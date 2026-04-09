@@ -12,6 +12,7 @@ from tally._operators import (
 )
 from tally._stream import stream
 from tally._view import view
+from tally._app import App
 from tally._protocol import OP_PUSH, OP_GET, OP_SET, OP_MSET, OP_REGISTER
 
 __all__ = [
@@ -33,6 +34,8 @@ __all__ = [
     # Decorators
     "stream",
     "view",
+    # App
+    "App",
     # Protocol constants
     "OP_PUSH",
     "OP_GET",
