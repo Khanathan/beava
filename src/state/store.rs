@@ -31,14 +31,20 @@ pub struct EntityState {
     pub last_event_at: Option<SystemTime>,
 }
 
-impl EntityState {
-    /// Create a new empty EntityState.
-    pub fn new() -> Self {
+impl Default for EntityState {
+    fn default() -> Self {
         Self {
             live_operators: Vec::new(),
             static_features: AHashMap::new(),
             last_event_at: None,
         }
+    }
+}
+
+impl EntityState {
+    /// Create a new empty EntityState.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Update the last event timestamp.
@@ -54,12 +60,18 @@ pub struct StateStore {
     entities: AHashMap<EntityKey, EntityState>,
 }
 
-impl StateStore {
-    /// Create an empty store.
-    pub fn new() -> Self {
+impl Default for StateStore {
+    fn default() -> Self {
         Self {
             entities: AHashMap::new(),
         }
+    }
+}
+
+impl StateStore {
+    /// Create an empty store.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Get or create an EntityState for the given key.
