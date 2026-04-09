@@ -11,10 +11,11 @@ use std::time::{Duration, SystemTime};
 use serde::{Serialize, Deserialize};
 
 /// A fixed-capacity ring buffer with time-based bucket selection.
-/// Used by all windowed operators (count, sum, avg).
+/// Used by all windowed operators (count, sum, avg, min, max).
 /// Buckets are lazily expired on advance_to() -- no background timers.
+/// Clone bound (not Copy) allows use with wrapper types like MinBucket/MaxBucket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RingBuffer<T: Default + Copy> {
+pub struct RingBuffer<T: Default + Clone> {
     buckets: Vec<T>,
     head: usize,
     bucket_duration: Duration,
@@ -22,7 +23,7 @@ pub struct RingBuffer<T: Default + Copy> {
     current_bucket_start: Option<SystemTime>,
 }
 
-impl<T: Default + Copy> RingBuffer<T> {
+impl<T: Default + Clone> RingBuffer<T> {
     /// Create a new ring buffer for the given window and bucket durations.
     /// Bucket count = ceil(window_duration / bucket_duration).
     pub fn new(window_duration: Duration, bucket_duration: Duration) -> Self {
@@ -105,7 +106,7 @@ impl<T: Default + Copy> RingBuffer<T> {
     }
 }
 
-impl<T: Default + Copy + AddAssign> RingBuffer<T> {
+impl<T: Default + Clone + AddAssign> RingBuffer<T> {
     /// Add a value to the current bucket, advancing time if needed.
     pub fn add_to_current(&mut self, value: T, now: SystemTime) {
         self.advance_to(now);
@@ -113,14 +114,28 @@ impl<T: Default + Copy + AddAssign> RingBuffer<T> {
     }
 }
 
-impl<T: Default + Copy + Sum> RingBuffer<T> {
-    /// Sum all bucket values currently in the buffer.
-    pub fn sum_all(&self) -> T {
-        self.buckets.iter().copied().sum()
+impl<T: Default + Clone> RingBuffer<T> {
+    /// Mutate the current (head) bucket via a closure, advancing time if needed.
+    /// Used by min/max operators which need conditional replacement, not additive update.
+    pub fn update_current<F: FnOnce(&mut T)>(&mut self, f: F, now: SystemTime) {
+        self.advance_to(now);
+        f(&mut self.buckets[self.head]);
+    }
+
+    /// Iterate over all bucket values in the ring buffer.
+    pub fn buckets_iter(&self) -> impl Iterator<Item = &T> {
+        self.buckets.iter()
     }
 }
 
-impl<T: Default + Copy + PartialEq> RingBuffer<T> {
+impl<T: Default + Clone + Sum> RingBuffer<T> {
+    /// Sum all bucket values currently in the buffer.
+    pub fn sum_all(&self) -> T {
+        self.buckets.iter().cloned().sum()
+    }
+}
+
+impl<T: Default + Clone + PartialEq> RingBuffer<T> {
     /// Count the number of buckets with non-default (non-zero) values.
     pub fn count_nonzero(&self) -> usize {
         let default = T::default();
@@ -334,5 +349,66 @@ mod tests {
         // Advance one more bucket -- oldest (1) should be zeroed
         rb.add_to_current(4, t0 + Duration::from_secs(3 * 60));
         assert_eq!(rb.sum_all(), 9); // 2 + 3 + 4
+    }
+
+    // ======================== update_current Tests ========================
+
+    #[test]
+    fn test_update_current_replaces_value_via_closure() {
+        let mut rb = RingBuffer::<f64>::new(
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(60),
+        );
+        let t0 = ts(1000 * 60);
+        // Set initial value via update_current
+        rb.update_current(|b| *b = 10.0, t0);
+        assert_eq!(rb.buckets_iter().next().map(|v| *v), Some(10.0));
+
+        // Update: only replace if smaller
+        rb.update_current(|b| if 5.0 < *b { *b = 5.0 }, t0);
+        // Bucket should now be 5.0 (replaced because 5 < 10)
+        let vals: Vec<f64> = rb.buckets_iter().cloned().collect();
+        assert_eq!(vals[rb.head], 5.0);
+    }
+
+    #[test]
+    fn test_update_current_advances_time() {
+        let mut rb = RingBuffer::<f64>::new(
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(60),
+        );
+        let t0 = ts(1000 * 60);
+        rb.update_current(|b| *b = 10.0, t0);
+        let head_before = rb.head;
+
+        // Advance by one bucket
+        let t1 = t0 + Duration::from_secs(60);
+        rb.update_current(|b| *b = 20.0, t1);
+        let head_after = rb.head;
+        assert_ne!(head_before, head_after);
+    }
+
+    // ======================== buckets_iter Tests ========================
+
+    #[test]
+    fn test_buckets_iter_returns_all_buckets() {
+        let rb = RingBuffer::<u64>::new(
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(60),
+        );
+        let count = rb.buckets_iter().count();
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn test_buckets_iter_reflects_added_values() {
+        let mut rb = RingBuffer::<u64>::new(
+            Duration::from_secs(3 * 60),
+            Duration::from_secs(60),
+        );
+        let t0 = ts(1000 * 60);
+        rb.add_to_current(42, t0);
+        let sum: u64 = rb.buckets_iter().sum();
+        assert_eq!(sum, 42);
     }
 }

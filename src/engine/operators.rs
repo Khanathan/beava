@@ -134,6 +134,183 @@ impl Operator for SumOp {
     }
 }
 
+// ======================== MinBucket / MaxBucket ========================
+
+/// Bucket wrapper for MinOp. Default is +INFINITY so any real value replaces it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct MinBucket(pub f64);
+impl Default for MinBucket {
+    fn default() -> Self { MinBucket(f64::INFINITY) }
+}
+
+/// Bucket wrapper for MaxOp. Default is -INFINITY so any real value replaces it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct MaxBucket(pub f64);
+impl Default for MaxBucket {
+    fn default() -> Self { MaxBucket(f64::NEG_INFINITY) }
+}
+
+// ======================== MinOp ========================
+
+/// Tracks the minimum value of a numeric field within a time window.
+/// Uses a RingBuffer<MinBucket> with per-bucket min tracking and a
+/// parallel event_count buffer to distinguish "no events" from "min is INFINITY".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MinOp {
+    field: String,
+    buffer: RingBuffer<MinBucket>,
+    event_count: RingBuffer<u64>,
+    optional: bool,
+}
+
+impl MinOp {
+    pub fn new(
+        field: impl Into<String>,
+        window_duration: std::time::Duration,
+        bucket_duration: std::time::Duration,
+        optional: bool,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            buffer: RingBuffer::new(window_duration, bucket_duration),
+            event_count: RingBuffer::new(window_duration, bucket_duration),
+            optional,
+        }
+    }
+}
+
+impl Operator for MinOp {
+    fn push(&mut self, event: &serde_json::Value, now: SystemTime) -> Result<(), TallyError> {
+        match event.get(&self.field) {
+            None => {
+                if self.optional {
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: "absent".into(),
+                    })
+                }
+            }
+            Some(val) => {
+                if let Some(f) = val.as_f64() {
+                    self.buffer.update_current(|bucket| {
+                        if f < bucket.0 {
+                            bucket.0 = f;
+                        }
+                    }, now);
+                    self.event_count.add_to_current(1u64, now);
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: format!("{}", val),
+                    })
+                }
+            }
+        }
+    }
+
+    fn read(&mut self, now: SystemTime) -> FeatureValue {
+        self.buffer.advance_to(now);
+        self.event_count.advance_to(now);
+        if self.event_count.sum_all() == 0 {
+            return FeatureValue::Missing;
+        }
+        let min_val = self.buffer.buckets_iter()
+            .filter(|b| b.0 != f64::INFINITY)
+            .map(|b| b.0)
+            .fold(f64::INFINITY, f64::min);
+        if min_val == f64::INFINITY {
+            FeatureValue::Missing
+        } else {
+            FeatureValue::Float(min_val)
+        }
+    }
+}
+
+// ======================== MaxOp ========================
+
+/// Tracks the maximum value of a numeric field within a time window.
+/// Mirrors MinOp with MaxBucket(f64::NEG_INFINITY) and f64::max logic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaxOp {
+    field: String,
+    buffer: RingBuffer<MaxBucket>,
+    event_count: RingBuffer<u64>,
+    optional: bool,
+}
+
+impl MaxOp {
+    pub fn new(
+        field: impl Into<String>,
+        window_duration: std::time::Duration,
+        bucket_duration: std::time::Duration,
+        optional: bool,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            buffer: RingBuffer::new(window_duration, bucket_duration),
+            event_count: RingBuffer::new(window_duration, bucket_duration),
+            optional,
+        }
+    }
+}
+
+impl Operator for MaxOp {
+    fn push(&mut self, event: &serde_json::Value, now: SystemTime) -> Result<(), TallyError> {
+        match event.get(&self.field) {
+            None => {
+                if self.optional {
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: "absent".into(),
+                    })
+                }
+            }
+            Some(val) => {
+                if let Some(f) = val.as_f64() {
+                    self.buffer.update_current(|bucket| {
+                        if f > bucket.0 {
+                            bucket.0 = f;
+                        }
+                    }, now);
+                    self.event_count.add_to_current(1u64, now);
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: format!("{}", val),
+                    })
+                }
+            }
+        }
+    }
+
+    fn read(&mut self, now: SystemTime) -> FeatureValue {
+        self.buffer.advance_to(now);
+        self.event_count.advance_to(now);
+        if self.event_count.sum_all() == 0 {
+            return FeatureValue::Missing;
+        }
+        let max_val = self.buffer.buckets_iter()
+            .filter(|b| b.0 != f64::NEG_INFINITY)
+            .map(|b| b.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if max_val == f64::NEG_INFINITY {
+            FeatureValue::Missing
+        } else {
+            FeatureValue::Float(max_val)
+        }
+    }
+}
+
 /// Computes the running average (sum/count) of a numeric field within a window.
 /// Uses paired ring buffers: one for count, one for sum. Divides on read.
 /// Same Redis-strict type checking as SumOp.
@@ -494,5 +671,119 @@ mod tests {
         op.push(&json!({"amount": 10.0}), t).unwrap();
         op.push(&json!({"amount": -30.0}), t).unwrap();
         assert_eq!(op.read(t), FeatureValue::Float(-10.0));
+    }
+
+    // ======================== MinOp Tests ========================
+
+    #[test]
+    fn test_min_three_events_returns_minimum() {
+        let mut op = MinOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 10.0}), t).unwrap();
+        op.push(&json!({"amount": 5.0}), t).unwrap();
+        op.push(&json!({"amount": 20.0}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Float(5.0));
+    }
+
+    #[test]
+    fn test_min_zero_events_returns_missing() {
+        let mut op = MinOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        assert_eq!(op.read(t), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_min_expires_old_buckets() {
+        let mut op = MinOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let t0 = ts(1000 * 60);
+        op.push(&json!({"amount": 42.0}), t0).unwrap();
+        assert_eq!(op.read(t0), FeatureValue::Float(42.0));
+        // Advance past the full window (2x window)
+        let t_future = t0 + Duration::from_secs(10 * 60);
+        assert_eq!(op.read(t_future), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_min_optional_skips_missing_field() {
+        let mut op = MinOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), true);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 10.0}), t).unwrap();
+        // Push event without field -- should succeed silently
+        assert!(op.push(&json!({}), t).is_ok());
+        assert_eq!(op.read(t), FeatureValue::Float(10.0));
+    }
+
+    #[test]
+    fn test_min_non_optional_missing_field_errors() {
+        let mut op = MinOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        let result = op.push(&json!({}), t);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TallyError::Type { ref got, .. } if got == "absent"));
+    }
+
+    #[test]
+    fn test_min_type_error_on_string_field() {
+        let mut op = MinOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        let result = op.push(&json!({"amount": "not_a_number"}), t);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TallyError::Type { ref field, .. } if field == "amount"));
+    }
+
+    // ======================== MaxOp Tests ========================
+
+    #[test]
+    fn test_max_three_events_returns_maximum() {
+        let mut op = MaxOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 10.0}), t).unwrap();
+        op.push(&json!({"amount": 5.0}), t).unwrap();
+        op.push(&json!({"amount": 20.0}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Float(20.0));
+    }
+
+    #[test]
+    fn test_max_zero_events_returns_missing() {
+        let mut op = MaxOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        assert_eq!(op.read(t), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_max_expires_old_buckets() {
+        let mut op = MaxOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let t0 = ts(1000 * 60);
+        op.push(&json!({"amount": 42.0}), t0).unwrap();
+        assert_eq!(op.read(t0), FeatureValue::Float(42.0));
+        let t_future = t0 + Duration::from_secs(10 * 60);
+        assert_eq!(op.read(t_future), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_max_optional_skips_missing_field() {
+        let mut op = MaxOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), true);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 10.0}), t).unwrap();
+        assert!(op.push(&json!({}), t).is_ok());
+        assert_eq!(op.read(t), FeatureValue::Float(10.0));
+    }
+
+    #[test]
+    fn test_max_non_optional_missing_field_errors() {
+        let mut op = MaxOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        let result = op.push(&json!({}), t);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TallyError::Type { ref got, .. } if got == "absent"));
+    }
+
+    #[test]
+    fn test_max_type_error_on_string_field() {
+        let mut op = MaxOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        let result = op.push(&json!({"amount": "not_a_number"}), t);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TallyError::Type { ref field, .. } if field == "amount"));
     }
 }
