@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
-status: executing
-stopped_at: Completed 06-03-PLAN.md
-last_updated: "2026-04-09T23:51:36.667Z"
+status: verifying
+stopped_at: Completed 06-04-PLAN.md
+last_updated: "2026-04-09T23:57:18.893Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 5
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 4
-  completed_plans: 3
-  percent: 75
+  completed_plans: 4
+  percent: 100
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 
 Phase: 6 (Foundation) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-09
 
 Progress: [..........] 0%
@@ -52,6 +52,7 @@ Progress: [..........] 0%
 | Phase 06 P01 | 33min | 2 tasks | 6 files |
 | Phase 06 P02 | 9min | 2 tasks | 7 files |
 | Phase 06 P03 | 5min | 2 tasks | 6 files |
+| Phase 06 P04 | 3min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -73,6 +74,9 @@ Key v1.1 architectural decisions (from research):
 - [Phase 06]: MGET strips qualified Stream.feature names from response (T-06-03 mitigation)
 - [Phase 06]: Borrow conflict in REGISTER handler resolved by extracting history_ttl before borrowing event_log mutably
 - [Phase 06]: Event log uses Option<EventLog> in AppState for backward compatibility -- system works without event log
+- [Phase 06]: encode_mget uses simple [u32 count][u16-string key]... format matching Rust MGET handler
+- [Phase 06]: TTL fields conditionally omitted from RegisterRequest JSON when None for backward compatibility
+- [Phase 06]: Views reject entity_ttl/history_ttl at StreamMeta.__new__ level for consistent validation
 
 ### Pending Todos
 
@@ -91,6 +95,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T23:51:36.665Z
-Stopped at: Completed 06-03-PLAN.md
+Last session: 2026-04-09T23:57:18.891Z
+Stopped at: Completed 06-04-PLAN.md
 Resume: `/gsd-plan-phase 6`

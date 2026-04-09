@@ -53,7 +53,7 @@ Plans:
 - [x] 06-01-PLAN.md — EntityState restructure for per-stream isolation + snapshot v4
 - [x] 06-02-PLAN.md — Per-stream entity TTL eviction + MGET command
 - [x] 06-03-PLAN.md — SSD event log module + background timers integration
-- [ ] 06-04-PLAN.md — Python SDK updates (mget, entity_ttl, history_ttl)
+- [x] 06-04-PLAN.md — Python SDK updates (mget, entity_ttl, history_ttl)
 
 ### Phase 7: Composable Pipeline
 **Goal**: Users can define multi-stage streaming pipelines where events automatically cascade through dependent streams in topological order
