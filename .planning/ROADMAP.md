@@ -71,7 +71,7 @@ Plans:
 - [x] 03-01-PLAN.md — Project skeleton, types (FeatureResult, exceptions), and binary protocol encoding with byte-level conformance tests
 - [x] 03-02-PLAN.md — Operator descriptor classes, @stream/@view decorators with metaclass and mixin support
 - [x] 03-03-PLAN.md — TCP client with auto-reconnect and App class (register/push/get/set/mset)
-- [ ] 03-04-PLAN.md — End-to-end integration tests against live Tally server
+- [x] 03-04-PLAN.md — End-to-end integration tests against live Tally server
 
 ### Phase 4: Persistence and Operational Readiness
 **Goal**: Tally survives restarts (snapshot persistence + crash recovery), reclaims memory for idle keys (TTL eviction), and exposes enough observability for production use (HTTP management API with pipeline CRUD, metrics, and debug endpoints)

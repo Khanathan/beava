@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: Completed 03-03-PLAN.md (TCP client and App class)
-last_updated: "2026-04-09T16:42:39.237Z"
+status: verifying
+stopped_at: Completed 03-04-PLAN.md (integration tests)
+last_updated: "2026-04-09T16:48:10.325Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 5
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 13
-  completed_plans: 12
-  percent: 92
+  completed_plans: 13
+  percent: 100
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 
 Phase: 03 (python-sdk) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-09
 
 Progress: [███████░░░] 71%
@@ -64,6 +64,7 @@ Progress: [███████░░░] 71%
 | Phase 03-python-sdk P01 | 4min | 2 tasks | 8 files |
 | Phase 03-python-sdk P02 | 5min | 2 tasks | 7 files |
 | Phase 03-python-sdk P03 | 4min | 2 tasks | 5 files |
+| Phase 03-python-sdk P04 | 3min | 1 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -105,6 +106,8 @@ Recent decisions affecting current work:
 - [Phase 03-python-sdk]: TallyClient auto-reconnect: catch ConnectionError, null socket, reconnect once and retry
 - [Phase 03-python-sdk]: App._parse_address uses rsplit(':',1) with default port 6400
 - [Phase 03-python-sdk]: App._send centralizes STATUS_ERROR check, raises ProtocolError with decoded server message
+- [Phase 03-python-sdk]: Added TALLY_TCP_PORT/TALLY_HTTP_PORT env vars to main.rs for integration test port isolation
+- [Phase 03-python-sdk]: Session-scoped server fixture with unique entity keys per test for isolation without restart overhead
 
 ### Pending Todos
 
@@ -125,6 +128,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T16:42:39.234Z
-Stopped at: Completed 03-03-PLAN.md (TCP client and App class)
+Last session: 2026-04-09T16:48:10.322Z
+Stopped at: Completed 03-04-PLAN.md (integration tests)
 Resume file: None
