@@ -141,25 +141,33 @@ fn test_eviction_removes_old_entity() {
         })
         .unwrap();
 
-    // Entity with old last_event_at (1 hour ago from now=100_000)
+    // Entity with old last_event_at (strictly older than TTL)
     {
         let entity = store.get_or_create_entity("old_user");
-        entity.update_last_event(ts(96_400)); // 100_000 - 96_400 = 3600s = 1 hour ago
+        entity.update_last_event(ts(96_399)); // 100_000 - 96_399 = 3601s > 3600s TTL -> evicted
+    }
+
+    // Entity at exactly TTL boundary (should be kept)
+    {
+        let entity = store.get_or_create_entity("boundary_user");
+        entity.update_last_event(ts(96_400)); // 100_000 - 96_400 = 3600s = TTL -> kept
     }
 
     // Entity with recent last_event_at (1 minute ago)
     {
         let entity = store.get_or_create_entity("recent_user");
-        entity.update_last_event(ts(99_940)); // 100_000 - 99_940 = 60s = 1 min ago
+        entity.update_last_event(ts(99_940)); // 100_000 - 99_940 = 60s < 3600s TTL -> kept
     }
 
     let now = ts(100_000);
     // TTL = 2 * 1800 = 3600 seconds (1 hour)
-    // old_user: 3600s old >= 3600s TTL -> evicted
+    // old_user: 3601s old > 3600s TTL -> evicted
+    // boundary_user: 3600s old = 3600s TTL -> kept (at boundary)
     // recent_user: 60s old < 3600s TTL -> kept
     let evicted = evict_expired_keys(&mut store, &engine, now, 2);
     assert_eq!(evicted, 1);
     assert!(store.get_entity("old_user").is_none());
+    assert!(store.get_entity("boundary_user").is_some());
     assert!(store.get_entity("recent_user").is_some());
 }
 

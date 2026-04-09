@@ -162,7 +162,8 @@ impl StateStore {
         }
     }
 
-    /// Remove entities whose last_event_at is older than `ttl` from `now`.
+    /// Remove entities whose last_event_at is strictly older than `ttl` from `now`.
+    /// Entities exactly at TTL age are kept (evicted only after TTL has fully elapsed).
     /// Entities with `last_event_at = None` are not evicted (never received an event).
     /// Returns the count of evicted entities.
     pub fn remove_expired_entities(&mut self, now: SystemTime, ttl: std::time::Duration) -> usize {
@@ -171,7 +172,7 @@ impl StateStore {
             match entity.last_event_at {
                 None => true, // Never pushed -- don't evict
                 Some(last) => {
-                    now.duration_since(last).unwrap_or(std::time::Duration::ZERO) < ttl
+                    now.duration_since(last).unwrap_or(std::time::Duration::ZERO) <= ttl
                 }
             }
         });
