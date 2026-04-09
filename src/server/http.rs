@@ -296,7 +296,7 @@ async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse
         let app = state.lock().unwrap_or_else(|e| e.into_inner());
         let entities = app.store.clone_for_snapshot();
         // Populate pipelines from engine -- same pattern as periodic snapshot timer in Plan 02
-        let pipelines: Vec<crate::state::snapshot::SerializablePipeline> = app
+        let mut pipelines: Vec<crate::state::snapshot::SerializablePipeline> = app
             .engine
             .list_streams()
             .filter_map(|stream| {
@@ -309,6 +309,16 @@ async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse
                 })
             })
             .collect();
+        // Also include view definitions in the snapshot
+        for view in app.engine.list_views() {
+            if let Some(json) = app.engine.get_raw_register_json(&view.name) {
+                pipelines.push(crate::state::snapshot::SerializablePipeline {
+                    name: view.name.clone(),
+                    key_field: view.key_field.clone(),
+                    raw_register_json: serde_json::to_string(json).unwrap_or_default(),
+                });
+            }
+        }
         crate::state::snapshot::SnapshotState {
             entities,
             pipelines,

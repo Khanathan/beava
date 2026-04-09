@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tally::engine::pipeline::PipelineEngine;
 use tally::server::http::run_http_server;
-use tally::server::protocol::{RegisterRequest, convert_register_request};
+use tally::server::protocol::{RegisterRequest, convert_register_request, convert_view_register_request};
 use tally::server::tcp::{AppState, Metrics, run_tcp_server};
 use tally::state::eviction::evict_expired_keys;
 use tally::state::snapshot::{SerializablePipeline, SnapshotState, load_snapshot, save_snapshot};
@@ -48,10 +48,17 @@ async fn main() {
                             let req: Result<RegisterRequest, _> =
                                 serde_json::from_value(json_val.clone());
                             if let Ok(req) = req {
-                                let stream_name = req.name.clone();
-                                if let Ok(stream_def) = convert_register_request(req) {
-                                    let _ = app.engine.register(stream_def);
-                                    app.engine.store_raw_register_json(&stream_name, json_val);
+                                let def_name = req.name.clone();
+                                let is_view = req.definition_type.as_deref() == Some("view");
+                                let registered = if is_view {
+                                    convert_view_register_request(req)
+                                        .and_then(|view_def| app.engine.register_view(view_def))
+                                } else {
+                                    convert_register_request(req)
+                                        .and_then(|stream_def| app.engine.register(stream_def))
+                                };
+                                if registered.is_ok() {
+                                    app.engine.store_raw_register_json(&def_name, json_val);
                                 }
                             }
                         }
@@ -94,7 +101,7 @@ async fn main() {
             let snapshot_data = {
                 let app = snap_state.lock().unwrap_or_else(|e| e.into_inner());
                 let entities = app.store.clone_for_snapshot();
-                let pipelines: Vec<SerializablePipeline> = app
+                let mut pipelines: Vec<SerializablePipeline> = app
                     .engine
                     .list_streams()
                     .filter_map(|stream| {
@@ -108,6 +115,17 @@ async fn main() {
                             })
                     })
                     .collect();
+                // Also include view definitions in the snapshot
+                for view in app.engine.list_views() {
+                    if let Some(json) = app.engine.get_raw_register_json(&view.name) {
+                        pipelines.push(SerializablePipeline {
+                            name: view.name.clone(),
+                            key_field: view.key_field.clone(),
+                            raw_register_json: serde_json::to_string(json)
+                                .unwrap_or_default(),
+                        });
+                    }
+                }
                 SnapshotState {
                     entities,
                     pipelines,
