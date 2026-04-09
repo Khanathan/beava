@@ -33,7 +33,7 @@ Requirements for milestone v1.1: Composable Pipeline & Event Log.
 
 ### Operational
 
-- [ ] **OPS-01**: User can fetch features for multiple keys in a single MGET call
+- [x] **OPS-01**: User can fetch features for multiple keys in a single MGET call
 - [x] **OPS-02**: User can configure entity state TTL per dataset/stream
 - [ ] **OPS-03**: Incremental snapshot serialization only writes changed entities since last snapshot
 - [ ] **OPS-04**: Snapshot restore handles incremental format (base + deltas)
@@ -97,7 +97,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SCHM-03 | Phase 8 | Pending |
 | SCHM-04 | Phase 8 | Pending |
 | SCHM-05 | Phase 8 | Pending |
-| OPS-01 | Phase 6 | Pending |
+| OPS-01 | Phase 6 | Complete |
 | OPS-02 | Phase 6 | Complete |
 | OPS-03 | Phase 9 | Pending |
 | OPS-04 | Phase 9 | Pending |
