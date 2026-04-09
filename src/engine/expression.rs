@@ -399,15 +399,15 @@ fn eval_binary(op: BinOp, left: FeatureValue, right: FeatureValue) -> FeatureVal
     match op {
         // Arithmetic: Int + Int -> Int; if either Float -> Float.
         BinOp::Add => match (&left, &right) {
-            (FeatureValue::Int(a), FeatureValue::Int(b)) => FeatureValue::Int(a + b),
+            (FeatureValue::Int(a), FeatureValue::Int(b)) => FeatureValue::Int(a.saturating_add(*b)),
             _ => guard_float(left.as_f64().unwrap() + right.as_f64().unwrap()),
         },
         BinOp::Sub => match (&left, &right) {
-            (FeatureValue::Int(a), FeatureValue::Int(b)) => FeatureValue::Int(a - b),
+            (FeatureValue::Int(a), FeatureValue::Int(b)) => FeatureValue::Int(a.saturating_sub(*b)),
             _ => guard_float(left.as_f64().unwrap() - right.as_f64().unwrap()),
         },
         BinOp::Mul => match (&left, &right) {
-            (FeatureValue::Int(a), FeatureValue::Int(b)) => FeatureValue::Int(a * b),
+            (FeatureValue::Int(a), FeatureValue::Int(b)) => FeatureValue::Int(a.saturating_mul(*b)),
             _ => guard_float(left.as_f64().unwrap() * right.as_f64().unwrap()),
         },
         BinOp::Div => {
