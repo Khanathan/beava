@@ -233,6 +233,10 @@ pub struct RegisterRequest {
     #[serde(default, rename = "type")]
     pub definition_type: Option<String>,  // "stream" (default) or "view"
     pub features: Vec<FeatureDefRequest>,
+    #[serde(default)]
+    pub entity_ttl: Option<String>,    // e.g., "5m", "1h"
+    #[serde(default)]
+    pub history_ttl: Option<String>,   // e.g., "72h", "7d"
 }
 
 /// A single feature definition in the REGISTER JSON payload.
@@ -487,10 +491,19 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
         features.push((f.name, def));
     }
 
+    let entity_ttl = req.entity_ttl
+        .map(|s| parse_duration_str(&s))
+        .transpose()?;
+    let history_ttl = req.history_ttl
+        .map(|s| parse_duration_str(&s))
+        .transpose()?;
+
     Ok(StreamDefinition {
         name: req.name,
         key_field: req.key_field,
         features,
+        entity_ttl,
+        history_ttl,
     })
 }
 
@@ -1038,6 +1051,8 @@ mod tests {
             name: "Test".into(),
             key_field: "id".into(),
             definition_type: None,
+            entity_ttl: None,
+            history_ttl: None,
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "median".into(),
@@ -1057,6 +1072,8 @@ mod tests {
             name: "Test".into(),
             key_field: "id".into(),
             definition_type: None,
+            entity_ttl: None,
+            history_ttl: None,
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "histogram".into(),
@@ -1078,6 +1095,8 @@ mod tests {
             name: "Test".into(),
             key_field: "id".into(),
             definition_type: None,
+            entity_ttl: None,
+            history_ttl: None,
             features: vec![FeatureDefRequest {
                 name: "cnt".into(),
                 feature_type: "count".into(),
@@ -1097,6 +1116,8 @@ mod tests {
             name: "Test".into(),
             key_field: "id".into(),
             definition_type: None,
+            entity_ttl: None,
+            history_ttl: None,
             features: vec![FeatureDefRequest {
                 name: "total".into(),
                 feature_type: "sum".into(),
@@ -1116,6 +1137,8 @@ mod tests {
             name: "Test".into(),
             key_field: "id".into(),
             definition_type: None,
+            entity_ttl: None,
+            history_ttl: None,
             features: vec![FeatureDefRequest {
                 name: "total".into(),
                 feature_type: "sum".into(),
@@ -1135,6 +1158,8 @@ mod tests {
             name: "Test".into(),
             key_field: "id".into(),
             definition_type: None,
+            entity_ttl: None,
+            history_ttl: None,
             features: vec![FeatureDefRequest {
                 name: "mean".into(),
                 feature_type: "avg".into(),
@@ -1154,6 +1179,8 @@ mod tests {
             name: "Test".into(),
             key_field: "id".into(),
             definition_type: None,
+            entity_ttl: None,
+            history_ttl: None,
             features: vec![FeatureDefRequest {
                 name: "ratio".into(),
                 feature_type: "derive".into(),
@@ -1272,6 +1299,8 @@ mod tests {
             name: "Test".into(),
             key_field: "id".into(),
             definition_type: None,
+            entity_ttl: None,
+            history_ttl: None,
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "min".into(),
@@ -1291,6 +1320,8 @@ mod tests {
             name: "Test".into(),
             key_field: "id".into(),
             definition_type: None,
+            entity_ttl: None,
+            history_ttl: None,
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "last".into(),
@@ -1302,6 +1333,68 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("last requires 'field'"), "got: {}", err_msg);
+    }
+
+    // ======================== Phase 6 Plan 02: entity_ttl / history_ttl parsing tests ========================
+
+    #[test]
+    fn test_register_request_with_entity_ttl_parsed() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "entity_ttl": "5m",
+            "features": [
+                {"name": "tx_count_1h", "type": "count", "window": "1h"}
+            ]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        assert_eq!(stream.entity_ttl, Some(std::time::Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn test_register_request_without_entity_ttl_is_none() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [
+                {"name": "tx_count_1h", "type": "count", "window": "1h"}
+            ]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        assert_eq!(stream.entity_ttl, None);
+        assert_eq!(stream.history_ttl, None);
+    }
+
+    #[test]
+    fn test_register_request_with_history_ttl_parsed() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "history_ttl": "72h",
+            "features": [
+                {"name": "tx_count_1h", "type": "count", "window": "1h"}
+            ]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        assert_eq!(stream.history_ttl, Some(std::time::Duration::from_secs(259200)));
+    }
+
+    #[test]
+    fn test_register_request_with_both_ttls_parsed() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "entity_ttl": "1h",
+            "history_ttl": "7d",
+            "features": []
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        assert_eq!(stream.entity_ttl, Some(std::time::Duration::from_secs(3600)));
+        assert_eq!(stream.history_ttl, Some(std::time::Duration::from_secs(604800)));
     }
 
     // --- G-08: read_json_payload ---
@@ -1341,6 +1434,8 @@ mod tests {
             name: "Test".into(),
             key_field: "id".into(),
             definition_type: None,
+            entity_ttl: None,
+            history_ttl: None,
             features: vec![FeatureDefRequest {
                 name: "dc".into(),
                 feature_type: "distinct_count".into(),

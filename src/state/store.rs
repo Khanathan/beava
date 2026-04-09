@@ -188,6 +188,11 @@ impl StateStore {
         self.entities.len()
     }
 
+    /// Iterate over all entity keys.
+    pub fn entity_keys(&self) -> impl Iterator<Item = String> + '_ {
+        self.entities.keys().cloned()
+    }
+
     /// Clone full state for snapshot serialization (v4 format).
     /// AHashMap is not directly serializable by postcard -- convert to Vec<(K, V)>.
     pub fn clone_for_snapshot(&self) -> Vec<(String, SerializableEntityState)> {

@@ -7,23 +7,87 @@ use std::time::SystemTime;
 use crate::state::store::StateStore;
 use crate::engine::pipeline::PipelineEngine;
 
-/// Evict entity keys whose last_event_at is older than ttl_multiplier * max_window.
-/// Returns the number of evicted keys.
+/// Evict individual stream entries from entities based on per-stream entity_ttl.
+/// Two-phase process:
+/// 1. For each entity, iterate streams and remove those whose last_event_at
+///    exceeds their stream's entity_ttl.
+/// 2. Remove entities that have zero remaining streams AND zero static_features.
 ///
-/// If no streams are registered (max_window == 0), nothing is evicted.
-/// Uses Duration arithmetic with unwrap_or(Duration::ZERO) for clock skew safety (T-04-04).
-pub fn evict_expired_keys(
+/// Streams with entity_ttl=None fall back to the global TTL behavior
+/// (ttl_multiplier * max_window). Streams with last_event_at=None are not evicted.
+///
+/// Returns the number of stream entries evicted.
+pub fn evict_expired_stream_entries(
     store: &mut StateStore,
     engine: &PipelineEngine,
     now: SystemTime,
     ttl_multiplier: u32,
 ) -> usize {
     let max_window = engine.max_window_duration();
-    if max_window.is_zero() {
-        return 0; // No streams registered -- nothing to evict
+    let global_ttl = if max_window.is_zero() {
+        None // No global fallback when max_window is zero
+    } else {
+        Some(max_window * ttl_multiplier)
+    };
+
+    let mut total_evicted = 0;
+
+    // Phase 1: For each entity, remove expired stream entries
+    // Collect entity keys first to avoid borrow issues
+    let entity_keys: Vec<String> = store.entity_keys().collect();
+
+    for key in &entity_keys {
+        if let Some(entity) = store.get_entity_mut(key) {
+            // Collect stream names to evict
+            let mut streams_to_remove: Vec<String> = Vec::new();
+
+            for (stream_name, stream_state) in entity.streams.iter() {
+                // Skip streams with no last_event_at (never received an event)
+                let last_event = match stream_state.last_event_at {
+                    Some(t) => t,
+                    None => continue,
+                };
+
+                // Determine the TTL for this stream
+                let ttl = match engine.get_stream_entity_ttl(stream_name) {
+                    Some(stream_ttl) => stream_ttl,
+                    None => match global_ttl {
+                        Some(gt) => gt,
+                        None => continue, // No TTL applicable -- skip
+                    },
+                };
+
+                // Check if stream entry is expired
+                let age = now.duration_since(last_event).unwrap_or(std::time::Duration::ZERO);
+                if age > ttl {
+                    streams_to_remove.push(stream_name.clone());
+                }
+            }
+
+            // Remove expired streams
+            for stream_name in &streams_to_remove {
+                entity.streams.remove(stream_name);
+            }
+            total_evicted += streams_to_remove.len();
+        }
     }
-    let ttl = max_window * ttl_multiplier;
-    store.remove_expired_entities(now, ttl)
+
+    // Phase 2: Remove entities that are now empty (no streams AND no static features)
+    store.remove_empty_entities();
+
+    total_evicted
+}
+
+/// Legacy wrapper: Evict entity keys whose last_event_at is older than ttl_multiplier * max_window.
+/// Delegates to evict_expired_stream_entries for per-stream eviction behavior.
+/// Returns the number of stream entries evicted.
+pub fn evict_expired_keys(
+    store: &mut StateStore,
+    engine: &PipelineEngine,
+    now: SystemTime,
+    ttl_multiplier: u32,
+) -> usize {
+    evict_expired_stream_entries(store, engine, now, ttl_multiplier)
 }
 
 #[cfg(test)]
@@ -47,6 +111,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         }
     }
 
@@ -96,8 +162,11 @@ mod tests {
         let mut engine = PipelineEngine::new();
         engine.register(make_stream_with_window("stream1", 3600)).unwrap();
 
-        // Add entity with no last_event_at (never pushed)
-        store.get_or_create_entity("no_event_user");
+        // Add entity with a stream but no last_event_at (never pushed)
+        {
+            let entity = store.get_or_create_entity("no_event_user");
+            entity.get_or_create_stream("stream1"); // has a stream entry, so not empty
+        }
 
         let now = ts(100_000);
         let evicted = evict_expired_keys(&mut store, &engine, now, 2);
@@ -122,13 +191,187 @@ mod tests {
         assert_eq!(store.entity_count(), 1); // Not evicted because no streams -> no max window
     }
 
+    fn make_stream_with_ttl(name: &str, window_secs: u64, ttl_secs: Option<u64>) -> StreamDefinition {
+        StreamDefinition {
+            name: name.to_string(),
+            key_field: "user_id".to_string(),
+            features: vec![
+                ("count".to_string(), FeatureDef::Count {
+                    window: Duration::from_secs(window_secs),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                }),
+            ],
+            entity_ttl: ttl_secs.map(|s| Duration::from_secs(s)),
+            history_ttl: None,
+        }
+    }
+
+    // ======================== Per-stream eviction tests ========================
+
+    #[test]
+    fn test_evict_expired_stream_entries_removes_expired_stream_only() {
+        let mut store = StateStore::new();
+        let mut engine = PipelineEngine::new();
+        // stream_short has 300s entity_ttl, stream_long has 7200s entity_ttl
+        engine.register(make_stream_with_ttl("stream_short", 3600, Some(300))).unwrap();
+        engine.register(make_stream_with_ttl("stream_long", 3600, Some(7200))).unwrap();
+
+        // Entity with two streams; stream_short is old, stream_long is recent
+        {
+            let entity = store.get_or_create_entity("user1");
+            let short = entity.get_or_create_stream("stream_short");
+            short.last_event_at = Some(ts(1000)); // Very old
+            let long = entity.get_or_create_stream("stream_long");
+            long.last_event_at = Some(ts(99_000)); // Recent
+        }
+
+        let now = ts(100_000);
+        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        assert_eq!(evicted, 1, "only stream_short should be evicted");
+
+        let entity = store.get_entity("user1").unwrap();
+        assert!(entity.streams.get("stream_short").is_none(), "stream_short should be removed");
+        assert!(entity.streams.get("stream_long").is_some(), "stream_long should remain");
+    }
+
+    #[test]
+    fn test_evict_all_streams_removes_entity_when_no_static_features() {
+        let mut store = StateStore::new();
+        let mut engine = PipelineEngine::new();
+        engine.register(make_stream_with_ttl("stream1", 3600, Some(300))).unwrap();
+
+        {
+            let entity = store.get_or_create_entity("user1");
+            let stream = entity.get_or_create_stream("stream1");
+            stream.last_event_at = Some(ts(1000)); // Old
+        }
+
+        let now = ts(100_000);
+        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        assert_eq!(evicted, 1);
+        assert_eq!(store.entity_count(), 0, "entity should be removed when all streams evicted and no static features");
+    }
+
+    #[test]
+    fn test_evict_all_streams_keeps_entity_with_static_features() {
+        let mut store = StateStore::new();
+        let mut engine = PipelineEngine::new();
+        engine.register(make_stream_with_ttl("stream1", 3600, Some(300))).unwrap();
+
+        {
+            let entity = store.get_or_create_entity("user1");
+            let stream = entity.get_or_create_stream("stream1");
+            stream.last_event_at = Some(ts(1000)); // Old
+        }
+        // Add a static feature
+        store.set_static("user1", "lifetime_value", crate::types::FeatureValue::Float(100.0), ts(1000));
+
+        let now = ts(100_000);
+        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        assert_eq!(evicted, 1, "stream1 should be evicted");
+        assert_eq!(store.entity_count(), 1, "entity should be kept because of static features");
+        let entity = store.get_entity("user1").unwrap();
+        assert!(entity.streams.is_empty(), "all streams should be gone");
+        assert!(!entity.static_features.is_empty(), "static features should remain");
+    }
+
+    #[test]
+    fn test_evict_stream_with_none_entity_ttl_falls_back_to_global() {
+        let mut store = StateStore::new();
+        let mut engine = PipelineEngine::new();
+        // entity_ttl=None -> falls back to global (max_window * ttl_multiplier = 3600 * 2 = 7200)
+        engine.register(make_stream_with_window("stream_global", 3600)).unwrap();
+
+        {
+            let entity = store.get_or_create_entity("user1");
+            let stream = entity.get_or_create_stream("stream_global");
+            stream.last_event_at = Some(ts(1000)); // 99000 seconds old -> exceeds 7200 TTL
+        }
+
+        let now = ts(100_000);
+        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        assert_eq!(evicted, 1, "stream with None entity_ttl should fall back to global TTL");
+    }
+
+    #[test]
+    fn test_evict_stream_with_none_entity_ttl_and_zero_max_window_skips() {
+        let mut store = StateStore::new();
+        let mut engine = PipelineEngine::new();
+        // A derive-only stream has zero max window
+        engine.register(StreamDefinition {
+            name: "derived_only".to_string(),
+            key_field: "user_id".to_string(),
+            features: vec![
+                ("ratio".to_string(), FeatureDef::Derive {
+                    expr: crate::engine::expression::parse_expr("1 + 1").unwrap(),
+                }),
+            ],
+            entity_ttl: None,
+            history_ttl: None,
+        }).unwrap();
+
+        {
+            let entity = store.get_or_create_entity("user1");
+            let stream = entity.get_or_create_stream("derived_only");
+            stream.last_event_at = Some(ts(1000)); // Very old
+        }
+
+        let now = ts(100_000);
+        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        assert_eq!(evicted, 0, "should not evict when entity_ttl=None and max_window=0");
+    }
+
+    #[test]
+    fn test_evict_stream_with_no_last_event_at_not_evicted() {
+        let mut store = StateStore::new();
+        let mut engine = PipelineEngine::new();
+        engine.register(make_stream_with_ttl("stream1", 3600, Some(300))).unwrap();
+
+        {
+            let entity = store.get_or_create_entity("user1");
+            entity.get_or_create_stream("stream1");
+            // last_event_at is None (default)
+        }
+
+        let now = ts(100_000);
+        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        assert_eq!(evicted, 0, "stream with no last_event_at should not be evicted");
+    }
+
+    #[test]
+    fn test_evict_mixed_entity_ttl_and_global() {
+        let mut store = StateStore::new();
+        let mut engine = PipelineEngine::new();
+        // stream_custom has 300s TTL, stream_global has None (falls back to 3600*2=7200)
+        engine.register(make_stream_with_ttl("stream_custom", 3600, Some(300))).unwrap();
+        engine.register(make_stream_with_window("stream_global", 3600)).unwrap();
+
+        {
+            let entity = store.get_or_create_entity("user1");
+            // stream_custom: old (should be evicted with 300s TTL)
+            let custom = entity.get_or_create_stream("stream_custom");
+            custom.last_event_at = Some(ts(99_000)); // 1000s old > 300s TTL
+            // stream_global: old but within global TTL
+            let global = entity.get_or_create_stream("stream_global");
+            global.last_event_at = Some(ts(99_000)); // 1000s old < 7200s global TTL
+        }
+
+        let now = ts(100_000);
+        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        assert_eq!(evicted, 1, "only stream_custom should be evicted");
+        let entity = store.get_entity("user1").unwrap();
+        assert!(entity.streams.get("stream_custom").is_none());
+        assert!(entity.streams.get("stream_global").is_some());
+    }
+
     #[test]
     fn test_evict_mixed_entities() {
         let mut store = StateStore::new();
         let mut engine = PipelineEngine::new();
         engine.register(make_stream_with_window("stream1", 3600)).unwrap();
 
-        // Old entity (should be evicted)
+        // Old entity (should be evicted -- stream entry removed, then entity removed because empty)
         {
             let entity = store.get_or_create_entity("old_user");
             let stream = entity.get_or_create_stream("stream1");
@@ -140,8 +383,11 @@ mod tests {
             let stream = entity.get_or_create_stream("stream1");
             stream.last_event_at = Some(ts(99_000));
         }
-        // No event entity (should be kept)
-        store.get_or_create_entity("no_event_user");
+        // No event entity with a stream (should be kept -- no last_event_at means not evicted)
+        {
+            let entity = store.get_or_create_entity("no_event_user");
+            entity.get_or_create_stream("stream1"); // has a stream entry, not empty
+        }
 
         let now = ts(100_000);
         let evicted = evict_expired_keys(&mut store, &engine, now, 2);

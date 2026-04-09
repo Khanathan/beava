@@ -42,6 +42,8 @@ fn make_tx_stream_with_derive() -> StreamDefinition {
                 expr: parse_expr("tx_sum_1h / tx_count_1h").unwrap(),
             }),
         ],
+        entity_ttl: None,
+        history_ttl: None,
     }
 }
 
@@ -111,6 +113,8 @@ fn test_derive_division_by_zero_returns_missing() {
                 expr: parse_expr("count_1h / nonexistent_feature").unwrap(),
             }),
         ],
+        entity_ttl: None,
+        history_ttl: None,
     };
 
     let mut engine = PipelineEngine::new();
@@ -161,6 +165,8 @@ fn test_window_expiration_end_to_end() {
                 where_expr: None,
             }),
         ],
+        entity_ttl: None,
+        history_ttl: None,
     };
 
     let mut engine = PipelineEngine::new();
@@ -209,6 +215,8 @@ fn test_derive_with_event_field_access() {
                 expr: parse_expr("_event.amount / avg_1h").unwrap(),
             }),
         ],
+        entity_ttl: None,
+        history_ttl: None,
     };
 
     let mut engine = PipelineEngine::new();

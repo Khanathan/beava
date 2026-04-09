@@ -40,6 +40,8 @@ fn make_tx_stream() -> StreamDefinition {
                 },
             ),
         ],
+        entity_ttl: None,
+        history_ttl: None,
     }
 }
 
@@ -141,6 +143,8 @@ fn test_eviction_removes_old_entity() {
                     where_expr: None,
                 },
             )],
+            entity_ttl: None,
+            history_ttl: None,
         })
         .unwrap();
 
@@ -193,11 +197,16 @@ fn test_eviction_preserves_entity_with_no_events() {
                     where_expr: None,
                 },
             )],
+            entity_ttl: None,
+            history_ttl: None,
         })
         .unwrap();
 
-    // Entity with no last_event_at (never received event)
-    store.get_or_create_entity("no_event_user");
+    // Entity with a stream but no last_event_at (never received event)
+    {
+        let entity = store.get_or_create_entity("no_event_user");
+        entity.get_or_create_stream("stream1"); // has a stream entry, so not empty
+    }
 
     let now = ts(100_000);
     let evicted = evict_expired_keys(&mut store, &engine, now, 2);

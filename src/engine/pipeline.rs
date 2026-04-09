@@ -89,6 +89,13 @@ pub struct StreamDefinition {
     pub name: String,
     pub key_field: String,
     pub features: Vec<(String, FeatureDef)>, // (feature_name, definition)
+    /// Per-stream entity state TTL. When set, entities with no events
+    /// for this stream older than this duration have their stream entry evicted.
+    /// None means this stream uses the global TTL behavior.
+    pub entity_ttl: Option<Duration>,
+    /// How long to retain events in the event log for this stream.
+    /// Default: None (uses global default). Used by event log compaction.
+    pub history_ttl: Option<Duration>,
 }
 
 /// The pipeline engine. Holds registered stream definitions and coordinates
@@ -416,6 +423,11 @@ impl PipelineEngine {
         self.streams.get(name)
     }
 
+    /// Returns the entity_ttl for a given stream, if set.
+    pub fn get_stream_entity_ttl(&self, stream_name: &str) -> Option<Duration> {
+        self.streams.get(stream_name).and_then(|s| s.entity_ttl)
+    }
+
     /// Number of registered streams.
     pub fn stream_count(&self) -> usize {
         self.streams.len()
@@ -532,6 +544,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         }
     }
 
@@ -551,6 +565,8 @@ mod tests {
             name: "".into(),
             key_field: "user_id".into(),
             features: vec![],
+            entity_ttl: None,
+            history_ttl: None,
         };
         assert!(engine.register(stream).is_err());
     }
@@ -647,6 +663,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         }).unwrap();
         engine.register(StreamDefinition {
             name: "stream2".into(),
@@ -658,6 +676,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         }).unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(3600));
     }
@@ -679,6 +699,8 @@ mod tests {
                     expr: crate::engine::expression::parse_expr("1 + 1").unwrap(),
                 }),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         }).unwrap();
         assert_eq!(engine.max_window_duration(), Duration::ZERO);
     }
@@ -798,6 +820,8 @@ mod tests {
                     optional: false,
                 }),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         };
         engine.register(stream).unwrap();
         let now = ts(60_000);
@@ -835,6 +859,8 @@ mod tests {
                     where_expr: Some(where_expr),
                 }),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         };
         engine.register(stream).unwrap();
         let now = ts(60_000);
@@ -889,6 +915,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         }).unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(86400));
     }
@@ -953,6 +981,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         }).unwrap();
         engine.register(StreamDefinition {
             name: "Logins".into(),
@@ -964,6 +994,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         }).unwrap();
 
         // Register a view that derives from both streams
@@ -1007,6 +1039,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         }).unwrap();
 
         // Register Transactions stream with last_merchant_id to store the foreign key
@@ -1024,6 +1058,8 @@ mod tests {
                     optional: true,
                 }),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         }).unwrap();
 
         // Register a view with lookup
@@ -1068,6 +1104,8 @@ mod tests {
                     optional: true,
                 }),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         }).unwrap();
 
         engine.register(StreamDefinition {
@@ -1080,6 +1118,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         }).unwrap();
 
         let view = ViewDefinition {
@@ -1101,6 +1141,65 @@ mod tests {
         let features = engine.get_features("u123", &mut store, now);
         // Lookup target entity doesn't exist -> Missing
         assert_eq!(features.get("merchant_chargebacks"), Some(&FeatureValue::Missing));
+    }
+
+    // ======================== Phase 6 Plan 02: entity_ttl / history_ttl Tests ========================
+
+    #[test]
+    fn test_stream_definition_with_entity_ttl_stores_value() {
+        let stream = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: "user_id".into(),
+            features: vec![],
+            entity_ttl: Some(Duration::from_secs(300)),
+            history_ttl: None,
+        };
+        assert_eq!(stream.entity_ttl, Some(Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn test_stream_definition_with_entity_ttl_none_is_backwards_compatible() {
+        let stream = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: "user_id".into(),
+            features: vec![],
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        assert_eq!(stream.entity_ttl, None);
+        assert_eq!(stream.history_ttl, None);
+    }
+
+    #[test]
+    fn test_get_stream_entity_ttl_returns_some() {
+        let mut engine = PipelineEngine::new();
+        engine.register(StreamDefinition {
+            name: "Transactions".into(),
+            key_field: "user_id".into(),
+            features: vec![],
+            entity_ttl: Some(Duration::from_secs(300)),
+            history_ttl: None,
+        }).unwrap();
+        assert_eq!(engine.get_stream_entity_ttl("Transactions"), Some(Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn test_get_stream_entity_ttl_returns_none_for_unset() {
+        let mut engine = PipelineEngine::new();
+        engine.register(StreamDefinition {
+            name: "Transactions".into(),
+            key_field: "user_id".into(),
+            features: vec![],
+            entity_ttl: None,
+            history_ttl: None,
+        }).unwrap();
+        assert_eq!(engine.get_stream_entity_ttl("Transactions"), None);
+    }
+
+    #[test]
+    fn test_get_stream_entity_ttl_returns_none_for_unknown_stream() {
+        let engine = PipelineEngine::new();
+        assert_eq!(engine.get_stream_entity_ttl("NonExistent"), None);
     }
 
     #[test]
@@ -1125,6 +1224,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         }).unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(86400));
     }

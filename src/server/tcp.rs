@@ -306,6 +306,8 @@ mod tests {
                     },
                 ),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         };
         let mut app = state.lock().unwrap();
         app.engine.register(stream).unwrap();
@@ -612,6 +614,8 @@ mod tests {
                     },
                 ),
             ],
+            entity_ttl: None,
+            history_ttl: None,
         };
         let mut app = state.lock().unwrap();
         app.engine.register(stream).unwrap();
