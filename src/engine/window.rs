@@ -26,12 +26,22 @@ impl<T: Default + Copy> RingBuffer<T> {
     /// Create a new ring buffer for the given window and bucket durations.
     /// Bucket count = ceil(window_duration / bucket_duration).
     pub fn new(window_duration: Duration, bucket_duration: Duration) -> Self {
-        todo!()
+        let window_secs = window_duration.as_secs_f64();
+        let bucket_secs = bucket_duration.as_secs_f64();
+        let num_buckets = (window_secs / bucket_secs).ceil() as usize;
+
+        Self {
+            buckets: vec![T::default(); num_buckets],
+            head: 0,
+            bucket_duration,
+            window_duration,
+            current_bucket_start: None,
+        }
     }
 
     /// Return the number of buckets in this ring buffer.
     pub fn num_buckets(&self) -> usize {
-        todo!()
+        self.buckets.len()
     }
 
     /// Advance the ring buffer to the given timestamp, zeroing skipped buckets.
@@ -40,33 +50,81 @@ impl<T: Default + Copy> RingBuffer<T> {
     /// Per RESEARCH.md Pitfall 1: Uses unwrap_or(Duration::ZERO) for SystemTime arithmetic.
     /// Per RESEARCH.md Pitfall 3: If gap > full window, zeros ALL buckets.
     pub fn advance_to(&mut self, now: SystemTime) -> usize {
-        todo!()
+        let start = match self.current_bucket_start {
+            Some(start) => start,
+            None => {
+                // First event: initialize from the bucket-aligned time
+                let aligned = self.bucket_start_for(now);
+                self.current_bucket_start = Some(aligned);
+                self.head = 0;
+                return 0;
+            }
+        };
+
+        // Pitfall 1: unwrap_or(Duration::ZERO) for out-of-order timestamps
+        let elapsed = now.duration_since(start).unwrap_or(Duration::ZERO);
+        let bucket_secs = self.bucket_duration.as_secs_f64();
+        let buckets_to_advance = (elapsed.as_secs_f64() / bucket_secs) as usize;
+
+        if buckets_to_advance == 0 {
+            return self.head;
+        }
+
+        let num_buckets = self.buckets.len();
+
+        if buckets_to_advance >= num_buckets {
+            // Pitfall 3: gap exceeds full window -- zero ALL buckets
+            for bucket in self.buckets.iter_mut() {
+                *bucket = T::default();
+            }
+            self.head = 0;
+        } else {
+            // Zero only the skipped buckets (head+1 through head+advance, mod num_buckets)
+            for i in 1..=buckets_to_advance {
+                let idx = (self.head + i) % num_buckets;
+                self.buckets[idx] = T::default();
+            }
+            self.head = (self.head + buckets_to_advance) % num_buckets;
+        }
+
+        // Update current_bucket_start to the new bucket's start time
+        self.current_bucket_start = Some(self.bucket_start_for(now));
+
+        self.head
     }
 
     /// Align a timestamp down to the start of its containing bucket.
     fn bucket_start_for(&self, time: SystemTime) -> SystemTime {
-        todo!()
+        let since_epoch = time
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO);
+        let bucket_secs = self.bucket_duration.as_secs();
+        // Integer division truncates, aligning down to bucket boundary
+        let aligned_secs = (since_epoch.as_secs() / bucket_secs) * bucket_secs;
+        SystemTime::UNIX_EPOCH + Duration::from_secs(aligned_secs)
     }
 }
 
 impl<T: Default + Copy + AddAssign> RingBuffer<T> {
     /// Add a value to the current bucket, advancing time if needed.
     pub fn add_to_current(&mut self, value: T, now: SystemTime) {
-        todo!()
+        self.advance_to(now);
+        self.buckets[self.head] += value;
     }
 }
 
 impl<T: Default + Copy + Sum> RingBuffer<T> {
     /// Sum all bucket values currently in the buffer.
     pub fn sum_all(&self) -> T {
-        todo!()
+        self.buckets.iter().copied().sum()
     }
 }
 
 impl<T: Default + Copy + PartialEq> RingBuffer<T> {
     /// Count the number of buckets with non-default (non-zero) values.
     pub fn count_nonzero(&self) -> usize {
-        todo!()
+        let default = T::default();
+        self.buckets.iter().filter(|b| **b != default).count()
     }
 }
 
