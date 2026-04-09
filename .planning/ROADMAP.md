@@ -48,7 +48,12 @@ Full details: [v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
   3. Event log writes do not measurably degrade PUSH p99 latency (remains under 100us with buffered async writes)
   4. User can fetch features for multiple keys in a single MGET call and receive all results in one response
   5. User can configure entity state TTL per stream, and keys expire independently per stream (short-TTL stream expiry does not evict long-TTL stream state for the same entity)
-**Plans**: TBD
+**Plans:** 4 plans
+Plans:
+- [ ] 06-01-PLAN.md — EntityState restructure for per-stream isolation + snapshot v4
+- [ ] 06-02-PLAN.md — Per-stream entity TTL eviction + MGET command
+- [ ] 06-03-PLAN.md — SSD event log module + background timers integration
+- [ ] 06-04-PLAN.md — Python SDK updates (mget, entity_ttl, history_ttl)
 
 ### Phase 7: Composable Pipeline
 **Goal**: Users can define multi-stage streaming pipelines where events automatically cascade through dependent streams in topological order
@@ -107,7 +112,7 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10
 | 3. Python SDK | v1.0 | 4/4 | Complete | 2026-04-09 |
 | 4. Persistence and Operational Readiness | v1.0 | 3/3 | Complete | 2026-04-09 |
 | 5. Advanced Operators and Cross-Stream | v1.0 | 3/3 | Complete | 2026-04-09 |
-| 6. Foundation | v1.1 | 0/? | Not started | - |
+| 6. Foundation | v1.1 | 0/4 | Not started | - |
 | 7. Composable Pipeline | v1.1 | 0/? | Not started | - |
 | 8. Backfill & Schema Evolution | v1.1 | 0/? | Not started | - |
 | 9. Incremental Snapshots | v1.1 | 0/? | Not started | - |
