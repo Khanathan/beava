@@ -591,6 +591,335 @@ async fn test_register_duplicate_overwrites() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// HTTP request helpers
+// ---------------------------------------------------------------------------
+
+/// Parse an HTTP response body, handling both chunked and non-chunked encoding.
+/// Returns the JSON body as a string.
+fn extract_http_body(response: &str) -> String {
+    let body_start = response.find("\r\n\r\n").unwrap_or(response.len()) + 4;
+    let raw_body = &response[body_start..];
+    // If Transfer-Encoding: chunked, parse chunk format
+    if response.contains("transfer-encoding: chunked") || response.contains("Transfer-Encoding: chunked") {
+        // Chunked format: [hex-length]\r\n[data]\r\n ... 0\r\n\r\n
+        let mut result = String::new();
+        let mut remaining = raw_body;
+        loop {
+            // Find the chunk size line
+            let size_end = match remaining.find("\r\n") {
+                Some(pos) => pos,
+                None => break,
+            };
+            let size_str = remaining[..size_end].trim();
+            let chunk_size = match usize::from_str_radix(size_str, 16) {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            if chunk_size == 0 {
+                break;
+            }
+            let data_start = size_end + 2;
+            let data_end = data_start + chunk_size;
+            if data_end <= remaining.len() {
+                result.push_str(&remaining[data_start..data_end]);
+            }
+            remaining = if data_end + 2 <= remaining.len() {
+                &remaining[data_end + 2..]
+            } else {
+                ""
+            };
+        }
+        result
+    } else {
+        raw_body.to_string()
+    }
+}
+
+/// Extract the HTTP status code from a response string.
+fn extract_http_status(response: &str) -> u16 {
+    let status_line = response.lines().next().unwrap_or("");
+    status_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("0")
+        .parse()
+        .unwrap_or(0)
+}
+
+async fn http_get(port: u16, path: &str) -> (u16, String) {
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+    let request = format!(
+        "GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        path
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let response_str = String::from_utf8_lossy(&response).to_string();
+    let status = extract_http_status(&response_str);
+    let body = extract_http_body(&response_str);
+    (status, body)
+}
+
+async fn http_post(port: u16, path: &str, body: &str) -> (u16, String) {
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+    let request = format!(
+        "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        path,
+        body.len(),
+        body
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let response_str = String::from_utf8_lossy(&response).to_string();
+    let status = extract_http_status(&response_str);
+    let resp_body = extract_http_body(&response_str);
+    (status, resp_body)
+}
+
+async fn http_delete(port: u16, path: &str) -> (u16, String) {
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+    let request = format!(
+        "DELETE {} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        path
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let response_str = String::from_utf8_lossy(&response).to_string();
+    let status = extract_http_status(&response_str);
+    let resp_body = extract_http_body(&response_str);
+    (status, resp_body)
+}
+
+// ---------------------------------------------------------------------------
+// HTTP Management API Tests (SRV-08)
+// ---------------------------------------------------------------------------
+
+/// Test: GET /pipelines with no registered pipelines returns empty list.
+#[tokio::test(flavor = "current_thread")]
+async fn test_pipelines_list_empty() {
+    let (_tcp_port, http_port, _state) = start_test_server().await;
+    let (status, body) = http_get(http_port, "/pipelines").await;
+    assert_eq!(status, 200);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["pipelines"], serde_json::json!([]));
+}
+
+/// Test: POST /pipelines registers a pipeline, GET /pipelines lists it.
+#[tokio::test(flavor = "current_thread")]
+async fn test_pipelines_register_and_list() {
+    let (_tcp_port, http_port, _state) = start_test_server().await;
+
+    // Register via HTTP
+    let pipeline_json = serde_json::json!({
+        "name": "Transactions",
+        "key_field": "user_id",
+        "features": [
+            {"name": "tx_count_1h", "type": "count", "window": "1h"}
+        ]
+    });
+    let (status, _body) = http_post(http_port, "/pipelines", &pipeline_json.to_string()).await;
+    assert_eq!(status, 200);
+
+    // List pipelines
+    let (status, body) = http_get(http_port, "/pipelines").await;
+    assert_eq!(status, 200);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let pipelines = json["pipelines"].as_array().unwrap();
+    assert!(
+        pipelines.iter().any(|p| p == "Transactions"),
+        "Pipeline list should contain 'Transactions', got: {:?}",
+        pipelines
+    );
+}
+
+/// Test: GET /pipelines/:name returns pipeline definition with features.
+#[tokio::test(flavor = "current_thread")]
+async fn test_pipelines_get_by_name() {
+    let (_tcp_port, http_port, _state) = start_test_server().await;
+
+    // Register via HTTP
+    let pipeline_json = serde_json::json!({
+        "name": "Transactions",
+        "key_field": "user_id",
+        "features": [
+            {"name": "tx_count_1h", "type": "count", "window": "1h"}
+        ]
+    });
+    http_post(http_port, "/pipelines", &pipeline_json.to_string()).await;
+
+    // Get by name
+    let (status, body) = http_get(http_port, "/pipelines/Transactions").await;
+    assert_eq!(status, 200);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["name"], "Transactions");
+    assert_eq!(json["key_field"], "user_id");
+    let features = json["features"].as_array().unwrap();
+    assert!(!features.is_empty(), "Should have at least one feature");
+    assert_eq!(features[0]["type"], "count");
+}
+
+/// Test: GET /pipelines/:name for nonexistent pipeline returns 404.
+#[tokio::test(flavor = "current_thread")]
+async fn test_pipelines_get_nonexistent() {
+    let (_tcp_port, http_port, _state) = start_test_server().await;
+    let (status, body) = http_get(http_port, "/pipelines/NotReal").await;
+    assert_eq!(status, 404);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(json["error"].as_str().unwrap().contains("not found"));
+}
+
+/// Test: DELETE /pipelines/:name removes pipeline, subsequent GET returns 404.
+#[tokio::test(flavor = "current_thread")]
+async fn test_pipelines_delete() {
+    let (_tcp_port, http_port, _state) = start_test_server().await;
+
+    // Register
+    let pipeline_json = serde_json::json!({
+        "name": "Transactions",
+        "key_field": "user_id",
+        "features": [
+            {"name": "tx_count_1h", "type": "count", "window": "1h"}
+        ]
+    });
+    http_post(http_port, "/pipelines", &pipeline_json.to_string()).await;
+
+    // Delete
+    let (status, _body) = http_delete(http_port, "/pipelines/Transactions").await;
+    assert_eq!(status, 200);
+
+    // Verify it's gone
+    let (status, _body) = http_get(http_port, "/pipelines/Transactions").await;
+    assert_eq!(status, 404);
+}
+
+/// Test: DELETE /pipelines/:name for nonexistent pipeline returns 404.
+#[tokio::test(flavor = "current_thread")]
+async fn test_pipelines_delete_nonexistent() {
+    let (_tcp_port, http_port, _state) = start_test_server().await;
+    let (status, body) = http_delete(http_port, "/pipelines/NotReal").await;
+    assert_eq!(status, 404);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(json["error"].as_str().unwrap().contains("not found"));
+}
+
+/// Test: GET /metrics returns Prometheus text format with all 5 metrics.
+#[tokio::test(flavor = "current_thread")]
+async fn test_metrics_endpoint() {
+    let (_tcp_port, http_port, _state) = start_test_server().await;
+    let (status, body) = http_get(http_port, "/metrics").await;
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("tally_keys_total"),
+        "Metrics should contain tally_keys_total, got: {}",
+        body
+    );
+    assert!(
+        body.contains("tally_events_total"),
+        "Metrics should contain tally_events_total"
+    );
+    assert!(
+        body.contains("tally_push_latency_seconds"),
+        "Metrics should contain tally_push_latency_seconds"
+    );
+    assert!(
+        body.contains("tally_snapshot_duration_seconds"),
+        "Metrics should contain tally_snapshot_duration_seconds"
+    );
+    assert!(
+        body.contains("tally_memory_bytes"),
+        "Metrics should contain tally_memory_bytes"
+    );
+}
+
+/// Test: GET /debug/key/:key after pushing events returns operator state.
+#[tokio::test(flavor = "current_thread")]
+async fn test_debug_key_after_push() {
+    let (tcp_port, http_port, _state) = start_test_server().await;
+
+    // Register and push via TCP
+    let mut tcp_stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+    register_tx_stream(&mut tcp_stream).await;
+
+    let push_payload = build_push_payload(
+        "Transactions",
+        &serde_json::json!({"user_id": "u123", "amount": 50.0}),
+    );
+    let (status, _) = send_frame(&mut tcp_stream, OP_PUSH, &push_payload).await;
+    assert_eq!(status, STATUS_OK);
+
+    // Debug key via HTTP
+    let (status, body) = http_get(http_port, "/debug/key/u123").await;
+    assert_eq!(status, 200);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["key"], "u123");
+    assert!(
+        json["live_operators"].is_array(),
+        "Should have live_operators array"
+    );
+    assert!(
+        json["computed_features"].is_object(),
+        "Should have computed_features object"
+    );
+}
+
+/// Test: GET /debug/key/:key for nonexistent key returns 404.
+#[tokio::test(flavor = "current_thread")]
+async fn test_debug_key_nonexistent() {
+    let (_tcp_port, http_port, _state) = start_test_server().await;
+    let (status, body) = http_get(http_port, "/debug/key/nobody").await;
+    assert_eq!(status, 404);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(json["error"].as_str().unwrap().contains("not found"));
+}
+
+/// Test: GET /debug/memory returns entity_count and stream_count.
+#[tokio::test(flavor = "current_thread")]
+async fn test_debug_memory() {
+    let (_tcp_port, http_port, _state) = start_test_server().await;
+    let (status, body) = http_get(http_port, "/debug/memory").await;
+    assert_eq!(status, 200);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(
+        json["entity_count"].is_number(),
+        "Should have entity_count"
+    );
+    assert!(
+        json["stream_count"].is_number(),
+        "Should have stream_count"
+    );
+    assert!(
+        json["estimated_bytes"].is_number(),
+        "Should have estimated_bytes"
+    );
+}
+
+/// Test: POST /pipelines with invalid JSON returns 400.
+#[tokio::test(flavor = "current_thread")]
+async fn test_pipelines_register_invalid_json() {
+    let (_tcp_port, http_port, _state) = start_test_server().await;
+    // Missing required fields
+    let (status, body) = http_post(http_port, "/pipelines", r#"{"invalid": true}"#).await;
+    assert_eq!(status, 400);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(json["error"].is_string(), "Should have error message");
+}
+
+// ---------------------------------------------------------------------------
+// Pre-existing integration tests
+// ---------------------------------------------------------------------------
+
 /// G-13: State is visible across separate TCP connections (shared state).
 #[tokio::test(flavor = "current_thread")]
 async fn test_cross_connection_state_visibility() {
