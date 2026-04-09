@@ -100,7 +100,11 @@ Plans:
   3. A where-clause filtered aggregation (e.g. count(window="30m", where="status == 'failed'")) counts only events matching the filter, verified against a mixed event stream
   4. A @st.view that derives a feature from two streams (e.g. Transactions.tx_count_1h / Logins.login_count_1h) returns the correct combined value after pushing events to both streams
   5. A single PUSH event containing both user_id and merchant_id updates state for both entity keys, and a st.lookup feature on the user's view correctly reads the merchant's current feature value
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 05-01-PLAN.md — MinOp, MaxOp, LastOp operators, where-clause filtering, snapshot/protocol/HTTP plumbing
+- [ ] 05-02-PLAN.md — HyperLogLog from scratch and DistinctCountOp with windowed HLL rotation
+- [ ] 05-03-PLAN.md — DistinctCount wiring, cross-stream views, cross-key lookups, event fan-out
 
 ## Progress
 
@@ -113,4 +117,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. TCP Server and Binary Protocol | 3/5 | Gap closure planned | - |
 | 3. Python SDK | 0/4 | Planning complete | - |
 | 4. Persistence and Operational Readiness | 0/3 | Planning complete | - |
-| 5. Advanced Operators and Cross-Stream | 0/TBD | Not started | - |
+| 5. Advanced Operators and Cross-Stream | 0/3 | Planning complete | - |
