@@ -151,13 +151,16 @@ impl PipelineEngine {
         let entity = store.get_or_create_entity(&key);
 
         // 4. Initialize or reconcile operators with current stream definition.
-        // On first push: create operators. On re-registration: rebuild if feature
-        // count changed (WR-04 fix: old code only checked is_empty, silently
-        // ignoring stream definition changes).
-        let expected_op_count = stream.features.iter()
+        // Name-based reconciliation: only rebuild if operator names don't match
+        // the expected set. This preserves accumulated windowed state for
+        // unchanged operators when a new feature is added to a running stream.
+        let expected_ops: Vec<&(String, FeatureDef)> = stream.features.iter()
             .filter(|(_, def)| !matches!(def, FeatureDef::Derive { .. }))
-            .count();
-        if entity.live_operators.len() != expected_op_count {
+            .collect();
+        let needs_rebuild = entity.live_operators.len() != expected_ops.len()
+            || entity.live_operators.iter().zip(expected_ops.iter())
+                .any(|((name, _), (exp_name, _))| name != exp_name);
+        if needs_rebuild {
             entity.live_operators.clear();
             for (name, def) in &stream.features {
                 if let Some(op) = create_operator(def) {
