@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 03-01-PLAN.md (SDK types and protocol encoding)
-last_updated: "2026-04-09T16:28:00.884Z"
+stopped_at: "Completed 03-02-PLAN.md (DSL layer: operators, @stream, @view)"
+last_updated: "2026-04-09T16:35:46.438Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 13
-  completed_plans: 10
-  percent: 77
+  completed_plans: 11
+  percent: 85
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 ## Current Position
 
 Phase: 03 (python-sdk) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-04-09
 
@@ -62,6 +62,7 @@ Progress: [███████░░░] 71%
 | Phase 02 P04 | 2min | 2 tasks | 2 files |
 | Phase 02 P05 | 2min | 2 tasks | 2 files |
 | Phase 03-python-sdk P01 | 4min | 2 tasks | 8 files |
+| Phase 03-python-sdk P02 | 5min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -97,6 +98,9 @@ Recent decisions affecting current work:
 - [Phase 03-python-sdk]: FeatureResult uses __slots__ with object.__setattr__ for clean attribute access
 - [Phase 03-python-sdk]: parse_response raises ProtocolError on STATUS_ERROR -- exception-based error handling for callers
 - [Phase 03-python-sdk]: Protocol constants use type annotations (OP_PUSH: int = 0x01) for IDE support
+- [Phase 03-python-sdk]: Operator constructors use Python keyword-only args for required param validation (native TypeError)
+- [Phase 03-python-sdk]: Lookup target stored as plain string ref -- cross-class attribute resolution deferred to Phase 5
+- [Phase 03-python-sdk]: StreamMeta walks reversed(bases) for mixin features; later-listed bases take precedence, class body always wins
 
 ### Pending Todos
 
@@ -117,6 +121,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T16:28:00.882Z
-Stopped at: Completed 03-01-PLAN.md (SDK types and protocol encoding)
+Last session: 2026-04-09T16:35:46.435Z
+Stopped at: Completed 03-02-PLAN.md (DSL layer: operators, @stream, @view)
 Resume file: None

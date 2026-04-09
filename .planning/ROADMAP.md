@@ -69,7 +69,7 @@ Plans:
 **Plans:** 4 plans
 Plans:
 - [x] 03-01-PLAN.md — Project skeleton, types (FeatureResult, exceptions), and binary protocol encoding with byte-level conformance tests
-- [ ] 03-02-PLAN.md — Operator descriptor classes, @stream/@view decorators with metaclass and mixin support
+- [x] 03-02-PLAN.md — Operator descriptor classes, @stream/@view decorators with metaclass and mixin support
 - [ ] 03-03-PLAN.md — TCP client with auto-reconnect and App class (register/push/get/set/mset)
 - [ ] 03-04-PLAN.md — End-to-end integration tests against live Tally server
 
