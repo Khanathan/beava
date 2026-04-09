@@ -51,7 +51,7 @@ impl Operator for CountOp {
         if total == 0 {
             FeatureValue::Missing // Zero events in window -> Missing (CONTEXT.md)
         } else {
-            FeatureValue::Int(total as i64)
+            FeatureValue::Int(i64::try_from(total).unwrap_or(i64::MAX))
         }
     }
 }
