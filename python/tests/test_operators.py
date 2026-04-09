@@ -334,8 +334,8 @@ class TestLookup:
         assert result == {
             "name": "merch_cb",
             "type": "lookup",
-            "expr": "MerchantActivity.chargeback_count_24h",
-            "field": "merchant_id",
+            "target": "MerchantActivity.chargeback_count_24h",
+            "on": "merchant_id",
         }
 
     def test_missing_target_raises(self) -> None:

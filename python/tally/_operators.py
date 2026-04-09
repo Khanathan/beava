@@ -202,4 +202,4 @@ class Lookup(OperatorBase):
         self.on = on
 
     def to_json(self, name: str) -> dict:
-        return {"name": name, "type": "lookup", "expr": self.target, "field": self.on}
+        return {"name": name, "type": "lookup", "target": self.target, "on": self.on}
