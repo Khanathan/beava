@@ -495,6 +495,28 @@ mod tests {
         assert_eq!(v, FeatureValue::Missing);
     }
 
+    #[tokio::test]
+    async fn test_mset_skips_non_object_entries() {
+        let state = make_shared_state();
+        let entries = vec![
+            ("k1".to_string(), serde_json::json!({"score": 1})),
+            ("k2".to_string(), serde_json::json!("not an object")), // string, not object
+            ("k3".to_string(), serde_json::json!({"score": 3})),
+        ];
+        let result = handle_mset(entries, &state).await;
+        assert!(result.is_ok());
+
+        let app = state.lock().unwrap();
+        // k1 and k3 should be written (object payloads)
+        assert!(app.store.get_entity("k1").is_some(), "k1 should be written");
+        assert!(app.store.get_entity("k3").is_some(), "k3 should be written");
+        // k2 should NOT be written (non-object payload was skipped)
+        assert!(
+            app.store.get_entity("k2").is_none(),
+            "k2 should be skipped (non-object)"
+        );
+    }
+
     // --- Mutex poisoning recovery test ---
 
     #[test]
