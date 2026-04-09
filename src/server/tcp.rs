@@ -144,8 +144,26 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                 ref mut store,
                 ..
             } = *app;
+
+            // Primary push -- returns features for this stream only
             let features = engine.push(&stream_name, &payload, store, now)?;
             let result = feature_map_to_json(&features);
+
+            // Fan-out: push to other streams whose key_field exists in the event
+            let targets = engine.fan_out_targets();
+            for (target_name, target_key_field) in &targets {
+                if target_name == &stream_name {
+                    continue; // Skip primary stream (already pushed)
+                }
+                // Check if event contains this stream's key_field as a non-empty string
+                if let Some(serde_json::Value::String(key_val)) = payload.get(target_key_field.as_str()) {
+                    if !key_val.is_empty() {
+                        // Push to secondary stream -- ignore errors (primary already committed)
+                        let _ = engine.push(target_name, &payload, store, now);
+                    }
+                }
+            }
+
             let push_elapsed = push_start.elapsed();
             app.metrics.push_latency_seconds = push_elapsed.as_secs_f64();
             app.metrics.events_total += 1;
@@ -568,5 +586,221 @@ mod tests {
         };
         let result = handle_sync_command(cmd, &state);
         assert!(result.is_ok());
+    }
+
+    // --- Fan-out tests ---
+
+    /// Helper: register MerchantActivity stream keyed by merchant_id.
+    fn register_merchant_stream(state: &SharedState) {
+        let stream = StreamDefinition {
+            name: "MerchantActivity".into(),
+            key_field: "merchant_id".into(),
+            features: vec![
+                (
+                    "merchant_tx_count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                    },
+                ),
+            ],
+        };
+        let mut app = state.lock().unwrap();
+        app.engine.register(stream).unwrap();
+    }
+
+    #[test]
+    fn test_fan_out_push_updates_secondary_stream() {
+        let state = make_shared_state();
+        register_tx_stream(&state);
+        register_merchant_stream(&state);
+
+        // Push event with both user_id and merchant_id
+        let cmd = Command::Push {
+            stream_name: "Transactions".into(),
+            payload: serde_json::json!({
+                "user_id": "u123",
+                "merchant_id": "m456",
+                "amount": 50.0
+            }),
+        };
+        let result = handle_sync_command(cmd, &state);
+        assert!(result.is_ok());
+
+        // Verify merchant entity was created via fan-out
+        let mut app = state.lock().unwrap();
+        let merchant_features = app.store.get_all_features("m456", std::time::SystemTime::now());
+        assert_eq!(
+            merchant_features.get("merchant_tx_count_1h"),
+            Some(&FeatureValue::Int(1)),
+            "fan-out should have pushed to MerchantActivity for m456"
+        );
+    }
+
+    #[test]
+    fn test_fan_out_push_returns_primary_features_only() {
+        let state = make_shared_state();
+        register_tx_stream(&state);
+        register_merchant_stream(&state);
+
+        let cmd = Command::Push {
+            stream_name: "Transactions".into(),
+            payload: serde_json::json!({
+                "user_id": "u123",
+                "merchant_id": "m456",
+                "amount": 50.0
+            }),
+        };
+        let result = handle_sync_command(cmd, &state).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&result).unwrap();
+
+        // PUSH response should contain Transactions features, not MerchantActivity
+        assert!(json.get("tx_count_1h").is_some(), "should have primary stream feature");
+        assert!(json.get("merchant_tx_count_1h").is_none(), "should NOT have secondary stream feature");
+    }
+
+    #[test]
+    fn test_fan_out_skips_primary_stream() {
+        let state = make_shared_state();
+        register_tx_stream(&state);
+        register_merchant_stream(&state);
+
+        // Push to Transactions -- should push once, not twice
+        let cmd = Command::Push {
+            stream_name: "Transactions".into(),
+            payload: serde_json::json!({
+                "user_id": "u123",
+                "merchant_id": "m456",
+                "amount": 50.0
+            }),
+        };
+        handle_sync_command(cmd, &state).unwrap();
+
+        // user count should be 1 (pushed once, not twice)
+        let mut app = state.lock().unwrap();
+        let user_features = app.store.get_all_features("u123", std::time::SystemTime::now());
+        assert_eq!(user_features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
+    }
+
+    #[test]
+    fn test_fan_out_skips_streams_without_key_in_event() {
+        let state = make_shared_state();
+        register_tx_stream(&state);
+        register_merchant_stream(&state);
+
+        // Push event WITHOUT merchant_id -- should NOT fan out to MerchantActivity
+        let cmd = Command::Push {
+            stream_name: "Transactions".into(),
+            payload: serde_json::json!({
+                "user_id": "u123",
+                "amount": 50.0
+            }),
+        };
+        handle_sync_command(cmd, &state).unwrap();
+
+        // Merchant entity should NOT exist
+        let app = state.lock().unwrap();
+        assert!(app.store.get_entity("m456").is_none(), "no fan-out without key field");
+    }
+
+    #[test]
+    fn test_fan_out_skips_empty_key_value() {
+        let state = make_shared_state();
+        register_tx_stream(&state);
+        register_merchant_stream(&state);
+
+        // Push event with empty merchant_id
+        let cmd = Command::Push {
+            stream_name: "Transactions".into(),
+            payload: serde_json::json!({
+                "user_id": "u123",
+                "merchant_id": "",
+                "amount": 50.0
+            }),
+        };
+        handle_sync_command(cmd, &state).unwrap();
+
+        // Should not create entity for empty key
+        let app = state.lock().unwrap();
+        assert_eq!(app.store.entity_count(), 1, "only u123 entity, not empty merchant");
+    }
+
+    #[test]
+    fn test_get_after_fan_out_returns_both_streams() {
+        let state = make_shared_state();
+        register_tx_stream(&state);
+        register_merchant_stream(&state);
+
+        // Push with fan-out
+        let cmd = Command::Push {
+            stream_name: "Transactions".into(),
+            payload: serde_json::json!({
+                "user_id": "u123",
+                "merchant_id": "m456",
+                "amount": 50.0
+            }),
+        };
+        handle_sync_command(cmd, &state).unwrap();
+
+        // GET for user should return Transactions features
+        let get_cmd = Command::Get { key: "u123".into() };
+        let result = handle_sync_command(get_cmd, &state).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        assert_eq!(json["tx_count_1h"], 1);
+
+        // GET for merchant should return MerchantActivity features
+        let get_cmd = Command::Get { key: "m456".into() };
+        let result = handle_sync_command(get_cmd, &state).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        assert_eq!(json["merchant_tx_count_1h"], 1);
+    }
+
+    #[test]
+    fn test_end_to_end_register_push_get_with_views() {
+        let state = make_shared_state();
+        register_tx_stream(&state);
+        register_merchant_stream(&state);
+
+        // Register a view via REGISTER command
+        let register_view_cmd = Command::Register {
+            payload: serde_json::json!({
+                "name": "UserRisk",
+                "key_field": "user_id",
+                "type": "view",
+                "features": [{
+                    "name": "tx_velocity",
+                    "type": "derive",
+                    "expr": "Transactions.tx_count_1h / 1"
+                }]
+            }),
+        };
+        handle_sync_command(register_view_cmd, &state).unwrap();
+
+        // Push events
+        for _ in 0..3 {
+            let cmd = Command::Push {
+                stream_name: "Transactions".into(),
+                payload: serde_json::json!({
+                    "user_id": "u1",
+                    "merchant_id": "m1",
+                    "amount": 10.0
+                }),
+            };
+            handle_sync_command(cmd, &state).unwrap();
+        }
+
+        // GET for user should include Transactions features + view features
+        let get_cmd = Command::Get { key: "u1".into() };
+        let result = handle_sync_command(get_cmd, &state).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        assert_eq!(json["tx_count_1h"], 3, "should have 3 transactions");
+        assert_eq!(json["tx_velocity"], 3.0, "view derive should be 3/1=3.0");
+
+        // GET for merchant should include MerchantActivity features (from fan-out)
+        let get_cmd = Command::Get { key: "m1".into() };
+        let result = handle_sync_command(get_cmd, &state).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        assert_eq!(json["merchant_tx_count_1h"], 3, "fan-out should have 3 merchant events");
     }
 }
