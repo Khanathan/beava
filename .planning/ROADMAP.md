@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. All operator state uses AHashMap and SystemTime-based window buckets so that client-supplied Unix timestamps are handled correctly from day one
 **Plans:** 4 plans
 Plans:
-- [ ] 01-01-PLAN.md — Project skeleton, core types (FeatureValue, TallyError), and time-bucketed RingBuffer
+- [x] 01-01-PLAN.md — Project skeleton, core types (FeatureValue, TallyError), and time-bucketed RingBuffer
 - [ ] 01-02-PLAN.md — Core operators (CountOp, SumOp, AvgOp) with Redis-strict type checking
 - [ ] 01-03-PLAN.md — Expression parser (winnow Pratt) and evaluator with Missing propagation
 - [ ] 01-04-PLAN.md — State store (EntityState, StateStore) and PipelineEngine push-through integration

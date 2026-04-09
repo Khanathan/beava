@@ -10,7 +10,7 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Core Engine
 
 - [ ] **ENG-01**: Server maintains in-memory state store (HashMap<EntityKey, EntityState>) with live and static features
-- [ ] **ENG-02**: Sliding windows use bucketed ring buffer with configurable bucket granularity
+- [x] **ENG-02**: Sliding windows use bucketed ring buffer with configurable bucket granularity
 - [ ] **ENG-03**: count operator tracks event count within a time window
 - [ ] **ENG-04**: sum operator accumulates a numeric field within a time window
 - [ ] **ENG-05**: avg operator computes running average of a numeric field within a time window
@@ -97,7 +97,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | ENG-01 | Phase 1 | Pending |
-| ENG-02 | Phase 1 | Pending |
+| ENG-02 | Phase 1 | Complete |
 | ENG-03 | Phase 1 | Pending |
 | ENG-04 | Phase 1 | Pending |
 | ENG-05 | Phase 1 | Pending |
