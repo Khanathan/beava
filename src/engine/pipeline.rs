@@ -143,8 +143,15 @@ impl PipelineEngine {
         // 3. Get or create EntityState
         let entity = store.get_or_create_entity(&key);
 
-        // 4. Initialize operators lazily on first push if entity has none
-        if entity.live_operators.is_empty() {
+        // 4. Initialize or reconcile operators with current stream definition.
+        // On first push: create operators. On re-registration: rebuild if feature
+        // count changed (WR-04 fix: old code only checked is_empty, silently
+        // ignoring stream definition changes).
+        let expected_op_count = stream.features.iter()
+            .filter(|(_, def)| !matches!(def, FeatureDef::Derive { .. }))
+            .count();
+        if entity.live_operators.len() != expected_op_count {
+            entity.live_operators.clear();
             for (name, def) in &stream.features {
                 if let Some(op) = create_operator(def) {
                     entity.live_operators.push((name.clone(), op));
