@@ -138,7 +138,7 @@ fn test_static_feature_alongside_live_features() {
     engine.push("Transactions", &json!({"user_id": "u123", "amount": 50.0}), &mut store, now).unwrap();
 
     // Write a static feature
-    store.set_static("u123", "lifetime_value", FeatureValue::Float(4500.0));
+    store.set_static("u123", "lifetime_value", FeatureValue::Float(4500.0), now);
 
     let features = engine.get_features("u123", &mut store, now);
     assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));

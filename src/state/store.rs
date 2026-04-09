@@ -81,13 +81,14 @@ impl StateStore {
     }
 
     /// Write a static feature for an entity. Creates the entity if absent.
-    pub fn set_static(&mut self, key: &str, feature_name: &str, value: FeatureValue) {
+    /// Accepts an explicit `now` timestamp for determinism and testability (WR-05).
+    pub fn set_static(&mut self, key: &str, feature_name: &str, value: FeatureValue, now: SystemTime) {
         let entity = self.get_or_create_entity(key);
         entity.static_features.insert(
             feature_name.to_string(),
             StaticFeature {
                 value,
-                updated_at: SystemTime::now(),
+                updated_at: now,
             },
         );
     }
@@ -174,7 +175,7 @@ mod tests {
     #[test]
     fn test_entity_state_stores_static_features() {
         let mut store = StateStore::new();
-        store.set_static("u123", "lifetime_value", FeatureValue::Float(4500.0));
+        store.set_static("u123", "lifetime_value", FeatureValue::Float(4500.0), ts(1000));
         let entity = store.get_entity("u123").unwrap();
         assert_eq!(entity.static_features.len(), 1);
         assert_eq!(
@@ -197,7 +198,7 @@ mod tests {
         }
 
         // Add a static feature
-        store.set_static("u123", "segment", FeatureValue::String("high_value".into()));
+        store.set_static("u123", "segment", FeatureValue::String("high_value".into()), ts(1000));
 
         let features = store.get_all_features("u123", now);
         assert_eq!(features.get("tx_count"), Some(&FeatureValue::Int(1)));
@@ -218,7 +219,7 @@ mod tests {
         }
 
         // Write a static feature with the same name
-        store.set_static("u123", "score", FeatureValue::Float(999.0));
+        store.set_static("u123", "score", FeatureValue::Float(999.0), ts(1000));
 
         let features = store.get_all_features("u123", now);
         // Static takes precedence
