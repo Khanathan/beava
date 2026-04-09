@@ -96,13 +96,50 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (populated by roadmapper) | | |
+| ENG-01 | Phase 1 | Pending |
+| ENG-02 | Phase 1 | Pending |
+| ENG-03 | Phase 1 | Pending |
+| ENG-04 | Phase 1 | Pending |
+| ENG-05 | Phase 1 | Pending |
+| ENG-06 | Phase 1 | Pending |
+| ENG-07 | Phase 1 | Pending |
+| ENG-08 | Phase 1 | Pending |
+| SRV-01 | Phase 2 | Pending |
+| SRV-02 | Phase 2 | Pending |
+| SRV-03 | Phase 2 | Pending |
+| SRV-04 | Phase 2 | Pending |
+| SRV-05 | Phase 2 | Pending |
+| SRV-06 | Phase 2 | Pending |
+| SRV-07 | Phase 2 | Pending |
+| SRV-08 | Phase 4 | Pending |
+| OPS-01 | Phase 5 | Pending |
+| OPS-02 | Phase 5 | Pending |
+| OPS-03 | Phase 5 | Pending |
+| OPS-04 | Phase 5 | Pending |
+| OPS-05 | Phase 5 | Pending |
+| XSTR-01 | Phase 5 | Pending |
+| XSTR-02 | Phase 5 | Pending |
+| XSTR-03 | Phase 5 | Pending |
+| SDK-01 | Phase 3 | Pending |
+| SDK-02 | Phase 3 | Pending |
+| SDK-03 | Phase 3 | Pending |
+| SDK-04 | Phase 3 | Pending |
+| SDK-05 | Phase 3 | Pending |
+| SDK-06 | Phase 3 | Pending |
+| SDK-07 | Phase 3 | Pending |
+| PERS-01 | Phase 4 | Pending |
+| PERS-02 | Phase 4 | Pending |
+| PERS-03 | Phase 4 | Pending |
+| PERS-04 | Phase 4 | Pending |
+| PERS-05 | Phase 4 | Pending |
 
 **Coverage:**
-- v1 requirements: 30 total
-- Mapped to phases: 0
-- Unmapped: 30
+- v1 requirements: 36 total
+- Mapped to phases: 36
+- Unmapped: 0
+
+Note: REQUIREMENTS.md header previously stated 30 requirements; the actual count is 36 (8 ENG + 8 SRV + 5 OPS + 3 XSTR + 7 SDK + 5 PERS). All 36 are mapped.
 
 ---
 *Requirements defined: 2026-04-09*
-*Last updated: 2026-04-09 after initial definition*
+*Last updated: 2026-04-09 — traceability populated after roadmap creation*
