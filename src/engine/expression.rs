@@ -345,9 +345,194 @@ impl<'a> EvalContext<'a> {
 ///
 /// Called per-event for derive/where expressions. The AST is pre-parsed at
 /// registration time, so this just walks the tree.
-pub fn eval(_expr: &Expr, _ctx: &EvalContext) -> FeatureValue {
-    // Stub -- will be implemented in GREEN phase
-    FeatureValue::Missing
+pub fn eval(expr: &Expr, ctx: &EvalContext) -> FeatureValue {
+    match expr {
+        Expr::Literal(f) => FeatureValue::Float(*f),
+        Expr::StringLit(s) => FeatureValue::String(s.clone()),
+        Expr::FieldAccess(field_ref) => ctx.resolve_field(field_ref),
+        Expr::BinaryOp { op, left, right } => {
+            let l = eval(left, ctx);
+            let r = eval(right, ctx);
+            eval_binary(*op, l, r)
+        }
+        Expr::UnaryOp { op, operand } => {
+            let val = eval(operand, ctx);
+            eval_unary(*op, val)
+        }
+        Expr::FnCall { name, args } => eval_fn_call(name, args, ctx),
+    }
+}
+
+/// Guard: if f64 result is NaN or infinite, return Missing (defense-in-depth, ENG-08).
+fn guard_float(val: f64) -> FeatureValue {
+    if val.is_nan() || val.is_infinite() {
+        FeatureValue::Missing
+    } else {
+        FeatureValue::Float(val)
+    }
+}
+
+/// Evaluate a binary operation with Missing propagation (SQL NULL semantics).
+fn eval_binary(op: BinOp, left: FeatureValue, right: FeatureValue) -> FeatureValue {
+    // String equality/inequality: handled before Missing check for string-specific ops.
+    if matches!(op, BinOp::Eq | BinOp::Neq) {
+        // Allow String == String and String != String
+        if let (FeatureValue::String(ref a), FeatureValue::String(ref b)) = (&left, &right) {
+            return match op {
+                BinOp::Eq => FeatureValue::Int(if a == b { 1 } else { 0 }),
+                BinOp::Neq => FeatureValue::Int(if a != b { 1 } else { 0 }),
+                _ => unreachable!(),
+            };
+        }
+    }
+
+    // Missing propagation: any Missing input -> Missing output (Pitfall 6).
+    if left.is_missing() || right.is_missing() {
+        return FeatureValue::Missing;
+    }
+
+    // String in arithmetic/comparison (except equality handled above) -> Missing.
+    if matches!(left, FeatureValue::String(_)) || matches!(right, FeatureValue::String(_)) {
+        return FeatureValue::Missing;
+    }
+
+    match op {
+        // Arithmetic: Int + Int -> Int; if either Float -> Float.
+        BinOp::Add => match (&left, &right) {
+            (FeatureValue::Int(a), FeatureValue::Int(b)) => FeatureValue::Int(a + b),
+            _ => guard_float(left.as_f64().unwrap() + right.as_f64().unwrap()),
+        },
+        BinOp::Sub => match (&left, &right) {
+            (FeatureValue::Int(a), FeatureValue::Int(b)) => FeatureValue::Int(a - b),
+            _ => guard_float(left.as_f64().unwrap() - right.as_f64().unwrap()),
+        },
+        BinOp::Mul => match (&left, &right) {
+            (FeatureValue::Int(a), FeatureValue::Int(b)) => FeatureValue::Int(a * b),
+            _ => guard_float(left.as_f64().unwrap() * right.as_f64().unwrap()),
+        },
+        BinOp::Div => {
+            // Division by zero -> Missing (ENG-08).
+            let r = right.as_f64().unwrap();
+            if r == 0.0 {
+                return FeatureValue::Missing;
+            }
+            // Division always promotes to Float.
+            guard_float(left.as_f64().unwrap() / r)
+        }
+
+        // Comparison: returns Int(1) for true, Int(0) for false.
+        BinOp::Gt => {
+            let (a, b) = (left.as_f64().unwrap(), right.as_f64().unwrap());
+            FeatureValue::Int(if a > b { 1 } else { 0 })
+        }
+        BinOp::Lt => {
+            let (a, b) = (left.as_f64().unwrap(), right.as_f64().unwrap());
+            FeatureValue::Int(if a < b { 1 } else { 0 })
+        }
+        BinOp::Gte => {
+            let (a, b) = (left.as_f64().unwrap(), right.as_f64().unwrap());
+            FeatureValue::Int(if a >= b { 1 } else { 0 })
+        }
+        BinOp::Lte => {
+            let (a, b) = (left.as_f64().unwrap(), right.as_f64().unwrap());
+            FeatureValue::Int(if a <= b { 1 } else { 0 })
+        }
+        BinOp::Eq => {
+            // Numeric equality (string equality handled above).
+            let (a, b) = (left.as_f64().unwrap(), right.as_f64().unwrap());
+            FeatureValue::Int(if (a - b).abs() < f64::EPSILON { 1 } else { 0 })
+        }
+        BinOp::Neq => {
+            let (a, b) = (left.as_f64().unwrap(), right.as_f64().unwrap());
+            FeatureValue::Int(if (a - b).abs() >= f64::EPSILON { 1 } else { 0 })
+        }
+
+        // Boolean: and/or operate on Int(0)/Int(1). Missing -> Missing (Pitfall 6).
+        BinOp::And => {
+            let a = left.as_f64().unwrap();
+            let b = right.as_f64().unwrap();
+            FeatureValue::Int(if a != 0.0 && b != 0.0 { 1 } else { 0 })
+        }
+        BinOp::Or => {
+            let a = left.as_f64().unwrap();
+            let b = right.as_f64().unwrap();
+            FeatureValue::Int(if a != 0.0 || b != 0.0 { 1 } else { 0 })
+        }
+    }
+}
+
+/// Evaluate a unary operation.
+fn eval_unary(op: UnOp, val: FeatureValue) -> FeatureValue {
+    if val.is_missing() {
+        return FeatureValue::Missing;
+    }
+    match op {
+        UnOp::Not => match &val {
+            FeatureValue::Int(i) => FeatureValue::Int(if *i == 0 { 1 } else { 0 }),
+            FeatureValue::Float(f) => FeatureValue::Int(if *f == 0.0 { 1 } else { 0 }),
+            _ => FeatureValue::Missing,
+        },
+        UnOp::Neg => match &val {
+            FeatureValue::Int(i) => FeatureValue::Int(-i),
+            FeatureValue::Float(f) => FeatureValue::Float(-f),
+            _ => FeatureValue::Missing,
+        },
+    }
+}
+
+/// Evaluate a builtin function call.
+fn eval_fn_call(name: &str, args: &[Expr], ctx: &EvalContext) -> FeatureValue {
+    match name {
+        "abs" => {
+            if args.len() != 1 {
+                return FeatureValue::Missing;
+            }
+            let val = eval(&args[0], ctx);
+            if val.is_missing() {
+                return FeatureValue::Missing;
+            }
+            match val {
+                FeatureValue::Int(i) => FeatureValue::Int(i.abs()),
+                FeatureValue::Float(f) => FeatureValue::Float(f.abs()),
+                _ => FeatureValue::Missing,
+            }
+        }
+        "min" => {
+            if args.len() != 2 {
+                return FeatureValue::Missing;
+            }
+            let a = eval(&args[0], ctx);
+            let b = eval(&args[1], ctx);
+            if a.is_missing() || b.is_missing() {
+                return FeatureValue::Missing;
+            }
+            let af = a.as_f64().unwrap();
+            let bf = b.as_f64().unwrap();
+            FeatureValue::Float(af.min(bf))
+        }
+        "max" => {
+            if args.len() != 2 {
+                return FeatureValue::Missing;
+            }
+            let a = eval(&args[0], ctx);
+            let b = eval(&args[1], ctx);
+            if a.is_missing() || b.is_missing() {
+                return FeatureValue::Missing;
+            }
+            let af = a.as_f64().unwrap();
+            let bf = b.as_f64().unwrap();
+            FeatureValue::Float(af.max(bf))
+        }
+        "now" => {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let secs = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
+            FeatureValue::Float(secs)
+        }
+        _ => FeatureValue::Missing,
+    }
 }
 
 /// Parse an expression string into an AST.
