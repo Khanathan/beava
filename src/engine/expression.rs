@@ -294,6 +294,62 @@ fn parse_full_expr(input: &mut &str) -> PResult<Expr> {
         .parse_next(input)
 }
 
+// ---------------------------------------------------------------------------
+// Expression evaluator
+// ---------------------------------------------------------------------------
+
+use crate::types::FeatureValue;
+
+/// Context for evaluating expressions. Provides feature values and event data.
+pub struct EvalContext<'a> {
+    /// Features for the current entity (from all streams).
+    /// Key format: "feature_name" for local, "StreamName.feature_name" for qualified.
+    pub features: &'a ahash::AHashMap<String, FeatureValue>,
+    /// The current event JSON (for _event.field access).
+    pub event: Option<&'a serde_json::Value>,
+}
+
+impl<'a> EvalContext<'a> {
+    /// Resolve a field reference to its current value.
+    pub fn resolve_field(&self, field_ref: &FieldRef) -> FeatureValue {
+        match field_ref {
+            FieldRef::Local(name) => {
+                self.features.get(name).cloned().unwrap_or(FeatureValue::Missing)
+            }
+            FieldRef::Qualified(stream, field) => {
+                let key = format!("{}.{}", stream, field);
+                self.features.get(&key).cloned().unwrap_or(FeatureValue::Missing)
+            }
+            FieldRef::Event(field) => match self.event {
+                Some(ev) => match ev.get(field) {
+                    Some(serde_json::Value::Number(n)) => {
+                        if let Some(i) = n.as_i64() {
+                            FeatureValue::Int(i)
+                        } else if let Some(f) = n.as_f64() {
+                            FeatureValue::Float(f)
+                        } else {
+                            FeatureValue::Missing
+                        }
+                    }
+                    Some(serde_json::Value::String(s)) => FeatureValue::String(s.clone()),
+                    Some(serde_json::Value::Bool(b)) => FeatureValue::Int(if *b { 1 } else { 0 }),
+                    _ => FeatureValue::Missing,
+                },
+                None => FeatureValue::Missing,
+            },
+        }
+    }
+}
+
+/// Evaluate an expression AST against a context, returning a FeatureValue.
+///
+/// Called per-event for derive/where expressions. The AST is pre-parsed at
+/// registration time, so this just walks the tree.
+pub fn eval(_expr: &Expr, _ctx: &EvalContext) -> FeatureValue {
+    // Stub -- will be implemented in GREEN phase
+    FeatureValue::Missing
+}
+
 /// Parse an expression string into an AST.
 ///
 /// Called at pipeline registration time, not per-event.
@@ -599,5 +655,281 @@ mod tests {
                 right: Box::new(Expr::StringLit("failed".into())),
             }
         );
+    }
+
+    // ======================== Evaluator Tests ========================
+
+    use crate::types::FeatureValue;
+
+    /// Helper: parse + eval with given features.
+    fn eval_with(input: &str, pairs: &[(&str, FeatureValue)]) -> FeatureValue {
+        let expr = parse_expr(input).unwrap();
+        let features: ahash::AHashMap<String, FeatureValue> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
+        let ctx = EvalContext {
+            features: &features,
+            event: None,
+        };
+        eval(&expr, &ctx)
+    }
+
+    #[test]
+    fn test_eval_literal_float() {
+        let result = eval_with("42.5", &[]);
+        assert_eq!(result, FeatureValue::Float(42.5));
+    }
+
+    #[test]
+    fn test_eval_string_literal() {
+        let result = eval_with("'hello'", &[]);
+        assert_eq!(result, FeatureValue::String("hello".into()));
+    }
+
+    #[test]
+    fn test_eval_field_found() {
+        let result = eval_with("tx_count", &[("tx_count", FeatureValue::Int(5))]);
+        assert_eq!(result, FeatureValue::Int(5));
+    }
+
+    #[test]
+    fn test_eval_field_missing() {
+        let result = eval_with("unknown", &[]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_add_int_int() {
+        let result = eval_with("a + b", &[
+            ("a", FeatureValue::Int(3)),
+            ("b", FeatureValue::Int(4)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(7));
+    }
+
+    #[test]
+    fn test_eval_add_int_float() {
+        let result = eval_with("a + b", &[
+            ("a", FeatureValue::Int(3)),
+            ("b", FeatureValue::Float(4.5)),
+        ]);
+        assert_eq!(result, FeatureValue::Float(7.5));
+    }
+
+    #[test]
+    fn test_eval_sub_float() {
+        let result = eval_with("a - b", &[
+            ("a", FeatureValue::Float(10.0)),
+            ("b", FeatureValue::Float(3.0)),
+        ]);
+        assert_eq!(result, FeatureValue::Float(7.0));
+    }
+
+    #[test]
+    fn test_eval_mul_int_int() {
+        let result = eval_with("a * b", &[
+            ("a", FeatureValue::Int(2)),
+            ("b", FeatureValue::Int(3)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(6));
+    }
+
+    #[test]
+    fn test_eval_div_float() {
+        let result = eval_with("a / b", &[
+            ("a", FeatureValue::Float(10.0)),
+            ("b", FeatureValue::Float(3.0)),
+        ]);
+        match result {
+            FeatureValue::Float(f) => assert!((f - 10.0 / 3.0).abs() < 1e-10),
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_eval_div_by_zero_float_returns_missing() {
+        let result = eval_with("a / b", &[
+            ("a", FeatureValue::Float(10.0)),
+            ("b", FeatureValue::Float(0.0)),
+        ]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_div_by_zero_int_returns_missing() {
+        let result = eval_with("a / b", &[
+            ("a", FeatureValue::Int(10)),
+            ("b", FeatureValue::Int(0)),
+        ]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_missing_propagation_in_arithmetic() {
+        let result = eval_with("a + b", &[
+            ("a", FeatureValue::Missing),
+            ("b", FeatureValue::Int(5)),
+        ]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_gt_true() {
+        let result = eval_with("a > 10", &[("a", FeatureValue::Int(15))]);
+        assert_eq!(result, FeatureValue::Int(1));
+    }
+
+    #[test]
+    fn test_eval_gt_false() {
+        let result = eval_with("a > 10", &[("a", FeatureValue::Int(5))]);
+        assert_eq!(result, FeatureValue::Int(0));
+    }
+
+    #[test]
+    fn test_eval_string_eq_true() {
+        let result = eval_with("a == 'US'", &[("a", FeatureValue::String("US".into()))]);
+        assert_eq!(result, FeatureValue::Int(1));
+    }
+
+    #[test]
+    fn test_eval_string_eq_false() {
+        let result = eval_with("a == 'US'", &[("a", FeatureValue::String("UK".into()))]);
+        assert_eq!(result, FeatureValue::Int(0));
+    }
+
+    #[test]
+    fn test_eval_comparison_with_missing() {
+        let result = eval_with("a > b", &[("a", FeatureValue::Missing)]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_and_true_true() {
+        let result = eval_with("a and b", &[
+            ("a", FeatureValue::Int(1)),
+            ("b", FeatureValue::Int(1)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(1));
+    }
+
+    #[test]
+    fn test_eval_and_true_false() {
+        let result = eval_with("a and b", &[
+            ("a", FeatureValue::Int(1)),
+            ("b", FeatureValue::Int(0)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(0));
+    }
+
+    #[test]
+    fn test_eval_and_with_missing() {
+        let result = eval_with("a and b", &[
+            ("a", FeatureValue::Missing),
+            ("b", FeatureValue::Int(1)),
+        ]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_not_zero() {
+        let result = eval_with("not a", &[("a", FeatureValue::Int(0))]);
+        assert_eq!(result, FeatureValue::Int(1));
+    }
+
+    #[test]
+    fn test_eval_not_one() {
+        let result = eval_with("not a", &[("a", FeatureValue::Int(1))]);
+        assert_eq!(result, FeatureValue::Int(0));
+    }
+
+    #[test]
+    fn test_eval_not_missing() {
+        let result = eval_with("not a", &[("a", FeatureValue::Missing)]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_abs() {
+        let result = eval_with("abs(a)", &[("a", FeatureValue::Float(-5.0))]);
+        assert_eq!(result, FeatureValue::Float(5.0));
+    }
+
+    #[test]
+    fn test_eval_min_two_args() {
+        let result = eval_with("min(a, b)", &[
+            ("a", FeatureValue::Float(3.0)),
+            ("b", FeatureValue::Float(7.0)),
+        ]);
+        assert_eq!(result, FeatureValue::Float(3.0));
+    }
+
+    #[test]
+    fn test_eval_max_two_args() {
+        let result = eval_with("max(a, b)", &[
+            ("a", FeatureValue::Float(3.0)),
+            ("b", FeatureValue::Float(7.0)),
+        ]);
+        assert_eq!(result, FeatureValue::Float(7.0));
+    }
+
+    #[test]
+    fn test_eval_event_field() {
+        let expr = parse_expr("_event.amount").unwrap();
+        let features = ahash::AHashMap::new();
+        let event = serde_json::json!({"amount": 50.0});
+        let ctx = EvalContext {
+            features: &features,
+            event: Some(&event),
+        };
+        assert_eq!(eval(&expr, &ctx), FeatureValue::Float(50.0));
+    }
+
+    #[test]
+    fn test_eval_qualified_field() {
+        let result = eval_with("Stream.field", &[
+            ("Stream.field", FeatureValue::Int(42)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(42));
+    }
+
+    #[test]
+    fn test_eval_string_plus_int_returns_missing() {
+        let result = eval_with("a + b", &[
+            ("a", FeatureValue::String("hello".into())),
+            ("b", FeatureValue::Int(5)),
+        ]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_nan_returns_missing() {
+        // f64::MAX + f64::MAX overflows to infinity
+        let result = eval_with("a + b", &[
+            ("a", FeatureValue::Float(f64::MAX)),
+            ("b", FeatureValue::Float(f64::MAX)),
+        ]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_neg_unary() {
+        let result = eval_with("-a", &[("a", FeatureValue::Float(5.0))]);
+        assert_eq!(result, FeatureValue::Float(-5.0));
+    }
+
+    #[test]
+    fn test_eval_neg_int() {
+        let result = eval_with("-a", &[("a", FeatureValue::Int(3))]);
+        assert_eq!(result, FeatureValue::Int(-3));
+    }
+
+    #[test]
+    fn test_eval_now_returns_float() {
+        let result = eval_with("now()", &[]);
+        match result {
+            FeatureValue::Float(f) => assert!(f > 1_000_000_000.0, "now() should return Unix timestamp"),
+            other => panic!("Expected Float from now(), got {:?}", other),
+        }
     }
 }
