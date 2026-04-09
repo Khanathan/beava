@@ -18,12 +18,14 @@ import json
 from tally._client import TallyClient
 from tally._protocol import (
     OP_GET,
+    OP_MGET,
     OP_MSET,
     OP_PUSH,
     OP_REGISTER,
     OP_SET,
     STATUS_ERROR,
     encode_get,
+    encode_mget,
     encode_mset,
     encode_push,
     encode_register,
@@ -102,6 +104,21 @@ class App:
         resp = self._send(OP_GET, payload)
         data = json.loads(resp) if resp else {}
         return FeatureResult(data)
+
+    def mget(self, keys: list[str]) -> dict[str, FeatureResult]:
+        """Fetch features for multiple keys in a single round trip.
+
+        Args:
+            keys: List of entity keys to fetch.
+
+        Returns:
+            Dict mapping each key to a ``FeatureResult``. Unknown keys
+            map to an empty ``FeatureResult``.
+        """
+        payload = encode_mget(keys)
+        resp = self._send(OP_MGET, payload)
+        data = json.loads(resp) if resp else {}
+        return {k: FeatureResult(v) for k, v in data.items()}
 
     def set(self, key: str, features: dict) -> None:
         """Directly write feature values for a key (batch features).

@@ -24,6 +24,7 @@ OP_GET: int = 0x02
 OP_SET: int = 0x03
 OP_MSET: int = 0x04
 OP_REGISTER: int = 0x05
+OP_MGET: int = 0x06
 
 STATUS_OK: int = 0x00
 STATUS_ERROR: int = 0x01
@@ -84,6 +85,15 @@ def encode_mset(entries: dict[str, dict]) -> bytes:
         json_bytes = json.dumps(features).encode("utf-8")
         parts.extend(struct.pack(">I", len(json_bytes)))
         parts.extend(json_bytes)
+    return bytes(parts)
+
+
+def encode_mget(keys: list[str]) -> bytes:
+    """Encode MGET payload: [u32 count][u16-string key_1]...[u16-string key_n]."""
+    parts = bytearray()
+    parts.extend(struct.pack(">I", len(keys)))
+    for key in keys:
+        parts.extend(encode_string(key))
     return bytes(parts)
 
 

@@ -13,7 +13,7 @@ from tally._operators import (
 from tally._stream import stream
 from tally._view import view
 from tally._app import App
-from tally._protocol import OP_PUSH, OP_GET, OP_SET, OP_MSET, OP_REGISTER
+from tally._protocol import OP_PUSH, OP_GET, OP_SET, OP_MSET, OP_MGET, OP_REGISTER
 
 __all__ = [
     # Types and exceptions
@@ -41,5 +41,6 @@ __all__ = [
     "OP_GET",
     "OP_SET",
     "OP_MSET",
+    "OP_MGET",
     "OP_REGISTER",
 ]
