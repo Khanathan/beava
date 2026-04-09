@@ -176,6 +176,10 @@ async fn delete_pipeline(
 ) -> impl IntoResponse {
     let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
     if app.engine.remove_stream(&name) {
+        // Also deregister from event log
+        if let Some(ref mut log) = app.event_log {
+            let _ = log.deregister_stream(&name);
+        }
         (
             StatusCode::OK,
             Json(serde_json::json!({"status": "ok"})),

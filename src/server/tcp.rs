@@ -12,6 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 use crate::engine::pipeline::PipelineEngine;
 use crate::error::TallyError;
 use crate::server::protocol::{self, Command, STATUS_ERROR, STATUS_OK};
+use crate::state::event_log::EventLog;
 use crate::state::store::StateStore;
 use crate::types::{feature_map_to_json, FeatureValue};
 
@@ -31,6 +32,9 @@ pub struct AppState {
     pub metrics: Metrics,
     /// Snapshot file path. Single source of truth for both periodic and manual snapshot triggers.
     pub snapshot_path: std::path::PathBuf,
+    /// Optional event log for persisting raw events to per-stream log files.
+    /// None if event log initialization failed or is disabled.
+    pub event_log: Option<EventLog>,
 }
 
 /// Shared state handle for concurrent connection handlers.
@@ -142,12 +146,20 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             let AppState {
                 ref engine,
                 ref mut store,
+                ref mut event_log,
                 ..
             } = *app;
 
             // Primary push -- returns features for this stream only
             let features = engine.push(&stream_name, &payload, store, now)?;
             let result = feature_map_to_json(&features);
+
+            // Append raw event to event log (ELOG-01, ELOG-02, ELOG-03)
+            // BufWriter::write_all is ~100-300ns (memcpy), does not block hot path
+            if let Some(ref mut log) = event_log {
+                let event_bytes = serde_json::to_vec(&payload).unwrap_or_default();
+                let _ = log.append(&stream_name, &event_bytes, now);
+            }
 
             // Fan-out: push to other streams whose key_field exists in the event.
             // Only fan out to streams with a DIFFERENT key_field than the primary
@@ -167,6 +179,11 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                     if !key_val.is_empty() {
                         // Push to secondary stream -- ignore errors (primary already committed)
                         let _ = engine.push(target_name, &payload, store, now);
+                        // Also append to fan-out stream's event log
+                        if let Some(ref mut log) = event_log {
+                            let event_bytes = serde_json::to_vec(&payload).unwrap_or_default();
+                            let _ = log.append(target_name, &event_bytes, now);
+                        }
                     }
                 }
             }
@@ -214,6 +231,12 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             } else {
                 let stream_def = protocol::convert_register_request(req)?;
                 app.engine.register(stream_def)?;
+                // Register stream with event log for persistence
+                let history_ttl = app.engine.get_stream(&def_name)
+                    .and_then(|s| s.history_ttl);
+                if let Some(ref mut log) = app.event_log {
+                    let _ = log.register_stream(&def_name, history_ttl);
+                }
             }
             app.engine.store_raw_register_json(&def_name, raw_json);
             Ok(vec![])
@@ -301,6 +324,7 @@ mod tests {
             store: StateStore::new(),
             metrics: Metrics::default(),
             snapshot_path: std::path::PathBuf::from("test.snapshot"),
+            event_log: None,
         }))
     }
 

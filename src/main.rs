@@ -1,11 +1,12 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use tally::engine::pipeline::PipelineEngine;
 use tally::server::http::run_http_server;
 use tally::server::protocol::{RegisterRequest, convert_register_request, convert_view_register_request};
 use tally::server::tcp::{AppState, Metrics, run_tcp_server};
+use tally::state::event_log::EventLog;
 use tally::state::eviction::evict_expired_keys;
 use tally::state::snapshot::{SerializablePipeline, SnapshotState, load_snapshot, save_snapshot};
 use tally::state::store::StateStore;
@@ -25,11 +26,23 @@ async fn main() {
     let tcp_addr = format!("0.0.0.0:{}", tcp_port);
     let http_addr = format!("0.0.0.0:{}", http_port);
 
+    // Initialize event log directory
+    let event_log_dir = PathBuf::from(
+        std::env::var("TALLY_DATA_DIR").unwrap_or_else(|_| ".".into()),
+    ).join("events");
+    let event_log = EventLog::new(event_log_dir)
+        .map(Some)
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to initialize event log: {}", e);
+            None
+        });
+
     let state = Arc::new(Mutex::new(AppState {
         engine: PipelineEngine::new(),
         store: StateStore::new(),
         metrics: Metrics::default(),
         snapshot_path: snapshot_path.clone(),
+        event_log,
     }));
 
     // Load snapshot on startup (PERS-03)
@@ -59,6 +72,14 @@ async fn main() {
                                 };
                                 if registered.is_ok() {
                                     app.engine.store_raw_register_json(&def_name, json_val);
+                                    // Register stream with event log for persistence
+                                    if !is_view {
+                                        let history_ttl = app.engine.get_stream(&def_name)
+                                            .and_then(|s| s.history_ttl);
+                                        if let Some(ref mut log) = app.event_log {
+                                            let _ = log.register_stream(&def_name, history_ttl);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -176,6 +197,66 @@ async fn main() {
             let evicted = evict_expired_keys(store, engine, now, ttl_multiplier);
             if evicted > 0 {
                 eprintln!("Evicted {} expired keys", evicted);
+            }
+        }
+    });
+
+    // Periodic event log fsync timer (ELOG-04: 1-second interval, Redis everysec pattern)
+    let fsync_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        interval.tick().await; // Skip first immediate tick
+        loop {
+            interval.tick().await;
+            let result = {
+                let mut app = fsync_state.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(ref mut log) = app.event_log {
+                    log.fsync_all()
+                } else {
+                    Ok(())
+                }
+            };
+            if let Err(e) = result {
+                eprintln!("Event log fsync failed: {}", e);
+            }
+        }
+    });
+
+    // Periodic event log compaction timer (ELOG-05: 60-second interval)
+    let compact_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        interval.tick().await; // Skip first immediate tick
+        loop {
+            interval.tick().await;
+            let now = SystemTime::now();
+            // Get list of streams to compact
+            let streams_to_compact: Vec<String> = {
+                let app = compact_state.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(ref log) = app.event_log {
+                    log.registered_streams().map(String::from).collect()
+                } else {
+                    vec![]
+                }
+            };
+            // Compact each stream (re-acquires lock per stream for cooperative yielding)
+            for stream_name in &streams_to_compact {
+                {
+                    let mut app = compact_state.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(ref mut log) = app.event_log {
+                        match log.compact_stream(stream_name, now) {
+                            Ok(removed) if removed > 0 => {
+                                eprintln!("Compacted {}: removed {} expired entries", stream_name, removed);
+                            }
+                            Err(e) => {
+                                eprintln!("Compaction failed for {}: {}", stream_name, e);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                // Yield between streams for cooperative scheduling
+                tokio::task::yield_now().await;
             }
         }
     });

@@ -7,7 +7,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read as IoRead, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 use ahash::AHashMap;
 use serde::{Serialize, Deserialize};

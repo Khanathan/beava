@@ -32,6 +32,7 @@ async fn start_test_server() -> (u16, u16, SharedState) {
         store: StateStore::new(),
         metrics: Metrics::default(),
         snapshot_path: std::path::PathBuf::from("test.snapshot"),
+        event_log: None,
     }));
 
     // Bind to port 0 for random assignment
