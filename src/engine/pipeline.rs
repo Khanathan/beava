@@ -9,7 +9,7 @@ use ahash::AHashMap;
 use crate::types::{FeatureValue, FeatureMap};
 use crate::error::TallyError;
 use crate::state::store::StateStore;
-use super::operators::{CountOp, SumOp, AvgOp};
+use super::operators::{CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp};
 use crate::state::snapshot::OperatorState;
 use super::expression::{Expr, EvalContext, eval};
 
@@ -19,17 +19,38 @@ pub enum FeatureDef {
     Count {
         window: Duration,
         bucket: Duration,
+        where_expr: Option<Expr>,
     },
     Sum {
         field: String,
         window: Duration,
         bucket: Duration,
         optional: bool,
+        where_expr: Option<Expr>,
     },
     Avg {
         field: String,
         window: Duration,
         bucket: Duration,
+        optional: bool,
+        where_expr: Option<Expr>,
+    },
+    Min {
+        field: String,
+        window: Duration,
+        bucket: Duration,
+        optional: bool,
+        where_expr: Option<Expr>,
+    },
+    Max {
+        field: String,
+        window: Duration,
+        bucket: Duration,
+        optional: bool,
+        where_expr: Option<Expr>,
+    },
+    Last {
+        field: String,
         optional: bool,
     },
     Derive {
@@ -60,16 +81,38 @@ pub struct PipelineEngine {
 /// Returns OperatorState enum (not Box<dyn Operator>) for serialization support.
 fn create_operator(def: &FeatureDef) -> Option<OperatorState> {
     match def {
-        FeatureDef::Count { window, bucket } => {
+        FeatureDef::Count { window, bucket, .. } => {
             Some(OperatorState::Count(CountOp::new(*window, *bucket)))
         }
-        FeatureDef::Sum { field, window, bucket, optional } => {
+        FeatureDef::Sum { field, window, bucket, optional, .. } => {
             Some(OperatorState::Sum(SumOp::new(field.clone(), *window, *bucket, *optional)))
         }
-        FeatureDef::Avg { field, window, bucket, optional } => {
+        FeatureDef::Avg { field, window, bucket, optional, .. } => {
             Some(OperatorState::Avg(AvgOp::new(field.clone(), *window, *bucket, *optional)))
         }
+        FeatureDef::Min { field, window, bucket, optional, .. } => {
+            Some(OperatorState::Min(MinOp::new(field.clone(), *window, *bucket, *optional)))
+        }
+        FeatureDef::Max { field, window, bucket, optional, .. } => {
+            Some(OperatorState::Max(MaxOp::new(field.clone(), *window, *bucket, *optional)))
+        }
+        FeatureDef::Last { field, optional } => {
+            Some(OperatorState::Last(LastOp::new(field.clone(), *optional)))
+        }
         FeatureDef::Derive { .. } => None, // Derives have no operator state
+    }
+}
+
+/// Extract the where_expr from a FeatureDef, if present.
+fn get_where_expr(def: &FeatureDef) -> Option<&Expr> {
+    match def {
+        FeatureDef::Count { where_expr, .. } => where_expr.as_ref(),
+        FeatureDef::Sum { where_expr, .. } => where_expr.as_ref(),
+        FeatureDef::Avg { where_expr, .. } => where_expr.as_ref(),
+        FeatureDef::Min { where_expr, .. } => where_expr.as_ref(),
+        FeatureDef::Max { where_expr, .. } => where_expr.as_ref(),
+        FeatureDef::Last { .. } => None,
+        FeatureDef::Derive { .. } => None,
     }
 }
 
@@ -169,8 +212,30 @@ impl PipelineEngine {
             }
         }
 
-        // Push event to all operators
-        for (_, op) in entity.live_operators.iter_mut() {
+        // Push event to all operators, respecting where-clause filters.
+        // Build a mapping from operator name to its where_expr (if any).
+        // The operator list matches the non-derive features in order.
+        let op_features: Vec<&(String, FeatureDef)> = stream.features.iter()
+            .filter(|(_, def)| !matches!(def, FeatureDef::Derive { .. }))
+            .collect();
+        for (i, (_, op)) in entity.live_operators.iter_mut().enumerate() {
+            // Check if this operator's FeatureDef has a where_expr
+            if let Some((_, def)) = op_features.get(i) {
+                if let Some(where_expr) = get_where_expr(def) {
+                    // Evaluate the where expression with the current event
+                    let ctx = EvalContext {
+                        features: &ahash::AHashMap::new(),
+                        event: Some(event),
+                    };
+                    let result = eval(where_expr, &ctx);
+                    // Skip this operator if the where clause evaluates to false/Missing
+                    match result {
+                        FeatureValue::Int(0) | FeatureValue::Missing => continue,
+                        FeatureValue::Float(f) if f == 0.0 => continue,
+                        _ => {} // truthy -- proceed with push
+                    }
+                }
+            }
             op.push(event, now)?;
         }
 
@@ -267,6 +332,9 @@ impl PipelineEngine {
                 FeatureDef::Count { window, .. } => Some(*window),
                 FeatureDef::Sum { window, .. } => Some(*window),
                 FeatureDef::Avg { window, .. } => Some(*window),
+                FeatureDef::Min { window, .. } => Some(*window),
+                FeatureDef::Max { window, .. } => Some(*window),
+                FeatureDef::Last { .. } => None, // No window
                 FeatureDef::Derive { .. } => None,
             })
             .max()
@@ -312,18 +380,21 @@ mod tests {
                 ("tx_count_1h".into(), FeatureDef::Count {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
+                    where_expr: None,
                 }),
                 ("tx_sum_1h".into(), FeatureDef::Sum {
                     field: "amount".into(),
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     optional: false,
+                    where_expr: None,
                 }),
                 ("avg_amount_1h".into(), FeatureDef::Avg {
                     field: "amount".into(),
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     optional: false,
+                    where_expr: None,
                 }),
             ],
         }
@@ -431,12 +502,14 @@ mod tests {
                 ("c1".into(), FeatureDef::Count {
                     window: Duration::from_secs(1800), // 30m
                     bucket: Duration::from_secs(60),
+                    where_expr: None,
                 }),
                 ("s1".into(), FeatureDef::Sum {
                     field: "amount".into(),
                     window: Duration::from_secs(3600), // 1h -- largest
                     bucket: Duration::from_secs(60),
                     optional: false,
+                    where_expr: None,
                 }),
             ],
         }).unwrap();
@@ -447,6 +520,7 @@ mod tests {
                 ("c2".into(), FeatureDef::Count {
                     window: Duration::from_secs(900), // 15m
                     bucket: Duration::from_secs(60),
+                    where_expr: None,
                 }),
             ],
         }).unwrap();
@@ -525,5 +599,149 @@ mod tests {
         assert!(engine.get_raw_register_json("Transactions").is_some());
         engine.remove_stream("Transactions");
         assert!(engine.get_raw_register_json("Transactions").is_none());
+    }
+
+    // ======================== Phase 5: FeatureDef Min/Max/Last Tests ========================
+
+    #[test]
+    fn test_create_operator_min() {
+        let def = FeatureDef::Min {
+            field: "amount".into(),
+            window: Duration::from_secs(3600),
+            bucket: Duration::from_secs(60),
+            optional: false,
+            where_expr: None,
+        };
+        assert!(create_operator(&def).is_some());
+    }
+
+    #[test]
+    fn test_create_operator_max() {
+        let def = FeatureDef::Max {
+            field: "amount".into(),
+            window: Duration::from_secs(3600),
+            bucket: Duration::from_secs(60),
+            optional: false,
+            where_expr: None,
+        };
+        assert!(create_operator(&def).is_some());
+    }
+
+    #[test]
+    fn test_create_operator_last() {
+        let def = FeatureDef::Last {
+            field: "country".into(),
+            optional: false,
+        };
+        assert!(create_operator(&def).is_some());
+    }
+
+    #[test]
+    fn test_push_with_min_max_last_operators() {
+        let mut engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        let stream = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: "user_id".into(),
+            features: vec![
+                ("min_amount_1h".into(), FeatureDef::Min {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                }),
+                ("max_amount_1h".into(), FeatureDef::Max {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                }),
+                ("last_country".into(), FeatureDef::Last {
+                    field: "country".into(),
+                    optional: false,
+                }),
+            ],
+        };
+        engine.register(stream).unwrap();
+        let now = ts(60_000);
+        let event = serde_json::json!({
+            "user_id": "u123",
+            "amount": 50.0,
+            "country": "US"
+        });
+        let features = engine.push("Transactions", &event, &mut store, now).unwrap();
+        assert_eq!(features.get("min_amount_1h"), Some(&FeatureValue::Float(50.0)));
+        assert_eq!(features.get("max_amount_1h"), Some(&FeatureValue::Float(50.0)));
+        assert_eq!(features.get("last_country"), Some(&FeatureValue::String("US".into())));
+    }
+
+    // ======================== Phase 5: where-clause filtering Tests ========================
+
+    #[test]
+    fn test_push_with_where_expr_filters_events() {
+        let mut engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        // Create a stream with a where-clause filtered count
+        let where_expr = crate::engine::expression::parse_expr("_event.status == 'failed'").unwrap();
+        let stream = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: "user_id".into(),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                }),
+                ("failed_tx_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: Some(where_expr),
+                }),
+            ],
+        };
+        engine.register(stream).unwrap();
+        let now = ts(60_000);
+
+        // Push 3 events: 2 success, 1 failed
+        engine.push("Transactions", &serde_json::json!({
+            "user_id": "u123", "status": "success"
+        }), &mut store, now).unwrap();
+        engine.push("Transactions", &serde_json::json!({
+            "user_id": "u123", "status": "failed"
+        }), &mut store, now).unwrap();
+        let features = engine.push("Transactions", &serde_json::json!({
+            "user_id": "u123", "status": "success"
+        }), &mut store, now).unwrap();
+
+        assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(3)));
+        assert_eq!(features.get("failed_tx_1h"), Some(&FeatureValue::Int(1)));
+    }
+
+    #[test]
+    fn test_max_window_duration_includes_min_max() {
+        let mut engine = PipelineEngine::new();
+        engine.register(StreamDefinition {
+            name: "stream1".into(),
+            key_field: "id".into(),
+            features: vec![
+                ("min_1h".into(), FeatureDef::Min {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                }),
+                ("max_24h".into(), FeatureDef::Max {
+                    field: "amount".into(),
+                    window: Duration::from_secs(86400),
+                    bucket: Duration::from_secs(300),
+                    optional: false,
+                    where_expr: None,
+                }),
+            ],
+        }).unwrap();
+        assert_eq!(engine.max_window_duration(), Duration::from_secs(86400));
     }
 }

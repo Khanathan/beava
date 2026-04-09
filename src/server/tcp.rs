@@ -261,6 +261,7 @@ mod tests {
                     FeatureDef::Count {
                         window: Duration::from_secs(3600),
                         bucket: Duration::from_secs(60),
+                        where_expr: None,
                     },
                 ),
                 (
@@ -270,6 +271,7 @@ mod tests {
                         window: Duration::from_secs(3600),
                         bucket: Duration::from_secs(60),
                         optional: false,
+                        where_expr: None,
                     },
                 ),
             ],

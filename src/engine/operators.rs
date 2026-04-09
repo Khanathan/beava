@@ -311,6 +311,78 @@ impl Operator for MaxOp {
     }
 }
 
+// ======================== LastOp ========================
+
+/// Stores the most recent value of a field. No window -- always returns
+/// the last-seen value regardless of how long ago it was pushed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LastOp {
+    field: String,
+    value: FeatureValue,
+    timestamp: Option<SystemTime>,
+    optional: bool,
+}
+
+impl LastOp {
+    pub fn new(field: impl Into<String>, optional: bool) -> Self {
+        Self {
+            field: field.into(),
+            value: FeatureValue::Missing,
+            timestamp: None,
+            optional,
+        }
+    }
+}
+
+impl Operator for LastOp {
+    fn push(&mut self, event: &serde_json::Value, now: SystemTime) -> Result<(), TallyError> {
+        match event.get(&self.field) {
+            None => {
+                if self.optional {
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "any".into(),
+                        got: "absent".into(),
+                    })
+                }
+            }
+            Some(val) => {
+                let fv = match val {
+                    serde_json::Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            FeatureValue::Int(i)
+                        } else if let Some(f) = n.as_f64() {
+                            FeatureValue::Float(f)
+                        } else {
+                            FeatureValue::Missing
+                        }
+                    }
+                    serde_json::Value::String(s) => FeatureValue::String(s.clone()),
+                    serde_json::Value::Bool(b) => FeatureValue::Int(if *b { 1 } else { 0 }),
+                    _ => FeatureValue::Missing,
+                };
+                // Only update if this event is newer or same time
+                let should_update = match self.timestamp {
+                    None => true,
+                    Some(prev) => now >= prev,
+                };
+                if should_update {
+                    self.value = fv;
+                    self.timestamp = Some(now);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn read(&mut self, _now: SystemTime) -> FeatureValue {
+        // LastOp has no window -- just return the stored value
+        self.value.clone()
+    }
+}
+
 /// Computes the running average (sum/count) of a numeric field within a window.
 /// Uses paired ring buffers: one for count, one for sum. Divides on read.
 /// Same Redis-strict type checking as SumOp.
@@ -785,5 +857,75 @@ mod tests {
         let result = op.push(&json!({"amount": "not_a_number"}), t);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), TallyError::Type { ref field, .. } if field == "amount"));
+    }
+
+    // ======================== LastOp Tests ========================
+
+    #[test]
+    fn test_last_stores_most_recent_value() {
+        let mut op = LastOp::new("country", false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"country": "US"}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::String("US".into()));
+    }
+
+    #[test]
+    fn test_last_no_events_returns_missing() {
+        let mut op = LastOp::new("country", false);
+        let t = ts(1000 * 60);
+        assert_eq!(op.read(t), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_last_stores_string_values() {
+        let mut op = LastOp::new("status", false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"status": "active"}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::String("active".into()));
+    }
+
+    #[test]
+    fn test_last_updates_to_newer_value() {
+        let mut op = LastOp::new("country", false);
+        let t1 = ts(1000 * 60);
+        let t2 = ts(1001 * 60);
+        op.push(&json!({"country": "US"}), t1).unwrap();
+        op.push(&json!({"country": "UK"}), t2).unwrap();
+        assert_eq!(op.read(t2), FeatureValue::String("UK".into()));
+    }
+
+    #[test]
+    fn test_last_stores_numeric_values() {
+        let mut op = LastOp::new("amount", false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 42.5}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Float(42.5));
+    }
+
+    #[test]
+    fn test_last_stores_int_values() {
+        let mut op = LastOp::new("count", false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"count": 7}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Int(7));
+    }
+
+    #[test]
+    fn test_last_optional_skips_missing_field() {
+        let mut op = LastOp::new("country", true);
+        let t = ts(1000 * 60);
+        op.push(&json!({"country": "US"}), t).unwrap();
+        assert!(op.push(&json!({}), t).is_ok());
+        // Should still be US (missing field was skipped)
+        assert_eq!(op.read(t), FeatureValue::String("US".into()));
+    }
+
+    #[test]
+    fn test_last_non_optional_missing_field_errors() {
+        let mut op = LastOp::new("country", false);
+        let t = ts(1000 * 60);
+        let result = op.push(&json!({}), t);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TallyError::Type { ref got, .. } if got == "absent"));
     }
 }

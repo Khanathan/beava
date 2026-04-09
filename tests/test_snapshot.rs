@@ -26,6 +26,7 @@ fn make_tx_stream() -> StreamDefinition {
                 FeatureDef::Count {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
+                    where_expr: None,
                 },
             ),
             (
@@ -35,6 +36,7 @@ fn make_tx_stream() -> StreamDefinition {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     optional: false,
+                    where_expr: None,
                 },
             ),
         ],
@@ -116,7 +118,7 @@ fn test_snapshot_empty_bytes_returns_none() {
 #[test]
 fn test_snapshot_corrupt_data_returns_none() {
     // Correct version byte followed by garbage
-    let mut bytes = vec![0x01]; // version 1
+    let mut bytes = vec![0x02]; // version 2
     bytes.extend_from_slice(b"this is absolutely not valid postcard data!!!");
     assert!(load_snapshot(&bytes).is_none());
 }
@@ -136,6 +138,7 @@ fn test_eviction_removes_old_entity() {
                 FeatureDef::Count {
                     window: Duration::from_secs(1800), // 30m window
                     bucket: Duration::from_secs(60),
+                    where_expr: None,
                 },
             )],
         })
@@ -184,6 +187,7 @@ fn test_eviction_preserves_entity_with_no_events() {
                 FeatureDef::Count {
                     window: Duration::from_secs(1800),
                     bucket: Duration::from_secs(60),
+                    where_expr: None,
                 },
             )],
         })

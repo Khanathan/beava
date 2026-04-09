@@ -6,14 +6,14 @@
 
 use serde::{Serialize, Deserialize};
 use std::time::SystemTime;
-use crate::engine::operators::{CountOp, SumOp, AvgOp, Operator};
+use crate::engine::operators::{CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp, Operator};
 use crate::state::store::StaticFeature;
 use crate::types::FeatureValue;
 use crate::error::TallyError;
 
 /// Snapshot format version byte. Prepended to serialized data.
 /// If the version doesn't match on load, return None (clean startup from empty state).
-const SNAPSHOT_FORMAT_VERSION: u8 = 1;
+const SNAPSHOT_FORMAT_VERSION: u8 = 2;
 
 /// Serializable enum wrapping all operator types.
 /// Replaces Box<dyn Operator> so EntityState can be serialized.
@@ -23,6 +23,9 @@ pub enum OperatorState {
     Count(CountOp),
     Sum(SumOp),
     Avg(AvgOp),
+    Min(MinOp),
+    Max(MaxOp),
+    Last(LastOp),
 }
 
 impl OperatorState {
@@ -31,6 +34,9 @@ impl OperatorState {
             Self::Count(op) => op.push(event, now),
             Self::Sum(op) => op.push(event, now),
             Self::Avg(op) => op.push(event, now),
+            Self::Min(op) => op.push(event, now),
+            Self::Max(op) => op.push(event, now),
+            Self::Last(op) => op.push(event, now),
         }
     }
 
@@ -39,6 +45,9 @@ impl OperatorState {
             Self::Count(op) => op.read(now),
             Self::Sum(op) => op.read(now),
             Self::Avg(op) => op.read(now),
+            Self::Min(op) => op.read(now),
+            Self::Max(op) => op.read(now),
+            Self::Last(op) => op.read(now),
         }
     }
 }
@@ -249,7 +258,7 @@ mod tests {
         };
         let bytes = save_snapshot(&state).expect("save_snapshot should succeed");
         assert_eq!(bytes[0], SNAPSHOT_FORMAT_VERSION);
-        assert_eq!(bytes[0], 0x01);
+        assert_eq!(bytes[0], 0x02);
     }
 
     #[test]
@@ -307,5 +316,101 @@ mod tests {
         let mut bytes = vec![SNAPSHOT_FORMAT_VERSION];
         bytes.extend_from_slice(b"this is not valid postcard data!!!");
         assert!(load_snapshot(&bytes).is_none());
+    }
+
+    // ======================== Phase 5: Min/Max/Last OperatorState Tests ========================
+
+    #[test]
+    fn test_operator_state_min_push_read() {
+        let mut op = OperatorState::Min(crate::engine::operators::MinOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        ));
+        let now = ts(60_000);
+        op.push(&json!({"amount": 10.0}), now).unwrap();
+        op.push(&json!({"amount": 5.0}), now).unwrap();
+        op.push(&json!({"amount": 20.0}), now).unwrap();
+        assert_eq!(op.read(now), FeatureValue::Float(5.0));
+    }
+
+    #[test]
+    fn test_operator_state_max_push_read() {
+        let mut op = OperatorState::Max(crate::engine::operators::MaxOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        ));
+        let now = ts(60_000);
+        op.push(&json!({"amount": 10.0}), now).unwrap();
+        op.push(&json!({"amount": 5.0}), now).unwrap();
+        op.push(&json!({"amount": 20.0}), now).unwrap();
+        assert_eq!(op.read(now), FeatureValue::Float(20.0));
+    }
+
+    #[test]
+    fn test_operator_state_last_push_read() {
+        let mut op = OperatorState::Last(crate::engine::operators::LastOp::new(
+            "country",
+            false,
+        ));
+        let now = ts(60_000);
+        op.push(&json!({"country": "US"}), now).unwrap();
+        assert_eq!(op.read(now), FeatureValue::String("US".into()));
+    }
+
+    #[test]
+    fn test_operator_state_min_roundtrip_postcard() {
+        let mut op = OperatorState::Min(crate::engine::operators::MinOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        ));
+        let now = ts(60_000);
+        op.push(&json!({"amount": 10.0}), now).unwrap();
+        op.push(&json!({"amount": 5.0}), now).unwrap();
+
+        let bytes = postcard::to_stdvec(&op).expect("serialize");
+        let mut restored: OperatorState = postcard::from_bytes(&bytes).expect("deserialize");
+        assert_eq!(restored.read(now), FeatureValue::Float(5.0));
+    }
+
+    #[test]
+    fn test_operator_state_max_roundtrip_postcard() {
+        let mut op = OperatorState::Max(crate::engine::operators::MaxOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        ));
+        let now = ts(60_000);
+        op.push(&json!({"amount": 10.0}), now).unwrap();
+        op.push(&json!({"amount": 20.0}), now).unwrap();
+
+        let bytes = postcard::to_stdvec(&op).expect("serialize");
+        let mut restored: OperatorState = postcard::from_bytes(&bytes).expect("deserialize");
+        assert_eq!(restored.read(now), FeatureValue::Float(20.0));
+    }
+
+    #[test]
+    fn test_operator_state_last_roundtrip_postcard() {
+        let mut op = OperatorState::Last(crate::engine::operators::LastOp::new(
+            "country",
+            false,
+        ));
+        let now = ts(60_000);
+        op.push(&json!({"country": "UK"}), now).unwrap();
+
+        let bytes = postcard::to_stdvec(&op).expect("serialize");
+        let mut restored: OperatorState = postcard::from_bytes(&bytes).expect("deserialize");
+        assert_eq!(restored.read(now), FeatureValue::String("UK".into()));
+    }
+
+    #[test]
+    fn test_snapshot_format_version_is_2() {
+        assert_eq!(SNAPSHOT_FORMAT_VERSION, 2);
     }
 }

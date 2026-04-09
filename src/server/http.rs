@@ -36,7 +36,7 @@ async fn get_pipeline(
                 .features
                 .iter()
                 .map(|(fname, def)| match def {
-                    crate::engine::pipeline::FeatureDef::Count { window, bucket } => {
+                    crate::engine::pipeline::FeatureDef::Count { window, bucket, .. } => {
                         serde_json::json!({"name": fname, "type": "count", "window_secs": window.as_secs(), "bucket_secs": bucket.as_secs()})
                     }
                     crate::engine::pipeline::FeatureDef::Sum {
@@ -44,6 +44,7 @@ async fn get_pipeline(
                         window,
                         bucket,
                         optional,
+                        ..
                     } => {
                         serde_json::json!({"name": fname, "type": "sum", "field": field, "window_secs": window.as_secs(), "bucket_secs": bucket.as_secs(), "optional": optional})
                     }
@@ -52,8 +53,33 @@ async fn get_pipeline(
                         window,
                         bucket,
                         optional,
+                        ..
                     } => {
                         serde_json::json!({"name": fname, "type": "avg", "field": field, "window_secs": window.as_secs(), "bucket_secs": bucket.as_secs(), "optional": optional})
+                    }
+                    crate::engine::pipeline::FeatureDef::Min {
+                        field,
+                        window,
+                        bucket,
+                        optional,
+                        ..
+                    } => {
+                        serde_json::json!({"name": fname, "type": "min", "field": field, "window_secs": window.as_secs(), "bucket_secs": bucket.as_secs(), "optional": optional})
+                    }
+                    crate::engine::pipeline::FeatureDef::Max {
+                        field,
+                        window,
+                        bucket,
+                        optional,
+                        ..
+                    } => {
+                        serde_json::json!({"name": fname, "type": "max", "field": field, "window_secs": window.as_secs(), "bucket_secs": bucket.as_secs(), "optional": optional})
+                    }
+                    crate::engine::pipeline::FeatureDef::Last {
+                        field,
+                        optional,
+                    } => {
+                        serde_json::json!({"name": fname, "type": "last", "field": field, "optional": optional})
                     }
                     crate::engine::pipeline::FeatureDef::Derive { .. } => {
                         serde_json::json!({"name": fname, "type": "derive"})

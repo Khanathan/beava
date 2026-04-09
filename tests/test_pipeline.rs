@@ -22,18 +22,21 @@ fn make_tx_stream_with_derive() -> StreamDefinition {
             ("tx_count_1h".into(), FeatureDef::Count {
                 window: Duration::from_secs(3600),
                 bucket: Duration::from_secs(60),
+                where_expr: None,
             }),
             ("tx_sum_1h".into(), FeatureDef::Sum {
                 field: "amount".into(),
                 window: Duration::from_secs(3600),
                 bucket: Duration::from_secs(60),
                 optional: false,
+                where_expr: None,
             }),
             ("avg_amount_1h".into(), FeatureDef::Avg {
                 field: "amount".into(),
                 window: Duration::from_secs(3600),
                 bucket: Duration::from_secs(60),
                 optional: false,
+                where_expr: None,
             }),
             ("avg_via_derive".into(), FeatureDef::Derive {
                 expr: parse_expr("tx_sum_1h / tx_count_1h").unwrap(),
@@ -101,6 +104,7 @@ fn test_derive_division_by_zero_returns_missing() {
             ("count_1h".into(), FeatureDef::Count {
                 window: Duration::from_secs(3600),
                 bucket: Duration::from_secs(60),
+                where_expr: None,
             }),
             // Derive references a feature that doesn't exist -> Missing
             ("ratio".into(), FeatureDef::Derive {
@@ -154,6 +158,7 @@ fn test_window_expiration_end_to_end() {
             ("count_5m".into(), FeatureDef::Count {
                 window: Duration::from_secs(300),  // 5 minute window
                 bucket: Duration::from_secs(60),
+                where_expr: None,
             }),
         ],
     };
@@ -198,6 +203,7 @@ fn test_derive_with_event_field_access() {
                 window: Duration::from_secs(3600),
                 bucket: Duration::from_secs(60),
                 optional: false,
+                where_expr: None,
             }),
             ("amount_vs_avg".into(), FeatureDef::Derive {
                 expr: parse_expr("_event.amount / avg_1h").unwrap(),

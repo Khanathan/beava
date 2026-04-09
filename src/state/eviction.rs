@@ -44,6 +44,7 @@ mod tests {
                 ("count".to_string(), FeatureDef::Count {
                     window: Duration::from_secs(window_secs),
                     bucket: Duration::from_secs(60),
+                    where_expr: None,
                 }),
             ],
         }

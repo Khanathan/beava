@@ -249,6 +249,12 @@ pub struct FeatureDefRequest {
     pub expr: Option<String>,
     #[serde(default)]
     pub optional: Option<bool>,
+    #[serde(default, rename = "where")]
+    pub where_clause: Option<String>,
+    #[serde(default)]
+    pub on: Option<String>,       // For lookup (used in Plan 03)
+    #[serde(default)]
+    pub target: Option<String>,   // For lookup (used in Plan 03)
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +289,20 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
 
     let mut features = Vec::with_capacity(req.features.len());
     for f in req.features {
+        // Parse optional where clause (shared by all windowed operators)
+        let where_expr = match &f.where_clause {
+            Some(clause) => {
+                let expr = crate::engine::expression::parse_expr(clause).map_err(|e| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': invalid where expression: {}",
+                        f.name, e
+                    ))
+                })?;
+                Some(expr)
+            }
+            None => None,
+        };
+
         let def = match f.feature_type.as_str() {
             "count" => {
                 let window_str = f.window.ok_or_else(|| {
@@ -296,7 +316,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                     Some(b) => parse_duration_str(&b)?,
                     None => default_bucket(window),
                 };
-                FeatureDef::Count { window, bucket }
+                FeatureDef::Count { window, bucket, where_expr }
             }
             "sum" => {
                 let field = f.field.ok_or_else(|| {
@@ -321,6 +341,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                     window,
                     bucket,
                     optional: f.optional.unwrap_or(false),
+                    where_expr,
                 }
             }
             "avg" => {
@@ -345,6 +366,71 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                     field,
                     window,
                     bucket,
+                    optional: f.optional.unwrap_or(false),
+                    where_expr,
+                }
+            }
+            "min" => {
+                let field = f.field.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': min requires 'field'",
+                        f.name
+                    ))
+                })?;
+                let window_str = f.window.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': min requires 'window' field",
+                        f.name
+                    ))
+                })?;
+                let window = parse_duration_str(&window_str)?;
+                let bucket = match f.bucket {
+                    Some(b) => parse_duration_str(&b)?,
+                    None => default_bucket(window),
+                };
+                FeatureDef::Min {
+                    field,
+                    window,
+                    bucket,
+                    optional: f.optional.unwrap_or(false),
+                    where_expr,
+                }
+            }
+            "max" => {
+                let field = f.field.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': max requires 'field'",
+                        f.name
+                    ))
+                })?;
+                let window_str = f.window.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': max requires 'window' field",
+                        f.name
+                    ))
+                })?;
+                let window = parse_duration_str(&window_str)?;
+                let bucket = match f.bucket {
+                    Some(b) => parse_duration_str(&b)?,
+                    None => default_bucket(window),
+                };
+                FeatureDef::Max {
+                    field,
+                    window,
+                    bucket,
+                    optional: f.optional.unwrap_or(false),
+                    where_expr,
+                }
+            }
+            "last" => {
+                let field = f.field.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': last requires 'field'",
+                        f.name
+                    ))
+                })?;
+                FeatureDef::Last {
+                    field,
                     optional: f.optional.unwrap_or(false),
                 }
             }
@@ -651,7 +737,7 @@ mod tests {
         assert_eq!(stream.features.len(), 1);
         assert_eq!(stream.features[0].0, "tx_count_1h");
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::Count { window, bucket } => {
+            crate::engine::pipeline::FeatureDef::Count { window, bucket, .. } => {
                 assert_eq!(*window, std::time::Duration::from_secs(3600));
                 // Default bucket = window / 30 = 120s = 2m
                 assert_eq!(*bucket, std::time::Duration::from_secs(120));
@@ -685,7 +771,7 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::Sum { field, window, bucket, optional } => {
+            crate::engine::pipeline::FeatureDef::Sum { field, window, bucket, optional, .. } => {
                 assert_eq!(field, "amount");
                 assert_eq!(*window, std::time::Duration::from_secs(3600));
                 assert_eq!(*bucket, std::time::Duration::from_secs(120));
@@ -711,7 +797,7 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::Avg { field, window, bucket, optional } => {
+            crate::engine::pipeline::FeatureDef::Avg { field, window, bucket, optional, .. } => {
                 assert_eq!(field, "amount");
                 assert_eq!(*window, std::time::Duration::from_secs(3600));
                 assert_eq!(*bucket, std::time::Duration::from_secs(120));
@@ -855,6 +941,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "median".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
+                where_clause: None, on: None, target: None,
             }],
         };
         let result = convert_register_request(req);
@@ -872,6 +959,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "histogram".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
+                where_clause: None, on: None, target: None,
             }],
         };
         let result = convert_register_request(req);
@@ -891,6 +979,7 @@ mod tests {
                 name: "cnt".into(),
                 feature_type: "count".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
+                where_clause: None, on: None, target: None,
             }],
         };
         let result = convert_register_request(req);
@@ -908,6 +997,7 @@ mod tests {
                 name: "total".into(),
                 feature_type: "sum".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
+                where_clause: None, on: None, target: None,
             }],
         };
         let result = convert_register_request(req);
@@ -925,6 +1015,7 @@ mod tests {
                 name: "total".into(),
                 feature_type: "sum".into(),
                 field: Some("amount".into()), window: None, bucket: None, expr: None, optional: None,
+                where_clause: None, on: None, target: None,
             }],
         };
         let result = convert_register_request(req);
@@ -942,6 +1033,7 @@ mod tests {
                 name: "mean".into(),
                 feature_type: "avg".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
+                where_clause: None, on: None, target: None,
             }],
         };
         let result = convert_register_request(req);
@@ -959,12 +1051,148 @@ mod tests {
                 name: "ratio".into(),
                 feature_type: "derive".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
+                where_clause: None, on: None, target: None,
             }],
         };
         let result = convert_register_request(req);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("derive requires 'expr'"), "got: {}", err_msg);
+    }
+
+    // ======================== Phase 5: min/max/last/where protocol tests ========================
+
+    #[test]
+    fn test_register_request_min_feature() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [{
+                "name": "min_amount_1h",
+                "type": "min",
+                "field": "amount",
+                "window": "1h"
+            }]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        match &stream.features[0].1 {
+            crate::engine::pipeline::FeatureDef::Min { field, window, bucket, optional, where_expr } => {
+                assert_eq!(field, "amount");
+                assert_eq!(*window, std::time::Duration::from_secs(3600));
+                assert_eq!(*bucket, std::time::Duration::from_secs(120));
+                assert!(!optional);
+                assert!(where_expr.is_none());
+            }
+            other => panic!("expected Min, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_register_request_max_feature() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [{
+                "name": "max_amount_24h",
+                "type": "max",
+                "field": "amount",
+                "window": "24h",
+                "optional": true
+            }]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        match &stream.features[0].1 {
+            crate::engine::pipeline::FeatureDef::Max { field, window, optional, where_expr, .. } => {
+                assert_eq!(field, "amount");
+                assert_eq!(*window, std::time::Duration::from_secs(86400));
+                assert!(*optional);
+                assert!(where_expr.is_none());
+            }
+            other => panic!("expected Max, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_register_request_last_feature() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [{
+                "name": "last_country",
+                "type": "last",
+                "field": "country"
+            }]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        match &stream.features[0].1 {
+            crate::engine::pipeline::FeatureDef::Last { field, optional } => {
+                assert_eq!(field, "country");
+                assert!(!optional);
+            }
+            other => panic!("expected Last, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_register_request_count_with_where_clause() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [{
+                "name": "failed_tx_1h",
+                "type": "count",
+                "window": "1h",
+                "where": "status == 'failed'"
+            }]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        match &stream.features[0].1 {
+            crate::engine::pipeline::FeatureDef::Count { window, where_expr, .. } => {
+                assert_eq!(*window, std::time::Duration::from_secs(3600));
+                assert!(where_expr.is_some());
+            }
+            other => panic!("expected Count with where_expr, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_register_request_min_missing_field() {
+        let req = RegisterRequest {
+            name: "Test".into(),
+            key_field: "id".into(),
+            features: vec![FeatureDefRequest {
+                name: "f1".into(),
+                feature_type: "min".into(),
+                field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
+                where_clause: None, on: None, target: None,
+            }],
+        };
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("min requires 'field'"), "got: {}", err_msg);
+    }
+
+    #[test]
+    fn test_register_request_last_missing_field() {
+        let req = RegisterRequest {
+            name: "Test".into(),
+            key_field: "id".into(),
+            features: vec![FeatureDefRequest {
+                name: "f1".into(),
+                feature_type: "last".into(),
+                field: None, window: None, bucket: None, expr: None, optional: None,
+                where_clause: None, on: None, target: None,
+            }],
+        };
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("last requires 'field'"), "got: {}", err_msg);
     }
 
     // --- G-08: read_json_payload ---
