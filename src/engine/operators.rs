@@ -65,6 +65,10 @@ impl Operator for CountOp {
 pub struct SumOp {
     field: String,
     buffer: RingBuffer<f64>,
+    /// Parallel count buffer to track whether any events were pushed.
+    /// Needed because count_nonzero on the sum buffer returns 0 for all-zero
+    /// sums, which would incorrectly return Missing instead of Float(0.0).
+    event_count: RingBuffer<u64>,
     optional: bool,
 }
 
@@ -78,6 +82,7 @@ impl SumOp {
         Self {
             field: field.into(),
             buffer: RingBuffer::new(window_duration, bucket_duration),
+            event_count: RingBuffer::new(window_duration, bucket_duration),
             optional,
         }
     }
@@ -101,6 +106,7 @@ impl Operator for SumOp {
                 // Extract numeric value. Int or Float accepted, anything else -> type error.
                 if let Some(f) = val.as_f64() {
                     self.buffer.add_to_current(f, now);
+                    self.event_count.add_to_current(1u64, now);
                     Ok(())
                 } else {
                     Err(TallyError::Type {
@@ -114,9 +120,13 @@ impl Operator for SumOp {
     }
 
     fn read(&mut self, now: SystemTime) -> FeatureValue {
-        // Advance time to expire stale buckets before reading.
+        // Advance both buffers to expire stale buckets before reading.
         self.buffer.advance_to(now);
-        if self.buffer.count_nonzero() == 0 {
+        self.event_count.advance_to(now);
+        // Use event_count (not count_nonzero on sum buffer) to detect empty state.
+        // count_nonzero would incorrectly return 0 for all-zero sums (WR-01).
+        let count = self.event_count.sum_all();
+        if count == 0 {
             FeatureValue::Missing // Zero events -> Missing
         } else {
             FeatureValue::Float(self.buffer.sum_all())
