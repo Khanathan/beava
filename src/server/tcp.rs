@@ -149,11 +149,18 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             let features = engine.push(&stream_name, &payload, store, now)?;
             let result = feature_map_to_json(&features);
 
-            // Fan-out: push to other streams whose key_field exists in the event
+            // Fan-out: push to other streams whose key_field exists in the event.
+            // Only fan out to streams with a DIFFERENT key_field than the primary
+            // stream. Streams sharing the same key_field are independent pipelines
+            // and should only receive events explicitly pushed to them.
+            let primary_key_field = engine.get_stream(&stream_name).map(|s| s.key_field.as_str());
             let targets = engine.fan_out_targets();
             for (target_name, target_key_field) in &targets {
                 if target_name == &stream_name {
                     continue; // Skip primary stream (already pushed)
+                }
+                if primary_key_field == Some(target_key_field.as_str()) {
+                    continue; // Skip streams with the same key_field
                 }
                 // Check if event contains this stream's key_field as a non-empty string
                 if let Some(serde_json::Value::String(key_val)) = payload.get(target_key_field.as_str()) {

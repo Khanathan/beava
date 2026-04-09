@@ -374,10 +374,23 @@ impl PipelineEngine {
                     }
                     ViewFeatureDef::Lookup { target_stream: _target_stream, target_feature, on_field } => {
                         // Resolve the foreign key from the entity's existing features.
-                        // Look for a feature named "last_{on_field}" or "{on_field}" that
-                        // stores the last known value of the foreign key field.
-                        let foreign_key = features.get(&format!("last_{}", on_field))
-                            .or_else(|| features.get(on_field));
+                        // Search stream definitions for a Last operator that tracks the
+                        // on_field, then use its feature name to look up the value.
+                        let mut foreign_key: Option<&FeatureValue> = None;
+                        'outer: for stream in self.streams.values() {
+                            for (feat_name, def) in &stream.features {
+                                if let FeatureDef::Last { field, .. } = def {
+                                    if field == on_field {
+                                        foreign_key = features.get(feat_name);
+                                        break 'outer;
+                                    }
+                                }
+                            }
+                        }
+                        // Fallback: try direct name match (e.g. feature named same as on_field)
+                        if foreign_key.is_none() {
+                            foreign_key = features.get(on_field);
+                        }
                         match foreign_key {
                             Some(FeatureValue::String(fk)) => {
                                 let val = store.get_feature_value(fk, target_feature, now);
