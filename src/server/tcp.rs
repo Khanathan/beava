@@ -27,6 +27,14 @@ pub type SharedState = Arc<Mutex<AppState>>;
 /// Start the TCP server on the given address. Loops forever accepting connections.
 pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::io::Error> {
     let listener = TcpListener::bind(addr).await?;
+    run_tcp_server_with_listener(listener, state).await
+}
+
+/// Start the TCP server from a pre-bound listener (for tests with random ports).
+pub async fn run_tcp_server_with_listener(
+    listener: TcpListener,
+    state: SharedState,
+) -> Result<(), std::io::Error> {
     loop {
         let (stream, _addr) = listener.accept().await?;
         let state = state.clone();
@@ -36,6 +44,14 @@ pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::i
             }
         });
     }
+}
+
+/// Public wrapper for handle_connection, for integration tests.
+pub async fn handle_connection_public(
+    stream: TcpStream,
+    state: SharedState,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    handle_connection(stream, state).await
 }
 
 /// Handle a single persistent TCP connection: read frames in a loop, dispatch commands.
