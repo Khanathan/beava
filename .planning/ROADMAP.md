@@ -102,7 +102,7 @@ Plans:
   5. A single PUSH event containing both user_id and merchant_id updates state for both entity keys, and a st.lookup feature on the user's view correctly reads the merchant's current feature value
 **Plans:** 3 plans
 Plans:
-- [ ] 05-01-PLAN.md — MinOp, MaxOp, LastOp operators, where-clause filtering, snapshot/protocol/HTTP plumbing
+- [x] 05-01-PLAN.md — MinOp, MaxOp, LastOp operators, where-clause filtering, snapshot/protocol/HTTP plumbing
 - [ ] 05-02-PLAN.md — HyperLogLog from scratch and DistinctCountOp with windowed HLL rotation
 - [ ] 05-03-PLAN.md — DistinctCount wiring, cross-stream views, cross-key lookups, event fan-out
 

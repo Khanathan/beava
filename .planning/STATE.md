@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: verifying
-stopped_at: Completed 04-03-PLAN.md (HTTP management API)
-last_updated: "2026-04-09T19:32:20.359Z"
+status: executing
+stopped_at: Completed 05-01-PLAN.md (Min/Max/Last operators and where-clause filtering)
+last_updated: "2026-04-09T20:40:03.481Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 5
   completed_phases: 4
-  total_plans: 16
-  completed_plans: 16
-  percent: 100
+  total_plans: 19
+  completed_plans: 17
+  percent: 89
 ---
 
 # Project State
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Events go in, features come out — synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
-**Current focus:** Phase 04 — persistence-and-operational-readiness
+**Current focus:** Phase 05 — advanced-operators-and-cross-stream
 
 ## Current Position
 
-Phase: 5
-Plan: Not started
-Status: Phase complete — ready for verification
+Phase: 05 (advanced-operators-and-cross-stream) — EXECUTING
+Plan: 2 of 3
+Status: Ready to execute
 Last activity: 2026-04-09
 
 Progress: [███████░░░] 71%
@@ -70,6 +70,7 @@ Progress: [███████░░░] 71%
 | Phase 04 P01 | 5min | 2 tasks | 6 files |
 | Phase 04 P02 | 3min | 2 tasks | 3 files |
 | Phase 04 P03 | 4min | 2 tasks | 4 files |
+| Phase 05 P01 | 11min | 2 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -120,6 +121,11 @@ Recent decisions affecting current work:
 - [Phase 04]: Re-store raw_register_json in PipelineEngine after snapshot restore so subsequent snapshot cycles persist pipeline definitions
 - [Phase 04]: Metrics struct uses last-observed gauge for push_latency_seconds (not histogram) -- simplest for v1
 - [Phase 04]: POST /pipelines stores raw JSON via store_raw_register_json for snapshot pipeline persistence (same as TCP REGISTER)
+- [Phase 05]: RingBuffer relaxed from Copy to Clone bound for MinBucket/MaxBucket wrapper compatibility
+- [Phase 05]: MinBucket(INFINITY)/MaxBucket(NEG_INFINITY) sentinels with event_count guard -- sentinels never returned to client
+- [Phase 05]: LastOp stores FeatureValue directly (not raw JSON) for consistent type handling
+- [Phase 05]: Where-clause eval uses empty features map -- only _event.* fields accessible in where expressions
+- [Phase 05]: SNAPSHOT_FORMAT_VERSION bumped 1->2; old snapshots cleanly rejected per Phase 4 design
 
 ### Pending Todos
 
@@ -140,6 +146,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T19:24:14.095Z
-Stopped at: Completed 04-03-PLAN.md (HTTP management API)
+Last session: 2026-04-09T20:40:03.478Z
+Stopped at: Completed 05-01-PLAN.md (Min/Max/Last operators and where-clause filtering)
 Resume file: None

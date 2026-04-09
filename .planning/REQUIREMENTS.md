@@ -31,11 +31,11 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Advanced Operators
 
-- [ ] **OPS-01**: min operator tracks minimum value of a field within a time window
-- [ ] **OPS-02**: max operator tracks maximum value of a field within a time window
-- [ ] **OPS-03**: last operator stores most recent value of a field with timestamp
+- [x] **OPS-01**: min operator tracks minimum value of a field within a time window
+- [x] **OPS-02**: max operator tracks maximum value of a field within a time window
+- [x] **OPS-03**: last operator stores most recent value of a field with timestamp
 - [ ] **OPS-04**: distinct_count operator uses HyperLogLog with epoch-rotation for windowed approximate unique counts
-- [ ] **OPS-05**: where-clause filtering supports conditional aggregation (e.g. count events where status == 'failed')
+- [x] **OPS-05**: where-clause filtering supports conditional aggregation (e.g. count events where status == 'failed')
 
 ### Cross-Stream
 
@@ -112,11 +112,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SRV-06 | Phase 2 | Complete |
 | SRV-07 | Phase 2 | Complete |
 | SRV-08 | Phase 4 | Complete |
-| OPS-01 | Phase 5 | Pending |
-| OPS-02 | Phase 5 | Pending |
-| OPS-03 | Phase 5 | Pending |
+| OPS-01 | Phase 5 | Complete |
+| OPS-02 | Phase 5 | Complete |
+| OPS-03 | Phase 5 | Complete |
 | OPS-04 | Phase 5 | Pending |
-| OPS-05 | Phase 5 | Pending |
+| OPS-05 | Phase 5 | Complete |
 | XSTR-01 | Phase 5 | Pending |
 | XSTR-02 | Phase 5 | Pending |
 | XSTR-03 | Phase 5 | Pending |
