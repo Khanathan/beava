@@ -812,4 +812,198 @@ mod tests {
         assert_eq!(engine.stream_count(), 1);
         assert!(engine.get_stream("Transactions").is_some());
     }
+
+    // --- G-02: write_string panic on oversized input ---
+
+    #[test]
+    #[should_panic(expected = "string too long for protocol")]
+    fn test_write_string_panics_on_oversized() {
+        let huge = "x".repeat(u16::MAX as usize + 1); // 65536 bytes
+        write_string(&huge);
+    }
+
+    // --- G-04: read_string invalid UTF-8 ---
+
+    #[test]
+    fn test_read_string_invalid_utf8() {
+        let bytes: &[u8] = &[0, 3, 0xFF, 0xFE, 0xFD];
+        let mut buf: &[u8] = bytes;
+        let result = read_string(&mut buf);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("invalid UTF-8 in string"), "got: {}", err_msg);
+    }
+
+    #[test]
+    fn test_read_string_invalid_utf8_continuation() {
+        let bytes: &[u8] = &[0, 2, 0xC0, 0x01]; // invalid continuation byte
+        let mut buf: &[u8] = bytes;
+        let result = read_string(&mut buf);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("invalid UTF-8 in string"), "got: {}", err_msg);
+    }
+
+    // --- G-05: unknown feature type ---
+
+    #[test]
+    fn test_register_request_unknown_feature_type_median() {
+        let req = RegisterRequest {
+            name: "Test".into(),
+            key_field: "id".into(),
+            features: vec![FeatureDefRequest {
+                name: "f1".into(),
+                feature_type: "median".into(),
+                field: None, window: None, bucket: None, expr: None, optional: None,
+            }],
+        };
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("unknown feature type: median"), "got: {}", err_msg);
+    }
+
+    #[test]
+    fn test_register_request_unknown_feature_type_histogram() {
+        let req = RegisterRequest {
+            name: "Test".into(),
+            key_field: "id".into(),
+            features: vec![FeatureDefRequest {
+                name: "f1".into(),
+                feature_type: "histogram".into(),
+                field: None, window: None, bucket: None, expr: None, optional: None,
+            }],
+        };
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("unknown feature type: histogram"), "got: {}", err_msg);
+    }
+
+    // --- G-06: missing required fields per feature type ---
+
+    #[test]
+    fn test_register_request_count_missing_window() {
+        let req = RegisterRequest {
+            name: "Test".into(),
+            key_field: "id".into(),
+            features: vec![FeatureDefRequest {
+                name: "cnt".into(),
+                feature_type: "count".into(),
+                field: None, window: None, bucket: None, expr: None, optional: None,
+            }],
+        };
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("count requires 'window'"), "got: {}", err_msg);
+    }
+
+    #[test]
+    fn test_register_request_sum_missing_field() {
+        let req = RegisterRequest {
+            name: "Test".into(),
+            key_field: "id".into(),
+            features: vec![FeatureDefRequest {
+                name: "total".into(),
+                feature_type: "sum".into(),
+                field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
+            }],
+        };
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("sum requires 'field'"), "got: {}", err_msg);
+    }
+
+    #[test]
+    fn test_register_request_sum_missing_window() {
+        let req = RegisterRequest {
+            name: "Test".into(),
+            key_field: "id".into(),
+            features: vec![FeatureDefRequest {
+                name: "total".into(),
+                feature_type: "sum".into(),
+                field: Some("amount".into()), window: None, bucket: None, expr: None, optional: None,
+            }],
+        };
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("sum requires 'window'"), "got: {}", err_msg);
+    }
+
+    #[test]
+    fn test_register_request_avg_missing_field() {
+        let req = RegisterRequest {
+            name: "Test".into(),
+            key_field: "id".into(),
+            features: vec![FeatureDefRequest {
+                name: "mean".into(),
+                feature_type: "avg".into(),
+                field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
+            }],
+        };
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("avg requires 'field'"), "got: {}", err_msg);
+    }
+
+    #[test]
+    fn test_register_request_derive_missing_expr() {
+        let req = RegisterRequest {
+            name: "Test".into(),
+            key_field: "id".into(),
+            features: vec![FeatureDefRequest {
+                name: "ratio".into(),
+                feature_type: "derive".into(),
+                field: None, window: None, bucket: None, expr: None, optional: None,
+            }],
+        };
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("derive requires 'expr'"), "got: {}", err_msg);
+    }
+
+    // --- G-08: read_json_payload ---
+
+    #[test]
+    fn test_read_json_payload_valid() {
+        let json_bytes = b"{\"a\":1}";
+        let mut buf: &[u8] = json_bytes;
+        let result = read_json_payload(&mut buf).unwrap();
+        assert_eq!(result, serde_json::json!({"a": 1}));
+        assert!(buf.is_empty(), "buf should be fully consumed");
+    }
+
+    #[test]
+    fn test_read_json_payload_invalid() {
+        let bad_bytes = b"not json";
+        let mut buf: &[u8] = bad_bytes;
+        let result = read_json_payload(&mut buf);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("invalid JSON payload"), "got: {}", err_msg);
+    }
+
+    #[test]
+    fn test_read_json_payload_empty_buffer() {
+        let empty: &[u8] = b"";
+        let mut buf: &[u8] = empty;
+        let result = read_json_payload(&mut buf);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("invalid JSON payload"), "got: {}", err_msg);
+    }
+
+    #[test]
+    fn test_read_json_payload_advances_buffer() {
+        let json_bytes = b"[1,2,3]";
+        let mut buf: &[u8] = json_bytes;
+        let result = read_json_payload(&mut buf).unwrap();
+        assert_eq!(result, serde_json::json!([1, 2, 3]));
+        assert_eq!(buf.len(), 0, "buffer should be empty after consuming JSON");
+    }
 }
