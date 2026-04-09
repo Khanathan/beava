@@ -20,12 +20,12 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Server Protocol
 
-- [ ] **SRV-01**: TCP server accepts persistent connections on configurable port (default 6400)
+- [x] **SRV-01**: TCP server accepts persistent connections on configurable port (default 6400)
 - [x] **SRV-02**: Binary protocol uses length-prefixed frames (4-byte u32 BE length + 1-byte opcode + payload)
-- [ ] **SRV-03**: PUSH command ingests event to a stream and returns updated features synchronously
-- [ ] **SRV-04**: GET command returns all current features for an entity key
-- [ ] **SRV-05**: SET command writes static feature values for a key
-- [ ] **SRV-06**: MSET command bulk-writes with cooperative yielding (chunked, non-blocking)
+- [x] **SRV-03**: PUSH command ingests event to a stream and returns updated features synchronously
+- [x] **SRV-04**: GET command returns all current features for an entity key
+- [x] **SRV-05**: SET command writes static feature values for a key
+- [x] **SRV-06**: MSET command bulk-writes with cooperative yielding (chunked, non-blocking)
 - [x] **SRV-07**: REGISTER command accepts pipeline definitions as JSON
 - [ ] **SRV-08**: HTTP management API serves health, metrics, debug, and pipeline CRUD on separate port (default 6401)
 
@@ -104,12 +104,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ENG-06 | Phase 1 | Complete |
 | ENG-07 | Phase 1 | Complete |
 | ENG-08 | Phase 1 | Complete |
-| SRV-01 | Phase 2 | Pending |
+| SRV-01 | Phase 2 | Complete |
 | SRV-02 | Phase 2 | Complete |
-| SRV-03 | Phase 2 | Pending |
-| SRV-04 | Phase 2 | Pending |
-| SRV-05 | Phase 2 | Pending |
-| SRV-06 | Phase 2 | Pending |
+| SRV-03 | Phase 2 | Complete |
+| SRV-04 | Phase 2 | Complete |
+| SRV-05 | Phase 2 | Complete |
+| SRV-06 | Phase 2 | Complete |
 | SRV-07 | Phase 2 | Complete |
 | SRV-08 | Phase 4 | Pending |
 | OPS-01 | Phase 5 | Pending |

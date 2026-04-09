@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 02-01-PLAN.md (binary protocol layer)
-last_updated: "2026-04-09T15:09:45.951Z"
+stopped_at: Completed 02-02-PLAN.md (TCP server command dispatch)
+last_updated: "2026-04-09T15:14:11.376Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 7
-  completed_plans: 5
-  percent: 71
+  completed_plans: 6
+  percent: 86
 ---
 
 # Project State
@@ -26,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 ## Current Position
 
 Phase: 02 (TCP Server and Binary Protocol) — EXECUTING
-Plan: 1 of 3
-Status: Plan 02-01 complete, continuing to 02-02
+Plan: 2 of 3
+Status: Ready to execute
 Last activity: 2026-04-09
 
 Progress: [███████░░░] 71%
@@ -57,6 +57,7 @@ Progress: [███████░░░] 71%
 | Phase 01-core-engine P03 | 8min | 2 tasks | 2 files |
 | Phase 01-core-engine P04 | 3min | 2 tasks | 5 files |
 | Phase 02-tcp-server P01 | 5min | 2 tasks | 6 files |
+| Phase 02 P02 | 2min | 1 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -84,6 +85,8 @@ Recent decisions affecting current work:
 - [Phase 02-tcp-server]: Frame length = opcode + payload bytes (standard length-prefix convention)
 - [Phase 02-tcp-server]: MSET per-entry format: [u16 key][u32 json_len][json_bytes] for streaming parse
 - [Phase 02-tcp-server]: Default bucket = window/30 clamped to 1s minimum (consistent with Phase 1)
+- [Phase 02]: Added Send bound to Operator trait for tokio::spawn compatibility
+- [Phase 02]: Destructured AppState borrow pattern for split engine/store references in command handlers
 
 ### Pending Todos
 
@@ -104,6 +107,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T15:09:45.949Z
-Stopped at: Completed 02-01-PLAN.md (binary protocol layer)
+Last session: 2026-04-09T15:14:11.373Z
+Stopped at: Completed 02-02-PLAN.md (TCP server command dispatch)
 Resume file: None
