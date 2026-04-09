@@ -185,15 +185,15 @@ pub struct RingBuffer<T: Default + Copy> {
 **Key insight:** On `advance_to(now)`, calculate how many bucket slots to skip, zero them out, and update `head`. This is O(buckets_skipped), not O(total_buckets). On read, iterate all buckets and sum non-expired ones.
 
 ### Pattern 3: Operator Trait
-**What:** A trait that all operators implement, with `push()` to ingest an event field and `read()` to get the current value.
+**What:** A trait that all operators implement, with `push()` to ingest an event field and `read()` to get the current value. `read` takes `&mut self` because it must call `advance_to(now)` to expire stale buckets before aggregating -- this is safe in the single-threaded Redis-like design (no concurrent reads).
 **When to use:** The pipeline engine calls `push` on each operator when an event arrives, then `read` to collect features.
 **Example:**
 ```rust
 pub trait Operator {
     /// Process an incoming event. Returns Ok(()) or type error.
     fn push(&mut self, event: &serde_json::Value, now: SystemTime) -> Result<(), TallyError>;
-    /// Read the current aggregate value.
-    fn read(&self, now: SystemTime) -> FeatureValue;
+    /// Read the current aggregate value. Takes &mut self to advance time and expire stale buckets.
+    fn read(&mut self, now: SystemTime) -> FeatureValue;
 }
 ```
 
@@ -557,22 +557,22 @@ fn eval_binary(op: BinOp, left: FeatureValue, right: FeatureValue) -> FeatureVal
 | A3 | nom is in maintenance mode, superseded by winnow | State of the Art | Low -- winnow is locked decision regardless |
 | A4 | Default bucket granularity thresholds (1-min for <=1h) | Memory Budget Analysis | Medium -- if users expect 1-min for all windows by default, 24h windows will use 11KB+ per counter per key |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Boolean representation in FeatureValue**
+1. **Boolean representation in FeatureValue** -- RESOLVED: Use Int(0) for false, Int(1) for true.
    - What we know: CONTEXT.md specifies Float, Int, String, Missing. No Bool variant.
    - What's unclear: Should boolean expressions return Int(0)/Int(1)? This is the C/Redis convention.
-   - Recommendation: Use Int(0) for false, Int(1) for true. This is consistent with the "Redis-strict" philosophy and avoids adding a fifth variant. Document this convention clearly.
+   - Resolution: Use Int(0) for false, Int(1) for true. This is consistent with the "Redis-strict" philosophy and avoids adding a fifth variant. Implemented in Plan 01-03 Task 2 (expression evaluator comparisons and boolean ops return Int(0)/Int(1)).
 
-2. **Event timestamp source**
+2. **Event timestamp source** -- RESOLVED: Accept `now: SystemTime` as parameter to `push()`.
    - What we know: SystemTime is locked for window buckets. Events are JSON.
    - What's unclear: Does the event JSON contain a timestamp field, or do we use SystemTime::now() on arrival?
-   - Recommendation: For Phase 1 (no networking), accept `now: SystemTime` as a parameter to `push()`. This makes tests deterministic. Phase 2 can decide whether to extract from event JSON or use arrival time.
+   - Resolution: For Phase 1 (no networking), accept `now: SystemTime` as a parameter to `push()`. This makes tests deterministic. Phase 2 can decide whether to extract from event JSON or use arrival time. Implemented in Plans 01-01 through 01-04 (all operator/pipeline push methods take `now: SystemTime`).
 
-3. **String comparison in expressions**
+3. **String comparison in expressions** -- RESOLVED: Support string equality (`==`, `!=`) only; string in arithmetic -> Missing.
    - What we know: Expression language has `==` and `!=` operators. FeatureValue has String variant.
    - What's unclear: Can expressions compare strings? e.g., `last_country == 'US'`
-   - Recommendation: Support string equality (`==`, `!=`) but not ordering (`>`, `<` on strings). String in arithmetic -> Missing.
+   - Resolution: Support string equality (`==`, `!=`) but not ordering (`>`, `<` on strings). String in arithmetic -> Missing. Implemented in Plan 01-03 Task 2 (evaluator handles String == String and String in arithmetic returns Missing).
 
 ## Environment Availability
 
