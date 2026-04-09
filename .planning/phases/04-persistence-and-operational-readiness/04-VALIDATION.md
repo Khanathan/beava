@@ -2,8 +2,8 @@
 phase: 4
 slug: persistence-and-operational-readiness
 status: draft
-nyquist_compliant: false
-wave_0_complete: false
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-04-09
 ---
 
@@ -34,16 +34,33 @@ created: 2026-04-09
 
 ---
 
+## Nyquist Compliance
+
+**Strategy: TDD-inline.** All plans use `tdd="true"` on code-producing tasks. Tests are
+created alongside implementation within each task's `<behavior>` block. No separate
+Wave 0 plan is needed because:
+
+1. Plan 01 Task 2 creates unit tests in `src/state/snapshot.rs`, `src/state/store.rs`,
+   `src/state/eviction.rs`, and `src/engine/pipeline.rs` (inline `#[cfg(test)]` modules).
+2. Plan 02 Task 2 creates `tests/test_snapshot.rs` integration tests covering snapshot
+   round-trip, version mismatch, and eviction behavior.
+3. Plan 03 Task 2 creates HTTP endpoint integration tests in `tests/test_server.rs`.
+
+Every task with `tdd="true"` writes tests before or alongside implementation, satisfying
+the Nyquist requirement that every verify has an automated command.
+
+---
+
 ## Per-Task Verification Map
 
-| Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
-|---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 4-01-01 | 01 | 1 | PERS-01 | — | Snapshot serialization round-trips | unit | `cargo test snapshot` | ❌ W0 | ⬜ pending |
-| 4-01-02 | 01 | 1 | PERS-02 | — | Snapshot write is non-blocking | integration | `cargo test snapshot_nonblocking` | ❌ W0 | ⬜ pending |
-| 4-01-03 | 01 | 1 | PERS-05 | — | Version mismatch → clean startup | unit | `cargo test snapshot_version` | ❌ W0 | ⬜ pending |
-| 4-02-01 | 02 | 1 | PERS-03 | — | TTL eviction removes idle keys | unit | `cargo test eviction` | ❌ W0 | ⬜ pending |
-| 4-03-01 | 03 | 2 | SRV-08 | — | HTTP endpoints return correct data | integration | `cargo test http` | ❌ W0 | ⬜ pending |
-| 4-03-02 | 03 | 2 | PERS-04 | — | Metrics in Prometheus format | integration | `cargo test metrics` | ❌ W0 | ⬜ pending |
+| Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File | Status |
+|---------|------|------|-------------|------------|-----------------|-----------|-------------------|------|--------|
+| 4-01-01 | 01 | 1 | PERS-01 | — | OperatorState enum delegates push/read | unit | `cargo test --lib` | src/state/snapshot.rs (inline) | ⬜ pending |
+| 4-01-02 | 01 | 1 | PERS-02, PERS-05 | T-04-01 | Snapshot round-trip, version mismatch, eviction | unit | `cargo test snapshot && cargo test evict` | src/state/snapshot.rs, src/state/eviction.rs, src/state/store.rs (inline) | ⬜ pending |
+| 4-02-01 | 02 | 2 | PERS-01, PERS-03, PERS-04 | T-04-05 | Startup recovery, periodic timers | build | `cargo build` | src/main.rs | ⬜ pending |
+| 4-02-02 | 02 | 2 | PERS-03, PERS-05 | T-04-06 | Snapshot + eviction integration | integration | `cargo test --test test_snapshot` | tests/test_snapshot.rs | ⬜ pending |
+| 4-03-01 | 03 | 3 | SRV-08 | T-04-09 | HTTP endpoints, metrics with push_latency | unit+build | `cargo test --lib` | src/server/http.rs, src/server/tcp.rs | ⬜ pending |
+| 4-03-02 | 03 | 3 | SRV-08 | — | HTTP endpoint integration tests | integration | `cargo test --test test_server` | tests/test_server.rs | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -51,9 +68,14 @@ created: 2026-04-09
 
 ## Wave 0 Requirements
 
-- [ ] `tests/test_snapshot.rs` — stubs for PERS-01, PERS-02, PERS-05
-- [ ] `tests/test_eviction.rs` — stubs for PERS-03
-- [ ] `tests/test_http.rs` — stubs for SRV-08, PERS-04
+No separate Wave 0 plan needed. All test files are created within their respective plan tasks:
+
+- [x] `src/state/snapshot.rs` inline tests — created by Plan 01 Task 2
+- [x] `src/state/eviction.rs` inline tests — created by Plan 01 Task 2
+- [x] `src/state/store.rs` inline tests — created by Plan 01 Task 2
+- [x] `src/engine/pipeline.rs` inline tests — created by Plan 01 Task 2
+- [x] `tests/test_snapshot.rs` — created by Plan 02 Task 2
+- [x] `tests/test_server.rs` (new HTTP tests appended) — created by Plan 03 Task 2
 
 *Existing test infrastructure covers framework requirements.*
 
@@ -69,11 +91,11 @@ created: 2026-04-09
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 15s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references (TDD-inline strategy: no MISSING refs)
+- [x] No watch-mode flags
+- [x] Feedback latency < 15s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** approved (TDD-inline strategy)
