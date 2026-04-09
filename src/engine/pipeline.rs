@@ -9,7 +9,8 @@ use ahash::AHashMap;
 use crate::types::{FeatureValue, FeatureMap};
 use crate::error::TallyError;
 use crate::state::store::StateStore;
-use super::operators::{Operator, CountOp, SumOp, AvgOp};
+use super::operators::{CountOp, SumOp, AvgOp};
+use crate::state::snapshot::OperatorState;
 use super::expression::{Expr, EvalContext, eval};
 
 /// Definition of a single feature within a stream.
@@ -52,16 +53,17 @@ pub struct PipelineEngine {
 }
 
 /// Create an operator instance from a FeatureDef (non-derive only).
-fn create_operator(def: &FeatureDef) -> Option<Box<dyn Operator>> {
+/// Returns OperatorState enum (not Box<dyn Operator>) for serialization support.
+fn create_operator(def: &FeatureDef) -> Option<OperatorState> {
     match def {
         FeatureDef::Count { window, bucket } => {
-            Some(Box::new(CountOp::new(*window, *bucket)))
+            Some(OperatorState::Count(CountOp::new(*window, *bucket)))
         }
         FeatureDef::Sum { field, window, bucket, optional } => {
-            Some(Box::new(SumOp::new(field.clone(), *window, *bucket, *optional)))
+            Some(OperatorState::Sum(SumOp::new(field.clone(), *window, *bucket, *optional)))
         }
         FeatureDef::Avg { field, window, bucket, optional } => {
-            Some(Box::new(AvgOp::new(field.clone(), *window, *bucket, *optional)))
+            Some(OperatorState::Avg(AvgOp::new(field.clone(), *window, *bucket, *optional)))
         }
         FeatureDef::Derive { .. } => None, // Derives have no operator state
     }

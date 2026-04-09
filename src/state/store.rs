@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use ahash::AHashMap;
 use serde::{Serialize, Deserialize};
 use crate::types::{EntityKey, FeatureValue, FeatureMap};
-use crate::engine::operators::Operator;
+use crate::state::snapshot::OperatorState;
 
 /// A directly-written feature value (from SET/MSET commands).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,12 +19,11 @@ pub struct StaticFeature {
 
 /// Per-entity state. Holds live features (from streaming operators)
 /// and static features (from direct SET/MSET writes).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EntityState {
     /// Features computed by streaming operators. Keyed by feature name.
-    /// The value is the operator instance itself (holds ring buffer state).
-    /// Not serializable via serde (trait objects) -- Phase 4 will use enum wrapper.
-    pub live_operators: Vec<(String, Box<dyn Operator>)>,
+    /// Uses OperatorState enum (not Box<dyn Operator>) for serialization support.
+    pub live_operators: Vec<(String, OperatorState)>,
     /// Features from direct writes (SET/MSET). Bypass pipeline engine.
     pub static_features: AHashMap<String, StaticFeature>,
     /// Last event timestamp for TTL eviction (Phase 4).
@@ -142,6 +141,7 @@ mod tests {
     use super::*;
     use std::time::{Duration, UNIX_EPOCH};
     use crate::engine::operators::{CountOp, SumOp};
+    use crate::state::snapshot::OperatorState;
 
     fn ts(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
@@ -178,8 +178,8 @@ mod tests {
     #[test]
     fn test_entity_state_stores_live_operators() {
         let mut entity = EntityState::new();
-        let op = CountOp::new(Duration::from_secs(3600), Duration::from_secs(60));
-        entity.live_operators.push(("tx_count_1h".to_string(), Box::new(op)));
+        let op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+        entity.live_operators.push(("tx_count_1h".to_string(), op));
         assert_eq!(entity.live_operators.len(), 1);
         assert_eq!(entity.live_operators[0].0, "tx_count_1h");
     }
@@ -204,9 +204,9 @@ mod tests {
         // Add a live operator
         {
             let entity = store.get_or_create_entity("u123");
-            let mut op = CountOp::new(Duration::from_secs(3600), Duration::from_secs(60));
+            let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
             op.push(&serde_json::json!({}), now).unwrap();
-            entity.live_operators.push(("tx_count".to_string(), Box::new(op)));
+            entity.live_operators.push(("tx_count".to_string(), op));
         }
 
         // Add a static feature
@@ -225,9 +225,9 @@ mod tests {
         // Add a live operator named "score"
         {
             let entity = store.get_or_create_entity("u123");
-            let mut op = SumOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+            let mut op = OperatorState::Sum(SumOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false));
             op.push(&serde_json::json!({"amount": 100.0}), now).unwrap();
-            entity.live_operators.push(("score".to_string(), Box::new(op)));
+            entity.live_operators.push(("score".to_string(), op));
         }
 
         // Write a static feature with the same name
