@@ -85,7 +85,7 @@ Plans:
   5. Starting Tally with a snapshot from a different format version (bumped SNAPSHOT_FORMAT_VERSION) results in a clean startup from empty state, not a panic
 **Plans:** 3 plans
 Plans:
-- [ ] 04-01-PLAN.md — OperatorState enum refactor, snapshot save/load with postcard + versioning, TTL eviction logic
+- [x] 04-01-PLAN.md — OperatorState enum refactor, snapshot save/load with postcard + versioning, TTL eviction logic
 - [ ] 04-02-PLAN.md — main.rs snapshot recovery, periodic snapshot/eviction timers, integration tests
 - [ ] 04-03-PLAN.md — HTTP management API: pipeline CRUD, metrics, debug, snapshot endpoints
 **UI hint**: no

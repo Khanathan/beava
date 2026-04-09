@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: verifying
-stopped_at: Completed 03-04-PLAN.md (integration tests)
-last_updated: "2026-04-09T16:57:23.191Z"
+status: executing
+stopped_at: Completed 04-01-PLAN.md (serialization foundation)
+last_updated: "2026-04-09T19:09:36.798Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 13
-  completed_plans: 13
-  percent: 100
+  total_plans: 16
+  completed_plans: 14
+  percent: 88
 ---
 
 # Project State
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Events go in, features come out — synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
-**Current focus:** Phase 03 — python-sdk
+**Current focus:** Phase 04 — persistence-and-operational-readiness
 
 ## Current Position
 
-Phase: 4
-Plan: Not started
-Status: Phase complete — ready for verification
+Phase: 04 (persistence-and-operational-readiness) — EXECUTING
+Plan: 2 of 3
+Status: Ready to execute
 Last activity: 2026-04-09
 
 Progress: [███████░░░] 71%
@@ -66,6 +66,7 @@ Progress: [███████░░░] 71%
 | Phase 03-python-sdk P02 | 5min | 2 tasks | 7 files |
 | Phase 03-python-sdk P03 | 4min | 2 tasks | 5 files |
 | Phase 03-python-sdk P04 | 3min | 1 tasks | 3 files |
+| Phase 04 P01 | 5min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -109,6 +110,9 @@ Recent decisions affecting current work:
 - [Phase 03-python-sdk]: App._send centralizes STATUS_ERROR check, raises ProtocolError with decoded server message
 - [Phase 03-python-sdk]: Added TALLY_TCP_PORT/TALLY_HTTP_PORT env vars to main.rs for integration test port isolation
 - [Phase 03-python-sdk]: Session-scoped server fixture with unique entity keys per test for isolation without restart overhead
+- [Phase 04]: Use String (not serde_json::Value) for raw_register_json in SerializablePipeline -- postcard cannot serialize serde_json::Value
+- [Phase 04]: Version byte 0x01 prefix on snapshot data; mismatched version returns None for clean fresh startup
+- [Phase 04]: Raw register JSON stored in PipelineEngine via store_raw_register_json for snapshot pipeline persistence
 
 ### Pending Todos
 
@@ -129,6 +133,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T16:48:10.322Z
-Stopped at: Completed 03-04-PLAN.md (integration tests)
+Last session: 2026-04-09T19:09:36.796Z
+Stopped at: Completed 04-01-PLAN.md (serialization foundation)
 Resume file: None
