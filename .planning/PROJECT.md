@@ -45,7 +45,20 @@ Shipped v1.0 with 9,904 lines of Rust + 2,915 lines of Python (~12,800 total).
 
 ### Active
 
-(None — planning next milestone)
+#### Current Milestone: v1.1 Composable Pipeline & Event Log
+
+**Goal:** Transform Tally into a composable streaming pipeline with SSD event log for replay/backfill, operational improvements, and a debug UI for observability.
+
+**Target features:**
+- Keyless streams (raw event ingestion, append-only SSD log)
+- Keyed streams with explicit dependencies (LEFT JOIN semantics, DAG execution)
+- SSD event log for replay/backfill with configurable history TTL
+- Entity state TTL per dataset
+- Backfill flag on new feature definitions (replay from event log)
+- MGET (batch GET)
+- Schema evolution (add/remove features without reset)
+- Incremental snapshot serialization
+- Debug UI (stream watching, memory, throughput, real-time values)
 
 ### Out of Scope
 
@@ -102,4 +115,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-09 after v1.0 milestone completion*
+*Last updated: 2026-04-09 after v1.1 milestone started*
