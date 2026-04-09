@@ -57,7 +57,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [x] **PERS-01**: Periodic snapshot serialization of full state to local file (default every 30s)
 - [x] **PERS-02**: Snapshot uses postcard + serde with versioned format (version byte per snapshot)
-- [ ] **PERS-03**: Server loads latest snapshot on startup for crash recovery
+- [x] **PERS-03**: Server loads latest snapshot on startup for crash recovery
 - [x] **PERS-04**: Snapshot write uses cooperative yielding to avoid blocking the event loop
 - [x] **PERS-05**: TTL-based key eviction removes inactive keys (default: 2x largest window)
 
@@ -129,7 +129,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SDK-07 | Phase 3 | Complete |
 | PERS-01 | Phase 4 | Complete |
 | PERS-02 | Phase 4 | Complete |
-| PERS-03 | Phase 4 | Pending |
+| PERS-03 | Phase 4 | Complete |
 | PERS-04 | Phase 4 | Complete |
 | PERS-05 | Phase 4 | Complete |
 

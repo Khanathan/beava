@@ -86,7 +86,7 @@ Plans:
 **Plans:** 3 plans
 Plans:
 - [x] 04-01-PLAN.md — OperatorState enum refactor, snapshot save/load with postcard + versioning, TTL eviction logic
-- [ ] 04-02-PLAN.md — main.rs snapshot recovery, periodic snapshot/eviction timers, integration tests
+- [x] 04-02-PLAN.md — main.rs snapshot recovery, periodic snapshot/eviction timers, integration tests
 - [ ] 04-03-PLAN.md — HTTP management API: pipeline CRUD, metrics, debug, snapshot endpoints
 **UI hint**: no
 

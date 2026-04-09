@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 04-01-PLAN.md (serialization foundation)
-last_updated: "2026-04-09T19:09:36.798Z"
+stopped_at: Completed 04-02-PLAN.md (snapshot wiring and eviction timers)
+last_updated: "2026-04-09T19:15:58.947Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 16
-  completed_plans: 14
-  percent: 88
+  completed_plans: 15
+  percent: 94
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 ## Current Position
 
 Phase: 04 (persistence-and-operational-readiness) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-04-09
 
@@ -67,6 +67,7 @@ Progress: [███████░░░] 71%
 | Phase 03-python-sdk P03 | 4min | 2 tasks | 5 files |
 | Phase 03-python-sdk P04 | 3min | 1 tasks | 3 files |
 | Phase 04 P01 | 5min | 2 tasks | 6 files |
+| Phase 04 P02 | 3min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -113,6 +114,8 @@ Recent decisions affecting current work:
 - [Phase 04]: Use String (not serde_json::Value) for raw_register_json in SerializablePipeline -- postcard cannot serialize serde_json::Value
 - [Phase 04]: Version byte 0x01 prefix on snapshot data; mismatched version returns None for clean fresh startup
 - [Phase 04]: Raw register JSON stored in PipelineEngine via store_raw_register_json for snapshot pipeline persistence
+- [Phase 04]: Serialize serde_json::Value to String for SerializablePipeline.raw_register_json, two-step deserialization on snapshot load
+- [Phase 04]: Re-store raw_register_json in PipelineEngine after snapshot restore so subsequent snapshot cycles persist pipeline definitions
 
 ### Pending Todos
 
@@ -133,6 +136,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T19:09:36.796Z
-Stopped at: Completed 04-01-PLAN.md (serialization foundation)
+Last session: 2026-04-09T19:15:58.945Z
+Stopped at: Completed 04-02-PLAN.md (snapshot wiring and eviction timers)
 Resume file: None
