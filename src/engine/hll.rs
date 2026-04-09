@@ -7,7 +7,12 @@
 //! Also contains `DistinctCountOp` which wraps `RingBuffer<Hll>` for
 //! windowed approximate distinct counting.
 
+use std::time::{Duration, SystemTime};
 use serde::{Serialize, Deserialize};
+use crate::engine::window::RingBuffer;
+use crate::engine::operators::Operator;
+use crate::types::FeatureValue;
+use crate::error::TallyError;
 
 /// Precision: 14 bits (locked decision from CONTEXT.md)
 const HLL_P: usize = 14;
@@ -91,6 +96,103 @@ impl Hll {
     /// Check if the sketch has had no insertions.
     pub fn is_empty(&self) -> bool {
         self.registers.iter().all(|&r| r == 0)
+    }
+}
+
+// ======================== DistinctCountOp ========================
+
+/// Windowed approximate distinct count operator using RingBuffer<Hll>.
+///
+/// Each bucket holds an independent HLL sketch. On push, the value is
+/// inserted into the current bucket's sketch. On read, all non-empty
+/// bucket sketches are merged and the combined cardinality is returned.
+///
+/// Per locked CONTEXT.md decision: "HLL uses RingBuffer<Hll> pattern".
+/// Hll implements Default (empty sketch) so advance_to clearing works
+/// via T::default().
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DistinctCountOp {
+    field: String,
+    buffer: RingBuffer<Hll>,
+    /// Parallel count buffer to track whether any events were pushed.
+    /// Needed because an empty HLL still has count() > 0 issues at edge.
+    event_count: RingBuffer<u64>,
+    optional: bool,
+}
+
+impl DistinctCountOp {
+    pub fn new(
+        field: impl Into<String>,
+        window_duration: Duration,
+        bucket_duration: Duration,
+        optional: bool,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            buffer: RingBuffer::new(window_duration, bucket_duration),
+            event_count: RingBuffer::new(window_duration, bucket_duration),
+            optional,
+        }
+    }
+}
+
+impl Operator for DistinctCountOp {
+    fn push(&mut self, event: &serde_json::Value, now: SystemTime) -> Result<(), TallyError> {
+        match event.get(&self.field) {
+            None => {
+                if self.optional {
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "string or numeric".into(),
+                        got: "absent".into(),
+                    })
+                }
+            }
+            Some(val) => {
+                let str_val = match val {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    _ => {
+                        return Err(TallyError::Type {
+                            field: self.field.clone(),
+                            expected: "string or numeric".into(),
+                            got: format!("{}", val),
+                        })
+                    }
+                };
+                self.buffer.update_current(
+                    |hll| {
+                        hll.insert(&str_val);
+                    },
+                    now,
+                );
+                self.event_count.add_to_current(1u64, now);
+                Ok(())
+            }
+        }
+    }
+
+    fn read(&mut self, now: SystemTime) -> FeatureValue {
+        self.buffer.advance_to(now);
+        self.event_count.advance_to(now);
+
+        // Check if any events exist in window
+        if self.event_count.sum_all() == 0 {
+            return FeatureValue::Missing;
+        }
+
+        // Merge all non-empty buckets into a single HLL, then count
+        let mut merged = Hll::new();
+        for bucket in self.buffer.buckets_iter() {
+            if !bucket.is_empty() {
+                merged.merge(bucket);
+            }
+        }
+        let count = merged.count();
+        FeatureValue::Float(count)
     }
 }
 
@@ -231,5 +333,204 @@ mod tests {
         let h1 = hash_value("hello");
         let h2 = hash_value("hello");
         assert_eq!(h1, h2, "Same input should produce same hash");
+    }
+
+    // ======================== DistinctCountOp Tests ========================
+
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn ts(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    fn make_op(optional: bool) -> DistinctCountOp {
+        // 5-minute window, 1-minute buckets
+        DistinctCountOp::new(
+            "merchant_id",
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(60),
+            optional,
+        )
+    }
+
+    fn event(field: &str, value: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ field: value })
+    }
+
+    #[test]
+    fn test_distinct_count_5_unique_values_approx_5() {
+        let mut op = make_op(false);
+        let t0 = ts(1000 * 60);
+        for i in 0..5 {
+            let ev = event("merchant_id", serde_json::Value::String(format!("m{}", i)));
+            op.push(&ev, t0).unwrap();
+        }
+        match op.read(t0) {
+            FeatureValue::Float(v) => {
+                assert!(v >= 4.0 && v <= 6.0,
+                    "Expected ~5 distinct, got {}", v);
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_distinct_count_5_identical_values_approx_1() {
+        let mut op = make_op(false);
+        let t0 = ts(1000 * 60);
+        for _ in 0..5 {
+            let ev = event("merchant_id", serde_json::Value::String("m_same".into()));
+            op.push(&ev, t0).unwrap();
+        }
+        match op.read(t0) {
+            FeatureValue::Float(v) => {
+                assert!(v >= 0.5 && v <= 2.0,
+                    "Expected ~1 distinct for duplicates, got {}", v);
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_distinct_count_zero_events_returns_missing() {
+        let mut op = make_op(false);
+        let t0 = ts(1000 * 60);
+        assert_eq!(op.read(t0), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_distinct_count_expires_old_buckets() {
+        let mut op = make_op(false);
+        let t0 = ts(1000 * 60);
+
+        // Push event at t0
+        let ev = event("merchant_id", serde_json::Value::String("m1".into()));
+        op.push(&ev, t0).unwrap();
+
+        // Read at t0 -- should have data
+        assert_ne!(op.read(t0), FeatureValue::Missing);
+
+        // Read at t0 + 2 * window (10 minutes) -- all buckets expired
+        let t_far = t0 + Duration::from_secs(10 * 60);
+        assert_eq!(op.read(t_far), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_distinct_count_events_in_different_buckets_merge() {
+        let mut op = make_op(false);
+        let t0 = ts(1000 * 60);
+
+        // Push unique values into different buckets
+        for i in 0..3 {
+            let t = t0 + Duration::from_secs(i * 60);
+            let ev = event("merchant_id", serde_json::Value::String(format!("m{}", i)));
+            op.push(&ev, t).unwrap();
+        }
+
+        // Read should merge all buckets, returning ~3 distinct
+        let t_read = t0 + Duration::from_secs(2 * 60);
+        match op.read(t_read) {
+            FeatureValue::Float(v) => {
+                assert!(v >= 2.0 && v <= 4.0,
+                    "Expected ~3 distinct from merged buckets, got {}", v);
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_distinct_count_optional_true_skips_absent_field() {
+        let mut op = make_op(true);
+        let t0 = ts(1000 * 60);
+
+        // Event without the field
+        let ev = serde_json::json!({"other_field": "value"});
+        assert!(op.push(&ev, t0).is_ok());
+
+        // No events with the field -- should be Missing
+        assert_eq!(op.read(t0), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_distinct_count_optional_false_errors_on_absent_field() {
+        let mut op = make_op(false);
+        let t0 = ts(1000 * 60);
+
+        let ev = serde_json::json!({"other_field": "value"});
+        let result = op.push(&ev, t0);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("absent"), "Error should mention absent: {}", err);
+    }
+
+    #[test]
+    fn test_distinct_count_type_error_on_non_string_non_numeric() {
+        let mut op = make_op(false);
+        let t0 = ts(1000 * 60);
+
+        // Array value -- not string or numeric
+        let ev = serde_json::json!({"merchant_id": [1, 2, 3]});
+        let result = op.push(&ev, t0);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("string or numeric"),
+            "Error should mention expected type: {}", err);
+    }
+
+    #[test]
+    fn test_distinct_count_accepts_numeric_values() {
+        let mut op = make_op(false);
+        let t0 = ts(1000 * 60);
+
+        // Numeric values should be accepted (converted to string for hashing)
+        for i in 0..5 {
+            let ev = serde_json::json!({"merchant_id": i});
+            op.push(&ev, t0).unwrap();
+        }
+        match op.read(t0) {
+            FeatureValue::Float(v) => {
+                assert!(v >= 4.0 && v <= 6.0,
+                    "Expected ~5 distinct numeric values, got {}", v);
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_distinct_count_accepts_bool_values() {
+        let mut op = make_op(false);
+        let t0 = ts(1000 * 60);
+
+        let ev1 = serde_json::json!({"merchant_id": true});
+        let ev2 = serde_json::json!({"merchant_id": false});
+        op.push(&ev1, t0).unwrap();
+        op.push(&ev2, t0).unwrap();
+
+        match op.read(t0) {
+            FeatureValue::Float(v) => {
+                assert!(v >= 1.5 && v <= 3.0,
+                    "Expected ~2 distinct bools, got {}", v);
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_distinct_count_postcard_round_trip() {
+        let mut op = make_op(false);
+        let t0 = ts(1000 * 60);
+
+        for i in 0..10 {
+            let ev = event("merchant_id", serde_json::Value::String(format!("m{}", i)));
+            op.push(&ev, t0).unwrap();
+        }
+        let val_before = op.read(t0);
+
+        let bytes = postcard::to_allocvec(&op).unwrap();
+        let mut restored: DistinctCountOp = postcard::from_bytes(&bytes).unwrap();
+        let val_after = restored.read(t0);
+
+        assert_eq!(val_before, val_after,
+            "Round-trip changed value: {:?} -> {:?}", val_before, val_after);
     }
 }
