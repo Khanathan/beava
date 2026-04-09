@@ -51,7 +51,7 @@ Plans:
 Plans:
 - [x] 02-01-PLAN.md — Protocol layer: frame parsing, string encoding, command opcodes, REGISTER DTO, FeatureValue JSON conversion
 - [x] 02-02-PLAN.md — TCP server with connection handler and command dispatch (PUSH, GET, SET, MSET, REGISTER)
-- [ ] 02-03-PLAN.md — HTTP health endpoint, main.rs entry point, and integration tests for all SRV-* requirements
+- [x] 02-03-PLAN.md — HTTP health endpoint, main.rs entry point, and integration tests for all SRV-* requirements
 **UI hint**: no
 
 ### Phase 3: Python SDK

@@ -27,7 +27,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **SRV-05**: SET command writes static feature values for a key
 - [x] **SRV-06**: MSET command bulk-writes with cooperative yielding (chunked, non-blocking)
 - [x] **SRV-07**: REGISTER command accepts pipeline definitions as JSON
-- [ ] **SRV-08**: HTTP management API serves health, metrics, debug, and pipeline CRUD on separate port (default 6401)
+- [x] **SRV-08**: HTTP management API serves health, metrics, debug, and pipeline CRUD on separate port (default 6401)
 
 ### Advanced Operators
 
@@ -111,7 +111,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SRV-05 | Phase 2 | Complete |
 | SRV-06 | Phase 2 | Complete |
 | SRV-07 | Phase 2 | Complete |
-| SRV-08 | Phase 4 | Pending |
+| SRV-08 | Phase 4 | Complete |
 | OPS-01 | Phase 5 | Pending |
 | OPS-02 | Phase 5 | Pending |
 | OPS-03 | Phase 5 | Pending |
