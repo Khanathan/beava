@@ -3,6 +3,9 @@
 //!
 //! OperatorState replaces Box<dyn Operator> throughout the codebase,
 //! making EntityState fully serializable with serde/postcard.
+//!
+//! v1.1: Snapshot format v4 with per-stream grouped state via
+//! SerializableStreamEntityState. v3 snapshots are gracefully rejected.
 
 use serde::{Serialize, Deserialize};
 use std::time::SystemTime;
@@ -14,8 +17,8 @@ use crate::error::TallyError;
 
 /// Snapshot format version byte. Prepended to serialized data.
 /// If the version doesn't match on load, return None (clean startup from empty state).
-/// Bumped to 3 for DistinctCount variant addition.
-const SNAPSHOT_FORMAT_VERSION: u8 = 3;
+/// Bumped to 4 for per-stream grouped EntityState (v1.1 OPS-02).
+const SNAPSHOT_FORMAT_VERSION: u8 = 4;
 
 /// Serializable enum wrapping all operator types.
 /// Replaces Box<dyn Operator> so EntityState can be serialized.
@@ -68,14 +71,21 @@ pub struct SerializablePipeline {
     pub raw_register_json: String,
 }
 
-/// Serializable entity state for snapshot persistence.
-/// Mirrors EntityState but uses Vec instead of AHashMap for static_features
-/// (AHashMap is not directly serializable by postcard).
+/// Serializable per-stream entity state for v4 snapshot format.
+/// Each stream within an entity has its own operators and last_event_at.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializableStreamEntityState {
+    pub operators: Vec<(String, OperatorState)>,
+    pub last_event_at: Option<SystemTime>,
+}
+
+/// Serializable entity state for snapshot persistence (v4 format).
+/// Groups operators by stream name for independent per-stream TTL management.
+/// Uses Vec instead of AHashMap for postcard compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableEntityState {
-    pub live_operators: Vec<(String, OperatorState)>,
+    pub streams: Vec<(String, SerializableStreamEntityState)>,
     pub static_features: Vec<(String, StaticFeature)>,
-    pub last_event_at: Option<SystemTime>,
 }
 
 /// Top-level serializable snapshot state.
@@ -202,10 +212,10 @@ mod tests {
         assert_eq!(restored.read(now), FeatureValue::Float(50.0));
     }
 
-    // ======================== SnapshotState Tests ========================
+    // ======================== SnapshotState Tests (v4 format) ========================
 
     #[test]
-    fn test_snapshot_state_roundtrip() {
+    fn test_snapshot_state_roundtrip_v4() {
         let now = ts(60_000);
         let mut count_op = OperatorState::Count(CountOp::new(
             Duration::from_secs(3600),
@@ -219,7 +229,13 @@ mod tests {
             entities: vec![(
                 "u123".to_string(),
                 SerializableEntityState {
-                    live_operators: vec![("tx_count_1h".to_string(), count_op)],
+                    streams: vec![(
+                        "Transactions".to_string(),
+                        SerializableStreamEntityState {
+                            operators: vec![("tx_count_1h".to_string(), count_op)],
+                            last_event_at: Some(now),
+                        },
+                    )],
                     static_features: vec![(
                         "segment".to_string(),
                         StaticFeature {
@@ -227,7 +243,6 @@ mod tests {
                             updated_at: now,
                         },
                     )],
-                    last_event_at: Some(now),
                 },
             )],
             pipelines: vec![SerializablePipeline {
@@ -242,14 +257,16 @@ mod tests {
 
         assert_eq!(restored.entities.len(), 1);
         assert_eq!(restored.entities[0].0, "u123");
-        assert_eq!(restored.entities[0].1.live_operators.len(), 1);
+        assert_eq!(restored.entities[0].1.streams.len(), 1);
+        assert_eq!(restored.entities[0].1.streams[0].0, "Transactions");
+        assert_eq!(restored.entities[0].1.streams[0].1.operators.len(), 1);
+        assert_eq!(restored.entities[0].1.streams[0].1.last_event_at, Some(now));
         assert_eq!(restored.entities[0].1.static_features.len(), 1);
-        assert_eq!(restored.entities[0].1.last_event_at, Some(now));
         assert_eq!(restored.pipelines.len(), 1);
         assert_eq!(restored.pipelines[0].name, "Transactions");
 
         // Verify operator state preserved
-        let mut restored_op = restored.entities[0].1.live_operators[0].1.clone();
+        let mut restored_op = restored.entities[0].1.streams[0].1.operators[0].1.clone();
         assert_eq!(restored_op.read(now), FeatureValue::Int(3));
     }
 
@@ -263,7 +280,7 @@ mod tests {
         };
         let bytes = save_snapshot(&state).expect("save_snapshot should succeed");
         assert_eq!(bytes[0], SNAPSHOT_FORMAT_VERSION);
-        assert_eq!(bytes[0], 0x03);
+        assert_eq!(bytes[0], 0x04);
     }
 
     #[test]
@@ -281,9 +298,14 @@ mod tests {
             entities: vec![(
                 "u123".to_string(),
                 SerializableEntityState {
-                    live_operators: vec![("tx_count_1h".to_string(), count_op)],
+                    streams: vec![(
+                        "TestStream".to_string(),
+                        SerializableStreamEntityState {
+                            operators: vec![("tx_count_1h".to_string(), count_op)],
+                            last_event_at: Some(now),
+                        },
+                    )],
                     static_features: vec![],
-                    last_event_at: Some(now),
                 },
             )],
             pipelines: vec![],
@@ -295,7 +317,7 @@ mod tests {
 
         let restored = restored.unwrap();
         assert_eq!(restored.entities.len(), 1);
-        let mut restored_op = restored.entities[0].1.live_operators[0].1.clone();
+        let mut restored_op = restored.entities[0].1.streams[0].1.operators[0].1.clone();
         assert_eq!(restored_op.read(now), FeatureValue::Int(3));
     }
 
@@ -309,6 +331,19 @@ mod tests {
         // Tamper with version byte
         bytes[0] = 0xFF;
         assert!(load_snapshot(&bytes).is_none());
+    }
+
+    #[test]
+    fn test_load_snapshot_v3_returns_none() {
+        // A v3 snapshot byte should be gracefully rejected
+        let state = SnapshotState {
+            entities: vec![],
+            pipelines: vec![],
+        };
+        let mut bytes = save_snapshot(&state).expect("save_snapshot should succeed");
+        // Set version to 3 (old format)
+        bytes[0] = 0x03;
+        assert!(load_snapshot(&bytes).is_none(), "v3 snapshot should be gracefully rejected");
     }
 
     #[test]
@@ -415,8 +450,8 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_format_version_is_3() {
-        assert_eq!(SNAPSHOT_FORMAT_VERSION, 3);
+    fn test_snapshot_format_version_is_4() {
+        assert_eq!(SNAPSHOT_FORMAT_VERSION, 4);
     }
 
     // ======================== Phase 5 Plan 03: DistinctCount OperatorState Tests ========================
@@ -460,5 +495,54 @@ mod tests {
         let val_before = op.read(now);
         let val_after = restored.read(now);
         assert_eq!(val_before, val_after, "Round-trip changed value");
+    }
+
+    // ======================== Snapshot v4 round-trip via save/load ========================
+
+    #[test]
+    fn test_snapshot_v4_roundtrip_save_load() {
+        let now = ts(60_000);
+        let mut count_op = OperatorState::Count(CountOp::new(
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+        ));
+        count_op.push(&json!({}), now).unwrap();
+        count_op.push(&json!({}), now).unwrap();
+
+        let state = SnapshotState {
+            entities: vec![(
+                "u123".to_string(),
+                SerializableEntityState {
+                    streams: vec![
+                        (
+                            "Transactions".to_string(),
+                            SerializableStreamEntityState {
+                                operators: vec![("tx_count".to_string(), count_op)],
+                                last_event_at: Some(now),
+                            },
+                        ),
+                    ],
+                    static_features: vec![(
+                        "segment".to_string(),
+                        StaticFeature {
+                            value: FeatureValue::String("premium".to_string()),
+                            updated_at: now,
+                        },
+                    )],
+                },
+            )],
+            pipelines: vec![],
+        };
+
+        let bytes = save_snapshot(&state).expect("save");
+        let restored = load_snapshot(&bytes).expect("load");
+
+        assert_eq!(restored.entities.len(), 1);
+        assert_eq!(restored.entities[0].1.streams.len(), 1);
+        assert_eq!(restored.entities[0].1.streams[0].0, "Transactions");
+        let mut op = restored.entities[0].1.streams[0].1.operators[0].1.clone();
+        assert_eq!(op.read(now), FeatureValue::Int(2));
+        assert_eq!(restored.entities[0].1.streams[0].1.last_event_at, Some(now));
+        assert_eq!(restored.entities[0].1.static_features.len(), 1);
     }
 }

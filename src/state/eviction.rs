@@ -59,7 +59,8 @@ mod tests {
         // Add entity with old last_event_at
         {
             let entity = store.get_or_create_entity("old_user");
-            entity.update_last_event(ts(1000)); // Very old
+            let stream = entity.get_or_create_stream("stream1");
+            stream.last_event_at = Some(ts(1000)); // Very old
         }
 
         let now = ts(100_000);
@@ -78,7 +79,8 @@ mod tests {
         // Add entity with recent last_event_at
         {
             let entity = store.get_or_create_entity("recent_user");
-            entity.update_last_event(ts(99_000)); // Recent
+            let stream = entity.get_or_create_stream("stream1");
+            stream.last_event_at = Some(ts(99_000)); // Recent
         }
 
         let now = ts(100_000);
@@ -110,7 +112,8 @@ mod tests {
 
         {
             let entity = store.get_or_create_entity("user");
-            entity.update_last_event(ts(1000));
+            let stream = entity.get_or_create_stream("SomeStream");
+            stream.last_event_at = Some(ts(1000));
         }
 
         let now = ts(100_000);
@@ -128,12 +131,14 @@ mod tests {
         // Old entity (should be evicted)
         {
             let entity = store.get_or_create_entity("old_user");
-            entity.update_last_event(ts(1000));
+            let stream = entity.get_or_create_stream("stream1");
+            stream.last_event_at = Some(ts(1000));
         }
         // Recent entity (should be kept)
         {
             let entity = store.get_or_create_entity("recent_user");
-            entity.update_last_event(ts(99_000));
+            let stream = entity.get_or_create_stream("stream1");
+            stream.last_event_at = Some(ts(99_000));
         }
         // No event entity (should be kept)
         store.get_or_create_entity("no_event_user");

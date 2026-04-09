@@ -3,12 +3,16 @@
 //! EntityState stores per-key features from streaming operators (live) and
 //! direct writes (static). StateStore maps entity keys to EntityState using
 //! AHashMap (not std HashMap) per locked decision.
+//!
+//! v1.1: EntityState groups live operators by stream name using
+//! AHashMap<String, StreamEntityState>. Each stream has its own operators
+//! and last_event_at for independent TTL management (OPS-02).
 
 use std::time::SystemTime;
 use ahash::AHashMap;
 use serde::{Serialize, Deserialize};
 use crate::types::{EntityKey, FeatureValue, FeatureMap};
-use crate::state::snapshot::{OperatorState, SerializableEntityState};
+use crate::state::snapshot::{OperatorState, SerializableEntityState, SerializableStreamEntityState};
 
 /// A directly-written feature value (from SET/MSET commands).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,25 +21,41 @@ pub struct StaticFeature {
     pub updated_at: SystemTime,
 }
 
-/// Per-entity state. Holds live features (from streaming operators)
-/// and static features (from direct SET/MSET writes).
+/// Per-stream state within an entity. Isolates operators and last_event_at
+/// per stream for independent TTL management (OPS-02).
+#[derive(Debug, Clone)]
+pub struct StreamEntityState {
+    /// Operators belonging to this stream only.
+    pub operators: Vec<(String, OperatorState)>,
+    /// Last event timestamp for this stream (per-stream TTL).
+    pub last_event_at: Option<SystemTime>,
+}
+
+impl Default for StreamEntityState {
+    fn default() -> Self {
+        Self {
+            operators: Vec::new(),
+            last_event_at: None,
+        }
+    }
+}
+
+/// Per-entity state. Holds live features grouped by stream name (from streaming
+/// operators) and static features (from direct SET/MSET writes).
 #[derive(Debug, Clone)]
 pub struct EntityState {
-    /// Features computed by streaming operators. Keyed by feature name.
-    /// Uses OperatorState enum (not Box<dyn Operator>) for serialization support.
-    pub live_operators: Vec<(String, OperatorState)>,
+    /// Live features grouped by stream name. Each stream has its own operators
+    /// and last_event_at for independent TTL management.
+    pub streams: AHashMap<String, StreamEntityState>,
     /// Features from direct writes (SET/MSET). Bypass pipeline engine.
     pub static_features: AHashMap<String, StaticFeature>,
-    /// Last event timestamp for TTL eviction (Phase 4).
-    pub last_event_at: Option<SystemTime>,
 }
 
 impl Default for EntityState {
     fn default() -> Self {
         Self {
-            live_operators: Vec::new(),
+            streams: AHashMap::new(),
             static_features: AHashMap::new(),
-            last_event_at: None,
         }
     }
 }
@@ -46,9 +66,17 @@ impl EntityState {
         Self::default()
     }
 
-    /// Update the last event timestamp.
-    pub fn update_last_event(&mut self, now: SystemTime) {
-        self.last_event_at = Some(now);
+    /// Get or create a StreamEntityState for the given stream name.
+    /// Returns a mutable reference to the stream's state.
+    pub fn get_or_create_stream(&mut self, stream_name: &str) -> &mut StreamEntityState {
+        self.streams
+            .entry(stream_name.to_string())
+            .or_insert_with(StreamEntityState::default)
+    }
+
+    /// Returns true when this entity has no streams and no static features.
+    pub fn is_empty(&self) -> bool {
+        self.streams.is_empty() && self.static_features.is_empty()
     }
 }
 
@@ -105,9 +133,9 @@ impl StateStore {
     }
 
     /// Collect all feature values for an entity.
-    /// Iterates live_operators calling read(now) (which advances time to expire
-    /// stale buckets), then overlays static_features. Static features with the
-    /// same name override live features (direct writes take precedence).
+    /// Iterates all streams' operators calling read(now) (which advances time
+    /// to expire stale buckets), then overlays static_features. Static features
+    /// with the same name override live features (direct writes take precedence).
     /// Takes &mut self because operator read() requires mutable access.
     pub fn get_all_features(&mut self, key: &str, now: SystemTime) -> FeatureMap {
         let entity = match self.entities.get_mut(key) {
@@ -117,9 +145,11 @@ impl StateStore {
 
         let mut features = FeatureMap::new();
 
-        // Collect live features from operators
-        for (name, op) in entity.live_operators.iter_mut() {
-            features.insert(name.clone(), op.read(now));
+        // Collect live features from all streams' operators
+        for (_stream_name, stream_state) in entity.streams.iter_mut() {
+            for (name, op) in stream_state.operators.iter_mut() {
+                features.insert(name.clone(), op.read(now));
+            }
         }
 
         // Overlay static features (static takes precedence)
@@ -138,10 +168,12 @@ impl StateStore {
             Some(e) => e,
             None => return FeatureValue::Missing,
         };
-        // Check live operators first
-        for (name, op) in entity.live_operators.iter_mut() {
-            if name == feature_name {
-                return op.read(now);
+        // Check live operators across all streams
+        for (_stream_name, stream_state) in entity.streams.iter_mut() {
+            for (name, op) in stream_state.operators.iter_mut() {
+                if name == feature_name {
+                    return op.read(now);
+                }
             }
         }
         // Check static features
@@ -156,48 +188,72 @@ impl StateStore {
         self.entities.len()
     }
 
-    /// Clone full state for snapshot serialization.
+    /// Clone full state for snapshot serialization (v4 format).
     /// AHashMap is not directly serializable by postcard -- convert to Vec<(K, V)>.
     pub fn clone_for_snapshot(&self) -> Vec<(String, SerializableEntityState)> {
         self.entities.iter().map(|(key, entity)| {
+            let streams: Vec<(String, SerializableStreamEntityState)> = entity.streams.iter()
+                .map(|(stream_name, stream_state)| {
+                    (stream_name.clone(), SerializableStreamEntityState {
+                        operators: stream_state.operators.clone(),
+                        last_event_at: stream_state.last_event_at,
+                    })
+                })
+                .collect();
             (key.clone(), SerializableEntityState {
-                live_operators: entity.live_operators.clone(),
+                streams,
                 static_features: entity.static_features.iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                last_event_at: entity.last_event_at,
             })
         }).collect()
     }
 
-    /// Restore state from a snapshot. Clears existing state first.
+    /// Restore state from a snapshot (v4 format). Clears existing state first.
     pub fn restore_from_snapshot(&mut self, entities: Vec<(String, SerializableEntityState)>) {
         self.entities.clear();
         for (key, state) in entities {
+            let mut streams = AHashMap::new();
+            for (stream_name, stream_state) in state.streams {
+                streams.insert(stream_name, StreamEntityState {
+                    operators: stream_state.operators,
+                    last_event_at: stream_state.last_event_at,
+                });
+            }
             let entity = EntityState {
-                live_operators: state.live_operators,
+                streams,
                 static_features: state.static_features.into_iter().collect(),
-                last_event_at: state.last_event_at,
             };
             self.entities.insert(key, entity);
         }
     }
 
-    /// Remove entities whose last_event_at is strictly older than `ttl` from `now`.
+    /// Remove entities whose last_event_at (across all streams) is strictly
+    /// older than `ttl` from `now`. For per-stream grouping, we use the most
+    /// recent last_event_at across all streams. Entities with no streams that
+    /// have a last_event_at are not evicted (never received an event).
     /// Entities exactly at TTL age are kept (evicted only after TTL has fully elapsed).
-    /// Entities with `last_event_at = None` are not evicted (never received an event).
     /// Returns the count of evicted entities.
     pub fn remove_expired_entities(&mut self, now: SystemTime, ttl: std::time::Duration) -> usize {
         let before = self.entities.len();
         self.entities.retain(|_key, entity| {
-            match entity.last_event_at {
-                None => true, // Never pushed -- don't evict
+            // Find the most recent last_event_at across all streams
+            let most_recent = entity.streams.values()
+                .filter_map(|s| s.last_event_at)
+                .max();
+            match most_recent {
+                None => true, // No streams with events -- don't evict
                 Some(last) => {
                     now.duration_since(last).unwrap_or(std::time::Duration::ZERO) <= ttl
                 }
             }
         });
         before - self.entities.len()
+    }
+
+    /// Remove entities where `is_empty()` returns true.
+    pub fn remove_empty_entities(&mut self) {
+        self.entities.retain(|_key, entity| !entity.is_empty());
     }
 }
 
@@ -222,9 +278,9 @@ mod tests {
     fn test_get_or_create_entity_creates_new() {
         let mut store = StateStore::new();
         let entity = store.get_or_create_entity("u123");
-        assert!(entity.live_operators.is_empty());
+        assert!(entity.streams.is_empty());
         assert!(entity.static_features.is_empty());
-        assert!(entity.last_event_at.is_none());
+        assert!(entity.is_empty());
         assert_eq!(store.entity_count(), 1);
     }
 
@@ -234,19 +290,35 @@ mod tests {
         // First call creates
         store.get_or_create_entity("u123");
         // Mutate the entity so we can verify it's the same one
-        store.get_or_create_entity("u123").update_last_event(ts(1000));
+        {
+            let entity = store.get_or_create_entity("u123");
+            let stream_state = entity.get_or_create_stream("TestStream");
+            stream_state.last_event_at = Some(ts(1000));
+        }
         assert_eq!(store.entity_count(), 1); // Still only 1 entity
         let entity = store.get_entity("u123").unwrap();
-        assert_eq!(entity.last_event_at, Some(ts(1000)));
+        assert_eq!(
+            entity.streams.get("TestStream").unwrap().last_event_at,
+            Some(ts(1000))
+        );
     }
 
     #[test]
-    fn test_entity_state_stores_live_operators() {
+    fn test_stream_entity_state_holds_operators_with_independent_last_event_at() {
         let mut entity = EntityState::new();
         let op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
-        entity.live_operators.push(("tx_count_1h".to_string(), op));
-        assert_eq!(entity.live_operators.len(), 1);
-        assert_eq!(entity.live_operators[0].0, "tx_count_1h");
+        let stream = entity.get_or_create_stream("Transactions");
+        stream.operators.push(("tx_count_1h".to_string(), op));
+        stream.last_event_at = Some(ts(1000));
+
+        let stream2 = entity.get_or_create_stream("Logins");
+        stream2.last_event_at = Some(ts(2000));
+
+        // Each stream has independent last_event_at
+        assert_eq!(entity.streams.get("Transactions").unwrap().last_event_at, Some(ts(1000)));
+        assert_eq!(entity.streams.get("Logins").unwrap().last_event_at, Some(ts(2000)));
+        assert_eq!(entity.streams.get("Transactions").unwrap().operators.len(), 1);
+        assert_eq!(entity.streams.get("Transactions").unwrap().operators[0].0, "tx_count_1h");
     }
 
     #[test]
@@ -262,16 +334,17 @@ mod tests {
     }
 
     #[test]
-    fn test_get_all_features_merges_live_and_static() {
+    fn test_get_all_features_merges_all_streams_and_static() {
         let mut store = StateStore::new();
         let now = ts(60_000);
 
-        // Add a live operator
+        // Add a live operator in a named stream
         {
             let entity = store.get_or_create_entity("u123");
+            let stream = entity.get_or_create_stream("Transactions");
             let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
             op.push(&serde_json::json!({}), now).unwrap();
-            entity.live_operators.push(("tx_count".to_string(), op));
+            stream.operators.push(("tx_count".to_string(), op));
         }
 
         // Add a static feature
@@ -287,12 +360,13 @@ mod tests {
         let mut store = StateStore::new();
         let now = ts(60_000);
 
-        // Add a live operator named "score"
+        // Add a live operator named "score" in a stream
         {
             let entity = store.get_or_create_entity("u123");
+            let stream = entity.get_or_create_stream("Transactions");
             let mut op = OperatorState::Sum(SumOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false));
             op.push(&serde_json::json!({"amount": 100.0}), now).unwrap();
-            entity.live_operators.push(("score".to_string(), op));
+            stream.operators.push(("score".to_string(), op));
         }
 
         // Write a static feature with the same name
@@ -304,12 +378,30 @@ mod tests {
     }
 
     #[test]
-    fn test_last_event_at_updated_on_push() {
-        let mut entity = EntityState::new();
-        assert!(entity.last_event_at.is_none());
-        let now = ts(1000);
-        entity.update_last_event(now);
-        assert_eq!(entity.last_event_at, Some(now));
+    fn test_get_feature_value_searches_across_all_streams() {
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+
+        // Add operators in two different streams
+        {
+            let entity = store.get_or_create_entity("u123");
+            let stream1 = entity.get_or_create_stream("Transactions");
+            let mut op1 = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            op1.push(&serde_json::json!({}), now).unwrap();
+            stream1.operators.push(("tx_count".to_string(), op1));
+
+            let stream2 = entity.get_or_create_stream("Logins");
+            let mut op2 = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            op2.push(&serde_json::json!({}), now).unwrap();
+            op2.push(&serde_json::json!({}), now).unwrap();
+            stream2.operators.push(("login_count".to_string(), op2));
+        }
+
+        let val = store.get_feature_value("u123", "tx_count", now);
+        assert_eq!(val, FeatureValue::Int(1));
+
+        let val = store.get_feature_value("u123", "login_count", now);
+        assert_eq!(val, FeatureValue::Int(2));
     }
 
     #[test]
@@ -319,38 +411,61 @@ mod tests {
         assert!(features.is_empty());
     }
 
+    #[test]
+    fn test_entity_is_empty() {
+        let entity = EntityState::new();
+        assert!(entity.is_empty());
+
+        let mut entity2 = EntityState::new();
+        entity2.get_or_create_stream("Transactions");
+        assert!(!entity2.is_empty());
+
+        let mut entity3 = EntityState::new();
+        entity3.static_features.insert("key".to_string(), StaticFeature {
+            value: FeatureValue::Int(1),
+            updated_at: ts(1000),
+        });
+        assert!(!entity3.is_empty());
+    }
+
     // ======================== clone_for_snapshot / restore_from_snapshot Tests ========================
 
     #[test]
-    fn test_clone_for_snapshot_preserves_state() {
+    fn test_clone_for_snapshot_preserves_per_stream_state() {
         let mut store = StateStore::new();
         let now = ts(60_000);
 
-        // Add an entity with a live operator and static feature
+        // Add an entity with a live operator in a named stream and static feature
         {
             let entity = store.get_or_create_entity("u123");
+            let stream = entity.get_or_create_stream("Transactions");
             let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
             op.push(&serde_json::json!({}), now).unwrap();
             op.push(&serde_json::json!({}), now).unwrap();
-            entity.live_operators.push(("tx_count".to_string(), op));
-            entity.update_last_event(now);
+            stream.operators.push(("tx_count".to_string(), op));
+            stream.last_event_at = Some(now);
         }
         store.set_static("u123", "segment", FeatureValue::String("premium".into()), now);
 
         let snapshot = store.clone_for_snapshot();
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].0, "u123");
-        assert_eq!(snapshot[0].1.live_operators.len(), 1);
+        assert_eq!(snapshot[0].1.streams.len(), 1);
         assert_eq!(snapshot[0].1.static_features.len(), 1);
-        assert_eq!(snapshot[0].1.last_event_at, Some(now));
+
+        // Verify stream state preserved
+        let stream_snap = &snapshot[0].1.streams[0];
+        assert_eq!(stream_snap.0, "Transactions");
+        assert_eq!(stream_snap.1.operators.len(), 1);
+        assert_eq!(stream_snap.1.last_event_at, Some(now));
 
         // Verify operator state preserved
-        let mut op = snapshot[0].1.live_operators[0].1.clone();
+        let mut op = stream_snap.1.operators[0].1.clone();
         assert_eq!(op.read(now), FeatureValue::Int(2));
     }
 
     #[test]
-    fn test_restore_from_snapshot() {
+    fn test_restore_from_snapshot_v4() {
         let mut store = StateStore::new();
         let now = ts(60_000);
 
@@ -360,7 +475,13 @@ mod tests {
         let snapshot_entities = vec![(
             "u456".to_string(),
             crate::state::snapshot::SerializableEntityState {
-                live_operators: vec![("count".to_string(), op)],
+                streams: vec![(
+                    "TestStream".to_string(),
+                    SerializableStreamEntityState {
+                        operators: vec![("count".to_string(), op)],
+                        last_event_at: Some(now),
+                    },
+                )],
                 static_features: vec![(
                     "tier".to_string(),
                     StaticFeature {
@@ -368,19 +489,20 @@ mod tests {
                         updated_at: now,
                     },
                 )],
-                last_event_at: Some(now),
             },
         )];
 
         store.restore_from_snapshot(snapshot_entities);
         assert_eq!(store.entity_count(), 1);
         let entity = store.get_entity("u456").unwrap();
-        assert_eq!(entity.live_operators.len(), 1);
+        assert_eq!(entity.streams.len(), 1);
+        let stream = entity.streams.get("TestStream").unwrap();
+        assert_eq!(stream.operators.len(), 1);
+        assert_eq!(stream.last_event_at, Some(now));
         assert_eq!(entity.static_features.len(), 1);
-        assert_eq!(entity.last_event_at, Some(now));
     }
 
-    // ======================== Phase 5 Plan 03: get_feature_value Tests ========================
+    // ======================== get_feature_value Tests ========================
 
     #[test]
     fn test_get_feature_value_returns_live_operator_value() {
@@ -388,10 +510,11 @@ mod tests {
         let now = ts(60_000);
 
         let entity = store.get_or_create_entity("u123");
+        let stream = entity.get_or_create_stream("TestStream");
         let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
         op.push(&serde_json::json!({}), now).unwrap();
         op.push(&serde_json::json!({}), now).unwrap();
-        entity.live_operators.push(("tx_count".to_string(), op));
+        stream.operators.push(("tx_count".to_string(), op));
 
         let val = store.get_feature_value("u123", "tx_count", now);
         assert_eq!(val, FeatureValue::Int(2));
@@ -433,16 +556,18 @@ mod tests {
         // Entity with old last_event_at (should be evicted)
         {
             let entity = store.get_or_create_entity("old_user");
-            entity.update_last_event(ts(1000)); // Very old
+            let stream = entity.get_or_create_stream("TestStream");
+            stream.last_event_at = Some(ts(1000)); // Very old
         }
 
         // Entity with recent last_event_at (should be kept)
         {
             let entity = store.get_or_create_entity("recent_user");
-            entity.update_last_event(ts(99_000)); // Recent
+            let stream = entity.get_or_create_stream("TestStream");
+            stream.last_event_at = Some(ts(99_000)); // Recent
         }
 
-        // Entity with no last_event_at (should be kept)
+        // Entity with no streams (should be kept -- never pushed)
         store.get_or_create_entity("no_event_user");
 
         assert_eq!(store.entity_count(), 3);
@@ -452,5 +577,31 @@ mod tests {
         assert!(store.get_entity("old_user").is_none());
         assert!(store.get_entity("recent_user").is_some());
         assert!(store.get_entity("no_event_user").is_some());
+    }
+
+    // ======================== remove_empty_entities Tests ========================
+
+    #[test]
+    fn test_remove_empty_entities() {
+        let mut store = StateStore::new();
+
+        // Empty entity (should be removed)
+        store.get_or_create_entity("empty");
+
+        // Entity with a stream (should be kept)
+        {
+            let entity = store.get_or_create_entity("has_stream");
+            entity.get_or_create_stream("TestStream");
+        }
+
+        // Entity with static features (should be kept)
+        store.set_static("has_static", "key", FeatureValue::Int(1), ts(1000));
+
+        assert_eq!(store.entity_count(), 3);
+        store.remove_empty_entities();
+        assert_eq!(store.entity_count(), 2);
+        assert!(store.get_entity("empty").is_none());
+        assert!(store.get_entity("has_stream").is_some());
+        assert!(store.get_entity("has_static").is_some());
     }
 }

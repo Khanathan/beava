@@ -241,26 +241,31 @@ async fn debug_key(
     // Collect debug info from entity (immutable borrow)
     let (live_ops, static_feats, last_event_at) = {
         let entity = app.store.get_entity(&key).unwrap();
-        let live_ops: Vec<serde_json::Value> = entity
-            .live_operators
-            .iter()
-            .map(|(name, op)| {
-                serde_json::json!({
+        // Collect operators from all streams
+        let mut live_ops: Vec<serde_json::Value> = Vec::new();
+        for (stream_name, stream_state) in &entity.streams {
+            for (name, op) in &stream_state.operators {
+                live_ops.push(serde_json::json!({
                     "name": name,
+                    "stream": stream_name,
                     "state": format!("{:?}", op),
-                })
-            })
-            .collect();
+                }));
+            }
+        }
         let static_feats: serde_json::Map<String, serde_json::Value> = entity
             .static_features
             .iter()
             .map(|(k, v)| (k.clone(), v.value.to_json_value()))
             .collect();
-        let last_event_at = entity.last_event_at.map(|t| {
-            t.duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-        });
+        // Use the most recent last_event_at across all streams
+        let last_event_at = entity.streams.values()
+            .filter_map(|s| s.last_event_at)
+            .max()
+            .map(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            });
         (live_ops, static_feats, last_event_at)
     };
     // Now get computed features (mutable borrow for window advancement)

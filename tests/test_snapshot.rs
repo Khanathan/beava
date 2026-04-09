@@ -118,7 +118,7 @@ fn test_snapshot_empty_bytes_returns_none() {
 #[test]
 fn test_snapshot_corrupt_data_returns_none() {
     // Correct version byte followed by garbage
-    let mut bytes = vec![0x03]; // version 3
+    let mut bytes = vec![0x04]; // version 4
     bytes.extend_from_slice(b"this is absolutely not valid postcard data!!!");
     assert!(load_snapshot(&bytes).is_none());
 }
@@ -147,19 +147,22 @@ fn test_eviction_removes_old_entity() {
     // Entity with old last_event_at (strictly older than TTL)
     {
         let entity = store.get_or_create_entity("old_user");
-        entity.update_last_event(ts(96_399)); // 100_000 - 96_399 = 3601s > 3600s TTL -> evicted
+        let stream = entity.get_or_create_stream("stream1");
+        stream.last_event_at = Some(ts(96_399)); // 100_000 - 96_399 = 3601s > 3600s TTL -> evicted
     }
 
     // Entity at exactly TTL boundary (should be kept)
     {
         let entity = store.get_or_create_entity("boundary_user");
-        entity.update_last_event(ts(96_400)); // 100_000 - 96_400 = 3600s = TTL -> kept
+        let stream = entity.get_or_create_stream("stream1");
+        stream.last_event_at = Some(ts(96_400)); // 100_000 - 96_400 = 3600s = TTL -> kept
     }
 
     // Entity with recent last_event_at (1 minute ago)
     {
         let entity = store.get_or_create_entity("recent_user");
-        entity.update_last_event(ts(99_940)); // 100_000 - 99_940 = 60s < 3600s TTL -> kept
+        let stream = entity.get_or_create_stream("stream1");
+        stream.last_event_at = Some(ts(99_940)); // 100_000 - 99_940 = 60s < 3600s TTL -> kept
     }
 
     let now = ts(100_000);

@@ -224,60 +224,59 @@ impl PipelineEngine {
         // 3. Get or create EntityState
         let entity = store.get_or_create_entity(&key);
 
-        // 4. Initialize or reconcile operators for THIS stream only.
-        // Multiple streams may share the same entity key (e.g. Transactions
-        // and Logins both keyed by user_id). Each stream's operators are
-        // stored with their unqualified feature names. We identify "this
-        // stream's operators" by collecting the expected operator names and
-        // comparing against what's already in live_operators.
-        //
-        // Strategy: extract existing operators for this stream's features
-        // (by name), create missing ones, then push to each.
+        // 4. Get or create the stream's state within the entity.
+        // Each stream has its own operators and last_event_at for independent
+        // TTL management (OPS-02).
+        // Use entry API to ensure stream exists, then work through entity.streams
+        // to avoid long-lived mutable borrow conflicts with static_features.
+        entity.get_or_create_stream(stream_name);
+
+        // Initialize or reconcile operators for THIS stream only.
         let op_features: Vec<&(String, FeatureDef)> = stream.features.iter()
             .filter(|(_, def)| !matches!(def, FeatureDef::Derive { .. }))
             .collect();
 
-        // Ensure each expected operator exists in the entity
-        for (name, def) in &op_features {
-            let exists = entity.live_operators.iter().any(|(n, _)| *n == **name);
-            if !exists {
-                if let Some(op) = create_operator(def) {
-                    entity.live_operators.push(((*name).clone(), op));
-                }
-            }
-        }
-
-        // Push event to this stream's operators, respecting where-clause filters.
-        for (fname, def) in &op_features {
-            // Find the operator by name
-            if let Some((_, op)) = entity.live_operators.iter_mut().find(|(n, _)| *n == **fname) {
-                // Check where clause
-                if let Some(where_expr) = get_where_expr(def) {
-                    let ctx = EvalContext {
-                        features: &ahash::AHashMap::new(),
-                        event: Some(event),
-                    };
-                    let result = eval(where_expr, &ctx);
-                    match result {
-                        FeatureValue::Int(0) | FeatureValue::Missing => continue,
-                        FeatureValue::Float(f) if f == 0.0 => continue,
-                        _ => {} // truthy -- proceed with push
+        // Ensure each expected operator exists in the stream's state
+        {
+            let stream_state = entity.streams.get_mut(stream_name).unwrap();
+            for (name, def) in &op_features {
+                let exists = stream_state.operators.iter().any(|(n, _)| *n == **name);
+                if !exists {
+                    if let Some(op) = create_operator(def) {
+                        stream_state.operators.push(((*name).clone(), op));
                     }
                 }
-                op.push(event, now)?;
             }
-        }
+
+            // Push event to this stream's operators, respecting where-clause filters.
+            for (fname, def) in &op_features {
+                // Find the operator by name in stream_state
+                if let Some((_, op)) = stream_state.operators.iter_mut().find(|(n, _)| *n == **fname) {
+                    // Check where clause
+                    if let Some(where_expr) = get_where_expr(def) {
+                        let ctx = EvalContext {
+                            features: &ahash::AHashMap::new(),
+                            event: Some(event),
+                        };
+                        let result = eval(where_expr, &ctx);
+                        match result {
+                            FeatureValue::Int(0) | FeatureValue::Missing => continue,
+                            FeatureValue::Float(f) if f == 0.0 => continue,
+                            _ => {} // truthy -- proceed with push
+                        }
+                    }
+                    op.push(event, now)?;
+                }
+            }
+        } // stream_state borrow dropped here
 
         // 5. Collect feature values for this stream only (PUSH returns primary stream features).
-        // Build a set of this stream's feature names for filtering.
-        let stream_feature_names: Vec<&String> = stream.features.iter()
-            .map(|(name, _)| name)
-            .collect();
         let mut features = FeatureMap::new();
 
         // Read operator values belonging to this stream
-        for (name, op) in entity.live_operators.iter_mut() {
-            if stream_feature_names.iter().any(|n| *n == name) {
+        {
+            let stream_state = entity.streams.get_mut(stream_name).unwrap();
+            for (name, op) in stream_state.operators.iter_mut() {
                 features.insert(name.clone(), op.read(now));
             }
         }
@@ -307,8 +306,8 @@ impl PipelineEngine {
             features.insert(name, value);
         }
 
-        // 6. Update last_event_at
-        entity.update_last_event(now);
+        // 6. Update last_event_at on the stream
+        entity.streams.get_mut(stream_name).unwrap().last_event_at = Some(now);
 
         // 7. Return features
         Ok(features)
@@ -329,6 +328,7 @@ impl PipelineEngine {
 
         // Build qualified feature names: "StreamName.feature_name" -> value
         // so view derive expressions can reference features from specific streams.
+        // Iterate all streams' operators from the entity to build qualified names.
         let mut qualified: Vec<(String, FeatureValue)> = Vec::new();
         for stream in self.streams.values() {
             for (fname, _) in &stream.features {
