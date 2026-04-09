@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: "Completed 03-02-PLAN.md (DSL layer: operators, @stream, @view)"
-last_updated: "2026-04-09T16:35:46.438Z"
+stopped_at: Completed 03-03-PLAN.md (TCP client and App class)
+last_updated: "2026-04-09T16:42:39.237Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 13
-  completed_plans: 11
-  percent: 85
+  completed_plans: 12
+  percent: 92
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 ## Current Position
 
 Phase: 03 (python-sdk) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-04-09
 
@@ -63,6 +63,7 @@ Progress: [███████░░░] 71%
 | Phase 02 P05 | 2min | 2 tasks | 2 files |
 | Phase 03-python-sdk P01 | 4min | 2 tasks | 8 files |
 | Phase 03-python-sdk P02 | 5min | 2 tasks | 7 files |
+| Phase 03-python-sdk P03 | 4min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -101,6 +102,9 @@ Recent decisions affecting current work:
 - [Phase 03-python-sdk]: Operator constructors use Python keyword-only args for required param validation (native TypeError)
 - [Phase 03-python-sdk]: Lookup target stored as plain string ref -- cross-class attribute resolution deferred to Phase 5
 - [Phase 03-python-sdk]: StreamMeta walks reversed(bases) for mixin features; later-listed bases take precedence, class body always wins
+- [Phase 03-python-sdk]: TallyClient auto-reconnect: catch ConnectionError, null socket, reconnect once and retry
+- [Phase 03-python-sdk]: App._parse_address uses rsplit(':',1) with default port 6400
+- [Phase 03-python-sdk]: App._send centralizes STATUS_ERROR check, raises ProtocolError with decoded server message
 
 ### Pending Todos
 
@@ -121,6 +125,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T16:35:46.435Z
-Stopped at: Completed 03-02-PLAN.md (DSL layer: operators, @stream, @view)
+Last session: 2026-04-09T16:42:39.234Z
+Stopped at: Completed 03-03-PLAN.md (TCP client and App class)
 Resume file: None

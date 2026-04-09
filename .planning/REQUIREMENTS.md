@@ -49,9 +49,9 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **SDK-02**: @st.view decorator defines cross-stream views with derive expressions
 - [x] **SDK-03**: Operator classes (st.count, st.sum, st.avg, st.min, st.max, st.distinct_count, st.last, st.derive, st.lookup) serialize to JSON
 - [x] **SDK-04**: TCP client with connection pooling communicates via binary protocol
-- [ ] **SDK-05**: app.push() sends event and returns typed feature results
-- [ ] **SDK-06**: app.get(), app.set(), app.mset() for read/write operations
-- [ ] **SDK-07**: app.register() sends pipeline definitions to server
+- [x] **SDK-05**: app.push() sends event and returns typed feature results
+- [x] **SDK-06**: app.get(), app.set(), app.mset() for read/write operations
+- [x] **SDK-07**: app.register() sends pipeline definitions to server
 
 ### Persistence
 
@@ -124,9 +124,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SDK-02 | Phase 3 | Complete |
 | SDK-03 | Phase 3 | Complete |
 | SDK-04 | Phase 3 | Complete |
-| SDK-05 | Phase 3 | Pending |
-| SDK-06 | Phase 3 | Pending |
-| SDK-07 | Phase 3 | Pending |
+| SDK-05 | Phase 3 | Complete |
+| SDK-06 | Phase 3 | Complete |
+| SDK-07 | Phase 3 | Complete |
 | PERS-01 | Phase 4 | Pending |
 | PERS-02 | Phase 4 | Pending |
 | PERS-03 | Phase 4 | Pending |
