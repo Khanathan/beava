@@ -48,7 +48,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [ ] **SDK-01**: @st.stream decorator defines a stream with key field and feature declarations
 - [ ] **SDK-02**: @st.view decorator defines cross-stream views with derive expressions
 - [ ] **SDK-03**: Operator classes (st.count, st.sum, st.avg, st.min, st.max, st.distinct_count, st.last, st.derive, st.lookup) serialize to JSON
-- [ ] **SDK-04**: TCP client with connection pooling communicates via binary protocol
+- [x] **SDK-04**: TCP client with connection pooling communicates via binary protocol
 - [ ] **SDK-05**: app.push() sends event and returns typed feature results
 - [ ] **SDK-06**: app.get(), app.set(), app.mset() for read/write operations
 - [ ] **SDK-07**: app.register() sends pipeline definitions to server
@@ -123,7 +123,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SDK-01 | Phase 3 | Pending |
 | SDK-02 | Phase 3 | Pending |
 | SDK-03 | Phase 3 | Pending |
-| SDK-04 | Phase 3 | Pending |
+| SDK-04 | Phase 3 | Complete |
 | SDK-05 | Phase 3 | Pending |
 | SDK-06 | Phase 3 | Pending |
 | SDK-07 | Phase 3 | Pending |

@@ -68,7 +68,7 @@ Plans:
   5. A conformance test verifies that the Python client's binary encoding matches the Rust server's expected wire format byte-for-byte
 **Plans:** 4 plans
 Plans:
-- [ ] 03-01-PLAN.md — Project skeleton, types (FeatureResult, exceptions), and binary protocol encoding with byte-level conformance tests
+- [x] 03-01-PLAN.md — Project skeleton, types (FeatureResult, exceptions), and binary protocol encoding with byte-level conformance tests
 - [ ] 03-02-PLAN.md — Operator descriptor classes, @stream/@view decorators with metaclass and mixin support
 - [ ] 03-03-PLAN.md — TCP client with auto-reconnect and App class (register/push/get/set/mset)
 - [ ] 03-04-PLAN.md — End-to-end integration tests against live Tally server
