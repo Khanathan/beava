@@ -430,22 +430,22 @@ tokio::spawn(async move {
 | A3 | AHashMap does not implement Serialize; needs conversion to Vec for snapshot | Code Examples | Medium -- if ahash adds Serialize, the conversion is unnecessary but not harmful |
 | A4 | Manual Prometheus text formatting is sufficient for 5 metrics | Standard Stack | Low -- can always add prometheus crate later |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Pipeline persistence scope**
    - What we know: Entity state must be persisted for crash recovery. Pipeline definitions are needed to interpret entity state.
    - What's unclear: Should pipeline definitions be included in the snapshot, or should clients re-register after restart?
-   - Recommendation: Include pipeline definitions in the snapshot. Without them, restored entity state is useless (operators exist but no stream definition tells the engine how to evaluate them). This is also better UX -- restart is transparent to clients.
+   - RESOLVED: Include pipeline definitions in the snapshot. Without them, restored entity state is useless (operators exist but no stream definition tells the engine how to evaluate them). This is also better UX -- restart is transparent to clients. Implemented via SerializablePipeline storing raw_register_json in SnapshotState.
 
 2. **Snapshot file path configuration**
    - What we know: CLAUDE.md says "periodic serialization to local file"
    - What's unclear: Should the path be configurable via env var or CLI flag?
-   - Recommendation: Default to `tally.snapshot` in the working directory. Add `TALLY_SNAPSHOT_PATH` env var (consistent with existing `TALLY_TCP_PORT` / `TALLY_HTTP_PORT` pattern).
+   - RESOLVED: Default to `tally.snapshot` in the working directory. Add `TALLY_SNAPSHOT_PATH` env var (consistent with existing `TALLY_TCP_PORT` / `TALLY_HTTP_PORT` pattern). Implemented in Plan 02 Task 1.
 
 3. **Metrics persistence across restarts**
    - What we know: Counters like events_total are monotonically increasing
    - What's unclear: Should counters reset to 0 on restart or be persisted?
-   - Recommendation: Reset to 0 on restart. Prometheus handles counter resets via `rate()` function. Persisting counters adds complexity for no operational benefit.
+   - RESOLVED: Reset to 0 on restart. Prometheus handles counter resets via `rate()` function. Persisting counters adds complexity for no operational benefit. Metrics struct uses Default trait (all zeros).
 
 ## Validation Architecture
 
