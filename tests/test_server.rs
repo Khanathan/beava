@@ -1,0 +1,461 @@
+//! Integration tests for the Tally TCP + HTTP server.
+//!
+//! Tests all SRV-* requirements by starting a real server on random ports
+//! and sending binary protocol frames over TCP connections.
+//!
+//! SRV-01: TCP connection and persistent connections
+//! SRV-02: Frame roundtrip and malformed frame handling
+//! SRV-03: REGISTER + PUSH, push to unregistered stream
+//! SRV-04: GET features after push, GET unknown key
+//! SRV-05: SET static features
+//! SRV-06: MSET bulk write
+//! SRV-07: REGISTER with multiple feature types, PUSH returns computed features
+//! SRV-08: HTTP /health endpoint
+
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+
+use tally::engine::pipeline::PipelineEngine;
+use tally::server::protocol::{self, OP_GET, OP_MSET, OP_PUSH, OP_REGISTER, OP_SET, STATUS_ERROR, STATUS_OK};
+use tally::server::tcp::{AppState, SharedState};
+use tally::state::store::StateStore;
+
+// ---------------------------------------------------------------------------
+// Test server helper
+// ---------------------------------------------------------------------------
+
+/// Start a test server on random ports. Returns (tcp_port, http_port, state).
+async fn start_test_server() -> (u16, u16, SharedState) {
+    let state: SharedState = Arc::new(Mutex::new(AppState {
+        engine: PipelineEngine::new(),
+        store: StateStore::new(),
+    }));
+
+    // Bind to port 0 for random assignment
+    let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let tcp_port = tcp_listener.local_addr().unwrap().port();
+
+    let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let http_port = http_listener.local_addr().unwrap().port();
+
+    // Spawn TCP accept loop using pre-bound listener
+    let tcp_state = state.clone();
+    tokio::spawn(async move {
+        tally::server::tcp::run_tcp_server_with_listener(tcp_listener, tcp_state)
+            .await
+            .unwrap();
+    });
+
+    // Spawn HTTP server using pre-bound listener
+    let http_state = state.clone();
+    tokio::spawn(async move {
+        tally::server::http::run_http_server_with_listener(http_listener, http_state)
+            .await
+            .unwrap();
+    });
+
+    // Small delay for servers to start accepting
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    (tcp_port, http_port, state)
+}
+
+// ---------------------------------------------------------------------------
+// Frame send/receive helpers
+// ---------------------------------------------------------------------------
+
+/// Send a command frame and read the response. Returns (status, payload).
+async fn send_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) -> (u8, Vec<u8>) {
+    // Write frame: [4-byte length (opcode+payload)][opcode][payload]
+    let len = (1 + payload.len()) as u32;
+    stream.write_u32(len).await.unwrap();
+    stream.write_u8(opcode).await.unwrap();
+    if !payload.is_empty() {
+        stream.write_all(payload).await.unwrap();
+    }
+    stream.flush().await.unwrap();
+
+    // Read response: [4-byte length][status][payload]
+    let resp_len = stream.read_u32().await.unwrap() as usize;
+    let status = stream.read_u8().await.unwrap();
+    let payload_len = resp_len - 1;
+    let mut resp_payload = vec![0u8; payload_len];
+    if payload_len > 0 {
+        stream.read_exact(&mut resp_payload).await.unwrap();
+    }
+    (status, resp_payload)
+}
+
+/// Build PUSH payload: [u16 stream_name][JSON bytes]
+fn build_push_payload(stream_name: &str, event: &serde_json::Value) -> Vec<u8> {
+    let mut buf = protocol::write_string(stream_name);
+    buf.extend_from_slice(&serde_json::to_vec(event).unwrap());
+    buf
+}
+
+/// Build GET payload: [u16 key]
+fn build_get_payload(key: &str) -> Vec<u8> {
+    protocol::write_string(key)
+}
+
+/// Build SET payload: [u16 key][JSON bytes]
+fn build_set_payload(key: &str, features: &serde_json::Value) -> Vec<u8> {
+    let mut buf = protocol::write_string(key);
+    buf.extend_from_slice(&serde_json::to_vec(features).unwrap());
+    buf
+}
+
+/// Build REGISTER payload: raw JSON bytes of stream definition.
+fn build_register_payload(
+    name: &str,
+    key_field: &str,
+    features_json: Vec<serde_json::Value>,
+) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "name": name,
+        "key_field": key_field,
+        "features": features_json
+    }))
+    .unwrap()
+}
+
+/// Build MSET payload: [u32 count][for each: u16 key string + u32 json_len + json_bytes]
+fn build_mset_payload(entries: &[(&str, serde_json::Value)]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+    for (key, val) in entries {
+        buf.extend_from_slice(&protocol::write_string(key));
+        let json_bytes = serde_json::to_vec(val).unwrap();
+        buf.extend_from_slice(&(json_bytes.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&json_bytes);
+    }
+    buf
+}
+
+/// Helper: register a simple Transactions stream with count feature.
+async fn register_tx_stream(stream: &mut TcpStream) {
+    let payload = build_register_payload(
+        "Transactions",
+        "user_id",
+        vec![serde_json::json!({
+            "name": "tx_count_1h",
+            "type": "count",
+            "window": "1h"
+        })],
+    );
+    let (status, _) = send_frame(stream, OP_REGISTER, &payload).await;
+    assert_eq!(status, STATUS_OK, "REGISTER should succeed");
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+/// SRV-01: TCP connection succeeds.
+#[tokio::test(flavor = "current_thread")]
+async fn test_tcp_connect() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port)).await;
+    assert!(stream.is_ok(), "Should connect to TCP server");
+}
+
+/// SRV-02: Send a GET frame, receive a well-formed response with status byte.
+#[tokio::test(flavor = "current_thread")]
+async fn test_frame_roundtrip() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+
+    let payload = build_get_payload("nonexistent");
+    let (status, resp) = send_frame(&mut stream, OP_GET, &payload).await;
+    assert_eq!(status, STATUS_OK);
+
+    let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(json, serde_json::json!({}));
+}
+
+/// SRV-03, SRV-07: REGISTER a stream, PUSH an event, verify features returned.
+#[tokio::test(flavor = "current_thread")]
+async fn test_register_and_push() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+
+    // Register
+    register_tx_stream(&mut stream).await;
+
+    // Push event
+    let push_payload = build_push_payload(
+        "Transactions",
+        &serde_json::json!({"user_id": "u1", "amount": 50.0}),
+    );
+    let (status, resp) = send_frame(&mut stream, OP_PUSH, &push_payload).await;
+    assert_eq!(status, STATUS_OK);
+
+    let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(json["tx_count_1h"], 1, "Count should be 1 after first push");
+}
+
+/// SRV-03: PUSH to unregistered stream returns error.
+#[tokio::test(flavor = "current_thread")]
+async fn test_push_unregistered_stream() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+
+    let push_payload = build_push_payload(
+        "NonExistent",
+        &serde_json::json!({"user_id": "u1"}),
+    );
+    let (status, resp) = send_frame(&mut stream, OP_PUSH, &push_payload).await;
+    assert_eq!(status, STATUS_ERROR);
+    let msg = String::from_utf8_lossy(&resp);
+    assert!(
+        msg.contains("unknown stream"),
+        "Error should mention 'unknown stream', got: {}",
+        msg
+    );
+}
+
+/// SRV-04: GET features after PUSH returns them.
+#[tokio::test(flavor = "current_thread")]
+async fn test_get_features_after_push() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+
+    register_tx_stream(&mut stream).await;
+
+    // Push
+    let push_payload = build_push_payload(
+        "Transactions",
+        &serde_json::json!({"user_id": "u1", "amount": 50.0}),
+    );
+    send_frame(&mut stream, OP_PUSH, &push_payload).await;
+
+    // GET
+    let get_payload = build_get_payload("u1");
+    let (status, resp) = send_frame(&mut stream, OP_GET, &get_payload).await;
+    assert_eq!(status, STATUS_OK);
+
+    let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(json["tx_count_1h"], 1, "GET should return pushed features");
+}
+
+/// SRV-04: GET for unknown key returns empty JSON {}.
+#[tokio::test(flavor = "current_thread")]
+async fn test_get_unknown_key() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+
+    let get_payload = build_get_payload("nobody");
+    let (status, resp) = send_frame(&mut stream, OP_GET, &get_payload).await;
+    assert_eq!(status, STATUS_OK);
+
+    let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(json, serde_json::json!({}));
+}
+
+/// SRV-05: SET writes static features, readable via GET.
+#[tokio::test(flavor = "current_thread")]
+async fn test_set_static_features() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+
+    // SET
+    let set_payload = build_set_payload("u1", &serde_json::json!({"segment": "premium", "score": 0.95}));
+    let (status, _) = send_frame(&mut stream, OP_SET, &set_payload).await;
+    assert_eq!(status, STATUS_OK);
+
+    // GET
+    let get_payload = build_get_payload("u1");
+    let (status, resp) = send_frame(&mut stream, OP_GET, &get_payload).await;
+    assert_eq!(status, STATUS_OK);
+
+    let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(json["segment"], "premium");
+    assert_eq!(json["score"], 0.95);
+}
+
+/// SRV-06: MSET with 2048+ entries completes, values readable via GET.
+#[tokio::test(flavor = "current_thread")]
+async fn test_mset_bulk_write() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+
+    // Build 2048 entries
+    let entries: Vec<(&str, serde_json::Value)> = (0..2048)
+        .map(|i| {
+            // We need owned strings but the slice expects &str.
+            // Use a trick: allocate and leak for test scope.
+            let key: &str = Box::leak(format!("k{}", i).into_boxed_str());
+            (key, serde_json::json!({"score": i}))
+        })
+        .collect();
+
+    let mset_payload = build_mset_payload(&entries);
+    let (status, _) = send_frame(&mut stream, OP_MSET, &mset_payload).await;
+    assert_eq!(status, STATUS_OK, "MSET should succeed");
+
+    // Verify first and last entries
+    let get_payload = build_get_payload("k0");
+    let (status, resp) = send_frame(&mut stream, OP_GET, &get_payload).await;
+    assert_eq!(status, STATUS_OK);
+    let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(json["score"], 0);
+
+    let get_payload = build_get_payload("k2047");
+    let (status, resp) = send_frame(&mut stream, OP_GET, &get_payload).await;
+    assert_eq!(status, STATUS_OK);
+    let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(json["score"], 2047);
+}
+
+/// SRV-07: REGISTER with count + sum + derive, PUSH returns all computed features.
+#[tokio::test(flavor = "current_thread")]
+async fn test_register_with_derive() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+
+    let reg_payload = build_register_payload(
+        "Transactions",
+        "user_id",
+        vec![
+            serde_json::json!({"name": "tx_count", "type": "count", "window": "1h"}),
+            serde_json::json!({"name": "tx_sum", "type": "sum", "field": "amount", "window": "1h"}),
+            serde_json::json!({"name": "avg_amount", "type": "avg", "field": "amount", "window": "1h"}),
+            serde_json::json!({"name": "rate", "type": "derive", "expr": "tx_count / 1"}),
+        ],
+    );
+    let (status, _) = send_frame(&mut stream, OP_REGISTER, &reg_payload).await;
+    assert_eq!(status, STATUS_OK, "REGISTER with derive should succeed");
+
+    // Push event
+    let push_payload = build_push_payload(
+        "Transactions",
+        &serde_json::json!({"user_id": "u1", "amount": 100.0}),
+    );
+    let (status, resp) = send_frame(&mut stream, OP_PUSH, &push_payload).await;
+    assert_eq!(status, STATUS_OK);
+
+    let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(json["tx_count"], 1);
+    assert_eq!(json["tx_sum"], 100.0);
+    assert_eq!(json["avg_amount"], 100.0);
+    // derive: tx_count / 1 = 1.0
+    assert_eq!(json["rate"], 1.0);
+}
+
+/// SRV-08: HTTP GET /health returns 200 with {"status": "ok"}.
+#[tokio::test(flavor = "current_thread")]
+async fn test_health_endpoint() {
+    let (_tcp_port, http_port, _state) = start_test_server().await;
+
+    // Send raw HTTP/1.1 request over TcpStream (no reqwest dependency)
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", http_port))
+        .await
+        .unwrap();
+
+    let request = format!(
+        "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        http_port
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    stream.flush().await.unwrap();
+
+    // Read full response
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let response_str = String::from_utf8_lossy(&response);
+
+    // Verify HTTP 200
+    assert!(
+        response_str.starts_with("HTTP/1.1 200"),
+        "Expected HTTP 200, got: {}",
+        response_str.lines().next().unwrap_or("")
+    );
+
+    // Verify body contains {"status":"ok"}
+    // Body is after the empty line in HTTP response
+    let body = response_str
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap_or("");
+    // Body may be chunked-encoded; extract JSON
+    assert!(
+        body.contains(r#""status":"ok"#) || body.contains(r#""status": "ok"#),
+        "Body should contain status:ok, got: {}",
+        body
+    );
+}
+
+/// SRV-01: Multiple commands on same TCP connection work correctly.
+#[tokio::test(flavor = "current_thread")]
+async fn test_persistent_connection() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+
+    // Register
+    register_tx_stream(&mut stream).await;
+
+    // Push 3 events on the same connection
+    for i in 1..=3 {
+        let push_payload = build_push_payload(
+            "Transactions",
+            &serde_json::json!({"user_id": "u1", "amount": 10.0}),
+        );
+        let (status, resp) = send_frame(&mut stream, OP_PUSH, &push_payload).await;
+        assert_eq!(status, STATUS_OK);
+
+        let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+        assert_eq!(
+            json["tx_count_1h"], i,
+            "Count should increment to {} on push {}",
+            i, i
+        );
+    }
+}
+
+/// SRV-02: Malformed frame (zero-length) produces error response.
+#[tokio::test(flavor = "current_thread")]
+async fn test_malformed_frame() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+
+    // Send a zero-length frame: [0, 0, 0, 0]
+    stream.write_all(&[0u8, 0, 0, 0]).await.unwrap();
+    stream.flush().await.unwrap();
+
+    // Should receive an error response
+    let resp_len = stream.read_u32().await.unwrap() as usize;
+    let status = stream.read_u8().await.unwrap();
+    assert_eq!(status, STATUS_ERROR, "Zero-length frame should return error");
+
+    if resp_len > 1 {
+        let mut payload = vec![0u8; resp_len - 1];
+        stream.read_exact(&mut payload).await.unwrap();
+        let msg = String::from_utf8_lossy(&payload);
+        assert!(
+            msg.contains("invalid frame length"),
+            "Error should mention invalid frame, got: {}",
+            msg
+        );
+    }
+}
