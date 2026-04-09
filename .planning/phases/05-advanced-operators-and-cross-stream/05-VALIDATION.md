@@ -1,9 +1,9 @@
 ---
 phase: 5
 slug: advanced-operators-and-cross-stream
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: approved
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-04-09
 ---
 
@@ -17,18 +17,18 @@ created: 2026-04-09
 
 | Property | Value |
 |----------|-------|
-| **Framework** | {pytest 7.x / jest 29.x / vitest / go test / other} |
-| **Config file** | {path or "none — Wave 0 installs"} |
-| **Quick run command** | `{quick command}` |
-| **Full suite command** | `{full command}` |
+| **Framework** | Rust built-in test framework (cargo test) |
+| **Config file** | Cargo.toml (already configured) |
+| **Quick run command** | `cargo test --lib` |
+| **Full suite command** | `cargo test` |
 | **Estimated runtime** | ~5 seconds |
 
 ---
 
 ## Sampling Rate
 
-- **After every task commit:** Run `{quick run command}`
-- **After every plan wave:** Run `{full suite command}`
+- **After every task commit:** Run `cargo test --lib`
+- **After every plan wave:** Run `cargo test`
 - **Before `/gsd-verify-work`:** Full suite must be green
 - **Max feedback latency:** 5 seconds
 
@@ -38,39 +38,36 @@ created: 2026-04-09
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 5-01-01 | 01 | 1 | REQ-{XX} | T-5-01 / — | {expected secure behavior or "N/A"} | unit | `{command}` | ✅ / ❌ W0 | ⬜ pending |
+| 5-01-01 | 01 | 1 | OPS-01, OPS-02, OPS-03, OPS-05 | T-5-01, T-5-03 | MinBucket/MaxBucket sentinels never returned to client; event_count check returns Missing | unit | `cargo test --lib engine::window::tests && cargo test --lib engine::operators::tests` | TDD inline | pending |
+| 5-01-02 | 01 | 1 | OPS-03, OPS-05 | T-5-02, T-5-04 | Where expressions bounded AST; snapshot version rejects old format | unit | `cargo test` | TDD inline | pending |
+| 5-02-01 | 02 | 1 | OPS-04 | T-5-05, T-5-07 | HLL memory bounded by design; ahash non-crypto accepted for cardinality | unit | `cargo test --lib engine::hll::tests` | TDD inline | pending |
+| 5-02-02 | 02 | 1 | OPS-04 | T-5-06 | HLL merge O(30*16384) sub-microsecond | unit | `cargo test --lib engine::hll` | TDD inline | pending |
+| 5-03-01 | 03 | 2 | OPS-04, XSTR-01, XSTR-02, XSTR-03 | T-5-08, T-5-10 | Lookup reads feature values only; view features validated at registration | unit+integration | `cargo test` | TDD inline | pending |
+| 5-03-02 | 03 | 2 | XSTR-03 | T-5-09, T-5-11 | Fan-out bounded by stream count; qualified map O(features*2) | unit+integration | `cargo test` | TDD inline | pending |
 
-*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+*Status: pending -- all tasks use TDD (tests written before implementation)*
 
 ---
 
 ## Wave 0 Requirements
 
-- [ ] `{tests/test_file.py}` — stubs for REQ-{XX}
-- [ ] `{tests/conftest.py}` — shared fixtures
-- [ ] `{framework install}` — if no framework detected
-
-*If none: "Existing infrastructure covers all phase requirements."*
+Existing infrastructure covers all phase requirements. All tasks use `tdd="true"` with inline `<behavior>` blocks that define tests before implementation. No separate Wave 0 needed.
 
 ---
 
 ## Manual-Only Verifications
 
-| Behavior | Requirement | Why Manual | Test Instructions |
-|----------|-------------|------------|-------------------|
-| {behavior} | REQ-{XX} | {reason} | {steps} |
-
-*If none: "All phase behaviors have automated verification."*
+All phase behaviors have automated verification.
 
 ---
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 5s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references (N/A -- TDD inline)
+- [x] No watch-mode flags
+- [x] Feedback latency < 5s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** {pending / approved YYYY-MM-DD}
+**Approval:** approved 2026-04-09

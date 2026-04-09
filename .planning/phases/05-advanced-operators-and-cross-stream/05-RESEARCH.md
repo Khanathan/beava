@@ -530,19 +530,19 @@ fn evaluate_view_features(
 | A5 | Lookup foreign key resolution from entity features (not just event) works during GET | Pitfall 8 | MEDIUM -- requires that a `last` operator captured the foreign key; otherwise Missing |
 | A6 | DistinctCountOp needs its own ring buffer logic (cannot reuse RingBuffer<Hll> with add_to_current) | Code Examples | LOW -- HLL insert is fundamentally different from numeric add; custom advance_to is needed |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **RingBuffer Clone vs Custom HllRingBuffer**
+1. **RingBuffer Clone vs Custom HllRingBuffer** — RESOLVED: Relax Copy to Clone (Plan 05-01 Task 1). RingBuffer<Hll> is valid after this change, matching locked CONTEXT.md decision.
    - What we know: RingBuffer requires `T: Copy`. HLL is ~16KB and should not be Copy.
    - What's unclear: Whether relaxing to Clone affects postcard serialization or performance of existing operators.
    - Recommendation: Relax to Clone (safest, smallest change). If any issue, create a standalone `HllRingBuffer` that duplicates the advance_to/bucket logic specifically for Hll.
 
-2. **Lookup Foreign Key on GET (No Event Context)**
+2. **Lookup Foreign Key on GET (No Event Context)** — RESOLVED: Search entity features for on_field name (e.g. last_merchant_id or merchant_id). Missing if not found.
    - What we know: On PUSH, the foreign key comes from `_event.merchant_id`. On GET, there's no event.
    - What's unclear: Exactly which entity features should be searched for the foreign key.
    - Recommendation: On GET, look for a feature named `last_{on_field}` or search all static/live features for one matching the `on_field` name. If not found, return Missing. This matches CONTEXT.md: "Lookup foreign key extracted from the current event or from the entity's last known value."
 
-3. **View Key-Field Matching**
+3. **View Key-Field Matching** — RESOLVED: Evaluate all views for every GET. Missing references resolve naturally for non-matching keys.
    - What we know: Views have a `key_field` (e.g., "user_id"). On GET for key "u123", views with key_field "user_id" should be evaluated.
    - What's unclear: How does the server know that "u123" is a "user_id" vs. a "merchant_id"?
    - Recommendation: In the current design, GET returns ALL features for a key regardless of which stream created them. Views should evaluate for all views whose key_field matches ANY registered stream that has state for this entity. Simpler: evaluate all views -- if a view references a stream that doesn't have features for this key, those references resolve to Missing naturally.
