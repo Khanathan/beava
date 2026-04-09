@@ -29,6 +29,7 @@ async fn main() {
         engine: PipelineEngine::new(),
         store: StateStore::new(),
         metrics: Metrics::default(),
+        snapshot_path: snapshot_path.clone(),
     }));
 
     // Load snapshot on startup (PERS-03)

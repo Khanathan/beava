@@ -29,6 +29,8 @@ pub struct AppState {
     pub engine: PipelineEngine,
     pub store: StateStore,
     pub metrics: Metrics,
+    /// Snapshot file path. Single source of truth for both periodic and manual snapshot triggers.
+    pub snapshot_path: std::path::PathBuf,
 }
 
 /// Shared state handle for concurrent connection handlers.
@@ -244,6 +246,7 @@ mod tests {
             engine: PipelineEngine::new(),
             store: StateStore::new(),
             metrics: Metrics::default(),
+            snapshot_path: std::path::PathBuf::from("test.snapshot"),
         }))
     }
 

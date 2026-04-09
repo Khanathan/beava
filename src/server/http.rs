@@ -266,9 +266,10 @@ async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse
             pipelines,
         }
     };
-    let path = std::path::PathBuf::from(
-        std::env::var("TALLY_SNAPSHOT_PATH").unwrap_or_else(|_| "tally.snapshot".into()),
-    );
+    let path = {
+        let app = state.lock().unwrap_or_else(|e| e.into_inner());
+        app.snapshot_path.clone()
+    };
     // Capture start time for snapshot_duration_ms metric
     let snap_start = std::time::Instant::now();
     let result = tokio::task::spawn_blocking(move || {
