@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 05-01-PLAN.md (Min/Max/Last operators and where-clause filtering)
-last_updated: "2026-04-09T20:40:03.481Z"
+stopped_at: Completed 05-02-PLAN.md (HyperLogLog and DistinctCountOp)
+last_updated: "2026-04-09T20:44:59.037Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 19
-  completed_plans: 17
-  percent: 89
+  completed_plans: 18
+  percent: 95
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 ## Current Position
 
 Phase: 05 (advanced-operators-and-cross-stream) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-04-09
 
@@ -71,6 +71,7 @@ Progress: [███████░░░] 71%
 | Phase 04 P02 | 3min | 2 tasks | 3 files |
 | Phase 04 P03 | 4min | 2 tasks | 4 files |
 | Phase 05 P01 | 11min | 2 tasks | 10 files |
+| Phase 05 P02 | 3min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -126,6 +127,8 @@ Recent decisions affecting current work:
 - [Phase 05]: LastOp stores FeatureValue directly (not raw JSON) for consistent type handling
 - [Phase 05]: Where-clause eval uses empty features map -- only _event.* fields accessible in where expressions
 - [Phase 05]: SNAPSHOT_FORMAT_VERSION bumped 1->2; old snapshots cleanly rejected per Phase 4 design
+- [Phase 05]: Vec<u8> HLL registers (not [u8; 16384]) for Clone compatibility with RingBuffer
+- [Phase 05]: DistinctCountOp merge-on-read: bucket HLLs merged at read time, not maintained incrementally
 
 ### Pending Todos
 
@@ -146,6 +149,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T20:40:03.478Z
-Stopped at: Completed 05-01-PLAN.md (Min/Max/Last operators and where-clause filtering)
+Last session: 2026-04-09T20:44:59.034Z
+Stopped at: Completed 05-02-PLAN.md (HyperLogLog and DistinctCountOp)
 Resume file: None

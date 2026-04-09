@@ -34,7 +34,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **OPS-01**: min operator tracks minimum value of a field within a time window
 - [x] **OPS-02**: max operator tracks maximum value of a field within a time window
 - [x] **OPS-03**: last operator stores most recent value of a field with timestamp
-- [ ] **OPS-04**: distinct_count operator uses HyperLogLog with epoch-rotation for windowed approximate unique counts
+- [x] **OPS-04**: distinct_count operator uses HyperLogLog with epoch-rotation for windowed approximate unique counts
 - [x] **OPS-05**: where-clause filtering supports conditional aggregation (e.g. count events where status == 'failed')
 
 ### Cross-Stream
@@ -115,7 +115,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | OPS-01 | Phase 5 | Complete |
 | OPS-02 | Phase 5 | Complete |
 | OPS-03 | Phase 5 | Complete |
-| OPS-04 | Phase 5 | Pending |
+| OPS-04 | Phase 5 | Complete |
 | OPS-05 | Phase 5 | Complete |
 | XSTR-01 | Phase 5 | Pending |
 | XSTR-02 | Phase 5 | Pending |
