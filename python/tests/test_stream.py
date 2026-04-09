@@ -220,3 +220,66 @@ class TestStreamMeta:
             pass
 
         assert type(Tx) is StreamMeta
+
+
+# -----------------------------------------------------------------------
+# entity_ttl and history_ttl
+# -----------------------------------------------------------------------
+
+
+class TestTtlFields:
+    def test_stream_with_entity_ttl(self) -> None:
+        @stream(key="user_id", entity_ttl="5m")
+        class Transactions:
+            tx_count = Count(window="1h")
+
+        assert Transactions._tally_entity_ttl == "5m"
+        json_def = Transactions._to_register_json()
+        assert json_def["entity_ttl"] == "5m"
+
+    def test_stream_with_history_ttl(self) -> None:
+        @stream(key="user_id", history_ttl="72h")
+        class Transactions:
+            tx_count = Count(window="1h")
+
+        assert Transactions._tally_history_ttl == "72h"
+        json_def = Transactions._to_register_json()
+        assert json_def["history_ttl"] == "72h"
+
+    def test_stream_with_both_ttl_fields(self) -> None:
+        @stream(key="user_id", entity_ttl="10m", history_ttl="48h")
+        class Transactions:
+            tx_count = Count(window="1h")
+
+        assert Transactions._tally_entity_ttl == "10m"
+        assert Transactions._tally_history_ttl == "48h"
+        json_def = Transactions._to_register_json()
+        assert json_def["entity_ttl"] == "10m"
+        assert json_def["history_ttl"] == "48h"
+
+    def test_stream_without_ttl_fields(self) -> None:
+        @stream(key="user_id")
+        class Transactions:
+            tx_count = Count(window="1h")
+
+        assert Transactions._tally_entity_ttl is None
+        assert Transactions._tally_history_ttl is None
+        json_def = Transactions._to_register_json()
+        assert "entity_ttl" not in json_def
+        assert "history_ttl" not in json_def
+
+    def test_view_rejects_entity_ttl(self) -> None:
+        from tally._view import view
+
+        with pytest.raises(TypeError, match="entity_ttl"):
+            StreamMeta(
+                "BadView", (), {"score": Derive("a + b")},
+                key="user_id", _is_view=True, entity_ttl="5m",
+            )
+
+    def test_view_rejects_history_ttl(self) -> None:
+        with pytest.raises(TypeError, match="history_ttl"):
+            StreamMeta(
+                "BadView", (), {"score": Derive("a + b")},
+                key="user_id", _is_view=True, history_ttl="72h",
+            )
