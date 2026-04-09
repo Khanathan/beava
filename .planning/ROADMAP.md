@@ -66,7 +66,12 @@ Plans:
   3. All operator classes (st.count, st.sum, st.avg, st.min, st.max, st.distinct_count, st.last, st.derive, st.lookup) serialize to valid JSON pipeline definitions
   4. app.get(), app.set(), and app.mset() all work correctly against a running server with persistent pooled connections
   5. A conformance test verifies that the Python client's binary encoding matches the Rust server's expected wire format byte-for-byte
-**Plans**: TBD
+**Plans:** 4 plans
+Plans:
+- [ ] 03-01-PLAN.md — Project skeleton, types (FeatureResult, exceptions), and binary protocol encoding with byte-level conformance tests
+- [ ] 03-02-PLAN.md — Operator descriptor classes, @stream/@view decorators with metaclass and mixin support
+- [ ] 03-03-PLAN.md — TCP client with auto-reconnect and App class (register/push/get/set/mset)
+- [ ] 03-04-PLAN.md — End-to-end integration tests against live Tally server
 
 ### Phase 4: Persistence and Operational Readiness
 **Goal**: Tally survives restarts (snapshot persistence + crash recovery), reclaims memory for idle keys (TTL eviction), and exposes enough observability for production use (HTTP management API with pipeline CRUD, metrics, and debug endpoints)
@@ -102,6 +107,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 |-------|----------------|--------|-----------|
 | 1. Core Engine | 0/4 | Planning complete | - |
 | 2. TCP Server and Binary Protocol | 3/5 | Gap closure planned | - |
-| 3. Python SDK | 0/TBD | Not started | - |
+| 3. Python SDK | 0/4 | Planning complete | - |
 | 4. Persistence and Operational Readiness | 0/TBD | Not started | - |
 | 5. Advanced Operators and Cross-Stream | 0/TBD | Not started | - |
