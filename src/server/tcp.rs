@@ -218,6 +218,29 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             app.engine.store_raw_register_json(&def_name, raw_json);
             Ok(vec![])
         }
+        Command::Mget { keys } => {
+            let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+            let AppState {
+                ref engine,
+                ref mut store,
+                ..
+            } = *app;
+            let mut result = serde_json::Map::new();
+            for key in &keys {
+                let features = engine.get_features(key, store, now);
+                let feature_json = feature_map_to_json(&features);
+                // Parse the JSON bytes back to a Value for nesting
+                let mut value: serde_json::Value = serde_json::from_slice(&feature_json)
+                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                // T-06-03 mitigation: Strip feature names containing "." to avoid
+                // leaking internal StreamName.feature qualified names to clients
+                if let serde_json::Value::Object(ref mut map) = value {
+                    map.retain(|k, _| !k.contains('.'));
+                }
+                result.insert(key.clone(), value);
+            }
+            Ok(serde_json::to_vec(&serde_json::Value::Object(result)).unwrap())
+        }
         Command::Mset { .. } => unreachable!("MSET handled separately"),
     }
 }
@@ -765,6 +788,72 @@ mod tests {
         let result = handle_sync_command(get_cmd, &state).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&result).unwrap();
         assert_eq!(json["merchant_tx_count_1h"], 1);
+    }
+
+    // --- MGET command tests ---
+
+    #[test]
+    fn test_mget_returns_nested_json_for_known_and_unknown_keys() {
+        let state = make_shared_state();
+        register_tx_stream(&state);
+
+        // Push event for u123
+        let push_cmd = Command::Push {
+            stream_name: "Transactions".into(),
+            payload: serde_json::json!({"user_id": "u123", "amount": 50.0}),
+        };
+        handle_sync_command(push_cmd, &state).unwrap();
+
+        // MGET for known key u123 and unknown key u999
+        let mget_cmd = Command::Mget {
+            keys: vec!["u123".into(), "u999".into()],
+        };
+        let result = handle_sync_command(mget_cmd, &state).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&result).unwrap();
+
+        // u123 should have features
+        assert_eq!(json["u123"]["tx_count_1h"], 1);
+        assert_eq!(json["u123"]["tx_sum_1h"], 50.0);
+
+        // u999 should have empty object
+        assert_eq!(json["u999"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_mget_empty_keys_returns_empty_object() {
+        let state = make_shared_state();
+        let mget_cmd = Command::Mget { keys: vec![] };
+        let result = handle_sync_command(mget_cmd, &state).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        assert_eq!(json, serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_mget_strips_qualified_feature_names() {
+        let state = make_shared_state();
+        register_tx_stream(&state);
+
+        // Push event
+        let push_cmd = Command::Push {
+            stream_name: "Transactions".into(),
+            payload: serde_json::json!({"user_id": "u123", "amount": 50.0}),
+        };
+        handle_sync_command(push_cmd, &state).unwrap();
+
+        // MGET should not contain "Transactions.tx_count_1h" etc.
+        let mget_cmd = Command::Mget {
+            keys: vec!["u123".into()],
+        };
+        let result = handle_sync_command(mget_cmd, &state).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&result).unwrap();
+
+        // Should have unqualified names
+        assert!(json["u123"]["tx_count_1h"].is_number());
+        // Should NOT have qualified names
+        let obj = json["u123"].as_object().unwrap();
+        for key in obj.keys() {
+            assert!(!key.contains('.'), "MGET response should not contain qualified name: {}", key);
+        }
     }
 
     #[test]

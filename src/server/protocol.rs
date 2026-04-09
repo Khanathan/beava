@@ -11,6 +11,7 @@ pub const OP_GET: u8 = 0x02;
 pub const OP_SET: u8 = 0x03;
 pub const OP_MSET: u8 = 0x04;
 pub const OP_REGISTER: u8 = 0x05;
+pub const OP_MGET: u8 = 0x06;
 
 // Response status codes
 pub const STATUS_OK: u8 = 0x00;
@@ -24,6 +25,7 @@ pub enum Command {
     Set { key: String, payload: serde_json::Value },
     Mset { entries: Vec<(String, serde_json::Value)> },
     Register { payload: serde_json::Value },
+    Mget { keys: Vec<String> },
 }
 
 /// Encode a frame: [4-byte BE length][opcode][payload].
@@ -177,6 +179,18 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
         OP_REGISTER => {
             let payload_value = read_json_payload(&mut buf)?;
             Ok(Command::Register { payload: payload_value })
+        }
+        OP_MGET => {
+            if buf.len() < 4 {
+                return Err(TallyError::Protocol("MGET payload too short: need 4 bytes for count".into()));
+            }
+            let count = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+            buf = &buf[4..];
+            let mut keys = Vec::with_capacity(count);
+            for _ in 0..count {
+                keys.push(read_string(&mut buf)?);
+            }
+            Ok(Command::Mget { keys })
         }
         _ => Err(TallyError::Protocol(format!("unknown opcode: 0x{:02x}", opcode))),
     }
@@ -1333,6 +1347,64 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("last requires 'field'"), "got: {}", err_msg);
+    }
+
+    // ======================== Phase 6 Plan 02: MGET protocol tests ========================
+
+    #[test]
+    fn test_parse_command_mget_two_keys() {
+        let mut payload = Vec::new();
+        let count: u32 = 2;
+        payload.extend_from_slice(&count.to_be_bytes());
+        payload.extend_from_slice(&write_string("k1"));
+        payload.extend_from_slice(&write_string("k2"));
+
+        let cmd = parse_command(OP_MGET, &payload).unwrap();
+        match cmd {
+            Command::Mget { keys } => {
+                assert_eq!(keys, vec!["k1".to_string(), "k2".to_string()]);
+            }
+            _ => panic!("expected Mget command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_command_mget_zero_keys() {
+        let mut payload = Vec::new();
+        let count: u32 = 0;
+        payload.extend_from_slice(&count.to_be_bytes());
+
+        let cmd = parse_command(OP_MGET, &payload).unwrap();
+        match cmd {
+            Command::Mget { keys } => {
+                assert!(keys.is_empty());
+            }
+            _ => panic!("expected Mget command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_command_mget_truncated_count() {
+        // Only 2 bytes instead of 4 for count
+        let payload = vec![0u8, 1];
+        let result = parse_command(OP_MGET, &payload);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("MGET payload too short"), "got: {}", err_msg);
+    }
+
+    #[test]
+    fn test_parse_command_mget_truncated_key_string() {
+        let mut payload = Vec::new();
+        let count: u32 = 1;
+        payload.extend_from_slice(&count.to_be_bytes());
+        // String header says 10 bytes but only 2 available
+        payload.extend_from_slice(&[0u8, 10, 0x68, 0x69]);
+
+        let result = parse_command(OP_MGET, &payload);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("truncated"), "got: {}", err_msg);
     }
 
     // ======================== Phase 6 Plan 02: entity_ttl / history_ttl parsing tests ========================
