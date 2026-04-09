@@ -15,6 +15,7 @@ from tally._protocol import (
     OP_GET,
     OP_SET,
     OP_MSET,
+    OP_MGET,
     OP_REGISTER,
     STATUS_OK,
     STATUS_ERROR,
@@ -23,6 +24,7 @@ from tally._protocol import (
     encode_string,
     encode_push,
     encode_get,
+    encode_mget,
     encode_set,
     encode_mset,
     encode_register,
@@ -43,6 +45,7 @@ class TestConstants:
         assert OP_SET == 0x03
         assert OP_MSET == 0x04
         assert OP_REGISTER == 0x05
+        assert OP_MGET == 0x06
 
     def test_status_codes(self):
         assert STATUS_OK == 0x00
@@ -200,6 +203,39 @@ class TestEncodeMset:
         payload = encode_mset({"k": {"v": 42}})
         count = struct.unpack(">I", payload[:4])[0]
         assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# encode_mget
+# ---------------------------------------------------------------------------
+
+
+class TestEncodeMget:
+    def test_two_keys(self):
+        payload = encode_mget(["k1", "k2"])
+        # u32 count=2
+        assert payload[:4] == struct.pack(">I", 2)
+        # First key: u16 len=2 + "k1"
+        assert payload[4:6] == struct.pack(">H", 2)
+        assert payload[6:8] == b"k1"
+        # Second key: u16 len=2 + "k2"
+        assert payload[8:10] == struct.pack(">H", 2)
+        assert payload[10:12] == b"k2"
+
+    def test_empty(self):
+        payload = encode_mget([])
+        assert payload == struct.pack(">I", 0)
+
+    def test_single_key(self):
+        payload = encode_mget(["abc"])
+        assert payload[:4] == struct.pack(">I", 1)
+        assert payload[4:6] == struct.pack(">H", 3)
+        assert payload[6:9] == b"abc"
+
+    def test_total_length(self):
+        payload = encode_mget(["a", "bb"])
+        # 4 (count) + 2+1 (a) + 2+2 (bb) = 11
+        assert len(payload) == 11
 
 
 # ---------------------------------------------------------------------------

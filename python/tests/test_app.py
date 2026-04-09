@@ -13,6 +13,7 @@ from tally._app import App
 from tally._protocol import (
     MAX_FRAME_SIZE,
     OP_GET,
+    OP_MGET,
     OP_MSET,
     OP_PUSH,
     OP_REGISTER,
@@ -346,6 +347,82 @@ class TestMset:
         payload = received["payload"]
         count = struct.unpack(">I", payload[:4])[0]
         assert count == 2
+
+
+# ---------------------------------------------------------------------------
+# Tests: mget
+# ---------------------------------------------------------------------------
+
+
+class TestMget:
+    def test_mget_sends_mget_frame_and_returns_dict(self):
+        response_data = {
+            "k1": {"tx_count_1h": 5, "tx_sum_1h": 100.0},
+            "k2": {"tx_count_1h": 3, "tx_sum_1h": 50.0},
+        }
+        received = {}
+
+        def handler(conn):
+            opcode, payload = _recv_frame(conn)
+            received["opcode"] = opcode
+            received["payload"] = payload
+            conn.sendall(
+                _make_response_frame(
+                    STATUS_OK, json.dumps(response_data).encode("utf-8")
+                )
+            )
+
+        port, done = _start_mock_server(handler)
+        with App(f"127.0.0.1:{port}") as app:
+            result = app.mget(["k1", "k2"])
+
+        done.wait(timeout=2.0)
+        assert received["opcode"] == OP_MGET
+
+        # Verify payload: [u32 count=2][u16-string "k1"][u16-string "k2"]
+        payload = received["payload"]
+        count = struct.unpack(">I", payload[:4])[0]
+        assert count == 2
+
+        # Result is dict[str, FeatureResult]
+        assert isinstance(result, dict)
+        assert set(result.keys()) == {"k1", "k2"}
+        assert isinstance(result["k1"], FeatureResult)
+        assert result["k1"].tx_count_1h == 5
+        assert result["k1"].tx_sum_1h == 100.0
+        assert result["k2"].tx_count_1h == 3
+
+    def test_mget_unknown_key_returns_empty_feature_result(self):
+        response_data = {"k1": {"a": 1}, "k_unknown": {}}
+
+        def handler(conn):
+            _recv_frame(conn)
+            conn.sendall(
+                _make_response_frame(
+                    STATUS_OK, json.dumps(response_data).encode("utf-8")
+                )
+            )
+
+        port, done = _start_mock_server(handler)
+        with App(f"127.0.0.1:{port}") as app:
+            result = app.mget(["k1", "k_unknown"])
+
+        done.wait(timeout=2.0)
+        assert isinstance(result["k_unknown"], FeatureResult)
+        assert result["k_unknown"].to_dict() == {}
+
+    def test_mget_empty_response(self):
+        def handler(conn):
+            _recv_frame(conn)
+            conn.sendall(_make_response_frame(STATUS_OK, b"{}"))
+
+        port, done = _start_mock_server(handler)
+        with App(f"127.0.0.1:{port}") as app:
+            result = app.mget(["k1"])
+
+        done.wait(timeout=2.0)
+        assert isinstance(result, dict)
+        assert len(result) == 0
 
 
 # ---------------------------------------------------------------------------
