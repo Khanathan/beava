@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: verifying
-stopped_at: Completed 01-04-PLAN.md (state store and pipeline engine)
-last_updated: "2026-04-09T13:55:28.378Z"
+status: executing
+stopped_at: Completed 02-01-PLAN.md (binary protocol layer)
+last_updated: "2026-04-09T15:09:45.951Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 4
-  completed_plans: 4
-  percent: 100
+  total_plans: 7
+  completed_plans: 5
+  percent: 71
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Events go in, features come out — synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
-**Current focus:** Phase 01 — Core Engine
+**Current focus:** Phase 02 — TCP Server and Binary Protocol
 
 ## Current Position
 
-Phase: 01 (Core Engine) — EXECUTING
-Plan: 4 of 4
-Status: Phase complete — ready for verification
-Last activity: 2026-04-09 - Completed quick task 260409-f8y: Generate AI image generation prompts for Tally logo/mascot
+Phase: 02 (TCP Server and Binary Protocol) — EXECUTING
+Plan: 1 of 3
+Status: Plan 02-01 complete, continuing to 02-02
+Last activity: 2026-04-09
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [███████░░░] 71%
 
 ## Performance Metrics
 
@@ -56,6 +56,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01-core-engine P02 | 3min | 2 tasks | 2 files |
 | Phase 01-core-engine P03 | 8min | 2 tasks | 2 files |
 | Phase 01-core-engine P04 | 3min | 2 tasks | 5 files |
+| Phase 02-tcp-server P01 | 5min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,10 @@ Recent decisions affecting current work:
 - [Phase 01-core-engine]: Lazy operator instantiation: operators created on first push per entity, not at registration time
 - [Phase 01-core-engine]: Static features override live features with same name (direct writes take precedence per CLAUDE.md)
 - [Phase 01-core-engine]: Derive results collected into Vec before insertion to satisfy Rust borrow checker
+- [Phase 02-tcp-server]: Flat DTO struct with serde rename from 'type' instead of internally tagged enum for REGISTER JSON
+- [Phase 02-tcp-server]: Frame length = opcode + payload bytes (standard length-prefix convention)
+- [Phase 02-tcp-server]: MSET per-entry format: [u16 key][u32 json_len][json_bytes] for streaming parse
+- [Phase 02-tcp-server]: Default bucket = window/30 clamped to 1s minimum (consistent with Phase 1)
 
 ### Pending Todos
 
@@ -99,6 +104,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T13:55:28.376Z
-Stopped at: Completed 01-04-PLAN.md (state store and pipeline engine)
+Last session: 2026-04-09T15:09:45.949Z
+Stopped at: Completed 02-01-PLAN.md (binary protocol layer)
 Resume file: None
