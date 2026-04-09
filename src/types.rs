@@ -106,4 +106,81 @@ mod tests {
         assert_eq!(parsed["a"], 1.5);
         assert_eq!(parsed["b"], 2);
     }
+
+    // --- G-09: as_f64 and is_missing exhaustive variant tests ---
+
+    #[test]
+    fn test_as_f64_float() {
+        assert_eq!(FeatureValue::Float(3.14).as_f64(), Some(3.14));
+    }
+
+    #[test]
+    fn test_as_f64_int() {
+        assert_eq!(FeatureValue::Int(42).as_f64(), Some(42.0));
+    }
+
+    #[test]
+    fn test_as_f64_string_returns_none() {
+        assert_eq!(FeatureValue::String("hi".into()).as_f64(), None);
+    }
+
+    #[test]
+    fn test_as_f64_missing_returns_none() {
+        assert_eq!(FeatureValue::Missing.as_f64(), None);
+    }
+
+    #[test]
+    fn test_is_missing_true() {
+        assert!(FeatureValue::Missing.is_missing());
+    }
+
+    #[test]
+    fn test_is_missing_false_float() {
+        assert!(!FeatureValue::Float(1.0).is_missing());
+    }
+
+    #[test]
+    fn test_is_missing_false_int() {
+        assert!(!FeatureValue::Int(0).is_missing());
+    }
+
+    #[test]
+    fn test_is_missing_false_string() {
+        assert!(!FeatureValue::String("".into()).is_missing());
+    }
+
+    // --- G-10: feature_map_to_json with Missing and String values ---
+
+    #[test]
+    fn test_feature_map_to_json_with_missing() {
+        let mut map = FeatureMap::new();
+        map.insert("x".into(), FeatureValue::Missing);
+        let bytes = feature_map_to_json(&map);
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed["x"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn test_feature_map_to_json_with_string() {
+        let mut map = FeatureMap::new();
+        map.insert("name".into(), FeatureValue::String("alice".into()));
+        let bytes = feature_map_to_json(&map);
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed["name"], "alice");
+    }
+
+    #[test]
+    fn test_feature_map_to_json_all_variants() {
+        let mut map = FeatureMap::new();
+        map.insert("f".into(), FeatureValue::Float(1.5));
+        map.insert("i".into(), FeatureValue::Int(42));
+        map.insert("s".into(), FeatureValue::String("ok".into()));
+        map.insert("m".into(), FeatureValue::Missing);
+        let bytes = feature_map_to_json(&map);
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed["f"], 1.5);
+        assert_eq!(parsed["i"], 42);
+        assert_eq!(parsed["s"], "ok");
+        assert_eq!(parsed["m"], serde_json::Value::Null);
+    }
 }
