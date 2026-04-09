@@ -1,0 +1,368 @@
+//! Pipeline engine: stream definitions and push-through orchestration.
+//!
+//! PipelineEngine holds registered stream definitions and coordinates the
+//! synchronous push-through flow: event -> extract key -> update operators
+//! -> evaluate derives -> return feature map.
+
+use std::time::{Duration, SystemTime};
+use ahash::AHashMap;
+use crate::types::{FeatureValue, FeatureMap};
+use crate::error::TallyError;
+use crate::state::store::StateStore;
+use super::operators::{Operator, CountOp, SumOp, AvgOp};
+use super::expression::{Expr, EvalContext, eval};
+
+/// Definition of a single feature within a stream.
+#[derive(Debug, Clone)]
+pub enum FeatureDef {
+    Count {
+        window: Duration,
+        bucket: Duration,
+    },
+    Sum {
+        field: String,
+        window: Duration,
+        bucket: Duration,
+        optional: bool,
+    },
+    Avg {
+        field: String,
+        window: Duration,
+        bucket: Duration,
+        optional: bool,
+    },
+    Derive {
+        expr: Expr, // Parsed at registration time
+    },
+}
+
+/// A stream definition: a named stream with a key field and a list of named features.
+#[derive(Debug, Clone)]
+pub struct StreamDefinition {
+    pub name: String,
+    pub key_field: String,
+    pub features: Vec<(String, FeatureDef)>, // (feature_name, definition)
+}
+
+/// The pipeline engine. Holds registered stream definitions and coordinates
+/// the push-through flow.
+#[derive(Debug)]
+pub struct PipelineEngine {
+    streams: AHashMap<String, StreamDefinition>,
+}
+
+/// Create an operator instance from a FeatureDef (non-derive only).
+fn create_operator(def: &FeatureDef) -> Option<Box<dyn Operator>> {
+    match def {
+        FeatureDef::Count { window, bucket } => {
+            Some(Box::new(CountOp::new(*window, *bucket)))
+        }
+        FeatureDef::Sum { field, window, bucket, optional } => {
+            Some(Box::new(SumOp::new(field.clone(), *window, *bucket, *optional)))
+        }
+        FeatureDef::Avg { field, window, bucket, optional } => {
+            Some(Box::new(AvgOp::new(field.clone(), *window, *bucket, *optional)))
+        }
+        FeatureDef::Derive { .. } => None, // Derives have no operator state
+    }
+}
+
+impl PipelineEngine {
+    /// Create engine with no registered streams.
+    pub fn new() -> Self {
+        Self {
+            streams: AHashMap::new(),
+        }
+    }
+
+    /// Register a stream definition. Validates derive expressions are parseable.
+    /// Duplicate registration replaces the previous definition (idempotent).
+    /// Stream names must be non-empty (T-01-14 mitigation).
+    pub fn register(&mut self, stream: StreamDefinition) -> Result<(), TallyError> {
+        if stream.name.is_empty() {
+            return Err(TallyError::Protocol("stream name must not be empty".into()));
+        }
+        // Derive expressions should already be parsed in the StreamDefinition,
+        // but verify they exist
+        for (name, def) in &stream.features {
+            if let FeatureDef::Derive { expr: _ } = def {
+                // Expression is already parsed -- valid
+                let _ = name;
+            }
+        }
+        self.streams.insert(stream.name.clone(), stream);
+        Ok(())
+    }
+
+    /// Synchronous push-through flow:
+    /// 1. Look up stream definition by name
+    /// 2. Extract entity key from event JSON
+    /// 3. Get or create EntityState
+    /// 4. For each operator feature: find or create operator, call push
+    /// 5. Collect all feature values: read operators + evaluate derives
+    /// 6. Update last_event_at
+    /// 7. Return complete FeatureMap
+    pub fn push(
+        &self,
+        stream_name: &str,
+        event: &serde_json::Value,
+        store: &mut StateStore,
+        now: SystemTime,
+    ) -> Result<FeatureMap, TallyError> {
+        // 1. Look up stream definition
+        let stream = self.streams.get(stream_name).ok_or_else(|| {
+            TallyError::Protocol(format!("unknown stream: {}", stream_name))
+        })?;
+
+        // 2. Extract entity key from event JSON (T-01-11 mitigation)
+        let key = match event.get(&stream.key_field) {
+            Some(serde_json::Value::String(s)) => {
+                if s.is_empty() {
+                    return Err(TallyError::Protocol(
+                        format!("empty key field '{}'", stream.key_field),
+                    ));
+                }
+                s.clone()
+            }
+            Some(other) => {
+                return Err(TallyError::Type {
+                    field: stream.key_field.clone(),
+                    expected: "string".into(),
+                    got: format!("{}", other),
+                });
+            }
+            None => {
+                return Err(TallyError::Type {
+                    field: stream.key_field.clone(),
+                    expected: "string".into(),
+                    got: "absent".into(),
+                });
+            }
+        };
+
+        // 3. Get or create EntityState
+        let entity = store.get_or_create_entity(&key);
+
+        // 4. Initialize operators lazily on first push if entity has none
+        if entity.live_operators.is_empty() {
+            for (name, def) in &stream.features {
+                if let Some(op) = create_operator(def) {
+                    entity.live_operators.push((name.clone(), op));
+                }
+            }
+        }
+
+        // Push event to all operators
+        for (_, op) in entity.live_operators.iter_mut() {
+            op.push(event, now)?;
+        }
+
+        // 5. Collect feature values
+        let mut features = FeatureMap::new();
+
+        // Read all operator values
+        for (name, op) in entity.live_operators.iter_mut() {
+            features.insert(name.clone(), op.read(now));
+        }
+
+        // Overlay static features
+        for (name, sf) in &entity.static_features {
+            features.insert(name.clone(), sf.value.clone());
+        }
+
+        // Evaluate derive expressions (collect first to avoid borrow conflict)
+        let derived: Vec<(String, FeatureValue)> = {
+            let ctx = EvalContext {
+                features: &features,
+                event: Some(event),
+            };
+            stream.features.iter()
+                .filter_map(|(name, def)| {
+                    if let FeatureDef::Derive { expr } = def {
+                        Some((name.clone(), eval(expr, &ctx)))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+        for (name, value) in derived {
+            features.insert(name, value);
+        }
+
+        // 6. Update last_event_at
+        entity.update_last_event(now);
+
+        // 7. Return features
+        Ok(features)
+    }
+
+    /// Feature retrieval for GET path.
+    /// Calls store.get_all_features (which reads operators with &mut self to
+    /// advance time and expire stale buckets), then evaluates derive expressions
+    /// for any registered streams.
+    pub fn get_features(
+        &self,
+        key: &str,
+        store: &mut StateStore,
+        now: SystemTime,
+    ) -> FeatureMap {
+        let mut features = store.get_all_features(key, now);
+
+        // Evaluate derives from all registered streams
+        let ctx = EvalContext {
+            features: &features,
+            event: None,
+        };
+        // Collect derives first to avoid borrow issues
+        let mut derived: Vec<(String, FeatureValue)> = Vec::new();
+        for stream in self.streams.values() {
+            for (name, def) in &stream.features {
+                if let FeatureDef::Derive { expr } = def {
+                    let value = eval(expr, &ctx);
+                    derived.push((name.clone(), value));
+                }
+            }
+        }
+        for (name, value) in derived {
+            features.insert(name, value);
+        }
+
+        features
+    }
+
+    /// Get a registered stream definition by name.
+    pub fn get_stream(&self, name: &str) -> Option<&StreamDefinition> {
+        self.streams.get(name)
+    }
+
+    /// Number of registered streams.
+    pub fn stream_count(&self) -> usize {
+        self.streams.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn ts(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    fn make_tx_stream() -> StreamDefinition {
+        StreamDefinition {
+            name: "Transactions".into(),
+            key_field: "user_id".into(),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                }),
+                ("tx_sum_1h".into(), FeatureDef::Sum {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                }),
+                ("avg_amount_1h".into(), FeatureDef::Avg {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                }),
+            ],
+        }
+    }
+
+    #[test]
+    fn test_register_stream() {
+        let mut engine = PipelineEngine::new();
+        let stream = make_tx_stream();
+        engine.register(stream).unwrap();
+        assert_eq!(engine.stream_count(), 1);
+        assert!(engine.get_stream("Transactions").is_some());
+    }
+
+    #[test]
+    fn test_register_empty_name_rejected() {
+        let mut engine = PipelineEngine::new();
+        let stream = StreamDefinition {
+            name: "".into(),
+            key_field: "user_id".into(),
+            features: vec![],
+        };
+        assert!(engine.register(stream).is_err());
+    }
+
+    #[test]
+    fn test_push_updates_all_operators() {
+        let mut engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        engine.register(make_tx_stream()).unwrap();
+
+        let now = ts(60_000);
+        let event = serde_json::json!({
+            "user_id": "u123",
+            "amount": 50.0
+        });
+
+        let features = engine.push("Transactions", &event, &mut store, now).unwrap();
+        assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
+        assert_eq!(features.get("tx_sum_1h"), Some(&FeatureValue::Float(50.0)));
+        assert_eq!(features.get("avg_amount_1h"), Some(&FeatureValue::Float(50.0)));
+    }
+
+    #[test]
+    fn test_push_missing_key_field_returns_error() {
+        let mut engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        engine.register(make_tx_stream()).unwrap();
+
+        let event = serde_json::json!({"amount": 50.0});
+        let result = engine.push("Transactions", &event, &mut store, ts(60_000));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_push_empty_key_rejected() {
+        let mut engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        engine.register(make_tx_stream()).unwrap();
+
+        let event = serde_json::json!({"user_id": "", "amount": 50.0});
+        let result = engine.push("Transactions", &event, &mut store, ts(60_000));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_push_unknown_stream_returns_error() {
+        let engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        let event = serde_json::json!({"user_id": "u123"});
+        let result = engine.push("NonExistent", &event, &mut store, ts(60_000));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_push_3_events_verify_aggregates() {
+        let mut engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        engine.register(make_tx_stream()).unwrap();
+
+        let now = ts(60_000);
+        for amount in [10.0, 20.0, 30.0] {
+            let event = serde_json::json!({
+                "user_id": "u123",
+                "amount": amount
+            });
+            engine.push("Transactions", &event, &mut store, now).unwrap();
+        }
+
+        let features = store.get_all_features("u123", now);
+        assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(3)));
+        assert_eq!(features.get("tx_sum_1h"), Some(&FeatureValue::Float(60.0)));
+        assert_eq!(features.get("avg_amount_1h"), Some(&FeatureValue::Float(20.0)));
+    }
+}
