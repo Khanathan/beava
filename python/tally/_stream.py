@@ -38,6 +38,8 @@ class StreamMeta(type):
         *,
         key: str | None = None,
         _is_view: bool = False,
+        entity_ttl: str | None = None,
+        history_ttl: str | None = None,
     ) -> StreamMeta:
         # Collect operator descriptors from all bases (mixin support).
         # Walk bases in reverse order so later bases override earlier ones,
@@ -53,6 +55,13 @@ class StreamMeta(type):
             if isinstance(attr_val, OperatorBase):
                 features[attr_name] = attr_val
 
+        # Validate view restriction: views cannot have TTL fields.
+        if _is_view and (entity_ttl is not None or history_ttl is not None):
+            raise TypeError(
+                f"view '{name}' cannot have entity_ttl or history_ttl; "
+                "views have no state to evict"
+            )
+
         # Validate view restriction: only Derive and Lookup allowed.
         if _is_view:
             for feat_name, feat_op in features.items():
@@ -67,6 +76,8 @@ class StreamMeta(type):
         cls._tally_key_field = key
         cls._tally_stream_name = name
         cls._tally_is_view = _is_view
+        cls._tally_entity_ttl = entity_ttl
+        cls._tally_history_ttl = history_ttl
         return cls
 
     def _to_register_json(cls) -> dict:
@@ -93,15 +104,24 @@ class StreamMeta(type):
         }
         if cls._tally_is_view:
             d["type"] = "view"
+        if cls._tally_entity_ttl is not None:
+            d["entity_ttl"] = cls._tally_entity_ttl
+        if cls._tally_history_ttl is not None:
+            d["history_ttl"] = cls._tally_history_ttl
         return d
 
 
-def stream(*, key: str):
+def stream(
+    *,
+    key: str,
+    entity_ttl: str | None = None,
+    history_ttl: str | None = None,
+):
     """Decorator that creates a stream class with the given key field.
 
     Usage::
 
-        @stream(key="user_id")
+        @stream(key="user_id", entity_ttl="5m", history_ttl="72h")
         class Transactions:
             tx_count = Count(window="30m")
     """
@@ -111,6 +131,13 @@ def stream(*, key: str):
         namespace = {
             k: v for k, v in cls.__dict__.items() if not k.startswith("__")
         }
-        return StreamMeta(cls.__name__, cls.__bases__, namespace, key=key)
+        return StreamMeta(
+            cls.__name__,
+            cls.__bases__,
+            namespace,
+            key=key,
+            entity_ttl=entity_ttl,
+            history_ttl=history_ttl,
+        )
 
     return decorator
