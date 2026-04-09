@@ -52,7 +52,7 @@ Plans:
 - [x] 02-01-PLAN.md — Protocol layer: frame parsing, string encoding, command opcodes, REGISTER DTO, FeatureValue JSON conversion
 - [x] 02-02-PLAN.md — TCP server with connection handler and command dispatch (PUSH, GET, SET, MSET, REGISTER)
 - [x] 02-03-PLAN.md — HTTP health endpoint, main.rs entry point, and integration tests for all SRV-* requirements
-- [ ] 02-04-PLAN.md — Gap closure: unit tests for protocol error branches and types public API (G-02, G-04, G-05, G-06, G-08, G-09, G-10)
+- [x] 02-04-PLAN.md — Gap closure: unit tests for protocol error branches and types public API (G-02, G-04, G-05, G-06, G-08, G-09, G-10)
 - [ ] 02-05-PLAN.md — Gap closure: integration tests for server edge cases and behavioral coverage (G-01, G-03, G-07, G-11, G-12, G-13)
 **UI hint**: no
 
