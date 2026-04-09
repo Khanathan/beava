@@ -16,7 +16,7 @@ use super::window::RingBuffer;
 /// `read` takes `&mut self` so implementations can call `advance_to(now)` to
 /// expire stale buckets before aggregating. This is safe in Tally's
 /// single-threaded Redis-like design (no concurrent reads).
-pub trait Operator: std::fmt::Debug {
+pub trait Operator: std::fmt::Debug + Send {
     fn push(&mut self, event: &serde_json::Value, now: SystemTime) -> Result<(), TallyError>;
     fn read(&mut self, now: SystemTime) -> FeatureValue;
 }
