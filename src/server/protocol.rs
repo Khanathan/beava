@@ -382,4 +382,234 @@ mod tests {
         let result = parse_frame(&data);
         assert!(result.is_err());
     }
+
+    // --- Duration parsing tests ---
+
+    #[test]
+    fn test_parse_duration_30m() {
+        let d = parse_duration_str("30m").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(1800));
+    }
+
+    #[test]
+    fn test_parse_duration_1h() {
+        let d = parse_duration_str("1h").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn test_parse_duration_24h() {
+        let d = parse_duration_str("24h").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(86400));
+    }
+
+    #[test]
+    fn test_parse_duration_30s() {
+        let d = parse_duration_str("30s").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_parse_duration_7d() {
+        let d = parse_duration_str("7d").unwrap();
+        assert_eq!(d, std::time::Duration::from_secs(604800));
+    }
+
+    #[test]
+    fn test_parse_duration_500ms() {
+        let d = parse_duration_str("500ms").unwrap();
+        assert_eq!(d, std::time::Duration::from_millis(500));
+    }
+
+    #[test]
+    fn test_parse_duration_empty() {
+        assert!(parse_duration_str("").is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_abc() {
+        assert!(parse_duration_str("abc").is_err());
+    }
+
+    // --- REGISTER DTO and conversion tests ---
+
+    #[test]
+    fn test_register_request_count_feature() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [{
+                "name": "tx_count_1h",
+                "type": "count",
+                "window": "1h"
+            }]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        assert_eq!(stream.name, "Transactions");
+        assert_eq!(stream.key_field, "user_id");
+        assert_eq!(stream.features.len(), 1);
+        assert_eq!(stream.features[0].0, "tx_count_1h");
+        match &stream.features[0].1 {
+            crate::engine::pipeline::FeatureDef::Count { window, bucket } => {
+                assert_eq!(*window, std::time::Duration::from_secs(3600));
+                // Default bucket = window / 30 = 120s = 2m
+                assert_eq!(*bucket, std::time::Duration::from_secs(120));
+            }
+            other => panic!("expected Count, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_default_bucket_clamped_to_1s_minimum() {
+        // 30s window / 30 = 1s (exactly at minimum)
+        let b = default_bucket(std::time::Duration::from_secs(30));
+        assert_eq!(b, std::time::Duration::from_secs(1));
+        // 10s window / 30 = 0.33s -> clamped to 1s
+        let b2 = default_bucket(std::time::Duration::from_secs(10));
+        assert_eq!(b2, std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn test_register_request_sum_feature() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [{
+                "name": "tx_sum_1h",
+                "type": "sum",
+                "field": "amount",
+                "window": "1h"
+            }]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        match &stream.features[0].1 {
+            crate::engine::pipeline::FeatureDef::Sum { field, window, bucket, optional } => {
+                assert_eq!(field, "amount");
+                assert_eq!(*window, std::time::Duration::from_secs(3600));
+                assert_eq!(*bucket, std::time::Duration::from_secs(120));
+                assert!(!optional);
+            }
+            other => panic!("expected Sum, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_register_request_avg_feature() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [{
+                "name": "avg_amount_1h",
+                "type": "avg",
+                "field": "amount",
+                "window": "1h",
+                "optional": true
+            }]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        match &stream.features[0].1 {
+            crate::engine::pipeline::FeatureDef::Avg { field, window, bucket, optional } => {
+                assert_eq!(field, "amount");
+                assert_eq!(*window, std::time::Duration::from_secs(3600));
+                assert_eq!(*bucket, std::time::Duration::from_secs(120));
+                assert!(*optional);
+            }
+            other => panic!("expected Avg, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_register_request_derive_feature() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [{
+                "name": "failure_rate",
+                "type": "derive",
+                "expr": "failed_count_1h / count_1h"
+            }]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        match &stream.features[0].1 {
+            crate::engine::pipeline::FeatureDef::Derive { expr: _ } => {
+                // Expression was parsed successfully
+            }
+            other => panic!("expected Derive, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_register_request_invalid_expression_returns_error() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [{
+                "name": "bad",
+                "type": "derive",
+                "expr": "+++"
+            }]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_register_request_missing_required_fields() {
+        // Missing "name" field
+        let json = serde_json::json!({
+            "key_field": "user_id",
+            "features": []
+        });
+        let result: Result<RegisterRequest, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_register_request_empty_stream_name() {
+        let json = serde_json::json!({
+            "name": "",
+            "key_field": "user_id",
+            "features": []
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_register_request_empty_key_field() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "",
+            "features": []
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_convert_register_request_pipeline_engine_compatibility() {
+        // End-to-end: convert DTO and register in PipelineEngine
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [
+                {"name": "tx_count_1h", "type": "count", "window": "1h"},
+                {"name": "tx_sum_1h", "type": "sum", "field": "amount", "window": "1h"},
+                {"name": "rate", "type": "derive", "expr": "tx_sum_1h / tx_count_1h"}
+            ]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        let mut engine = crate::engine::pipeline::PipelineEngine::new();
+        engine.register(stream).unwrap();
+        assert_eq!(engine.stream_count(), 1);
+        assert!(engine.get_stream("Transactions").is_some());
+    }
 }
