@@ -35,6 +35,26 @@ impl FeatureValue {
     pub fn is_missing(&self) -> bool {
         matches!(self, FeatureValue::Missing)
     }
+
+    /// Convert to a plain serde_json::Value (untagged).
+    /// Float(1.5) -> 1.5, Int(42) -> 42, String("ok") -> "ok", Missing -> null.
+    pub fn to_json_value(&self) -> serde_json::Value {
+        match self {
+            FeatureValue::Float(f) => serde_json::Value::from(*f),
+            FeatureValue::Int(i) => serde_json::Value::from(*i),
+            FeatureValue::String(s) => serde_json::Value::String(s.clone()),
+            FeatureValue::Missing => serde_json::Value::Null,
+        }
+    }
+}
+
+/// Convert a FeatureMap to JSON bytes (untagged values).
+pub fn feature_map_to_json(features: &FeatureMap) -> Vec<u8> {
+    let map: serde_json::Map<String, serde_json::Value> = features
+        .iter()
+        .map(|(k, v)| (k.clone(), v.to_json_value()))
+        .collect();
+    serde_json::to_vec(&serde_json::Value::Object(map)).unwrap()
 }
 
 /// A map of feature name to feature value.
