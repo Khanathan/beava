@@ -73,10 +73,12 @@ pub struct SnapshotState {
 
 /// Serialize a SnapshotState to bytes with a version prefix.
 /// Format: [1 byte version][postcard-encoded SnapshotState]
-pub fn save_snapshot(data: &SnapshotState) -> Vec<u8> {
+/// Returns an error if postcard serialization fails (e.g., due to
+/// unsupported types or internal limits), instead of panicking.
+pub fn save_snapshot(data: &SnapshotState) -> Result<Vec<u8>, postcard::Error> {
     let mut buf = vec![SNAPSHOT_FORMAT_VERSION];
-    buf.extend_from_slice(&postcard::to_stdvec(data).expect("snapshot serialization failed"));
-    buf
+    buf.extend_from_slice(&postcard::to_stdvec(data)?);
+    Ok(buf)
 }
 
 /// Deserialize a SnapshotState from bytes.
@@ -245,7 +247,7 @@ mod tests {
             entities: vec![],
             pipelines: vec![],
         };
-        let bytes = save_snapshot(&state);
+        let bytes = save_snapshot(&state).expect("save_snapshot should succeed");
         assert_eq!(bytes[0], SNAPSHOT_FORMAT_VERSION);
         assert_eq!(bytes[0], 0x01);
     }
@@ -273,7 +275,7 @@ mod tests {
             pipelines: vec![],
         };
 
-        let bytes = save_snapshot(&state);
+        let bytes = save_snapshot(&state).expect("save_snapshot should succeed");
         let restored = load_snapshot(&bytes);
         assert!(restored.is_some());
 
@@ -289,7 +291,7 @@ mod tests {
             entities: vec![],
             pipelines: vec![],
         };
-        let mut bytes = save_snapshot(&state);
+        let mut bytes = save_snapshot(&state).expect("save_snapshot should succeed");
         // Tamper with version byte
         bytes[0] = 0xFF;
         assert!(load_snapshot(&bytes).is_none());

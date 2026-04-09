@@ -72,7 +72,7 @@ fn test_snapshot_roundtrip_preserves_features() {
     };
 
     // Save and load
-    let bytes = save_snapshot(&snapshot);
+    let bytes = save_snapshot(&snapshot).expect("save_snapshot should succeed");
     let restored = load_snapshot(&bytes).expect("load_snapshot should succeed");
 
     // Restore into a new store
@@ -98,7 +98,7 @@ fn test_snapshot_version_mismatch_returns_none() {
         entities: vec![],
         pipelines: vec![],
     };
-    let mut bytes = save_snapshot(&snapshot);
+    let mut bytes = save_snapshot(&snapshot).expect("save_snapshot should succeed");
     // Mutate version byte to invalid value
     bytes[0] = 0xFF;
     assert!(load_snapshot(&bytes).is_none());
@@ -211,7 +211,7 @@ fn test_snapshot_atomic_write() {
         entities: vec![],
         pipelines: vec![],
     };
-    let bytes = save_snapshot(&snapshot);
+    let bytes = save_snapshot(&snapshot).expect("save_snapshot should succeed");
 
     // Mimic the atomic rename pattern from main.rs
     std::fs::write(&tmp_path, &bytes).expect("write tmp");

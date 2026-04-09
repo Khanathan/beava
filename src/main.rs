@@ -118,7 +118,8 @@ async fn main() {
             let snap_start = std::time::Instant::now();
             let path = snap_path.clone();
             let result = tokio::task::spawn_blocking(move || {
-                let bytes = save_snapshot(&snapshot_data);
+                let bytes = save_snapshot(&snapshot_data)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
                 let tmp_path = path.with_extension("tmp");
                 std::fs::write(&tmp_path, &bytes)?;
                 std::fs::rename(&tmp_path, &path)?;

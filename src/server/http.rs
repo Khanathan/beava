@@ -273,7 +273,8 @@ async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse
     // Capture start time for snapshot_duration_ms metric
     let snap_start = std::time::Instant::now();
     let result = tokio::task::spawn_blocking(move || {
-        let bytes = crate::state::snapshot::save_snapshot(&snapshot_data);
+        let bytes = crate::state::snapshot::save_snapshot(&snapshot_data)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         let tmp_path = path.with_extension("tmp");
         std::fs::write(&tmp_path, &bytes)?;
         std::fs::rename(&tmp_path, &path)?;
