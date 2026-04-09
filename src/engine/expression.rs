@@ -1117,4 +1117,157 @@ mod tests {
             other => panic!("Expected Float from now(), got {:?}", other),
         }
     }
+
+    // ======================== Or / Lt / Lte / Neq Tests ========================
+
+    #[test]
+    fn test_eval_or_true_true() {
+        let result = eval_with("a or b", &[
+            ("a", FeatureValue::Int(1)),
+            ("b", FeatureValue::Int(1)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(1));
+    }
+
+    #[test]
+    fn test_eval_or_true_false() {
+        let result = eval_with("a or b", &[
+            ("a", FeatureValue::Int(1)),
+            ("b", FeatureValue::Int(0)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(1));
+    }
+
+    #[test]
+    fn test_eval_or_false_false() {
+        let result = eval_with("a or b", &[
+            ("a", FeatureValue::Int(0)),
+            ("b", FeatureValue::Int(0)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(0));
+    }
+
+    #[test]
+    fn test_eval_or_with_missing_propagates() {
+        let result = eval_with("a or b", &[
+            ("a", FeatureValue::Missing),
+            ("b", FeatureValue::Int(1)),
+        ]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_lt_true() {
+        let result = eval_with("a < b", &[
+            ("a", FeatureValue::Int(3)),
+            ("b", FeatureValue::Int(5)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(1));
+    }
+
+    #[test]
+    fn test_eval_lt_false_equal() {
+        let result = eval_with("a < b", &[
+            ("a", FeatureValue::Int(5)),
+            ("b", FeatureValue::Int(5)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(0));
+    }
+
+    #[test]
+    fn test_eval_lt_false_greater() {
+        let result = eval_with("a < b", &[
+            ("a", FeatureValue::Float(7.0)),
+            ("b", FeatureValue::Float(3.0)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(0));
+    }
+
+    #[test]
+    fn test_eval_lte_true_less() {
+        let result = eval_with("a <= b", &[
+            ("a", FeatureValue::Int(3)),
+            ("b", FeatureValue::Int(5)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(1));
+    }
+
+    #[test]
+    fn test_eval_lte_true_equal() {
+        let result = eval_with("a <= b", &[
+            ("a", FeatureValue::Float(5.0)),
+            ("b", FeatureValue::Float(5.0)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(1));
+    }
+
+    #[test]
+    fn test_eval_lte_false() {
+        let result = eval_with("a <= b", &[
+            ("a", FeatureValue::Int(10)),
+            ("b", FeatureValue::Int(5)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(0));
+    }
+
+    #[test]
+    fn test_eval_neq_true() {
+        let result = eval_with("a != b", &[
+            ("a", FeatureValue::Int(3)),
+            ("b", FeatureValue::Int(5)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(1));
+    }
+
+    #[test]
+    fn test_eval_neq_false() {
+        let result = eval_with("a != b", &[
+            ("a", FeatureValue::Float(5.0)),
+            ("b", FeatureValue::Float(5.0)),
+        ]);
+        assert_eq!(result, FeatureValue::Int(0));
+    }
+
+    #[test]
+    fn test_eval_neq_strings() {
+        let result = eval_with("a != b", &[
+            ("a", FeatureValue::String("hello".into())),
+            ("b", FeatureValue::String("world".into())),
+        ]);
+        assert_eq!(result, FeatureValue::Int(1));
+    }
+
+    // ======================== Unknown Function / Wrong Arity Tests ========================
+
+    #[test]
+    fn test_eval_unknown_function_returns_missing() {
+        let result = eval_with("unknown_fn(a)", &[
+            ("a", FeatureValue::Float(5.0)),
+        ]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_abs_wrong_arity_zero_args() {
+        let result = eval_with("abs()", &[]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_min_wrong_arity_one_arg() {
+        let result = eval_with("min(a)", &[
+            ("a", FeatureValue::Float(5.0)),
+        ]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_max_wrong_arity_three_args() {
+        let result = eval_with("max(a, b, c)", &[
+            ("a", FeatureValue::Float(1.0)),
+            ("b", FeatureValue::Float(2.0)),
+            ("c", FeatureValue::Float(3.0)),
+        ]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
 }

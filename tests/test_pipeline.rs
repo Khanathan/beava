@@ -222,3 +222,46 @@ fn test_derive_with_event_field_access() {
         panic!("expected Float, got {:?}", ratio);
     }
 }
+
+#[test]
+fn test_get_features_returns_live_and_derived() {
+    let mut engine = PipelineEngine::new();
+    let mut store = StateStore::new();
+    engine.register(make_tx_stream_with_derive()).unwrap();
+
+    let now = ts(60_000);
+    // Push two events so derive (avg_via_derive = sum/count) is meaningful
+    engine.push("Transactions", &json!({"user_id": "u1", "amount": 30.0}), &mut store, now).unwrap();
+    engine.push("Transactions", &json!({"user_id": "u1", "amount": 70.0}), &mut store, now).unwrap();
+
+    let features = engine.get_features("u1", &mut store, now);
+
+    // Live features
+    assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(2)));
+    assert_eq!(features.get("tx_sum_1h"), Some(&FeatureValue::Float(100.0)));
+    assert_eq!(features.get("avg_amount_1h"), Some(&FeatureValue::Float(50.0)));
+
+    // Derived feature: tx_sum_1h / tx_count_1h = 100 / 2 = 50
+    assert_eq!(features.get("avg_via_derive"), Some(&FeatureValue::Float(50.0)));
+}
+
+// ======================== FeatureValue Serialization Round-Trip ========================
+
+#[test]
+fn test_feature_value_json_round_trip() {
+    let values = vec![
+        FeatureValue::Float(3.14),
+        FeatureValue::Int(42),
+        FeatureValue::String("hello".into()),
+        FeatureValue::Missing,
+        FeatureValue::Float(-0.0),
+        FeatureValue::Int(i64::MIN),
+        FeatureValue::Int(i64::MAX),
+    ];
+
+    for val in &values {
+        let json = serde_json::to_string(val).expect("serialize");
+        let back: FeatureValue = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(&back, val, "round-trip failed for {:?} -> {}", val, json);
+    }
+}

@@ -456,4 +456,43 @@ mod tests {
         op.push(&json!({"amount": 20}), t).unwrap();
         assert_eq!(op.read(t), FeatureValue::Float(15.0));
     }
+
+    // ======================== Negative Number Tests ========================
+
+    #[test]
+    fn test_sum_with_negative_values() {
+        let mut op = SumOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": -10.0}), t).unwrap();
+        op.push(&json!({"amount": -20.0}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Float(-30.0));
+    }
+
+    #[test]
+    fn test_sum_with_mixed_positive_and_negative() {
+        let mut op = SumOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 100.0}), t).unwrap();
+        op.push(&json!({"amount": -30.0}), t).unwrap();
+        op.push(&json!({"amount": -20.0}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Float(50.0));
+    }
+
+    #[test]
+    fn test_avg_with_negative_values() {
+        let mut op = AvgOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": -10.0}), t).unwrap();
+        op.push(&json!({"amount": -30.0}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Float(-20.0));
+    }
+
+    #[test]
+    fn test_avg_with_mixed_positive_and_negative() {
+        let mut op = AvgOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 10.0}), t).unwrap();
+        op.push(&json!({"amount": -30.0}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Float(-10.0));
+    }
 }
