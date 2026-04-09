@@ -5,7 +5,7 @@ use std::time::Duration;
 use tally::engine::pipeline::PipelineEngine;
 use tally::server::http::run_http_server;
 use tally::server::protocol::{RegisterRequest, convert_register_request};
-use tally::server::tcp::{AppState, run_tcp_server};
+use tally::server::tcp::{AppState, Metrics, run_tcp_server};
 use tally::state::eviction::evict_expired_keys;
 use tally::state::snapshot::{SerializablePipeline, SnapshotState, load_snapshot, save_snapshot};
 use tally::state::store::StateStore;
@@ -28,6 +28,7 @@ async fn main() {
     let state = Arc::new(Mutex::new(AppState {
         engine: PipelineEngine::new(),
         store: StateStore::new(),
+        metrics: Metrics::default(),
     }));
 
     // Load snapshot on startup (PERS-03)
@@ -125,11 +126,12 @@ async fn main() {
             .await;
             match result {
                 Ok(Ok(size)) => {
-                    let _snap_elapsed = snap_start.elapsed();
-                    // NOTE: Plan 03 will update this arm to write:
-                    //   snap_state.lock().metrics.snapshot_duration_ms = _snap_elapsed.as_millis() as u64;
-                    // This cannot be done here because the Metrics struct does not exist until Plan 03.
-                    eprintln!("Snapshot saved ({} bytes)", size);
+                    let snap_elapsed = snap_start.elapsed();
+                    {
+                        let mut app = snap_state.lock().unwrap_or_else(|e| e.into_inner());
+                        app.metrics.snapshot_duration_ms = snap_elapsed.as_millis() as u64;
+                    }
+                    eprintln!("Snapshot saved ({} bytes, {}ms)", size, snap_elapsed.as_millis());
                 }
                 Ok(Err(e)) => eprintln!("Snapshot write failed: {}", e),
                 Err(e) => eprintln!("Snapshot task panicked: {}", e),
@@ -149,6 +151,7 @@ async fn main() {
             let AppState {
                 ref engine,
                 ref mut store,
+                ..
             } = *app;
             let evicted = evict_expired_keys(store, engine, now, ttl_multiplier);
             if evicted > 0 {

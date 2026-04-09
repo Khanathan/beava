@@ -18,7 +18,7 @@ use tokio::net::TcpStream;
 
 use tally::engine::pipeline::PipelineEngine;
 use tally::server::protocol::{self, OP_GET, OP_MSET, OP_PUSH, OP_REGISTER, OP_SET, STATUS_ERROR, STATUS_OK};
-use tally::server::tcp::{AppState, SharedState};
+use tally::server::tcp::{AppState, Metrics, SharedState};
 use tally::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
@@ -30,6 +30,7 @@ async fn start_test_server() -> (u16, u16, SharedState) {
     let state: SharedState = Arc::new(Mutex::new(AppState {
         engine: PipelineEngine::new(),
         store: StateStore::new(),
+        metrics: Metrics::default(),
     }));
 
     // Bind to port 0 for random assignment

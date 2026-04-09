@@ -15,10 +15,20 @@ use crate::server::protocol::{self, Command, STATUS_ERROR, STATUS_OK};
 use crate::state::store::StateStore;
 use crate::types::{feature_map_to_json, FeatureValue};
 
-/// Application state: engine + store.
+/// Operational metrics exposed via GET /metrics.
+/// Updated in-place by command handlers.
+#[derive(Debug, Default)]
+pub struct Metrics {
+    pub events_total: u64,
+    pub push_latency_seconds: f64, // Last observed PUSH latency
+    pub snapshot_duration_ms: u64,
+}
+
+/// Application state: engine + store + metrics.
 pub struct AppState {
     pub engine: PipelineEngine,
     pub store: StateStore,
+    pub metrics: Metrics,
 }
 
 /// Shared state handle for concurrent connection handlers.
@@ -125,19 +135,26 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             stream_name,
             payload,
         } => {
+            let push_start = std::time::Instant::now();
             let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
             let AppState {
                 ref engine,
                 ref mut store,
+                ..
             } = *app;
             let features = engine.push(&stream_name, &payload, store, now)?;
-            Ok(feature_map_to_json(&features))
+            let result = feature_map_to_json(&features);
+            let push_elapsed = push_start.elapsed();
+            app.metrics.push_latency_seconds = push_elapsed.as_secs_f64();
+            app.metrics.events_total += 1;
+            Ok(result)
         }
         Command::Get { key } => {
             let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
             let AppState {
                 ref engine,
                 ref mut store,
+                ..
             } = *app;
             let features = engine.get_features(&key, store, now);
             Ok(feature_map_to_json(&features))
@@ -226,6 +243,7 @@ mod tests {
         Arc::new(Mutex::new(AppState {
             engine: PipelineEngine::new(),
             store: StateStore::new(),
+            metrics: Metrics::default(),
         }))
     }
 
