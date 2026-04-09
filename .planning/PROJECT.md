@@ -28,7 +28,10 @@ Events go in, features come out — synchronously, in one request-response cycle
 
 <!-- Shipped and confirmed valuable. -->
 
-(None yet — ship to validate)
+- [x] Snapshot persistence (periodic serde+postcard to disk) — Validated in Phase 4: Persistence & Operational Readiness
+- [x] Snapshot recovery on startup — Validated in Phase 4: Persistence & Operational Readiness
+- [x] TTL-based key eviction — Validated in Phase 4: Persistence & Operational Readiness
+- [x] HTTP management API (health, metrics, debug, pipeline CRUD) — Validated in Phase 4: Persistence & Operational Readiness
 
 ### Active
 
@@ -48,11 +51,11 @@ Events go in, features come out — synchronously, in one request-response cycle
 - [ ] Python SDK: @st.stream, @st.view decorators, operator classes
 - [ ] Python SDK: TCP client with connection pooling
 - [ ] Python SDK: typed feature results
-- [ ] Snapshot persistence (periodic serde+bincode to disk)
-- [ ] Snapshot recovery on startup
-- [ ] TTL-based key eviction
+- [x] Snapshot persistence (periodic serde+postcard to disk) — Completed Phase 4
+- [x] Snapshot recovery on startup — Completed Phase 4
+- [x] TTL-based key eviction — Completed Phase 4
 - [ ] MSET chunked yielding (cooperative, non-blocking)
-- [ ] HTTP management API (health, metrics, debug, pipeline CRUD)
+- [x] HTTP management API (health, metrics, debug, pipeline CRUD) — Completed Phase 4
 
 ### Out of Scope
 
@@ -114,4 +117,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-09 after milestone v1.0 initialization*
+*Last updated: 2026-04-09 after Phase 4 completion (Persistence & Operational Readiness)*
