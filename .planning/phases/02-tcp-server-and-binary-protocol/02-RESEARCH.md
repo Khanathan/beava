@@ -543,7 +543,7 @@ async fn run_http_server(addr: &str, state: SharedState) {
 | A1 | std::sync::Mutex is preferable to tokio::sync::Mutex because lock is never held across .await points | Architecture Patterns - Pattern 1 | If any future handler needs async work while holding state, would need refactoring to tokio::sync::Mutex. Low risk for Phase 2. |
 | A2 | tokio::sync::Mutex has higher overhead than std::sync::Mutex for non-contended single-thread case | Anti-Patterns | Marginal difference in practice. Low risk. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Frame length semantics: does length include the opcode byte?**
    - What we know: CLAUDE.md says `[4 bytes: message length][1 byte: opcode][payload]`. The most natural reading is that "message length" = opcode + payload (i.e., everything after the 4-byte length field).
