@@ -1,7 +1,9 @@
 //! Binary protocol: frame encoding/decoding, string protocol, command parsing,
 //! response serialization. All functions are synchronous (pure byte manipulation).
 
+use serde::Deserialize;
 use crate::error::TallyError;
+use crate::engine::pipeline::{StreamDefinition, FeatureDef};
 
 // Command opcodes
 pub const OP_PUSH: u8 = 0x01;
@@ -178,6 +180,204 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
         }
         _ => Err(TallyError::Protocol(format!("unknown opcode: 0x{:02x}", opcode))),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Duration string parsing
+// ---------------------------------------------------------------------------
+
+/// Parse a human-readable duration string into std::time::Duration.
+/// Supported suffixes: ms (milliseconds), s (seconds), m (minutes), h (hours), d (days).
+pub fn parse_duration_str(s: &str) -> Result<std::time::Duration, TallyError> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err(TallyError::Protocol("empty duration string".into()));
+    }
+    // Check for "ms" suffix first (two-character suffix)
+    if let Some(num_str) = s.strip_suffix("ms") {
+        let millis: u64 = num_str
+            .parse()
+            .map_err(|_| TallyError::Protocol(format!("invalid duration number: {}", s)))?;
+        return Ok(std::time::Duration::from_millis(millis));
+    }
+    // Single-character suffix
+    let (num_str, multiplier) = match s.as_bytes().last() {
+        Some(b's') => (&s[..s.len() - 1], 1u64),
+        Some(b'm') => (&s[..s.len() - 1], 60u64),
+        Some(b'h') => (&s[..s.len() - 1], 3600u64),
+        Some(b'd') => (&s[..s.len() - 1], 86400u64),
+        _ => {
+            return Err(TallyError::Protocol(format!(
+                "unknown duration suffix: {}",
+                s
+            )));
+        }
+    };
+    let value: u64 = num_str
+        .parse()
+        .map_err(|_| TallyError::Protocol(format!("invalid duration number: {}", s)))?;
+    Ok(std::time::Duration::from_secs(value * multiplier))
+}
+
+// ---------------------------------------------------------------------------
+// REGISTER DTO types
+// ---------------------------------------------------------------------------
+
+/// Intermediate deserialization type for the REGISTER command payload.
+/// Uses a flat struct with `feature_type` field instead of an internally tagged enum
+/// for simpler Python SDK production.
+#[derive(Debug, Deserialize)]
+pub struct RegisterRequest {
+    pub name: String,
+    pub key_field: String,
+    pub features: Vec<FeatureDefRequest>,
+}
+
+/// A single feature definition in the REGISTER JSON payload.
+#[derive(Debug, Deserialize)]
+pub struct FeatureDefRequest {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub feature_type: String,
+    #[serde(default)]
+    pub field: Option<String>,
+    #[serde(default)]
+    pub window: Option<String>,
+    #[serde(default)]
+    pub bucket: Option<String>,
+    #[serde(default)]
+    pub expr: Option<String>,
+    #[serde(default)]
+    pub optional: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// DTO to domain conversion
+// ---------------------------------------------------------------------------
+
+/// Compute the default bucket granularity: window / 30, clamped to minimum 1 second.
+fn default_bucket(window: std::time::Duration) -> std::time::Duration {
+    let bucket_nanos = window.as_nanos() / 30;
+    let min_bucket = std::time::Duration::from_secs(1);
+    let bucket = std::time::Duration::from_nanos(bucket_nanos as u64);
+    if bucket < min_bucket {
+        min_bucket
+    } else {
+        bucket
+    }
+}
+
+/// Convert a RegisterRequest DTO into a StreamDefinition with parsed expressions.
+/// Validates name/key_field non-empty, parses duration strings, parses derive expressions.
+pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition, TallyError> {
+    if req.name.is_empty() {
+        return Err(TallyError::Protocol(
+            "stream name must not be empty".into(),
+        ));
+    }
+    if req.key_field.is_empty() {
+        return Err(TallyError::Protocol(
+            "key_field must not be empty".into(),
+        ));
+    }
+
+    let mut features = Vec::with_capacity(req.features.len());
+    for f in req.features {
+        let def = match f.feature_type.as_str() {
+            "count" => {
+                let window_str = f.window.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': count requires 'window' field",
+                        f.name
+                    ))
+                })?;
+                let window = parse_duration_str(&window_str)?;
+                let bucket = match f.bucket {
+                    Some(b) => parse_duration_str(&b)?,
+                    None => default_bucket(window),
+                };
+                FeatureDef::Count { window, bucket }
+            }
+            "sum" => {
+                let field = f.field.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': sum requires 'field'",
+                        f.name
+                    ))
+                })?;
+                let window_str = f.window.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': sum requires 'window' field",
+                        f.name
+                    ))
+                })?;
+                let window = parse_duration_str(&window_str)?;
+                let bucket = match f.bucket {
+                    Some(b) => parse_duration_str(&b)?,
+                    None => default_bucket(window),
+                };
+                FeatureDef::Sum {
+                    field,
+                    window,
+                    bucket,
+                    optional: f.optional.unwrap_or(false),
+                }
+            }
+            "avg" => {
+                let field = f.field.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': avg requires 'field'",
+                        f.name
+                    ))
+                })?;
+                let window_str = f.window.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': avg requires 'window' field",
+                        f.name
+                    ))
+                })?;
+                let window = parse_duration_str(&window_str)?;
+                let bucket = match f.bucket {
+                    Some(b) => parse_duration_str(&b)?,
+                    None => default_bucket(window),
+                };
+                FeatureDef::Avg {
+                    field,
+                    window,
+                    bucket,
+                    optional: f.optional.unwrap_or(false),
+                }
+            }
+            "derive" => {
+                let expr_str = f.expr.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': derive requires 'expr' field",
+                        f.name
+                    ))
+                })?;
+                let expr = crate::engine::expression::parse_expr(&expr_str).map_err(|e| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': invalid expression: {}",
+                        f.name, e
+                    ))
+                })?;
+                FeatureDef::Derive { expr }
+            }
+            unknown => {
+                return Err(TallyError::Protocol(format!(
+                    "unknown feature type: {}",
+                    unknown
+                )));
+            }
+        };
+        features.push((f.name, def));
+    }
+
+    Ok(StreamDefinition {
+        name: req.name,
+        key_field: req.key_field,
+        features,
+    })
 }
 
 #[cfg(test)]
