@@ -50,6 +50,10 @@ pub struct StreamDefinition {
 #[derive(Debug)]
 pub struct PipelineEngine {
     streams: AHashMap<String, StreamDefinition>,
+    /// Raw register JSON strings for each stream, keyed by stream name.
+    /// Stored on REGISTER so snapshots can persist pipeline definitions
+    /// without serializing the Expr AST.
+    raw_register_jsons: AHashMap<String, serde_json::Value>,
 }
 
 /// Create an operator instance from a FeatureDef (non-derive only).
@@ -74,6 +78,7 @@ impl PipelineEngine {
     pub fn new() -> Self {
         Self {
             streams: AHashMap::new(),
+            raw_register_jsons: AHashMap::new(),
         }
     }
 
@@ -249,6 +254,42 @@ impl PipelineEngine {
     pub fn stream_count(&self) -> usize {
         self.streams.len()
     }
+
+    /// Return the maximum window duration across all registered streams.
+    /// Returns Duration::ZERO if no streams are registered.
+    pub fn max_window_duration(&self) -> Duration {
+        self.streams.values()
+            .flat_map(|s| s.features.iter())
+            .filter_map(|(_, def)| match def {
+                FeatureDef::Count { window, .. } => Some(*window),
+                FeatureDef::Sum { window, .. } => Some(*window),
+                FeatureDef::Avg { window, .. } => Some(*window),
+                FeatureDef::Derive { .. } => None,
+            })
+            .max()
+            .unwrap_or(Duration::ZERO)
+    }
+
+    /// Iterate over all registered stream definitions.
+    pub fn list_streams(&self) -> impl Iterator<Item = &StreamDefinition> {
+        self.streams.values()
+    }
+
+    /// Remove a stream definition by name. Returns true if found and removed.
+    pub fn remove_stream(&mut self, name: &str) -> bool {
+        self.raw_register_jsons.remove(name);
+        self.streams.remove(name).is_some()
+    }
+
+    /// Store the raw register JSON for a stream (called during REGISTER command processing).
+    pub fn store_raw_register_json(&mut self, name: &str, json: serde_json::Value) {
+        self.raw_register_jsons.insert(name.to_string(), json);
+    }
+
+    /// Get the raw register JSON for a stream. Returns None if not found.
+    pub fn get_raw_register_json(&self, name: &str) -> Option<&serde_json::Value> {
+        self.raw_register_jsons.get(name)
+    }
 }
 
 #[cfg(test)]
@@ -373,5 +414,113 @@ mod tests {
         assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(3)));
         assert_eq!(features.get("tx_sum_1h"), Some(&FeatureValue::Float(60.0)));
         assert_eq!(features.get("avg_amount_1h"), Some(&FeatureValue::Float(20.0)));
+    }
+
+    // ======================== max_window_duration Tests ========================
+
+    #[test]
+    fn test_max_window_duration() {
+        let mut engine = PipelineEngine::new();
+        engine.register(StreamDefinition {
+            name: "stream1".into(),
+            key_field: "id".into(),
+            features: vec![
+                ("c1".into(), FeatureDef::Count {
+                    window: Duration::from_secs(1800), // 30m
+                    bucket: Duration::from_secs(60),
+                }),
+                ("s1".into(), FeatureDef::Sum {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600), // 1h -- largest
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                }),
+            ],
+        }).unwrap();
+        engine.register(StreamDefinition {
+            name: "stream2".into(),
+            key_field: "id".into(),
+            features: vec![
+                ("c2".into(), FeatureDef::Count {
+                    window: Duration::from_secs(900), // 15m
+                    bucket: Duration::from_secs(60),
+                }),
+            ],
+        }).unwrap();
+        assert_eq!(engine.max_window_duration(), Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn test_max_window_duration_no_streams() {
+        let engine = PipelineEngine::new();
+        assert_eq!(engine.max_window_duration(), Duration::ZERO);
+    }
+
+    #[test]
+    fn test_max_window_duration_derive_only_returns_zero() {
+        let mut engine = PipelineEngine::new();
+        engine.register(StreamDefinition {
+            name: "derived".into(),
+            key_field: "id".into(),
+            features: vec![
+                ("ratio".into(), FeatureDef::Derive {
+                    expr: crate::engine::expression::parse_expr("1 + 1").unwrap(),
+                }),
+            ],
+        }).unwrap();
+        assert_eq!(engine.max_window_duration(), Duration::ZERO);
+    }
+
+    // ======================== list_streams / remove_stream Tests ========================
+
+    #[test]
+    fn test_list_streams() {
+        let mut engine = PipelineEngine::new();
+        engine.register(make_tx_stream()).unwrap();
+        let streams: Vec<_> = engine.list_streams().collect();
+        assert_eq!(streams.len(), 1);
+        assert_eq!(streams[0].name, "Transactions");
+    }
+
+    #[test]
+    fn test_remove_stream() {
+        let mut engine = PipelineEngine::new();
+        engine.register(make_tx_stream()).unwrap();
+        assert_eq!(engine.stream_count(), 1);
+        assert!(engine.remove_stream("Transactions"));
+        assert_eq!(engine.stream_count(), 0);
+        assert!(!engine.remove_stream("Transactions")); // Already removed
+    }
+
+    // ======================== raw_register_json Tests ========================
+
+    #[test]
+    fn test_get_raw_register_json_returns_some_for_registered() {
+        let mut engine = PipelineEngine::new();
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [{"name": "tx_count_1h", "type": "count", "window": "1h"}]
+        });
+        engine.store_raw_register_json("Transactions", json.clone());
+        let result = engine.get_raw_register_json("Transactions");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), &json);
+    }
+
+    #[test]
+    fn test_get_raw_register_json_returns_none_for_unknown() {
+        let engine = PipelineEngine::new();
+        assert!(engine.get_raw_register_json("NonExistent").is_none());
+    }
+
+    #[test]
+    fn test_remove_stream_also_removes_raw_json() {
+        let mut engine = PipelineEngine::new();
+        engine.register(make_tx_stream()).unwrap();
+        engine.store_raw_register_json("Transactions", serde_json::json!({"test": true}));
+        assert!(engine.get_raw_register_json("Transactions").is_some());
+        engine.remove_stream("Transactions");
+        assert!(engine.get_raw_register_json("Transactions").is_none());
     }
 }

@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use ahash::AHashMap;
 use serde::{Serialize, Deserialize};
 use crate::types::{EntityKey, FeatureValue, FeatureMap};
-use crate::state::snapshot::OperatorState;
+use crate::state::snapshot::{OperatorState, SerializableEntityState};
 
 /// A directly-written feature value (from SET/MSET commands).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,6 +134,49 @@ impl StateStore {
     pub fn entity_count(&self) -> usize {
         self.entities.len()
     }
+
+    /// Clone full state for snapshot serialization.
+    /// AHashMap is not directly serializable by postcard -- convert to Vec<(K, V)>.
+    pub fn clone_for_snapshot(&self) -> Vec<(String, SerializableEntityState)> {
+        self.entities.iter().map(|(key, entity)| {
+            (key.clone(), SerializableEntityState {
+                live_operators: entity.live_operators.clone(),
+                static_features: entity.static_features.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                last_event_at: entity.last_event_at,
+            })
+        }).collect()
+    }
+
+    /// Restore state from a snapshot. Clears existing state first.
+    pub fn restore_from_snapshot(&mut self, entities: Vec<(String, SerializableEntityState)>) {
+        self.entities.clear();
+        for (key, state) in entities {
+            let entity = EntityState {
+                live_operators: state.live_operators,
+                static_features: state.static_features.into_iter().collect(),
+                last_event_at: state.last_event_at,
+            };
+            self.entities.insert(key, entity);
+        }
+    }
+
+    /// Remove entities whose last_event_at is older than `ttl` from `now`.
+    /// Entities with `last_event_at = None` are not evicted (never received an event).
+    /// Returns the count of evicted entities.
+    pub fn remove_expired_entities(&mut self, now: SystemTime, ttl: std::time::Duration) -> usize {
+        let before = self.entities.len();
+        self.entities.retain(|_key, entity| {
+            match entity.last_event_at {
+                None => true, // Never pushed -- don't evict
+                Some(last) => {
+                    now.duration_since(last).unwrap_or(std::time::Duration::ZERO) < ttl
+                }
+            }
+        });
+        before - self.entities.len()
+    }
 }
 
 #[cfg(test)]
@@ -252,5 +295,98 @@ mod tests {
         let mut store = StateStore::new();
         let features = store.get_all_features("nonexistent", ts(1000));
         assert!(features.is_empty());
+    }
+
+    // ======================== clone_for_snapshot / restore_from_snapshot Tests ========================
+
+    #[test]
+    fn test_clone_for_snapshot_preserves_state() {
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+
+        // Add an entity with a live operator and static feature
+        {
+            let entity = store.get_or_create_entity("u123");
+            let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            op.push(&serde_json::json!({}), now).unwrap();
+            op.push(&serde_json::json!({}), now).unwrap();
+            entity.live_operators.push(("tx_count".to_string(), op));
+            entity.update_last_event(now);
+        }
+        store.set_static("u123", "segment", FeatureValue::String("premium".into()), now);
+
+        let snapshot = store.clone_for_snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].0, "u123");
+        assert_eq!(snapshot[0].1.live_operators.len(), 1);
+        assert_eq!(snapshot[0].1.static_features.len(), 1);
+        assert_eq!(snapshot[0].1.last_event_at, Some(now));
+
+        // Verify operator state preserved
+        let mut op = snapshot[0].1.live_operators[0].1.clone();
+        assert_eq!(op.read(now), FeatureValue::Int(2));
+    }
+
+    #[test]
+    fn test_restore_from_snapshot() {
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+
+        let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+        op.push(&serde_json::json!({}), now).unwrap();
+
+        let snapshot_entities = vec![(
+            "u456".to_string(),
+            crate::state::snapshot::SerializableEntityState {
+                live_operators: vec![("count".to_string(), op)],
+                static_features: vec![(
+                    "tier".to_string(),
+                    StaticFeature {
+                        value: FeatureValue::String("gold".into()),
+                        updated_at: now,
+                    },
+                )],
+                last_event_at: Some(now),
+            },
+        )];
+
+        store.restore_from_snapshot(snapshot_entities);
+        assert_eq!(store.entity_count(), 1);
+        let entity = store.get_entity("u456").unwrap();
+        assert_eq!(entity.live_operators.len(), 1);
+        assert_eq!(entity.static_features.len(), 1);
+        assert_eq!(entity.last_event_at, Some(now));
+    }
+
+    // ======================== remove_expired_entities Tests ========================
+
+    #[test]
+    fn test_remove_expired_entities() {
+        let mut store = StateStore::new();
+        let now = ts(100_000);
+        let ttl = Duration::from_secs(3600); // 1 hour TTL
+
+        // Entity with old last_event_at (should be evicted)
+        {
+            let entity = store.get_or_create_entity("old_user");
+            entity.update_last_event(ts(1000)); // Very old
+        }
+
+        // Entity with recent last_event_at (should be kept)
+        {
+            let entity = store.get_or_create_entity("recent_user");
+            entity.update_last_event(ts(99_000)); // Recent
+        }
+
+        // Entity with no last_event_at (should be kept)
+        store.get_or_create_entity("no_event_user");
+
+        assert_eq!(store.entity_count(), 3);
+        let evicted = store.remove_expired_entities(now, ttl);
+        assert_eq!(evicted, 1);
+        assert_eq!(store.entity_count(), 2);
+        assert!(store.get_entity("old_user").is_none());
+        assert!(store.get_entity("recent_user").is_some());
+        assert!(store.get_entity("no_event_user").is_some());
     }
 }

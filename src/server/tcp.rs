@@ -158,11 +158,14 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             Ok(vec![])
         }
         Command::Register { payload } => {
+            let raw_json = payload.clone();
             let req: protocol::RegisterRequest = serde_json::from_value(payload)
                 .map_err(|e| TallyError::Protocol(format!("invalid register payload: {}", e)))?;
+            let stream_name = req.name.clone();
             let stream_def = protocol::convert_register_request(req)?;
             let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
             app.engine.register(stream_def)?;
+            app.engine.store_raw_register_json(&stream_name, raw_json);
             Ok(vec![])
         }
         Command::Mset { .. } => unreachable!("MSET handled separately"),
