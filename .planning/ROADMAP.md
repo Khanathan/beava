@@ -47,7 +47,11 @@ Plans:
   3. GET returns the current feature map for a key; SET writes a static feature; both work correctly across separate TCP connections
   4. An MSET with 10,000 entries completes without starving concurrent PUSH/GET requests (cooperative yielding is observable via interleaved response timing)
   5. The HTTP management API on port 6401 responds to GET /health with a 200 OK
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 02-01-PLAN.md — Protocol layer: frame parsing, string encoding, command opcodes, REGISTER DTO, FeatureValue JSON conversion
+- [ ] 02-02-PLAN.md — TCP server with connection handler and command dispatch (PUSH, GET, SET, MSET, REGISTER)
+- [ ] 02-03-PLAN.md — HTTP health endpoint, main.rs entry point, and integration tests for all SRV-* requirements
 **UI hint**: no
 
 ### Phase 3: Python SDK
@@ -95,7 +99,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Core Engine | 0/4 | Planning complete | - |
-| 2. TCP Server and Binary Protocol | 0/TBD | Not started | - |
+| 2. TCP Server and Binary Protocol | 0/3 | Planning complete | - |
 | 3. Python SDK | 0/TBD | Not started | - |
 | 4. Persistence and Operational Readiness | 0/TBD | Not started | - |
 | 5. Advanced Operators and Cross-Stream | 0/TBD | Not started | - |
