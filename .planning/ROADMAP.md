@@ -30,7 +30,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. A derive expression string (e.g. "failed_tx_30m / tx_count_30m") is parsed at registration time into an AST and evaluated at event time to produce a numeric result
   4. The expression evaluator returns FeatureValue::Missing (not a panic, not NaN) for division-by-zero and for access to fields not present in the current state
   5. All operator state uses AHashMap and SystemTime-based window buckets so that client-supplied Unix timestamps are handled correctly from day one
-**Plans**: TBD
+**Plans:** 4 plans
+Plans:
+- [ ] 01-01-PLAN.md — Project skeleton, core types (FeatureValue, TallyError), and time-bucketed RingBuffer
+- [ ] 01-02-PLAN.md — Core operators (CountOp, SumOp, AvgOp) with Redis-strict type checking
+- [ ] 01-03-PLAN.md — Expression parser (winnow Pratt) and evaluator with Missing propagation
+- [ ] 01-04-PLAN.md — State store (EntityState, StateStore) and PipelineEngine push-through integration
 
 ### Phase 2: TCP Server and Binary Protocol
 **Goal**: A running Tally server accepts persistent TCP connections, parses binary frames, dispatches all five commands (PUSH, GET, SET, MSET, REGISTER) to the engine, and returns updated features synchronously in the same response
@@ -89,7 +94,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Core Engine | 0/TBD | Not started | - |
+| 1. Core Engine | 0/4 | Planning complete | - |
 | 2. TCP Server and Binary Protocol | 0/TBD | Not started | - |
 | 3. Python SDK | 0/TBD | Not started | - |
 | 4. Persistence and Operational Readiness | 0/TBD | Not started | - |
