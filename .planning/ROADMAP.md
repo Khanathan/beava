@@ -34,7 +34,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 Plans:
 - [x] 01-01-PLAN.md — Project skeleton, core types (FeatureValue, TallyError), and time-bucketed RingBuffer
 - [x] 01-02-PLAN.md — Core operators (CountOp, SumOp, AvgOp) with Redis-strict type checking
-- [ ] 01-03-PLAN.md — Expression parser (winnow Pratt) and evaluator with Missing propagation
+- [x] 01-03-PLAN.md — Expression parser (winnow Pratt) and evaluator with Missing propagation
 - [ ] 01-04-PLAN.md — State store (EntityState, StateStore) and PipelineEngine push-through integration
 
 ### Phase 2: TCP Server and Binary Protocol

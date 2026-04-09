@@ -14,9 +14,9 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **ENG-03**: count operator tracks event count within a time window
 - [x] **ENG-04**: sum operator accumulates a numeric field within a time window
 - [x] **ENG-05**: avg operator computes running average of a numeric field within a time window
-- [ ] **ENG-06**: Expression evaluator parses derive/where expressions at registration time into AST
-- [ ] **ENG-07**: Expression evaluator supports arithmetic (+, -, *, /), comparison (>, <, >=, <=, ==, !=), boolean (and, or, not), field access (field, Stream.field, _event.field), and builtins (abs, min, max, now)
-- [ ] **ENG-08**: Expression evaluator returns Missing on division-by-zero or missing inputs (no panics)
+- [x] **ENG-06**: Expression evaluator parses derive/where expressions at registration time into AST
+- [x] **ENG-07**: Expression evaluator supports arithmetic (+, -, *, /), comparison (>, <, >=, <=, ==, !=), boolean (and, or, not), field access (field, Stream.field, _event.field), and builtins (abs, min, max, now)
+- [x] **ENG-08**: Expression evaluator returns Missing on division-by-zero or missing inputs (no panics)
 
 ### Server Protocol
 
@@ -101,9 +101,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ENG-03 | Phase 1 | Complete |
 | ENG-04 | Phase 1 | Complete |
 | ENG-05 | Phase 1 | Complete |
-| ENG-06 | Phase 1 | Pending |
-| ENG-07 | Phase 1 | Pending |
-| ENG-08 | Phase 1 | Pending |
+| ENG-06 | Phase 1 | Complete |
+| ENG-07 | Phase 1 | Complete |
+| ENG-08 | Phase 1 | Complete |
 | SRV-01 | Phase 2 | Pending |
 | SRV-02 | Phase 2 | Pending |
 | SRV-03 | Phase 2 | Pending |

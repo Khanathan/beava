@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: "Completed 01-02-PLAN.md (core operators: count, sum, avg)"
-last_updated: "2026-04-09T13:40:49.201Z"
+stopped_at: Completed 01-03-PLAN.md (expression parser and evaluator)
+last_updated: "2026-04-09T13:50:57.543Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 4
-  completed_plans: 2
-  percent: 50
+  completed_plans: 3
+  percent: 75
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 ## Current Position
 
 Phase: 01 (Core Engine) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-04-09
 
@@ -54,6 +54,7 @@ Progress: [░░░░░░░░░░] 0%
 *Updated after each plan completion*
 | Phase 01-core-engine P01 | 3min | 2 tasks | 11 files |
 | Phase 01-core-engine P02 | 3min | 2 tasks | 2 files |
+| Phase 01-core-engine P03 | 8min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -71,6 +72,9 @@ Recent decisions affecting current work:
 - [Phase 01-core-engine]: RingBuffer uses Vec<T> with head pointer (not VecDeque) for cache-friendly fixed-size ring
 - [Phase 01-core-engine]: read(&mut self, now) calls advance_to(now) for accurate window expiration on GET-only paths
 - [Phase 01-core-engine]: SumOp/AvgOp use serde_json as_f64() accepting both Int and Float JSON values for numeric extraction
+- [Phase 01-core-engine]: winnow Alt tuple limit requires nested alt() for >9 operator alternatives
+- [Phase 01-core-engine]: Keywords (and/or/not) rejected in parse_field_ref; Pratt prefix/infix handle them
+- [Phase 01-core-engine]: guard_float() defense-in-depth: all f64 results checked for NaN/infinity -> Missing
 
 ### Pending Todos
 
@@ -85,6 +89,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T13:40:49.199Z
-Stopped at: Completed 01-02-PLAN.md (core operators: count, sum, avg)
+Last session: 2026-04-09T13:50:57.541Z
+Stopped at: Completed 01-03-PLAN.md (expression parser and evaluator)
 Resume file: None
