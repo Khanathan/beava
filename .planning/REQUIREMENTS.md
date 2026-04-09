@@ -82,36 +82,36 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PIPE-01 | — | Pending |
-| PIPE-02 | — | Pending |
-| PIPE-03 | — | Pending |
-| PIPE-04 | — | Pending |
-| PIPE-05 | — | Pending |
-| ELOG-01 | — | Pending |
-| ELOG-02 | — | Pending |
-| ELOG-03 | — | Pending |
-| ELOG-04 | — | Pending |
-| ELOG-05 | — | Pending |
-| SCHM-01 | — | Pending |
-| SCHM-02 | — | Pending |
-| SCHM-03 | — | Pending |
-| SCHM-04 | — | Pending |
-| SCHM-05 | — | Pending |
-| OPS-01 | — | Pending |
-| OPS-02 | — | Pending |
-| OPS-03 | — | Pending |
-| OPS-04 | — | Pending |
-| DBUI-01 | — | Pending |
-| DBUI-02 | — | Pending |
-| DBUI-03 | — | Pending |
-| DBUI-04 | — | Pending |
-| DBUI-05 | — | Pending |
+| PIPE-01 | Phase 7 | Pending |
+| PIPE-02 | Phase 7 | Pending |
+| PIPE-03 | Phase 7 | Pending |
+| PIPE-04 | Phase 7 | Pending |
+| PIPE-05 | Phase 7 | Pending |
+| ELOG-01 | Phase 6 | Pending |
+| ELOG-02 | Phase 6 | Pending |
+| ELOG-03 | Phase 6 | Pending |
+| ELOG-04 | Phase 6 | Pending |
+| ELOG-05 | Phase 6 | Pending |
+| SCHM-01 | Phase 8 | Pending |
+| SCHM-02 | Phase 8 | Pending |
+| SCHM-03 | Phase 8 | Pending |
+| SCHM-04 | Phase 8 | Pending |
+| SCHM-05 | Phase 8 | Pending |
+| OPS-01 | Phase 6 | Pending |
+| OPS-02 | Phase 6 | Pending |
+| OPS-03 | Phase 9 | Pending |
+| OPS-04 | Phase 9 | Pending |
+| DBUI-01 | Phase 10 | Pending |
+| DBUI-02 | Phase 10 | Pending |
+| DBUI-03 | Phase 10 | Pending |
+| DBUI-04 | Phase 10 | Pending |
+| DBUI-05 | Phase 10 | Pending |
 
 **Coverage:**
 - v1.1 requirements: 24 total
-- Mapped to phases: 0
-- Unmapped: 24 ⚠️
+- Mapped to phases: 24
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-09*
-*Last updated: 2026-04-09 after initial definition*
+*Last updated: 2026-04-09 after roadmap creation*

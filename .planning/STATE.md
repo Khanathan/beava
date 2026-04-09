@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
-status: planning
-stopped_at: Defining requirements
+status: ready_to_plan
+stopped_at: Roadmap created
 last_updated: "2026-04-09"
 last_activity: 2026-04-09
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -20,25 +20,27 @@ progress:
 
 See: .planning/PROJECT.md (updated 2026-04-09)
 
-**Core value:** Events go in, features come out — synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
-**Current focus:** v1.1 Composable Pipeline & Event Log
+**Core value:** Events go in, features come out -- synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
+**Current focus:** Phase 6 Foundation (v1.1 Composable Pipeline & Event Log)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-04-09 — Milestone v1.1 started
+Phase: 6 of 10 (Foundation)
+Plan: 0 of ? in current phase
+Status: Ready to plan
+Last activity: 2026-04-09 -- Roadmap created for v1.1 milestone
+
+Progress: [..........] 0%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 19
-- Total phases: 5
-- Total tasks: 36
+- Total plans completed: 19 (v1.0)
+- Total phases completed: 5 (v1.0)
+- Total tasks completed: 36 (v1.0)
 
-**By Phase:**
+**By Phase (v1.0):**
 
 | Phase | Plans | Duration | Tasks | Files |
 |-------|-------|----------|-------|-------|
@@ -52,15 +54,23 @@ Last activity: 2026-04-09 — Milestone v1.1 started
 
 ### Decisions
 
-All decisions archived in PROJECT.md Key Decisions table and milestone archive.
+All v1.0 decisions archived in PROJECT.md Key Decisions table.
+
+Key v1.1 architectural decisions (from research):
+- EntityState refactor (per-stream grouping) must precede all other v1.1 work
+- Event log uses BufWriter + periodic fdatasync (never sync on hot path)
+- petgraph for DAG construction/topological sort
+- rust-embed for debug UI asset embedding (single binary preserved)
+- Backfill rate-limited to 64 events per yield cycle
 
 ### Pending Todos
 
-None — milestone complete.
+None yet.
 
 ### Blockers/Concerns
 
-None — all v1.0 blockers resolved.
+- Phase 8: Backfill + live traffic boundary semantics need explicit design (live PUSH during mid-backfill)
+- Phase 9: Incremental snapshot recovery edge cases need test case design before implementation
 
 ### Quick Tasks Completed
 
@@ -71,5 +81,5 @@ None — all v1.0 blockers resolved.
 ## Session Continuity
 
 Last session: 2026-04-09
-Stopped at: Milestone v1.0 complete
-Resume: `/gsd-new-milestone` for next milestone
+Stopped at: v1.1 roadmap created, ready to plan Phase 6
+Resume: `/gsd-plan-phase 6`
