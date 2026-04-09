@@ -459,3 +459,166 @@ async fn test_malformed_frame() {
         );
     }
 }
+
+/// G-01: Frame length > 64MB is rejected with error and connection close.
+#[tokio::test(flavor = "current_thread")]
+async fn test_frame_oversized_rejected() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+
+    // Send a frame header with length = 64MB + 1 (exceeds the 64 * 1024 * 1024 limit)
+    let oversized_len: u32 = 64 * 1024 * 1024 + 1;
+    stream.write_u32(oversized_len).await.unwrap();
+    stream.flush().await.unwrap();
+
+    // Should receive an error response
+    let resp_len = stream.read_u32().await.unwrap() as usize;
+    let status = stream.read_u8().await.unwrap();
+    assert_eq!(status, STATUS_ERROR, "Oversized frame should return error");
+
+    if resp_len > 1 {
+        let mut payload = vec![0u8; resp_len - 1];
+        stream.read_exact(&mut payload).await.unwrap();
+        let msg = String::from_utf8_lossy(&payload);
+        assert!(
+            msg.contains("invalid frame length"),
+            "Error should mention invalid frame length, got: {}",
+            msg
+        );
+    }
+
+    // Connection should be closed -- next read should return EOF
+    let result = stream.read_u32().await;
+    assert!(
+        result.is_err() || result.unwrap() == 0,
+        "Connection should be closed after oversized frame"
+    );
+}
+
+/// G-03: Client disconnects after sending length header but before payload.
+/// Server should handle gracefully without panic.
+#[tokio::test(flavor = "current_thread")]
+async fn test_client_disconnect_mid_frame() {
+    let (tcp_port, _, _state) = start_test_server().await;
+
+    // Connect and send only the length header, then drop
+    {
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+            .await
+            .unwrap();
+        // Send a length header indicating 100 bytes to follow
+        stream.write_u32(100).await.unwrap();
+        stream.flush().await.unwrap();
+        // Drop stream -- server will get UnexpectedEof on read_u8 or read_exact
+    }
+
+    // Small delay for server to process the disconnection
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Verify server is still alive by making a successful connection
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+    let get_payload = build_get_payload("test");
+    let (status, _) = send_frame(&mut stream, OP_GET, &get_payload).await;
+    assert_eq!(
+        status, STATUS_OK,
+        "Server should still be alive after client disconnect"
+    );
+}
+
+/// G-11: MSET with 0 entries returns OK.
+#[tokio::test(flavor = "current_thread")]
+async fn test_mset_empty() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+
+    let empty_entries: &[(&str, serde_json::Value)] = &[];
+    let mset_payload = build_mset_payload(empty_entries);
+    let (status, _) = send_frame(&mut stream, OP_MSET, &mset_payload).await;
+    assert_eq!(status, STATUS_OK, "Empty MSET should succeed");
+}
+
+/// G-12: Re-registering a stream with the same name overwrites the definition.
+#[tokio::test(flavor = "current_thread")]
+async fn test_register_duplicate_overwrites() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+
+    // Register "Transactions" with count feature
+    let reg1 = build_register_payload(
+        "Transactions",
+        "user_id",
+        vec![serde_json::json!({"name": "tx_count", "type": "count", "window": "1h"})],
+    );
+    let (status, _) = send_frame(&mut stream, OP_REGISTER, &reg1).await;
+    assert_eq!(status, STATUS_OK);
+
+    // Re-register "Transactions" with sum feature instead
+    let reg2 = build_register_payload(
+        "Transactions",
+        "user_id",
+        vec![serde_json::json!({"name": "tx_sum", "type": "sum", "field": "amount", "window": "1h"})],
+    );
+    let (status, _) = send_frame(&mut stream, OP_REGISTER, &reg2).await;
+    assert_eq!(status, STATUS_OK);
+
+    // Push event -- should use the second definition (sum, not count)
+    let push_payload = build_push_payload(
+        "Transactions",
+        &serde_json::json!({"user_id": "u1", "amount": 100.0}),
+    );
+    let (status, resp) = send_frame(&mut stream, OP_PUSH, &push_payload).await;
+    assert_eq!(status, STATUS_OK);
+
+    let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+    // Should have tx_sum from the second registration, not tx_count from the first
+    assert_eq!(
+        json["tx_sum"], 100.0,
+        "Should use overwritten stream definition"
+    );
+    assert_eq!(
+        json.get("tx_count"),
+        None,
+        "Old feature should not exist after overwrite"
+    );
+}
+
+/// G-13: State is visible across separate TCP connections (shared state).
+#[tokio::test(flavor = "current_thread")]
+async fn test_cross_connection_state_visibility() {
+    let (tcp_port, _, _state) = start_test_server().await;
+
+    // Connection A: register and push
+    let mut conn_a = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+    register_tx_stream(&mut conn_a).await;
+
+    let push_payload = build_push_payload(
+        "Transactions",
+        &serde_json::json!({"user_id": "u1", "amount": 50.0}),
+    );
+    let (status, _) = send_frame(&mut conn_a, OP_PUSH, &push_payload).await;
+    assert_eq!(status, STATUS_OK);
+
+    // Connection B: GET the same key
+    let mut conn_b = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+    let get_payload = build_get_payload("u1");
+    let (status, resp) = send_frame(&mut conn_b, OP_GET, &get_payload).await;
+    assert_eq!(status, STATUS_OK);
+
+    let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        json["tx_count_1h"], 1,
+        "Connection B should see features written by Connection A"
+    );
+}
