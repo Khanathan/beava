@@ -83,7 +83,11 @@ Plans:
   3. Entity keys that receive no events for 2x their largest window are automatically removed from memory; confirmed via GET returning empty and a decreasing memory metric
   4. GET /pipelines on port 6401 returns the registered pipeline definitions; GET /debug/key/:key returns full operator state internals; GET /metrics returns Prometheus-format counters
   5. Starting Tally with a snapshot from a different format version (bumped SNAPSHOT_FORMAT_VERSION) results in a clean startup from empty state, not a panic
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 04-01-PLAN.md — OperatorState enum refactor, snapshot save/load with postcard + versioning, TTL eviction logic
+- [ ] 04-02-PLAN.md — main.rs snapshot recovery, periodic snapshot/eviction timers, integration tests
+- [ ] 04-03-PLAN.md — HTTP management API: pipeline CRUD, metrics, debug, snapshot endpoints
 **UI hint**: no
 
 ### Phase 5: Advanced Operators and Cross-Stream
@@ -108,5 +112,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 1. Core Engine | 0/4 | Planning complete | - |
 | 2. TCP Server and Binary Protocol | 3/5 | Gap closure planned | - |
 | 3. Python SDK | 0/4 | Planning complete | - |
-| 4. Persistence and Operational Readiness | 0/TBD | Not started | - |
+| 4. Persistence and Operational Readiness | 0/3 | Planning complete | - |
 | 5. Advanced Operators and Cross-Stream | 0/TBD | Not started | - |
