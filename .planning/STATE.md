@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-01-PLAN.md (project foundation and ring buffer)
-last_updated: "2026-04-09T13:35:27.645Z"
+stopped_at: "Completed 01-02-PLAN.md (core operators: count, sum, avg)"
+last_updated: "2026-04-09T13:40:49.201Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 4
-  completed_plans: 1
-  percent: 25
+  completed_plans: 2
+  percent: 50
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 ## Current Position
 
 Phase: 01 (Core Engine) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-04-09
 
@@ -53,6 +53,7 @@ Progress: [░░░░░░░░░░] 0%
 
 *Updated after each plan completion*
 | Phase 01-core-engine P01 | 3min | 2 tasks | 11 files |
+| Phase 01-core-engine P02 | 3min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -68,6 +69,8 @@ Recent decisions affecting current work:
 - Init: Use winnow for expression parser — evolved from nom, inline combinators, no grammar files
 - [Phase 01-core-engine]: Used edition 2021 (not 2024) for broader compatibility with specified deps
 - [Phase 01-core-engine]: RingBuffer uses Vec<T> with head pointer (not VecDeque) for cache-friendly fixed-size ring
+- [Phase 01-core-engine]: read(&mut self, now) calls advance_to(now) for accurate window expiration on GET-only paths
+- [Phase 01-core-engine]: SumOp/AvgOp use serde_json as_f64() accepting both Int and Float JSON values for numeric extraction
 
 ### Pending Todos
 
@@ -82,6 +85,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T13:35:27.642Z
-Stopped at: Completed 01-01-PLAN.md (project foundation and ring buffer)
+Last session: 2026-04-09T13:40:49.199Z
+Stopped at: Completed 01-02-PLAN.md (core operators: count, sum, avg)
 Resume file: None
