@@ -17,11 +17,11 @@ Requirements for milestone v1.1: Composable Pipeline & Event Log.
 
 ### Event Log
 
-- [ ] **ELOG-01**: Keyless streams persist events as an append-only log on local SSD
-- [ ] **ELOG-02**: Keyed streams persist events as an append-only log that gets compacted (snapshot replaces old events)
-- [ ] **ELOG-03**: Event log writes do not block the hot path (buffered async writes)
-- [ ] **ELOG-04**: User can configure history TTL per stream controlling how long events are retained
-- [ ] **ELOG-05**: Background compaction removes events older than history TTL
+- [x] **ELOG-01**: Keyless streams persist events as an append-only log on local SSD
+- [x] **ELOG-02**: Keyed streams persist events as an append-only log that gets compacted (snapshot replaces old events)
+- [x] **ELOG-03**: Event log writes do not block the hot path (buffered async writes)
+- [x] **ELOG-04**: User can configure history TTL per stream controlling how long events are retained
+- [x] **ELOG-05**: Background compaction removes events older than history TTL
 
 ### Backfill & Schema Evolution
 
@@ -87,11 +87,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PIPE-03 | Phase 7 | Pending |
 | PIPE-04 | Phase 7 | Pending |
 | PIPE-05 | Phase 7 | Pending |
-| ELOG-01 | Phase 6 | Pending |
-| ELOG-02 | Phase 6 | Pending |
-| ELOG-03 | Phase 6 | Pending |
-| ELOG-04 | Phase 6 | Pending |
-| ELOG-05 | Phase 6 | Pending |
+| ELOG-01 | Phase 6 | Complete |
+| ELOG-02 | Phase 6 | Complete |
+| ELOG-03 | Phase 6 | Complete |
+| ELOG-04 | Phase 6 | Complete |
+| ELOG-05 | Phase 6 | Complete |
 | SCHM-01 | Phase 8 | Pending |
 | SCHM-02 | Phase 8 | Pending |
 | SCHM-03 | Phase 8 | Pending |

@@ -52,7 +52,7 @@ Full details: [v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
 Plans:
 - [x] 06-01-PLAN.md — EntityState restructure for per-stream isolation + snapshot v4
 - [x] 06-02-PLAN.md — Per-stream entity TTL eviction + MGET command
-- [ ] 06-03-PLAN.md — SSD event log module + background timers integration
+- [x] 06-03-PLAN.md — SSD event log module + background timers integration
 - [ ] 06-04-PLAN.md — Python SDK updates (mget, entity_ttl, history_ttl)
 
 ### Phase 7: Composable Pipeline

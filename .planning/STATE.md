@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
 status: executing
-stopped_at: Completed 06-02-PLAN.md
-last_updated: "2026-04-09T23:43:35.938Z"
+stopped_at: Completed 06-03-PLAN.md
+last_updated: "2026-04-09T23:51:36.667Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 4
-  completed_plans: 2
-  percent: 50
+  completed_plans: 3
+  percent: 75
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 ## Current Position
 
 Phase: 6 (Foundation) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-04-09
 
@@ -51,6 +51,7 @@ Progress: [..........] 0%
 | 05 Advanced Ops | 3 | ~22min | 6 | 19 |
 | Phase 06 P01 | 33min | 2 tasks | 6 files |
 | Phase 06 P02 | 9min | 2 tasks | 7 files |
+| Phase 06 P03 | 5min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -70,6 +71,8 @@ Key v1.1 architectural decisions (from research):
 - [Phase 06]: Per-stream eviction delegates from evict_expired_keys to evict_expired_stream_entries for backward compatibility
 - [Phase 06]: MGET routed through sync command path (not chunked) since reads are fast and non-destructive
 - [Phase 06]: MGET strips qualified Stream.feature names from response (T-06-03 mitigation)
+- [Phase 06]: Borrow conflict in REGISTER handler resolved by extracting history_ttl before borrowing event_log mutably
+- [Phase 06]: Event log uses Option<EventLog> in AppState for backward compatibility -- system works without event log
 
 ### Pending Todos
 
@@ -88,6 +91,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T23:43:35.936Z
-Stopped at: Completed 06-02-PLAN.md
+Last session: 2026-04-09T23:51:36.665Z
+Stopped at: Completed 06-03-PLAN.md
 Resume: `/gsd-plan-phase 6`
