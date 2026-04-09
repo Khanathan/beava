@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: Completed 01-03-PLAN.md (expression parser and evaluator)
-last_updated: "2026-04-09T13:50:57.543Z"
+status: verifying
+stopped_at: Completed 01-04-PLAN.md (state store and pipeline engine)
+last_updated: "2026-04-09T13:55:28.378Z"
 last_activity: 2026-04-09
 progress:
   total_phases: 5
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 4
-  completed_plans: 3
-  percent: 75
+  completed_plans: 4
+  percent: 100
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 
 Phase: 01 (Core Engine) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-09
 
 Progress: [░░░░░░░░░░] 0%
@@ -55,6 +55,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01-core-engine P01 | 3min | 2 tasks | 11 files |
 | Phase 01-core-engine P02 | 3min | 2 tasks | 2 files |
 | Phase 01-core-engine P03 | 8min | 2 tasks | 2 files |
+| Phase 01-core-engine P04 | 3min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -75,6 +76,9 @@ Recent decisions affecting current work:
 - [Phase 01-core-engine]: winnow Alt tuple limit requires nested alt() for >9 operator alternatives
 - [Phase 01-core-engine]: Keywords (and/or/not) rejected in parse_field_ref; Pratt prefix/infix handle them
 - [Phase 01-core-engine]: guard_float() defense-in-depth: all f64 results checked for NaN/infinity -> Missing
+- [Phase 01-core-engine]: Lazy operator instantiation: operators created on first push per entity, not at registration time
+- [Phase 01-core-engine]: Static features override live features with same name (direct writes take precedence per CLAUDE.md)
+- [Phase 01-core-engine]: Derive results collected into Vec before insertion to satisfy Rust borrow checker
 
 ### Pending Todos
 
@@ -89,6 +93,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T13:50:57.541Z
-Stopped at: Completed 01-03-PLAN.md (expression parser and evaluator)
+Last session: 2026-04-09T13:55:28.376Z
+Stopped at: Completed 01-04-PLAN.md (state store and pipeline engine)
 Resume file: None

@@ -35,7 +35,7 @@ Plans:
 - [x] 01-01-PLAN.md — Project skeleton, core types (FeatureValue, TallyError), and time-bucketed RingBuffer
 - [x] 01-02-PLAN.md — Core operators (CountOp, SumOp, AvgOp) with Redis-strict type checking
 - [x] 01-03-PLAN.md — Expression parser (winnow Pratt) and evaluator with Missing propagation
-- [ ] 01-04-PLAN.md — State store (EntityState, StateStore) and PipelineEngine push-through integration
+- [x] 01-04-PLAN.md — State store (EntityState, StateStore) and PipelineEngine push-through integration
 
 ### Phase 2: TCP Server and Binary Protocol
 **Goal**: A running Tally server accepts persistent TCP connections, parses binary frames, dispatches all five commands (PUSH, GET, SET, MSET, REGISTER) to the engine, and returns updated features synchronously in the same response
