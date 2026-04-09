@@ -120,6 +120,7 @@ class TestViewRegisterJson:
         result = UserRisk._to_register_json()
         assert result["name"] == "UserRisk"
         assert result["key_field"] == "user_id"
+        assert result["type"] == "view"
         assert len(result["features"]) == 2
 
         feature_names = {f["name"] for f in result["features"]}

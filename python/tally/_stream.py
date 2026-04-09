@@ -83,7 +83,7 @@ class StreamMeta(type):
                 ]
             }
         """
-        return {
+        d = {
             "name": cls._tally_stream_name,
             "key_field": cls._tally_key_field,
             "features": [
@@ -91,6 +91,9 @@ class StreamMeta(type):
                 for feat_name, op in cls._tally_features.items()
             ],
         }
+        if cls._tally_is_view:
+            d["type"] = "view"
+        return d
 
 
 def stream(*, key: str):
