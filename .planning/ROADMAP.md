@@ -104,7 +104,7 @@ Plans:
 Plans:
 - [x] 05-01-PLAN.md — MinOp, MaxOp, LastOp operators, where-clause filtering, snapshot/protocol/HTTP plumbing
 - [x] 05-02-PLAN.md — HyperLogLog from scratch and DistinctCountOp with windowed HLL rotation
-- [ ] 05-03-PLAN.md — DistinctCount wiring, cross-stream views, cross-key lookups, event fan-out
+- [x] 05-03-PLAN.md — DistinctCount wiring, cross-stream views, cross-key lookups, event fan-out
 
 ## Progress
 

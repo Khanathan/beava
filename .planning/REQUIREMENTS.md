@@ -39,9 +39,9 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Cross-Stream
 
-- [ ] **XSTR-01**: @st.view computes derived features across multiple streams for the same entity key
-- [ ] **XSTR-02**: st.lookup resolves cross-key feature references (e.g. merchant chargebacks for a user's transaction)
-- [ ] **XSTR-03**: Single event fans out to update multiple streams when it contains keys for each
+- [x] **XSTR-01**: @st.view computes derived features across multiple streams for the same entity key
+- [x] **XSTR-02**: st.lookup resolves cross-key feature references (e.g. merchant chargebacks for a user's transaction)
+- [x] **XSTR-03**: Single event fans out to update multiple streams when it contains keys for each
 
 ### Python SDK
 
@@ -117,9 +117,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | OPS-03 | Phase 5 | Complete |
 | OPS-04 | Phase 5 | Complete |
 | OPS-05 | Phase 5 | Complete |
-| XSTR-01 | Phase 5 | Pending |
-| XSTR-02 | Phase 5 | Pending |
-| XSTR-03 | Phase 5 | Pending |
+| XSTR-01 | Phase 5 | Complete |
+| XSTR-02 | Phase 5 | Complete |
+| XSTR-03 | Phase 5 | Complete |
 | SDK-01 | Phase 3 | Complete |
 | SDK-02 | Phase 3 | Complete |
 | SDK-03 | Phase 3 | Complete |
