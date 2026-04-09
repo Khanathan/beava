@@ -130,6 +130,27 @@ impl StateStore {
         features
     }
 
+    /// Read a single feature value for an entity. Used by cross-key lookups.
+    /// Returns Missing if entity or feature not found.
+    /// Takes &mut self because operator read() requires mutable access.
+    pub fn get_feature_value(&mut self, key: &str, feature_name: &str, now: SystemTime) -> FeatureValue {
+        let entity = match self.entities.get_mut(key) {
+            Some(e) => e,
+            None => return FeatureValue::Missing,
+        };
+        // Check live operators first
+        for (name, op) in entity.live_operators.iter_mut() {
+            if name == feature_name {
+                return op.read(now);
+            }
+        }
+        // Check static features
+        if let Some(sf) = entity.static_features.get(feature_name) {
+            return sf.value.clone();
+        }
+        FeatureValue::Missing
+    }
+
     /// Number of tracked entities.
     pub fn entity_count(&self) -> usize {
         self.entities.len()
@@ -357,6 +378,48 @@ mod tests {
         assert_eq!(entity.live_operators.len(), 1);
         assert_eq!(entity.static_features.len(), 1);
         assert_eq!(entity.last_event_at, Some(now));
+    }
+
+    // ======================== Phase 5 Plan 03: get_feature_value Tests ========================
+
+    #[test]
+    fn test_get_feature_value_returns_live_operator_value() {
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+
+        let entity = store.get_or_create_entity("u123");
+        let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+        op.push(&serde_json::json!({}), now).unwrap();
+        op.push(&serde_json::json!({}), now).unwrap();
+        entity.live_operators.push(("tx_count".to_string(), op));
+
+        let val = store.get_feature_value("u123", "tx_count", now);
+        assert_eq!(val, FeatureValue::Int(2));
+    }
+
+    #[test]
+    fn test_get_feature_value_returns_static_feature() {
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+        store.set_static("u123", "segment", FeatureValue::String("premium".into()), now);
+
+        let val = store.get_feature_value("u123", "segment", now);
+        assert_eq!(val, FeatureValue::String("premium".into()));
+    }
+
+    #[test]
+    fn test_get_feature_value_returns_missing_for_unknown_entity() {
+        let mut store = StateStore::new();
+        let val = store.get_feature_value("nonexistent", "anything", ts(60_000));
+        assert_eq!(val, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_get_feature_value_returns_missing_for_unknown_feature() {
+        let mut store = StateStore::new();
+        store.get_or_create_entity("u123");
+        let val = store.get_feature_value("u123", "nonexistent_feature", ts(60_000));
+        assert_eq!(val, FeatureValue::Missing);
     }
 
     // ======================== remove_expired_entities Tests ========================

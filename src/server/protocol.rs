@@ -3,7 +3,7 @@
 
 use serde::Deserialize;
 use crate::error::TallyError;
-use crate::engine::pipeline::{StreamDefinition, FeatureDef};
+use crate::engine::pipeline::{StreamDefinition, FeatureDef, ViewDefinition, ViewFeatureDef};
 
 // Command opcodes
 pub const OP_PUSH: u8 = 0x01;
@@ -230,6 +230,8 @@ pub fn parse_duration_str(s: &str) -> Result<std::time::Duration, TallyError> {
 pub struct RegisterRequest {
     pub name: String,
     pub key_field: String,
+    #[serde(default, rename = "type")]
+    pub definition_type: Option<String>,  // "stream" (default) or "view"
     pub features: Vec<FeatureDefRequest>,
 }
 
@@ -434,6 +436,32 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                     optional: f.optional.unwrap_or(false),
                 }
             }
+            "distinct_count" => {
+                let field = f.field.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': distinct_count requires 'field'",
+                        f.name
+                    ))
+                })?;
+                let window_str = f.window.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': distinct_count requires 'window' field",
+                        f.name
+                    ))
+                })?;
+                let window = parse_duration_str(&window_str)?;
+                let bucket = match f.bucket {
+                    Some(b) => parse_duration_str(&b)?,
+                    None => default_bucket(window),
+                };
+                FeatureDef::DistinctCount {
+                    field,
+                    window,
+                    bucket,
+                    optional: f.optional.unwrap_or(false),
+                    where_expr,
+                }
+            }
             "derive" => {
                 let expr_str = f.expr.ok_or_else(|| {
                     TallyError::Protocol(format!(
@@ -460,6 +488,78 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
     }
 
     Ok(StreamDefinition {
+        name: req.name,
+        key_field: req.key_field,
+        features,
+    })
+}
+
+/// Convert a RegisterRequest DTO into a ViewDefinition.
+/// Only "derive" and "lookup" feature types are allowed in views.
+pub fn convert_view_register_request(req: RegisterRequest) -> Result<ViewDefinition, TallyError> {
+    if req.name.is_empty() {
+        return Err(TallyError::Protocol("view name must not be empty".into()));
+    }
+    if req.key_field.is_empty() {
+        return Err(TallyError::Protocol("key_field must not be empty".into()));
+    }
+
+    let mut features = Vec::with_capacity(req.features.len());
+    for f in req.features {
+        let vdef = match f.feature_type.as_str() {
+            "derive" => {
+                let expr_str = f.expr.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': derive requires 'expr' field",
+                        f.name
+                    ))
+                })?;
+                let expr = crate::engine::expression::parse_expr(&expr_str).map_err(|e| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': invalid expression: {}",
+                        f.name, e
+                    ))
+                })?;
+                ViewFeatureDef::Derive { expr }
+            }
+            "lookup" => {
+                let target = f.target.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': lookup requires 'target' field (e.g. 'StreamName.feature_name')",
+                        f.name
+                    ))
+                })?;
+                let on_field = f.on.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': lookup requires 'on' field",
+                        f.name
+                    ))
+                })?;
+                // Parse "StreamName.feature_name" into stream and feature parts
+                let parts: Vec<&str> = target.splitn(2, '.').collect();
+                if parts.len() != 2 {
+                    return Err(TallyError::Protocol(format!(
+                        "feature '{}': lookup target must be 'StreamName.feature_name', got '{}'",
+                        f.name, target
+                    )));
+                }
+                ViewFeatureDef::Lookup {
+                    target_stream: parts[0].to_string(),
+                    target_feature: parts[1].to_string(),
+                    on_field,
+                }
+            }
+            other => {
+                return Err(TallyError::Protocol(format!(
+                    "view feature '{}': only supports 'derive' and 'lookup' types, got '{}'",
+                    f.name, other
+                )));
+            }
+        };
+        features.push((f.name, vdef));
+    }
+
+    Ok(ViewDefinition {
         name: req.name,
         key_field: req.key_field,
         features,
@@ -937,6 +1037,7 @@ mod tests {
         let req = RegisterRequest {
             name: "Test".into(),
             key_field: "id".into(),
+            definition_type: None,
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "median".into(),
@@ -955,6 +1056,7 @@ mod tests {
         let req = RegisterRequest {
             name: "Test".into(),
             key_field: "id".into(),
+            definition_type: None,
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "histogram".into(),
@@ -975,6 +1077,7 @@ mod tests {
         let req = RegisterRequest {
             name: "Test".into(),
             key_field: "id".into(),
+            definition_type: None,
             features: vec![FeatureDefRequest {
                 name: "cnt".into(),
                 feature_type: "count".into(),
@@ -993,6 +1096,7 @@ mod tests {
         let req = RegisterRequest {
             name: "Test".into(),
             key_field: "id".into(),
+            definition_type: None,
             features: vec![FeatureDefRequest {
                 name: "total".into(),
                 feature_type: "sum".into(),
@@ -1011,6 +1115,7 @@ mod tests {
         let req = RegisterRequest {
             name: "Test".into(),
             key_field: "id".into(),
+            definition_type: None,
             features: vec![FeatureDefRequest {
                 name: "total".into(),
                 feature_type: "sum".into(),
@@ -1029,6 +1134,7 @@ mod tests {
         let req = RegisterRequest {
             name: "Test".into(),
             key_field: "id".into(),
+            definition_type: None,
             features: vec![FeatureDefRequest {
                 name: "mean".into(),
                 feature_type: "avg".into(),
@@ -1047,6 +1153,7 @@ mod tests {
         let req = RegisterRequest {
             name: "Test".into(),
             key_field: "id".into(),
+            definition_type: None,
             features: vec![FeatureDefRequest {
                 name: "ratio".into(),
                 feature_type: "derive".into(),
@@ -1164,6 +1271,7 @@ mod tests {
         let req = RegisterRequest {
             name: "Test".into(),
             key_field: "id".into(),
+            definition_type: None,
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "min".into(),
@@ -1182,6 +1290,7 @@ mod tests {
         let req = RegisterRequest {
             name: "Test".into(),
             key_field: "id".into(),
+            definition_type: None,
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "last".into(),
@@ -1196,6 +1305,124 @@ mod tests {
     }
 
     // --- G-08: read_json_payload ---
+
+    // ======================== Phase 5 Plan 03: distinct_count and view protocol tests ========================
+
+    #[test]
+    fn test_register_request_distinct_count_feature() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [{
+                "name": "unique_merchants_24h",
+                "type": "distinct_count",
+                "field": "merchant_id",
+                "window": "24h"
+            }]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        match &stream.features[0].1 {
+            crate::engine::pipeline::FeatureDef::DistinctCount { field, window, bucket, optional, where_expr } => {
+                assert_eq!(field, "merchant_id");
+                assert_eq!(*window, std::time::Duration::from_secs(86400));
+                assert!(!optional);
+                assert!(where_expr.is_none());
+                // bucket should be default: 86400/30 = 2880s
+                assert_eq!(*bucket, std::time::Duration::from_secs(2880));
+            }
+            other => panic!("expected DistinctCount, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_register_request_distinct_count_missing_field() {
+        let req = RegisterRequest {
+            name: "Test".into(),
+            key_field: "id".into(),
+            definition_type: None,
+            features: vec![FeatureDefRequest {
+                name: "dc".into(),
+                feature_type: "distinct_count".into(),
+                field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
+                where_clause: None, on: None, target: None,
+            }],
+        };
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("distinct_count requires 'field'"), "got: {}", err_msg);
+    }
+
+    #[test]
+    fn test_convert_view_register_request_derive() {
+        let json = serde_json::json!({
+            "name": "UserRisk",
+            "key_field": "user_id",
+            "type": "view",
+            "features": [{
+                "name": "tx_ratio",
+                "type": "derive",
+                "expr": "Transactions.tx_count_1h / 1"
+            }]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.definition_type.as_deref(), Some("view"));
+        let view = convert_view_register_request(req).unwrap();
+        assert_eq!(view.name, "UserRisk");
+        assert_eq!(view.key_field, "user_id");
+        assert_eq!(view.features.len(), 1);
+        assert_eq!(view.features[0].0, "tx_ratio");
+        match &view.features[0].1 {
+            crate::engine::pipeline::ViewFeatureDef::Derive { .. } => {}
+            other => panic!("expected ViewFeatureDef::Derive, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_convert_view_register_request_lookup() {
+        let json = serde_json::json!({
+            "name": "FraudSignals",
+            "key_field": "user_id",
+            "type": "view",
+            "features": [{
+                "name": "merchant_chargebacks",
+                "type": "lookup",
+                "target": "MerchantActivity.chargeback_count_24h",
+                "on": "merchant_id"
+            }]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let view = convert_view_register_request(req).unwrap();
+        assert_eq!(view.features.len(), 1);
+        match &view.features[0].1 {
+            crate::engine::pipeline::ViewFeatureDef::Lookup { target_stream, target_feature, on_field } => {
+                assert_eq!(target_stream, "MerchantActivity");
+                assert_eq!(target_feature, "chargeback_count_24h");
+                assert_eq!(on_field, "merchant_id");
+            }
+            other => panic!("expected ViewFeatureDef::Lookup, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_convert_view_register_request_rejects_count_type() {
+        let json = serde_json::json!({
+            "name": "BadView",
+            "key_field": "user_id",
+            "type": "view",
+            "features": [{
+                "name": "cnt",
+                "type": "count",
+                "window": "1h"
+            }]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let result = convert_view_register_request(req);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("only supports 'derive' and 'lookup'"), "got: {}", err_msg);
+    }
 
     #[test]
     fn test_read_json_payload_valid() {

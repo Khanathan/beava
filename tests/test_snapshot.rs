@@ -118,7 +118,7 @@ fn test_snapshot_empty_bytes_returns_none() {
 #[test]
 fn test_snapshot_corrupt_data_returns_none() {
     // Correct version byte followed by garbage
-    let mut bytes = vec![0x02]; // version 2
+    let mut bytes = vec![0x03]; // version 3
     bytes.extend_from_slice(b"this is absolutely not valid postcard data!!!");
     assert!(load_snapshot(&bytes).is_none());
 }

@@ -7,17 +7,19 @@
 use serde::{Serialize, Deserialize};
 use std::time::SystemTime;
 use crate::engine::operators::{CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp, Operator};
+use crate::engine::hll::DistinctCountOp;
 use crate::state::store::StaticFeature;
 use crate::types::FeatureValue;
 use crate::error::TallyError;
 
 /// Snapshot format version byte. Prepended to serialized data.
 /// If the version doesn't match on load, return None (clean startup from empty state).
-const SNAPSHOT_FORMAT_VERSION: u8 = 2;
+/// Bumped to 3 for DistinctCount variant addition.
+const SNAPSHOT_FORMAT_VERSION: u8 = 3;
 
 /// Serializable enum wrapping all operator types.
 /// Replaces Box<dyn Operator> so EntityState can be serialized.
-/// Phase 5 adds: Min(MinOp), Max(MaxOp), DistinctCount(DistinctCountOp), Last(LastOp)
+/// Phase 5 adds: Min(MinOp), Max(MaxOp), Last(LastOp), DistinctCount(DistinctCountOp)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OperatorState {
     Count(CountOp),
@@ -26,6 +28,7 @@ pub enum OperatorState {
     Min(MinOp),
     Max(MaxOp),
     Last(LastOp),
+    DistinctCount(DistinctCountOp),
 }
 
 impl OperatorState {
@@ -37,6 +40,7 @@ impl OperatorState {
             Self::Min(op) => op.push(event, now),
             Self::Max(op) => op.push(event, now),
             Self::Last(op) => op.push(event, now),
+            Self::DistinctCount(op) => op.push(event, now),
         }
     }
 
@@ -48,6 +52,7 @@ impl OperatorState {
             Self::Min(op) => op.read(now),
             Self::Max(op) => op.read(now),
             Self::Last(op) => op.read(now),
+            Self::DistinctCount(op) => op.read(now),
         }
     }
 }
@@ -258,7 +263,7 @@ mod tests {
         };
         let bytes = save_snapshot(&state).expect("save_snapshot should succeed");
         assert_eq!(bytes[0], SNAPSHOT_FORMAT_VERSION);
-        assert_eq!(bytes[0], 0x02);
+        assert_eq!(bytes[0], 0x03);
     }
 
     #[test]
@@ -410,7 +415,50 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_format_version_is_2() {
-        assert_eq!(SNAPSHOT_FORMAT_VERSION, 2);
+    fn test_snapshot_format_version_is_3() {
+        assert_eq!(SNAPSHOT_FORMAT_VERSION, 3);
+    }
+
+    // ======================== Phase 5 Plan 03: DistinctCount OperatorState Tests ========================
+
+    #[test]
+    fn test_operator_state_distinct_count_push_read() {
+        use crate::engine::hll::DistinctCountOp;
+        let mut op = OperatorState::DistinctCount(DistinctCountOp::new(
+            "merchant_id",
+            Duration::from_secs(300),
+            Duration::from_secs(60),
+            false,
+        ));
+        let now = ts(60_000);
+        op.push(&json!({"merchant_id": "m1"}), now).unwrap();
+        op.push(&json!({"merchant_id": "m2"}), now).unwrap();
+        op.push(&json!({"merchant_id": "m3"}), now).unwrap();
+        match op.read(now) {
+            FeatureValue::Float(v) => {
+                assert!(v >= 2.0 && v <= 4.0, "Expected ~3 distinct, got {}", v);
+            }
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_operator_state_distinct_count_roundtrip_postcard() {
+        use crate::engine::hll::DistinctCountOp;
+        let mut op = OperatorState::DistinctCount(DistinctCountOp::new(
+            "merchant_id",
+            Duration::from_secs(300),
+            Duration::from_secs(60),
+            false,
+        ));
+        let now = ts(60_000);
+        op.push(&json!({"merchant_id": "m1"}), now).unwrap();
+        op.push(&json!({"merchant_id": "m2"}), now).unwrap();
+
+        let bytes = postcard::to_stdvec(&op).expect("serialize");
+        let mut restored: OperatorState = postcard::from_bytes(&bytes).expect("deserialize");
+        let val_before = op.read(now);
+        let val_after = restored.read(now);
+        assert_eq!(val_before, val_after, "Round-trip changed value");
     }
 }

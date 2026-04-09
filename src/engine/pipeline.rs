@@ -10,6 +10,7 @@ use crate::types::{FeatureValue, FeatureMap};
 use crate::error::TallyError;
 use crate::state::store::StateStore;
 use super::operators::{CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp};
+use super::hll::DistinctCountOp;
 use crate::state::snapshot::OperatorState;
 use super::expression::{Expr, EvalContext, eval};
 
@@ -53,9 +54,33 @@ pub enum FeatureDef {
         field: String,
         optional: bool,
     },
+    DistinctCount {
+        field: String,
+        window: Duration,
+        bucket: Duration,
+        optional: bool,
+        where_expr: Option<Expr>,
+    },
     Derive {
         expr: Expr, // Parsed at registration time
     },
+}
+
+/// A view feature: either a derived expression or a cross-key lookup.
+#[derive(Debug, Clone)]
+pub enum ViewFeatureDef {
+    Derive { expr: Expr },
+    Lookup { target_stream: String, target_feature: String, on_field: String },
+}
+
+/// A cross-stream view. Views have no key_field for push -- they compute
+/// derived features across multiple streams for the same entity key.
+/// Evaluated lazily on GET only (not on PUSH).
+#[derive(Debug, Clone)]
+pub struct ViewDefinition {
+    pub name: String,
+    pub key_field: String,
+    pub features: Vec<(String, ViewFeatureDef)>,
 }
 
 /// A stream definition: a named stream with a key field and a list of named features.
@@ -71,7 +96,8 @@ pub struct StreamDefinition {
 #[derive(Debug)]
 pub struct PipelineEngine {
     streams: AHashMap<String, StreamDefinition>,
-    /// Raw register JSON strings for each stream, keyed by stream name.
+    views: AHashMap<String, ViewDefinition>,
+    /// Raw register JSON strings for each stream/view, keyed by name.
     /// Stored on REGISTER so snapshots can persist pipeline definitions
     /// without serializing the Expr AST.
     raw_register_jsons: AHashMap<String, serde_json::Value>,
@@ -99,6 +125,9 @@ fn create_operator(def: &FeatureDef) -> Option<OperatorState> {
         FeatureDef::Last { field, optional } => {
             Some(OperatorState::Last(LastOp::new(field.clone(), *optional)))
         }
+        FeatureDef::DistinctCount { field, window, bucket, optional, .. } => {
+            Some(OperatorState::DistinctCount(DistinctCountOp::new(field.clone(), *window, *bucket, *optional)))
+        }
         FeatureDef::Derive { .. } => None, // Derives have no operator state
     }
 }
@@ -112,6 +141,7 @@ fn get_where_expr(def: &FeatureDef) -> Option<&Expr> {
         FeatureDef::Min { where_expr, .. } => where_expr.as_ref(),
         FeatureDef::Max { where_expr, .. } => where_expr.as_ref(),
         FeatureDef::Last { .. } => None,
+        FeatureDef::DistinctCount { where_expr, .. } => where_expr.as_ref(),
         FeatureDef::Derive { .. } => None,
     }
 }
@@ -121,6 +151,7 @@ impl PipelineEngine {
     pub fn new() -> Self {
         Self {
             streams: AHashMap::new(),
+            views: AHashMap::new(),
             raw_register_jsons: AHashMap::new(),
         }
     }
@@ -193,58 +224,62 @@ impl PipelineEngine {
         // 3. Get or create EntityState
         let entity = store.get_or_create_entity(&key);
 
-        // 4. Initialize or reconcile operators with current stream definition.
-        // Name-based reconciliation: only rebuild if operator names don't match
-        // the expected set. This preserves accumulated windowed state for
-        // unchanged operators when a new feature is added to a running stream.
-        let expected_ops: Vec<&(String, FeatureDef)> = stream.features.iter()
+        // 4. Initialize or reconcile operators for THIS stream only.
+        // Multiple streams may share the same entity key (e.g. Transactions
+        // and Logins both keyed by user_id). Each stream's operators are
+        // stored with their unqualified feature names. We identify "this
+        // stream's operators" by collecting the expected operator names and
+        // comparing against what's already in live_operators.
+        //
+        // Strategy: extract existing operators for this stream's features
+        // (by name), create missing ones, then push to each.
+        let op_features: Vec<&(String, FeatureDef)> = stream.features.iter()
             .filter(|(_, def)| !matches!(def, FeatureDef::Derive { .. }))
             .collect();
-        let needs_rebuild = entity.live_operators.len() != expected_ops.len()
-            || entity.live_operators.iter().zip(expected_ops.iter())
-                .any(|((name, _), (exp_name, _))| name != exp_name);
-        if needs_rebuild {
-            entity.live_operators.clear();
-            for (name, def) in &stream.features {
+
+        // Ensure each expected operator exists in the entity
+        for (name, def) in &op_features {
+            let exists = entity.live_operators.iter().any(|(n, _)| *n == **name);
+            if !exists {
                 if let Some(op) = create_operator(def) {
-                    entity.live_operators.push((name.clone(), op));
+                    entity.live_operators.push(((*name).clone(), op));
                 }
             }
         }
 
-        // Push event to all operators, respecting where-clause filters.
-        // Build a mapping from operator name to its where_expr (if any).
-        // The operator list matches the non-derive features in order.
-        let op_features: Vec<&(String, FeatureDef)> = stream.features.iter()
-            .filter(|(_, def)| !matches!(def, FeatureDef::Derive { .. }))
-            .collect();
-        for (i, (_, op)) in entity.live_operators.iter_mut().enumerate() {
-            // Check if this operator's FeatureDef has a where_expr
-            if let Some((_, def)) = op_features.get(i) {
+        // Push event to this stream's operators, respecting where-clause filters.
+        for (fname, def) in &op_features {
+            // Find the operator by name
+            if let Some((_, op)) = entity.live_operators.iter_mut().find(|(n, _)| *n == **fname) {
+                // Check where clause
                 if let Some(where_expr) = get_where_expr(def) {
-                    // Evaluate the where expression with the current event
                     let ctx = EvalContext {
                         features: &ahash::AHashMap::new(),
                         event: Some(event),
                     };
                     let result = eval(where_expr, &ctx);
-                    // Skip this operator if the where clause evaluates to false/Missing
                     match result {
                         FeatureValue::Int(0) | FeatureValue::Missing => continue,
                         FeatureValue::Float(f) if f == 0.0 => continue,
                         _ => {} // truthy -- proceed with push
                     }
                 }
+                op.push(event, now)?;
             }
-            op.push(event, now)?;
         }
 
-        // 5. Collect feature values
+        // 5. Collect feature values for this stream only (PUSH returns primary stream features).
+        // Build a set of this stream's feature names for filtering.
+        let stream_feature_names: Vec<&String> = stream.features.iter()
+            .map(|(name, _)| name)
+            .collect();
         let mut features = FeatureMap::new();
 
-        // Read all operator values
+        // Read operator values belonging to this stream
         for (name, op) in entity.live_operators.iter_mut() {
-            features.insert(name.clone(), op.read(now));
+            if stream_feature_names.iter().any(|n| *n == name) {
+                features.insert(name.clone(), op.read(now));
+            }
         }
 
         // Overlay static features
@@ -282,7 +317,8 @@ impl PipelineEngine {
     /// Feature retrieval for GET path.
     /// Calls store.get_all_features (which reads operators with &mut self to
     /// advance time and expire stale buckets), then evaluates derive expressions
-    /// for any registered streams.
+    /// for any registered streams, then evaluates view features (cross-stream
+    /// derives and cross-key lookups).
     pub fn get_features(
         &self,
         key: &str,
@@ -290,6 +326,20 @@ impl PipelineEngine {
         now: SystemTime,
     ) -> FeatureMap {
         let mut features = store.get_all_features(key, now);
+
+        // Build qualified feature names: "StreamName.feature_name" -> value
+        // so view derive expressions can reference features from specific streams.
+        let mut qualified: Vec<(String, FeatureValue)> = Vec::new();
+        for stream in self.streams.values() {
+            for (fname, _) in &stream.features {
+                if let Some(val) = features.get(fname) {
+                    qualified.push((format!("{}.{}", stream.name, fname), val.clone()));
+                }
+            }
+        }
+        for (qname, val) in qualified {
+            features.insert(qname, val);
+        }
 
         // Evaluate derives from all registered streams
         let ctx = EvalContext {
@@ -307,6 +357,41 @@ impl PipelineEngine {
             }
         }
         for (name, value) in derived {
+            features.insert(name, value);
+        }
+
+        // Evaluate view features (cross-stream derives and cross-key lookups)
+        let mut view_results: Vec<(String, FeatureValue)> = Vec::new();
+        for view in self.views.values() {
+            for (fname, vdef) in &view.features {
+                match vdef {
+                    ViewFeatureDef::Derive { expr } => {
+                        let ctx = EvalContext {
+                            features: &features,
+                            event: None,
+                        };
+                        view_results.push((fname.clone(), eval(expr, &ctx)));
+                    }
+                    ViewFeatureDef::Lookup { target_stream: _target_stream, target_feature, on_field } => {
+                        // Resolve the foreign key from the entity's existing features.
+                        // Look for a feature named "last_{on_field}" or "{on_field}" that
+                        // stores the last known value of the foreign key field.
+                        let foreign_key = features.get(&format!("last_{}", on_field))
+                            .or_else(|| features.get(on_field));
+                        match foreign_key {
+                            Some(FeatureValue::String(fk)) => {
+                                let val = store.get_feature_value(fk, target_feature, now);
+                                view_results.push((fname.clone(), val));
+                            }
+                            _ => {
+                                view_results.push((fname.clone(), FeatureValue::Missing));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (name, value) in view_results {
             features.insert(name, value);
         }
 
@@ -335,6 +420,7 @@ impl PipelineEngine {
                 FeatureDef::Min { window, .. } => Some(*window),
                 FeatureDef::Max { window, .. } => Some(*window),
                 FeatureDef::Last { .. } => None, // No window
+                FeatureDef::DistinctCount { window, .. } => Some(*window),
                 FeatureDef::Derive { .. } => None,
             })
             .max()
@@ -360,6 +446,42 @@ impl PipelineEngine {
     /// Get the raw register JSON for a stream. Returns None if not found.
     pub fn get_raw_register_json(&self, name: &str) -> Option<&serde_json::Value> {
         self.raw_register_jsons.get(name)
+    }
+
+    // ======================== View management ========================
+
+    /// Register a view definition. View names must be non-empty.
+    /// Duplicate registration replaces the previous definition (idempotent).
+    pub fn register_view(&mut self, view: ViewDefinition) -> Result<(), TallyError> {
+        if view.name.is_empty() {
+            return Err(TallyError::Protocol("view name must not be empty".into()));
+        }
+        self.views.insert(view.name.clone(), view);
+        Ok(())
+    }
+
+    /// Get a registered view definition by name.
+    pub fn get_view(&self, name: &str) -> Option<&ViewDefinition> {
+        self.views.get(name)
+    }
+
+    /// Iterate over all registered view definitions.
+    pub fn list_views(&self) -> impl Iterator<Item = &ViewDefinition> {
+        self.views.values()
+    }
+
+    /// Remove a view definition by name. Returns true if found and removed.
+    pub fn remove_view(&mut self, name: &str) -> bool {
+        self.raw_register_jsons.remove(name);
+        self.views.remove(name).is_some()
+    }
+
+    /// Return list of (stream_name, key_field) for all registered streams.
+    /// Used by PUSH handler for fan-out.
+    pub fn fan_out_targets(&self) -> Vec<(String, String)> {
+        self.streams.values()
+            .map(|s| (s.name.clone(), s.key_field.clone()))
+            .collect()
     }
 }
 
@@ -717,6 +839,255 @@ mod tests {
 
         assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(3)));
         assert_eq!(features.get("failed_tx_1h"), Some(&FeatureValue::Int(1)));
+    }
+
+    // ======================== Phase 5 Plan 03: DistinctCount FeatureDef Tests ========================
+
+    #[test]
+    fn test_create_operator_distinct_count() {
+        let def = FeatureDef::DistinctCount {
+            field: "merchant_id".into(),
+            window: Duration::from_secs(300),
+            bucket: Duration::from_secs(60),
+            optional: false,
+            where_expr: None,
+        };
+        let op = create_operator(&def);
+        assert!(op.is_some());
+        // Verify it's a DistinctCount variant
+        match op.unwrap() {
+            crate::state::snapshot::OperatorState::DistinctCount(_) => {}
+            other => panic!("Expected DistinctCount, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_max_window_duration_includes_distinct_count() {
+        let mut engine = PipelineEngine::new();
+        engine.register(StreamDefinition {
+            name: "stream1".into(),
+            key_field: "id".into(),
+            features: vec![
+                ("dc_24h".into(), FeatureDef::DistinctCount {
+                    field: "merchant_id".into(),
+                    window: Duration::from_secs(86400),
+                    bucket: Duration::from_secs(300),
+                    optional: false,
+                    where_expr: None,
+                }),
+            ],
+        }).unwrap();
+        assert_eq!(engine.max_window_duration(), Duration::from_secs(86400));
+    }
+
+    // ======================== Phase 5 Plan 03: ViewDefinition Tests ========================
+
+    #[test]
+    fn test_register_view_and_get_view() {
+        let mut engine = PipelineEngine::new();
+        let view = ViewDefinition {
+            name: "UserRisk".into(),
+            key_field: "user_id".into(),
+            features: vec![
+                ("ratio".into(), ViewFeatureDef::Derive {
+                    expr: crate::engine::expression::parse_expr("Transactions.tx_count_1h / 1").unwrap(),
+                }),
+            ],
+        };
+        engine.register_view(view).unwrap();
+        assert!(engine.get_view("UserRisk").is_some());
+        assert_eq!(engine.list_views().count(), 1);
+    }
+
+    #[test]
+    fn test_register_view_empty_name_rejected() {
+        let mut engine = PipelineEngine::new();
+        let view = ViewDefinition {
+            name: "".into(),
+            key_field: "user_id".into(),
+            features: vec![],
+        };
+        assert!(engine.register_view(view).is_err());
+    }
+
+    #[test]
+    fn test_remove_view() {
+        let mut engine = PipelineEngine::new();
+        let view = ViewDefinition {
+            name: "UserRisk".into(),
+            key_field: "user_id".into(),
+            features: vec![],
+        };
+        engine.register_view(view).unwrap();
+        assert!(engine.remove_view("UserRisk"));
+        assert!(!engine.remove_view("UserRisk"));
+    }
+
+    #[test]
+    fn test_view_derive_resolves_qualified_fields_from_two_streams() {
+        let mut engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+
+        // Register two streams
+        engine.register(StreamDefinition {
+            name: "Transactions".into(),
+            key_field: "user_id".into(),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                }),
+            ],
+        }).unwrap();
+        engine.register(StreamDefinition {
+            name: "Logins".into(),
+            key_field: "user_id".into(),
+            features: vec![
+                ("login_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                }),
+            ],
+        }).unwrap();
+
+        // Register a view that derives from both streams
+        let view = ViewDefinition {
+            name: "UserRisk".into(),
+            key_field: "user_id".into(),
+            features: vec![
+                ("tx_to_login_ratio".into(), ViewFeatureDef::Derive {
+                    expr: crate::engine::expression::parse_expr("Transactions.tx_count_1h / Logins.login_count_1h").unwrap(),
+                }),
+            ],
+        };
+        engine.register_view(view).unwrap();
+
+        // Push events to both streams for the same user
+        engine.push("Transactions", &serde_json::json!({"user_id": "u1"}), &mut store, now).unwrap();
+        engine.push("Transactions", &serde_json::json!({"user_id": "u1"}), &mut store, now).unwrap();
+        engine.push("Logins", &serde_json::json!({"user_id": "u1"}), &mut store, now).unwrap();
+
+        // GET should include view features with correct ratio: 2 / 1 = 2.0
+        let features = engine.get_features("u1", &mut store, now);
+        assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(2)));
+        assert_eq!(features.get("login_count_1h"), Some(&FeatureValue::Int(1)));
+        assert_eq!(features.get("tx_to_login_ratio"), Some(&FeatureValue::Float(2.0)));
+    }
+
+    #[test]
+    fn test_view_lookup_resolves_cross_key_feature() {
+        let mut engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+
+        // Register MerchantActivity stream (keyed by merchant_id)
+        engine.register(StreamDefinition {
+            name: "MerchantActivity".into(),
+            key_field: "merchant_id".into(),
+            features: vec![
+                ("chargeback_count_24h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(86400),
+                    bucket: Duration::from_secs(300),
+                    where_expr: None,
+                }),
+            ],
+        }).unwrap();
+
+        // Register Transactions stream with last_merchant_id to store the foreign key
+        engine.register(StreamDefinition {
+            name: "Transactions".into(),
+            key_field: "user_id".into(),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                }),
+                ("last_merchant_id".into(), FeatureDef::Last {
+                    field: "merchant_id".into(),
+                    optional: true,
+                }),
+            ],
+        }).unwrap();
+
+        // Register a view with lookup
+        let view = ViewDefinition {
+            name: "FraudSignals".into(),
+            key_field: "user_id".into(),
+            features: vec![
+                ("merchant_chargebacks".into(), ViewFeatureDef::Lookup {
+                    target_stream: "MerchantActivity".into(),
+                    target_feature: "chargeback_count_24h".into(),
+                    on_field: "merchant_id".into(),
+                }),
+            ],
+        };
+        engine.register_view(view).unwrap();
+
+        // Push events: merchant gets 3 chargebacks
+        for _ in 0..3 {
+            engine.push("MerchantActivity", &serde_json::json!({"merchant_id": "m456"}), &mut store, now).unwrap();
+        }
+
+        // Push a user transaction with merchant_id (stores last_merchant_id)
+        engine.push("Transactions", &serde_json::json!({"user_id": "u123", "merchant_id": "m456", "amount": 50.0}), &mut store, now).unwrap();
+
+        // GET for user should include lookup result
+        let features = engine.get_features("u123", &mut store, now);
+        assert_eq!(features.get("merchant_chargebacks"), Some(&FeatureValue::Int(3)));
+    }
+
+    #[test]
+    fn test_view_lookup_returns_missing_when_target_entity_not_found() {
+        let mut engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+
+        engine.register(StreamDefinition {
+            name: "Transactions".into(),
+            key_field: "user_id".into(),
+            features: vec![
+                ("last_merchant_id".into(), FeatureDef::Last {
+                    field: "merchant_id".into(),
+                    optional: true,
+                }),
+            ],
+        }).unwrap();
+
+        engine.register(StreamDefinition {
+            name: "MerchantActivity".into(),
+            key_field: "merchant_id".into(),
+            features: vec![
+                ("chargeback_count_24h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(86400),
+                    bucket: Duration::from_secs(300),
+                    where_expr: None,
+                }),
+            ],
+        }).unwrap();
+
+        let view = ViewDefinition {
+            name: "FraudSignals".into(),
+            key_field: "user_id".into(),
+            features: vec![
+                ("merchant_chargebacks".into(), ViewFeatureDef::Lookup {
+                    target_stream: "MerchantActivity".into(),
+                    target_feature: "chargeback_count_24h".into(),
+                    on_field: "merchant_id".into(),
+                }),
+            ],
+        };
+        engine.register_view(view).unwrap();
+
+        // Push user transaction but do NOT push any MerchantActivity events
+        engine.push("Transactions", &serde_json::json!({"user_id": "u123", "merchant_id": "m_nonexistent", "amount": 50.0}), &mut store, now).unwrap();
+
+        let features = engine.get_features("u123", &mut store, now);
+        // Lookup target entity doesn't exist -> Missing
+        assert_eq!(features.get("merchant_chargebacks"), Some(&FeatureValue::Missing));
     }
 
     #[test]

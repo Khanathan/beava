@@ -180,11 +180,17 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             let raw_json = payload.clone();
             let req: protocol::RegisterRequest = serde_json::from_value(payload)
                 .map_err(|e| TallyError::Protocol(format!("invalid register payload: {}", e)))?;
-            let stream_name = req.name.clone();
-            let stream_def = protocol::convert_register_request(req)?;
+            let def_name = req.name.clone();
+            let is_view = req.definition_type.as_deref() == Some("view");
             let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-            app.engine.register(stream_def)?;
-            app.engine.store_raw_register_json(&stream_name, raw_json);
+            if is_view {
+                let view_def = protocol::convert_view_register_request(req)?;
+                app.engine.register_view(view_def)?;
+            } else {
+                let stream_def = protocol::convert_register_request(req)?;
+                app.engine.register(stream_def)?;
+            }
+            app.engine.store_raw_register_json(&def_name, raw_json);
             Ok(vec![])
         }
         Command::Mset { .. } => unreachable!("MSET handled separately"),

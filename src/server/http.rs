@@ -81,6 +81,15 @@ async fn get_pipeline(
                     } => {
                         serde_json::json!({"name": fname, "type": "last", "field": field, "optional": optional})
                     }
+                    crate::engine::pipeline::FeatureDef::DistinctCount {
+                        field,
+                        window,
+                        bucket,
+                        optional,
+                        ..
+                    } => {
+                        serde_json::json!({"name": fname, "type": "distinct_count", "field": field, "window_secs": window.as_secs(), "bucket_secs": bucket.as_secs(), "optional": optional})
+                    }
                     crate::engine::pipeline::FeatureDef::Derive { .. } => {
                         serde_json::json!({"name": fname, "type": "derive"})
                     }
@@ -118,22 +127,35 @@ async fn create_pipeline(
                 .into_response()
         }
     };
-    let stream_name = req.name.clone();
-    let stream_def = match convert_register_request(req) {
-        Ok(s) => s,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{}", e)})),
-            )
-                .into_response()
+    let def_name = req.name.clone();
+    let is_view = req.definition_type.as_deref() == Some("view");
+    let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+    let result = if is_view {
+        match crate::server::protocol::convert_view_register_request(req) {
+            Ok(view_def) => app.engine.register_view(view_def),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("{}", e)})),
+                )
+                    .into_response()
+            }
+        }
+    } else {
+        match convert_register_request(req) {
+            Ok(stream_def) => app.engine.register(stream_def),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("{}", e)})),
+                )
+                    .into_response()
+            }
         }
     };
-    let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-    match app.engine.register(stream_def) {
+    match result {
         Ok(()) => {
-            // Store raw JSON for snapshot persistence (same as TCP REGISTER handler)
-            app.engine.store_raw_register_json(&stream_name, body);
+            app.engine.store_raw_register_json(&def_name, body);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({"status": "ok"})),
