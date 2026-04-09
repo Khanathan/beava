@@ -1,256 +1,280 @@
 # Pitfalls Research
 
-**Domain:** Real-time in-memory feature server (Rust, custom TCP, sliding windows, HyperLogLog, snapshot persistence, Python SDK)
+**Domain:** Adding composable pipelines, SSD event log, replay/backfill, schema evolution, incremental snapshots, and debug UI to an existing low-latency in-memory feature server (Rust, single-threaded tokio)
 **Researched:** 2026-04-09
-**Confidence:** HIGH (core pitfalls verified against official Tokio docs, Rust stdlib docs, and multiple production post-mortems)
+**Confidence:** HIGH (core pitfalls verified against Redis AOF documentation, Flink schema evolution docs, tokio runtime internals, and Tally v1.0 codebase analysis)
+
+**Context:** This research focuses exclusively on pitfalls when ADDING v1.1 features to the existing Tally v1.0 codebase. For v1.0 pitfalls (snapshot blocking, MSET yielding, SipHash, TCP framing, etc.), see git history of this file.
 
 ---
 
 ## Critical Pitfalls
 
-### Pitfall 1: Snapshot Serialization Blocks the Async Event Loop
+### Pitfall 1: SSD Event Log Write Blocks the Hot Path — Synchronous fsync Destroys <100us p99
 
 **What goes wrong:**
-The snapshot job is triggered periodically (every 30 seconds). If the full state HashMap is serialized synchronously inside an async task without yielding, the single-threaded Tokio runtime is blocked for the entire duration. All PUSH and GET requests queue up unserved. For 1M keys the serialization walk alone can take hundreds of milliseconds, spiking p99 latency by 100x during snapshot windows.
+Adding an append-only SSD event log means every PUSH must write to disk before returning features. A naive implementation calls `write()` + `fsync()` on the event log file synchronously in the PUSH handler. On Linux, `fsync()` on an SSD takes 200us-2ms depending on device queue depth and filesystem journaling. This single syscall blows the entire <100us PUSH latency budget. Under sustained load (100K events/sec), the fsync queue depth grows, pushing tail latency to 5-20ms. Redis documented this exact problem: during AOF persistence, the main thread's `write(2)` was blocked for 7 to 14 seconds during heavy I/O on a 10GB AOF file rewrite.
 
 **Why it happens:**
-Developers see `tokio::spawn` and assume the task yields automatically. It does not. CPU-bound work inside an async task consumes the thread without hitting any `.await` point. The Tokio cooperative budget (128 operations) is only decremented by I/O and channel operations — not by iterator loops or serde encoding. The single-threaded runtime (`current_thread`) has no other thread to fall back on.
+Developers treat "append to file" as trivially fast. Appending IS fast (~100-300ns for the `write()` syscall itself), but durability requires `fsync()` which forces the SSD's internal write buffer to flash. The v1.0 Tally architecture is single-threaded `current_thread` tokio — any blocking syscall on the event loop thread stalls ALL connections. The memory architecture document mentions "periodic fsync (~100-300ns amortized per event)" but this confuses the amortized cost of buffered writes with the actual fsync latency.
 
 **How to avoid:**
-Implement cooperative chunking explicitly in the snapshot path: serialize N keys per chunk, then call `tokio::task::yield_now().await` to hand the thread back. The CLAUDE.md design already specifies this ("Cooperative yielding during snapshot"). Budget ~1024 keys per chunk. Alternatively, use `tokio::task::spawn_blocking` to move the serialization to the blocking thread pool, but then the full state must be cloneable (expensive) or wrapped in an `Arc<Mutex<>>` (adds lock contention on hot path). Chunked yielding in-task is the correct approach here.
+Three-layer approach:
+1. **Buffer writes in memory** — accumulate events in a `Vec<u8>` write buffer. Append to the buffer on each PUSH (true O(1), ~50ns).
+2. **Async flush via spawn_blocking** — periodically (every 100ms or every N events) flush the buffer to disk using `tokio::task::spawn_blocking`. The flush does `write()` + `fdatasync()` on the blocking thread pool, never touching the event loop thread.
+3. **Accept bounded data loss** — events in the write buffer but not yet flushed are lost on crash. This is the same tradeoff as the existing 30-second snapshot interval. Document that event log durability is "at most 100ms behind."
+
+Do NOT use `io_uring` or `tokio-uring` — they require the multi-threaded runtime and are Linux-only. Tally targets macOS+Linux, and the current runtime is `current_thread`. The `spawn_blocking` approach works everywhere.
 
 **Warning signs:**
-- PUSH latency histograms show periodic p99 spikes every 30 seconds
-- `tokio::runtime` metrics show long scheduler poll times
-- `GET` requests pile up while snapshot is running
+- PUSH p99 jumps from <100us to >1ms after event log is enabled
+- `perf` shows `fdatasync` or `fsync` in the main thread's call stack
+- Latency is bimodal: fast when SSD queue is empty, slow when other I/O (snapshots, compaction) is concurrent
 
 **Phase to address:**
-Phase 4 (Persistence). Must be designed in from the start of the snapshot module — retrofitting cooperative yielding into a monolithic serializer is harder than writing it that way initially.
+Phase 1 (SSD Event Log). The write buffer + async flush architecture must be the first thing built. Do NOT start with synchronous writes "to get it working" — the refactor from sync to async flush changes the durability semantics and error handling of every caller.
 
 ---
 
-### Pitfall 2: bincode Has No Schema Evolution — Snapshots Become Unreadable on Code Changes
+### Pitfall 2: Event Log Compaction and Snapshot I/O Collide — Double Disk Load Causes Latency Spikes
 
 **What goes wrong:**
-bincode serializes structs as positional binary — field order and types must match exactly between writer and reader. Adding a field to `OperatorState` or `EntityState` (e.g., adding `min_value` to `Counter`), renaming a variant, or reordering enum arms will make the snapshot completely unreadable. The server crashes on startup trying to deserialize a mismatched snapshot. Users lose all their feature state.
+Tally v1.0 already runs periodic snapshots (clone state + `spawn_blocking` serialize + write to disk). V1.1 adds event log compaction (rewrite the log with only events within TTL). If both run concurrently, the SSD handles two heavy write workloads simultaneously. SSD write amplification causes the device write queue to fill, which increases latency for ALL writes — including the event log append buffer flush. Redis explicitly prevents this: "AOF rewrite is prevented if RDB snapshotting is in progress. BGSAVE is blocked if AOF rewrite is running."
 
 **Why it happens:**
-bincode is a low-overhead format deliberately lacking self-description. There are no field names, no type tags, no version markers embedded in the format by default. The Rust forum confirms "bincode does not provide explicit forward or backward compatibility guarantees." This is fine for ephemeral data; it's a trap for persisted snapshots that survive code deployments.
+Both snapshot and compaction are "background" tasks on independent timers. Without coordination, they occasionally overlap. The developer assumes `spawn_blocking` isolates them from the hot path, but SSD I/O bandwidth is a shared resource. When the device queue is saturated, even buffered `write()` calls can stall at the OS level.
 
 **How to avoid:**
-Two complementary defenses: (1) Embed an explicit version byte at the top of every snapshot file (`[1 byte: snapshot_format_version]`). On startup, if version mismatches, refuse to load and start fresh rather than crashing. (2) Wrap the serialized `OperatorState` enum so that adding new variants doesn't corrupt existing data — use `#[serde(other)]` or a dedicated `Unknown` variant as a catch-all. The CLAUDE.md design notes "versioned format" and "version byte per key allows migration on read" — this must be implemented, not just mentioned. Do not assume it comes for free.
-
-**Warning signs:**
-- Server panics on startup after any code change to state structs
-- Error message: "failed to deserialize" or "unexpected end of input"
-- Tests pass but production recovery fails after deployment
-
-**Phase to address:**
-Phase 4 (Persistence). Must be part of the initial snapshot design. Add a `SNAPSHOT_FORMAT_VERSION: u8 = 1` constant and write it as the first byte. Write a migration test that verifies a v1 snapshot can be loaded after adding a new field.
-
----
-
-### Pitfall 3: MSET Chunked Yielding Is Not Actually Cooperative Without Explicit yield_now
-
-**What goes wrong:**
-The MSET handler processes a large batch (e.g., 100K keys). The developer chunks it into 1024-key groups with a loop. But without an explicit `tokio::task::yield_now().await` call between chunks, no yielding occurs — the loop burns through all chunks without ever suspending, blocking PUSH and GET requests for the full batch duration. This is the same root cause as Pitfall 1 but applied to MSET.
-
-**Why it happens:**
-There are no implicit yield points in Rust async code. Iterating a Vec, updating a HashMap, and encoding JSON all look synchronous to the Tokio scheduler. The `await` keyword is the only suspension mechanism. Writing `for chunk in batch.chunks(1024) { process(chunk); }` inside an async fn does NOT yield between iterations.
-
-**How to avoid:**
-The loop body must look like:
+Implement a simple mutual exclusion lock for background I/O tasks:
 ```rust
-for chunk in batch.chunks(CHUNK_SIZE) {
-    process_chunk(chunk, &mut state);
-    tokio::task::yield_now().await;  // explicit — no other way
+enum BackgroundTask { Snapshot, Compaction, None }
+// Only one at a time. If compaction is due but snapshot is running, defer compaction.
+```
+Schedule compaction to run at the midpoint between snapshots (e.g., snapshot at t=0s, compaction at t=15s if both are on 30s intervals). Never overlap. This is exactly the Redis model.
+
+Additionally, when incremental snapshots replace full snapshots, consider merging the snapshot and compaction into a single background task — they both walk state and write to disk.
+
+**Warning signs:**
+- Periodic latency spikes that are twice as severe as snapshot-only spikes
+- SSD IOPS utilization hits device ceiling during combined operations
+- `snapshot_duration_ms` metric shows high variance (fast when alone, slow when competing with compaction)
+
+**Phase to address:**
+Phase 2 (Compaction/TTL) and Phase 4 (Incremental Snapshots). Mutual exclusion must be designed when the first background I/O task (event log flush) is added in Phase 1.
+
+---
+
+### Pitfall 3: Backfill Replay Starves Live Traffic — No Priority Scheduling
+
+**What goes wrong:**
+When a new feature is registered with `backfill=True`, the server replays all events from the SSD event log through the new operator. For a stream with 1M events in the log, replay takes seconds to minutes. During replay, the single-threaded event loop is either (a) processing replay events, blocking all live PUSH/GET, or (b) interleaving replay and live traffic, but replay consumes 90%+ of the event loop's capacity because the replay queue always has more pending work than live traffic.
+
+**Why it happens:**
+Replay is a bounded-but-large burst of CPU work. The developer adds `yield_now()` between replay batches (learning from the MSET pitfall), but each replay batch still takes 500us-5ms of CPU. With 100K events to replay, even at 1024 events/batch with yields, the event loop spends most of its time on replay. Live PUSH requests queue up, and p99 latency degrades to 10-100ms for the entire replay duration.
+
+**How to avoid:**
+Rate-limit replay explicitly:
+1. **Replay budget per event loop tick** — process at most N replay events (e.g., 64) per yield cycle, then yield and process ALL pending live traffic before resuming replay.
+2. **Live-first scheduling** — check if any live PUSH/GET requests are pending before processing the next replay batch. Live requests always take priority.
+3. **Expose replay progress** — the debug UI should show "backfill: 45,231 / 1,000,000 events replayed" so operators know the feature is still warming up.
+4. **Degrade gracefully** — features being backfilled should return `Missing` until replay is complete, not stale/partial values. Mark features as `warming_up` in GET responses.
+
+Do NOT attempt to run replay in a separate thread. Tally is single-threaded by design; operator state is not thread-safe. Replay must run on the event loop with explicit budgeting.
+
+**Warning signs:**
+- PUSH p99 spikes to >10ms when any new feature is registered with backfill
+- GET returns partially-warmed features (e.g., `tx_count_1h = 3` when the log has 1000 events in the last hour)
+- Server appears unresponsive during backfill of large streams
+
+**Phase to address:**
+Phase 2 (Backfill). The replay scheduler must be designed before the first line of replay code. Write a test: register a new feature with backfill=True on a stream with 100K logged events, fire concurrent PUSH requests, verify PUSH p99 stays under 1ms.
+
+---
+
+### Pitfall 4: Schema Evolution Silently Corrupts In-Memory Operator State
+
+**What goes wrong:**
+A user re-registers a stream with modified features: adds `tx_max_1h`, removes `tx_min_1h`, changes `tx_count_1h` window from 1h to 30m. The server must reconcile the new schema with existing in-memory `EntityState` for all keys. If existing operators are reused when the window configuration has changed (e.g., the `CountOp` ring buffer was sized for 60 buckets at 1-minute granularity for 1h, but is now expected to cover 30m), the operator produces incorrect values. Existing data in the ring buffer is misinterpreted.
+
+**Why it happens:**
+The v1.0 `EntityState.live_operators` is a `Vec<(String, OperatorState)>` keyed by feature name. On re-register, the naive approach is "keep operators with matching names, add new ones, remove old ones." But an operator's internal state (ring buffer size, bucket duration, field name) is baked into the `OperatorState` enum at creation time. Changing the window parameter requires creating a new operator, discarding the old state. Apache Flink documents this: "The structure of a key cannot be migrated as this may lead to non-deterministic behavior."
+
+**How to avoid:**
+Schema evolution must implement a **diff-and-reconcile** algorithm:
+1. **Compare feature signatures, not just names** — two features with the same name but different window/field/type are DIFFERENT features. Hash the feature definition (operator type + window + bucket + field + where_expr) into a signature.
+2. **New signature = new operator** — if the signature changed, drop the old operator state for that feature and create a fresh one. The feature starts cold (returns Missing until enough events arrive).
+3. **Same signature = keep state** — only truly unchanged features retain their accumulated state.
+4. **Removed features = drop operators** — clean up. Don't leave orphaned operators consuming memory.
+5. **Migration atomicity** — apply the schema change to ALL entities' live_operators in one sweep, or none. Partial migration (some entities on old schema, some on new) causes inconsistent features across keys.
+
+For the migration sweep, use chunked iteration with yield_now() to avoid blocking the event loop (same pattern as MSET).
+
+**Warning signs:**
+- Feature values change unexpectedly after re-registering a stream with modified windows
+- Ring buffer panics or produces garbage after window resize
+- Some entity keys return features from the old schema while others return the new
+
+**Phase to address:**
+Phase 3 (Schema Evolution). Must be designed with awareness of how `EntityState.live_operators` works in v1.0. Write a test: register stream, push 1000 events, re-register with changed window, verify old state is discarded and new operator starts fresh.
+
+---
+
+### Pitfall 5: DAG Dependency Cycles in Composable Pipeline Cause Infinite Evaluation Loops
+
+**What goes wrong:**
+V1.1 introduces keyless-to-keyed stream dependencies with DAG execution. A user accidentally creates a cycle: Stream A depends on View B, View B depends on Stream C, Stream C has a derive that references Stream A. On PUSH, the evaluation engine follows dependencies: A triggers B triggers C triggers A... resulting in infinite recursion or stack overflow. In the single-threaded event loop, this hangs the entire server.
+
+**Why it happens:**
+V1.0 has a simple two-level model: streams have operators, views have derives that reference streams. No stream can reference another stream, so cycles are structurally impossible. V1.1 introduces multi-stage composition where streams can depend on other streams. Without explicit cycle detection at registration time, the runtime evaluation must handle cycles — and it won't, because DAG evaluation assumes acyclicity.
+
+**How to avoid:**
+1. **Cycle detection at REGISTER time** — when a new stream/view is registered, build the dependency graph and run Kahn's algorithm (BFS topological sort). If the graph has a cycle (some nodes never reach in-degree 0), reject the registration with a clear error message naming the cycle.
+2. **Store the topological order** — after validation, store the sorted evaluation order. On PUSH, evaluate in topological order only. This also eliminates redundant evaluations (each node computed exactly once).
+3. **Depth limit at evaluation time** — as a safety net, cap the evaluation depth (e.g., 16 levels). If a cycle somehow bypasses the registration check, the depth limit prevents infinite recursion.
+4. **Re-validate on every REGISTER** — when a new stream is added, re-run cycle detection on the full graph, not just the new node. Adding a single edge can create a cycle in a previously acyclic graph.
+
+**Warning signs:**
+- Server hangs on PUSH after registering a complex pipeline
+- Stack overflow panics in the expression evaluator or pipeline engine
+- Registration of mutually-referencing views succeeds when it should fail
+
+**Phase to address:**
+Phase 1 (Composable Pipeline / DAG). Cycle detection must be part of the registration validation from day one. Do NOT add it as a "hardening" step later — by then, users may have created pipelines that depend on the ability to register cycles.
+
+---
+
+### Pitfall 6: Incremental Snapshots Require Dirty Tracking That Adds Overhead to Every PUSH
+
+**What goes wrong:**
+V1.0 snapshots clone the entire state and serialize it. V1.1 wants incremental snapshots that only serialize changed entities. This requires tracking which entities were modified since the last snapshot ("dirty set"). The naive approach adds a `dirty: bool` flag to every `EntityState` and checks it during snapshot. But the PUSH handler must now set this flag on every event — adding a write to every hot-path operation. Worse, the dirty set itself must be collected during snapshot, requiring iteration over all entities to find dirty ones (O(n_entities) even when only 1% changed).
+
+**Why it happens:**
+Incremental snapshots look like a simple optimization ("just track what changed"). But in a system processing 100K events/sec, even a few nanoseconds of overhead per event compounds. The dirty tracking mechanism interacts with the existing clone-then-serialize model: you can't clone just the dirty entities without knowing which they are, and knowing which are dirty requires a data structure that is maintained on the hot path.
+
+**How to avoid:**
+Use a separate **dirty key set** (not a flag per entity):
+1. Maintain a `HashSet<EntityKey>` (or `Vec<EntityKey>`) that records keys modified since last snapshot.
+2. On PUSH, `dirty_set.insert(key)` — this is O(1) amortized and adds ~20-50ns per event (acceptable within 100us budget).
+3. On snapshot, iterate only the dirty set, clone only those entities, serialize them as a delta file.
+4. Clear the dirty set after snapshot completes.
+5. Periodically (e.g., every 10th snapshot) write a full snapshot to bound recovery time.
+
+The dirty set must be swapped atomically with the snapshot: take the current dirty set, replace it with an empty one, then serialize the taken set's entities on the blocking thread. This prevents races where a PUSH between "collect dirty" and "clear dirty" loses its tracking.
+
+**Warning signs:**
+- PUSH latency increases by >10ns after adding dirty tracking (measure with benchmarks)
+- Snapshot still iterates all entities even when the dirty set is small
+- Recovery from incremental snapshots takes longer than full snapshots (missing base snapshot)
+
+**Phase to address:**
+Phase 4 (Incremental Snapshots). Design the dirty tracking data structure before implementation. Benchmark the overhead of dirty set insertion on the hot path.
+
+---
+
+### Pitfall 7: Event Log Replay Produces Different Results Than Live Processing (Time Semantics Mismatch)
+
+**What goes wrong:**
+During live processing, operators use `SystemTime::now()` for window bucket assignment (the v1.0 behavior). During backfill replay, events are read from the log with their original timestamps. If the replay code passes the event's historical timestamp to the operator, window boundaries are calculated relative to the event time. But the operator's internal ring buffer tracks "current time" for expiry — during replay, "current time" advances non-monotonically as historical events are processed in log order. Ring buffer buckets expire incorrectly, producing different aggregation results than if the events had been processed in real time.
+
+**Why it happens:**
+The v1.0 ring buffer operators use "now" for two purposes: (1) determining which bucket to write into, and (2) expiring old buckets on read. During live processing, these are always the same wall-clock time. During replay, "now" for bucket assignment should be the event's timestamp, but "now" for expiry is ambiguous — should expired buckets be expired relative to event time or wall-clock time? Getting this wrong means replay produces different feature values than live processing for the same event sequence.
+
+**How to avoid:**
+Define and enforce a clear time model for replay:
+1. **Replay uses event timestamps for both assignment AND expiry** — the operator's "now" is the event's timestamp, not wall-clock time. This means replay produces identical results to live processing (deterministic replay).
+2. **Events must be replayed in timestamp order** — if the event log contains out-of-order timestamps, sort by timestamp before replay. The SSD log stores events in arrival order, which may differ from timestamp order.
+3. **After replay completes, advance operator time to wall-clock "now"** — this expires any buckets that would have expired during the gap between the last replayed event and the current time.
+4. **Test determinism explicitly** — push 1000 events live, record the resulting features. Wipe state, replay the same 1000 events from the log, verify identical features.
+
+**Warning signs:**
+- Backfilled features differ from live-computed features for the same event sequence
+- Features "jump" when replay completes and the operator sees current wall-clock time
+- Off-by-one errors in window boundaries during replay (events landing in wrong buckets)
+
+**Phase to address:**
+Phase 2 (Backfill). The replay time model must be defined before any replay code is written. This is the most subtle correctness issue in the entire v1.1 scope.
+
+---
+
+### Pitfall 8: Keyless Stream Event Log Grows Unboundedly Without Automatic TTL
+
+**What goes wrong:**
+V1.1 introduces keyless streams (raw event ingestion) with `history=True`. At 100K events/sec with ~300 bytes per event, the log grows at ~30MB/sec = ~2.5TB/day. The v2 architecture doc acknowledges this with the `history=True` opt-in flag, but a stream with history enabled and no TTL will fill the disk. When the disk fills, the event log write fails, the write buffer backs up in memory, and the server OOMs or starts dropping events silently.
+
+**Why it happens:**
+Developers focus on the append path and defer the cleanup path. The TTL compaction ("Redis-style AOF rewrite") is planned but implemented in a later phase than the event log. In the gap between "event log exists" and "compaction exists," the log grows without bound.
+
+**How to avoid:**
+1. **Require history TTL at stream registration** — if `history=True`, the user MUST specify a `history_ttl` (e.g., `"24h"`). Reject registration without a TTL.
+2. **Implement simple truncation before full compaction** — before the compaction system is built, implement a crude "delete events older than TTL" by tracking file offsets. When the oldest event in the log exceeds TTL, truncate from the beginning. This is a temporary stopgap until proper compaction.
+3. **Disk space monitoring** — expose `event_log_bytes` in the metrics endpoint. Alert when disk usage exceeds a configurable threshold (e.g., 80%).
+4. **Fail safely on disk full** — if the write fails, drop the event from the log (not from processing). The event still updates in-memory features; it just won't be available for replay. Log a warning.
+
+**Warning signs:**
+- Disk usage grows linearly without bound on streams with `history=True`
+- Server crashes or hangs when disk is full
+- No metrics visible for event log size
+
+**Phase to address:**
+Phase 1 (SSD Event Log). The history TTL requirement and disk-full handling must ship with the event log itself, not deferred to the compaction phase.
+
+---
+
+### Pitfall 9: Per-Dataset Entity TTL Creates Conflicting Eviction for Shared Keys
+
+**What goes wrong:**
+V1.1 adds per-dataset (per-stream) entity state TTL. Stream A has TTL=1h, Stream B has TTL=24h. Both use `user_id` as the key. User "u123" has operators for both streams in a single `EntityState`. When Stream A's TTL expires for u123, what happens? If the entire EntityState is evicted, Stream B's 24h operators are lost. If only Stream A's operators are evicted, the `EntityState` must support partial eviction, which the v1.0 data structure doesn't support.
+
+**Why it happens:**
+V1.0 has a single global TTL (2x the largest window) applied to the entire EntityState. The data structure assumes all operators for a key live and die together. Per-dataset TTL breaks this assumption by requiring different lifetimes for different operators within the same entity.
+
+**How to avoid:**
+Refactor `EntityState.live_operators` from `Vec<(String, OperatorState)>` to a structure grouped by stream:
+```rust
+struct EntityState {
+    streams: HashMap<StreamName, StreamState>,  // Per-stream operator groups
+    static_features: AHashMap<String, StaticFeature>,
+    // No single last_event_at — each StreamState has its own
+}
+
+struct StreamState {
+    operators: Vec<(String, OperatorState)>,
+    last_event_at: Option<SystemTime>,
 }
 ```
-The chunk size controls the tradeoff between MSET throughput and PUSH/GET responsiveness. 1024 keys per chunk at ~500ns per key = ~500µs per chunk, which fits within a 1ms budget. Test this under load.
+Eviction then operates per-stream: if Stream A hasn't seen an event for its TTL, evict only `streams["A"]`. Stream B's operators survive independently. This is a significant refactor to `EntityState` and affects snapshot serialization, `get_all_features`, and the PUSH handler.
 
 **Warning signs:**
-- PUSH latency spikes during MSET operations (same symptom as Pitfall 1)
-- `tokio::runtime` shows 0 task switches during large MSET
-- No `yield_now` calls in the MSET handler code
+- Operators for long-TTL streams are evicted when short-TTL streams expire
+- Entity count drops unexpectedly despite active traffic on some streams
+- Cross-stream views return Missing because one stream's operators were evicted
 
 **Phase to address:**
-Phase 2 (Server / MSET command). Write a test that fires 50K PUSH requests concurrently with a 100K MSET and verifies PUSH p99 stays under 5ms.
+Phase 1 (Entity State Refactor). This structural change to EntityState must happen before per-dataset TTL is implemented, ideally as the first change in v1.1. The refactor touches every module.
 
 ---
 
-### Pitfall 4: Processing-Time Windows Instead of Event-Time Windows
+### Pitfall 10: Debug UI WebSocket Backpressure Stalls the Event Loop
 
 **What goes wrong:**
-The window operators (count, sum, avg) use `Instant::now()` at event arrival time to determine which bucket to write into. When events arrive late (network jitter, retries, batch replay), their timestamps are recorded as "now" rather than when they occurred. A transaction from 25 minutes ago gets counted in the current 30-minute window instead of the one that was open when it happened. Features are silently wrong.
+The debug UI streams real-time data (throughput, memory, feature values) to a browser via WebSocket. If the browser tab is backgrounded, paused by the OS, or on a slow connection, the WebSocket write buffer grows. The WebSocket writer, running on the same event loop as the TCP server, attempts to flush the buffer. If the flush stalls (slow client), it holds the event loop, degrading PUSH/GET latency for all clients.
 
 **Why it happens:**
-Using arrival time is simpler — no timestamp field required, no clock synchronization needed, no out-of-order handling. It works correctly in the happy path when events arrive in real time. The problem only surfaces when clients retry, replay, or batch-ingest historical events, which happens in fraud detection workflows regularly.
+The debug UI is a "nice to have" feature that runs on the same HTTP server (port 6401). Developers treat it as low-risk because it's "just monitoring." But the HTTP server shares the tokio runtime with the TCP hot path. A stuck WebSocket connection on the HTTP side steals event loop time from the TCP side.
 
 **How to avoid:**
-Design the PUSH protocol from day one to accept an optional `_timestamp` field in the event payload. The window bucket assignment uses this timestamp if present, falls back to `Instant::now()` if absent. Events with timestamps older than the longest registered window are discarded (they can't affect any current window). Events with future timestamps are clamped to now. This is a protocol decision — it's very difficult to add retroactively because the wire format and state store both need to change.
+1. **Non-blocking WebSocket sends** — use a bounded channel (e.g., capacity=32) between the metrics producer and the WebSocket sender. If the channel is full, drop the oldest update (not block the producer). The metrics producer should never await on WebSocket delivery.
+2. **Separate the debug data path** — the debug UI reads from a periodic metrics snapshot (every 100ms), not from real-time event callbacks. The metrics snapshot is a simple struct clone, not a live tap on the event stream.
+3. **Connection timeout** — disconnect WebSocket clients that haven't ACK'd in >5 seconds. Don't let stale connections accumulate.
+4. **Consider a separate runtime** — if the debug UI becomes complex, spawn it on a separate multi-threaded tokio runtime on a dedicated thread. This completely isolates it from the hot path. The extra thread is a small cost for reliability.
 
 **Warning signs:**
-- Feature values drift when events are replayed or retried
-- `failed_tx_30m` counts don't match expected values in tests using pre-recorded event streams
-- ML model performance degrades when trained features differ from served features (training-serving skew)
+- PUSH latency degrades when a debug UI browser tab is open
+- Multiple open debug UI tabs cause proportional latency increase
+- WebSocket connection count grows over time (stale connections not cleaned up)
 
 **Phase to address:**
-Phase 1 (Core Engine / Window implementation). Add `event_timestamp: Option<Timestamp>` to the PUSH frame during Phase 2 wire protocol design.
-
----
-
-### Pitfall 5: HashMap Default Hasher (SipHash) Is a Throughput Bottleneck at 100K+ events/sec
-
-**What goes wrong:**
-Rust's `std::collections::HashMap` uses SipHash 1-3 by default. SipHash is a cryptographic-quality hash chosen to prevent HashDoS attacks. For a single-threaded server with string entity keys (user IDs, transaction IDs), profiling consistently shows 20-25% of CPU time spent in hashing at high throughput. This directly caps the throughput ceiling below the 100K events/sec target.
-
-**Why it happens:**
-SipHash is deliberately slow compared to non-cryptographic alternatives. For internal server state that is not accessible to untrusted external input, the HashDoS protection is unnecessary overhead.
-
-**How to avoid:**
-Use `FxHashMap` from the `rustc-hash` crate as a drop-in replacement for all internal state maps (`EntityState`, pipeline registry, etc.). FxHashMap is 2-3x faster for string keys. For entity keys that come from external clients (user IDs), evaluate whether HashDoS is a real threat — if the server is internal only, FxHashMap is safe everywhere. Keep SipHash only for structures keyed on untrusted external data if serving public-facing clients. Add a benchmark (`benches/throughput.rs`) early and track hash time as a percentage of per-event cost.
-
-**Warning signs:**
-- `perf` or `cargo flamegraph` shows `sip_hash` or `hashbrown::hash` consuming >15% of cycles
-- Throughput plateaus below 100K events/sec on a modern CPU
-- Latency is stable per event but total throughput doesn't scale with optimizations elsewhere
-
-**Phase to address:**
-Phase 1 (Core Engine / State Store). Choose the hasher when writing `store.rs` — changing it later requires touching every HashMap instantiation.
-
----
-
-### Pitfall 6: HyperLogLog Lacks Windowing — distinct_count Counts All Time, Not the Window
-
-**What goes wrong:**
-HyperLogLog is a mergeable sketch for cardinality estimation. A single HLL register accumulates elements forever — you cannot "un-add" an element when its window expires. The design calls for `distinct_count` per window (e.g., unique merchants in 24h), but a naive HLL implementation gives you distinct count since server start. As time passes, `unique_merchants` grows monotonically and never reflects the rolling window.
-
-**Why it happens:**
-HLL's mathematical structure supports union (merge two sketches) but not subtraction (remove elements from a sketch). This is a fundamental property, not a library limitation. Developers familiar with count/sum operators (which use bucketed ring buffers) assume distinct_count works the same way.
-
-**How to avoid:**
-Two approaches: (1) **Epoch-based rotation** — maintain N HLL sketches (one per bucket), rotate on bucket expiry, and compute the union of non-expired buckets on read. This approximates a sliding window with the same accuracy degradation as the count/sum buckets. Memory cost is `N × 12KB` per key per distinct_count feature. With 30 one-minute buckets for a 30m window, that's 360KB per key — acceptable for low-cardinality key spaces, problematic at scale. (2) **Tumbling windows only for distinct_count** — document that `distinct_count` is a tumbling window approximation, not a true sliding window. This matches what systems like Flink do. Be explicit in the Python SDK docs.
-
-**Warning signs:**
-- `unique_merchants` in tests grows without bound
-- distinct_count values are far higher than expected after server has been running for hours
-- Unit tests with time-advance don't show values decreasing when old events expire
-
-**Phase to address:**
-Phase 5 (Remaining Operators). The HLL data structure and its window semantics must be designed together — do not implement HLL and add windowing later.
-
----
-
-### Pitfall 7: TCP Frame Parsing Assumes Complete Frames — Partial Reads Cause Silent Corruption
-
-**What goes wrong:**
-The binary protocol uses length-prefixed frames: `[4 bytes: length][1 byte: opcode][payload]`. A single call to `TcpStream::read()` may return fewer bytes than the frame length specifies — a partial read. If the handler processes bytes immediately without buffering until a complete frame is received, it will parse garbage: the opcode byte might actually be part of a string payload from the previous partial read. Corruption is silent — no error, wrong feature values returned.
-
-**Why it happens:**
-Developers test locally where TCP delivers complete frames almost always (loopback). Under real network conditions (even LAN), TCP can fragment arbitrarily at segment boundaries. The read-then-parse pattern works in the happy path and breaks silently under load or network variability.
-
-**How to avoid:**
-Use Tokio's `AsyncReadExt::read_exact` to read exactly N bytes — it buffers internally until the requested count is satisfied. The pattern:
-```rust
-let mut len_buf = [0u8; 4];
-reader.read_exact(&mut len_buf).await?;
-let frame_len = u32::from_be_bytes(len_buf) as usize;
-let mut payload = vec![0u8; frame_len];
-reader.read_exact(&mut payload).await?;
-```
-Alternatively use `tokio_util::codec::LengthDelimitedCodec` which handles this correctly. Also set a maximum frame length (e.g., 64MB) to prevent memory exhaustion from malformed length fields.
-
-**Warning signs:**
-- Protocol tests pass but integration tests fail intermittently under load
-- Corrupted feature values returned sporadically
-- Panic or malformed JSON parse errors in the protocol layer
-
-**Phase to address:**
-Phase 2 (Server / TCP and protocol). Write a unit test with a mock TCP stream that delivers frames in split pieces (1 byte at a time).
-
----
-
-### Pitfall 8: Derive Expressions Cause Division-by-Zero Panics on Cold Start
-
-**What goes wrong:**
-Derive expressions like `failed_tx_30m / tx_count_30m` compute correctly when both operands are non-zero. On cold start, when a new entity key receives its first event, `tx_count_30m` is 0. Integer division by zero in Rust panics. Even with float types, `0.0 / 0.0 = NaN`, which propagates silently and produces feature values of `NaN` that ML models consume without error.
-
-**Why it happens:**
-The expression evaluator computes derives on every event, including the first event for a key. The author of a stream definition assumes non-zero denominators because in production data they rarely see 0 counts. The divide-by-zero edge case exists on cold start, on key eviction and re-initialization, and any time a denominator feature has a longer window than the numerator.
-
-**How to avoid:**
-The expression evaluator must handle division by zero at the language level — return a typed `FeatureValue::Missing` or `0.0` rather than panicking. Define the semantics in the SDK docs: "derive expressions that divide by a zero-valued feature return null." ML models receiving null features should have fallback handling. Add a `safe_divide(a, b)` builtin as syntactic sugar. Test every derive expression with zero-initialized state.
-
-**Warning signs:**
-- Server panics when processing first event for a new entity key
-- `NaN` values appearing in feature responses (harder to catch — no panic)
-- ML model predictions behave erratically for new users with no event history
-
-**Phase to address:**
-Phase 1 (Core Engine / Expression evaluator). This is a correctness invariant — the evaluator must never panic on valid feature state. Add fuzz testing of expressions with boundary values.
-
----
-
-### Pitfall 9: Slow / Disconnected Clients Cause Unbounded Write Buffer Growth
-
-**What goes wrong:**
-A connected client issues a PUSH but stops reading responses (network pause, client bug, garbage collection pause on the Python side). The server's TCP write buffer fills up. Without backpressure, the server keeps accumulating response bytes for that client in memory. With hundreds of concurrent connections in a fraud detection system, a few stuck clients can consume gigabytes of buffer memory, eventually OOMing the server — taking down feature serving for all clients.
-
-**Why it happens:**
-TCP backpressure applies to the OS socket buffer, but application-level async write buffers in Tokio (via `AsyncWrite`) can grow unboundedly if writes are issued faster than the OS drains them. The common pattern of `socket.write_all(response).await` applies backpressure when the buffer is full (it awaits), but this blocks the connection handler task — it does not evict the stuck connection.
-
-**How to avoid:**
-Set per-connection write timeouts: wrap all socket writes with `tokio::time::timeout(WRITE_DEADLINE, socket.write_all(...))`. If the write times out, close the connection and log it. Set `SO_KEEPALIVE` and `TCP_USER_TIMEOUT` on all accepted sockets to detect dead connections quickly. Optionally cap the per-connection outstanding response buffer size and reject new requests if the buffer is full. For v1, a simple write timeout (e.g., 5 seconds) prevents the pathological case.
-
-**Warning signs:**
-- Server memory grows steadily under load without key count growth
-- Client connections accumulate without corresponding throughput increase
-- `debug/memory` endpoint shows large per-connection buffer allocations
-
-**Phase to address:**
-Phase 2 (Server / TCP connection handling). Write timeout must be part of the connection handler from the start.
-
----
-
-### Pitfall 10: Cross-Key Lookups Create Implicit State Coupling That Breaks TTL Eviction
-
-**What goes wrong:**
-`st.lookup(MerchantActivity.chargeback_count_24h, on="merchant_id")` resolves a merchant feature for a user event. The user's view depends on merchant state. When the merchant key is evicted by TTL (no events for 2× the longest window), the lookup returns `None` or 0. If the derive expression downstream divides by the lookup result, it hits the division-by-zero case from Pitfall 8. Additionally, if a merchant key is evicted and then re-initialized on a new event, the user's view state silently reflects a reset merchant counter — providing stale cross-key features without any error.
-
-**Why it happens:**
-TTL eviction treats each key independently. It has no awareness of which other entities depend on a given key. The eviction timer for a merchant key runs independently of how frequently user keys look it up.
-
-**How to avoid:**
-Define clear semantics: cross-key lookup on an evicted key returns `FeatureValue::Missing` (not 0, not panic). All derive expressions must handle `Missing` propagation (a derive with any `Missing` input returns `Missing`). Document this behavior explicitly in the SDK. Do NOT attempt reference counting or dependency tracking between keys in v1 — it introduces complexity that defeats the simplicity goal. Expose `Missing` values distinctly in the response JSON (e.g., `null`) so clients know to apply fallbacks.
-
-**Warning signs:**
-- Lookup-based features return 0 sporadically for active merchants
-- Features degrade in production after server has been running for days (eviction accumulates)
-- Tests using short TTLs show unexpected behavior in cross-key derives
-
-**Phase to address:**
-Phase 5 (Remaining Operators / cross-key lookup). Design `FeatureValue` enum to include `Missing` from the start of Phase 1.
-
----
-
-### Pitfall 11: Python SDK Uses SystemTime for Window Timestamps — Mismatches with Rust Instant
-
-**What goes wrong:**
-The Python SDK serializes events with timestamps from `time.time()` (wall clock, UTC). The Rust server uses `std::time::Instant` for window bucket assignment (monotonic, not wall clock). These two time bases are different: `Instant` cannot be converted to a Unix timestamp. If the server needs to compare event timestamps against the current window, mixing `SystemTime` (convertible to Unix epoch) with `Instant` (not) creates subtle bugs — especially during NTP corrections on the server, which jump `SystemTime` backward.
-
-**Why it happens:**
-`Instant` is idiomatic for measuring elapsed durations in Rust (monotonic, cheap). `SystemTime` is needed when you need wall-clock time that matches what external clients send. Developers reach for `Instant::now()` because it's what the Tokio docs use, not realizing it cannot be correlated with Unix timestamps from Python.
-
-**How to avoid:**
-Use `SystemTime::now()` for all window bucket calculations and event timestamps in the state store. Store window bucket boundaries as Unix timestamps (milliseconds since epoch, u64). Accept `_timestamp` from the client as Unix milliseconds. This allows the Rust side to compare event time with window boundaries consistently. Use `Instant` only for measuring server-internal durations (latency measurements, timeout deadlines). Do not mix the two.
-
-**Warning signs:**
-- Window boundaries drift relative to wall clock time over long uptimes
-- Events with explicit timestamps fall into wrong buckets
-- Tests using fixed event timestamps show non-deterministic window membership
-
-**Phase to address:**
-Phase 1 (Core Engine / Window implementation). The time representation decision must be made before any window code is written.
+Phase 5 (Debug UI). Use bounded channels and drop-on-backpressure from the start. Test: open debug UI, pause the browser, verify PUSH p99 is unaffected.
 
 ---
 
@@ -258,13 +282,14 @@ Phase 1 (Core Engine / Window implementation). The time representation decision 
 
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
 |----------|-------------------|----------------|-----------------|
-| Skip `_timestamp` in PUSH protocol | Simpler wire format, easier to implement | Processing-time windows; features wrong on replay/retry | Never — add it as optional from day one |
-| Use `std::HashMap` with SipHash | Zero dependencies | 20-25% CPU overhead at >50K events/sec; misses throughput target | Never for the hot-path state store |
-| Skip snapshot version byte | Less code to write | Any struct change renders all snapshots unloadable | Never — one byte prevents catastrophic data loss |
-| Monolithic snapshot (no chunked yield) | Simpler code | 100-500ms latency spike every 30 seconds | Never — defeats the latency promise |
-| `NaN` for divide-by-zero in derives | No special-casing needed | Silent wrong features; ML models consume NaN silently | Never — define `Missing` semantics explicitly |
-| Skip write timeout on TCP connections | Simpler connection handler | Stuck clients OOM server over time | Acceptable in dev/test only |
-| HyperLogLog without windowing | Simple HLL implementation | `distinct_count` grows monotonically; never reflects rolling window | Acceptable only if documented as "since startup" semantics |
+| Synchronous event log write on hot path | Simple implementation, "get it working" | Destroys <100us p99 forever; must rewrite to buffered async | Never |
+| Global entity TTL instead of per-stream | Simpler eviction, no EntityState refactor | Cross-stream features break; short-TTL evicts long-TTL operators | Only if per-dataset TTL is truly deferred to v1.2 |
+| Skip cycle detection in DAG registration | Faster to implement pipeline composition | Server hangs on cyclic dependencies; requires restart | Never |
+| Full state clone for incremental snapshot | Reuse existing snapshot code path | 2x peak memory; negates the point of incremental snapshots | Acceptable as Phase 1 stopgap while dirty tracking is built |
+| Replay at full speed without rate limiting | Backfill completes faster | Live traffic starved during replay; p99 spikes to seconds | Never in production; acceptable in offline/maintenance mode only |
+| Skip event log compaction in Phase 1 | Ship event log faster | Disk fills up for high-volume streams; manual cleanup required | Acceptable for 1-2 weeks of testing, but MUST require history_ttl |
+| Store event log as raw JSON lines | Simple format, human-readable, easy debugging | 3-5x larger than binary format; 3-5x slower to read during replay | Acceptable for v1.1 if performance is adequate; optimize to binary in v1.2 |
+| Schema diff by name only (not signature) | Simpler re-register logic | Changed window/field silently reuses stale operator state | Never |
 
 ---
 
@@ -272,12 +297,13 @@ Phase 1 (Core Engine / Window implementation). The time representation decision 
 
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| Python SDK → Rust TCP | Use Python `struct.pack(">H")` for string length but forget big-endian for the 4-byte frame length, causing silent misparse | Match the wire format exactly: `u32::from_be_bytes` on Rust, `struct.pack(">I", len)` on Python; write a protocol conformance test |
-| Python SDK → Rust TCP | Open a new TCP connection per request (like HTTP) | Maintain a persistent connection pool in the Python SDK; connection setup is ~1ms, destroying the latency budget |
-| Python SDK connection pool → Rust server | Pool returns a half-closed connection after Rust server restart | Python pool must detect EOF on read (empty bytes returned) and reconnect; test reconnect behavior explicitly |
-| HTTP management API → Pipeline REGISTER | Register a pipeline after events have already arrived for that stream | Server must queue or discard events for unregistered streams gracefully, not panic; define behavior on first REGISTER |
-| serde_json → Rust feature response | Return feature value as `f64::NAN` serialized as JSON | JSON spec does not allow NaN/Infinity; `serde_json` will panic or return an error; normalize to `null` in the response serializer |
-| Prometheus metrics → HTTP management API | Emit metrics as text in the hot path (PUSH handler) | Metrics must be accumulated as atomic counters and only formatted on the `/metrics` scrape endpoint — never in the event path |
+| Event log file + Snapshot file | Both use the same disk; concurrent heavy writes cause contention | Schedule snapshot and compaction to never overlap (Redis model); monitor SSD IOPS |
+| Event log replay + Live PUSH handler | Replay calls the same `engine.push()` as live traffic, but with historical timestamps | Create a separate `engine.replay()` entry point that uses event timestamps, or parameterize `push()` with a time source |
+| Schema evolution + Snapshot recovery | New schema is registered, snapshot is taken, server restarts, snapshot loads the new schema but entity operators are from the old schema | Snapshot must include the schema version/signature alongside each entity's operators; on load, reconcile operators against the current registered schema |
+| Per-stream TTL + Cross-stream views | Stream A's operators are evicted by TTL, but View V still references Stream A features | View evaluation must handle Missing values from evicted streams gracefully; never panic on lookup of evicted stream operators |
+| Debug UI WebSocket + TCP hot path | Both on same tokio runtime; WebSocket backpressure stalls TCP | Use bounded channels with drop semantics for WebSocket; never block the producer |
+| MGET batch + Large entity count | MGET for 10K keys iterates all keys under lock, blocking PUSH for the duration | Apply same chunked-yield pattern as MSET: 1024 keys per chunk, yield_now() between chunks |
+| Keyless streams + Keyed streams (fan-out) | Event pushed to keyless stream should fan out to keyed streams, but the fan-out logic in v1.0 only works with keyed streams | Redesign fan-out to handle keyless-to-keyed transitions: keyless stream logs the event, then the DAG evaluation pushes to downstream keyed streams |
 
 ---
 
@@ -285,12 +311,14 @@ Phase 1 (Core Engine / Window implementation). The time representation decision 
 
 | Trap | Symptoms | Prevention | When It Breaks |
 |------|----------|------------|----------------|
-| Per-event `Vec` allocation for derive results | Throughput plateaus ~40K events/sec; allocator shows high churn | Pre-allocate a feature result map per connection and reuse across events | >10K events/sec |
-| JSON parsing of full event payload on every PUSH | CPU time dominated by serde_json; simple events cost 10µs not 1µs | Parse only the key field eagerly; defer parsing of other fields to operators that need them | >20K events/sec with large event payloads |
-| Locking `Arc<Mutex<HashMap>>` for pipeline registry | Lock contention shows up in flamegraph even though it's read-mostly | Use `arc_swap` or `RwLock` for the pipeline registry; writes (REGISTER) are rare, reads (PUSH) are constant | >5K events/sec with frequent REGISTER calls |
-| Snapshot to same file without atomic rename | Server crash during write corrupts the snapshot file permanently | Write to `snapshot.bin.tmp`, then `rename()` atomically; `rename()` is atomic on POSIX | First server crash coinciding with snapshot write |
-| Cloning entity keys as `String` per lookup | Memory allocations dominate flamegraph for cross-key lookups | Intern entity keys or use `Arc<str>` for keys appearing in multiple structures | >50K events/sec with cross-key lookups |
-| Expiry scan runs on every event | O(n_keys) expiry check per event; 1M keys = 1M checks per event | Run expiry scan as a periodic background task (every 60 seconds), not per-event | >100K unique keys in the state store |
+| Event log fsync on every event | PUSH p99 jumps to 1-5ms | Buffer + async flush (spawn_blocking) | Immediately at any load |
+| Full state iteration for dirty set collection | Snapshot takes O(n_entities) even when 0.1% changed | Maintain a separate dirty key set, swap on snapshot | >500K entities |
+| Replay processes all events before yielding | Live PUSH queues for seconds during backfill | Rate-limit replay: max 64 events per yield cycle | Any backfill >1000 events |
+| JSON-encoded event log | Replay reads 30MB/sec of JSON; serde_json parsing dominates CPU | Use postcard or a length-prefixed binary format for the event log | >10K events/sec replay throughput needed |
+| Lock held during entire MGET | Arc<Mutex> locked for O(n_keys) GET operations | Chunked yield like MSET: 1024 keys per chunk | >1000 keys in a single MGET |
+| DAG evaluation recomputes intermediate nodes | View A and View B both depend on Stream C; C is evaluated twice per event | Cache intermediate results in the topological evaluation pass | >10 views with shared dependencies |
+| Debug UI polls state every frame (60fps) | Metrics collection steals 5% of event loop time | Poll at most 10 times per second; use last-known value between polls | Always, if not rate-limited |
+| Event log file descriptor leak on compaction | Old log files not closed after rotation; fd limit hit | Explicitly close old file handles; use RAII (Drop) | After ~1000 compaction cycles |
 
 ---
 
@@ -298,24 +326,25 @@ Phase 1 (Core Engine / Window implementation). The time representation decision 
 
 | Mistake | Risk | Prevention |
 |---------|------|------------|
-| No maximum frame length in TCP protocol | Malicious client sends `length = u32::MAX` (4GB); server allocates 4GB and OOMs | Enforce a maximum frame length (e.g., 64MB); disconnect clients sending oversized frames |
-| Unbounded expression complexity in REGISTER | Malicious pipeline definition with 10,000 nested derives; evaluation hangs the event loop | Limit expression depth (e.g., max 10 operators per derive chain) and number of features per stream at REGISTER time |
-| No REGISTER authentication | Any client can redefine pipelines, wiping all live operator state for existing pipelines | In v1, restrict REGISTER to the HTTP management API (separate port); add IP allowlist or shared secret before production use |
-| Derive expressions accessing arbitrary memory fields | `_event.some_deeply_nested.path` that doesn't exist panics in the evaluator | All field accesses must return `Missing` on non-existent paths, never panic; test with malformed events |
-| Snapshot file readable by other processes | State contains entity-level behavioral features (user fraud signals) | Ensure snapshot file has permissions 0600; document this in the ops guide |
+| Event log stores raw event payloads including PII | Sensitive data (user IDs, amounts, locations) persists on disk indefinitely | Document that event log contains raw events; apply same file permissions (0600) as snapshots; honor history TTL to limit PII retention |
+| Debug UI accessible without authentication | Anyone on the network can view real-time feature values, entity keys, and stream definitions | Bind debug UI to localhost only by default; require explicit `--debug-bind 0.0.0.0` flag to expose on network |
+| Schema evolution allows redefining key_field | Attacker re-registers a stream with a different key_field, causing all entity state to become orphaned | Reject re-registration that changes key_field; require explicit DELETE + re-REGISTER |
+| Event log replay with crafted timestamps | Replaying events with future timestamps skews window aggregations | Clamp event timestamps to [log_start_time, now] during replay; reject events with timestamps outside the log's time range |
 
 ---
 
 ## "Looks Done But Isn't" Checklist
 
-- [ ] **Snapshot recovery:** Loading a snapshot starts the server correctly — but verify that features are actually present and correct for existing keys, not just that the server boots without error
-- [ ] **Window expiry:** The 30-minute window looks correct at t=35m — but verify that events from t=0 to t=5m are excluded and events from t=5m to t=35m are included (off-by-one in bucket indexing is common)
-- [ ] **distinct_count windowing:** The HLL appears to reset correctly — but verify by checking that `unique_merchants` at t=25h does NOT include merchants from the first hour
-- [ ] **Derive with null inputs:** `failure_rate = failed_tx_30m / tx_count_30m` returns a value on first event — verify it does NOT return NaN or panic; it should return `Missing` or `null`
-- [ ] **MSET cooperative yielding:** The large MSET appears to complete — but verify PUSH p99 stays under 1ms during concurrent MSET of 50K keys by running both simultaneously in a test
-- [ ] **TCP frame parsing:** Protocol tests pass on loopback — but verify with a test that splits every frame at a random byte boundary and confirms correct parsing
-- [ ] **Python SDK reconnect:** The Python client works after server restart — but verify it reconnects correctly when the connection is closed mid-request (not just between requests)
-- [ ] **Cross-key lookup on evicted key:** FraudSignals view works for active merchants — but verify behavior when the merchant key has been TTL-evicted; it must return `null`, not panic
+- [ ] **Event log durability:** Appending to the log works under normal conditions -- but verify behavior when the disk is full (should fail gracefully, not corrupt the log or crash)
+- [ ] **Backfill correctness:** Replay produces features -- but verify they match live-computed features for the same event sequence (deterministic replay test)
+- [ ] **Schema evolution migration:** Re-registering a stream updates the schema -- but verify ALL entities' operators are reconciled, not just the next entity to receive an event
+- [ ] **Per-stream TTL eviction:** Old stream operators are evicted -- but verify operators for other streams on the same entity key survive
+- [ ] **DAG cycle detection:** Simple cycles (A->B->A) are detected -- but verify transitive cycles (A->B->C->A) and self-references (A->A) are also caught
+- [ ] **Incremental snapshot recovery:** Loading an incremental snapshot restores recent changes -- but verify recovery works when the base snapshot is missing or corrupt (should fall back to full snapshot or clean start)
+- [ ] **MGET cooperative yielding:** MGET returns correct results -- but verify PUSH p99 stays under 1ms during concurrent MGET of 10K keys
+- [ ] **Debug UI disconnection:** WebSocket streams data correctly -- but verify the server is unaffected when the WebSocket client disconnects abruptly (no resource leak, no panic)
+- [ ] **Event log compaction:** Compaction reduces log size -- but verify no events within the TTL window are lost during compaction
+- [ ] **Replay + live traffic interleaving:** Backfill completes while live traffic flows -- but verify no events are double-counted or missed at the boundary between "replayed" and "live"
 
 ---
 
@@ -323,12 +352,13 @@ Phase 1 (Core Engine / Window implementation). The time representation decision 
 
 | Pitfall | Recovery Cost | Recovery Steps |
 |---------|---------------|----------------|
-| Snapshot unreadable after code change | MEDIUM | (1) Rename corrupt snapshot to `.bak`, (2) restart server (starts fresh), (3) ingest last N hours of events via MSET to rebuild state from offline store |
-| Server OOM from slow client buffers | LOW | (1) Identify stuck connection via `debug/memory`, (2) force disconnect, (3) add write timeout to prevent recurrence |
-| divide-by-zero panic in expression evaluator | HIGH | Requires code fix + deploy; features are unavailable until patched; prevent by treating this as a correctness invariant in Phase 1 |
-| HLL distinct_count wrong (no windowing) | MEDIUM | (1) Document behavior as "since-epoch" in SDK, (2) implement epoch-rotation in next release, (3) existing state is irrecoverable — wait for natural TTL eviction |
-| Processing-time vs event-time skew | HIGH | Requires protocol change (adding `_timestamp` to wire format), Python SDK version bump, re-ingestion of affected data; extremely expensive to fix after SDK is shipped |
-| Snapshot write corrupts file (no atomic rename) | HIGH | (1) Check if `.tmp` file exists and is valid, (2) manually rename to restore, (3) fix atomic rename in code; if no `.tmp`, start fresh |
+| Event log corrupted (partial write on crash) | LOW | Detect corruption by validating last record's length+checksum; truncate the log to the last valid record; lose at most one event |
+| Schema migration leaves orphaned operators | MEDIUM | Re-register the stream (triggers reconciliation); if operators are still orphaned, delete snapshot and restart fresh |
+| Backfill produced wrong features (time semantics bug) | MEDIUM | Delete the affected operators from all entities (targeted wipe); re-run backfill with fixed replay logic; no need to restart server |
+| Disk full from unbounded event log | LOW | (1) Manually delete old event log segments, (2) add history_ttl to the stream definition, (3) trigger compaction via HTTP API |
+| DAG cycle caused server hang | LOW | Kill server, fix the pipeline definition to remove cycle, restart; cycle detection prevents recurrence |
+| Incremental snapshot missing base | MEDIUM | Fall back to last full snapshot; accept staleness for entities changed after the full snapshot; schedule immediate full snapshot |
+| Debug UI leak causes memory growth | LOW | Restart server; add connection timeout to prevent recurrence |
 
 ---
 
@@ -336,39 +366,38 @@ Phase 1 (Core Engine / Window implementation). The time representation decision 
 
 | Pitfall | Prevention Phase | Verification |
 |---------|------------------|--------------|
-| Snapshot blocks event loop | Phase 4 (Persistence) | Benchmark: PUSH p99 stays flat during periodic snapshot writes |
-| bincode schema evolution | Phase 4 (Persistence) | Test: add field to OperatorState, serialize, load from old format, verify graceful error |
-| MSET blocking without yield_now | Phase 2 (Server) | Test: concurrent PUSH during 100K MSET, verify PUSH p99 < 2ms |
-| Processing-time vs event-time | Phase 1 (Core Engine) | Test: send event with `_timestamp` 10m ago, verify it lands in correct window bucket |
-| SipHash throughput bottleneck | Phase 1 (Core Engine) | Benchmark: `benches/throughput.rs` shows >100K events/sec with FxHashMap |
-| HLL lacks windowing | Phase 5 (Remaining Operators) | Test: distinct_count at t=25h excludes events from hour 0 |
-| TCP partial frame reads | Phase 2 (Server / Protocol) | Test: mock TCP stream delivering frames 1 byte at a time |
-| Divide-by-zero in derives | Phase 1 (Core Engine) | Test: first event for new key, all derives with zero denominators return Missing |
-| Slow client write buffer growth | Phase 2 (Server) | Test: connect client, stop reading, verify server disconnects client after write timeout |
-| Cross-key lookup on evicted key | Phase 5 (Remaining Operators) | Test: lookup on TTL-evicted merchant key returns null, no panic |
-| Python/Rust time base mismatch | Phase 1 (Core Engine) | Test: event with explicit Unix timestamp lands in correct bucket on Rust side |
-| TCP max frame length | Phase 2 (Server / Protocol) | Test: send frame with length field = MaxU32, verify server disconnects gracefully |
+| SSD write blocks hot path | Phase 1 (Event Log) | Benchmark: PUSH p99 stays <100us with event log enabled |
+| Snapshot + compaction I/O collision | Phase 1 (Event Log) + Phase 4 (Incremental Snapshots) | Test: trigger snapshot and compaction simultaneously, verify no latency spike >2x baseline |
+| Backfill starves live traffic | Phase 2 (Backfill) | Test: backfill 100K events, concurrent PUSH p99 stays <1ms |
+| Schema evolution corrupts operators | Phase 3 (Schema Evolution) | Test: re-register stream with changed window, verify old operators discarded, new operator starts fresh |
+| DAG dependency cycles | Phase 1 (Composable Pipeline) | Test: register A->B->A cycle, verify REGISTER returns error |
+| Incremental snapshot dirty tracking overhead | Phase 4 (Incremental Snapshots) | Benchmark: PUSH throughput within 5% of baseline after adding dirty tracking |
+| Replay time semantics mismatch | Phase 2 (Backfill) | Test: replay same events as live, verify identical feature values |
+| Event log unbounded growth | Phase 1 (Event Log) | Test: stream with history_ttl=1h, verify log size bounded after 2h of writes |
+| Per-stream TTL conflicting eviction | Phase 1 (Entity State Refactor) | Test: two streams with different TTLs on same key, verify independent eviction |
+| Debug UI WebSocket backpressure | Phase 5 (Debug UI) | Test: open UI, pause browser, verify PUSH p99 unaffected |
 
 ---
 
 ## Sources
 
-- Tokio cooperative task yielding: https://tokio.rs/blog/2020-04-preemption
-- Tokio top runtime mistakes: https://www.techbuddies.io/2026/03/21/top-5-tokio-runtime-mistakes-that-quietly-kill-your-async-rust/
-- Tokio backpressure and Framed I/O: https://biriukov.dev/docs/async-rust-tokio-io/1-async-rust-with-tokio-io-streams-backpressure-concurrency-and-ergonomics/
-- TCP protocol framing with Tokio: https://tokio.rs/tokio/tutorial/framing
-- Rust HashMap performance (SipHash): https://nnethercote.github.io/perf-book/hashing.html
-- bincode compatibility guarantees: https://users.rust-lang.org/t/bincode-compatibility-guarantees/25611
-- Rust SystemTime vs Instant: https://doc.rust-lang.org/std/time/struct.Instant.html
-- Suspend-aware time bugs in Rust: https://www.rippling.com/blog/rust-suspend-time
-- Arroyo sliding window implementation: https://www.arroyo.dev/blog/how-arroyo-beats-flink-at-sliding-windows/
-- HyperLogLog in streaming_algorithms crate: https://docs.rs/streaming_algorithms/latest/streaming_algorithms/struct.HyperLogLog.html
-- fasteval expression evaluator (safe untrusted expressions): https://github.com/likebike/fasteval
-- Real-time feature store late data handling: https://oneuptime.com/blog/post/2026-01-24-streaming-late-data/view
-- Training-serving skew: https://www.qwak.com/post/real-time-feature-engineering
-- Redis single-thread pitfalls: https://adamdrake.com/redis-performance-triage-handbook.html
-- Async backpressure design: https://medium.com/@speedcraft21/async-backpressure-in-rust-designing-systems-that-refuse-work-safely-98f88661a717
+- Redis AOF persistence and fsync latency: https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/
+- Redis latency diagnostics (fsync, fork, AOF rewrite): https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency/
+- Redis AOF rewrite blocking main thread write(2) for 7-14 seconds: https://github.com/redis/redis/issues/1019
+- Redis incremental fsync during RDB save: https://github.com/redis/redis/pull/4758
+- 7 types of Redis latency (AOF-specific): https://www.netdata.cloud/blog/7-types-of-redis-latency/
+- Apache Flink state schema evolution constraints: https://nightlies.apache.org/flink/flink-docs-release-1.18/docs/dev/datastream/fault-tolerance/serialization/schema_evolution/
+- Databricks schema evolution in stateful streaming: https://www.databricks.com/blog/events-insights-complex-state-processing-schema-evolution-transformwithstate
+- Schema evolution in streaming data pipelines: https://medium.com/@krthiak/schema-evolution-in-streaming-data-pipelines-d870b46d40d0
+- Flink incremental snapshot design (FLIP-151): https://cwiki.apache.org/confluence/display/FLINK/FLIP-151:+Incremental+snapshots+for+heap-based+state+backend
+- Backfill correctness and idempotency: https://medium.com/@manjindersingh_10145/designing-robust-data-pipelines-idempotency-replays-backfills-explained-640c9920f7b9
+- Event stream processing backfills: https://jstaffans.github.io/posts/2016-11-05-backfills.html
+- Uber Kappa architecture for timely stream processing: https://www.uber.com/us/en/blog/kappa-architecture-data-stream-processing/
+- Backfilling real-time analytics pipeline for correctness: https://startree.ai/resources/backfilling-a-real-time-analytics-data-pipeline/
+- Tokio spawn_blocking for file I/O: https://docs.rs/tokio/latest/tokio/runtime/index.html
+- Tokio cooperative preemption: https://tokio.rs/blog/2020-04-preemption
+- Kahn's algorithm for DAG cycle detection: https://en.wikipedia.org/wiki/Topological_sorting
 
 ---
-*Pitfalls research for: real-time in-memory feature server (Tally)*
+*Pitfalls research for: Tally v1.1 composable pipeline, SSD event log, backfill, schema evolution*
 *Researched: 2026-04-09*

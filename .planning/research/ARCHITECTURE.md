@@ -1,565 +1,839 @@
-# Architecture Research
+# Architecture Research: v1.1 Composable Pipeline & Event Log
 
-**Domain:** Single-threaded in-memory real-time feature server (Rust/tokio)
+**Domain:** Integration of composable pipelines, SSD event log, backfill, debug UI into existing single-threaded real-time feature server
 **Researched:** 2026-04-09
-**Confidence:** HIGH
+**Confidence:** HIGH (based on existing codebase analysis + Redis AOF patterns + Rust ecosystem)
 
-## Standard Architecture
+## Existing Architecture Summary
 
-### System Overview
+The v1.0 codebase (~8,400 lines of Rust) follows a single-threaded Redis-like architecture:
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Tally Server Process                          │
-│                                                                     │
-│  ┌──────────────────────┐    ┌────────────────────────────────────┐ │
-│  │  TCP Listener        │    │  HTTP Management Listener          │ │
-│  │  port 6400           │    │  port 6401 (axum)                  │ │
-│  │  tokio::net::TcpListener  │  /health /metrics /pipelines       │ │
-│  └──────────┬───────────┘    └────────────────────────────────────┘ │
-│             │ accept()                                               │
-│  ┌──────────▼───────────────────────────────────────────────────┐   │
-│  │  Connection Handler (spawn_local per connection)             │   │
-│  │  Connection { stream: BufWriter<TcpStream>, buf: BytesMut }  │   │
-│  │  read_frame() → parse opcode → dispatch command              │   │
-│  └──────────┬───────────────────────────────────────────────────┘   │
-│             │ &mut Engine (via Rc<RefCell<>>)                       │
-│  ┌──────────▼───────────────────────────────────────────────────┐   │
-│  │  Command Dispatcher                                           │   │
-│  │  PUSH → PipelineEngine::process_event()                      │   │
-│  │  GET  → StateStore::get_all_features()                       │   │
-│  │  SET  → StateStore::set_static()                             │   │
-│  │  MSET → StateStore::bulk_set() [chunked with yield_now]      │   │
-│  │  REGISTER → PipelineRegistry::register()                     │   │
-│  └──────────┬───────────────────────────────────────────────────┘   │
-│             │                                                        │
-│  ┌──────────▼───────────────────────────────────────────────────┐   │
-│  │  Pipeline Engine                                              │   │
-│  │  - PipelineRegistry: HashMap<StreamName, StreamDef>          │   │
-│  │  - process_event(): fan-out → update operators → derives     │   │
-│  │  - resolve_views(): cross-stream derive evaluation           │   │
-│  │  - resolve_lookups(): cross-key HashMap reads                │   │
-│  └──────────┬───────────────────────────────────────────────────┘   │
-│             │                                                        │
-│  ┌──────────▼───────────────────────────────────────────────────┐   │
-│  │  State Store (in-memory, owned by Engine)                    │   │
-│  │  HashMap<EntityKey, EntityState>                             │   │
-│  │    EntityState {                                             │   │
-│  │      live:   HashMap<FeatureName, LiveFeature>               │   │
-│  │      static: HashMap<FeatureName, StaticFeature>            │   │
-│  │      last_event_at: Instant                                  │   │
-│  │    }                                                         │   │
-│  └──────────┬───────────────────────────────────────────────────┘   │
-│             │                                                        │
-│  ┌──────────▼───────────────────────────────────────────────────┐   │
-│  │  Snapshot Task (background, spawn_local)                     │   │
-│  │  tokio::time::interval(30s) → snapshot_state_to_disk()       │   │
-│  │  bincode serialize → atomic rename to snapshot file          │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
+main.rs
+  tokio::main(flavor = "current_thread")
+  Arc<Mutex<AppState>> shared across:
+    - TCP server (port 6400) -- hot path
+    - HTTP server (port 6401, axum) -- management
+    - Snapshot timer (30s interval, clone-then-spawn_blocking)
+    - Eviction timer (60s interval)
+
+AppState {
+  engine: PipelineEngine       // stream/view defs, push/get orchestration
+  store: StateStore            // AHashMap<EntityKey, EntityState>
+  metrics: Metrics             // events_total, push_latency, snapshot_duration
+  snapshot_path: PathBuf
+}
 ```
 
-### Component Responsibilities
+Key observation: The codebase uses `Arc<Mutex<AppState>>` (not `Rc<RefCell>` as the v1.0 architecture research recommended). This is because `spawn_blocking` for snapshots requires `Send`, and the HTTP server (axum) also needs `Send`. The Mutex is never contended in practice because all hot-path operations are synchronous (lock, process, unlock, no `.await` while locked).
 
-| Component | Responsibility | Implementation Pattern |
-|-----------|----------------|------------------------|
-| TCP Listener | Accept connections, spawn per-connection task | `tokio::net::TcpListener::accept()` loop, `spawn_local` |
-| Connection | Frame parsing, buffer management, command dispatch | `Connection { BufWriter<TcpStream>, BytesMut }` |
-| Command Dispatcher | Route opcodes to engine methods, serialize responses | Match on opcode byte, call engine, write response frame |
-| Pipeline Registry | Store stream/view definitions, validate on registration | `HashMap<String, StreamDef>`, validated at register time |
-| Pipeline Engine | Process events: fan-out, operator update, derive evaluation | Owns `StateStore`, calls operators in sequence |
-| State Store | In-memory entity state, live + static features | `HashMap<String, EntityState>` — single owner, no locks |
-| Operator State | Per-key windowed aggregation (ring buffer) | Enum variants per operator type, bucketed ring buffer |
-| Expression Evaluator | Parse and evaluate derive/where expressions | Pratt parser → AST at registration; tree-walk at runtime |
-| Snapshot Task | Periodic full serialization to disk, load on startup | `spawn_local` + `interval`, `spawn_blocking` for disk I/O |
-| HTTP API | Pipeline CRUD, health, metrics, debug endpoints | `axum` on separate port, shares `Arc` clone of registry |
-| TTL Eviction | Remove inactive keys to bound memory | Background task scanning `last_event_at`, evict expired |
+## v1.1 Target Architecture
 
-## Recommended Project Structure
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        Tally Server Process (v1.1)                       │
+│                                                                         │
+│  ┌──────────────────────┐    ┌────────────────────────────────────────┐ │
+│  │  TCP Listener 6400   │    │  HTTP Management 6401 (axum)          │ │
+│  │  PUSH GET SET MSET   │    │  /pipelines /health /metrics          │ │
+│  │  MGET REGISTER       │    │  /debug/* endpoints                   │ │
+│  └──────────┬───────────┘    │  /ui/* → embedded debug UI (SPA)      │ │
+│             │                └──────────┬─────────────────────────────┘ │
+│             │                           │                               │
+│  ┌──────────▼───────────────────────────▼──────────────────────────┐   │
+│  │                    AppState (Arc<Mutex<>>)                       │   │
+│  │                                                                  │   │
+│  │  ┌──────────────────────────────────────────────────────────┐   │   │
+│  │  │  PipelineEngine (MODIFIED)                               │   │   │
+│  │  │  - streams: AHashMap<String, StreamDefinition>           │   │   │
+│  │  │  - views: AHashMap<String, ViewDefinition>               │   │   │
+│  │  │  + keyless_streams: AHashMap<String, KeylessStreamDef>   │   │   │
+│  │  │  + dependency_graph: DependencyGraph (NEW)               │   │   │
+│  │  │  + schema_registry: SchemaRegistry (NEW)                 │   │   │
+│  │  └──────────────────────────────────────────────────────────┘   │   │
+│  │                                                                  │   │
+│  │  ┌──────────────────────────────────────────────────────────┐   │   │
+│  │  │  StateStore (MODIFIED)                                   │   │   │
+│  │  │  entities: AHashMap<EntityKey, EntityState>              │   │   │
+│  │  │  + per-dataset TTL configuration                         │   │   │
+│  │  └──────────────────────────────────────────────────────────┘   │   │
+│  │                                                                  │   │
+│  │  ┌──────────────────────────────────────────────────────────┐   │   │
+│  │  │  EventLog (NEW)                                          │   │   │
+│  │  │  - append_only_writer: BufWriter<File>                   │   │   │
+│  │  │  - log_index: AHashMap<StreamName, Vec<LogSegment>>      │   │   │
+│  │  │  - fsync_policy: FsyncPolicy (everysec / no)             │   │   │
+│  │  └──────────────────────────────────────────────────────────┘   │   │
+│  │                                                                  │   │
+│  │  Metrics (EXTENDED)                                              │   │
+│  │  + event_log_bytes, backfill_progress, per-stream counters      │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  Background Tasks:                                                      │
+│  - Snapshot timer (30s, MODIFIED for incremental)                       │
+│  - Eviction timer (60s, MODIFIED for per-dataset TTL)                   │
+│  + Fsync timer (1s, event log flush)                                    │
+│  + Log compaction timer (configurable, rewrites old segments)           │
+│  + Backfill task (on-demand, cooperative yielding)                      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+## Component Analysis: New vs Modified
+
+### NEW Components
+
+| Component | File | Lines Est. | Purpose |
+|-----------|------|-----------|---------|
+| EventLog | `src/state/event_log.rs` | ~400 | Append-only SSD event log with segments, fsync, compaction |
+| KeylessStreamDef | `src/engine/pipeline.rs` (extend) | ~80 | Stream definitions without key field (raw event capture) |
+| DependencyGraph | `src/engine/dag.rs` | ~200 | Topological ordering of stream/view execution |
+| SchemaRegistry | `src/engine/schema.rs` | ~250 | Schema diff, evolution, feature add/remove logic |
+| BackfillEngine | `src/engine/backfill.rs` | ~300 | Replay events from log, cooperative yielding |
+| DebugUI | `src/server/debug_ui.rs` | ~100 | Embedded SPA assets, WebSocket for live data |
+| MGET handler | `src/server/tcp.rs` (extend) | ~40 | Batch GET command |
+
+### MODIFIED Components
+
+| Component | File | Change Scope | What Changes |
+|-----------|------|-------------|--------------|
+| PipelineEngine | `src/engine/pipeline.rs` | Medium | Add keyless stream support, DAG execution order, schema evolution hooks |
+| StateStore | `src/state/store.rs` | Small | Per-dataset TTL, `get_many_features()` for MGET |
+| Snapshot | `src/state/snapshot.rs` | Medium | Incremental serialization (dirty-key tracking) |
+| Eviction | `src/state/eviction.rs` | Small | Per-dataset TTL instead of global TTL |
+| TCP handler | `src/server/tcp.rs` | Small | MGET opcode, event log write on PUSH, backfill trigger |
+| HTTP API | `src/server/http.rs` | Medium | Debug UI routes, backfill trigger endpoint, schema evolution endpoint |
+| Protocol | `src/server/protocol.rs` | Small | MGET command parsing, schema evolution register semantics |
+| main.rs | `src/main.rs` | Small | EventLog init, fsync timer, log compaction timer |
+| types.rs | `src/types.rs` | Minimal | No changes expected |
+| error.rs | `src/error.rs` | Small | New error variants for event log, backfill, schema |
+
+## Detailed Component Designs
+
+### 1. Event Log (`src/state/event_log.rs`)
+
+**Design: Redis AOF-inspired, segmented, append-only.**
+
+The event log is the foundation for backfill and keyless streams. It must not degrade the <100us PUSH latency target.
+
+```rust
+/// Configuration for event log behavior
+struct EventLogConfig {
+    /// Base directory for log segments
+    log_dir: PathBuf,
+    /// Maximum segment size before rotation (default: 64MB)
+    max_segment_size: u64,
+    /// Fsync policy: Everysec (default) or No
+    fsync_policy: FsyncPolicy,
+    /// Per-stream history TTL (None = no logging for this stream)
+    /// Maps stream name -> retention duration
+    stream_ttls: AHashMap<String, Duration>,
+}
+
+enum FsyncPolicy {
+    /// fsync every second via background timer (default, like Redis)
+    Everysec,
+    /// Never fsync, let OS handle it (fastest, least durable)
+    No,
+}
+
+/// A single log segment file
+struct LogSegment {
+    path: PathBuf,
+    stream_name: String,
+    start_offset: u64,
+    end_offset: u64,
+    created_at: SystemTime,
+    size_bytes: u64,
+}
+
+/// Entry in the event log
+struct LogEntry {
+    timestamp: SystemTime,
+    stream_name_len: u16,
+    stream_name: String,   // which stream this event belongs to
+    payload_len: u32,
+    payload: Vec<u8>,      // raw JSON bytes (same as PUSH payload)
+}
+
+struct EventLog {
+    config: EventLogConfig,
+    /// Current write segment per stream
+    writers: AHashMap<String, BufWriter<File>>,
+    /// Segment index per stream (for replay)
+    segments: AHashMap<String, Vec<LogSegment>>,
+    /// Bytes written since last fsync (for everysec tracking)
+    unfsynced_bytes: u64,
+}
+```
+
+**Integration with PUSH hot path:**
+
+The event log write happens AFTER the in-memory state update but BEFORE the response is sent. This is critical: the log captures the raw event for replay, but the response latency includes the buffered write (NOT the fsync).
+
+```
+PUSH arrives
+  1. Lock AppState
+  2. engine.push() -- update operators, compute features
+  3. event_log.append(stream_name, payload) -- buffered write, ~200ns
+  4. Unlock, return features
+  ...
+  [background: fsync timer fires every 1s, calls fdatasync()]
+```
+
+**Latency budget:** `BufWriter<File>::write()` for a ~300 byte event is ~100-300ns (memcpy into kernel page cache). No fsync on hot path. The 1-second fsync timer means at most 1 second of events lost on crash, which matches the existing ~30s snapshot loss tolerance.
+
+**Per-stream opt-in:** Streams declare `history=True` in their definition. Streams without history skip the log write entirely (zero overhead). This is exposed in the Python SDK as:
+
+```python
+@st.stream(key="user_id", history=True)
+class Transactions:
+    ...
+```
+
+**Compaction:** A background timer periodically rewrites old segments. For keyed streams, compaction walks the current in-memory state and writes the minimal set of events that would reproduce it (similar to Redis AOF rewrite). The retention TTL per stream determines when segments are eligible for deletion.
+
+**Confidence:** HIGH. Redis AOF has proven this pattern at scale. The buffered-write + periodic-fsync approach is well-understood. `std::fs::File` wrapped in `BufWriter` with periodic `fdatasync()` is the standard Rust approach.
+
+### 2. Keyless Streams (`src/engine/pipeline.rs` extension)
+
+**Design: Append-only event capture without aggregation.**
+
+Keyless streams are event sinks. They have no key field, no operators, and no state in the in-memory store. They exist purely for the event log -- capturing raw events that downstream keyed streams can reference.
+
+```rust
+/// A keyless stream: raw event ingestion, no aggregation
+struct KeylessStreamDef {
+    name: String,
+    /// Always true -- keyless streams exist for the event log
+    history: bool,
+    /// Optional schema for validation (field names + types)
+    schema: Option<EventSchema>,
+}
+```
+
+**Integration with PUSH:**
+
+When a PUSH targets a keyless stream:
+1. Validate event against schema (if defined)
+2. Write to event log
+3. Fan out to any keyed streams that depend on this keyless stream (via DAG)
+4. Return OK (no features to return since there are no operators)
+
+**Why this matters:** Keyless streams enable the composable pipeline pattern where raw events are captured first, then processed into keyed aggregations. A `RawTransactions` keyless stream can feed both `UserTransactions` (keyed by user_id) and `MerchantTransactions` (keyed by merchant_id) via explicit dependencies.
+
+**Confidence:** HIGH. This is a straightforward extension. The existing PUSH handler already returns features -- for keyless streams it returns an empty map.
+
+### 3. Dependency Graph / DAG Execution (`src/engine/dag.rs`)
+
+**Design: Static topological ordering computed at registration time.**
+
+The current v1.0 system has implicit dependencies: PUSH updates operators, then evaluates derives, then fan-out fires. Views are evaluated lazily on GET. This works but doesn't support explicit composition like "when RawTransactions is pushed, also update UserTransactions."
+
+```rust
+/// Represents a node in the pipeline dependency graph
+enum PipelineNode {
+    KeylessStream(String),
+    KeyedStream(String),
+    View(String),
+}
+
+/// Edge: source feeds into target
+struct Dependency {
+    source: PipelineNode,
+    target: PipelineNode,
+    /// How the source feeds the target
+    join: JoinType,
+}
+
+enum JoinType {
+    /// Target uses source's key field directly
+    SameKey,
+    /// Target uses a different field from source events for its key
+    Rekey { source_field: String },
+    /// Cross-key lookup (existing v1 behavior)
+    Lookup { on_field: String },
+}
+
+struct DependencyGraph {
+    nodes: Vec<PipelineNode>,
+    edges: Vec<Dependency>,
+    /// Pre-computed topological order (recomputed on register/remove)
+    execution_order: Vec<PipelineNode>,
+}
+```
+
+**How it changes PUSH:**
+
+Current v1.0 PUSH flow:
+```
+PUSH(Transactions, event)
+  -> engine.push("Transactions", event) -- update operators
+  -> fan_out_targets() -- find other streams with matching key fields
+  -> for each target: engine.push(target, event)
+```
+
+v1.1 PUSH flow with DAG:
+```
+PUSH(RawTransactions, event)  -- or PUSH(Transactions, event)
+  -> event_log.append(stream_name, event)
+  -> execution_order = dag.get_execution_order(stream_name)
+  -> for each node in execution_order:
+       if keyless_stream: skip (already logged)
+       if keyed_stream: extract key, update operators
+       if view: skip (views are still lazy on GET)
+```
+
+**Cycle detection:** Computed at registration time. If adding a new stream/view would create a cycle, the REGISTER command returns an error. Uses Kahn's algorithm (BFS-based topological sort) which naturally detects cycles.
+
+**Implementation: Inline, not a crate dependency.** The graph is small (typically <20 nodes). A ~100-line topological sort is simpler and lighter than pulling in `daggy` or `petgraph`. The execution order is precomputed and stored as a `Vec` -- no graph traversal on the hot path.
+
+**Confidence:** HIGH. Topological sort is well-understood. The existing fan-out logic already does something similar (iterate streams, check key fields). The DAG replaces that implicit logic with an explicit, validated order.
+
+### 4. Schema Evolution (`src/engine/schema.rs`)
+
+**Design: Diff-based reconciliation on re-register.**
+
+Currently, re-registering a stream replaces the definition entirely (idempotent). Operator state for existing entities is preserved only because operator names happen to match. v1.1 makes this explicit.
+
+```rust
+struct SchemaRegistry {
+    /// Version counter per stream (incremented on each schema change)
+    versions: AHashMap<String, u64>,
+    /// Previous definitions for diff computation
+    previous_defs: AHashMap<String, StreamDefinition>,
+}
+
+enum SchemaChange {
+    /// New feature added -- needs backfill if history available
+    FeatureAdded { name: String, def: FeatureDef, needs_backfill: bool },
+    /// Feature removed -- drop operator state for this feature
+    FeatureRemoved { name: String },
+    /// Feature changed incompatibly -- reset operator state
+    FeatureChanged { name: String, old: FeatureDef, new: FeatureDef },
+    /// Feature unchanged -- preserve operator state
+    FeatureUnchanged { name: String },
+}
+```
+
+**Diff logic:**
+
+When a stream is re-registered:
+1. Compare old and new feature lists by name
+2. For each feature name:
+   - Present in both, same type/window/field: `FeatureUnchanged` (preserve state)
+   - Present in both, different type or window: `FeatureChanged` (reset this feature's operator state for all entities)
+   - Present in new only: `FeatureAdded` (create new operators; if `backfill=True` on the stream, queue backfill)
+   - Present in old only: `FeatureRemoved` (remove operator state from all entities)
+3. Apply changes to EntityState for all affected entities
+
+**State reconciliation on entities:**
+
+This requires iterating affected entities. For `FeatureRemoved`, iterate all entities and remove the operator by name from `live_operators`. For `FeatureAdded`, the new operator is lazily initialized on the next PUSH (existing behavior -- operators are created on first push if missing). For `FeatureChanged`, iterate and replace the operator.
+
+**The iterate-all-entities concern:** With 1M entities, iterating to remove/reset operators could block the event loop. Use the same cooperative yielding pattern as MSET: process 1024 entities per chunk, yield between chunks.
+
+**Confidence:** MEDIUM. The diff logic is straightforward. The concern is the entity iteration cost for feature removal/reset. The cooperative yielding pattern from MSET is proven, but this is a new application of it.
+
+### 5. Backfill Engine (`src/engine/backfill.rs`)
+
+**Design: Event replay from log with cooperative yielding.**
+
+When a new feature is added to a stream with `history=True`, backfill replays historical events from the event log to populate the new feature's operator state.
+
+```rust
+struct BackfillTask {
+    stream_name: String,
+    feature_names: Vec<String>,  // only the new features to populate
+    from_segment: usize,         // start segment index
+    events_processed: u64,
+    events_total: u64,           // for progress tracking
+    status: BackfillStatus,
+}
+
+enum BackfillStatus {
+    Queued,
+    Running { progress_pct: f32 },
+    Complete,
+    Failed(String),
+}
+```
+
+**How backfill works:**
+
+1. Schema evolution detects `FeatureAdded` with `needs_backfill=true`
+2. Creates a `BackfillTask` and starts it as an async task
+3. The task reads log segments sequentially:
+   a. Deserialize LogEntry
+   b. Extract entity key from event
+   c. Find or create the new operator for this entity
+   d. Call `operator.push(event, entry.timestamp)` with the HISTORICAL timestamp
+   e. Every 1024 events, yield to event loop
+4. During backfill, live PUSH events continue normally (new operator is already initialized, so new events update it concurrently with replay)
+
+**Critical design choice: Use historical timestamps.** The ring buffer's `advance_to()` must process events in timestamp order for correct window computation. Since events are replayed from the log (which is append-order ~ timestamp order), this works correctly. The only subtlety: if a live PUSH arrives during backfill with a timestamp newer than the replay position, the ring buffer handles this correctly (it advances forward).
+
+**Backfill does NOT re-run derives.** Derives are computed on read (GET), not stored. Only operator state needs population.
+
+**Progress tracking:** Exposed via `GET /debug/backfill` and the debug UI.
+
+**Confidence:** MEDIUM. The replay logic is straightforward, but the interaction between live pushes and historical replay on the same operator state needs careful testing. Edge cases: out-of-order timestamps, events spanning window boundaries during replay.
+
+### 6. MGET Command (`src/server/tcp.rs` + `src/server/protocol.rs`)
+
+**Design: Batch GET over the existing binary protocol.**
+
+```
+MGET (0x06)
+  count: u32
+  [key: string] x count
+  -> Response: JSON array of { key: string, features: { ... } }
+```
+
+**Implementation in tcp.rs:**
+
+```rust
+Command::Mget { keys } => {
+    let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+    let AppState { ref engine, ref mut store, .. } = *app;
+    let now = SystemTime::now();
+    let results: Vec<serde_json::Value> = keys.iter().map(|key| {
+        let features = engine.get_features(key, store, now);
+        let map: serde_json::Map<_, _> = features.iter()
+            .map(|(k, v)| (k.clone(), v.to_json_value()))
+            .collect();
+        serde_json::json!({ "key": key, "features": map })
+    }).collect();
+    Ok(serde_json::to_vec(&results).unwrap())
+}
+```
+
+MGET is a synchronous command (like GET). It does NOT use cooperative yielding because the caller is waiting for a single response. For very large MGET requests (>10K keys), the lock hold time could be 5-10ms. This is acceptable -- MGET is a batch operation, not a latency-sensitive hot path.
+
+**Confidence:** HIGH. This is a trivial extension of the existing GET logic. The protocol addition is mechanical.
+
+### 7. Incremental Snapshots (`src/state/snapshot.rs` modification)
+
+**Design: Dirty-key tracking with full snapshot fallback.**
+
+The current approach clones ALL entities for every snapshot. At 1M entities this causes a significant memory spike. Incremental snapshots track which entities changed since the last snapshot and only serialize those.
+
+```rust
+/// Tracks which entity keys have been modified since last snapshot
+struct DirtyTracker {
+    /// Keys modified since last snapshot
+    dirty_keys: AHashSet<String>,
+    /// Keys deleted since last snapshot (eviction)
+    deleted_keys: AHashSet<String>,
+    /// Sequence number, incremented per snapshot
+    snapshot_seq: u64,
+}
+```
+
+**How it works:**
+
+1. On every PUSH/SET/MSET that modifies an entity: `dirty_tracker.dirty_keys.insert(key)`
+2. On every eviction: `dirty_tracker.deleted_keys.insert(key)`
+3. On snapshot timer:
+   - If `dirty_keys.len() < total_entities * 0.5`: incremental snapshot
+     - Clone only dirty entities + serialize as delta
+     - Periodically (every N snapshots), do a full snapshot to compact
+   - Else: full snapshot (current behavior)
+4. On load: apply base snapshot + deltas in order
+
+**Snapshot file format:**
+
+```
+[1 byte: version]
+[1 byte: snapshot_type (0=full, 1=delta)]
+[8 bytes: snapshot_seq]
+[postcard-encoded payload]
+```
+
+For delta snapshots, the payload is:
+```rust
+struct DeltaSnapshot {
+    base_seq: u64,
+    upserted_entities: Vec<(String, SerializableEntityState)>,
+    deleted_keys: Vec<String>,
+    pipelines: Vec<SerializablePipeline>,  // always include full pipeline defs
+}
+```
+
+**Recovery:** On startup, find the latest full snapshot, then apply deltas in sequence order. If any delta is missing or corrupt, fall back to the last valid full snapshot.
+
+**Confidence:** MEDIUM. The dirty-key tracking is straightforward. The concern is the snapshot recovery complexity (base + deltas). A simpler v1.1 approach: just track dirty keys to reduce the clone size, but still write a full snapshot each time. This eliminates the delta recovery complexity while still solving the memory spike problem.
+
+**Recommendation:** Start with "clone only dirty keys + always write full snapshot" as v1.1 scope. True delta snapshots with recovery chaining is v1.2 optimization.
+
+### 8. Debug UI (`src/server/debug_ui.rs`)
+
+**Design: Embedded SPA served from the existing axum HTTP server.**
+
+The debug UI is a single-page application (HTML + JS + CSS) embedded in the Rust binary at compile time using `rust-embed`. It connects to the existing HTTP API endpoints and optionally a WebSocket for live updates.
+
+```rust
+use rust_embed::RustEmbed;
+
+#[derive(RustEmbed)]
+#[folder = "ui/dist/"]
+struct DebugAssets;
+
+/// Serve embedded UI assets
+async fn serve_ui(path: Path<String>) -> impl IntoResponse {
+    let path = if path.0.is_empty() { "index.html" } else { &path.0 };
+    match DebugAssets::get(path) {
+        Some(file) => {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            (StatusCode::OK, [(header::CONTENT_TYPE, mime.as_ref())], file.data).into_response()
+        }
+        None => {
+            // SPA fallback: serve index.html for client-side routing
+            let index = DebugAssets::get("index.html").unwrap();
+            (StatusCode::OK, [(header::CONTENT_TYPE, "text/html")], index.data).into_response()
+        }
+    }
+}
+```
+
+**Routes added to axum router:**
+
+```rust
+.route("/ui", get(|| async { Redirect::permanent("/ui/") }))
+.route("/ui/", get(serve_ui))
+.route("/ui/*path", get(serve_ui))
+.route("/ws/live", get(websocket_handler))  // optional: live data feed
+```
+
+**UI tech stack:** Vanilla HTML + JS (no build step). The UI is a debug/observability tool, not a production application. Keeping it simple (no React, no build pipeline) means:
+- Zero additional build dependencies
+- Files go in `ui/dist/` in the repo
+- `rust-embed` bundles them into the binary
+- In dev mode (`debug-embed` feature disabled), files are served from disk for hot-reload
+
+**UI pages:**
+- **Dashboard:** Stream list, entity count, events/sec, memory usage (polls `/metrics` and `/debug/memory`)
+- **Stream Inspector:** Select a stream, see its definition, operator types, feature list
+- **Entity Inspector:** Enter a key, see all features (polls `/debug/key/:key`)
+- **Backfill Status:** Progress of any active backfill tasks (polls `/debug/backfill`)
+- **Event Log:** Show recent events for a stream (if history enabled)
+
+**WebSocket for live updates (optional):** A WebSocket endpoint that pushes metric updates every second. This avoids polling overhead in the UI. The WebSocket handler reads from `Arc<Mutex<AppState>>` on a timer -- same pattern as the HTTP endpoints.
+
+**Confidence:** HIGH. `rust-embed` is mature (v8.11, January 2026). Axum has first-class static file serving support. The UI itself is simple HTML/JS that consumes existing HTTP API endpoints.
+
+### 9. Per-Dataset TTL (`src/state/eviction.rs` modification)
+
+**Design: TTL configured per stream, not just global.**
+
+Currently, TTL = `ttl_multiplier * max_window_duration` (global). v1.1 allows per-stream TTL:
+
+```python
+@st.stream(key="user_id", ttl="7d")
+class Transactions:
+    ...
+```
+
+The eviction timer already iterates all entities. The change: instead of one global TTL, each entity's TTL is determined by which streams have state for that entity. The entity's TTL = max of all stream TTLs that have operators for that key.
+
+**Implementation detail:** `EntityState` already tracks `last_event_at`. We need to also track which streams contributed operators. This is already implicit in `live_operators` names -- but to make TTL per-stream efficient, store a `stream_name` field alongside each operator in `live_operators`:
+
+```rust
+// Current:  Vec<(String, OperatorState)>  -- (feature_name, state)
+// Proposed: Vec<(String, String, OperatorState)>  -- (feature_name, stream_name, state)
+```
+
+Or simpler: store per-stream `last_event_at` instead of per-entity. This requires a small structural change to `EntityState`.
+
+**Confidence:** HIGH. This is a small modification to the eviction logic. The main decision is the storage model for per-stream timestamps.
+
+## Data Flow Changes
+
+### v1.0 PUSH Flow (current)
+```
+Client -> TCP -> parse_command -> lock(AppState) ->
+  engine.push(stream, event, store) ->
+    extract key -> get_or_create entity -> push operators -> eval derives ->
+  fan_out to secondary streams ->
+  collect features -> unlock -> write response
+```
+
+### v1.1 PUSH Flow (proposed)
+```
+Client -> TCP -> parse_command -> lock(AppState) ->
+  IF keyless stream:
+    event_log.append(stream, event)  [buffered write, ~200ns]
+    dag.get_downstream(stream) -> for each keyed stream:
+      engine.push(keyed_stream, event, store)
+    unlock -> write response (empty features)
+  ELSE (keyed stream):
+    engine.push(stream, event, store)
+      extract key -> get_or_create entity -> push operators -> eval derives
+    IF stream.history:
+      event_log.append(stream, event)  [buffered write, ~200ns]
+    dag.get_downstream(stream) -> for each dependent:
+      engine.push(dependent, event, store)  [replaces fan_out_targets()]
+    unlock -> write response (features)
+```
+
+**Key difference:** Fan-out is replaced by explicit DAG traversal. The event log write is interleaved with the state update. The response includes only the primary stream's features (same as v1.0).
+
+### v1.1 GET Flow (unchanged for basic case)
+```
+Client -> TCP -> parse_command -> lock(AppState) ->
+  store.get_all_features(key) ->
+  engine.eval_derives(key, features) ->
+  engine.eval_views(key, features, store) ->
+  unlock -> write response
+```
+
+No changes to GET flow. Views are still evaluated lazily on GET.
+
+### v1.1 Schema Evolution Flow (new)
+```
+REGISTER arrives with updated definition ->
+  schema_registry.diff(old_def, new_def) -> Vec<SchemaChange> ->
+  for FeatureRemoved: iterate entities, remove operator (chunked + yield)
+  for FeatureChanged: iterate entities, reset operator (chunked + yield)
+  for FeatureAdded:
+    if stream.history && backfill requested:
+      spawn BackfillTask
+    else:
+      operator created lazily on next PUSH (existing behavior)
+  update PipelineEngine with new definition
+```
+
+### v1.1 Backfill Flow (new)
+```
+BackfillTask starts ->
+  read log segments for stream in timestamp order ->
+  for each LogEntry:
+    deserialize event JSON
+    extract entity key
+    find/create new operator in entity.live_operators
+    operator.push(event, historical_timestamp)
+    every 1024 events: yield_now()
+  mark BackfillTask as Complete
+```
+
+## File Structure Changes
 
 ```
 tally/
-├── Cargo.toml
 ├── src/
-│   ├── main.rs              # Entry point: parse config, build runtime, start server
-│   ├── config.rs            # Configuration struct (ports, snapshot interval, bucket size)
-│   ├── types.rs             # Value, Timestamp, FeatureMap, EntityKey, FeatureName
-│   ├── server/
-│   │   ├── mod.rs           # Re-exports, Server struct that owns engine + listeners
-│   │   ├── tcp.rs           # TcpListener loop, connection accept, spawn_local
-│   │   ├── connection.rs    # Connection struct, read_frame, write_frame, command loop
-│   │   ├── protocol.rs      # Frame encode/decode: opcodes, length prefix, string encoding
-│   │   └── http.rs          # axum router, pipeline CRUD, /health, /metrics, /debug
+│   ├── main.rs              # + EventLog init, fsync timer, log compaction
+│   ├── types.rs             # (unchanged)
+│   ├── error.rs             # + EventLog, Backfill, Schema error variants
 │   ├── engine/
-│   │   ├── mod.rs           # Engine struct owning StateStore + PipelineRegistry
-│   │   ├── pipeline.rs      # StreamDef, ViewDef, PipelineRegistry, REGISTER handling
-│   │   ├── dispatch.rs      # process_event(): fan-out, operator update, derive, lookup
-│   │   ├── operators.rs     # OperatorState enum + update/read for each variant
-│   │   ├── window.rs        # BucketedWindow<T>: ring buffer, bucket advance, sum
-│   │   ├── expression.rs    # Lexer, Pratt parser, Expr AST, eval(env: &FeatureMap)
-│   │   ├── hll.rs           # HyperLogLog (or thin wrapper over hyperloglog-rs crate)
-│   │   └── view.rs          # Cross-stream view resolution, cross-key lookup dispatch
+│   │   ├── mod.rs
+│   │   ├── pipeline.rs      # + KeylessStreamDef, schema evolution hooks
+│   │   ├── dag.rs           # NEW: DependencyGraph, topological sort
+│   │   ├── schema.rs        # NEW: SchemaRegistry, diff logic
+│   │   ├── backfill.rs      # NEW: BackfillTask, replay engine
+│   │   ├── operators.rs     # (unchanged)
+│   │   ├── window.rs        # (unchanged)
+│   │   ├── expression.rs    # (unchanged)
+│   │   ├── hll.rs           # (unchanged)
+│   ├── server/
+│   │   ├── mod.rs
+│   │   ├── tcp.rs           # + MGET handler, event log on PUSH
+│   │   ├── protocol.rs      # + MGET opcode 0x06
+│   │   ├── http.rs          # + debug UI routes, backfill endpoints
+│   │   ├── debug_ui.rs      # NEW: rust-embed asset serving
 │   ├── state/
 │   │   ├── mod.rs
-│   │   ├── store.rs         # StateStore: HashMap<EntityKey, EntityState>, get/set/evict
-│   │   ├── snapshot.rs      # serialize_to_bytes(), deserialize_from_bytes(), load/save
-│   │   └── eviction.rs      # run_eviction_loop(): interval scan, remove stale keys
-│   └── metrics.rs           # Prometheus counters/histograms, register_metrics()
-├── python/
-│   ├── pyproject.toml
-│   └── streamlet/           # (or tally/ after rename)
-│       ├── __init__.py
-│       ├── client.py        # TCP client, connection pool, frame encode/decode
-│       ├── stream.py        # @st.stream decorator, collects operator definitions
-│       ├── view.py          # @st.view decorator
-│       ├── operators.py     # st.count, st.sum, st.avg, st.derive, st.lookup, etc.
-│       └── types.py         # FeatureResult, typed attribute access
-├── tests/
-│   ├── test_operators.rs
-│   ├── test_window.rs
-│   ├── test_expression.rs
-│   ├── test_protocol.rs
-│   ├── test_pipeline.rs
-│   └── test_snapshot.rs
-└── benches/
-    ├── throughput.rs
-    └── latency.rs
+│   │   ├── store.rs         # + get_many_features(), per-dataset TTL
+│   │   ├── snapshot.rs      # + dirty-key tracking, incremental serialize
+│   │   ├── eviction.rs      # + per-dataset TTL
+│   │   ├── event_log.rs     # NEW: append-only log, segments, compaction
+├── ui/
+│   └── dist/                # NEW: debug UI static assets
+│       ├── index.html
+│       ├── app.js
+│       └── style.css
 ```
 
-### Structure Rationale
+## Suggested Build Order
 
-- **server/**: Everything that touches the network. `tcp.rs` only accepts and spawns — no business logic. `connection.rs` handles the frame loop and calls into `engine/`. `protocol.rs` is a pure encode/decode module with no side effects, making it fully unit-testable.
-- **engine/**: All computation. `dispatch.rs` is the hot path — it sequences fan-out, operator updates, and derive resolution. `expression.rs` is split: parse at registration time (slow path), evaluate at event time (hot path, no allocation).
-- **state/**: Persistence layer is fully isolated. `store.rs` knows nothing about snapshots. `snapshot.rs` knows nothing about live event processing. Keeps both testable independently.
-- **types.rs at root**: Shared value types imported by all modules — `Value`, `Timestamp`, `FeatureMap`. Avoids circular imports between `engine/` and `state/`.
+The build order is driven by dependencies between features. Each phase should be independently testable.
 
-## Architectural Patterns
+### Phase 1: Foundation (MGET + Schema Evolution)
+**Why first:** MGET is trivial and independently useful. Schema evolution is the prerequisite for backfill (you need to detect FeatureAdded to know when to backfill).
 
-### Pattern 1: Single-Threaded Ownership with tokio::task::LocalSet
+1. **MGET command** (protocol.rs, tcp.rs) -- ~1 hour
+   - Add OP_MGET opcode
+   - Parse N keys from payload
+   - Call get_features() for each key
+   - Tests: unit + integration
+   - *No dependencies on other v1.1 features*
 
-**What:** Run the entire event loop on one thread using `tokio::runtime::Builder::new_current_thread()` and `tokio::task::LocalSet`. All tasks use `spawn_local`. State is owned by the `Engine` struct, passed as `Rc<RefCell<Engine>>` to connection tasks — no `Arc`, no `Mutex`, no atomic overhead on the hot path.
+2. **Schema evolution** (schema.rs, pipeline.rs, store.rs) -- ~3 hours
+   - SchemaRegistry: diff old vs new definitions
+   - Feature add/remove/change detection
+   - Entity iteration with cooperative yielding for removals
+   - Tests: unit tests for diff logic, integration tests for re-register
+   - *Depends on: nothing new, uses existing PipelineEngine*
 
-**When to use:** Exactly this use case: Redis-inspired servers where keys are independent, the workload is I/O-bound with short CPU bursts, and single-thread throughput meets requirements (100K+ events/sec is achievable on one core with zero lock contention).
+3. **Per-dataset TTL** (eviction.rs, store.rs, pipeline.rs) -- ~2 hours
+   - Add TTL field to StreamDefinition
+   - Modify eviction to use per-stream TTL
+   - Track which stream contributed each operator
+   - Tests: eviction with mixed TTLs
+   - *Depends on: nothing new*
 
-**Trade-offs:**
-- Pro: Zero lock contention. `RefCell` borrow panics if misused, but correct code never holds a borrow across `.await` — enforce this as a rule.
-- Pro: Can use `Rc`, `Cell`, `RefCell` freely — zero atomic overhead.
-- Con: `spawn_blocking` required for any disk I/O (snapshot writes) to avoid blocking the thread.
-- Con: Cannot use standard `tokio::spawn` — all tasks must be `spawn_local`.
+### Phase 2: DAG Execution
+**Why second:** The DAG replaces the implicit fan-out logic. It must be in place before keyless streams can work (keyless streams depend on the DAG to know which keyed streams to feed).
 
-**Example:**
-```rust
-fn main() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let local = tokio::task::LocalSet::new();
-    local.block_on(&rt, async {
-        let engine = Rc::new(RefCell::new(Engine::new(config)));
-        // spawn snapshot background task
-        let snap_engine = engine.clone();
-        spawn_local(async move { run_snapshot_loop(snap_engine).await });
-        // accept TCP connections
-        run_tcp_server(engine).await;
-    });
-}
-```
+4. **Dependency graph** (dag.rs, pipeline.rs) -- ~3 hours
+   - DependencyGraph struct with topological sort
+   - Cycle detection at registration time
+   - Integration into PipelineEngine.register()
+   - Replace fan_out_targets() with DAG traversal in PUSH handler
+   - Tests: DAG construction, cycle detection, execution order
+   - *Depends on: nothing new, replaces existing fan-out*
 
-### Pattern 2: Frame-First Connection Loop (Connection Struct)
+5. **Keyless streams** (pipeline.rs, tcp.rs) -- ~2 hours
+   - KeylessStreamDef type
+   - PUSH to keyless stream: validate, then DAG fan-out
+   - REGISTER for keyless streams
+   - Tests: keyless -> keyed flow
+   - *Depends on: Phase 2 step 4 (DAG)*
 
-**What:** Each accepted TCP connection gets a `Connection` struct wrapping `BufWriter<TcpStream>` + `BytesMut` read buffer. The connection task runs a loop: `read_frame()` → dispatch command → `write_frame()`. Frame parsing is a two-phase check (boundary detection → deserialization) against the buffer, never blocking the event loop.
+### Phase 3: Event Log
+**Why third:** The event log is the foundation for backfill. It depends on keyless streams (keyless streams always log) and keyed streams with `history=True`.
 
-**When to use:** Any binary protocol over persistent TCP. This is the canonical pattern from the tokio tutorial and mini-redis.
+6. **Event log core** (event_log.rs) -- ~4 hours
+   - LogEntry format, segment management
+   - BufWriter append, segment rotation
+   - Fsync background timer
+   - Read iterator for replay
+   - Tests: write/read round-trip, segment rotation, corrupt segment handling
+   - *Depends on: nothing, but integrates with PUSH in step 7*
 
-**Trade-offs:**
-- Pro: Clean separation — `Connection` handles I/O, `Engine` handles logic. Can swap protocol without touching engine.
-- Pro: `BufWriter` coalesces small writes into fewer syscalls. Response frames for simple GET/SET are small — batching matters.
-- Con: Each connection holds a buffer allocation (typically 4KB). For 10K concurrent connections that is 40MB just for buffers — acceptable.
+7. **Event log integration** (tcp.rs, main.rs, pipeline.rs) -- ~2 hours
+   - Add `history: bool` to StreamDefinition
+   - Event log write on PUSH path (for streams with history=True)
+   - EventLog initialization in main.rs
+   - Fsync timer in main.rs
+   - Tests: E2E push with logging, verify log contents
+   - *Depends on: Phase 3 step 6 (event log core)*
 
-**Example:**
-```rust
-pub struct Connection {
-    stream: BufWriter<TcpStream>,
-    buffer: BytesMut,
-}
+8. **Log compaction** (event_log.rs) -- ~2 hours
+   - Walk current state, write minimal reproduction
+   - Segment TTL-based deletion
+   - Background compaction timer
+   - Tests: compaction preserves replay correctness
+   - *Depends on: Phase 3 step 6, step 7*
 
-impl Connection {
-    async fn read_frame(&mut self) -> Result<Option<Frame>> {
-        loop {
-            if let Some(frame) = self.parse_frame()? {
-                return Ok(Some(frame));
-            }
-            if 0 == self.stream.read_buf(&mut self.buffer).await? {
-                return Ok(None); // EOF
-            }
-        }
-    }
-}
-```
+### Phase 4: Backfill
+**Why fourth:** Backfill requires both the event log (to read from) and schema evolution (to trigger). It is the most complex new feature.
 
-### Pattern 3: Register-Once, Evaluate-Many for Expressions
+9. **Backfill engine** (backfill.rs) -- ~4 hours
+   - BackfillTask: read segments, replay events, cooperative yielding
+   - Integration with schema evolution (FeatureAdded triggers backfill)
+   - Progress tracking via Metrics
+   - Tests: backfill populates new feature correctly, concurrent live pushes
+   - *Depends on: Phase 1 step 2 (schema), Phase 3 steps 6-7 (event log)*
 
-**What:** Parse derive/where expressions into an AST at pipeline registration time (on the REGISTER command, which is rare). At event time (PUSH), evaluate the pre-compiled AST by walking the tree — no parsing, no allocation per event.
+### Phase 5: Incremental Snapshots
+**Why fifth:** This is an optimization. The existing full-snapshot approach works. Incremental snapshots reduce memory spikes.
 
-**When to use:** Any situation where expressions are registered once but evaluated millions of times. This is what keeps Python off the hot path.
+10. **Dirty-key tracking** (snapshot.rs, store.rs, tcp.rs) -- ~3 hours
+    - DirtyTracker: mark keys on PUSH/SET/MSET/eviction
+    - Clone only dirty keys for snapshot
+    - Still write full snapshot (no delta recovery needed)
+    - Tests: dirty tracking accuracy, snapshot size reduction
+    - *Depends on: nothing new, modifies existing snapshot flow*
 
-**Trade-offs:**
-- Pro: Expression evaluation adds negligible overhead per event — tree walk over a small AST is cache-friendly.
-- Pro: Syntax errors are caught at registration time, not silently at runtime.
-- Con: Expression language must be intentionally limited — `derive` and `where` are not Turing-complete. This is a feature, not a bug.
+### Phase 6: Debug UI
+**Why last:** The debug UI is a consumer of all other features. It needs the metrics, backfill status, and event log endpoints to be useful.
 
-**Example AST:**
-```rust
-pub enum Expr {
-    Literal(f64),
-    Bool(bool),
-    Field(FieldRef),          // field_name, StreamName.field, _event.field
-    BinOp { op: Op, lhs: Box<Expr>, rhs: Box<Expr> },
-    UnaryOp { op: UnaryOp, operand: Box<Expr> },
-    Call { name: String, args: Vec<Expr> },
-}
+11. **Debug UI** (debug_ui.rs, http.rs, ui/dist/) -- ~4 hours
+    - Build simple HTML/JS dashboard
+    - rust-embed integration for compile-time bundling
+    - New HTTP endpoints: `/debug/backfill`, `/debug/event-log`
+    - WebSocket for live metrics (optional)
+    - Tests: HTTP 200 on UI routes, asset serving
+    - *Depends on: all other features (for full utility)*
 
-// Evaluated at event time: no heap allocation for simple expressions
-pub fn eval(expr: &Expr, env: &EvalEnv) -> Result<Value> { ... }
-```
+### Python SDK Updates (parallel with any phase)
 
-Use a Pratt parser for infix precedence — it handles arithmetic/comparison/boolean in ~200 lines and is significantly simpler than a recursive descent parser with full precedence climbing.
+12. **SDK updates** (python/) -- ~2 hours
+    - `history=True` parameter on `@st.stream`
+    - `ttl="7d"` parameter on `@st.stream`
+    - `app.mget(["key1", "key2", ...])` method
+    - Keyless stream support: `@st.stream()` (no key parameter)
+    - *Can be done in parallel with server-side work*
 
-### Pattern 4: Bucketed Ring Buffer for Sliding Windows
-
-**What:** Each windowed operator (count, sum, avg, min, max) maintains a fixed-size ring buffer of buckets. Bucket granularity is configurable (e.g., 1-minute buckets for a 30-minute window = 30 buckets). On event arrival: add to the current bucket (determined by `now % window_size`). On read: sum all non-expired buckets. Bucket advancement is lazy — expire old buckets when the current time has moved past them.
-
-**When to use:** Any windowed streaming aggregation with bounded memory requirements. This is the approach used by Redis TimeSeries and Arroyo's sliding window implementation.
-
-**Trade-offs:**
-- Pro: O(1) per event update. O(W/B) read (W = window duration, B = bucket size) — typically 30-120 buckets, very fast.
-- Pro: Strictly bounded memory per operator per key.
-- Con: Introduces a maximum error of one bucket duration in window boundary precision. Configurable tradeoff.
-
-**Example:**
-```rust
-pub struct BucketedWindow {
-    buckets: Vec<f64>,       // ring buffer, len = num_buckets
-    bucket_counts: Vec<u64>, // parallel count for avg computation
-    head: usize,             // current bucket index
-    last_advance: Instant,   // when we last moved head
-    bucket_duration: Duration,
-    num_buckets: usize,
-}
-
-impl BucketedWindow {
-    pub fn advance_to_now(&mut self) {
-        let elapsed = self.last_advance.elapsed();
-        let buckets_to_advance = (elapsed.as_secs_f64()
-            / self.bucket_duration.as_secs_f64()) as usize;
-        for _ in 0..buckets_to_advance.min(self.num_buckets) {
-            self.head = (self.head + 1) % self.num_buckets;
-            self.buckets[self.head] = 0.0;
-            self.bucket_counts[self.head] = 0;
-        }
-        self.last_advance += self.bucket_duration * buckets_to_advance as u32;
-    }
-
-    pub fn add(&mut self, value: f64) {
-        self.advance_to_now();
-        self.buckets[self.head] += value;
-        self.bucket_counts[self.head] += 1;
-    }
-
-    pub fn sum(&mut self) -> f64 {
-        self.advance_to_now();
-        self.buckets.iter().sum()
-    }
-}
-```
-
-### Pattern 5: Cooperative Yielding for MSET Chunks
-
-**What:** Large MSET operations (100K keys) are processed in chunks of ~1024 keys. After each chunk, call `tokio::task::yield_now().await` to give the event loop a chance to process pending PUSH and GET requests. This prevents MSET from starving the hot path.
-
-**When to use:** Any bulk operation that would otherwise run for tens of milliseconds on the hot-path thread. The same pattern applies to snapshot serialization (handled differently — see snapshot pattern below).
-
-**Trade-offs:**
-- Pro: PUSH/GET remain responsive even during large batch ingestion.
-- Pro: No need for separate threads or channels for MSET.
-- Con: MSET throughput is slightly lower than naive sequential processing due to yield overhead (negligible in practice — yield is a scheduler hint, not a sleep).
-
-**Example:**
-```rust
-async fn process_mset(engine: &mut Engine, entries: Vec<(String, FeatureMap)>) {
-    const CHUNK_SIZE: usize = 1024;
-    for chunk in entries.chunks(CHUNK_SIZE) {
-        for (key, features) in chunk {
-            engine.state.set_static(key, features);
-        }
-        tokio::task::yield_now().await;
-    }
-}
-```
-
-### Pattern 6: Snapshot via spawn_blocking
-
-**What:** Snapshot writes are CPU and I/O intensive (serialize a large HashMap to bytes, then write to disk). Running this synchronously on the event loop thread would block all connections for hundreds of milliseconds. The pattern: serialize the state to a `Vec<u8>` synchronously inside `spawn_blocking`, then atomically rename the temp file to the snapshot path.
-
-**Critical constraint:** The state must be cloned or serialized while holding no other borrows. On a single-threaded runtime with `RefCell`, the safe approach is: take a borrow, clone the data needed for serialization, release the borrow, then `spawn_blocking` the serialization.
-
-**When to use:** Any periodic full-state serialization in an async context.
-
-**Trade-offs:**
-- Pro: Event loop is unblocked during disk I/O.
-- Con: State clone for snapshot introduces a memory spike (up to 2x peak memory during snapshot). Mitigated by designing `EntityState` to be efficiently cloneable and compactly serializable.
-- Con: Cannot serialize a `RefCell` borrow across a thread boundary — must clone first.
-
-**Example:**
-```rust
-async fn run_snapshot_loop(engine: Rc<RefCell<Engine>>, path: PathBuf) {
-    let mut interval = tokio::time::interval(Duration::from_secs(30));
-    loop {
-        interval.tick().await;
-        // Clone state while on event loop thread
-        let snapshot_data = {
-            let eng = engine.borrow();
-            eng.state.clone_for_snapshot() // returns SnapshotData (cheaply serializable)
-        };
-        // Serialize + write on blocking thread pool
-        let path = path.clone();
-        tokio::task::spawn_blocking(move || {
-            let bytes = bincode::serialize(&snapshot_data).unwrap();
-            let tmp = path.with_extension("tmp");
-            std::fs::write(&tmp, &bytes).unwrap();
-            std::fs::rename(&tmp, &path).unwrap(); // atomic on POSIX
-        }).await.unwrap();
-    }
-}
-```
-
-## Data Flow
-
-### PUSH Event Flow (Hot Path)
+## Dependency Graph for Build Order
 
 ```
-Client TCP connection
-    |
-    | [4-byte len][0x01 opcode][stream_name][payload JSON]
-    v
-Connection::read_frame()
-    | parse binary frame from BytesMut buffer
-    v
-Command::Push { stream, payload }
-    |
-    v
-Engine::process_event(stream, payload)
-    |
-    +---> PipelineRegistry::get_stream(stream)
-    |         returns: StreamDef { key_field, operators, derives }
-    |
-    +---> extract entity_key = payload[key_field]
-    |
-    +---> fan-out: find all streams keyed by fields in payload
-    |         for each matched stream:
-    |           StateStore::get_or_create(entity_key)
-    |           update each LiveFeature's OperatorState
-    |
-    +---> evaluate derives: for each derive expr in StreamDef
-    |         Expr::eval(env = current feature values + _event fields)
-    |
-    +---> resolve views: any ViewDef that depends on this stream
-    |         re-evaluate cross-stream derive expressions
-    |
-    +---> resolve lookups: any lookup(Stream.feature, on=field)
-    |         StateStore::get(payload[field])?.get_feature(feature)
-    |
-    +---> collect FeatureMap { feature_name -> Value }
-    |
-    v
-Connection::write_frame()
-    | serialize FeatureMap as JSON, prefix with 4-byte length
-    v
-Client receives response
+Phase 1: MGET ──────────────────────────────────────┐
+Phase 1: Schema Evolution ──────────────────────────┤
+Phase 1: Per-dataset TTL ──────────────────────────┤
+                                                    │
+Phase 2: DAG ──────────────────────────────────────┤
+Phase 2: Keyless Streams (needs DAG) ──────────────┤
+                                                    │
+Phase 3: Event Log Core ──────────────────────────┤
+Phase 3: Event Log Integration (needs log core) ──┤
+Phase 3: Log Compaction (needs log integration) ──┤
+                                                    │
+Phase 4: Backfill (needs schema + event log) ──────┤
+                                                    │
+Phase 5: Incremental Snapshots ────────────────────┤
+                                                    │
+Phase 6: Debug UI (needs all above) ───────────────┘
 ```
 
-### State Ownership Flow
+## Integration Points Summary
 
-```
-Engine (owns StateStore via direct field)
-    |
-    +-- StateStore owns HashMap<EntityKey, EntityState>
-    |       EntityState owns all operator state (ring buffers, HLL, etc.)
-    |
-    +-- PipelineRegistry owns HashMap<StreamName, StreamDef>
-            StreamDef owns Vec<OperatorDef> + Vec<ExprAST>
-            (ASTs allocated once at REGISTER time, never again)
+| New Feature | Touches (existing files) | New Files |
+|-------------|-------------------------|-----------|
+| MGET | protocol.rs, tcp.rs | -- |
+| Schema Evolution | pipeline.rs, store.rs | schema.rs |
+| Per-dataset TTL | eviction.rs, store.rs, pipeline.rs | -- |
+| DAG Execution | pipeline.rs, tcp.rs | dag.rs |
+| Keyless Streams | pipeline.rs, tcp.rs, protocol.rs | -- |
+| Event Log | tcp.rs, main.rs, pipeline.rs | event_log.rs |
+| Log Compaction | event_log.rs | -- |
+| Backfill | pipeline.rs | backfill.rs |
+| Incremental Snapshots | snapshot.rs, store.rs, tcp.rs | -- |
+| Debug UI | http.rs | debug_ui.rs, ui/dist/* |
 
-Rc<RefCell<Engine>> shared across:
-    - Connection tasks (borrow for PUSH/GET/SET/MSET duration)
-    - Snapshot task (borrow briefly to clone state, then release)
-    - Eviction task (borrow briefly to scan + remove stale keys)
-    - HTTP handler (Arc<PipelineRegistry> clone, NOT RefCell borrow)
-```
+## Risk Assessment
 
-### HTTP Management API Data Flow
+| Feature | Risk | Mitigation |
+|---------|------|------------|
+| Event log latency impact | LOW | BufWriter + no hot-path fsync. ~200ns per write. |
+| Backfill + live push interaction | MEDIUM | Historical timestamps + forward-only ring buffer. Needs thorough testing. |
+| Schema evolution entity iteration | LOW | Cooperative yielding (proven pattern from MSET). |
+| DAG replacing fan-out | LOW | Same semantics, explicit instead of implicit. |
+| Incremental snapshot recovery | MEDIUM | Mitigated by starting with "clone dirty, write full" approach. |
+| Debug UI build complexity | LOW | Vanilla HTML/JS, no build pipeline. rust-embed is mature. |
+| Event log disk usage | MEDIUM | Per-stream opt-in + compaction + TTL. Document disk math clearly. |
 
-```
-axum router (separate tokio task, separate port)
-    |
-    | POST /pipelines → deserialize PipelineDefinition JSON
-    |                    → validate (expression parse, field refs)
-    |                    → send Msg::Register over tokio::sync::mpsc channel
-    |                         (mpsc channel bridges HTTP task to engine task)
-    | GET /debug/key/:key → send Msg::DebugGet, await response
-    | GET /metrics → read Arc<Metrics> counters (lock-free reads via atomics)
-    v
-Channel receiver in Engine's select! loop
-    | process registration message
-    | update PipelineRegistry
-    v
-HTTP handler awaits channel response
-```
+## Key Architectural Decisions
 
-Note: The HTTP handler must communicate with the engine via a channel rather than shared `RefCell` because axum runs on a potentially different `spawn_local` task. The recommended pattern is a `tokio::sync::mpsc::channel` for requests and `tokio::sync::oneshot` for responses (request-reply over channels).
-
-### Key Data Flows
-
-1. **REGISTER command flow:** Python SDK serializes stream class to JSON → sends REGISTER frame → Server parses pipeline definition → validates expression syntax (Pratt parse to AST) → validates field references against stream key → stores in PipelineRegistry. ASTs stored per operator/derive — never re-parsed.
-
-2. **GET command flow:** Read entity_key from frame → StateStore::get(key) → collect all live features (call `operator.read()` which advances expired buckets and returns current value) + all static features → serialize as JSON FeatureMap → write frame. No computation beyond bucket advancement.
-
-3. **TTL eviction flow:** Background task wakes on interval (every 60s default) → borrows StateStore → iterates entity keys → removes any where `last_event_at` is older than `2 × largest_window`. TTL eviction is the only place keys are removed, keeping the store simple.
-
-## Scaling Considerations
-
-| Scale | Architecture Adjustments |
-|-------|--------------------------|
-| <10K events/sec | Current single-threaded design is optimal. No changes. |
-| 10K-100K events/sec | Single-threaded target. Profile before changing anything. Likely still fine. |
-| 100K-500K events/sec | Tune bucket sizes, reduce HLL precision if memory-bound. Consider connection limit tuning. |
-| >500K events/sec | Key-partitioned multi-threading: shard `EntityKey` space across N engines on N threads. No locks between shards. Drop-in upgrade path from current design. |
-
-### Scaling Priorities
-
-1. **First bottleneck: CPU on derive evaluation.** Complex derive expressions with many field lookups per event. Fix: profile with `cargo flamegraph`, optimize hot expression paths. Expression evaluator should be JIT-compiled in a future version if this becomes a bottleneck.
-
-2. **Second bottleneck: Memory for distinct_count.** HyperLogLog at 14-bit precision is ~12KB per operator per key. 1M keys × 3 distinct_count operators = 36GB. Fix: reduce HLL precision (10-bit = ~1KB, ~2% error), or add TTL eviction more aggressively.
-
-3. **Third bottleneck: Snapshot write time.** Cloning 1M EntityState structs and serializing to bincode. Fix: incremental snapshots (post-v1 scope), or compress snapshot output with LZ4 before write.
-
-## Anti-Patterns
-
-### Anti-Pattern 1: Holding RefCell Borrow Across .await
-
-**What people do:** Borrow the `RefCell<Engine>` at the start of a connection handler and hold it across `read_frame().await` or `write_frame().await`.
-
-**Why it's wrong:** `RefCell` is not `Send`. Holding a borrow across an `.await` point on a `LocalSet` will either panic at runtime (second borrow while first is held during yield) or simply prevent any other task from borrowing the engine — effectively making the server single-connection.
-
-**Do this instead:** Borrow, do computation synchronously, collect result, drop borrow, then `.await` the write. The engine should never be borrowed while waiting for I/O.
-
-```rust
-// Wrong
-let guard = engine.borrow_mut(); // held across await below
-let frame = conn.read_frame().await?; // PANIC if another task tries to borrow
-guard.process(...);
-
-// Correct
-let frame = conn.read_frame().await?; // await with no borrow held
-let result = engine.borrow_mut().process(frame); // brief borrow, no await
-conn.write_frame(result).await?; // await with no borrow held
-```
-
-### Anti-Pattern 2: Using tokio::sync::Mutex on the Hot Path
-
-**What people do:** Wrap state in `tokio::sync::Mutex<Engine>` because it is "async-safe." This is the correct choice for multi-threaded runtimes — but it adds unnecessary overhead on the single-threaded current_thread runtime where contention is impossible.
-
-**Why it's wrong:** `tokio::sync::Mutex::lock().await` involves a future and a potential task yield even when uncontended. At 100K events/sec, this is measurable overhead. `std::sync::Mutex` is faster when uncontended (no async overhead), and `RefCell` is faster still (no atomic CAS, just a counter check).
-
-**Do this instead:** Use `Rc<RefCell<Engine>>` with `spawn_local` tasks. Never hold the borrow across `.await`.
-
-### Anti-Pattern 3: Allocating in the Hot Path Expression Evaluator
-
-**What people do:** Re-parse derive expressions on every PUSH event, or build an intermediate `HashMap` of field values for each evaluation.
-
-**Why it's wrong:** The expression evaluator is called for every derive and every `where` clause on every PUSH event. Allocation on every call balloons GC pressure (even in Rust, `Box` allocations under high load are measurable). Parsing on every call adds milliseconds of latency.
-
-**Do this instead:** Parse to AST once at REGISTER time. During evaluation, pass a borrowed reference to the feature map as `&FeatureMap` — no cloning, no allocation unless the expression produces a new string (rare).
-
-### Anti-Pattern 4: Doing Disk I/O on the Event Loop Thread
-
-**What people do:** Call `std::fs::write(snapshot_path, bytes)` directly in an async function, without `spawn_blocking`.
-
-**Why it's wrong:** On a single-threaded runtime, any blocking syscall (disk write, DNS lookup, file stat) blocks the entire event loop. A 100MB snapshot write could stall all connections for 50-500ms.
-
-**Do this instead:** Always use `tokio::task::spawn_blocking` for disk I/O. Clone state before spawning — the blocking thread cannot borrow from `Rc<RefCell<>>` because `Rc` is not `Send`.
-
-### Anti-Pattern 5: Recomputing All Derives on Every Operator Update
-
-**What people do:** After updating any operator, recompute all derive expressions across all views — even those that don't reference the updated stream.
-
-**Why it's wrong:** If a user has a `UserRisk` view that references both `Transactions` and `Logins`, and the event was for `Transactions`, there is no need to recompute `Logins`-only derives. At scale, unnecessary derive recomputation doubles or triples compute per event.
-
-**Do this instead:** At REGISTER time, build a dependency graph: which views/derives reference which streams. On PUSH, only recompute derives that depend on the stream being updated.
-
-## Integration Points
-
-### Internal Boundaries
-
-| Boundary | Communication | Notes |
-|----------|---------------|-------|
-| Connection → Engine | Direct method call via `Rc<RefCell<Engine>>` borrow | Never hold borrow across `.await` |
-| Engine → StateStore | Direct field access — Engine owns StateStore | No indirection; they're always in the same task |
-| Engine → PipelineRegistry | Direct field access — Engine owns Registry | ASTs owned by Registry, borrowed by eval |
-| HTTP Handler → Engine | `tokio::sync::mpsc` + `oneshot` channel (request-reply) | HTTP runs in separate `spawn_local`, cannot share `RefCell` borrow |
-| Snapshot Task → Engine | Clone state via `RefCell` borrow, then `spawn_blocking` | Clone before spawning — `Rc` is not `Send` |
-| Eviction Task → Engine | `RefCell` borrow, scan, remove stale keys, release | Short borrow, no `.await` while held |
-| TCP Server → HTTP Server | Shared `Arc<Metrics>` (atomic counters only) | Metrics are write-once-per-event, read by HTTP |
-
-### External Boundaries
-
-| Service | Integration Pattern | Notes |
-|---------|---------------------|-------|
-| Python SDK (client) | TCP persistent connection, binary protocol | Connection pool with configurable size |
-| Prometheus/Grafana | HTTP scrape of `/metrics` endpoint | Use `metrics` + `metrics-exporter-prometheus` crates |
-| Disk (snapshot) | Write-only periodic, read on startup | Bincode format, versioned with a header byte |
-| OS signals | `tokio::signal::ctrl_c()` for graceful shutdown | Trigger final snapshot before exit |
-
-## Build Order (Dependency Graph)
-
-Build in this order to avoid blocked dependencies:
-
-```
-1. types.rs          — Value, Timestamp, FeatureMap, EntityKey (no deps)
-2. engine/window.rs  — BucketedWindow<T> (depends on types)
-3. engine/hll.rs     — HyperLogLog wrapper (depends on types)
-4. engine/operators.rs — OperatorState enum, update/read (depends on window, hll)
-5. engine/expression.rs — Lexer, Pratt parser, Expr AST, eval (depends on types)
-6. engine/pipeline.rs — StreamDef, ViewDef, PipelineRegistry (depends on expression, operators)
-7. state/store.rs    — StateStore, EntityState (depends on operators, types)
-8. state/snapshot.rs — serialize/deserialize (depends on store)
-9. state/eviction.rs — eviction loop (depends on store)
-10. engine/dispatch.rs — process_event() hot path (depends on store, pipeline, expression)
-11. engine/view.rs   — cross-stream, cross-key resolution (depends on dispatch, pipeline)
-12. server/protocol.rs — Frame encode/decode, opcode constants (depends on types)
-13. server/connection.rs — Connection struct, read/write frame (depends on protocol)
-14. server/tcp.rs    — listener loop, spawn_local (depends on connection, engine)
-15. server/http.rs   — axum router (depends on pipeline registry, metrics)
-16. main.rs          — wire everything together (depends on all)
-17. python/          — SDK (depends on stable protocol)
-```
-
-The expression evaluator (step 5) and operator implementations (step 4) are the most self-contained and can be developed + unit-tested without a running server. Start there.
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Event log fsync policy | Everysec (like Redis) | <100us PUSH budget. No hot-path fsync. 1s data loss acceptable. |
+| Event log format | Custom binary (not JSON lines) | Compact, fast to write, fast to read sequentially. |
+| DAG library | Inline implementation | Graph is tiny (<20 nodes). No crate dependency needed. |
+| Debug UI framework | Vanilla HTML/JS | Zero build deps. Debug tool, not production UI. |
+| Debug UI embedding | rust-embed | Mature crate, compile-time bundling, zero runtime deps. |
+| Incremental snapshots v1.1 | Dirty-key tracking, full write | Simpler than delta recovery. Solves the memory spike problem. |
+| Keyless stream storage | Event log only, no in-memory state | They have no operators. Storing them in StateStore would waste memory. |
+| Schema evolution backfill trigger | Automatic on FeatureAdded + history | User doesn't manually request backfill. It just works. |
 
 ## Sources
 
-- [Tokio tutorial: Shared State](https://tokio.rs/tokio/tutorial/shared-state) — `std::sync::Mutex` recommendation, Arc pattern
-- [Tokio tutorial: Framing](https://tokio.rs/tokio/tutorial/framing) — Connection struct, BufWriter, BytesMut read loop
-- [Tokio: Reducing tail latencies with cooperative task yielding](https://tokio.rs/blog/2020-04-preemption) — yield_now, operation budget, spawn_blocking
-- [tokio-rs/mini-redis](https://github.com/tokio-rs/mini-redis) — canonical Redis-like server architecture in Rust
-- [tokio::task::LocalSet docs](https://docs.rs/tokio/latest/tokio/task/struct.LocalSet.html) — spawn_local, Rc/RefCell patterns
-- [Arroyo: 10x faster sliding windows](https://www.arroyo.dev/blog/how-arroyo-beats-flink-at-sliding-windows/) — bucketed ring buffer approach for windowed aggregation
-- [Cloudflare: Building fast interpreters in Rust](https://blog.cloudflare.com/building-fast-interpreters-in-rust/) — AST evaluation performance patterns
-- [tokio::task::spawn_blocking docs](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html) — blocking I/O off the event loop
-- [hyperloglog-rs crate](https://docs.rs/hyperloglog-rs/latest/hyperloglog_rs/) — HyperLogLog implementation for distinct_count
-- [Pierre Zemb: Tokio Hidden Gems](https://pierrezemb.fr/posts/tokio-hidden-gems/) — LocalSet, deterministic single-thread execution
+- [Redis Persistence Documentation](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/) -- AOF design, fsync policies, rewrite strategy
+- [Redis 7.0 Multi-Part AOF Design](https://www.alibabacloud.com/blog/design-and-implementation-of-redis-7-0-multi-part-aof_599199) -- Segmented AOF architecture
+- [rust-embed crate (v8.11)](https://crates.io/crates/rust-embed) -- Compile-time static asset embedding
+- [Axum static file server example](https://github.com/tokio-rs/axum/blob/main/examples/static-file-server/src/main.rs) -- Serving static files with axum
+- [Tokio file I/O documentation](https://docs.rs/tokio/latest/tokio/fs/index.html) -- Async file operations (delegates to threadpool)
+- [daggy crate](https://github.com/mitchmindtree/daggy) -- Reference for DAG API design (not used as dependency)
 
 ---
-*Architecture research for: Single-threaded in-memory real-time feature server*
+*Architecture research for: v1.1 Composable Pipeline & Event Log integration into existing Tally server*
 *Researched: 2026-04-09*

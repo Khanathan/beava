@@ -1,197 +1,188 @@
 # Project Research Summary
 
-**Project:** Tally (Streamlet) — Real-Time Feature Server
-**Domain:** Single-binary streaming feature server (Rust + Python SDK)
+**Project:** Tally v1.1 — Composable Pipeline & Event Log
+**Domain:** Real-time feature server — composable pipeline, SSD event log, backfill, schema evolution, incremental snapshots, debug UI
 **Researched:** 2026-04-09
 **Confidence:** HIGH
 
 ## Executive Summary
 
-Tally is a real-time feature server: a single Rust binary that ingests events over a custom TCP protocol, computes stateful windowed aggregations and derived expressions in-memory, and returns updated features synchronously in the same request-response cycle. The domain is well-understood — the design sits between Redis (in-memory key-value serving) and Flink/Tecton (streaming aggregations) — and the key architectural decisions are validated by production patterns from tokio/mini-redis, Arroyo's sliding window approach, and the HyperLogLog literature. The recommended approach is a single-threaded tokio current_thread event loop with Rc<RefCell<Engine>> state ownership, bucketed ring buffers for windowed operators, a Pratt-parsed expression AST evaluated at event time, and periodic postcard snapshots for crash recovery. This is the Redis RDB model applied to a streaming feature engine.
+Tally v1.1 adds a composable pipeline execution model, an append-only SSD event log, backfill capability, schema evolution, and a debug web UI onto an already-proven v1.0 single-binary real-time feature server. The research is grounded in the existing ~8,400-line Rust codebase and draws from well-documented analogues: Redis AOF for the event log pattern, Apache Flink and RisingWave for composable DAG execution and backfill, and Tecton for feature backfill semantics. The recommended approach is to build in dependency order — event log first (foundation for everything), then DAG execution and keyless streams (composable pipeline core), then backfill and schema evolution (high complexity, depends on prior phases), then incremental snapshots and debug UI (optimizations/polish). No new infrastructure, no new major runtime changes; the existing current_thread tokio architecture is preserved throughout.
 
-The most important differentiator — synchronous push-through (POST event, get computed features back in the same response) — is also the core architectural constraint that drives every other decision: single-threaded runtime, no external dependencies, binary TCP protocol, in-memory state only. Competitors (Feast, Tecton, Hopsworks) are all eventually consistent and require multi-service infrastructure. Tally's value proposition is valid and underserved, particularly for fraud detection and ML teams at companies too small for the Tecton-scale stack.
+The single largest risk is latency regression on the PUSH hot path. Every new v1.1 feature touches the critical path: the event log appends on every PUSH, DAG execution adds pipeline evaluation, backfill competes for event loop time. The mitigation pattern is consistent across all three: buffered writes (never fsync on hot path), explicit cooperative yielding (rate-limit replay to 64 events per yield cycle), and mutual exclusion between background I/O tasks (snapshot and compaction never run concurrently). These patterns are not optional hardening — they must be the initial design, not retrofits.
 
-The highest-risk areas are not algorithmic — they are implementation-time traps: snapshot serialization blocking the async event loop, processing-time vs. event-time window semantics, HyperLogLog lacking sliding-window semantics, and bincode's lack of schema evolution (resolved by switching to postcard). All of these have clear preventions that must be baked in from Phase 1, not retrofitted. The pitfalls research is unusually complete and high-confidence; treat it as a mandatory checklist during implementation.
+The v1.1 feature set is uniquely differentiated: no other single-binary system has composable pipelines, SSD-backed event replay, automatic backfill on feature registration, and an embedded debug UI. The nearest competitors (Flink, RisingWave, Materialize) require clusters, object storage, or external sources. Tally's local-disk-only constraint is both its constraint and its competitive positioning. Research confidence is HIGH across all areas except incremental snapshots (MEDIUM interaction complexity — the design is clear, but recovery from missing base snapshots combined with schema evolution changes needs careful test coverage).
 
 ## Key Findings
 
 ### Recommended Stack
 
-The Rust stack is well-settled. Use tokio 1.x with Builder::new_current_thread() for the single-threaded event loop — this is the direct equivalent of Redis's event loop model and eliminates all lock overhead on the hot path. Use postcard (not bincode) for snapshot serialization; bincode carries a critical security advisory (RUSTSEC-2025-0141) and is unmaintained. Use winnow for the expression parser (evolved from nom, inline combinators, no grammar files). Use axum 0.8 for the HTTP management API on port 6401 — it runs on the same current_thread runtime with zero context-switch overhead. Replace all std::collections::HashMap instances with ahash's AHashMap on the hot path to avoid SipHash's 20-25% CPU overhead at 100K+ events/sec. Implement HyperLogLog directly in src/engine/hll.rs — all external HLL crates either require nightly or are minimally maintained; the algorithm is ~100 lines of Rust.
+The existing v1.0 stack (tokio, serde/postcard, axum, ahash, winnow) remains unchanged. Four new crates are added for v1.1: `petgraph 0.8` for DAG construction and topological sort (O(V+E) with cycle detection, used by the Rust compiler toolchain itself), `crc32fast 1.5` for SIMD-accelerated per-record event log checksums, `rust-embed 8.11` for compiling the debug UI HTML/JS/CSS into the binary at build time (preserving the single-binary promise), and `tower-http 0.6` for CORS during debug UI development. The event log itself is hand-rolled using `std::fs + BufWriter` — the `commitlog` crate (v0.1.1, minimally maintained, mmap-based) is explicitly ruled out. Incremental snapshots require no new dependencies — they use the existing postcard serialization with a dirty-key HashSet. Add `"sync"` to the tokio feature flags to enable `broadcast::channel` for SSE debug streaming.
 
-The Python SDK uses only stdlib (socket, struct, threading) with zero dependencies. This preserves the "pip install tally, no Rust build step" story. The SDK never touches the hot path — it serializes stream definitions to JSON at registration time, then sends binary-framed TCP commands.
-
-**Core technologies:**
-- tokio 1.x (current_thread): Async runtime, TCP server — Redis-like single-threaded event loop, no lock overhead
-- postcard 1.1.3: Snapshot serialization — stable wire format, serde-compatible, replaces unmaintained bincode
-- axum 0.8: HTTP management API — same tokio runtime, no context switch; tower middleware for /metrics, /health
-- serde + serde_json 1.x: Serialization framework + JSON for event payloads and pipeline definitions
-- ahash 0.8: Fast HashMap hasher — DoS-resistant, 2-5x faster than SipHash on string entity keys
-- winnow 0.6: Expression parser for derive/where clauses — inline combinators, no grammar files, fast
-- bytes 1.x: BytesMut for TCP frame buffering — zero-copy slicing via reference counting
-- thiserror 2.x + anyhow 1.x: Typed errors in engine/state modules; contextual propagation in main.rs
-- tracing + tracing-subscriber: Async-aware structured logging — span context propagates through tokio tasks
-- prometheus-client 0.22: Metrics exposition — official OpenMetrics implementation without global state
-- criterion 0.7: Statistical benchmarking — stable Rust, generates confidence intervals for throughput/latency benches
-- Python stdlib only: TCP client with zero-dependency install story
+**Core new technologies (v1.1 additions):**
+- `petgraph 0.8`: DAG construction and topological sort — O(V+E), cycle detection with offending node identification, future DAG visualization comes free
+- `crc32fast 1.5`: Event log record checksums — SIMD-accelerated at multi-GB/s on x86/ARM, 335M+ downloads, negligible overhead at 100K events/sec
+- `rust-embed 8.11`: Debug UI asset embedding — dev-mode filesystem fallback, native axum integration, zero extra deployment files
+- `tower-http 0.6`: CORS for debug UI development — must match axum 0.8 (use v0.6, not v0.5)
+- `std::fs + BufWriter` (stdlib): Event log segments — full control over fsync policy, rotation, and cooperative yielding
 
 ### Expected Features
 
-The feature landscape is researched against Feast, Tecton, Hopsworks, and Redis. The P1/P2/P3 breakdown is clear.
+The v1.1 feature set splits cleanly into P1 (must ship for milestone) and P2 (follow-on after core is validated). The critical insight from the dependency analysis: **SSD event log is the dependency root — keyless streams, backfill, and history TTL all require it.** Nothing else in v1.1 can be built without it.
 
-**Must have (table stakes):**
-- Windowed count, sum, avg operators — core velocity features; every fraud detection system needs these three
-- Expression parser + derive evaluation — failure_rate = failed_tx_30m / tx_count_30m; without this, Tally is just a counter
-- TCP server with binary protocol (PUSH, GET, SET, MSET, REGISTER) — the hot path
-- Synchronous push-through — the entire value proposition; other systems are eventually consistent
-- Pipeline REGISTER command — stream schema must be known before events arrive
-- Python SDK with @st.stream decorator and TCP client — ML engineers won't adopt a server-only tool
-- Snapshot persistence + crash recovery — "zero ops" promise fails without crash recovery
-- TTL-based key eviction — unbounded memory is a production blocker
-- HTTP health check endpoint — required for k8s readiness probes and load balancers
-- Direct feature write (SET/MSET) — offline-computed features (lifetime value, segments) must be injectable
+**Must have (P1 — v1.1 milestone):**
+- SSD append-only event log — opt-in per stream via `history=True`; `history_ttl` required at registration to prevent unbounded disk growth
+- Keyless streams — raw event ingestion with no in-memory state; events write to log only; feeds downstream keyed streams via DAG
+- Keyed streams with `depends_on` — explicit upstream dependency declarations; LEFT JOIN semantics (null for missing upstream values)
+- DAG execution — topological sort at registration time; events cascade through pipeline automatically; cycle detection rejects invalid graphs
+- History TTL per stream — bounded event log retention; defaults to the stream's largest window size
+- Schema evolution (add features) — new operators initialized lazily on next event; no full state reset required
+- Backfill from event log — replay historical events through new features; `backfill=True` flag; cooperative yielding to protect live traffic
+- MGET — batch GET command (new TCP opcode); saves round-trips on ML inference paths; low implementation complexity
 
-**Should have (competitive):**
-- min/max operators — outlier detection ("largest transaction in 24h")
-- distinct_count via HyperLogLog — unique_merchants per window; strong fraud signal; ~12KB per key
-- last operator — context features (last_country, last_merchant); simple single-value state
-- Where-clause filtered aggregations — failed_tx_30m = count(where="status == 'failed'"); same expression evaluator
-- Cross-stream views — UserRisk.tx_to_login_ratio; multi-stream derived features without ETL
-- Cross-key lookups — merchant state enrichment on user event; highest complexity differentiator
-- Event fan-out to multiple streams — one event updates both user and merchant state atomically
-- MSET chunked cooperative yielding — bulk batch ingestion without blocking live PUSH/GET
-- Full HTTP management API (pipeline CRUD, metrics, debug endpoints)
+**Should have (P2 — after core validated):**
+- Schema evolution (remove features) — less urgent than add; users rarely remove features in production
+- Entity state TTL per dataset — extend existing global TTL to per-stream configuration
+- Incremental snapshot serialization — dirty-key tracking + delta files; meaningful benefit at >1M keys
+- Debug web UI — embedded SPA: DAG topology, throughput, memory, entity inspector, backfill progress
+- Event log compaction — background segment rewrite; history TTL handles most cases initially as stopgap
 
-**Defer (v2+):**
-- Key-partitioned multi-threading — single thread handles 100K+ events/sec; vertical scaling first
-- Schema evolution without restart — design once base schema is stable in production
-- Session windows — niche; sliding windows cover fraud detection patterns well
-- Multi-tenancy / namespace isolation — run separate instances per tenant for v1
-- Client-side sharding documentation — needed only once users outgrow a single node
+**Defer to v1.2+:**
+- Complex DAG transformations (map/filter/flatMap between stages) — `where` clause and `derive` cover most use cases
+- Event log as external Kafka-compatible API — Tally consumes events, it does not distribute them
+- Live schema migration (change window parameters without state reset) — reset + backfill is the supported path
+- Batch PUSH (MPUSH) — PUSH in a loop + pipelining works for now
 
 ### Architecture Approach
 
-The architecture is a single-threaded async server with clear ownership boundaries: Engine owns StateStore and PipelineRegistry via direct fields, exposed to connection tasks as Rc<RefCell<Engine>> with a strict rule that borrows are never held across .await points. The HTTP management API runs as a spawn_local task on the same runtime and communicates with the engine via tokio::sync::mpsc + oneshot channels (request-reply pattern) because it cannot share a RefCell borrow across task boundaries. The snapshot task clones engine state while holding a brief RefCell borrow, then hands the clone to tokio::task::spawn_blocking for disk I/O. The build order is fully specified: types -> window -> hll -> operators -> expression -> pipeline -> state/store -> state/snapshot -> state/eviction -> dispatch -> view -> protocol -> connection -> tcp -> http -> main -> python SDK.
+The v1.1 architecture extends the existing `Arc<Mutex<AppState>>` single-threaded tokio pattern with three new subsystems added to `AppState`: `EventLog` (new `src/state/event_log.rs`, ~400 LOC), `DependencyGraph` (new `src/engine/dag.rs`, ~200 LOC), and `SchemaRegistry` (new `src/engine/schema.rs`, ~250 LOC). Two new background timers are added: fsync timer (1s interval) and log compaction timer (configurable). The hot path gains two new synchronous steps on PUSH: `event_log.append()` (buffered write, ~200ns) and DAG cascade evaluation. Total estimated new code: ~1,370 lines across 6 new files plus modifications to 8 existing files.
 
-**Major components:**
-1. TCP Listener + Connection (server/tcp.rs, server/connection.rs) — frame parsing with BytesMut + BufWriter, dispatch to engine; Connection struct pattern from tokio tutorial
-2. Pipeline Engine (engine/dispatch.rs, engine/pipeline.rs, engine/view.rs) — hot path: event fan-out, operator update, derive evaluation, cross-stream view resolution, cross-key lookup; owns StateStore
-3. State Store (state/store.rs) — HashMap<EntityKey, EntityState> with AHashMap hasher; single owner, no locks; EntityState holds live (operator) and static (SET/MSET) features per key
-4. Operator implementations (engine/operators.rs, engine/window.rs, engine/hll.rs) — bucketed ring buffer for count/sum/avg/min/max; custom HyperLogLog for distinct_count; Last as single value + timestamp
-5. Expression evaluator (engine/expression.rs) — Pratt parser to AST at REGISTER time; tree-walk evaluation at event time with no allocation; handles derive and where clauses
-6. Snapshot + Eviction (state/snapshot.rs, state/eviction.rs) — periodic postcard serialization with atomic file rename; TTL eviction background task scanning last_event_at
-7. HTTP Management API (server/http.rs) — axum router on port 6401; pipeline CRUD, /health, /metrics, /debug/key/:key; shared Arc<Metrics> with TCP path via atomics
-8. Python SDK (python/streamlet/) — pure stdlib TCP client with connection pool; @st.stream/@st.view decorators serialize definitions to JSON for REGISTER command
+The `EntityState` structure requires a structural refactor **before any other v1.1 changes**: operators must be grouped by stream (from a flat `Vec<(String, OperatorState)>` to `HashMap<StreamName, StreamState>` where each `StreamState` has its own `last_event_at`). This refactor is the prerequisite for per-dataset TTL without cross-stream eviction conflicts, and it touches snapshot serialization, GET response assembly, and the PUSH handler simultaneously.
+
+**Major components (new):**
+1. `EventLog` (`src/state/event_log.rs`) — segmented append-only log, BufWriter per stream, Everysec/No fsync policy, compaction
+2. `DependencyGraph` (`src/engine/dag.rs`) — petgraph DiGraph, topological sort, cycle detection at registration, cascade dispatch order
+3. `SchemaRegistry` (`src/engine/schema.rs`) — feature signature hashing, diff-and-reconcile on re-register, migration sweep with yield_now
+4. `BackfillEngine` (`src/engine/backfill.rs`) — log replay, 64 events/yield-cycle rate limit, live-first scheduling, `warming_up` status
+5. `DebugUI` (`src/server/debug_ui.rs`) — rust-embed static assets, SSE broadcast channel, metrics snapshot polling at 10Hz
 
 ### Critical Pitfalls
 
-Research identified 11 critical and moderate pitfalls. Top 5 by severity and phase impact:
+1. **SSD event log fsync on hot path** — synchronous `fsync()` takes 200us-2ms on any SSD, instantly blowing the <100us PUSH p99 budget. Use `BufWriter` + `spawn_blocking` for periodic `fdatasync()` (every 1s or N events). Never start with synchronous writes "to get it working" — the refactor from sync to async changes durability semantics and all error handling paths.
 
-1. **Snapshot serialization blocks event loop** — Use tokio::task::yield_now().await between chunks of ~1024 keys during serialization, OR clone state then spawn_blocking for disk I/O. Never serialize synchronously in an async context on current_thread. Design into Phase 4 from the start — retrofitting cooperative yielding into a monolithic serializer is harder than writing it correctly initially.
+2. **Backfill replay starves live traffic** — replaying 1M events at full speed consumes the single-threaded event loop for seconds to minutes. Rate-limit replay to 64 events per yield cycle. Check for pending live PUSH/GET before each batch. Mark features as `warming_up` in GET responses until backfill completes. Do not run replay in a separate thread — operator state is not thread-safe.
 
-2. **Processing-time vs. event-time window semantics** — Accept an optional _timestamp (Unix milliseconds) field in PUSH events from day one. Use SystemTime (not Instant) for all window bucket calculations so server-side timestamps are comparable to client-supplied Unix timestamps. This is a wire-format decision that is extremely expensive to change retroactively. Must be in Phase 1 + Phase 2.
+3. **Schema evolution corrupts in-memory operator state** — matching features by name only allows a changed-window operator to silently reuse stale ring buffer state. Compare features by signature hash (operator type + window duration + field + where_expr). Changed signature = drop and reinitialize. Apply migration sweep to ALL entity keys atomically with cooperative yielding.
 
-3. **Divide-by-zero panics on cold start** — Derive expressions like failed_tx_30m / tx_count_30m divide by zero on first event for a new key. The expression evaluator must return FeatureValue::Missing (not panic, not NaN) for any division by zero or access to a missing field. NaN propagates silently into ML models; Missing propagates explicitly. Must be in Phase 1.
+4. **DAG dependency cycles cause infinite evaluation loops** — multi-stage composition allows cycles that the v1.0 two-level model structurally prevented. Run Kahn's algorithm at REGISTER time; reject cyclic graphs with a clear error naming the offending node. Store the topological order and use it exclusively for evaluation. Add depth limit (16 levels) as runtime safety net.
 
-4. **Snapshot schema evolution (bincode trap)** — Resolved by using postcard instead of bincode. Still: embed an explicit SNAPSHOT_FORMAT_VERSION: u8 = 1 as the first byte of every snapshot file. On startup, version mismatch = start fresh, not panic. Write a migration test. Must be in Phase 4.
+5. **Event log and snapshot I/O collision** — running periodic snapshots and log compaction concurrently saturates SSD write bandwidth. Implement mutual exclusion between background I/O tasks (only one heavy write operation at a time). Schedule compaction at the midpoint between snapshots. This is exactly the Redis model.
 
-5. **HyperLogLog lacks sliding window semantics** — A naive HLL accumulates elements forever; it cannot subtract expired events. Implement epoch-based rotation: N HLL sketches (one per bucket), union non-expired sketches on read. Memory cost is N x 12KB per key per distinct_count feature. Design HLL data structure and window semantics together in Phase 5.
+6. **Per-stream TTL conflicting eviction for shared keys** — short-TTL stream expiry silently evicts long-TTL stream operators for the same entity key if they share a flat EntityState. The EntityState refactor (per-stream StreamState grouping) is the structural fix and must land before per-dataset TTL is implemented.
+
+7. **Replay time semantics mismatch** — during live processing, operators use wall-clock `now()` for both bucket assignment and expiry. During replay, `now` must be the event's historical timestamp for both. After replay completes, advance operator time to current wall-clock to expire stale buckets. Test: push 1000 events live, record features; wipe state, replay same 1000 events, verify identical features.
 
 ## Implications for Roadmap
 
-Based on the dependency graph in FEATURES.md and the build order in ARCHITECTURE.md, the natural phase structure is:
+The dependency graph from FEATURES.md and the architectural refactor requirements from PITFALLS.md jointly determine phase structure. Two hard ordering constraints: (1) EntityState refactor must precede everything because it touches every module; (2) event log must precede composable pipeline because keyless streams have nowhere to put events without it.
 
-### Phase 1: Core Engine
-**Rationale:** The state store, windowed operators, and expression evaluator are the foundation everything else builds on. They have no external dependencies and are fully unit-testable without a running server. The most consequential correctness decisions (time representation, Missing semantics, hasher choice) must be made here — they are extremely expensive to change later.
-**Delivers:** In-memory state store with AHashMap; BucketedWindow ring buffer for count/sum/avg; Pratt-parsed expression AST with tree-walk evaluator; FeatureValue::Missing for null/divide-by-zero; SystemTime-based window buckets.
-**Addresses:** In-memory state store, windowed count/sum/avg, derive expression evaluation (FEATURES.md P1)
-**Avoids:** SipHash throughput bottleneck (AHashMap from day one), divide-by-zero panics (Missing semantics in evaluator), processing-time/event-time skew (SystemTime from day one)
+### Phase 1: Foundation — EntityState Refactor + Event Log + MGET
 
-### Phase 2: TCP Server and Binary Protocol
-**Rationale:** The engine can now process events; it needs a network interface. TCP protocol correctness (frame parsing, partial reads) must be solved before the Python SDK is written, since the SDK depends on the wire format being stable.
-**Delivers:** tokio current_thread server; TcpListener + Connection with BytesMut + BufWriter; PUSH, GET, SET, MSET, REGISTER commands; binary protocol with length-prefixed frames; per-connection write timeouts; maximum frame length enforcement; MSET chunked cooperative yielding with explicit yield_now.
-**Addresses:** TCP server + binary protocol, synchronous push-through, pipeline REGISTER, SET/MSET (FEATURES.md P1)
-**Avoids:** TCP partial frame reads (read_exact, not read), slow client OOM (write timeouts), MSET starving hot path (explicit yield_now)
+**Rationale:** The EntityState structural refactor is a cross-cutting change that invalidates snapshots and touches every module. Doing it first means the diff is clean and subsequent phases build on stable ground. The event log is the dependency root for all subsequent v1.1 features. MGET is independent and low-complexity — include here to deliver early user value with minimal risk.
 
-### Phase 3: Python SDK
-**Rationale:** The wire protocol is now stable. ML engineers are the primary users — they need to define streams and push events in Python before the product can be validated. The SDK has no server-side dependencies beyond the already-built protocol.
-**Delivers:** @st.stream and @st.view decorators; operator classes (st.count, st.sum, st.avg, st.derive, st.lookup); TCP client with persistent connection pool; REGISTER serialization; typed FeatureResult objects; @st.stream mixins for composable feature groups.
-**Addresses:** Python SDK (FEATURES.md P1); reusable mixins (FEATURES.md differentiator)
-**Avoids:** Per-request TCP connection overhead (connection pool from the start), Python/Rust endianness mismatch (protocol conformance test)
+**Delivers:** Per-stream operator grouping in EntityState (enables per-dataset TTL without cross-stream eviction), SSD append-only event log with BufWriter + periodic fdatasync, `history=True` opt-in per stream, mandatory `history_ttl` at registration, disk-full graceful degradation (drop from log not from processing), event log metrics, MGET TCP command.
 
-### Phase 4: Persistence and Operational Readiness
-**Rationale:** The server now works end-to-end but does not survive restarts. Snapshot persistence, TTL eviction, HTTP management API, and health/metrics endpoints are needed to call this production-ready. The snapshot design is complex and must be done correctly.
-**Delivers:** Periodic postcard snapshots with cooperative yielding and atomic rename; snapshot recovery on startup; SNAPSHOT_FORMAT_VERSION byte; TTL-based key eviction background task; HTTP management API on port 6401 (pipeline CRUD, /health, /metrics, /debug/key/:key, /snapshot); Prometheus metrics.
-**Addresses:** Snapshot persistence + crash recovery, HTTP health check, HTTP management API, Prometheus metrics (FEATURES.md P1 + P2)
-**Avoids:** Snapshot blocking event loop (chunked yield or spawn_blocking), snapshot corruption on code change (version byte + migration test), snapshot file corruption (atomic rename)
+**Avoids:** Pitfall 1 (fsync on hot path — buffered async from day one), Pitfall 8 (unbounded log growth — require history_ttl at registration), Pitfall 9 (cross-stream eviction — EntityState refactor)
 
-### Phase 5: Remaining Operators and Advanced Features
-**Rationale:** The core product is validated. Add the remaining operators (min, max, last, distinct_count) and complex cross-stream features (views, lookups, fan-out). HyperLogLog and cross-key lookups are last because they have the most complex semantics.
-**Delivers:** min and max operators; last operator; HyperLogLog distinct_count with epoch-based window rotation; where-clause filtered aggregations (reuses existing expression evaluator); cross-stream views; cross-key lookups with Missing propagation; event fan-out to multiple streams.
-**Addresses:** min/max, distinct_count, last, where-clause filtering, cross-stream views, cross-key lookups, event fan-out (FEATURES.md P2)
-**Avoids:** HLL growing monotonically without windowing (epoch rotation designed in), cross-key lookup on evicted key panicking (Missing semantics)
+### Phase 2: Composable Pipeline — Keyless Streams + DAG Execution
+
+**Rationale:** Keyless streams require the event log (Phase 1). DAG execution requires `depends_on` declarations on keyed streams. These two features together define the composable pipeline concept — one without the other delivers nothing meaningful to users.
+
+**Delivers:** Keyless stream type (no key field, no in-memory state, log-only), keyed streams with `depends_on` declarations, petgraph-based dependency graph at registration time, topological sort with cycle detection, event cascade on PUSH (events flow through pipeline in topological order automatically).
+
+**Avoids:** Pitfall 5 (DAG cycles — cycle detection ships with DAG, not as follow-on hardening), Pitfall 2 (I/O collision — background task mutual exclusion framework established here)
+
+### Phase 3: Backfill + Schema Evolution
+
+**Rationale:** Backfill requires both the event log (Phase 1) and schema evolution — you cannot replay events into new features unless you can add features to existing streams without resetting all state. These features are tightly coupled and must be designed and implemented together.
+
+**Delivers:** Schema evolution (add features with lazy initialization on next event for all existing keys), feature signature hashing for diff-and-reconcile, backfill engine with 64 events/yield-cycle rate limiting, live-first scheduling during backfill, `warming_up` status for features under backfill, backfill progress tracking in metrics.
+
+**Avoids:** Pitfall 3 (backfill starvation — rate limiting and live-first scheduling from day one), Pitfall 4 (schema evolution operator corruption — signature hashing), Pitfall 7 (replay time semantics — historical timestamp used for both bucket assignment and expiry during replay)
+
+### Phase 4: Incremental Snapshots + Schema Evolution (Remove)
+
+**Rationale:** Incremental snapshots are an independent optimization — no other v1.1 features depend on them — but the dirty-key tracking design must be validated against the now-refactored EntityState structure from Phase 1. Schema evolution for removing features is lower urgency than adding and fits naturally as a Phase 3 complement.
+
+**Delivers:** Dirty-key HashSet tracking (O(1) insert on PUSH/SET, swap-and-clear on snapshot), delta snapshot files (only dirty entities serialized), full snapshot every 10th cycle to bound recovery time, recovery from base + delta chain, schema evolution for removing features (stop evaluating, drop from snapshots, handle missing features on load), background I/O mutual exclusion implementation.
+
+**Avoids:** Pitfall 6 (dirty tracking overhead — benchmark to confirm <5% throughput impact), Pitfall 2 (I/O collision — mutual exclusion implementation here)
+
+### Phase 5: Debug Web UI + Event Log Compaction
+
+**Rationale:** These are independent features with no blocking dependencies on other v1.1 work. The debug UI enhances observability without affecting pipeline correctness. Event log compaction is the long-term disk management solution (history TTL at registration is the short-term stopgap from Phase 1).
+
+**Delivers:** Embedded debug UI (rust-embed static assets, vanilla HTML/JS/CSS, no npm build step), stream topology DAG visualization, per-stream throughput charts (SSE-powered), memory breakdown, entity state inspector, backfill progress display, bounded SSE broadcast channel (drop-on-full, never blocks hot path), event log compaction (background segment rewrite, Redis AOF rewrite model).
+
+**Avoids:** Pitfall 10 (WebSocket/SSE backpressure — bounded channel with drop semantics, never block the hot path for debug delivery)
 
 ### Phase Ordering Rationale
 
-- Engine before server: Operators and expression evaluator are fully testable without networking. Correctness invariants (Missing semantics, time representation) are far cheaper to establish here than to retrofit.
-- Protocol before SDK: The Python SDK encodes the wire format. Any protocol change after the SDK ships requires a version bump and client migration. Stabilize the format in Phase 2.
-- Persistence after end-to-end works: Snapshot design requires all core operator types to be defined (stable serde schema). Adding persistence before operators are stable risks multiple snapshot format versions.
-- Complex operators last: Cross-key lookups depend on cross-stream views, which depend on working derives. HyperLogLog windowing is algorithmically independent but operationally complex — validate simpler operators in production first.
-- Pitfall avoidance drives ordering: The processing-time vs event-time pitfall and the Missing semantics pitfall both require Phase 1 decisions. The snapshot blocking pitfall requires Phase 4 design. The HLL windowing pitfall requires Phase 5 design.
+- EntityState refactor first — it is a cross-cutting structural change. One clean diff, then all subsequent phases build on stable ground.
+- Event log before composable pipeline — keyless streams have nowhere to put events without the log. Backfill has nothing to replay.
+- Backfill and schema evolution together — backfill requires schema evolution. Separating them forces two design passes over the same operator state reconciliation logic.
+- Incremental snapshots after core pipeline stabilizes — dirty-key tracking interacts with the EntityState structure from Phase 1. Validating this after Phase 1-3 refactors reduces rework risk.
+- Debug UI last — purely operational. Does not affect pipeline correctness. Implementation is straightforward given existing HTTP management API infrastructure.
 
 ### Research Flags
 
 Phases likely needing deeper research during planning:
-- **Phase 5 (HLL windowing):** Epoch-based HLL rotation for sliding window distinct_count is algorithmically non-trivial. The memory profile (N buckets x 12KB per key) needs to be validated against target scale before committing. Research the tumbling window fallback as a documented alternative.
-- **Phase 5 (Cross-key lookups):** The dependency between entity key TTL eviction and cross-key lookup Missing propagation creates subtle state coupling. Specify the semantics precisely before implementation.
-- **Phase 2 (Connection backpressure):** Simple write timeout may not be sufficient for all production scenarios. Research tokio backpressure patterns (LengthDelimitedCodec, per-connection buffer caps) before finalizing connection handler.
+
+- **Phase 3 (Backfill time semantics):** The transition between replayed events and live events for an entity currently being backfilled is underspecified in all research sources. Specifically: if a live PUSH arrives for an entity mid-backfill, how are the two event streams merged without double-counting at the boundary? Needs explicit design decision before coding.
+- **Phase 4 (Incremental snapshot recovery):** Recovery path edge cases need explicit test case design before implementation: (a) corrupt delta record, (b) schema evolution change between base and delta (feature removed after base snapshot taken), (c) base snapshot missing entirely. These are not covered by the primary sources.
 
 Phases with standard patterns (skip research-phase):
-- **Phase 1 (Core Engine):** Bucketed ring buffers, Pratt parsing, and AHashMap are well-documented with canonical implementations. ARCHITECTURE.md provides concrete code patterns.
-- **Phase 2 (TCP Server):** The tokio mini-redis pattern (Connection struct, BytesMut, spawn_local) is fully documented in official tokio tutorials.
-- **Phase 3 (Python SDK):** Pure stdlib TCP client with struct.pack framing is straightforward. Main risk is protocol conformance, addressed by a conformance test.
-- **Phase 4 (Persistence):** postcard + atomic rename + spawn_blocking is a documented pattern. Versioning scheme is simple (one byte). Criterion benchmarks are standard.
+
+- **Phase 1 (Event Log):** Redis AOF is extremely well-documented. BufWriter + spawn_blocking is established Rust I/O pattern. STACK.md research is HIGH confidence.
+- **Phase 2 (DAG Execution):** petgraph topological sort is one API call. Cycle detection return type is documented. Pattern is validated by Rust compiler toolchain usage.
+- **Phase 5 (Debug UI):** rust-embed + axum SSE is a documented integration pattern. The UI itself is vanilla HTML/JS — no framework decisions needed.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | Core crates verified against official sources. postcard over bincode has RUSTSEC advisory. winnow over nom has lineage documented. One MEDIUM gap: Python connection pooling specifics (threading.local vs threading.Lock — both work, implementation detail). |
-| Features | HIGH | Corroborated against Tecton, Feast, Hopsworks, Redis, Fennel documentation. P1/P2/P3 split derived from the dependency graph, not arbitrary. One note: where-clause filtered aggregations is marked P2 but has near-zero incremental cost once the expression evaluator exists — roadmapper may want to pull it into Phase 1. |
-| Architecture | HIGH | Patterns sourced from tokio official docs, mini-redis canonical implementation, Arroyo sliding window blog, Cloudflare interpreter post. Rc<RefCell<Engine>> with LocalSet is well-understood. One open question: HTTP-to-engine mpsc channel adds latency to pipeline registration — acceptable for management API, worth documenting. |
-| Pitfalls | HIGH | 11 pitfalls with specific prevention strategies, phase assignments, and verification tests. All core pitfalls verified against official Tokio docs and production post-mortems. Processing-time vs event-time and bincode schema evolution have the highest recovery cost if missed — both have clear preventions in the phase structure. |
+| Stack | HIGH | All 4 new crates verified on crates.io; version compatibility confirmed; explicit rejection rationale for each alternative (commitlog, daggy, ServeDir, WebSocket) |
+| Features | HIGH | Corroborated across Flink, RisingWave, Materialize, Redis, Tecton; dependency graph explicitly mapped with ordering constraints identified |
+| Architecture | HIGH | Based on direct analysis of the existing ~8,400-line v1.0 codebase; component boundaries, modification scope, and LOC estimates are concrete |
+| Pitfalls | HIGH | Core pitfalls verified against Redis, Flink, Databricks documentation; Tally v1.0 codebase analysis confirms the specific code paths at risk; 10 pitfalls with phase assignment and verification tests |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **HLL windowing approach:** Epoch-based rotation vs. tumbling window documentation needs a concrete decision before Phase 5. The memory math (N buckets x 12KB x key count) must be validated against the target scale. Add a spike task at the start of Phase 5.
-- **REGISTER authentication:** Unrestricted REGISTER allows any client to redefine pipelines. For v1, restricting REGISTER to the HTTP management port (6401) is sufficient. Confirm this is the intended access control model before Phase 2.
-- **Snapshot memory spike:** Cloning full state for spawn_blocking creates up to 2x peak memory. For 1M keys at 5KB average = 10GB during snapshot. If the memory budget is tight, chunked cooperative yielding (in-task, no clone) is safer. Make this decision explicit in Phase 4.
-- **String comparisons in expression language:** The where clause examples require string equality (status == 'failed'), but the expression grammar section only lists numeric types. Confirm whether string comparison is in scope for Phase 1 or Phase 2.
+- **Backfill + live traffic boundary:** How are replayed events and live events merged for an entity currently being backfilled? Risk of double-counting at the handoff point. Must be resolved in Phase 3 design before any backfill code is written.
+- **Incremental snapshot recovery edge cases:** The base + delta recovery path is clear for happy path, but the combination of (missing base) + (schema evolution between base and delta) needs explicit specification and test cases before Phase 4 implementation.
+- **Event log compaction correctness:** Background compaction rewrites segments while the state continues to change. If state changes between "start compaction" and "finish compaction", the compacted log may diverge from current state. Snapshot + compaction mutual exclusion helps but does not fully address this. Needs design attention in Phase 5.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- tokio docs.rs 1.51.0 — current_thread runtime, LocalSet, spawn_blocking, yield_now, framing tutorial
-- tokio-rs/mini-redis (GitHub) — canonical Connection struct, BytesMut, BufWriter pattern
-- bincode RUSTSEC-2025-0141 advisory — unmaintained status confirmed
-- postcard crates.io v1.1.3 — stable wire format, serde-compatible
-- axum 0.8 announcement (tokio.rs blog) — v0.8 requires hyper 1.x confirmed
-- Arroyo: 10x faster sliding windows blog — bucketed ring buffer approach validated
-- Tokio cooperative task yielding blog post — yield_now, operation budget, spawn_blocking patterns
+- Redis AOF persistence + fsync latency documentation — event log write pattern, background I/O mutual exclusion model
+- Apache Flink state schema evolution docs — feature add/remove semantics, key evolution constraints, incremental checkpoint design (FLIP-151)
+- petgraph crates.io + docs.rs — DAG API, toposort() O(V+E), Cycle(NodeIndex) return type
+- crc32fast crates.io — SIMD acceleration confirmed, 335M+ downloads, no unsafe in public API
+- rust-embed crates.io — axum 0.8 feature flag, dev-mode filesystem fallback confirmed
+- Tally v1.0 codebase (~8,400 lines) — existing Arc<Mutex<AppState>> pattern, EntityState structure, snapshot design, v1.0 operator implementations
 
 ### Secondary (MEDIUM confidence)
-- Rust web frameworks 2026 comparison — axum dominance confirmed
-- Rust serialization benchmark (djkoloski) — postcard vs bincode vs rkyv comparison
-- hyperloglog-rs lib.rs — nightly requirement confirmed (drives custom HLL implementation decision)
-- Tecton, Feast, Hopsworks, Fennel documentation — feature landscape and competitor analysis
-- Cloudflare: Building fast interpreters in Rust — AST evaluation performance patterns
-- Tokio top runtime mistakes (techbuddies.io) — pitfall verification
+- RisingWave backfill order control (2025) — backfill dependency ordering insight; topological sort applies to backfill cascade
+- Tecton stream feature view documentation — backfill=True + feature_start_time pattern as user-facing API model
+- Flink incremental checkpointing (FLIP-151) — RocksDB SSTable delta approach adapted to Tally's flat HashMap model
+- Segmented log in Rust blog — validates hand-rolled approach over commitlog crate
+- ActivityWatch rust-embed pattern — single-binary UI embedding reference implementation
 
 ### Tertiary (LOW confidence)
-- Various streaming feature store blog posts — market positioning validation
-- Training-serving skew articles — event-time vs processing-time context
+- Backfill + live traffic boundary at replay completion — inferred from backfill correctness literature; not directly documented for single-threaded systems; requires explicit design validation in Phase 3
 
 ---
 *Research completed: 2026-04-09*
