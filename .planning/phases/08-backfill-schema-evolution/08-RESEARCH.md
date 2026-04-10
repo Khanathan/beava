@@ -374,7 +374,7 @@ pub fn clone_for_snapshot_with_gc(
 | A2 | Event log entries for a typical 72h window fit in memory for `read_entries()` | Common Pitfalls | MEDIUM -- for high-throughput streams, may need streaming iterator; bounded by history_ttl |
 | A3 | Postcard deserialization is backward compatible when we DON'T change the schema (lazy GC via filtering, not new fields) | Common Pitfalls | LOW -- no schema change means no compatibility issue |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should `GET` requests return partially-backfilled feature values or `Missing` during backfill?**
    - What we know: CONTEXT.md says "derives auto-resolve after backfill" which implies partial values are visible. Operators return their current state on `read()`.

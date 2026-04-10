@@ -42,7 +42,7 @@ created: 2026-04-09
 | 08-01-02 | 01 | 1 | SCHM-02 | — | N/A | unit | `cargo test schema_remove` | ❌ W0 | ⬜ pending |
 | 08-02-01 | 02 | 1 | SCHM-03 | — | N/A | integration | `cargo test backfill` | ❌ W0 | ⬜ pending |
 | 08-02-02 | 02 | 1 | SCHM-04 | — | N/A | integration | `cargo test backfill_cooperative` | ❌ W0 | ⬜ pending |
-| 08-03-01 | 03 | 1 | SCHM-05 | — | N/A | unit | `cd python && python -m pytest -k backfill` | ❌ W0 | ⬜ pending |
+| 08-01-03 | 01 | 1 | SCHM-05 | — | N/A | unit | `cd python && python -m pytest -k backfill` | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
