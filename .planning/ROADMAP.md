@@ -93,7 +93,10 @@ Plans:
   1. After a period of writes affecting a subset of keys, the snapshot written is proportional to the number of changed keys rather than total keys
   2. Server can recover from a base snapshot plus subsequent delta snapshots and restore full state correctly
   3. Full snapshots are periodically written (every Nth cycle) to bound recovery time even with many deltas
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [x] 09-01-PLAN.md — Dirty/deleted tracking in StateStore + v6 snapshot format (base/delta) + recovery + v5 migration
+- [ ] 09-02-PLAN.md — Wire incremental snapshots into timer, mutations, eviction, HTTP trigger, startup + integration tests
 
 ### Phase 10: Debug UI
 **Goal**: Users can observe and debug the running system through an embedded web UI served from the existing HTTP management port
@@ -123,5 +126,5 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10
 | 6. Foundation | v1.1 | 4/4 | Complete | 2026-04-10 |
 | 7. Composable Pipeline | v1.1 | 4/4 | Complete | 2026-04-10 |
 | 8. Backfill & Schema Evolution | v1.1 | 2/2 | Complete | 2026-04-10 |
-| 9. Incremental Snapshots | v1.1 | 0/? | Not started | - |
+| 9. Incremental Snapshots | v1.1 | 0/2 | Not started | - |
 | 10. Debug UI | v1.1 | 0/? | Not started | - |

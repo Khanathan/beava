@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
-status: verifying
-stopped_at: Completed 08-02-PLAN.md
-last_updated: "2026-04-10T03:11:27.449Z"
+status: executing
+stopped_at: Completed 09-01-PLAN.md
+last_updated: "2026-04-10T04:04:54.547Z"
 last_activity: 2026-04-10
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 10
-  completed_plans: 10
-  percent: 100
+  total_plans: 12
+  completed_plans: 11
+  percent: 92
 ---
 
 # Project State
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Events go in, features come out -- synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
-**Current focus:** Phase 08 — Backfill & Schema Evolution
+**Current focus:** Phase 9 — Incremental Snapshots
 
 ## Current Position
 
-Phase: 9
-Plan: Not started
-Status: Phase complete — ready for verification
+Phase: 9 (Incremental Snapshots) — EXECUTING
+Plan: 2 of 2
+Status: Ready to execute
 Last activity: 2026-04-10
 
 Progress: [..........] 0%
@@ -59,6 +59,7 @@ Progress: [..........] 0%
 | Phase 07 P04 | 3min | 2 tasks | 3 files |
 | Phase 08 P01 | 11min | 2 tasks | 9 files |
 | Phase 08 P02 | 11min | 2 tasks | 6 files |
+| Phase 09 P01 | 6min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -94,6 +95,9 @@ Key v1.1 architectural decisions (from research):
 - [Phase 08]: Both snapshot callers (main.rs periodic + http.rs trigger) wired to clone_for_snapshot_with_gc
 - [Phase 08]: run_backfill clears operator state before replay for idempotent restart correctness
 - [Phase 08]: Snapshot format bumped to v5 for backfill_complete with serde(default) backward compat
+- [Phase 09]: [Phase 09]: Dirty set lives on StateStore (not AppState); mark_deleted removes key from dirty_keys for mutual exclusion
+- [Phase 09]: [Phase 09]: Snapshot v6 uses [version][type_tag 0x00/0x01][postcard] header; legacy save/load_snapshot preserved with transparent v5 migration
+- [Phase 09]: [Phase 09]: apply_delta processes deletes before inserts so delete+reinsert in same delta lands as insert
 
 ### Pending Todos
 
@@ -112,6 +116,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-10T03:04:55.191Z
-Stopped at: Completed 08-02-PLAN.md
+Last session: 2026-04-10T04:04:54.545Z
+Stopped at: Completed 09-01-PLAN.md
 Resume: `/gsd-plan-phase 6`
