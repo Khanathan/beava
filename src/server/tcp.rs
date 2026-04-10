@@ -179,7 +179,9 @@ async fn handle_connection(
             let mset_us = cmd_start.elapsed().as_secs_f64() * 1_000_000.0;
             let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
             app.latency.record_command(crate::server::latency::CommandKind::Mset, mset_us, std::time::Instant::now());
-            app.latency.maybe_record_slow(crate::server::latency::CommandKind::Mset, None, mset_us, String::new());
+            if app.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Mset, mset_us) {
+                app.latency.maybe_record_slow(crate::server::latency::CommandKind::Mset, None, mset_us, String::new());
+            }
         }
 
         // Write response
@@ -383,10 +385,12 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             let result = feature_map_to_json(&features);
             // Phase 10.2: record GET latency
             let get_us = get_start.elapsed().as_secs_f64() * 1_000_000.0;
-            let mut kp = key.clone();
-            kp.truncate(32);
             app.latency.record_command(crate::server::latency::CommandKind::Get, get_us, std::time::Instant::now());
-            app.latency.maybe_record_slow(crate::server::latency::CommandKind::Get, None, get_us, kp);
+            if app.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Get, get_us) {
+                let mut kp = key.clone();
+                kp.truncate(32);
+                app.latency.maybe_record_slow(crate::server::latency::CommandKind::Get, None, get_us, kp);
+            }
             Ok(result)
         }
         Command::Set { key, payload } => {
@@ -407,10 +411,12 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             }
             // Phase 10.2: record SET latency
             let set_us = set_start.elapsed().as_secs_f64() * 1_000_000.0;
-            let mut kp = key.clone();
-            kp.truncate(32);
             app.latency.record_command(crate::server::latency::CommandKind::Set, set_us, std::time::Instant::now());
-            app.latency.maybe_record_slow(crate::server::latency::CommandKind::Set, None, set_us, kp);
+            if app.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Set, set_us) {
+                let mut kp = key.clone();
+                kp.truncate(32);
+                app.latency.maybe_record_slow(crate::server::latency::CommandKind::Set, None, set_us, kp);
+            }
             Ok(vec![])
         }
         Command::Register { payload } => {
