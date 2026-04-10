@@ -45,7 +45,7 @@ Requirements for milestone v1.1: Composable Pipeline & Event Log.
 - [x] **DBUI-03**: User can inspect current feature values for any entity key
 - [x] **DBUI-04**: User can see memory usage breakdown (per stream, total)
 - [x] **DBUI-05**: Debug UI is embedded in the binary (no separate process or npm build)
-- [ ] **DBUI-06**: User can explore the running pipeline through an interactive topology DAG with clickable nodes that drill into per-stream memory, state, throughput, and entity lookup (Phase 10.1 — added during discuss)
+- [x] **DBUI-06**: User can explore the running pipeline through an interactive topology DAG with clickable nodes that drill into per-stream memory, state, throughput, and entity lookup (Phase 10.1 — added during discuss)
 - [ ] **DBUI-07**: User can observe per-command latency histograms (p50/p95/p99) per TCP command and stream, via /debug/latency endpoint and Debug UI surface (Phase 10.2 — added during discuss)
 
 ## v1.2+ Requirements
