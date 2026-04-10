@@ -85,10 +85,14 @@ class TestStreamDecorator:
         assert "helper_value" not in Transactions._tally_features
 
     def test_missing_key_raises(self) -> None:
-        with pytest.raises(TypeError):
-            @stream()  # type: ignore[call-arg]
-            class Bad:
-                pass
+        # NOTE: This test is updated for v1.1 -- @st.stream() with no key
+        # now creates a keyless stream instead of raising TypeError.
+        # The original behavior (key was required) is replaced by keyless
+        # stream support. See TestKeylessStream below.
+        @stream()
+        class Keyless:
+            pass
+        assert Keyless._tally_key_field is None
 
 
 # -----------------------------------------------------------------------
@@ -283,3 +287,145 @@ class TestTtlFields:
                 "BadView", (), {"score": Derive("a + b")},
                 key="user_id", _is_view=True, history_ttl="72h",
             )
+
+
+# -----------------------------------------------------------------------
+# Keyless streams (v1.1)
+# -----------------------------------------------------------------------
+
+
+class TestKeylessStream:
+    def test_keyless_stream_no_key(self) -> None:
+        """@st.stream() with no key creates keyless stream."""
+
+        @stream()
+        class RawEvents:
+            pass
+
+        assert RawEvents._tally_key_field is None
+        assert RawEvents._tally_stream_name == "RawEvents"
+
+    def test_keyless_register_json_key_field_none(self) -> None:
+        """Keyless stream JSON has key_field: None."""
+
+        @stream()
+        class RawEvents:
+            pass
+
+        j = RawEvents._to_register_json()
+        assert j["key_field"] is None
+
+    def test_keyless_rejects_windowed_operators(self) -> None:
+        """Keyless stream with Count raises TypeError."""
+        with pytest.raises(TypeError, match="keyless"):
+
+            @stream()
+            class Bad:
+                c = Count(window="1h")
+
+    def test_keyless_allows_derive(self) -> None:
+        """Keyless stream with derive is allowed."""
+
+        @stream()
+        class RawEvents:
+            enriched = Derive("_event.amount * 2")
+
+        assert "enriched" in RawEvents._tally_features
+
+
+# -----------------------------------------------------------------------
+# depends_on (v1.1)
+# -----------------------------------------------------------------------
+
+
+class TestDependsOn:
+    def test_depends_on_sets_attribute(self) -> None:
+        """depends_on stores class references."""
+
+        @stream()
+        class Upstream:
+            pass
+
+        @stream(key="user_id", depends_on=[Upstream])
+        class Downstream:
+            c = Count(window="1h")
+
+        assert Downstream._tally_depends_on == [Upstream]
+
+    def test_depends_on_register_json(self) -> None:
+        """depends_on class refs resolved to string names in JSON."""
+
+        @stream()
+        class Upstream:
+            pass
+
+        @stream(key="user_id", depends_on=[Upstream])
+        class Downstream:
+            c = Count(window="1h")
+
+        j = Downstream._to_register_json()
+        assert j["depends_on"] == ["Upstream"]
+
+    def test_depends_on_multiple(self) -> None:
+        """Multiple depends_on classes resolved."""
+
+        @stream()
+        class A:
+            pass
+
+        @stream()
+        class B:
+            pass
+
+        @stream(key="uid", depends_on=[A, B])
+        class C:
+            c = Count(window="1h")
+
+        j = C._to_register_json()
+        assert j["depends_on"] == ["A", "B"]
+
+    def test_no_depends_on_omits_key(self) -> None:
+        """Without depends_on, JSON has no depends_on key."""
+
+        @stream(key="uid")
+        class S:
+            c = Count(window="1h")
+
+        j = S._to_register_json()
+        assert "depends_on" not in j
+
+
+# -----------------------------------------------------------------------
+# Stream-level filter (v1.1)
+# -----------------------------------------------------------------------
+
+
+class TestStreamFilter:
+    def test_filter_sets_attribute(self) -> None:
+        """filter= stores the expression string."""
+
+        @stream(key="uid", filter="_event.status == 'failed'")
+        class S:
+            c = Count(window="1h")
+
+        assert S._tally_filter == "_event.status == 'failed'"
+
+    def test_filter_in_register_json(self) -> None:
+        """filter appears in JSON."""
+
+        @stream(key="uid", filter="_event.status == 'failed'")
+        class S:
+            c = Count(window="1h")
+
+        j = S._to_register_json()
+        assert j["filter"] == "_event.status == 'failed'"
+
+    def test_no_filter_omits_key(self) -> None:
+        """Without filter, JSON has no filter key."""
+
+        @stream(key="uid")
+        class S:
+            c = Count(window="1h")
+
+        j = S._to_register_json()
+        assert "filter" not in j
