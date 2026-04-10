@@ -317,9 +317,29 @@ async fn main() {
                     }
                 }?;
                 let file_path = snap_dir.join(&filename);
-                let tmp_path = file_path.with_extension("tmp");
-                std::fs::write(&tmp_path, &bytes)?;
+                // Phase 9 CR-01: unique tmp filename per (type, seq) to avoid
+                // races between concurrent snapshot writers (periodic timer +
+                // manual /snapshot). `with_extension("tmp")` would drop the
+                // sequence number and produce a shared `tally.snapshot.base.tmp`.
+                let tmp_path = snap_dir.join(format!("{}.tmp", filename));
+                // Phase 9 WR-01: fsync the tmp file before rename so we don't
+                // end up with a zero-byte snapshot after a power loss.
+                {
+                    use std::fs::OpenOptions;
+                    use std::io::Write;
+                    let mut f = OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        .truncate(true)
+                        .open(&tmp_path)?;
+                    f.write_all(&bytes)?;
+                    f.sync_all()?;
+                }
                 std::fs::rename(&tmp_path, &file_path)?;
+                // Fsync the directory so the rename itself is durable.
+                if let Ok(dir) = std::fs::File::open(&snap_dir) {
+                    let _ = dir.sync_all();
+                }
                 // After a successful base write, delete old snapshot files
                 // whose sequence is strictly less than the current base's.
                 if is_full {
