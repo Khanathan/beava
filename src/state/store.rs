@@ -9,7 +9,7 @@
 //! and last_event_at for independent TTL management (OPS-02).
 
 use std::time::SystemTime;
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use serde::{Serialize, Deserialize};
 use crate::types::{EntityKey, FeatureValue, FeatureMap};
 use crate::state::snapshot::{OperatorState, SerializableEntityState, SerializableStreamEntityState};
@@ -82,15 +82,25 @@ impl EntityState {
 
 /// The top-level state store. Maps entity keys to their state.
 /// Uses AHashMap per STATE.md locked decision (not std HashMap).
+///
+/// v1.1 Phase 9: tracks dirty and deleted keys since the last snapshot clear
+/// for incremental snapshot serialization.
 #[derive(Debug)]
 pub struct StateStore {
     entities: AHashMap<EntityKey, EntityState>,
+    /// Keys modified since last snapshot clear (mutation-touched).
+    dirty_keys: AHashSet<EntityKey>,
+    /// Keys evicted/deleted since last snapshot clear. Populated by eviction
+    /// and explicit deletes; consumed by delta snapshot serialization.
+    deleted_keys: AHashSet<EntityKey>,
 }
 
 impl Default for StateStore {
     fn default() -> Self {
         Self {
             entities: AHashMap::new(),
+            dirty_keys: AHashSet::new(),
+            deleted_keys: AHashSet::new(),
         }
     }
 }
@@ -186,6 +196,81 @@ impl StateStore {
     /// Number of tracked entities.
     pub fn entity_count(&self) -> usize {
         self.entities.len()
+    }
+
+    // ======================== Dirty / Deleted Tracking (Phase 9) ========================
+
+    /// Mark an entity key as dirty (mutated since the last snapshot clear).
+    /// Idempotent -- repeated calls leave the dirty set unchanged.
+    pub fn mark_dirty(&mut self, key: &str) {
+        self.dirty_keys.insert(key.to_string());
+    }
+
+    /// Mark an entity key as deleted since the last snapshot clear. A deleted
+    /// key is automatically removed from the dirty set so it does not appear
+    /// in the next delta's `changed_entities` (avoids ambiguity).
+    pub fn mark_deleted(&mut self, key: &str) {
+        self.deleted_keys.insert(key.to_string());
+        self.dirty_keys.remove(key);
+    }
+
+    /// Clear the dirty set. Called after a successful snapshot write.
+    pub fn clear_dirty(&mut self) {
+        self.dirty_keys.clear();
+    }
+
+    /// Drain the deleted key set into a Vec. Leaves the set empty.
+    pub fn take_deleted(&mut self) -> Vec<String> {
+        self.deleted_keys.drain().collect()
+    }
+
+    /// Number of keys currently marked dirty.
+    pub fn dirty_count(&self) -> usize {
+        self.dirty_keys.len()
+    }
+
+    /// Read-only view of the dirty key set. Primarily for tests and debug APIs.
+    #[cfg(test)]
+    pub(crate) fn dirty_keys(&self) -> &AHashSet<EntityKey> {
+        &self.dirty_keys
+    }
+
+    /// Clone only dirty entities for a delta snapshot, applying the same lazy
+    /// GC pattern as `clone_for_snapshot_with_gc`. Entities whose key is not
+    /// in `dirty_keys` are skipped entirely. If a stream is not present in
+    /// `valid_features`, all of its operators are included (defensive, matching
+    /// the non-delta path).
+    pub fn clone_dirty_for_snapshot_with_gc(
+        &self,
+        valid_features: &AHashMap<String, Vec<String>>,
+    ) -> Vec<(String, SerializableEntityState)> {
+        self.entities.iter()
+            .filter(|(key, _)| self.dirty_keys.contains(key.as_str()))
+            .map(|(key, entity)| {
+                let streams: Vec<(String, SerializableStreamEntityState)> = entity.streams.iter()
+                    .map(|(stream_name, stream_state)| {
+                        let operators = if let Some(valid) = valid_features.get(stream_name) {
+                            stream_state.operators.iter()
+                                .filter(|(name, _)| valid.contains(name))
+                                .cloned()
+                                .collect()
+                        } else {
+                            stream_state.operators.clone()
+                        };
+                        (stream_name.clone(), SerializableStreamEntityState {
+                            operators,
+                            last_event_at: stream_state.last_event_at,
+                        })
+                    })
+                    .collect();
+                (key.clone(), SerializableEntityState {
+                    streams,
+                    static_features: entity.static_features.iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                })
+            })
+            .collect()
     }
 
     /// Iterate over all entity keys.
@@ -710,5 +795,210 @@ mod tests {
         assert!(store.get_entity("empty").is_none());
         assert!(store.get_entity("has_stream").is_some());
         assert!(store.get_entity("has_static").is_some());
+    }
+
+    // ======================== Phase 9: Dirty / Deleted Tracking Tests ========================
+
+    #[test]
+    fn test_mark_dirty_inserts_key() {
+        let mut store = StateStore::new();
+        store.mark_dirty("u123");
+        assert_eq!(store.dirty_count(), 1);
+        assert!(store.dirty_keys().contains("u123"));
+    }
+
+    #[test]
+    fn test_mark_dirty_is_idempotent() {
+        let mut store = StateStore::new();
+        store.mark_dirty("u123");
+        store.mark_dirty("u123");
+        store.mark_dirty("u123");
+        assert_eq!(store.dirty_count(), 1);
+    }
+
+    #[test]
+    fn test_mark_dirty_multiple_keys() {
+        let mut store = StateStore::new();
+        store.mark_dirty("u1");
+        store.mark_dirty("u2");
+        store.mark_dirty("u3");
+        assert_eq!(store.dirty_count(), 3);
+    }
+
+    #[test]
+    fn test_clear_dirty_empties_the_set() {
+        let mut store = StateStore::new();
+        store.mark_dirty("u1");
+        store.mark_dirty("u2");
+        assert_eq!(store.dirty_count(), 2);
+        store.clear_dirty();
+        assert_eq!(store.dirty_count(), 0);
+        assert!(store.dirty_keys().is_empty());
+    }
+
+    #[test]
+    fn test_mark_deleted_records_key() {
+        let mut store = StateStore::new();
+        store.mark_deleted("u456");
+        let deleted = store.take_deleted();
+        assert_eq!(deleted.len(), 1);
+        assert!(deleted.contains(&"u456".to_string()));
+    }
+
+    #[test]
+    fn test_mark_deleted_removes_from_dirty() {
+        // A key that was marked dirty and then deleted should NOT appear in
+        // the dirty set -- it must only appear in the deleted list.
+        let mut store = StateStore::new();
+        store.mark_dirty("u789");
+        assert_eq!(store.dirty_count(), 1);
+
+        store.mark_deleted("u789");
+        assert_eq!(store.dirty_count(), 0, "Deleted key must be removed from dirty set");
+
+        let deleted = store.take_deleted();
+        assert_eq!(deleted, vec!["u789".to_string()]);
+    }
+
+    #[test]
+    fn test_take_deleted_clears_the_set() {
+        let mut store = StateStore::new();
+        store.mark_deleted("a");
+        store.mark_deleted("b");
+
+        let first = store.take_deleted();
+        assert_eq!(first.len(), 2);
+
+        // Second call returns empty
+        let second = store.take_deleted();
+        assert!(second.is_empty(), "take_deleted should clear the set");
+    }
+
+    #[test]
+    fn test_dirty_count_returns_zero_when_empty() {
+        let store = StateStore::new();
+        assert_eq!(store.dirty_count(), 0);
+    }
+
+    #[test]
+    fn test_clone_dirty_for_snapshot_returns_only_dirty_entities() {
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+
+        // Create three entities with live operators
+        for key in &["u1", "u2", "u3"] {
+            let entity = store.get_or_create_entity(key);
+            let stream = entity.get_or_create_stream("Transactions");
+            let mut op = OperatorState::Count(CountOp::new(
+                Duration::from_secs(3600),
+                Duration::from_secs(60),
+            ));
+            op.push(&serde_json::json!({}), now).unwrap();
+            stream.operators.push(("tx_count".to_string(), op));
+        }
+
+        // Only mark u1 and u3 as dirty
+        store.mark_dirty("u1");
+        store.mark_dirty("u3");
+
+        let valid_features = ahash::AHashMap::new();
+        let snapshot = store.clone_dirty_for_snapshot_with_gc(&valid_features);
+
+        assert_eq!(snapshot.len(), 2);
+        let keys: Vec<&String> = snapshot.iter().map(|(k, _)| k).collect();
+        assert!(keys.contains(&&"u1".to_string()));
+        assert!(keys.contains(&&"u3".to_string()));
+        assert!(!keys.contains(&&"u2".to_string()));
+    }
+
+    #[test]
+    fn test_clone_dirty_for_snapshot_empty_when_no_dirty() {
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+
+        // Create an entity but do NOT mark it dirty
+        let entity = store.get_or_create_entity("u1");
+        let stream = entity.get_or_create_stream("Transactions");
+        let mut op = OperatorState::Count(CountOp::new(
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+        ));
+        op.push(&serde_json::json!({}), now).unwrap();
+        stream.operators.push(("tx_count".to_string(), op));
+
+        let valid_features = ahash::AHashMap::new();
+        let snapshot = store.clone_dirty_for_snapshot_with_gc(&valid_features);
+        assert!(snapshot.is_empty());
+    }
+
+    #[test]
+    fn test_clone_dirty_for_snapshot_applies_gc_filtering() {
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+
+        // Create entity with operators a, b, c in stream "Transactions"
+        {
+            let entity = store.get_or_create_entity("u123");
+            let stream = entity.get_or_create_stream("Transactions");
+            for name in &["a", "b", "c"] {
+                let mut op = OperatorState::Count(CountOp::new(
+                    Duration::from_secs(3600),
+                    Duration::from_secs(60),
+                ));
+                op.push(&serde_json::json!({}), now).unwrap();
+                stream.operators.push((name.to_string(), op));
+            }
+        }
+        store.mark_dirty("u123");
+
+        // Valid features: only a and c (b was removed from definition)
+        let mut valid_features = ahash::AHashMap::new();
+        valid_features.insert("Transactions".to_string(), vec!["a".to_string(), "c".to_string()]);
+
+        let snapshot = store.clone_dirty_for_snapshot_with_gc(&valid_features);
+        assert_eq!(snapshot.len(), 1);
+        let stream_snap = &snapshot[0].1.streams[0];
+        assert_eq!(stream_snap.0, "Transactions");
+        let op_names: Vec<&String> = stream_snap.1.operators.iter().map(|(n, _)| n).collect();
+        assert_eq!(op_names.len(), 2);
+        assert!(op_names.contains(&&"a".to_string()));
+        assert!(op_names.contains(&&"c".to_string()));
+        assert!(!op_names.contains(&&"b".to_string()));
+    }
+
+    #[test]
+    fn test_clone_dirty_for_snapshot_unknown_stream_includes_all() {
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+
+        {
+            let entity = store.get_or_create_entity("u1");
+            let stream = entity.get_or_create_stream("OldStream");
+            let mut op = OperatorState::Count(CountOp::new(
+                Duration::from_secs(3600),
+                Duration::from_secs(60),
+            ));
+            op.push(&serde_json::json!({}), now).unwrap();
+            stream.operators.push(("x".to_string(), op));
+        }
+        store.mark_dirty("u1");
+
+        // valid_features does NOT contain OldStream
+        let valid_features = ahash::AHashMap::new();
+        let snapshot = store.clone_dirty_for_snapshot_with_gc(&valid_features);
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].1.streams[0].1.operators.len(), 1);
+    }
+
+    #[test]
+    fn test_clone_dirty_skips_keys_that_are_dirty_but_not_in_entities() {
+        // Edge case: a key was marked dirty but the underlying entity was removed
+        // (e.g., via remove_empty_entities). clone_dirty should simply skip it.
+        let mut store = StateStore::new();
+        store.mark_dirty("ghost");
+        // No entity for "ghost" was ever created
+        let valid_features = ahash::AHashMap::new();
+        let snapshot = store.clone_dirty_for_snapshot_with_gc(&valid_features);
+        assert!(snapshot.is_empty());
     }
 }
