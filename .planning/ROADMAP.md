@@ -31,8 +31,8 @@ Full details: [v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
 **Milestone Goal:** Transform Tally into a composable streaming pipeline with SSD event log for replay/backfill, operational improvements, and a debug UI for observability.
 
 - [x] **Phase 6: Foundation** - EntityState refactor for per-stream isolation, SSD event log with history TTL and compaction, per-stream entity TTL, MGET
-- [ ] **Phase 7: Composable Pipeline** - Keyless streams, keyed streams with depends_on, DAG execution with topological cascade, cycle detection, LEFT JOIN semantics
-- [ ] **Phase 8: Backfill & Schema Evolution** - Add/remove features without state reset, backfill replay from event log with event timestamps
+- [x] **Phase 7: Composable Pipeline** - Keyless streams, keyed streams with depends_on, DAG execution with topological cascade, cycle detection, LEFT JOIN semantics
+- [x] **Phase 8: Backfill & Schema Evolution** - Add/remove features without state reset, backfill replay from event log with event timestamps
 - [ ] **Phase 9: Incremental Snapshots** - Dirty-key tracking, delta snapshot files, base + delta recovery
 - [ ] **Phase 10: Debug UI** - Embedded web UI for stream topology DAG, live throughput, memory breakdown, entity inspection
 
@@ -121,7 +121,7 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10
 | 4. Persistence and Operational Readiness | v1.0 | 3/3 | Complete | 2026-04-09 |
 | 5. Advanced Operators and Cross-Stream | v1.0 | 3/3 | Complete | 2026-04-09 |
 | 6. Foundation | v1.1 | 4/4 | Complete | 2026-04-10 |
-| 7. Composable Pipeline | v1.1 | 0/4 | Not started | - |
-| 8. Backfill & Schema Evolution | v1.1 | 0/2 | Not started | - |
+| 7. Composable Pipeline | v1.1 | 4/4 | Complete | 2026-04-10 |
+| 8. Backfill & Schema Evolution | v1.1 | 2/2 | Complete | 2026-04-10 |
 | 9. Incremental Snapshots | v1.1 | 0/? | Not started | - |
 | 10. Debug UI | v1.1 | 0/? | Not started | - |
