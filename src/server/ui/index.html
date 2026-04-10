@@ -6,111 +6,33 @@
   <title>tally — debug</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/app.css">
-  <script src="/static/vendor/htmx.min.js" defer></script>
   <script src="/static/vendor/d3.min.js" defer></script>
   <script src="/static/vendor/dagre-d3.min.js" defer></script>
+  <script src="/static/vendor/htmx.min.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
   <header class="app-header">
     <a class="wordmark" href="/">tally<span class="wordmark-tick">'</span></a>
-
-    <nav class="tabs" role="tablist" aria-label="Debug UI tabs">
-      <a role="tab" class="tab" data-tab="topology" id="tab-topology"
-         aria-selected="true" aria-controls="panel-topology" href="#topology">Topology</a>
-      <a role="tab" class="tab" data-tab="streams" id="tab-streams"
-         aria-selected="false" aria-controls="panel-streams" href="#streams">Streams</a>
-      <a role="tab" class="tab" data-tab="entity" id="tab-entity"
-         aria-selected="false" aria-controls="panel-entity" href="#entity">Entity</a>
-      <a role="tab" class="tab" data-tab="memory" id="tab-memory"
-         aria-selected="false" aria-controls="panel-memory" href="#memory">Memory</a>
-    </nav>
-
     <div class="poll-control" data-paused="false">
-      <span class="poll-dot" aria-hidden="true"></span>
-      <span class="poll-label">Live &middot; 1 Hz</span>
-      <button id="pause-btn" class="btn btn-ghost" type="button">Pause</button>
+      <span class="poll-dot" id="poll-dot" aria-hidden="true"></span>
+      <span class="poll-label" id="poll-label">Live · 1 Hz</span>
+      <button id="pause-btn" type="button" class="btn btn-ghost" aria-pressed="false">Pause</button>
       <span id="poll-status" class="sr-only" aria-live="polite"></span>
     </div>
   </header>
 
-  <main id="tab-body">
-
-    <section class="tab-panel" id="panel-topology" role="tabpanel" aria-labelledby="tab-topology" data-active>
-      <header class="tab-header">
-        <h1>Topology</h1>
-        <p class="tab-subtitle">Pipeline DAG &mdash; streams, views, and the links between them.</p>
-      </header>
-      <div class="card topology-card">
-        <div class="topology-canvas">
-          <svg id="topology-svg" role="img" aria-label="Pipeline topology graph"></svg>
-        </div>
-      </div>
+  <main class="split-view">
+    <section class="dag-canvas" aria-label="Pipeline topology">
+      <svg id="topology-svg" role="img" aria-label="Pipeline topology graph"></svg>
     </section>
-
-    <section class="tab-panel" id="panel-streams" role="tabpanel" aria-labelledby="tab-streams" hidden>
-      <header class="tab-header">
-        <h1>Streams</h1>
-        <p class="tab-subtitle">Live throughput and key counts for every registered stream.</p>
-      </header>
-      <div class="card streams-card">
-        <div class="streams-list"
-             id="streams-list"
-             hx-get="/debug/throughput"
-             hx-trigger="load, every 1s"
-             hx-swap="none"
-             hx-on::after-request="app.renderStreams(event)"></div>
-      </div>
-    </section>
-
-    <section class="tab-panel" id="panel-entity" role="tabpanel" aria-labelledby="tab-entity" hidden>
-      <header class="tab-header">
-        <h1>Entity lookup</h1>
-        <p class="tab-subtitle">Inspect every feature Tally is holding for a single key.</p>
-      </header>
-
-      <div class="card entity-search-card">
-        <label for="entity-key" class="input-label">Entity key</label>
-        <form class="entity-search-form"
-              hx-get="/debug/key/"
-              hx-target="#entity-result"
-              hx-swap="none"
-              hx-include="#entity-key"
-              hx-on::after-request="app.renderEntity(event)">
-          <input id="entity-key" class="input" name="key" type="text"
-                 placeholder="e.g. u_12345"
-                 autocomplete="off" spellcheck="false" />
-          <button type="submit" class="btn btn-primary">Look up</button>
-        </form>
-        <p class="input-help">
-          Keys are case-sensitive. Try <code>u_demo</code> to see an example.
-        </p>
-      </div>
-
-      <div class="card entity-result-card">
-        <div id="entity-result"></div>
-      </div>
-    </section>
-
-    <section class="tab-panel" id="panel-memory" role="tabpanel" aria-labelledby="tab-memory" hidden>
-      <header class="tab-header">
-        <h1>Memory</h1>
-        <p class="tab-subtitle">Per-stream memory footprint and total state size.</p>
-      </header>
-      <div class="card memory-card">
-        <div id="memory-summary" class="memory-summary"></div>
-        <div id="memory-bars"
-             hx-get="/debug/memory"
-             hx-trigger="load, every 2s"
-             hx-swap="none"
-             hx-on::after-request="app.renderMemory(event)"></div>
-      </div>
-    </section>
-
+    <aside id="drill-in-panel" class="drill-in-panel" data-empty="true" aria-live="polite">
+      <p class="drill-in-placeholder">Select a stream to see details</p>
+    </aside>
   </main>
 
   <footer class="app-footer">
-    tally <span id="footer-version">v&mdash;</span> &middot; connected to <span id="footer-host">&mdash;</span> &middot; last update <span id="footer-update">&mdash;</span>
+    tally <span id="footer-version">v—</span> · connected to <span id="footer-host">—</span> · last update <span id="footer-update">—</span>
   </footer>
 </body>
 </html>
