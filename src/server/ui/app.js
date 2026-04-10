@@ -687,7 +687,15 @@ async function tickEdgeUpdater() {
   if (state.selectedStream) {
     const panel = document.getElementById('drill-in-panel');
     const node = findNode(state.selectedStream);
-    if (panel && node && node.kind !== 'view') {
+    // WR-02: selected stream vanished from topology (e.g. a future refresh
+    // affordance reloaded /debug/topology and the previously-selected stream
+    // was DELETEd). Reset to the explicit placeholder instead of silently
+    // blanking the panel. Not a live bug today — topology is loaded exactly
+    // once in Phase 10.1 — but removes a foot-gun for Phase 10.2's refresh
+    // affordance and any test that intentionally swaps topologies.
+    if (!node) {
+      setSelected(null);
+    } else if (panel && node.kind !== 'view') {
       renderThroughputSection(panel, node, data);
     }
   }
