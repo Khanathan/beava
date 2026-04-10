@@ -1513,6 +1513,48 @@ mod tests {
         assert_eq!(targets[0].1, "user_id");
     }
 
+    // ======================== Phase 7 Plan 03: DAG unit tests ========================
+
+    #[test]
+    fn test_rebuild_dag_no_deps() {
+        let mut engine = PipelineEngine::new();
+        engine.register(make_tx_stream()).unwrap();
+        // DAG should succeed with standalone stream (no depends_on)
+        // No panic, no error
+        assert_eq!(engine.stream_count(), 1);
+    }
+
+    #[test]
+    fn test_rebuild_dag_topo_order() {
+        let mut engine = PipelineEngine::new();
+        // Register in reverse order: C, B, A -- topo order should still be A, B, C
+        let c = StreamDefinition {
+            name: "C".into(), key_field: Some("uid".into()),
+            features: vec![], entity_ttl: None, history_ttl: None,
+            depends_on: Some(vec!["B".into()]), filter: None,
+        };
+        let b = StreamDefinition {
+            name: "B".into(), key_field: Some("uid".into()),
+            features: vec![], entity_ttl: None, history_ttl: None,
+            depends_on: Some(vec!["A".into()]), filter: None,
+        };
+        let a = StreamDefinition {
+            name: "A".into(), key_field: None,
+            features: vec![], entity_ttl: None, history_ttl: None,
+            depends_on: None, filter: None,
+        };
+        engine.register(c).unwrap();
+        engine.register(b).unwrap();
+        engine.register(a).unwrap();
+        // After all registered, topo order should have A before B, B before C
+        let order = engine.get_topo_order();
+        let a_pos = order.iter().position(|n| n == "A").unwrap();
+        let b_pos = order.iter().position(|n| n == "B").unwrap();
+        let c_pos = order.iter().position(|n| n == "C").unwrap();
+        assert!(a_pos < b_pos, "A must come before B");
+        assert!(b_pos < c_pos, "B must come before C");
+    }
+
     #[test]
     fn test_backward_compat_keyed_stream() {
         // Existing pattern with key_field: Some(...) should work exactly as before

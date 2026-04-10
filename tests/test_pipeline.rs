@@ -267,6 +267,229 @@ fn test_get_features_returns_live_and_derived() {
     assert_eq!(features.get("avg_via_derive"), Some(&FeatureValue::Float(50.0)));
 }
 
+// ======================== Phase 7 Plan 03: DAG Cascade Tests ========================
+
+fn make_keyless_stream(name: &str) -> StreamDefinition {
+    StreamDefinition {
+        name: name.into(),
+        key_field: None,
+        features: vec![],
+        entity_ttl: None,
+        history_ttl: None,
+        depends_on: None,
+        filter: None,
+    }
+}
+
+fn make_keyed_dependent_stream(name: &str, key: &str, deps: Vec<&str>) -> StreamDefinition {
+    StreamDefinition {
+        name: name.into(),
+        key_field: Some(key.into()),
+        features: vec![
+            ("count_1h".into(), FeatureDef::Count {
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                where_expr: None,
+            }),
+        ],
+        entity_ttl: None,
+        history_ttl: None,
+        depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
+        filter: None,
+    }
+}
+
+#[test]
+fn test_cascade_push_keyless_to_keyed() {
+    let mut engine = PipelineEngine::new();
+    let mut store = StateStore::new();
+    let now = ts(1000);
+
+    engine.register(make_keyless_stream("RawEvents")).unwrap();
+    engine.register(make_keyed_dependent_stream("UserTx", "user_id", vec!["RawEvents"])).unwrap();
+
+    // Push to keyless stream -- should cascade to UserTx
+    let features = engine.push_with_cascade("RawEvents", &json!({
+        "user_id": "u1", "amount": 50.0
+    }), &mut store, now).unwrap();
+
+    // Primary push to keyless returns empty
+    assert!(features.is_empty());
+
+    // But downstream keyed stream should have entity state
+    let all = engine.get_features("u1", &mut store, now);
+    assert_eq!(all.get("count_1h"), Some(&FeatureValue::Int(1)));
+}
+
+#[test]
+fn test_multi_level_cascade() {
+    let mut engine = PipelineEngine::new();
+    let mut store = StateStore::new();
+    let now = ts(1000);
+
+    engine.register(make_keyless_stream("Raw")).unwrap();
+    engine.register(make_keyed_dependent_stream("Level1", "user_id", vec!["Raw"])).unwrap();
+
+    // Level2 depends on Level1 (keyed-to-keyed)
+    let level2 = make_keyed_dependent_stream("Level2", "user_id", vec!["Level1"]);
+    engine.register(level2).unwrap();
+
+    let features = engine.push_with_cascade("Raw", &json!({
+        "user_id": "u1", "amount": 10.0
+    }), &mut store, now).unwrap();
+
+    assert!(features.is_empty()); // keyless returns empty
+
+    // Both Level1 and Level2 should have state
+    let all = engine.get_features("u1", &mut store, now);
+    assert!(all.contains_key("count_1h"));
+}
+
+#[test]
+fn test_cascade_skips_missing_key_field() {
+    let mut engine = PipelineEngine::new();
+    let mut store = StateStore::new();
+    let now = ts(1000);
+
+    engine.register(make_keyless_stream("Raw")).unwrap();
+    engine.register(make_keyed_dependent_stream("UserTx", "user_id", vec!["Raw"])).unwrap();
+    engine.register(make_keyed_dependent_stream("MerchantTx", "merchant_id", vec!["Raw"])).unwrap();
+
+    // Push event WITHOUT merchant_id -- MerchantTx should be skipped
+    let _ = engine.push_with_cascade("Raw", &json!({
+        "user_id": "u1", "amount": 50.0
+    }), &mut store, now).unwrap();
+
+    // UserTx has state, MerchantTx does not
+    let user_features = engine.get_features("u1", &mut store, now);
+    assert!(user_features.contains_key("count_1h"));
+
+    // No merchant entity should exist
+    assert_eq!(store.entity_count(), 1); // Only "u1"
+}
+
+#[test]
+fn test_cycle_detection_rejects_registration() {
+    let mut engine = PipelineEngine::new();
+
+    let a = make_keyed_dependent_stream("A", "uid", vec!["B"]);
+    let b = make_keyed_dependent_stream("B", "uid", vec!["A"]);
+
+    engine.register(a).unwrap(); // A depends_on B (B not registered yet, OK)
+    let result = engine.register(b); // B depends_on A -- cycle!
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("circular dependency"), "error should mention circular dependency: {}", err_msg);
+}
+
+#[test]
+fn test_self_dependency_rejected() {
+    let mut engine = PipelineEngine::new();
+    let s = make_keyed_dependent_stream("Self", "uid", vec!["Self"]);
+    let result = engine.register(s);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("circular dependency"), "error should mention circular dependency: {}", err_msg);
+}
+
+#[test]
+fn test_cascade_with_filter_on_downstream() {
+    let mut engine = PipelineEngine::new();
+    let mut store = StateStore::new();
+    let now = ts(1000);
+
+    engine.register(make_keyless_stream("Raw")).unwrap();
+
+    // Downstream with filter: only failed events
+    let mut filtered = make_keyed_dependent_stream("Failed", "user_id", vec!["Raw"]);
+    filtered.filter = Some(parse_expr("_event.status == 'failed'").unwrap());
+    engine.register(filtered).unwrap();
+
+    // Push success event -- should NOT cascade to Failed
+    let _ = engine.push_with_cascade("Raw", &json!({
+        "user_id": "u1", "status": "success"
+    }), &mut store, now).unwrap();
+    assert_eq!(store.entity_count(), 0); // no entity created
+
+    // Push failed event -- SHOULD cascade to Failed
+    let _ = engine.push_with_cascade("Raw", &json!({
+        "user_id": "u1", "status": "failed"
+    }), &mut store, now).unwrap();
+    let all = engine.get_features("u1", &mut store, now);
+    assert_eq!(all.get("count_1h"), Some(&FeatureValue::Int(1)));
+}
+
+#[test]
+fn test_keyed_to_keyed_cascade() {
+    // Keyed stream A (key=user_id) -> Keyed stream B (key=user_id)
+    let mut engine = PipelineEngine::new();
+    let mut store = StateStore::new();
+    let now = ts(1000);
+
+    let a = StreamDefinition {
+        name: "A".into(),
+        key_field: Some("user_id".into()),
+        features: vec![("a_count".into(), FeatureDef::Count {
+            window: Duration::from_secs(3600),
+            bucket: Duration::from_secs(60),
+            where_expr: None,
+        })],
+        entity_ttl: None, history_ttl: None,
+        depends_on: None, filter: None,
+    };
+    let b = StreamDefinition {
+        name: "B".into(),
+        key_field: Some("user_id".into()),
+        features: vec![("b_count".into(), FeatureDef::Count {
+            window: Duration::from_secs(3600),
+            bucket: Duration::from_secs(60),
+            where_expr: None,
+        })],
+        entity_ttl: None, history_ttl: None,
+        depends_on: Some(vec!["A".into()]), filter: None,
+    };
+    engine.register(a).unwrap();
+    engine.register(b).unwrap();
+
+    // Push to A -- should cascade to B
+    let features = engine.push_with_cascade("A", &json!({
+        "user_id": "u1"
+    }), &mut store, now).unwrap();
+
+    // Features from primary push (stream A)
+    assert_eq!(features.get("a_count"), Some(&FeatureValue::Int(1)));
+
+    // B should also have been updated
+    let all = engine.get_features("u1", &mut store, now);
+    assert_eq!(all.get("b_count"), Some(&FeatureValue::Int(1)));
+}
+
+#[test]
+fn test_multiple_depends_on_sources() {
+    // Stream C depends on both A and B
+    let mut engine = PipelineEngine::new();
+    let mut store = StateStore::new();
+    let now = ts(1000);
+
+    engine.register(make_keyless_stream("A")).unwrap();
+    engine.register(make_keyless_stream("B")).unwrap();
+    engine.register(make_keyed_dependent_stream("C", "user_id", vec!["A", "B"])).unwrap();
+
+    // Push to A -- should cascade to C
+    let _ = engine.push_with_cascade("A", &json!({
+        "user_id": "u1"
+    }), &mut store, now).unwrap();
+    let all = engine.get_features("u1", &mut store, now);
+    assert_eq!(all.get("count_1h"), Some(&FeatureValue::Int(1)));
+
+    // Push to B -- should also cascade to C
+    let _ = engine.push_with_cascade("B", &json!({
+        "user_id": "u1"
+    }), &mut store, now).unwrap();
+    let all = engine.get_features("u1", &mut store, now);
+    assert_eq!(all.get("count_1h"), Some(&FeatureValue::Int(2)));
+}
+
 // ======================== FeatureValue Serialization Round-Trip ========================
 
 #[test]
