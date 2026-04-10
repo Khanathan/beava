@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
 status: executing
-stopped_at: Completed 07-04-PLAN.md
-last_updated: "2026-04-10T02:37:06.982Z"
-last_activity: 2026-04-10 -- Phase 8 planning complete
+stopped_at: Completed 08-01-PLAN.md
+last_updated: "2026-04-10T02:50:31.554Z"
+last_activity: 2026-04-10
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 10
-  completed_plans: 8
-  percent: 80
+  completed_plans: 9
+  percent: 90
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Events go in, features come out -- synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
-**Current focus:** Phase 7 — Composable Pipeline
+**Current focus:** Phase 08 — Backfill & Schema Evolution
 
 ## Current Position
 
-Phase: 8
-Plan: Not started
+Phase: 08 (Backfill & Schema Evolution) — EXECUTING
+Plan: 2 of 2
 Status: Ready to execute
-Last activity: 2026-04-10 -- Phase 8 planning complete
+Last activity: 2026-04-10
 
 Progress: [..........] 0%
 
@@ -57,6 +57,7 @@ Progress: [..........] 0%
 | Phase 07 P02 | 2min | 2 tasks | 2 files |
 | Phase 07 P03 | 3min | 2 tasks | 2 files |
 | Phase 07 P04 | 3min | 2 tasks | 3 files |
+| Phase 08 P01 | 11min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -87,6 +88,9 @@ Key v1.1 architectural decisions (from research):
 - [Phase 07]: depends_on stores class refs, resolves to string names only at JSON serialization
 - [Phase 07]: DAG edges go upstream->downstream; toposort gives correct cascade order; cycle detection rolls back failed registration
 - [Phase 07]: push_with_cascade replaces push in TCP handler; fan-out excludes cascade targets (T-07-09); cascade events logged to downstream logs (T-07-10)
+- [Phase 08]: Schema diff uses std::mem::discriminant for type equality -- simple, correct, no false positives
+- [Phase 08]: Lazy GC on snapshot (not on re-register) to avoid blocking the push hot path
+- [Phase 08]: Both snapshot callers (main.rs periodic + http.rs trigger) wired to clone_for_snapshot_with_gc
 
 ### Pending Todos
 
@@ -105,6 +109,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-10T01:56:29.669Z
-Stopped at: Completed 07-04-PLAN.md
+Last session: 2026-04-10T02:50:31.548Z
+Stopped at: Completed 08-01-PLAN.md
 Resume: `/gsd-plan-phase 6`

@@ -25,8 +25,8 @@ Requirements for milestone v1.1: Composable Pipeline & Event Log.
 
 ### Backfill & Schema Evolution
 
-- [ ] **SCHM-01**: User can add new features to an existing stream without resetting state
-- [ ] **SCHM-02**: User can remove features from a stream without resetting remaining features
+- [x] **SCHM-01**: User can add new features to an existing stream without resetting state
+- [x] **SCHM-02**: User can remove features from a stream without resetting remaining features
 - [ ] **SCHM-03**: User can register a new feature with `backfill=True` to auto-replay from event log
 - [ ] **SCHM-04**: Backfill replay uses cooperative yielding to avoid starving live traffic
 - [ ] **SCHM-05**: Backfill replays events using event timestamps (not wall clock) for deterministic results
@@ -92,8 +92,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ELOG-03 | Phase 6 | Complete |
 | ELOG-04 | Phase 6 | Complete |
 | ELOG-05 | Phase 6 | Complete |
-| SCHM-01 | Phase 8 | Pending |
-| SCHM-02 | Phase 8 | Pending |
+| SCHM-01 | Phase 8 | Complete |
+| SCHM-02 | Phase 8 | Complete |
 | SCHM-03 | Phase 8 | Pending |
 | SCHM-04 | Phase 8 | Pending |
 | SCHM-05 | Phase 8 | Pending |

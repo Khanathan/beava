@@ -82,7 +82,7 @@ Plans:
   4. During backfill replay, live PUSH and GET requests continue to be served without noticeable latency degradation (cooperative yielding)
 **Plans:** 2 plans
 Plans:
-- [ ] 08-01-PLAN.md — Schema diff engine, backfill type system, lazy GC, REGISTER diff response, Python SDK backfill kwarg
+- [x] 08-01-PLAN.md — Schema diff engine, backfill type system, lazy GC, REGISTER diff response, Python SDK backfill kwarg
 - [ ] 08-02-PLAN.md — Backfill replay engine, cooperative yielding, HTTP /debug/backfill, integration tests
 
 ### Phase 9: Incremental Snapshots
