@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
-status: executing
-stopped_at: Completed 08-01-PLAN.md
-last_updated: "2026-04-10T02:50:31.554Z"
+status: verifying
+stopped_at: Completed 08-02-PLAN.md
+last_updated: "2026-04-10T03:04:55.194Z"
 last_activity: 2026-04-10
 progress:
   total_phases: 5
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 10
-  completed_plans: 9
-  percent: 90
+  completed_plans: 10
+  percent: 100
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 
 Phase: 08 (Backfill & Schema Evolution) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-10
 
 Progress: [..........] 0%
@@ -58,6 +58,7 @@ Progress: [..........] 0%
 | Phase 07 P03 | 3min | 2 tasks | 2 files |
 | Phase 07 P04 | 3min | 2 tasks | 3 files |
 | Phase 08 P01 | 11min | 2 tasks | 9 files |
+| Phase 08 P02 | 11min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -91,6 +92,8 @@ Key v1.1 architectural decisions (from research):
 - [Phase 08]: Schema diff uses std::mem::discriminant for type equality -- simple, correct, no false positives
 - [Phase 08]: Lazy GC on snapshot (not on re-register) to avoid blocking the push hot path
 - [Phase 08]: Both snapshot callers (main.rs periodic + http.rs trigger) wired to clone_for_snapshot_with_gc
+- [Phase 08]: run_backfill clears operator state before replay for idempotent restart correctness
+- [Phase 08]: Snapshot format bumped to v5 for backfill_complete with serde(default) backward compat
 
 ### Pending Todos
 
@@ -109,6 +112,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-10T02:50:31.548Z
-Stopped at: Completed 08-01-PLAN.md
+Last session: 2026-04-10T03:04:55.191Z
+Stopped at: Completed 08-02-PLAN.md
 Resume: `/gsd-plan-phase 6`
