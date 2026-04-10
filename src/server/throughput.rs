@@ -31,6 +31,8 @@ pub struct StreamThroughput {
     /// Test-only counter: total number of single bumps observed since the
     /// tracker was created. Not exposed via snapshot(); only used by the
     /// correctness unit tests to prove dedup semantics.
+    // NOTE: test-only; not part of the public snapshot API. Gated on
+    // `#[cfg(test)]` so the struct layout is identical in release builds.
     #[cfg(test)]
     pending_total: u64,
 }
@@ -148,6 +150,8 @@ impl ThroughputTracker {
     }
 
     /// Test-only accessor for the cascade/fan-out dedup correctness test.
+    // NOTE: test-only; not part of the public snapshot API. The real public
+    // surface is `snapshot()` which returns EWMA rates, not raw counters.
     #[cfg(test)]
     pub(crate) fn pending_total_for_test(&self, stream_name: &str) -> u64 {
         self.streams

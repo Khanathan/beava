@@ -454,10 +454,15 @@ async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Valu
     // Preserve the existing three top-level fields (Phase 6 callers and any
     // hand-crafted curl scripts still read them). The `per_stream` array is
     // an additive extension (DBUI-04).
+    //
+    // Phase 10 review IN-04: bind entity_count once to avoid walking the
+    // state map twice in the same handler (matches the `keys` binding
+    // pattern above).
+    let entity_count = app.store.entity_count();
     Json(serde_json::json!({
-        "entity_count": app.store.entity_count(),
+        "entity_count": entity_count,
         "stream_count": app.engine.stream_count(),
-        "estimated_bytes": app.store.entity_count() * 2048,
+        "estimated_bytes": entity_count * 2048,
         "per_stream": per_stream,
     }))
 }

@@ -54,6 +54,13 @@ pub async fn ui_static(Path(file): Path<String>) -> Response {
     // `rust_embed` would already return None for paths that escape the embed
     // root, but we want to fail loudly AND avoid any pathological behavior
     // inside its internal path normalization (T-10-01 mitigation).
+    //
+    // Invariant: axum's `Path<String>` percent-decodes the captured segment
+    // before this handler runs, so encoded traversal attempts like `..%2f`
+    // arrive here as raw `../` and are caught by `file.contains("..")`. Do
+    // NOT weaken this check to a startswith/pattern scan — the substring
+    // check is intentional defense-in-depth on top of rust-embed's
+    // compile-time scoping.
     if file.contains("..") || file.starts_with('/') || file.contains('\0') {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
@@ -71,6 +78,11 @@ fn serve_asset(path: &str) -> Response {
             // tied to `content.metadata`, so we clone into a `String` before
             // `content.data.into_owned()` consumes the binding.
             let mime: String = content.metadata.mimetype().to_string();
+            // `.expect()` is safe here: `mime_guess` emits ASCII-only MIME
+            // strings, the status code is a const, and the body is an owned
+            // Vec<u8> — the only way `Response::builder().body()` can fail is
+            // if a header name/value is invalid, which cannot happen with the
+            // inputs above. Phase 10 review IN-01.
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, mime)
@@ -78,7 +90,7 @@ fn serve_asset(path: &str) -> Response {
                 // rebuild, but browsers reload between local dev sessions.
                 .header(header::CACHE_CONTROL, "public, max-age=300")
                 .body(Body::from(content.data.into_owned()))
-                .unwrap()
+                .expect("response builder accepts ASCII MIME from mime_guess")
         }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
