@@ -180,6 +180,17 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             let features = engine.push_with_cascade(&stream_name, &payload, store, now)?;
             let result = feature_map_to_json(&features);
 
+            // Mark primary key dirty for incremental snapshots (OPS-03).
+            if let Some(stream_def) = engine.get_stream(&stream_name) {
+                if let Some(ref kf) = stream_def.key_field {
+                    if let Some(serde_json::Value::String(key_val)) = payload.get(kf.as_str()) {
+                        if !key_val.is_empty() {
+                            store.mark_dirty(key_val);
+                        }
+                    }
+                }
+            }
+
             // Append raw event to primary stream's event log (ELOG-01, ELOG-02, ELOG-03)
             if let Some(ref mut log) = event_log {
                 let event_bytes = serde_json::to_vec(&payload).unwrap_or_default();
@@ -205,6 +216,20 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                 }
             }
 
+            // Mark cascade target keys dirty for incremental snapshots (OPS-03).
+            // Each cascade target may use a different key_field; extract per-target.
+            for ds_name in &cascade_targets {
+                if let Some(d) = engine.get_stream(ds_name) {
+                    if let Some(ref kf) = d.key_field {
+                        if let Some(serde_json::Value::String(key_val)) = payload.get(kf.as_str()) {
+                            if !key_val.is_empty() {
+                                store.mark_dirty(key_val);
+                            }
+                        }
+                    }
+                }
+            }
+
             // Fan-out: push to other streams whose key_field exists in the event.
             // Only fan out to streams with a DIFFERENT key_field than the primary
             // stream. Streams in the cascade DAG are excluded to prevent double-processing (T-07-09).
@@ -226,6 +251,8 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                     if !key_val.is_empty() {
                         // Push to secondary stream -- ignore errors (primary already committed)
                         let _ = engine.push(target_name, &payload, store, now);
+                        // Mark fan-out target's key dirty for incremental snapshots (OPS-03)
+                        store.mark_dirty(key_val);
                         // Also append to fan-out stream's event log
                         if let Some(ref mut log) = event_log {
                             let event_bytes = serde_json::to_vec(&payload).unwrap_or_default();
@@ -258,6 +285,8 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                     let fv = json_to_feature_value(val);
                     app.store.set_static(&key, &feat_name, fv, now);
                 }
+                // Mark entity key dirty for incremental snapshots (OPS-03)
+                app.store.mark_dirty(&key);
             } else {
                 return Err(TallyError::Protocol(
                     "SET payload must be a JSON object".into(),
@@ -406,6 +435,16 @@ pub async fn run_backfill(
                     entry.timestamp, // Event timestamp for determinism (SCHM-05)
                     &feature_names,
                 );
+                // Mark entity key dirty for incremental snapshots (OPS-03)
+                if let Some(stream_def) = engine.get_stream(&stream_name) {
+                    if let Some(ref kf) = stream_def.key_field {
+                        if let Some(serde_json::Value::String(key_val)) = event.get(kf.as_str()) {
+                            if !key_val.is_empty() {
+                                store.mark_dirty(key_val);
+                            }
+                        }
+                    }
+                }
             }
         } // Lock released before yield
         // Update progress
@@ -458,6 +497,8 @@ async fn handle_mset(
                         let fv = json_to_feature_value(val.clone());
                         app.store.set_static(key, feat_name, fv, now);
                     }
+                    // Mark entity key dirty once per chunk iteration (OPS-03)
+                    app.store.mark_dirty(key);
                 }
                 // Skip non-object payloads silently (defensive)
             }

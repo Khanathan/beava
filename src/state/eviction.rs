@@ -32,12 +32,14 @@ pub fn evict_expired_stream_entries(
 
     let mut total_evicted = 0;
 
-    // Phase 1: For each entity, remove expired stream entries
-    // Collect entity keys first to avoid borrow issues
+    // Phase 1: Collect eviction decisions using only immutable borrows, so we
+    // can separately call mark_deleted (which needs &mut store) before mutating
+    // the entity streams. Each plan entry is (key, streams_to_remove, will_be_empty).
     let entity_keys: Vec<String> = store.entity_keys().collect();
+    let mut eviction_plan: Vec<(String, Vec<String>, bool)> = Vec::new();
 
     for key in &entity_keys {
-        if let Some(entity) = store.get_entity_mut(key) {
+        if let Some(entity) = store.get_entity(key) {
             // Collect stream names to evict
             let mut streams_to_remove: Vec<String> = Vec::new();
 
@@ -64,15 +66,33 @@ pub fn evict_expired_stream_entries(
                 }
             }
 
-            // Remove expired streams
-            for stream_name in &streams_to_remove {
-                entity.streams.remove(stream_name);
+            if !streams_to_remove.is_empty() {
+                // Will this entity become completely empty (and thus fully removed
+                // by Phase 3 remove_empty_entities)? If so, mark it deleted so the
+                // next delta snapshot records the removal (OPS-03).
+                let remaining = entity.streams.len().saturating_sub(streams_to_remove.len());
+                let will_be_empty = remaining == 0 && entity.static_features.is_empty();
+                eviction_plan.push((key.clone(), streams_to_remove, will_be_empty));
             }
-            total_evicted += streams_to_remove.len();
         }
     }
 
-    // Phase 2: Remove entities that are now empty (no streams AND no static features)
+    // Phase 2: Apply evictions. Mark fully-removed entities as deleted BEFORE
+    // mutating streams, so the snapshot delta can include them in deleted_keys
+    // even if a concurrent snapshot cycle observes an intermediate state.
+    for (key, streams_to_remove, will_be_empty) in &eviction_plan {
+        if *will_be_empty {
+            store.mark_deleted(key);
+        }
+        if let Some(entity) = store.get_entity_mut(key) {
+            for stream_name in streams_to_remove {
+                entity.streams.remove(stream_name);
+            }
+        }
+        total_evicted += streams_to_remove.len();
+    }
+
+    // Phase 3: Remove entities that are now empty (no streams AND no static features)
     store.remove_empty_entities();
 
     total_evicted
@@ -404,5 +424,83 @@ mod tests {
         assert!(store.get_entity("old_user").is_none());
         assert!(store.get_entity("recent_user").is_some());
         assert!(store.get_entity("no_event_user").is_some());
+    }
+
+    // ======================== Phase 9: mark_deleted wiring tests ========================
+
+    #[test]
+    fn test_eviction_marks_fully_removed_entity_deleted() {
+        let mut store = StateStore::new();
+        let mut engine = PipelineEngine::new();
+        engine.register(make_stream_with_ttl("stream1", 3600, Some(300))).unwrap();
+
+        // Entity whose only stream will be evicted and has no static features
+        {
+            let entity = store.get_or_create_entity("doomed");
+            let stream = entity.get_or_create_stream("stream1");
+            stream.last_event_at = Some(ts(1000)); // Very old
+        }
+
+        let now = ts(100_000);
+        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        assert_eq!(evicted, 1);
+        assert_eq!(store.entity_count(), 0, "entity should be fully removed");
+
+        // take_deleted should contain "doomed"
+        let deleted = store.take_deleted();
+        assert_eq!(deleted, vec!["doomed".to_string()]);
+    }
+
+    #[test]
+    fn test_eviction_does_not_mark_deleted_when_static_features_remain() {
+        let mut store = StateStore::new();
+        let mut engine = PipelineEngine::new();
+        engine.register(make_stream_with_ttl("stream1", 3600, Some(300))).unwrap();
+
+        {
+            let entity = store.get_or_create_entity("user1");
+            let stream = entity.get_or_create_stream("stream1");
+            stream.last_event_at = Some(ts(1000)); // Old
+        }
+        store.set_static(
+            "user1",
+            "lifetime_value",
+            crate::types::FeatureValue::Float(100.0),
+            ts(1000),
+        );
+
+        let now = ts(100_000);
+        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        assert_eq!(evicted, 1, "stream1 should be evicted");
+        assert_eq!(store.entity_count(), 1, "entity kept due to static features");
+
+        // take_deleted should be empty: entity still exists, not "deleted"
+        let deleted = store.take_deleted();
+        assert!(deleted.is_empty(), "static-only entity must NOT be marked deleted");
+    }
+
+    #[test]
+    fn test_eviction_does_not_mark_deleted_when_other_stream_remains() {
+        let mut store = StateStore::new();
+        let mut engine = PipelineEngine::new();
+        // short TTL stream gets evicted, long TTL stream stays
+        engine.register(make_stream_with_ttl("stream_short", 3600, Some(300))).unwrap();
+        engine.register(make_stream_with_ttl("stream_long", 3600, Some(7200))).unwrap();
+
+        {
+            let entity = store.get_or_create_entity("user1");
+            let short = entity.get_or_create_stream("stream_short");
+            short.last_event_at = Some(ts(1000)); // Old
+            let long = entity.get_or_create_stream("stream_long");
+            long.last_event_at = Some(ts(99_000)); // Recent
+        }
+
+        let now = ts(100_000);
+        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        assert_eq!(evicted, 1);
+        assert_eq!(store.entity_count(), 1, "entity kept because stream_long remains");
+
+        let deleted = store.take_deleted();
+        assert!(deleted.is_empty(), "entity with remaining stream must NOT be marked deleted");
     }
 }
