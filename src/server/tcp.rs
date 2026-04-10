@@ -61,6 +61,13 @@ pub struct AppState {
     /// Written to snapshot for crash recovery. On restart, features with backfill=true
     /// that are NOT in this set are re-run (idempotent restart per CONTEXT.md locked decision).
     pub backfill_complete: HashSet<(String, String)>,
+    /// Phase 9: Current snapshot cycle number. Incremented after each successful
+    /// snapshot write. When cycle % full_snapshot_interval == 0 the periodic
+    /// timer writes a full base instead of a delta.
+    pub snapshot_cycle: u64,
+    /// Phase 9: Next sequence number for snapshot files. Derived from disk on
+    /// startup (max existing sequence + 1).
+    pub snapshot_seq: u64,
 }
 
 /// Shared state handle for concurrent connection handlers.
@@ -524,6 +531,8 @@ mod tests {
             event_log: None,
             backfill_tracker: Arc::new(BackfillTracker::default()),
             backfill_complete: HashSet::new(),
+            snapshot_cycle: 0,
+            snapshot_seq: 1,
         }))
     }
 

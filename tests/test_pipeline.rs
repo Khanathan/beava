@@ -541,6 +541,8 @@ fn make_state_with_event_log(log_dir: &std::path::Path) -> Arc<Mutex<AppState>> 
         event_log,
         backfill_tracker: Arc::new(BackfillTracker::default()),
         backfill_complete: HashSet::new(),
+        snapshot_cycle: 0,
+        snapshot_seq: 1,
     }))
 }
 

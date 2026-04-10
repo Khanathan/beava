@@ -302,11 +302,16 @@ async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Valu
 }
 
 async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse {
-    let snapshot_data = {
-        let app = state.lock().unwrap_or_else(|e| e.into_inner());
+    // Manual trigger always writes a full v6 base snapshot. This keeps the
+    // manual path simple and debuggable: no delta chain to reason about, no
+    // dependency on prior sequence state. Filenames follow the same
+    // tally.snapshot.base.{seq} convention as the periodic timer.
+    let (snapshot_data, seq, snap_dir) = {
+        let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+        let seq = app.snapshot_seq;
         let valid_features = app.engine.valid_features_map();
         let entities = app.store.clone_for_snapshot_with_gc(&valid_features);
-        // Populate pipelines from engine -- same pattern as periodic snapshot timer in Plan 02
+        // Populate pipelines from engine -- same pattern as periodic snapshot timer
         let mut pipelines: Vec<crate::state::snapshot::SerializablePipeline> = app
             .engine
             .list_streams()
@@ -330,24 +335,39 @@ async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse
                 });
             }
         }
-        crate::state::snapshot::SnapshotState {
+        let backfill_complete: Vec<(String, String)> =
+            app.backfill_complete.iter().cloned().collect();
+        // Manual trigger clears dirty/deleted tracking since the full base
+        // supersedes any pending delta.
+        app.store.clear_dirty();
+        let _ = app.store.take_deleted();
+        app.snapshot_seq += 1;
+
+        let snap_dir = app.snapshot_path.parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf();
+
+        let base = crate::state::snapshot::BaseSnapshotState {
+            header: crate::state::snapshot::SnapshotHeader {
+                snapshot_type: crate::state::snapshot::SnapshotType::Base,
+                sequence: seq,
+            },
             entities,
             pipelines,
-            backfill_complete: app.backfill_complete.iter().cloned().collect(),
-        }
-    };
-    let path = {
-        let app = state.lock().unwrap_or_else(|e| e.into_inner());
-        app.snapshot_path.clone()
+            backfill_complete,
+        };
+        (base, seq, snap_dir)
     };
     // Capture start time for snapshot_duration_ms metric
     let snap_start = std::time::Instant::now();
     let result = tokio::task::spawn_blocking(move || {
-        let bytes = crate::state::snapshot::save_snapshot(&snapshot_data)
+        let bytes = crate::state::snapshot::save_base_snapshot(&snapshot_data)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        let tmp_path = path.with_extension("tmp");
+        let filename = format!("tally.snapshot.base.{:010}", seq);
+        let file_path = snap_dir.join(&filename);
+        let tmp_path = file_path.with_extension("tmp");
         std::fs::write(&tmp_path, &bytes)?;
-        std::fs::rename(&tmp_path, &path)?;
+        std::fs::rename(&tmp_path, &file_path)?;
         Ok::<usize, std::io::Error>(bytes.len())
     })
     .await;
