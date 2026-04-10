@@ -80,7 +80,10 @@ Plans:
   2. User can re-register a stream with a feature removed and remaining features continue operating correctly
   3. User can register a new feature with `backfill=True` and the system replays historical events from the event log to populate the feature, producing deterministic results matching what live processing would have produced (using event timestamps, not wall clock)
   4. During backfill replay, live PUSH and GET requests continue to be served without noticeable latency degradation (cooperative yielding)
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 08-01-PLAN.md — Schema diff engine, backfill type system, lazy GC, REGISTER diff response, Python SDK backfill kwarg
+- [ ] 08-02-PLAN.md — Backfill replay engine, cooperative yielding, HTTP /debug/backfill, integration tests
 
 ### Phase 9: Incremental Snapshots
 **Goal**: Snapshot persistence only serializes changed entities, reducing snapshot write time and disk I/O proportional to change rate rather than total state size
@@ -119,6 +122,6 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10
 | 5. Advanced Operators and Cross-Stream | v1.0 | 3/3 | Complete | 2026-04-09 |
 | 6. Foundation | v1.1 | 4/4 | Complete | 2026-04-10 |
 | 7. Composable Pipeline | v1.1 | 0/4 | Not started | - |
-| 8. Backfill & Schema Evolution | v1.1 | 0/? | Not started | - |
+| 8. Backfill & Schema Evolution | v1.1 | 0/2 | Not started | - |
 | 9. Incremental Snapshots | v1.1 | 0/? | Not started | - |
 | 10. Debug UI | v1.1 | 0/? | Not started | - |
