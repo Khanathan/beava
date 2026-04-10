@@ -33,7 +33,7 @@ Full details: [v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
 - [x] **Phase 6: Foundation** - EntityState refactor for per-stream isolation, SSD event log with history TTL and compaction, per-stream entity TTL, MGET
 - [x] **Phase 7: Composable Pipeline** - Keyless streams, keyed streams with depends_on, DAG execution with topological cascade, cycle detection, LEFT JOIN semantics
 - [x] **Phase 8: Backfill & Schema Evolution** - Add/remove features without state reset, backfill replay from event log with event timestamps
-- [ ] **Phase 9: Incremental Snapshots** - Dirty-key tracking, delta snapshot files, base + delta recovery
+- [x] **Phase 9: Incremental Snapshots** - Dirty-key tracking, delta snapshot files, base + delta recovery (completed 2026-04-10)
 - [ ] **Phase 10: Debug UI** - Embedded web UI for stream topology DAG, live throughput, memory breakdown, entity inspection
 
 ## Phase Details
@@ -93,10 +93,10 @@ Plans:
   1. After a period of writes affecting a subset of keys, the snapshot written is proportional to the number of changed keys rather than total keys
   2. Server can recover from a base snapshot plus subsequent delta snapshots and restore full state correctly
   3. Full snapshots are periodically written (every Nth cycle) to bound recovery time even with many deltas
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 Plans:
 - [x] 09-01-PLAN.md — Dirty/deleted tracking in StateStore + v6 snapshot format (base/delta) + recovery + v5 migration
-- [ ] 09-02-PLAN.md — Wire incremental snapshots into timer, mutations, eviction, HTTP trigger, startup + integration tests
+- [x] 09-02-PLAN.md — Wire incremental snapshots into timer, mutations, eviction, HTTP trigger, startup + integration tests
 
 ### Phase 10: Debug UI
 **Goal**: Users can observe and debug the running system through an embedded web UI served from the existing HTTP management port
@@ -126,5 +126,5 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10
 | 6. Foundation | v1.1 | 4/4 | Complete | 2026-04-10 |
 | 7. Composable Pipeline | v1.1 | 4/4 | Complete | 2026-04-10 |
 | 8. Backfill & Schema Evolution | v1.1 | 2/2 | Complete | 2026-04-10 |
-| 9. Incremental Snapshots | v1.1 | 0/2 | Not started | - |
+| 9. Incremental Snapshots | v1.1 | 2/2 | Complete   | 2026-04-10 |
 | 10. Debug UI | v1.1 | 0/? | Not started | - |

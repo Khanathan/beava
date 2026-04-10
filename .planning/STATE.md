@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
-status: executing
-stopped_at: Completed 09-01-PLAN.md
-last_updated: "2026-04-10T04:04:54.547Z"
+status: verifying
+stopped_at: Completed 09-02-PLAN.md (incremental snapshot wiring)
+last_updated: "2026-04-10T04:18:29.709Z"
 last_activity: 2026-04-10
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 12
-  completed_plans: 11
-  percent: 92
+  completed_plans: 12
+  percent: 100
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 
 Phase: 9 (Incremental Snapshots) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-10
 
 Progress: [..........] 0%
@@ -60,6 +60,7 @@ Progress: [..........] 0%
 | Phase 08 P01 | 11min | 2 tasks | 9 files |
 | Phase 08 P02 | 11min | 2 tasks | 6 files |
 | Phase 09 P01 | 6min | 2 tasks | 2 files |
+| Phase 09 P02 | 110m | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -98,6 +99,9 @@ Key v1.1 architectural decisions (from research):
 - [Phase 09]: [Phase 09]: Dirty set lives on StateStore (not AppState); mark_deleted removes key from dirty_keys for mutual exclusion
 - [Phase 09]: [Phase 09]: Snapshot v6 uses [version][type_tag 0x00/0x01][postcard] header; legacy save/load_snapshot preserved with transparent v5 migration
 - [Phase 09]: [Phase 09]: apply_delta processes deletes before inserts so delete+reinsert in same delta lands as insert
+- [Phase 09]: Delta-rot skip: snapshot ticks with no dirty/deleted keys write no file but still advance cycle counter
+- [Phase 09]: cleanup_old_snapshots runs only after successful base write so deltas are never deleted before their owning base exists
+- [Phase 09]: Eviction restructured to two-phase (collect plan, then apply) to allow mark_deleted without borrow checker conflict
 
 ### Pending Todos
 
@@ -116,6 +120,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-10T04:04:54.545Z
-Stopped at: Completed 09-01-PLAN.md
+Last session: 2026-04-10T04:18:29.706Z
+Stopped at: Completed 09-02-PLAN.md (incremental snapshot wiring)
 Resume: `/gsd-plan-phase 6`
