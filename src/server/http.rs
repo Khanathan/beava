@@ -14,6 +14,7 @@ use std::time::SystemTime;
 
 use super::tcp::SharedState;
 use crate::server::protocol::{convert_register_request, RegisterRequest};
+use crate::server::ui::{ui_index, ui_static};
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok"}))
@@ -292,12 +293,172 @@ async fn debug_key(
         .into_response()
 }
 
+/// GET /debug/topology — Stream/view DAG for the Debug UI Topology tab.
+///
+/// Emits nodes for every registered stream AND every view (RESEARCH §Pitfall 7)
+/// plus two kinds of edges: `cascade` edges for `depends_on` upstream links on
+/// streams, and `lookup` edges for `ViewFeatureDef::Lookup` features on views.
+/// Returns the cached topological order so the frontend can render nodes in
+/// stable execution order without re-running toposort in JavaScript.
+///
+/// Lock discipline (RESEARCH §Pitfall 3): acquires the AppState mutex,
+/// reads/clones everything it needs, and returns `Json(...)` without any
+/// `.await` between lock and return.
+async fn debug_topology(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let app = state.lock().unwrap_or_else(|e| e.into_inner());
+
+    let mut nodes: Vec<serde_json::Value> = Vec::new();
+    let mut edges: Vec<serde_json::Value> = Vec::new();
+
+    // Emit a node per registered stream. Include key_field (may be null for
+    // keyless streams), the list of feature names, and depends_on for the
+    // cascade DAG.
+    for s in app.engine.list_streams() {
+        let feature_names: Vec<&str> = s.features.iter().map(|(n, _)| n.as_str()).collect();
+        nodes.push(serde_json::json!({
+            "name": s.name,
+            "kind": "stream",
+            "key_field": s.key_field,
+            "features": feature_names,
+            "depends_on": s.depends_on.clone().unwrap_or_default(),
+        }));
+        // Cascade edges: upstream -> downstream (this stream).
+        for dep in s.depends_on.clone().unwrap_or_default() {
+            edges.push(serde_json::json!({
+                "from": dep,
+                "to": s.name,
+                "kind": "cascade",
+            }));
+        }
+    }
+
+    // Emit a node per registered view. Views have a String key_field (not
+    // Option), no depends_on field, and derive edges from their Lookup
+    // features. This MUST include views -- RESEARCH §Pitfall 7 warns that
+    // forgetting list_views() breaks the topology tab's purple view nodes.
+    for v in app.engine.list_views() {
+        let feature_names: Vec<&str> = v.features.iter().map(|(n, _)| n.as_str()).collect();
+        nodes.push(serde_json::json!({
+            "name": v.name,
+            "kind": "view",
+            "key_field": v.key_field,
+            "features": feature_names,
+            "depends_on": Vec::<String>::new(),
+        }));
+        // Lookup edges: the view depends on each target_stream it looks up.
+        for (_fname, fdef) in &v.features {
+            if let crate::engine::pipeline::ViewFeatureDef::Lookup { target_stream, .. } = fdef {
+                edges.push(serde_json::json!({
+                    "from": target_stream,
+                    "to": v.name,
+                    "kind": "lookup",
+                }));
+            }
+        }
+    }
+
+    // Topological order already cached on the engine (Phase 7). Return it so
+    // the frontend can render nodes in a stable, execution-order sequence
+    // without re-running toposort in JavaScript.
+    let topo_order: Vec<String> = app.engine.get_topo_order().to_vec();
+
+    Json(serde_json::json!({
+        "nodes": nodes,
+        "edges": edges,
+        "topo_order": topo_order,
+    }))
+}
+
+/// GET /debug/throughput — Per-stream EWMA message rates for the Streams tab.
+///
+/// Calls `ThroughputTracker::decay_all(Instant::now())` BEFORE `snapshot()` so
+/// idle streams report declining rates even when no recent push drove an
+/// update. Returns `{streams: [{name, ewma_5s, ewma_1m, ewma_5m}, ...]}`.
+///
+/// Lock discipline (RESEARCH §Pitfall 3): acquires the AppState mutex with
+/// `&mut` for `decay_all`, performs both calls synchronously, and returns
+/// `Json(...)` without any `.await` while holding the guard.
+async fn debug_throughput(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+    // Decay every stream's EWMAs to "now" before snapshotting so idle streams
+    // report declining rates even with no recent push to drive the update.
+    let now_inst = std::time::Instant::now();
+    app.throughput.decay_all(now_inst);
+    let streams: Vec<serde_json::Value> = app
+        .throughput
+        .snapshot()
+        .into_iter()
+        .map(|(name, s)| {
+            serde_json::json!({
+                "name": name,
+                "ewma_5s": s.ewma_5s,
+                "ewma_1m": s.ewma_1m,
+                "ewma_5m": s.ewma_5m,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({
+        "streams": streams,
+    }))
+}
+
+/// GET /debug/memory — Memory rollup + per-stream breakdown.
+///
+/// Additively extended in Plan 10-03 (RESEARCH §Pitfall 8): the original three
+/// rollup fields (`entity_count`, `stream_count`, `estimated_bytes`) are
+/// preserved for backward compatibility, and a new `per_stream` array emits
+/// one entry per registered stream AND per registered view with
+/// `{name, kind, key_count, estimated_bytes}`.
+///
+/// Key count per stream is computed by iterating every entity and tallying
+/// which streams have a `StreamEntityState` under each. Views always report
+/// `key_count: 0` / `estimated_bytes: 0` since views hold no operator state.
 async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let app = state.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Per-stream breakdown: iterate every entity, tally how many have state
+    // under each stream name, and apply the same naive 2 KB/key estimator
+    // the existing rollup uses. Views are reported separately with their
+    // known key count of zero since they hold no operator state.
+    let mut per_stream_counts: ahash::AHashMap<String, u64> = ahash::AHashMap::new();
+    let keys: Vec<String> = app.store.entity_keys().collect();
+    for key in &keys {
+        if let Some(entity) = app.store.get_entity(key) {
+            for stream_name in entity.streams.keys() {
+                *per_stream_counts.entry(stream_name.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Emit per_stream entries in the order streams are registered (stable
+    // across calls for a given registration set).
+    let mut per_stream: Vec<serde_json::Value> = Vec::new();
+    for s in app.engine.list_streams() {
+        let key_count = per_stream_counts.get(&s.name).copied().unwrap_or(0);
+        per_stream.push(serde_json::json!({
+            "name": s.name,
+            "kind": "stream",
+            "key_count": key_count,
+            "estimated_bytes": key_count * 2048,
+        }));
+    }
+    for v in app.engine.list_views() {
+        per_stream.push(serde_json::json!({
+            "name": v.name,
+            "kind": "view",
+            "key_count": 0,
+            "estimated_bytes": 0,
+        }));
+    }
+
+    // Preserve the existing three top-level fields (Phase 6 callers and any
+    // hand-crafted curl scripts still read them). The `per_stream` array is
+    // an additive extension (DBUI-04).
     Json(serde_json::json!({
         "entity_count": app.store.entity_count(),
         "stream_count": app.engine.stream_count(),
         "estimated_bytes": app.store.entity_count() * 2048,
+        "per_stream": per_stream,
     }))
 }
 
@@ -464,7 +625,11 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/debug/key/{key}", get(debug_key))
         .route("/debug/memory", get(debug_memory))
         .route("/debug/backfill", get(debug_backfill))
+        .route("/debug/topology", get(debug_topology)) // NEW (DBUI-01)
+        .route("/debug/throughput", get(debug_throughput)) // NEW (DBUI-02)
         .route("/snapshot", post(trigger_snapshot))
+        .route("/", get(ui_index)) // NEW (DBUI-05)
+        .route("/static/{*file}", get(ui_static)) // NEW (DBUI-05)
         .with_state(state)
 }
 
