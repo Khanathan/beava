@@ -315,11 +315,47 @@ async fn debug_topology(State(state): State<SharedState>) -> Json<serde_json::Va
     // cascade DAG.
     for s in app.engine.list_streams() {
         let feature_names: Vec<&str> = s.features.iter().map(|(n, _)| n.as_str()).collect();
+
+        // Phase 10.1 DBUI-06: pass through raw register JSON features as the
+        // `operators` field so the drill-in panel can render per-stream operator
+        // details without a new endpoint or a FeatureDef AST serializer.
+        // RESEARCH Pattern 8 -- pass-through from `raw_register_jsons`.
+        // Snapshot-restored streams that pre-date raw_register_jsons return None
+        // here -- emit `operators: []` as a tolerant fallback (RESEARCH Pitfall 7).
+        let operators: Vec<serde_json::Value> = app
+            .engine
+            .get_raw_register_json(&s.name)
+            .and_then(|raw| raw.get("features"))
+            .and_then(|f| f.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .map(|feat| {
+                        let mut out = serde_json::Map::new();
+                        if let Some(n) = feat.get("name") { out.insert("name".into(), n.clone()); }
+                        // Rename `type` -> `op` in the output for frontend readability.
+                        if let Some(t) = feat.get("type") { out.insert("op".into(), t.clone()); }
+                        if let Some(w) = feat.get("window") { out.insert("window".into(), w.clone()); }
+                        if let Some(b) = feat.get("bucket") { out.insert("bucket".into(), b.clone()); }
+                        if let Some(fld) = feat.get("field") { out.insert("field".into(), fld.clone()); }
+                        if let Some(wh) = feat.get("where") { out.insert("where".into(), wh.clone()); }
+                        if let Some(e) = feat.get("expr") { out.insert("expr".into(), e.clone()); }
+                        if let Some(o) = feat.get("optional") { out.insert("optional".into(), o.clone()); }
+                        if let Some(bf) = feat.get("backfill") { out.insert("backfill".into(), bf.clone()); }
+                        // Lookup-only fields (present when type == "lookup")
+                        if let Some(on) = feat.get("on") { out.insert("on".into(), on.clone()); }
+                        if let Some(tg) = feat.get("target") { out.insert("target".into(), tg.clone()); }
+                        serde_json::Value::Object(out)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         nodes.push(serde_json::json!({
             "name": s.name,
             "kind": "stream",
             "key_field": s.key_field,
-            "features": feature_names,
+            "features": feature_names,              // UNCHANGED -- Phase 10 test compat
+            "operators": operators,                 // NEW -- Phase 10.1 additive (DBUI-06)
             "depends_on": s.depends_on.clone().unwrap_or_default(),
         }));
         // Cascade edges: upstream -> downstream (this stream).
@@ -338,11 +374,36 @@ async fn debug_topology(State(state): State<SharedState>) -> Json<serde_json::Va
     // forgetting list_views() breaks the topology tab's purple view nodes.
     for v in app.engine.list_views() {
         let feature_names: Vec<&str> = v.features.iter().map(|(n, _)| n.as_str()).collect();
+
+        // Phase 10.1 DBUI-06: same pass-through as stream nodes, but views
+        // only have derive and lookup features (no window/field/where/bucket/
+        // optional/backfill), so the projection is reduced.
+        let operators: Vec<serde_json::Value> = app
+            .engine
+            .get_raw_register_json(&v.name)
+            .and_then(|raw| raw.get("features"))
+            .and_then(|f| f.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .map(|feat| {
+                        let mut out = serde_json::Map::new();
+                        if let Some(n) = feat.get("name") { out.insert("name".into(), n.clone()); }
+                        if let Some(t) = feat.get("type") { out.insert("op".into(), t.clone()); }
+                        if let Some(e) = feat.get("expr") { out.insert("expr".into(), e.clone()); }
+                        if let Some(on) = feat.get("on") { out.insert("on".into(), on.clone()); }
+                        if let Some(tg) = feat.get("target") { out.insert("target".into(), tg.clone()); }
+                        serde_json::Value::Object(out)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         nodes.push(serde_json::json!({
             "name": v.name,
             "kind": "view",
             "key_field": v.key_field,
-            "features": feature_names,
+            "features": feature_names,              // UNCHANGED
+            "operators": operators,                 // NEW -- Phase 10.1 additive (DBUI-06)
             "depends_on": Vec::<String>::new(),
         }));
         // Lookup edges: the view depends on each target_stream it looks up.
