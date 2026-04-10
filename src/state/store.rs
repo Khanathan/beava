@@ -355,6 +355,39 @@ impl StateStore {
         }
     }
 
+    /// Apply a delta snapshot on top of the current state (Phase 9, OPS-04).
+    ///
+    /// For each entity in `deleted_keys`: remove from the store entirely.
+    /// For each entity in `changed_entities`: replace the existing entity
+    /// (same conversion as `restore_from_snapshot`). The dirty/deleted
+    /// tracking sets are NOT modified -- applying a delta during recovery
+    /// should not produce new dirty tracking.
+    pub fn apply_delta(
+        &mut self,
+        changed_entities: Vec<(String, SerializableEntityState)>,
+        deleted_keys: Vec<String>,
+    ) {
+        // Deletes first, so that an entity which is deleted AND re-inserted
+        // in the same delta ends up inserted (matches common delta semantics).
+        for key in deleted_keys {
+            self.entities.remove(&key);
+        }
+        for (key, state) in changed_entities {
+            let mut streams = AHashMap::new();
+            for (stream_name, stream_state) in state.streams {
+                streams.insert(stream_name, StreamEntityState {
+                    operators: stream_state.operators,
+                    last_event_at: stream_state.last_event_at,
+                });
+            }
+            let entity = EntityState {
+                streams,
+                static_features: state.static_features.into_iter().collect(),
+            };
+            self.entities.insert(key, entity);
+        }
+    }
+
     /// Remove entities whose last_event_at (across all streams) is strictly
     /// older than `ttl` from `now`. For per-stream grouping, we use the most
     /// recent last_event_at across all streams. Entities with no streams that
