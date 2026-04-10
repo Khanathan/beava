@@ -249,6 +249,16 @@ function renderStreamHeader(panel, node) {
 }
 
 function renderMemorySection(panel, node, memory) {
+  // May be called from the 2 Hz tick to refresh this section ONLY, leaving
+  // the entity input DOM node (and any rendered lookup results) untouched
+  // (Pitfall 6 — granular re-render preserves user-visible state across
+  // ticks). Mirrors the throughput pattern: if a <section
+  // data-section="memory"> is already mounted, swap it in place; otherwise
+  // append a new one during the initial drill-in panel render.
+  const existing = panel.querySelector(
+    '.drill-in-section[data-section="memory"]'
+  );
+
   const section = el('section', {
     class: 'drill-in-section',
     'data-section': 'memory',
@@ -278,7 +288,12 @@ function renderMemorySection(panel, node, memory) {
     }),
   ]));
   section.appendChild(row);
-  panel.appendChild(section);
+
+  if (existing) {
+    existing.replaceWith(section);
+  } else {
+    panel.appendChild(section);
+  }
 }
 
 function renderStateSection(panel, node) {
@@ -711,18 +726,21 @@ async function tickMemory() {
   if (state.paused) return;
   state.memory = data;
 
-  // Update the Memory section only if a stream is selected AND no element
-  // inside the drill-in panel has focus (Pitfall 6 — avoid clobbering the
-  // entity input mid-type).
+  // Granular re-render: if a stream is selected, update ONLY the Memory
+  // section via `renderMemorySection` (which swaps the existing
+  // [data-section="memory"] node in place). This matches the throughput
+  // pattern and is WR-01's fix — never call `renderDrillInPanel` from
+  // tickMemory, which would clobber the entity lookup input and any
+  // rendered lookup results every 2 s (Pitfall 6).
   if (state.selectedStream) {
     const panel = document.getElementById('drill-in-panel');
     const node = findNode(state.selectedStream);
-    if (panel && node && node.kind !== 'view') {
-      const active = document.activeElement;
-      const focusInPanel = active && panel.contains(active);
-      if (!focusInPanel) {
-        renderDrillInPanel(state.selectedStream);
-      }
+    // WR-02: selected stream vanished from topology. Reset to placeholder
+    // instead of silently blanking the panel.
+    if (!node) {
+      setSelected(null);
+    } else if (panel && node.kind !== 'view') {
+      renderMemorySection(panel, node, data);
     }
   }
 }
