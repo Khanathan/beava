@@ -342,6 +342,16 @@ async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse
         app.store.clear_dirty();
         let _ = app.store.take_deleted();
         app.snapshot_seq += 1;
+        // Phase 9 WR-01 (re-review): keep the manual path symmetric with the
+        // periodic timer in src/main.rs:289-293. Advance `last_base_seq` and
+        // roll the previous one into `previous_base_seq` so that:
+        //   1. The next periodic delta stamps the correct base_seq in its
+        //      header (instead of pointing at a stale pre-manual base).
+        //   2. The WR-03 fallback policy keeps the pre-manual base as the
+        //      "previous" candidate rather than skipping the manual one.
+        let prev_base = app.last_base_seq;
+        app.previous_base_seq = prev_base;
+        app.last_base_seq = seq;
 
         let snap_dir = app.snapshot_path.parent()
             .unwrap_or_else(|| std::path::Path::new("."))
