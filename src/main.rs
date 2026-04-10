@@ -1,11 +1,13 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, SystemTime};
 
 use tally::engine::pipeline::PipelineEngine;
 use tally::server::http::run_http_server;
 use tally::server::protocol::{RegisterRequest, convert_register_request, convert_view_register_request};
-use tally::server::tcp::{AppState, Metrics, run_tcp_server};
+use tally::server::tcp::{AppState, BackfillStatus, BackfillTracker, Metrics, run_backfill, run_tcp_server};
 use tally::state::event_log::EventLog;
 use tally::state::eviction::evict_expired_keys;
 use tally::state::snapshot::{SerializablePipeline, SnapshotState, load_snapshot, save_snapshot};
@@ -43,6 +45,8 @@ async fn main() {
         metrics: Metrics::default(),
         snapshot_path: snapshot_path.clone(),
         event_log,
+        backfill_tracker: Arc::new(BackfillTracker::default()),
+        backfill_complete: HashSet::new(),
     }));
 
     // Load snapshot on startup (PERS-03)
@@ -63,7 +67,7 @@ async fn main() {
                             if let Ok(req) = req {
                                 let def_name = req.name.clone();
                                 let is_view = req.definition_type.as_deref() == Some("view");
-                                let registered: Result<(), crate::error::TallyError> = if is_view {
+                                let registered: Result<(), tally::error::TallyError> = if is_view {
                                     convert_view_register_request(req)
                                         .and_then(|view_def| app.engine.register_view(view_def))
                                 } else {
@@ -84,7 +88,65 @@ async fn main() {
                             }
                         }
                     }
+                    // Restore backfill_complete markers from snapshot
+                    for (stream, feature) in &snapshot_state.backfill_complete {
+                        app.backfill_complete.insert((stream.clone(), feature.clone()));
+                    }
+
+                    // Detect incomplete backfills: features with backfill=true that are not in
+                    // the backfill_complete set. Re-spawn backfill for them (idempotent restart
+                    // per CONTEXT.md locked decision). Operators are deterministic so replay
+                    // from start produces the same result.
+                    let mut incomplete_backfills: Vec<(String, Vec<String>)> = Vec::new();
+                    for stream in app.engine.list_streams() {
+                        let missing: Vec<String> = stream.features.iter()
+                            .filter(|(_, def)| tally::engine::pipeline::get_backfill_flag(def))
+                            .filter(|(name, _)| !app.backfill_complete.contains(&(stream.name.clone(), name.clone())))
+                            .map(|(name, _)| name.clone())
+                            .collect();
+                        if !missing.is_empty() {
+                            incomplete_backfills.push((stream.name.clone(), missing));
+                        }
+                    }
+
                     eprintln!("Loaded snapshot from {}", snapshot_path.display());
+
+                    // Must drop the lock before spawning backfill tasks
+                    drop(app);
+
+                    // Spawn backfill tasks for incomplete backfills (outside lock)
+                    for (stream_name, features) in incomplete_backfills {
+                        let entries = {
+                            let app = state.lock().unwrap_or_else(|e| e.into_inner());
+                            app.event_log.as_ref()
+                                .map(|log| log.read_entries(&stream_name).unwrap_or_default())
+                                .unwrap_or_default()
+                        };
+                        if !entries.is_empty() {
+                            let status = Arc::new(BackfillStatus {
+                                stream: stream_name.clone(),
+                                features: features.clone(),
+                                total_events: entries.len(),
+                                processed_events: Arc::new(AtomicUsize::new(0)),
+                                started_at: SystemTime::now(),
+                                completed_at: Mutex::new(None),
+                            });
+                            {
+                                let app = state.lock().unwrap_or_else(|e| e.into_inner());
+                                app.backfill_tracker.tasks.lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .push(Arc::clone(&status));
+                            }
+                            eprintln!("Resuming incomplete backfill for {} features: {:?}", stream_name, features);
+                            tokio::spawn(run_backfill(
+                                state.clone(),
+                                stream_name,
+                                features,
+                                entries,
+                                status,
+                            ));
+                        }
+                    }
                 }
                 None => {
                     eprintln!("Snapshot incompatible or corrupt, starting fresh");
@@ -148,9 +210,11 @@ async fn main() {
                         });
                     }
                 }
+                let backfill_complete: Vec<(String, String)> = app.backfill_complete.iter().cloned().collect();
                 SnapshotState {
                     entities,
                     pipelines,
+                    backfill_complete,
                 }
             };
             // Serialize on blocking thread pool (PERS-04: does not block event loop)

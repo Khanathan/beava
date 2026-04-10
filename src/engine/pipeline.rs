@@ -614,6 +614,94 @@ impl PipelineEngine {
         Ok(primary_features)
     }
 
+    /// Push an event to only the specified backfill operators, using the provided
+    /// event timestamp instead of wall clock. Used during backfill replay.
+    /// Does NOT evaluate derives (they auto-resolve on read).
+    /// Does NOT update last_event_at (backfill is not a "live" event).
+    pub fn push_for_backfill(
+        &self,
+        stream_name: &str,
+        event: &serde_json::Value,
+        store: &mut StateStore,
+        event_time: SystemTime,
+        backfill_features: &[String],
+    ) -> Result<(), TallyError> {
+        let stream = self.streams.get(stream_name).ok_or_else(|| {
+            TallyError::Protocol(format!("unknown stream: {}", stream_name))
+        })?;
+
+        // Apply stream-level filter (same as push)
+        if let Some(ref filter_expr) = stream.filter {
+            let ctx = EvalContext {
+                features: &ahash::AHashMap::new(),
+                event: Some(event),
+            };
+            let result = eval(filter_expr, &ctx);
+            match result {
+                FeatureValue::Int(0) | FeatureValue::Missing => return Ok(()),
+                FeatureValue::Float(f) if f == 0.0 => return Ok(()),
+                _ => {}
+            }
+        }
+
+        // Keyless stream: nothing to backfill
+        if stream.key_field.is_none() {
+            return Ok(());
+        }
+
+        // Extract key
+        let key_field = stream.key_field.as_ref().unwrap();
+        let key = match event.get(key_field) {
+            Some(serde_json::Value::String(s)) if !s.is_empty() => s.clone(),
+            _ => return Ok(()), // Skip events without valid key (defensive)
+        };
+
+        let entity = store.get_or_create_entity(&key);
+        entity.get_or_create_stream(stream_name);
+
+        // Only push to backfill operators
+        let op_features: Vec<&(String, FeatureDef)> = stream.features.iter()
+            .filter(|(name, def)| {
+                !matches!(def, FeatureDef::Derive { .. })
+                && backfill_features.contains(name)
+            })
+            .collect();
+
+        let stream_state = entity.streams.get_mut(stream_name).unwrap();
+
+        // Ensure backfill operators exist
+        for (name, def) in &op_features {
+            let exists = stream_state.operators.iter().any(|(n, _)| *n == **name);
+            if !exists {
+                if let Some(op) = create_operator(def) {
+                    stream_state.operators.push(((*name).clone(), op));
+                }
+            }
+        }
+
+        // Push with event_time (not wall clock)
+        for (fname, def) in &op_features {
+            if let Some((_, op)) = stream_state.operators.iter_mut().find(|(n, _)| *n == **fname) {
+                // Check where clause
+                if let Some(where_expr) = get_where_expr(def) {
+                    let ctx = EvalContext {
+                        features: &ahash::AHashMap::new(),
+                        event: Some(event),
+                    };
+                    let result = eval(where_expr, &ctx);
+                    match result {
+                        FeatureValue::Int(0) | FeatureValue::Missing => continue,
+                        FeatureValue::Float(f) if f == 0.0 => continue,
+                        _ => {}
+                    }
+                }
+                let _ = op.push(event, event_time); // Use event timestamp!
+            }
+        }
+
+        Ok(())
+    }
+
     /// Return the current topological order (for testing/debugging).
     pub fn get_topo_order(&self) -> &[String] {
         &self.topo_order
@@ -2232,5 +2320,97 @@ mod tests {
         let login_features = vfm.get("Logins").unwrap();
         assert_eq!(login_features.len(), 1);
         assert!(login_features.contains(&"login_count_1h".to_string()));
+    }
+
+    // ======================== Phase 8 Plan 02: push_for_backfill Tests ========================
+
+    #[test]
+    fn test_push_for_backfill_targets_only_specified_features() {
+        let mut engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+
+        let stream = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                }),
+                ("tx_sum_1h".into(), FeatureDef::Sum {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: true,
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        engine.register(stream).unwrap();
+
+        // push_for_backfill targeting ONLY "tx_sum_1h"
+        let event = serde_json::json!({"user_id": "u1", "amount": 42.0});
+        engine.push_for_backfill("Transactions", &event, &mut store, now, &["tx_sum_1h".into()]).unwrap();
+
+        // Verify: tx_sum_1h should have the event, tx_count_1h should NOT have been pushed
+        let entity = store.get_entity("u1").unwrap();
+        let stream_state = entity.streams.get("Transactions").unwrap();
+        // tx_sum_1h should exist and have a value
+        let sum_op = stream_state.operators.iter().find(|(n, _)| n == "tx_sum_1h");
+        assert!(sum_op.is_some(), "tx_sum_1h operator should exist after backfill push");
+        // tx_count_1h should NOT exist (not in backfill_features list)
+        let count_op = stream_state.operators.iter().find(|(n, _)| n == "tx_count_1h");
+        assert!(count_op.is_none(), "tx_count_1h operator should NOT exist -- not in backfill list");
+    }
+
+    #[test]
+    fn test_push_for_backfill_uses_event_timestamp() {
+        let mut engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+
+        let stream = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: true,
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        engine.register(stream).unwrap();
+
+        // Push at time T=60000
+        let t = ts(60_000);
+        let event = serde_json::json!({"user_id": "u1"});
+        engine.push_for_backfill("Transactions", &event, &mut store, t, &["tx_count_1h".into()]).unwrap();
+
+        // Read at time T=60000 should show count=1
+        let features = store.get_all_features("u1", t);
+        assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
+
+        // Read at time T=60000 + 7200 (2h later, outside 1h window) should show count expired
+        let t_future = ts(60_000 + 7200);
+        let features_future = store.get_all_features("u1", t_future);
+        // Count should be 0 or Missing (expired beyond 1h window)
+        let val = features_future.get("tx_count_1h");
+        assert!(
+            val == Some(&FeatureValue::Missing) || val == Some(&FeatureValue::Int(0)),
+            "Count at T+2h should be expired, got {:?}", val
+        );
     }
 }

@@ -333,6 +333,7 @@ async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse
         crate::state::snapshot::SnapshotState {
             entities,
             pipelines,
+            backfill_complete: app.backfill_complete.iter().cloned().collect(),
         }
     };
     let path = {

@@ -9,10 +9,13 @@ use std::time::SystemTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::engine::pipeline::PipelineEngine;
 use crate::error::TallyError;
 use crate::server::protocol::{self, Command, STATUS_ERROR, STATUS_OK};
-use crate::state::event_log::EventLog;
+use crate::state::event_log::{EventLog, LogEntry};
 use crate::state::store::StateStore;
 use crate::types::{feature_map_to_json, FeatureValue};
 
@@ -25,6 +28,23 @@ pub struct Metrics {
     pub snapshot_duration_ms: u64,
 }
 
+/// Status of a single backfill task.
+#[derive(Debug)]
+pub struct BackfillStatus {
+    pub stream: String,
+    pub features: Vec<String>,
+    pub total_events: usize,
+    pub processed_events: Arc<AtomicUsize>,
+    pub started_at: SystemTime,
+    pub completed_at: Mutex<Option<SystemTime>>,
+}
+
+/// Tracks all active and recently completed backfill tasks.
+#[derive(Debug, Default)]
+pub struct BackfillTracker {
+    pub tasks: Mutex<Vec<Arc<BackfillStatus>>>,
+}
+
 /// Application state: engine + store + metrics.
 pub struct AppState {
     pub engine: PipelineEngine,
@@ -35,6 +55,12 @@ pub struct AppState {
     /// Optional event log for persisting raw events to per-stream log files.
     /// None if event log initialization failed or is disabled.
     pub event_log: Option<EventLog>,
+    /// Tracks active and completed backfill tasks for /debug/backfill endpoint.
+    pub backfill_tracker: Arc<BackfillTracker>,
+    /// Persistent set of (stream_name, feature_name) pairs that have completed backfill.
+    /// Written to snapshot for crash recovery. On restart, features with backfill=true
+    /// that are NOT in this set are re-run (idempotent restart per CONTEXT.md locked decision).
+    pub backfill_complete: HashSet<(String, String)>,
 }
 
 /// Shared state handle for concurrent connection handlers.
@@ -261,6 +287,43 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                     let _ = log.register_stream(&def_name, history_ttl);
                 }
                 app.engine.store_raw_register_json(&def_name, raw_json);
+
+                // If there are features to backfill, spawn async task (SCHM-03)
+                if !diff.backfilling.is_empty() {
+                    // Flush event log to ensure all events are readable
+                    if let Some(ref mut log) = app.event_log {
+                        let _ = log.fsync_all();
+                    }
+                    // Read event log entries for this stream
+                    let entries = app.event_log.as_ref()
+                        .map(|log| log.read_entries(&def_name).unwrap_or_default())
+                        .unwrap_or_default();
+                    let backfill_features = diff.backfilling.clone();
+
+                    if !entries.is_empty() {
+                        let status = Arc::new(BackfillStatus {
+                            stream: def_name.clone(),
+                            features: backfill_features.clone(),
+                            total_events: entries.len(),
+                            processed_events: Arc::new(AtomicUsize::new(0)),
+                            started_at: SystemTime::now(),
+                            completed_at: Mutex::new(None),
+                        });
+                        app.backfill_tracker.tasks.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(Arc::clone(&status));
+
+                        let state_clone = state.clone();
+                        tokio::spawn(run_backfill(
+                            state_clone,
+                            def_name.clone(),
+                            backfill_features,
+                            entries,
+                            status,
+                        ));
+                    }
+                }
+
                 // Return diff JSON summary (SCHM-01/02)
                 let diff_json = serde_json::json!({
                     "status": "ok",
@@ -295,6 +358,54 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             Ok(serde_json::to_vec(&serde_json::Value::Object(result)).unwrap())
         }
         Command::Mset { .. } => unreachable!("MSET handled separately"),
+    }
+}
+
+/// Cooperative backfill: reads event log entries, pushes to new operators in 64-event chunks.
+/// On completion, adds (stream, feature) pairs to backfill_complete set for persistence.
+pub async fn run_backfill(
+    state: SharedState,
+    stream_name: String,
+    feature_names: Vec<String>,
+    entries: Vec<LogEntry>,
+    status: Arc<BackfillStatus>,
+) {
+    let total = entries.len();
+    for (chunk_idx, chunk) in entries.chunks(64).enumerate() {
+        {
+            let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+            let AppState {
+                ref engine,
+                ref mut store,
+                ..
+            } = *app;
+            for entry in chunk {
+                let event: serde_json::Value = match serde_json::from_slice(&entry.payload) {
+                    Ok(v) => v,
+                    Err(_) => continue, // Skip malformed entries (T-08-08)
+                };
+                let _ = engine.push_for_backfill(
+                    &stream_name,
+                    &event,
+                    store,
+                    entry.timestamp, // Event timestamp for determinism (SCHM-05)
+                    &feature_names,
+                );
+            }
+        } // Lock released before yield
+        // Update progress
+        let processed = std::cmp::min((chunk_idx + 1) * 64, total);
+        status.processed_events.store(processed, Ordering::Relaxed);
+        tokio::task::yield_now().await; // Cooperative yield (SCHM-04)
+    }
+    // Mark complete in tracker
+    *status.completed_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(SystemTime::now());
+    // Persist completion markers so restart detects this backfill as done
+    {
+        let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+        for feat in &feature_names {
+            app.backfill_complete.insert((stream_name.clone(), feat.clone()));
+        }
     }
 }
 
@@ -355,6 +466,8 @@ mod tests {
             metrics: Metrics::default(),
             snapshot_path: std::path::PathBuf::from("test.snapshot"),
             event_log: None,
+            backfill_tracker: Arc::new(BackfillTracker::default()),
+            backfill_complete: HashSet::new(),
         }))
     }
 

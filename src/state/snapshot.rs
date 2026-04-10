@@ -17,8 +17,8 @@ use crate::error::TallyError;
 
 /// Snapshot format version byte. Prepended to serialized data.
 /// If the version doesn't match on load, return None (clean startup from empty state).
-/// Bumped to 4 for per-stream grouped EntityState (v1.1 OPS-02).
-const SNAPSHOT_FORMAT_VERSION: u8 = 4;
+/// Bumped to 5 for backfill_complete field in SnapshotState (SCHM-03).
+const SNAPSHOT_FORMAT_VERSION: u8 = 5;
 
 /// Serializable enum wrapping all operator types.
 /// Replaces Box<dyn Operator> so EntityState can be serialized.
@@ -93,6 +93,10 @@ pub struct SerializableEntityState {
 pub struct SnapshotState {
     pub entities: Vec<(String, SerializableEntityState)>,
     pub pipelines: Vec<SerializablePipeline>,
+    /// Set of (stream_name, feature_name) pairs that have completed backfill.
+    /// Used on restart to detect incomplete backfills.
+    #[serde(default)]
+    pub backfill_complete: Vec<(String, String)>,
 }
 
 /// Serialize a SnapshotState to bytes with a version prefix.
@@ -250,6 +254,7 @@ mod tests {
                 key_field: "user_id".to_string(),
                 raw_register_json: r#"{"name":"Transactions","key_field":"user_id","features":[{"name":"tx_count_1h","type":"count","window":"1h"}]}"#.to_string(),
             }],
+            backfill_complete: vec![],
         };
 
         let bytes = postcard::to_stdvec(&state).expect("serialize");
@@ -277,10 +282,11 @@ mod tests {
         let state = SnapshotState {
             entities: vec![],
             pipelines: vec![],
+            backfill_complete: vec![],
         };
         let bytes = save_snapshot(&state).expect("save_snapshot should succeed");
         assert_eq!(bytes[0], SNAPSHOT_FORMAT_VERSION);
-        assert_eq!(bytes[0], 0x04);
+        assert_eq!(bytes[0], 0x05);
     }
 
     #[test]
@@ -309,6 +315,7 @@ mod tests {
                 },
             )],
             pipelines: vec![],
+            backfill_complete: vec![],
         };
 
         let bytes = save_snapshot(&state).expect("save_snapshot should succeed");
@@ -326,6 +333,7 @@ mod tests {
         let state = SnapshotState {
             entities: vec![],
             pipelines: vec![],
+            backfill_complete: vec![],
         };
         let mut bytes = save_snapshot(&state).expect("save_snapshot should succeed");
         // Tamper with version byte
@@ -339,6 +347,7 @@ mod tests {
         let state = SnapshotState {
             entities: vec![],
             pipelines: vec![],
+            backfill_complete: vec![],
         };
         let mut bytes = save_snapshot(&state).expect("save_snapshot should succeed");
         // Set version to 3 (old format)
@@ -450,8 +459,8 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_format_version_is_4() {
-        assert_eq!(SNAPSHOT_FORMAT_VERSION, 4);
+    fn test_snapshot_format_version_is_5() {
+        assert_eq!(SNAPSHOT_FORMAT_VERSION, 5);
     }
 
     // ======================== Phase 5 Plan 03: DistinctCount OperatorState Tests ========================
@@ -532,6 +541,7 @@ mod tests {
                 },
             )],
             pipelines: vec![],
+            backfill_complete: vec![],
         };
 
         let bytes = save_snapshot(&state).expect("save");
@@ -544,5 +554,22 @@ mod tests {
         assert_eq!(op.read(now), FeatureValue::Int(2));
         assert_eq!(restored.entities[0].1.streams[0].1.last_event_at, Some(now));
         assert_eq!(restored.entities[0].1.static_features.len(), 1);
+    }
+
+    #[test]
+    fn test_snapshot_backfill_complete_roundtrip() {
+        let state = SnapshotState {
+            entities: vec![],
+            pipelines: vec![],
+            backfill_complete: vec![
+                ("Transactions".to_string(), "sum_1h".to_string()),
+                ("Logins".to_string(), "count_1h".to_string()),
+            ],
+        };
+        let bytes = save_snapshot(&state).expect("save");
+        let restored = load_snapshot(&bytes).expect("load");
+        assert_eq!(restored.backfill_complete.len(), 2);
+        assert!(restored.backfill_complete.contains(&("Transactions".to_string(), "sum_1h".to_string())));
+        assert!(restored.backfill_complete.contains(&("Logins".to_string(), "count_1h".to_string())));
     }
 }
