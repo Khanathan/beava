@@ -362,6 +362,262 @@ async fn topology_includes_view_nodes() {
 }
 
 // ===========================================================================
+// Phase 10.1 DBUI-06: /debug/topology nodes gain an additive `operators` array
+// sourced from PipelineEngine::raw_register_jsons pass-through (RESEARCH
+// Pattern 8). These tests lock the three key contract points:
+//   1. Presence + basic shape (name, op, window) for a stream feature
+//   2. Byte-for-byte where-clause preservation (no AST round-trip)
+//   3. View lookup shape (op="lookup", target, on)
+// ===========================================================================
+
+#[tokio::test(flavor = "current_thread")]
+async fn topology_nodes_include_operators_field() {
+    // Phase 10.1 DBUI-06: /debug/topology nodes gain an `operators` array
+    // sourced from PipelineEngine::raw_register_jsons pass-through. This test
+    // locks the happy-path shape for a stream with a single Count feature.
+    let (port, state) = start_debug_ui_server().await;
+
+    // Register a Transactions stream directly via the engine AND call
+    // store_raw_register_json to simulate the full register path that
+    // main.rs / tcp.rs / http.rs follow. Without the raw JSON store we would
+    // hit the Pitfall 7 empty-array fallback instead.
+    {
+        let mut app = state.lock().unwrap();
+        let tx_def = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![(
+                "tx_count_1h".into(),
+                FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                },
+            )],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        app.engine.register(tx_def).expect("register Transactions");
+        app.engine.store_raw_register_json(
+            "Transactions",
+            serde_json::json!({
+                "name": "Transactions",
+                "key_field": "user_id",
+                "features": [
+                    {"name": "tx_count_1h", "type": "count", "window": "1h"}
+                ]
+            }),
+        );
+    }
+
+    let (status, _headers, body) = http_get(port, "/debug/topology").await;
+    assert_eq!(status, 200);
+    let json = body_json(&body);
+
+    let nodes = json["nodes"].as_array().expect("nodes array");
+    let tx_node = nodes
+        .iter()
+        .find(|n| n["name"] == "Transactions")
+        .expect("Transactions node present");
+
+    // The additive field must be an array (never null, never missing).
+    let operators = tx_node["operators"]
+        .as_array()
+        .expect("operators is an array");
+    assert_eq!(
+        operators.len(),
+        1,
+        "expected exactly 1 operator for tx_count_1h, got {:?}",
+        operators
+    );
+
+    let op0 = &operators[0];
+    assert_eq!(op0["name"], "tx_count_1h");
+    assert_eq!(op0["op"], "count", "type -> op rename per CONTEXT backend contract");
+    assert_eq!(op0["window"], "1h");
+
+    // features field MUST remain -- Phase 10 backward compat.
+    let features = tx_node["features"].as_array().expect("features still present");
+    assert_eq!(features.len(), 1);
+    assert_eq!(features[0], "tx_count_1h");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn topology_operators_pass_through_where_clause() {
+    // Phase 10.1 DBUI-06 + RESEARCH Pattern 8: operator entries must emit
+    // the user's original `where` string verbatim -- no AST round-trip, no
+    // normalization. The drill-in panel shows the exact text the user wrote.
+    //
+    // The backend reads directly from raw_register_jsons so we register the
+    // stream with where_expr: None and rely on the raw JSON store to carry
+    // the where-clause text. The backend does NOT cross-check the parsed
+    // AST against the raw JSON -- it just passes the raw JSON through.
+    let (port, state) = start_debug_ui_server().await;
+
+    {
+        let mut app = state.lock().unwrap();
+        let tx_def = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![(
+                "failed_1h".into(),
+                FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                },
+            )],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        app.engine.register(tx_def).expect("register Transactions");
+        app.engine.store_raw_register_json(
+            "Transactions",
+            serde_json::json!({
+                "name": "Transactions",
+                "key_field": "user_id",
+                "features": [
+                    {
+                        "name": "failed_1h",
+                        "type": "count",
+                        "window": "1h",
+                        "where": "status == 'failed'"
+                    }
+                ]
+            }),
+        );
+    }
+
+    let (status, _headers, body) = http_get(port, "/debug/topology").await;
+    assert_eq!(status, 200);
+    let json = body_json(&body);
+
+    let tx_node = json["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["name"] == "Transactions")
+        .expect("Transactions node");
+    let operators = tx_node["operators"].as_array().expect("operators array");
+    assert_eq!(operators.len(), 1);
+    let op0 = &operators[0];
+    assert_eq!(op0["name"], "failed_1h");
+    assert_eq!(op0["op"], "count");
+    assert_eq!(op0["window"], "1h");
+    // Exact byte-for-byte pass-through -- NOT a re-parse of the AST.
+    assert_eq!(
+        op0["where"], "status == 'failed'",
+        "where-clause must be preserved verbatim; got {:?}",
+        op0["where"]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn topology_view_operators_include_lookup_shape() {
+    // Phase 10.1 DBUI-06: view nodes emit operators with lookup-specific
+    // fields -- op == "lookup", target, on -- so the drill-in panel's view
+    // variant can render them.
+    let (port, state) = start_debug_ui_server().await;
+
+    // First register the target stream (MerchantActivity) so the view's
+    // lookup target exists. Then register the view. Both need
+    // raw_register_jsons entries for the operators projection to emit.
+    {
+        let mut app = state.lock().unwrap();
+
+        let merchant_def = StreamDefinition {
+            name: "MerchantActivity".into(),
+            key_field: Some("merchant_id".into()),
+            features: vec![(
+                "chargeback_count_24h".into(),
+                FeatureDef::Count {
+                    window: Duration::from_secs(86_400),
+                    bucket: Duration::from_secs(3600),
+                    where_expr: None,
+                    backfill: false,
+                },
+            )],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        app.engine
+            .register(merchant_def)
+            .expect("register MerchantActivity");
+        app.engine.store_raw_register_json(
+            "MerchantActivity",
+            serde_json::json!({
+                "name": "MerchantActivity",
+                "key_field": "merchant_id",
+                "features": [
+                    {"name": "chargeback_count_24h", "type": "count", "window": "24h"}
+                ]
+            }),
+        );
+
+        let view_def = ViewDefinition {
+            name: "FraudSignals".into(),
+            key_field: "user_id".into(),
+            features: vec![(
+                "merchant_chargebacks".into(),
+                ViewFeatureDef::Lookup {
+                    target_stream: "MerchantActivity".into(),
+                    target_feature: "chargeback_count_24h".into(),
+                    on_field: "merchant_id".into(),
+                },
+            )],
+        };
+        app.engine
+            .register_view(view_def)
+            .expect("register FraudSignals");
+        app.engine.store_raw_register_json(
+            "FraudSignals",
+            serde_json::json!({
+                "name": "FraudSignals",
+                "key_field": "user_id",
+                "features": [
+                    {
+                        "name": "merchant_chargebacks",
+                        "type": "lookup",
+                        "target": "MerchantActivity.chargeback_count_24h",
+                        "on": "merchant_id"
+                    }
+                ]
+            }),
+        );
+    }
+
+    let (status, _headers, body) = http_get(port, "/debug/topology").await;
+    assert_eq!(status, 200);
+    let json = body_json(&body);
+
+    let fraud_node = json["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["name"] == "FraudSignals")
+        .expect("FraudSignals view node");
+    assert_eq!(fraud_node["kind"], "view");
+
+    let operators = fraud_node["operators"]
+        .as_array()
+        .expect("view operators array");
+    assert_eq!(operators.len(), 1);
+    let op0 = &operators[0];
+    assert_eq!(op0["name"], "merchant_chargebacks");
+    assert_eq!(op0["op"], "lookup");
+    assert_eq!(op0["target"], "MerchantActivity.chargeback_count_24h");
+    assert_eq!(op0["on"], "merchant_id");
+}
+
+// ===========================================================================
 // DBUI-02: /debug/throughput
 // ===========================================================================
 
