@@ -216,3 +216,153 @@ def test_feature_result_dict_access(app):
     assert isinstance(d, dict)
     assert "a" in d
     assert "b" in d
+
+
+# ===========================================================================
+# Composable Pipeline Tests (Phase 7)
+# ===========================================================================
+
+import pytest
+
+
+def test_cascade_keyless_to_keyed(tally_server):
+    """Push to keyless stream cascades to downstream keyed stream."""
+    host, tcp_port, _ = tally_server
+    import tally as st
+
+    @st.stream()
+    class RawEvents_cascade1:
+        pass
+
+    @st.stream(key="user_id", depends_on=[RawEvents_cascade1])
+    class UserTx_cascade1:
+        tx_count = st.count(window="1h")
+
+    app = st.App(f"{host}:{tcp_port}")
+    app.register(RawEvents_cascade1, UserTx_cascade1)
+
+    # Push to keyless stream
+    result = app.push(RawEvents_cascade1, {"user_id": "cascade_u1", "amount": 50.0})
+    # Keyless stream returns empty features
+    assert len(result._data) == 0
+
+    # GET should show downstream features
+    features = app.get("cascade_u1")
+    assert features.tx_count == 1
+    app.close()
+
+
+def test_cascade_returns_error_on_cycle(tally_server):
+    """Circular dependency is rejected at registration."""
+    host, tcp_port, _ = tally_server
+    import tally as st
+
+    @st.stream(key="uid", depends_on=[])
+    class CycleA:
+        pass
+
+    @st.stream(key="uid", depends_on=[CycleA])
+    class CycleB:
+        pass
+
+    # Manually set CycleA's depends_on to CycleB (creating cycle)
+    CycleA._tally_depends_on = [CycleB]
+
+    app = st.App(f"{host}:{tcp_port}")
+    # Registration should fail with cycle error
+    with pytest.raises(st.ProtocolError):
+        app.register(CycleA, CycleB)
+    app.close()
+
+
+def test_cascade_missing_key_skips_downstream(tally_server):
+    """Push event missing downstream key_field skips that stream (LEFT JOIN)."""
+    host, tcp_port, _ = tally_server
+    import tally as st
+
+    @st.stream()
+    class RawEvents_skip:
+        pass
+
+    @st.stream(key="user_id", depends_on=[RawEvents_skip])
+    class UserTx_skip:
+        tx_count = st.count(window="1h")
+
+    @st.stream(key="merchant_id", depends_on=[RawEvents_skip])
+    class MerchantTx_skip:
+        m_count = st.count(window="1h")
+
+    app = st.App(f"{host}:{tcp_port}")
+    app.register(RawEvents_skip, UserTx_skip, MerchantTx_skip)
+
+    # Push event with user_id but NO merchant_id
+    app.push(RawEvents_skip, {"user_id": "skip_u1", "amount": 10.0})
+
+    # User features should exist
+    user_features = app.get("skip_u1")
+    assert user_features.tx_count == 1
+
+    # Merchant entity should not exist (no merchant_id in event)
+    merchant_features = app.get("skip_m1")
+    d = merchant_features.to_dict()
+    assert "m_count" not in d or d.get("m_count") is None
+    app.close()
+
+
+def test_cascade_with_filter(tally_server):
+    """Stream-level filter controls which events cascade."""
+    host, tcp_port, _ = tally_server
+    import tally as st
+
+    @st.stream()
+    class RawEvents_filter:
+        pass
+
+    @st.stream(
+        key="user_id",
+        depends_on=[RawEvents_filter],
+        filter="_event.status == 'failed'"
+    )
+    class FailedTx_filter:
+        fail_count = st.count(window="1h")
+
+    app = st.App(f"{host}:{tcp_port}")
+    app.register(RawEvents_filter, FailedTx_filter)
+
+    # Push success event -- should NOT count
+    app.push(RawEvents_filter, {"user_id": "filter_u1", "status": "success"})
+
+    # Push failed event -- SHOULD count
+    app.push(RawEvents_filter, {"user_id": "filter_u1", "status": "failed"})
+
+    features = app.get("filter_u1")
+    assert features.fail_count == 1  # Only the failed event counted
+    app.close()
+
+
+def test_cascade_multi_level(tally_server):
+    """Multi-level cascade (3 deep) processes all levels."""
+    host, tcp_port, _ = tally_server
+    import tally as st
+
+    @st.stream()
+    class Raw_multi:
+        pass
+
+    @st.stream(key="user_id", depends_on=[Raw_multi])
+    class Level1_multi:
+        l1_count = st.count(window="1h")
+
+    @st.stream(key="user_id", depends_on=[Level1_multi])
+    class Level2_multi:
+        l2_count = st.count(window="1h")
+
+    app = st.App(f"{host}:{tcp_port}")
+    app.register(Raw_multi, Level1_multi, Level2_multi)
+
+    app.push(Raw_multi, {"user_id": "multi_u1"})
+
+    features = app.get("multi_u1")
+    assert features.l1_count == 1
+    assert features.l2_count == 1
+    app.close()
