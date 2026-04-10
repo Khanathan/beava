@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
 status: executing
-stopped_at: Completed 10.1-01-backend-operators-field-PLAN.md
-last_updated: "2026-04-10T17:58:48.261Z"
+stopped_at: Completed 10.1-02-frontend-shell-PLAN.md
+last_updated: "2026-04-10T18:09:19.201Z"
 last_activity: 2026-04-10
 progress:
   total_phases: 7
   completed_phases: 5
   total_plans: 20
-  completed_plans: 18
-  percent: 90
+  completed_plans: 19
+  percent: 95
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 ## Current Position
 
 Phase: 10.1 (Interactive Debug UI Redesign) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-04-10
 
@@ -65,6 +65,7 @@ Progress: [███████...] 71% (5/7 phases complete — Phase 10.1 and
 | Phase 10 P03 | 3min | 2 tasks | 3 files |
 | Phase 10 P05 | 8min | 3 tasks | 6 files |
 | Phase 10.1 P01 | 6min | 2 tasks | 2 files |
+| Phase 10.1 P02 | 5min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -110,6 +111,9 @@ Key v1.1 architectural decisions (from research):
 - [Phase 10]: Plan 10-03: /debug endpoints follow lock-once-then-build-JSON pattern (no .await across AppState mutex); /debug/memory extended additively (original 3 fields preserved + per_stream array); axum 0.8 brace-wildcard syntax for /static/{*file}; view nodes emit depends_on:[] and participate in DAG only via lookup edges; edge kind discriminator (cascade vs lookup) gives frontend a stable style hook
 - [Phase 10]: [Phase 10]: Plan 10-05: raw TCP HTTP/1.1 over tokio::net::TcpStream for integration tests (no reqwest); random 127.0.0.1:0 ports per test; SHA256 drift tests re-hash embedded vendored bytes at test time against VENDOR.md manifest; sha2=0.10 added to dev-dependencies only
 - [Phase 10.1]: [Phase 10.1]: Plan 10.1-01: /debug/topology operators field uses raw_register_jsons pass-through (RESEARCH Pattern 8) instead of walking FeatureDef enum — avoids AST-to-string conversion for parsed Expr where-clauses. Field rename type -> op at projection boundary for frontend readability. Empty-array fallback for snapshot-restored streams (Pitfall 7). No new .await inside handler lock scope.
+- [Phase 10.1]: Split-view shell rewrite: minmax(0, 1fr) 360px CSS Grid with overflow:hidden + min-height:0 escape-hatch, always-visible drill-in panel with data-empty attribute, Phase 10 design tokens preserved verbatim
+- [Phase 10.1]: Static HTML shell owns zero htmx attributes; Plan 03's app.js will use vanilla fetch + setInterval for polling — decouples shell contract from behavior layer
+- [Phase 10.1]: Grep-based shell regression tests (forbidden + required substring pairs) as enforcement layer for wholesale HTML/CSS rewrites
 
 ### Roadmap Evolution
 
@@ -134,6 +138,6 @@ Key v1.1 architectural decisions (from research):
 
 ## Session Continuity
 
-Last session: 2026-04-10T17:58:48.259Z
-Stopped at: Completed 10.1-01-backend-operators-field-PLAN.md
+Last session: 2026-04-10T18:09:19.199Z
+Stopped at: Completed 10.1-02-frontend-shell-PLAN.md
 Resume: `/gsd-plan-phase 6`
