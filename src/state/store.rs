@@ -412,8 +412,37 @@ impl StateStore {
     }
 
     /// Remove entities where `is_empty()` returns true.
+    ///
+    /// **Contract (Phase 9 IN-04):** Callers that remove empty entities must
+    /// first call `mark_deleted` for each entity they expect to end up
+    /// removed. Failure to do so produces an incremental delta that misses
+    /// the deletion and lets recovery resurrect the entity from the base
+    /// snapshot. The eviction path obeys this contract; any new caller
+    /// should do the same or accept the resurrection risk.
     pub fn remove_empty_entities(&mut self) {
         self.entities.retain(|_key, entity| !entity.is_empty());
+    }
+
+    /// Phase 9 WR-05: in-place GC pass that drops operators whose stream is
+    /// no longer registered or whose feature name has been removed from its
+    /// stream definition. Intended to run once at startup, after base+deltas
+    /// have been loaded and all pipelines re-registered, to clean up zombie
+    /// operators that survived because no event arrived for the affected
+    /// entity between an unregister and the next base write.
+    ///
+    /// Streams not present in `valid_features` are removed entirely (defensive).
+    pub fn gc_invalid_operators(&mut self, valid_features: &AHashMap<String, Vec<String>>) {
+        for entity in self.entities.values_mut() {
+            entity.streams.retain(|stream_name, stream_state| {
+                if let Some(valid) = valid_features.get(stream_name) {
+                    stream_state.operators.retain(|(name, _)| valid.contains(name));
+                    !stream_state.operators.is_empty()
+                } else {
+                    // Stream not registered anymore -- drop it wholesale.
+                    false
+                }
+            });
+        }
     }
 }
 
