@@ -829,16 +829,22 @@ async function lookupEntityForSelectedStream(rawKey) {
     return;
   }
 
-  // Prefer computed_features, fall back to features (Phase 10 compat).
-  const computed = (data && (data.computed_features || data.features)) || {};
+  // `computed_features` is the authoritative field emitted by
+  // StateStore::get_all_features (src/state/store.rs). It is a FLAT map of
+  // {feature_name: value} with no stream prefix, because the state store
+  // iterates every stream's operators and keys the result by the bare
+  // operator name. To scope the result to the currently-selected stream we
+  // build an allow-list from the topology node's per-stream `features`
+  // array (http.rs:317) and filter the flat map against it. Per CR-01
+  // (Phase 10.1 review), v1 callers register unique operator names per
+  // stream, so collapse-on-collision is acceptable.
+  const computed = (data && data.computed_features) || {};
+  const node = findNode(selectedStream);
+  const allowed = new Set((node && node.features) || []);
   const filtered = {};
-  for (const fullName of Object.keys(computed)) {
-    const dot = fullName.indexOf('.');
-    if (dot <= 0) continue;
-    const source = fullName.substring(0, dot);
-    if (source !== selectedStream) continue;
-    const label = fullName.substring(dot + 1);
-    filtered[label] = computed[fullName];
+  for (const name of Object.keys(computed)) {
+    if (!allowed.has(name)) continue;
+    filtered[name] = computed[name];
   }
 
   if (Object.keys(filtered).length === 0) {
