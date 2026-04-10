@@ -546,6 +546,7 @@ fn make_state_with_event_log(log_dir: &std::path::Path) -> Arc<Mutex<AppState>> 
         last_base_seq: 0,
         previous_base_seq: 0,
         throughput: tally::server::throughput::ThroughputTracker::new(),
+        latency: tally::server::latency::LatencyTracker::new(),
     }))
 }
 

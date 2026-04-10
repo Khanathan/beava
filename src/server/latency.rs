@@ -311,6 +311,13 @@ impl LatencyTracker {
             .record(micros, now);
     }
 
+    /// Check if a sample would be accepted into the slow-query heap for a given command.
+    /// Used to avoid key_preview string allocation on the common path (Pitfall 5).
+    #[inline]
+    pub fn slow_queries_would_accept(&self, kind: CommandKind, micros: f64) -> bool {
+        self.slow_queries[kind as usize].would_accept(micros)
+    }
+
     /// Record a non-PUSH command latency (GET/SET/MSET): updates only the global command histogram.
     pub fn record_command(&mut self, kind: CommandKind, micros: f64, now: Instant) {
         self.command_histograms[kind as usize].record(micros, now);

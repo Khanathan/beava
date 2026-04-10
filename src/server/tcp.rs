@@ -83,6 +83,8 @@ pub struct AppState {
     /// HashSet dedup -- see handle_sync_command Push arm). Read by the
     /// /debug/throughput handler in src/server/http.rs.
     pub throughput: crate::server::throughput::ThroughputTracker,
+    /// Phase 10.2 DBUI-07: per-command and per-stream latency histograms.
+    pub latency: crate::server::latency::LatencyTracker,
 }
 
 /// Shared state handle for concurrent connection handlers.
@@ -166,10 +168,19 @@ async fn handle_connection(
         };
 
         // Dispatch command
+        let cmd_start = std::time::Instant::now();
+        let is_mset = matches!(&cmd, Command::Mset { .. });
         let response = match cmd {
             Command::Mset { entries } => handle_mset(entries, &state).await,
             other => handle_sync_command(other, &state),
         };
+        // Phase 10.2: record MSET latency AFTER async completion, in a separate lock
+        if is_mset {
+            let mset_us = cmd_start.elapsed().as_secs_f64() * 1_000_000.0;
+            let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+            app.latency.record_command(crate::server::latency::CommandKind::Mset, mset_us, std::time::Instant::now());
+            app.latency.maybe_record_slow(crate::server::latency::CommandKind::Mset, None, mset_us, String::new());
+        }
 
         // Write response
         let resp_bytes = match response {
@@ -336,9 +347,32 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             let push_elapsed = push_start.elapsed();
             app.metrics.push_latency_seconds = push_elapsed.as_secs_f64();
             app.metrics.events_total += 1;
+
+            // Phase 10.2: record latency into histogram tracker
+            let push_us = push_elapsed.as_secs_f64() * 1_000_000.0;
+            app.latency.record_push(&stream_name, push_us, std::time::Instant::now());
+            // Slow query: extract key preview (first 32 chars of entity key)
+            if app.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Push, push_us) {
+                let key_preview = app.engine.get_stream(&stream_name)
+                    .and_then(|s| s.key_field.clone())
+                    .and_then(|kf| payload.get(&kf).and_then(|v| v.as_str()).map(|s| {
+                        let mut kp = s.to_string();
+                        kp.truncate(32);
+                        kp
+                    }))
+                    .unwrap_or_default();
+                app.latency.maybe_record_slow(
+                    crate::server::latency::CommandKind::Push,
+                    Some(&stream_name),
+                    push_us,
+                    key_preview,
+                );
+            }
+
             Ok(result)
         }
         Command::Get { key } => {
+            let get_start = std::time::Instant::now();
             let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
             let AppState {
                 ref engine,
@@ -346,9 +380,17 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                 ..
             } = *app;
             let features = engine.get_features(&key, store, now);
-            Ok(feature_map_to_json(&features))
+            let result = feature_map_to_json(&features);
+            // Phase 10.2: record GET latency
+            let get_us = get_start.elapsed().as_secs_f64() * 1_000_000.0;
+            let mut kp = key.clone();
+            kp.truncate(32);
+            app.latency.record_command(crate::server::latency::CommandKind::Get, get_us, std::time::Instant::now());
+            app.latency.maybe_record_slow(crate::server::latency::CommandKind::Get, None, get_us, kp);
+            Ok(result)
         }
         Command::Set { key, payload } => {
+            let set_start = std::time::Instant::now();
             let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
             // payload is a JSON object; iterate its key-value pairs
             if let serde_json::Value::Object(map) = payload {
@@ -363,6 +405,12 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                     "SET payload must be a JSON object".into(),
                 ));
             }
+            // Phase 10.2: record SET latency
+            let set_us = set_start.elapsed().as_secs_f64() * 1_000_000.0;
+            let mut kp = key.clone();
+            kp.truncate(32);
+            app.latency.record_command(crate::server::latency::CommandKind::Set, set_us, std::time::Instant::now());
+            app.latency.maybe_record_slow(crate::server::latency::CommandKind::Set, None, set_us, kp);
             Ok(vec![])
         }
         Command::Register { payload } => {
@@ -600,6 +648,7 @@ mod tests {
             last_base_seq: 0,
             previous_base_seq: 0,
             throughput: crate::server::throughput::ThroughputTracker::new(),
+            latency: crate::server::latency::LatencyTracker::new(),
         }))
     }
 

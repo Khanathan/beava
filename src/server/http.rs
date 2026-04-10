@@ -463,6 +463,16 @@ async fn debug_throughput(State(state): State<SharedState>) -> Json<serde_json::
     }))
 }
 
+/// Phase 10.2 DBUI-07: per-command and per-stream latency histograms.
+///
+/// Lock discipline: acquires the AppState mutex, calls `to_json()` synchronously,
+/// returns `Json(...)` without any `.await` while holding the guard.
+async fn debug_latency(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let app = state.lock().unwrap_or_else(|e| e.into_inner());
+    let now = std::time::Instant::now();
+    Json(app.latency.to_json(now))
+}
+
 /// GET /debug/memory — Memory rollup + per-stream breakdown.
 ///
 /// Additively extended in Plan 10-03 (RESEARCH §Pitfall 8): the original three
@@ -693,6 +703,7 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/debug/backfill", get(debug_backfill))
         .route("/debug/topology", get(debug_topology)) // NEW (DBUI-01)
         .route("/debug/throughput", get(debug_throughput)) // NEW (DBUI-02)
+        .route("/debug/latency", get(debug_latency)) // NEW (DBUI-07)
         .route("/snapshot", post(trigger_snapshot))
         .route("/", get(ui_index)) // NEW (DBUI-05)
         .route("/static/{*file}", get(ui_static)) // NEW (DBUI-05)

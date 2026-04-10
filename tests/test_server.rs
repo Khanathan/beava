@@ -41,6 +41,7 @@ async fn start_test_server() -> (u16, u16, SharedState) {
         last_base_seq: 0,
         previous_base_seq: 0,
         throughput: tally::server::throughput::ThroughputTracker::new(),
+        latency: tally::server::latency::LatencyTracker::new(),
     }));
 
     // Bind to port 0 for random assignment

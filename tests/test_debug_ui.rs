@@ -40,6 +40,7 @@ fn make_test_state() -> SharedState {
         last_base_seq: 0,
         previous_base_seq: 0,
         throughput: tally::server::throughput::ThroughputTracker::new(),
+        latency: tally::server::latency::LatencyTracker::new(),
     }))
 }
 
@@ -1415,4 +1416,61 @@ async fn app_js_has_no_innerhtml_or_eval_sinks() {
             forbidden
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10.2 (DBUI-07): Latency endpoint tests
+// ---------------------------------------------------------------------------
+
+/// GET /debug/latency returns valid JSON with per_command (4 entries),
+/// per_stream (empty initially), and slow_queries (empty initially).
+#[tokio::test]
+async fn debug_latency_returns_valid_json_with_all_sections() {
+    let (port, _state) = start_debug_ui_server().await;
+    let (status, _headers, body) = http_get(port, "/debug/latency").await;
+    assert_eq!(status, 200);
+
+    let json = body_json(&body);
+
+    // per_command: 4 entries (PUSH/GET/SET/MSET)
+    let per_command = json["per_command"].as_array().expect("per_command array");
+    assert_eq!(per_command.len(), 4, "should have 4 command entries");
+
+    // Each command entry has the required fields
+    for entry in per_command {
+        assert!(entry["command"].is_string());
+        assert!(entry["count"].is_number());
+        assert!(entry["p50_us"].is_number());
+        assert!(entry["p95_us"].is_number());
+        assert!(entry["p99_us"].is_number());
+        assert!(entry["histogram"]["bin_edges_us"].is_array());
+        assert!(entry["histogram"]["counts"].is_array());
+    }
+
+    // Command names are correct
+    let commands: Vec<&str> = per_command.iter().map(|e| e["command"].as_str().unwrap()).collect();
+    assert_eq!(commands, vec!["PUSH", "GET", "SET", "MSET"]);
+
+    // per_stream is an array (empty with no pushes)
+    assert!(json["per_stream"].is_array());
+    assert_eq!(json["per_stream"].as_array().unwrap().len(), 0);
+
+    // slow_queries is an array (empty)
+    assert!(json["slow_queries"].is_array());
+    assert_eq!(json["slow_queries"].as_array().unwrap().len(), 0);
+}
+
+/// Histogram bins have correct count (30 bins, 31 edges).
+#[tokio::test]
+async fn debug_latency_histogram_has_correct_bin_count() {
+    let (port, _state) = start_debug_ui_server().await;
+    let (status, _headers, body) = http_get(port, "/debug/latency").await;
+    assert_eq!(status, 200);
+
+    let json = body_json(&body);
+    let push = &json["per_command"][0];
+    let edges = push["histogram"]["bin_edges_us"].as_array().unwrap();
+    let counts = push["histogram"]["counts"].as_array().unwrap();
+    assert_eq!(edges.len(), 31, "should have 31 bin edges for 30 bins");
+    assert_eq!(counts.len(), 30, "should have 30 bin counts");
 }
