@@ -87,8 +87,16 @@ pub struct ViewDefinition {
 #[derive(Debug, Clone)]
 pub struct StreamDefinition {
     pub name: String,
-    pub key_field: String,
+    /// Key field for entity extraction. None = keyless stream (raw event ingestion).
+    /// Keyless streams cannot have windowed operators -- only derive features are allowed.
+    pub key_field: Option<String>,
     pub features: Vec<(String, FeatureDef)>, // (feature_name, definition)
+    /// Upstream stream dependencies for composable pipeline DAG.
+    /// None means no dependencies (root stream).
+    pub depends_on: Option<Vec<String>>,
+    /// Stream-level filter expression. Evaluated before operator processing.
+    /// Events not matching the filter are skipped (push returns empty FeatureMap).
+    pub filter: Option<Expr>,
     /// Per-stream entity state TTL. When set, entities with no events
     /// for this stream older than this duration have their stream entry evicted.
     /// None means this stream uses the global TTL behavior.
@@ -170,6 +178,22 @@ impl PipelineEngine {
         if stream.name.is_empty() {
             return Err(TallyError::Protocol("stream name must not be empty".into()));
         }
+        // Keyless streams cannot have windowed operators (T-07-01 mitigation)
+        if stream.key_field.is_none() {
+            for (name, def) in &stream.features {
+                let is_windowed = matches!(def,
+                    FeatureDef::Count { .. } | FeatureDef::Sum { .. } | FeatureDef::Avg { .. } |
+                    FeatureDef::Min { .. } | FeatureDef::Max { .. } | FeatureDef::DistinctCount { .. } |
+                    FeatureDef::Last { .. }
+                );
+                if is_windowed {
+                    return Err(TallyError::Protocol(format!(
+                        "keyless stream '{}' cannot have windowed operator '{}'; only derive features are allowed",
+                        stream.name, name
+                    )));
+                }
+            }
+        }
         // Derive expressions should already be parsed in the StreamDefinition,
         // but verify they exist
         for (name, def) in &stream.features {
@@ -202,26 +226,50 @@ impl PipelineEngine {
             TallyError::Protocol(format!("unknown stream: {}", stream_name))
         })?;
 
+        // Apply stream-level filter before any processing
+        if let Some(ref filter_expr) = stream.filter {
+            let ctx = EvalContext {
+                features: &ahash::AHashMap::new(),
+                event: Some(event),
+            };
+            let result = eval(filter_expr, &ctx);
+            match result {
+                FeatureValue::Int(0) | FeatureValue::Missing => {
+                    return Ok(FeatureMap::new());
+                }
+                FeatureValue::Float(f) if f == 0.0 => {
+                    return Ok(FeatureMap::new());
+                }
+                _ => {} // truthy -- proceed
+            }
+        }
+
+        // Keyless stream: no entity state, return empty feature map
+        if stream.key_field.is_none() {
+            return Ok(FeatureMap::new());
+        }
+
         // 2. Extract entity key from event JSON (T-01-11 mitigation)
-        let key = match event.get(&stream.key_field) {
+        let key_field = stream.key_field.as_ref().unwrap(); // safe: checked above
+        let key = match event.get(key_field) {
             Some(serde_json::Value::String(s)) => {
                 if s.is_empty() {
                     return Err(TallyError::Protocol(
-                        format!("empty key field '{}'", stream.key_field),
+                        format!("empty key field '{}'", key_field),
                     ));
                 }
                 s.clone()
             }
             Some(other) => {
                 return Err(TallyError::Type {
-                    field: stream.key_field.clone(),
+                    field: key_field.clone(),
                     expected: "string".into(),
                     got: format!("{}", other),
                 });
             }
             None => {
                 return Err(TallyError::Type {
-                    field: stream.key_field.clone(),
+                    field: key_field.clone(),
                     expected: "string".into(),
                     got: "absent".into(),
                 });
@@ -501,11 +549,11 @@ impl PipelineEngine {
         self.views.remove(name).is_some()
     }
 
-    /// Return list of (stream_name, key_field) for all registered streams.
-    /// Used by PUSH handler for fan-out.
+    /// Return list of (stream_name, key_field) for all registered keyed streams.
+    /// Used by PUSH handler for fan-out. Keyless streams are excluded (T-07-03).
     pub fn fan_out_targets(&self) -> Vec<(String, String)> {
         self.streams.values()
-            .map(|s| (s.name.clone(), s.key_field.clone()))
+            .filter_map(|s| s.key_field.as_ref().map(|kf| (s.name.clone(), kf.clone())))
             .collect()
     }
 }
@@ -522,7 +570,7 @@ mod tests {
     fn make_tx_stream() -> StreamDefinition {
         StreamDefinition {
             name: "Transactions".into(),
-            key_field: "user_id".into(),
+            key_field: Some("user_id".into()),
             features: vec![
                 ("tx_count_1h".into(), FeatureDef::Count {
                     window: Duration::from_secs(3600),
@@ -544,6 +592,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         }
@@ -563,8 +613,10 @@ mod tests {
         let mut engine = PipelineEngine::new();
         let stream = StreamDefinition {
             name: "".into(),
-            key_field: "user_id".into(),
+            key_field: Some("user_id".into()),
             features: vec![],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         };
@@ -648,7 +700,7 @@ mod tests {
         let mut engine = PipelineEngine::new();
         engine.register(StreamDefinition {
             name: "stream1".into(),
-            key_field: "id".into(),
+            key_field: Some("id".into()),
             features: vec![
                 ("c1".into(), FeatureDef::Count {
                     window: Duration::from_secs(1800), // 30m
@@ -663,12 +715,14 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         }).unwrap();
         engine.register(StreamDefinition {
             name: "stream2".into(),
-            key_field: "id".into(),
+            key_field: Some("id".into()),
             features: vec![
                 ("c2".into(), FeatureDef::Count {
                     window: Duration::from_secs(900), // 15m
@@ -676,6 +730,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         }).unwrap();
@@ -693,12 +749,14 @@ mod tests {
         let mut engine = PipelineEngine::new();
         engine.register(StreamDefinition {
             name: "derived".into(),
-            key_field: "id".into(),
+            key_field: Some("id".into()),
             features: vec![
                 ("ratio".into(), FeatureDef::Derive {
                     expr: crate::engine::expression::parse_expr("1 + 1").unwrap(),
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         }).unwrap();
@@ -799,7 +857,7 @@ mod tests {
         let mut store = StateStore::new();
         let stream = StreamDefinition {
             name: "Transactions".into(),
-            key_field: "user_id".into(),
+            key_field: Some("user_id".into()),
             features: vec![
                 ("min_amount_1h".into(), FeatureDef::Min {
                     field: "amount".into(),
@@ -820,6 +878,8 @@ mod tests {
                     optional: false,
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         };
@@ -846,7 +906,7 @@ mod tests {
         let where_expr = crate::engine::expression::parse_expr("_event.status == 'failed'").unwrap();
         let stream = StreamDefinition {
             name: "Transactions".into(),
-            key_field: "user_id".into(),
+            key_field: Some("user_id".into()),
             features: vec![
                 ("tx_count_1h".into(), FeatureDef::Count {
                     window: Duration::from_secs(3600),
@@ -859,6 +919,8 @@ mod tests {
                     where_expr: Some(where_expr),
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         };
@@ -905,7 +967,7 @@ mod tests {
         let mut engine = PipelineEngine::new();
         engine.register(StreamDefinition {
             name: "stream1".into(),
-            key_field: "id".into(),
+            key_field: Some("id".into()),
             features: vec![
                 ("dc_24h".into(), FeatureDef::DistinctCount {
                     field: "merchant_id".into(),
@@ -915,6 +977,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         }).unwrap();
@@ -973,7 +1037,7 @@ mod tests {
         // Register two streams
         engine.register(StreamDefinition {
             name: "Transactions".into(),
-            key_field: "user_id".into(),
+            key_field: Some("user_id".into()),
             features: vec![
                 ("tx_count_1h".into(), FeatureDef::Count {
                     window: Duration::from_secs(3600),
@@ -981,12 +1045,14 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         }).unwrap();
         engine.register(StreamDefinition {
             name: "Logins".into(),
-            key_field: "user_id".into(),
+            key_field: Some("user_id".into()),
             features: vec![
                 ("login_count_1h".into(), FeatureDef::Count {
                     window: Duration::from_secs(3600),
@@ -994,6 +1060,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         }).unwrap();
@@ -1031,7 +1099,7 @@ mod tests {
         // Register MerchantActivity stream (keyed by merchant_id)
         engine.register(StreamDefinition {
             name: "MerchantActivity".into(),
-            key_field: "merchant_id".into(),
+            key_field: Some("merchant_id".into()),
             features: vec![
                 ("chargeback_count_24h".into(), FeatureDef::Count {
                     window: Duration::from_secs(86400),
@@ -1039,6 +1107,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         }).unwrap();
@@ -1046,7 +1116,7 @@ mod tests {
         // Register Transactions stream with last_merchant_id to store the foreign key
         engine.register(StreamDefinition {
             name: "Transactions".into(),
-            key_field: "user_id".into(),
+            key_field: Some("user_id".into()),
             features: vec![
                 ("tx_count_1h".into(), FeatureDef::Count {
                     window: Duration::from_secs(3600),
@@ -1058,6 +1128,8 @@ mod tests {
                     optional: true,
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         }).unwrap();
@@ -1097,20 +1169,22 @@ mod tests {
 
         engine.register(StreamDefinition {
             name: "Transactions".into(),
-            key_field: "user_id".into(),
+            key_field: Some("user_id".into()),
             features: vec![
                 ("last_merchant_id".into(), FeatureDef::Last {
                     field: "merchant_id".into(),
                     optional: true,
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         }).unwrap();
 
         engine.register(StreamDefinition {
             name: "MerchantActivity".into(),
-            key_field: "merchant_id".into(),
+            key_field: Some("merchant_id".into()),
             features: vec![
                 ("chargeback_count_24h".into(), FeatureDef::Count {
                     window: Duration::from_secs(86400),
@@ -1118,6 +1192,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         }).unwrap();
@@ -1149,8 +1225,10 @@ mod tests {
     fn test_stream_definition_with_entity_ttl_stores_value() {
         let stream = StreamDefinition {
             name: "Transactions".into(),
-            key_field: "user_id".into(),
+            key_field: Some("user_id".into()),
             features: vec![],
+            depends_on: None,
+            filter: None,
             entity_ttl: Some(Duration::from_secs(300)),
             history_ttl: None,
         };
@@ -1161,8 +1239,10 @@ mod tests {
     fn test_stream_definition_with_entity_ttl_none_is_backwards_compatible() {
         let stream = StreamDefinition {
             name: "Transactions".into(),
-            key_field: "user_id".into(),
+            key_field: Some("user_id".into()),
             features: vec![],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         };
@@ -1175,8 +1255,10 @@ mod tests {
         let mut engine = PipelineEngine::new();
         engine.register(StreamDefinition {
             name: "Transactions".into(),
-            key_field: "user_id".into(),
+            key_field: Some("user_id".into()),
             features: vec![],
+            depends_on: None,
+            filter: None,
             entity_ttl: Some(Duration::from_secs(300)),
             history_ttl: None,
         }).unwrap();
@@ -1188,8 +1270,10 @@ mod tests {
         let mut engine = PipelineEngine::new();
         engine.register(StreamDefinition {
             name: "Transactions".into(),
-            key_field: "user_id".into(),
+            key_field: Some("user_id".into()),
             features: vec![],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         }).unwrap();
@@ -1207,7 +1291,7 @@ mod tests {
         let mut engine = PipelineEngine::new();
         engine.register(StreamDefinition {
             name: "stream1".into(),
-            key_field: "id".into(),
+            key_field: Some("id".into()),
             features: vec![
                 ("min_1h".into(), FeatureDef::Min {
                     field: "amount".into(),
@@ -1224,6 +1308,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         }).unwrap();

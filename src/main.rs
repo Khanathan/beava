@@ -130,7 +130,7 @@ async fn main() {
                             .get_raw_register_json(&stream.name)
                             .map(|json| SerializablePipeline {
                                 name: stream.name.clone(),
-                                key_field: stream.key_field.clone(),
+                                key_field: stream.key_field.clone().unwrap_or_default(),
                                 raw_register_json: serde_json::to_string(json)
                                     .unwrap_or_default(),
                             })

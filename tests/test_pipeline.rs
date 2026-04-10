@@ -17,7 +17,7 @@ fn ts(secs: u64) -> SystemTime {
 fn make_tx_stream_with_derive() -> StreamDefinition {
     StreamDefinition {
         name: "Transactions".into(),
-        key_field: "user_id".into(),
+        key_field: Some("user_id".into()),
         features: vec![
             ("tx_count_1h".into(), FeatureDef::Count {
                 window: Duration::from_secs(3600),
@@ -42,6 +42,8 @@ fn make_tx_stream_with_derive() -> StreamDefinition {
                 expr: parse_expr("tx_sum_1h / tx_count_1h").unwrap(),
             }),
         ],
+        depends_on: None,
+        filter: None,
         entity_ttl: None,
         history_ttl: None,
     }
@@ -101,7 +103,7 @@ fn test_different_keys_have_separate_state() {
 fn test_derive_division_by_zero_returns_missing() {
     let stream = StreamDefinition {
         name: "Test".into(),
-        key_field: "id".into(),
+        key_field: Some("id".into()),
         features: vec![
             ("count_1h".into(), FeatureDef::Count {
                 window: Duration::from_secs(3600),
@@ -113,6 +115,8 @@ fn test_derive_division_by_zero_returns_missing() {
                 expr: parse_expr("count_1h / nonexistent_feature").unwrap(),
             }),
         ],
+        depends_on: None,
+        filter: None,
         entity_ttl: None,
         history_ttl: None,
     };
@@ -157,7 +161,7 @@ fn test_static_feature_alongside_live_features() {
 fn test_window_expiration_end_to_end() {
     let stream = StreamDefinition {
         name: "Short".into(),
-        key_field: "id".into(),
+        key_field: Some("id".into()),
         features: vec![
             ("count_5m".into(), FeatureDef::Count {
                 window: Duration::from_secs(300),  // 5 minute window
@@ -165,6 +169,8 @@ fn test_window_expiration_end_to_end() {
                 where_expr: None,
             }),
         ],
+        depends_on: None,
+        filter: None,
         entity_ttl: None,
         history_ttl: None,
     };
@@ -202,7 +208,7 @@ fn test_push_type_error_on_non_numeric_sum_field() {
 fn test_derive_with_event_field_access() {
     let stream = StreamDefinition {
         name: "Test".into(),
-        key_field: "id".into(),
+        key_field: Some("id".into()),
         features: vec![
             ("avg_1h".into(), FeatureDef::Avg {
                 field: "amount".into(),
@@ -215,6 +221,8 @@ fn test_derive_with_event_field_access() {
                 expr: parse_expr("_event.amount / avg_1h").unwrap(),
             }),
         ],
+        depends_on: None,
+        filter: None,
         entity_ttl: None,
         history_ttl: None,
     };

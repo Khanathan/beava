@@ -243,10 +243,15 @@ pub fn parse_duration_str(s: &str) -> Result<std::time::Duration, TallyError> {
 #[derive(Debug, Deserialize)]
 pub struct RegisterRequest {
     pub name: String,
-    pub key_field: String,
+    #[serde(default)]
+    pub key_field: Option<String>,
     #[serde(default, rename = "type")]
     pub definition_type: Option<String>,  // "stream" (default) or "view"
     pub features: Vec<FeatureDefRequest>,
+    #[serde(default)]
+    pub depends_on: Option<Vec<String>>,
+    #[serde(default)]
+    pub filter: Option<String>,
     #[serde(default)]
     pub entity_ttl: Option<String>,    // e.g., "5m", "1h"
     #[serde(default)]
@@ -301,10 +306,26 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             "stream name must not be empty".into(),
         ));
     }
-    if req.key_field.is_empty() {
-        return Err(TallyError::Protocol(
-            "key_field must not be empty".into(),
-        ));
+    // Validate key_field: if present, must not be empty
+    if let Some(ref kf) = req.key_field {
+        if kf.is_empty() {
+            return Err(TallyError::Protocol(
+                "key_field must not be empty".into(),
+            ));
+        }
+    }
+    // Keyless streams cannot have windowed operators (T-07-01 mitigation)
+    if req.key_field.is_none() {
+        for f in &req.features {
+            let is_windowed = matches!(f.feature_type.as_str(),
+                "count" | "sum" | "avg" | "min" | "max" | "distinct_count" | "last");
+            if is_windowed {
+                return Err(TallyError::Protocol(format!(
+                    "keyless stream '{}' cannot have windowed operator '{}'; only derive features are allowed",
+                    req.name, f.name
+                )));
+            }
+        }
     }
 
     let mut features = Vec::with_capacity(req.features.len());
@@ -505,6 +526,11 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
         features.push((f.name, def));
     }
 
+    let filter = req.filter
+        .map(|f| crate::engine::expression::parse_expr(&f))
+        .transpose()
+        .map_err(|e| TallyError::Protocol(format!("invalid filter expression: {}", e)))?;
+
     let entity_ttl = req.entity_ttl
         .map(|s| parse_duration_str(&s))
         .transpose()?;
@@ -516,6 +542,8 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
         name: req.name,
         key_field: req.key_field,
         features,
+        depends_on: req.depends_on,
+        filter,
         entity_ttl,
         history_ttl,
     })
@@ -527,7 +555,10 @@ pub fn convert_view_register_request(req: RegisterRequest) -> Result<ViewDefinit
     if req.name.is_empty() {
         return Err(TallyError::Protocol("view name must not be empty".into()));
     }
-    if req.key_field.is_empty() {
+    let key_field = req.key_field.ok_or_else(|| {
+        TallyError::Protocol("view key_field must not be empty".into())
+    })?;
+    if key_field.is_empty() {
         return Err(TallyError::Protocol("key_field must not be empty".into()));
     }
 
@@ -588,7 +619,7 @@ pub fn convert_view_register_request(req: RegisterRequest) -> Result<ViewDefinit
 
     Ok(ViewDefinition {
         name: req.name,
-        key_field: req.key_field,
+        key_field,
         features,
     })
 }
@@ -860,7 +891,7 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
         assert_eq!(stream.name, "Transactions");
-        assert_eq!(stream.key_field, "user_id");
+        assert_eq!(stream.key_field, Some("user_id".into()));
         assert_eq!(stream.features.len(), 1);
         assert_eq!(stream.features[0].0, "tx_count_1h");
         match &stream.features[0].1 {
@@ -1063,8 +1094,10 @@ mod tests {
     fn test_register_request_unknown_feature_type_median() {
         let req = RegisterRequest {
             name: "Test".into(),
-            key_field: "id".into(),
+            key_field: Some("id".into()),
             definition_type: None,
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
             features: vec![FeatureDefRequest {
@@ -1084,8 +1117,10 @@ mod tests {
     fn test_register_request_unknown_feature_type_histogram() {
         let req = RegisterRequest {
             name: "Test".into(),
-            key_field: "id".into(),
+            key_field: Some("id".into()),
             definition_type: None,
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
             features: vec![FeatureDefRequest {
@@ -1107,8 +1142,10 @@ mod tests {
     fn test_register_request_count_missing_window() {
         let req = RegisterRequest {
             name: "Test".into(),
-            key_field: "id".into(),
+            key_field: Some("id".into()),
             definition_type: None,
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
             features: vec![FeatureDefRequest {
@@ -1128,8 +1165,10 @@ mod tests {
     fn test_register_request_sum_missing_field() {
         let req = RegisterRequest {
             name: "Test".into(),
-            key_field: "id".into(),
+            key_field: Some("id".into()),
             definition_type: None,
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
             features: vec![FeatureDefRequest {
@@ -1149,8 +1188,10 @@ mod tests {
     fn test_register_request_sum_missing_window() {
         let req = RegisterRequest {
             name: "Test".into(),
-            key_field: "id".into(),
+            key_field: Some("id".into()),
             definition_type: None,
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
             features: vec![FeatureDefRequest {
@@ -1170,8 +1211,10 @@ mod tests {
     fn test_register_request_avg_missing_field() {
         let req = RegisterRequest {
             name: "Test".into(),
-            key_field: "id".into(),
+            key_field: Some("id".into()),
             definition_type: None,
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
             features: vec![FeatureDefRequest {
@@ -1191,8 +1234,10 @@ mod tests {
     fn test_register_request_derive_missing_expr() {
         let req = RegisterRequest {
             name: "Test".into(),
-            key_field: "id".into(),
+            key_field: Some("id".into()),
             definition_type: None,
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
             features: vec![FeatureDefRequest {
@@ -1311,8 +1356,10 @@ mod tests {
     fn test_register_request_min_missing_field() {
         let req = RegisterRequest {
             name: "Test".into(),
-            key_field: "id".into(),
+            key_field: Some("id".into()),
             definition_type: None,
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
             features: vec![FeatureDefRequest {
@@ -1332,8 +1379,10 @@ mod tests {
     fn test_register_request_last_missing_field() {
         let req = RegisterRequest {
             name: "Test".into(),
-            key_field: "id".into(),
+            key_field: Some("id".into()),
             definition_type: None,
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
             features: vec![FeatureDefRequest {
@@ -1504,8 +1553,10 @@ mod tests {
     fn test_register_request_distinct_count_missing_field() {
         let req = RegisterRequest {
             name: "Test".into(),
-            key_field: "id".into(),
+            key_field: Some("id".into()),
             definition_type: None,
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
             features: vec![FeatureDefRequest {

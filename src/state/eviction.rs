@@ -103,7 +103,7 @@ mod tests {
     fn make_stream_with_window(name: &str, window_secs: u64) -> StreamDefinition {
         StreamDefinition {
             name: name.to_string(),
-            key_field: "user_id".to_string(),
+            key_field: Some("user_id".to_string()),
             features: vec![
                 ("count".to_string(), FeatureDef::Count {
                     window: Duration::from_secs(window_secs),
@@ -111,6 +111,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         }
@@ -194,7 +196,7 @@ mod tests {
     fn make_stream_with_ttl(name: &str, window_secs: u64, ttl_secs: Option<u64>) -> StreamDefinition {
         StreamDefinition {
             name: name.to_string(),
-            key_field: "user_id".to_string(),
+            key_field: Some("user_id".to_string()),
             features: vec![
                 ("count".to_string(), FeatureDef::Count {
                     window: Duration::from_secs(window_secs),
@@ -202,6 +204,8 @@ mod tests {
                     where_expr: None,
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: ttl_secs.map(|s| Duration::from_secs(s)),
             history_ttl: None,
         }
@@ -301,12 +305,14 @@ mod tests {
         // A derive-only stream has zero max window
         engine.register(StreamDefinition {
             name: "derived_only".to_string(),
-            key_field: "user_id".to_string(),
+            key_field: Some("user_id".to_string()),
             features: vec![
                 ("ratio".to_string(), FeatureDef::Derive {
                     expr: crate::engine::expression::parse_expr("1 + 1").unwrap(),
                 }),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         }).unwrap();

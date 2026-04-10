@@ -165,7 +165,7 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             // Only fan out to streams with a DIFFERENT key_field than the primary
             // stream. Streams sharing the same key_field are independent pipelines
             // and should only receive events explicitly pushed to them.
-            let primary_key_field = engine.get_stream(&stream_name).map(|s| s.key_field.as_str());
+            let primary_key_field = engine.get_stream(&stream_name).and_then(|s| s.key_field.as_deref());
             let targets = engine.fan_out_targets();
             for (target_name, target_key_field) in &targets {
                 if target_name == &stream_name {
@@ -332,7 +332,7 @@ mod tests {
     fn register_tx_stream(state: &SharedState) {
         let stream = StreamDefinition {
             name: "Transactions".into(),
-            key_field: "user_id".into(),
+            key_field: Some("user_id".into()),
             features: vec![
                 (
                     "tx_count_1h".into(),
@@ -353,6 +353,8 @@ mod tests {
                     },
                 ),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         };
@@ -650,7 +652,7 @@ mod tests {
     fn register_merchant_stream(state: &SharedState) {
         let stream = StreamDefinition {
             name: "MerchantActivity".into(),
-            key_field: "merchant_id".into(),
+            key_field: Some("merchant_id".into()),
             features: vec![
                 (
                     "merchant_tx_count_1h".into(),
@@ -661,6 +663,8 @@ mod tests {
                     },
                 ),
             ],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         };

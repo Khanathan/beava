@@ -19,7 +19,7 @@ fn ts(secs: u64) -> SystemTime {
 fn make_tx_stream() -> StreamDefinition {
     StreamDefinition {
         name: "Transactions".into(),
-        key_field: "user_id".into(),
+        key_field: Some("user_id".into()),
         features: vec![
             (
                 "tx_count_1h".into(),
@@ -40,6 +40,8 @@ fn make_tx_stream() -> StreamDefinition {
                 },
             ),
         ],
+        depends_on: None,
+        filter: None,
         entity_ttl: None,
         history_ttl: None,
     }
@@ -134,7 +136,7 @@ fn test_eviction_removes_old_entity() {
     engine
         .register(StreamDefinition {
             name: "stream1".into(),
-            key_field: "user_id".into(),
+            key_field: Some("user_id".into()),
             features: vec![(
                 "count".into(),
                 FeatureDef::Count {
@@ -143,6 +145,8 @@ fn test_eviction_removes_old_entity() {
                     where_expr: None,
                 },
             )],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         })
@@ -188,7 +192,7 @@ fn test_eviction_preserves_entity_with_no_events() {
     engine
         .register(StreamDefinition {
             name: "stream1".into(),
-            key_field: "user_id".into(),
+            key_field: Some("user_id".into()),
             features: vec![(
                 "count".into(),
                 FeatureDef::Count {
@@ -197,6 +201,8 @@ fn test_eviction_preserves_entity_with_no_events() {
                     where_expr: None,
                 },
             )],
+            depends_on: None,
+            filter: None,
             entity_ttl: None,
             history_ttl: None,
         })
