@@ -707,6 +707,26 @@ impl PipelineEngine {
             .filter_map(|s| s.key_field.as_ref().map(|kf| (s.name.clone(), kf.clone())))
             .collect()
     }
+
+    /// Return all streams downstream of the given stream (for event log and fan-out isolation).
+    /// Uses BFS through the downstream_map to find all reachable streams.
+    pub fn get_cascade_targets(&self, stream_name: &str) -> Vec<String> {
+        let mut targets = Vec::new();
+        let mut visited = AHashSet::new();
+        let mut queue = Vec::new();
+        if let Some(direct) = self.downstream_map.get(stream_name) {
+            queue.extend(direct.iter().cloned());
+        }
+        while let Some(current) = queue.pop() {
+            if visited.insert(current.clone()) {
+                targets.push(current.clone());
+                if let Some(next) = self.downstream_map.get(&current) {
+                    queue.extend(next.iter().cloned());
+                }
+            }
+        }
+        targets
+    }
 }
 
 #[cfg(test)]

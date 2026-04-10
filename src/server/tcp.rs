@@ -150,21 +150,38 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                 ..
             } = *app;
 
-            // Primary push -- returns features for this stream only
-            let features = engine.push(&stream_name, &payload, store, now)?;
+            // Cascade-aware push: handles topological cascade through depends_on chains
+            let features = engine.push_with_cascade(&stream_name, &payload, store, now)?;
             let result = feature_map_to_json(&features);
 
-            // Append raw event to event log (ELOG-01, ELOG-02, ELOG-03)
-            // BufWriter::write_all is ~100-300ns (memcpy), does not block hot path
+            // Append raw event to primary stream's event log (ELOG-01, ELOG-02, ELOG-03)
             if let Some(ref mut log) = event_log {
                 let event_bytes = serde_json::to_vec(&payload).unwrap_or_default();
                 let _ = log.append(&stream_name, &event_bytes, now);
             }
 
+            // Append event to downstream (cascade) streams' event logs (T-07-10)
+            let cascade_targets = engine.get_cascade_targets(&stream_name);
+            if let Some(ref mut log) = event_log {
+                let event_bytes = serde_json::to_vec(&payload).unwrap_or_default();
+                for ds_name in &cascade_targets {
+                    // Only log if downstream actually processed (key_field present in event)
+                    let should_log = match engine.get_stream(ds_name) {
+                        Some(d) => match &d.key_field {
+                            Some(kf) => matches!(payload.get(kf.as_str()), Some(serde_json::Value::String(s)) if !s.is_empty()),
+                            None => true, // keyless downstream always logs
+                        },
+                        None => false,
+                    };
+                    if should_log {
+                        let _ = log.append(ds_name, &event_bytes, now);
+                    }
+                }
+            }
+
             // Fan-out: push to other streams whose key_field exists in the event.
             // Only fan out to streams with a DIFFERENT key_field than the primary
-            // stream. Streams sharing the same key_field are independent pipelines
-            // and should only receive events explicitly pushed to them.
+            // stream. Streams in the cascade DAG are excluded to prevent double-processing (T-07-09).
             let primary_key_field = engine.get_stream(&stream_name).and_then(|s| s.key_field.as_deref());
             let targets = engine.fan_out_targets();
             for (target_name, target_key_field) in &targets {
@@ -173,6 +190,10 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                 }
                 if primary_key_field == Some(target_key_field.as_str()) {
                     continue; // Skip streams with the same key_field
+                }
+                // Skip streams that are cascade targets (avoid double-processing)
+                if cascade_targets.iter().any(|ct| ct == target_name) {
+                    continue;
                 }
                 // Check if event contains this stream's key_field as a non-empty string
                 if let Some(serde_json::Value::String(key_val)) = payload.get(target_key_field.as_str()) {
