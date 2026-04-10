@@ -40,6 +40,8 @@ class StreamMeta(type):
         _is_view: bool = False,
         entity_ttl: str | None = None,
         history_ttl: str | None = None,
+        depends_on: list | None = None,
+        filter: str | None = None,
     ) -> StreamMeta:
         # Collect operator descriptors from all bases (mixin support).
         # Walk bases in reverse order so later bases override earlier ones,
@@ -71,6 +73,16 @@ class StreamMeta(type):
                         f"{type(feat_op).__name__}; views only allow derive and lookup operators"
                     )
 
+        # Validate keyless stream restriction: no windowed operators allowed.
+        if not _is_view and key is None:
+            for feat_name, feat_op in features.items():
+                if not isinstance(feat_op, (Derive, Lookup)):
+                    raise TypeError(
+                        f"keyless stream '{name}' feature '{feat_name}' is a "
+                        f"{type(feat_op).__name__}; keyless streams only allow "
+                        f"derive operators (no windowed aggregations)"
+                    )
+
         cls = super().__new__(mcs, name, bases, namespace)
         cls._tally_features = features
         cls._tally_key_field = key
@@ -78,6 +90,8 @@ class StreamMeta(type):
         cls._tally_is_view = _is_view
         cls._tally_entity_ttl = entity_ttl
         cls._tally_history_ttl = history_ttl
+        cls._tally_depends_on = depends_on
+        cls._tally_filter = filter
         return cls
 
     def _to_register_json(cls) -> dict:
@@ -108,14 +122,24 @@ class StreamMeta(type):
             d["entity_ttl"] = cls._tally_entity_ttl
         if cls._tally_history_ttl is not None:
             d["history_ttl"] = cls._tally_history_ttl
+        if cls._tally_depends_on is not None:
+            # Resolve class references to string names
+            d["depends_on"] = [
+                dep._tally_stream_name if hasattr(dep, '_tally_stream_name') else str(dep)
+                for dep in cls._tally_depends_on
+            ]
+        if cls._tally_filter is not None:
+            d["filter"] = cls._tally_filter
         return d
 
 
 def stream(
     *,
-    key: str,
+    key: str | None = None,
     entity_ttl: str | None = None,
     history_ttl: str | None = None,
+    depends_on: list | None = None,
+    filter: str | None = None,
 ):
     """Decorator that creates a stream class with the given key field.
 
@@ -124,6 +148,14 @@ def stream(
         @stream(key="user_id", entity_ttl="5m", history_ttl="72h")
         class Transactions:
             tx_count = Count(window="30m")
+
+        @stream()  # keyless stream (no key)
+        class RawEvents:
+            pass
+
+        @stream(key="user_id", depends_on=[RawEvents], filter="_event.status == 'failed'")
+        class FailedTransactions:
+            failed_count = Count(window="1h")
     """
 
     def decorator(cls: type) -> StreamMeta:
@@ -138,6 +170,8 @@ def stream(
             key=key,
             entity_ttl=entity_ttl,
             history_ttl=history_ttl,
+            depends_on=depends_on,
+            filter=filter,
         )
 
     return decorator
