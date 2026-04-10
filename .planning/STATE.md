@@ -109,9 +109,15 @@ Key v1.1 architectural decisions (from research):
 - [Phase 10]: Plan 10-03: /debug endpoints follow lock-once-then-build-JSON pattern (no .await across AppState mutex); /debug/memory extended additively (original 3 fields preserved + per_stream array); axum 0.8 brace-wildcard syntax for /static/{*file}; view nodes emit depends_on:[] and participate in DAG only via lookup edges; edge kind discriminator (cascade vs lookup) gives frontend a stable style hook
 - [Phase 10]: [Phase 10]: Plan 10-05: raw TCP HTTP/1.1 over tokio::net::TcpStream for integration tests (no reqwest); random 127.0.0.1:0 ports per test; SHA256 drift tests re-hash embedded vendored bytes at test time against VENDOR.md manifest; sha2=0.10 added to dev-dependencies only
 
+### Roadmap Evolution
+
+- **2026-04-10 — Phase 10.1 Interactive Debug UI Redesign inserted after Phase 10** (URGENT). Makes topology DAG the primary Debug UI entry point with clickable nodes that drill into per-stream memory + state + entity lookup, and edges carrying live throughput numbers. Replaces flat 4-tab layout from Phase 10. Source: user request during Phase 10 Plan 10-04 smoke test. Routing confirmed via autonomous Option A.
+- **2026-04-10 — Phase 10.2 Latency Debugger inserted after Phase 10.1** (URGENT). Percentile latency tracker per TCP command (PUSH/GET/SET/MSET) with per-stream breakdown, new `/debug/latency` JSON endpoint on HTTP management port, latency visualization surface TBD in discuss (determined by Phase 10.1's interactive layout). Histogram estimator choice (t-digest vs HDR vs bucketed) requires explicit discuss-phase decision. Full cycle: discuss (required) → research → plan → execute. Source: user request mid Phase 10 Wave 1. **Ordering:** 10.2 runs after 10.1 per user decision so latency UI fits into the new interactive drill-in paradigm instead of being built against the flat 4-tab layout and discarded.
+
 ### Pending Todos
 
-- **Phase 10.1 Latency Debugger (scope addition, 2026-04-10)** — After Phase 10 verification passes and BEFORE the v1.1 milestone lifecycle (audit → complete → cleanup), insert decimal phase 10.1 for a latency debugger. Scope sketch: percentile tracker (t-digest vs HDR vs bucketed — real research decision) per TCP command (PUSH/GET/SET/MSET) with per-stream breakdown, new `/debug/latency` JSON endpoint on port 6401, fifth tab in the Debug UI with p50/p95/p99 histograms + slow-query view, Nyquist tests via raw TCP matching `tests/test_debug_ui.rs`. Invoke via `gsd-insert-phase 10.1` or `gsd-add-phase`; run full discuss → research → plan → execute cycle (do NOT skip discuss — histogram-estimator choice needs explicit decision). Source: user request mid Phase 10 Wave 1.
+- Phase 10.1 (Interactive UI Redesign) planning pending (discuss → research → plan → execute cycle).
+- Phase 10.2 (Latency Debugger) planning pending, blocked on Phase 10.1 completion.
 
 ### Blockers/Concerns
 

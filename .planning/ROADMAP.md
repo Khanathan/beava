@@ -134,3 +134,33 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10
 | 8. Backfill & Schema Evolution | v1.1 | 2/2 | Complete | 2026-04-10 |
 | 9. Incremental Snapshots | v1.1 | 2/2 | Complete   | 2026-04-10 |
 | 10. Debug UI | v1.1 | 5/5 | Complete   | 2026-04-10 |
+
+### Phase 10.1: Interactive Debug UI Redesign (INSERTED)
+**Goal**: Users can explore the running pipeline through an interactive topology DAG where nodes are clickable drill-ins showing per-stream memory profile, state, and entity lookup scoped to that stream, and edges carry live throughput numbers updated at the existing 1 Hz polling cadence
+**Depends on**: Phase 10
+**Requirements**: DBUI-06 (new -- added during discuss)
+**Success Criteria** (what must be TRUE):
+  1. User can click a node on the Topology DAG and see a per-stream drill-in panel showing that stream's current memory footprint, live state summary, and an entity lookup input scoped to that stream
+  2. User can query an entity key from within a node drill-in and see that entity's feature values for only the selected stream (not a global lookup)
+  3. User can see live per-edge throughput numbers on the DAG, refreshed from `/debug/throughput` at 1 Hz, with visual distinction between cascade and lookup edges
+  4. The flat Streams / Entity / Memory tabs from Phase 10 are either removed or demoted to a secondary navigation surface — the interactive DAG becomes the primary Debug UI entry point
+  5. Every DOM write for user-supplied strings (entity keys, feature values, stream names) continues to use `.textContent` or d3 `.text()` — zero `.innerHTML` for user data (preserved from Phase 10 XSS defense contract)
+**Plans:** 0 plans (to be planned)
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 10.1 to break down)
+
+### Phase 10.2: Latency Debugger (INSERTED)
+**Goal**: Users can observe and debug per-command latency through percentile histograms (p50/p95/p99) broken down by TCP command (PUSH/GET/SET/MSET) and stream, surfaced as a new latency view in the Debug UI (exact surface determined by Phase 10.1's interactive layout) and a `/debug/latency` JSON endpoint on the HTTP management port
+**Depends on**: Phase 10, Phase 10.1
+**Requirements**: DBUI-07 (new -- added during discuss)
+**Success Criteria** (what must be TRUE):
+  1. User can call GET /debug/latency and receive a JSON document with per-TCP-command p50/p95/p99 latencies plus per-stream breakdown
+  2. User can see live per-command latency histograms refreshing at 1 Hz somewhere in the Debug UI (as a tab, as a node drill-in panel, or as edge tooltips — decided in discuss after Phase 10.1 lands)
+  3. User can see a slow-query view listing the N slowest observed requests per command with the originating stream (if applicable)
+  4. Latency tracking adds no measurable overhead to the PUSH hot path (p99 remains under 100us per existing Phase 6 budget)
+  5. The estimator is memory-bounded per stream regardless of request rate (explicit choice between t-digest, HDR histogram, or bucketed histogram made during discuss)
+**Plans:** 0 plans (to be planned)
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 10.2 to break down)
