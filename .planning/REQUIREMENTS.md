@@ -41,7 +41,7 @@ Requirements for milestone v1.1: Composable Pipeline & Event Log.
 ### Debug UI
 
 - [ ] **DBUI-01**: User can view stream topology DAG in a web UI served from the existing HTTP port
-- [ ] **DBUI-02**: User can see real-time throughput (messages/sec) per stream
+- [x] **DBUI-02**: User can see real-time throughput (messages/sec) per stream
 - [ ] **DBUI-03**: User can inspect current feature values for any entity key
 - [ ] **DBUI-04**: User can see memory usage breakdown (per stream, total)
 - [ ] **DBUI-05**: Debug UI is embedded in the binary (no separate process or npm build)
@@ -102,7 +102,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | OPS-03 | Phase 9 | Complete |
 | OPS-04 | Phase 9 | Complete |
 | DBUI-01 | Phase 10 | Pending |
-| DBUI-02 | Phase 10 | Pending |
+| DBUI-02 | Phase 10 | Complete |
 | DBUI-03 | Phase 10 | Pending |
 | DBUI-04 | Phase 10 | Pending |
 | DBUI-05 | Phase 10 | Pending |

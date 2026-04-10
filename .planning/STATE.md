@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
 status: executing
-stopped_at: Completed 09-02-PLAN.md (incremental snapshot wiring)
-last_updated: "2026-04-10T06:57:49.574Z"
-last_activity: 2026-04-10 -- Phase 10 execution started
+stopped_at: Completed 10-02-PLAN.md (ThroughputTracker + Push arm instrumentation)
+last_updated: "2026-04-10T12:45:02.628Z"
+last_activity: 2026-04-10
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 17
-  completed_plans: 12
-  percent: 71
+  completed_plans: 14
+  percent: 82
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 ## Current Position
 
 Phase: 10 (Debug UI) — EXECUTING
-Plan: 1 of 5
-Status: Executing Phase 10
-Last activity: 2026-04-10 -- Phase 10 execution started
+Plan: 3 of 5
+Status: Ready to execute
+Last activity: 2026-04-10
 
 Progress: [..........] 0%
 
@@ -61,6 +61,7 @@ Progress: [..........] 0%
 | Phase 08 P02 | 11min | 2 tasks | 6 files |
 | Phase 09 P01 | 6min | 2 tasks | 2 files |
 | Phase 09 P02 | 110m | 2 tasks | 6 files |
+| Phase 10 P02 | 10min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -102,6 +103,7 @@ Key v1.1 architectural decisions (from research):
 - [Phase 09]: Delta-rot skip: snapshot ticks with no dirty/deleted keys write no file but still advance cycle counter
 - [Phase 09]: cleanup_old_snapshots runs only after successful base write so deltas are never deleted before their owning base exists
 - [Phase 09]: Eviction restructured to two-phase (collect plan, then apply) to allow mark_deleted without borrow checker conflict
+- [Phase 10]: [Phase 10]: ThroughputTracker uses lock-once instrumentation inside existing AppState mutex (RESEARCH Pattern 3 option A) — zero new contention on single-threaded core; bump_unique with HashSet dedup is the canonical Push-arm call site to prevent double-counting across primary/cascade/fan-out overlap (RESEARCH Pitfall 4)
 
 ### Pending Todos
 
@@ -120,6 +122,6 @@ Key v1.1 architectural decisions (from research):
 
 ## Session Continuity
 
-Last session: 2026-04-10T04:18:29.706Z
-Stopped at: Completed 09-02-PLAN.md (incremental snapshot wiring)
+Last session: 2026-04-10T12:44:51.136Z
+Stopped at: Completed 10-02-PLAN.md (ThroughputTracker + Push arm instrumentation)
 Resume: `/gsd-plan-phase 6`
