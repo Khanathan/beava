@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::engine::pipeline::PipelineEngine;
 use crate::error::TallyError;
 use crate::server::protocol::{self, Command, STATUS_ERROR, STATUS_OK};
+use crate::server::throughput::ThroughputTracker;
 use crate::state::event_log::{EventLog, LogEntry};
 use crate::state::store::StateStore;
 use crate::types::{feature_map_to_json, FeatureValue};
@@ -78,6 +79,11 @@ pub struct AppState {
     /// keep the previous base on disk as a fallback in case the new base
     /// turns out to be unreadable on startup.
     pub previous_base_seq: u64,
+    /// Phase 10 DBUI-02: per-stream EWMA throughput tracker. Updated once per
+    /// unique stream per successful PUSH (primary + cascade + fan-out with
+    /// HashSet dedup -- see handle_sync_command Push arm). Read by the
+    /// /debug/throughput handler in src/server/http.rs.
+    pub throughput: ThroughputTracker,
 }
 
 /// Shared state handle for concurrent connection handlers.
@@ -277,6 +283,55 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                         }
                     }
                 }
+            }
+
+            // DBUI-02: record throughput for primary + cascade + fan-out targets.
+            // One bump per UNIQUE stream touched by this push. See
+            // src/server/throughput.rs and RESEARCH §Pitfall 4 for why dedup
+            // matters: cascade_targets and fan-out can overlap with the
+            // primary and (in pathological pipelines) with each other.
+            //
+            // The destructured `engine`/`store`/`event_log` references from
+            // the top of this arm are no longer used past this point, but we
+            // re-borrow `app.engine` immutably here to re-derive the skip
+            // decisions. `app.throughput` is the only `&mut` borrow of `app`
+            // in this block, so no conflict with the earlier destructure.
+            {
+                let now_inst = std::time::Instant::now();
+                // Re-derive the same fan-out targets that were actually pushed
+                // above so we bump exactly the streams whose state changed.
+                let primary_key_field_for_tp = app
+                    .engine
+                    .get_stream(&stream_name)
+                    .and_then(|s| s.key_field.clone());
+                let tp_targets_all = app.engine.fan_out_targets();
+                let mut touched: Vec<&str> =
+                    Vec::with_capacity(1 + cascade_targets.len() + tp_targets_all.len());
+                touched.push(stream_name.as_str());
+                for ds in &cascade_targets {
+                    touched.push(ds.as_str());
+                }
+                for (target_name, target_key_field) in &tp_targets_all {
+                    if target_name == &stream_name {
+                        continue;
+                    }
+                    if primary_key_field_for_tp.as_deref() == Some(target_key_field.as_str()) {
+                        continue;
+                    }
+                    if cascade_targets.iter().any(|ct| ct == target_name) {
+                        continue;
+                    }
+                    // Skip if the event did not contain a non-empty key for this target.
+                    let key_present = matches!(
+                        payload.get(target_key_field.as_str()),
+                        Some(serde_json::Value::String(s)) if !s.is_empty()
+                    );
+                    if !key_present {
+                        continue;
+                    }
+                    touched.push(target_name.as_str());
+                }
+                app.throughput.bump_unique(touched.into_iter(), now_inst);
             }
 
             let push_elapsed = push_start.elapsed();
@@ -545,6 +600,7 @@ mod tests {
             snapshot_seq: 1,
             last_base_seq: 0,
             previous_base_seq: 0,
+            throughput: ThroughputTracker::new(),
         }))
     }
 

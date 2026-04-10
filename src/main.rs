@@ -62,6 +62,7 @@ async fn main() {
         snapshot_seq: 1,
         last_base_seq: 0,
         previous_base_seq: 0,
+        throughput: tally::server::throughput::ThroughputTracker::new(),
     }));
 
     // Phase 9: how often to write a full base snapshot. Every Nth cycle is a
