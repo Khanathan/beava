@@ -68,7 +68,7 @@ Plans:
 Plans:
 - [x] 07-01-PLAN.md — Rust type changes: keyless streams, depends_on, filter, petgraph dependency
 - [x] 07-02-PLAN.md — Python SDK: optional key, depends_on, filter on @st.stream()
-- [ ] 07-03-PLAN.md — DAG construction with petgraph, cascade execution, cycle detection
+- [x] 07-03-PLAN.md — DAG construction with petgraph, cascade execution, cycle detection
 - [ ] 07-04-PLAN.md — TCP handler cascade integration + E2E tests
 
 ### Phase 8: Backfill & Schema Evolution

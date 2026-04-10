@@ -11,8 +11,8 @@ Requirements for milestone v1.1: Composable Pipeline & Event Log.
 
 - [x] **PIPE-01**: User can define a keyless stream that ingests raw events without aggregation
 - [x] **PIPE-02**: User can define a keyed stream with explicit `depends_on` declaring upstream stream dependencies
-- [ ] **PIPE-03**: Events pushed to any stream automatically cascade through all dependent streams in topological order
-- [ ] **PIPE-04**: Circular dependencies are detected and rejected at registration time
+- [x] **PIPE-03**: Events pushed to any stream automatically cascade through all dependent streams in topological order
+- [x] **PIPE-04**: Circular dependencies are detected and rejected at registration time
 - [x] **PIPE-05**: Dependent streams receive null/missing for upstream values not yet available (LEFT JOIN semantics)
 
 ### Event Log
@@ -84,8 +84,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 |-------------|-------|--------|
 | PIPE-01 | Phase 7 | Complete |
 | PIPE-02 | Phase 7 | Complete |
-| PIPE-03 | Phase 7 | Pending |
-| PIPE-04 | Phase 7 | Pending |
+| PIPE-03 | Phase 7 | Complete |
+| PIPE-04 | Phase 7 | Complete |
 | PIPE-05 | Phase 7 | Complete |
 | ELOG-01 | Phase 6 | Complete |
 | ELOG-02 | Phase 6 | Complete |
