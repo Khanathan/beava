@@ -1,0 +1,53 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-04-10T06:02:47.641Z",
+  "phase": "10",
+  "phase_name": "Debug UI",
+  "phase_dir": ".planning/phases/10-debug-ui",
+  "plan": null,
+  "task": null,
+  "total_tasks": null,
+  "status": "paused",
+  "milestone": "v1.1",
+  "milestone_name": "Composable Pipeline & Event Log",
+  "milestone_progress": "4/5 phases complete (6, 7, 8, 9 done; 10 in progress)",
+  "workflow_stage": "plan_phase_after_research",
+  "completed_tasks": [
+    {"id": "discuss", "name": "Phase 10 smart discuss → CONTEXT.md", "status": "done", "commit": "2448010"},
+    {"id": "ui-spec-initial", "name": "UI-SPEC.md initial draft", "status": "done", "commit": "0e1920e"},
+    {"id": "ui-spec-revision", "name": "UI-SPEC.md revision (typography + spacing fixes)", "status": "done", "commit": "cc01d88"},
+    {"id": "ui-spec-approval", "name": "UI-SPEC.md frontmatter approved 6/6 dimensions", "status": "done", "commit": "5d87f60"},
+    {"id": "research", "name": "Phase 10 RESEARCH.md (HIGH confidence, 9 pitfalls, 17 tests, validation architecture)", "status": "done", "commit": null}
+  ],
+  "remaining_tasks": [
+    {"id": "validation-md", "name": "Generate VALIDATION.md from RESEARCH.md §Validation Architecture (template at $HOME/.claude/get-shit-done/templates/VALIDATION.md)", "status": "not_started"},
+    {"id": "plan", "name": "Spawn gsd-planner to produce PLAN.md files for Phase 10 (must cover DBUI-01 through DBUI-05)", "status": "not_started"},
+    {"id": "plan-check", "name": "Spawn gsd-plan-checker to verify plans (revision loop max 3 iterations)", "status": "not_started"},
+    {"id": "requirements-coverage", "name": "Verify DBUI-01..05 all covered in plan frontmatter", "status": "not_started"},
+    {"id": "execute", "name": "Execute phase: gsd-execute-phase 10 --no-transition (waves of plans with atomic commits)", "status": "not_started"},
+    {"id": "code-review", "name": "gsd-code-review + gsd-code-review-fix --auto chain", "status": "not_started"},
+    {"id": "post-exec-routing", "name": "Read VERIFICATION.md status and route (passed/human_needed/gaps_found)", "status": "not_started"},
+    {"id": "ui-review", "name": "gsd-ui-review for Phase 10 (advisory, non-blocking)", "status": "not_started"},
+    {"id": "audit-milestone", "name": "gsd-audit-milestone for v1.1", "status": "not_started"},
+    {"id": "complete-milestone", "name": "gsd-complete-milestone v1.1", "status": "not_started"},
+    {"id": "cleanup", "name": "gsd-cleanup to archive Phase 6-10 directories", "status": "not_started"}
+  ],
+  "blockers": [],
+  "human_actions_pending": [],
+  "decisions": [
+    {"decision": "Frontend stack: htmx + vanilla JS + vendored dagre-d3, zero build, rust-embed", "rationale": "DBUI-05 requires single-binary, no npm, no external files. rust-embed 8.11 with mime-guess + debug-embed feature is the canonical axum path.", "phase": "10"},
+    {"decision": "Vendor directory is src/server/ui/ (CONTEXT.md) NOT src/server/static/ (UI-SPEC.md §11)", "rationale": "CONTEXT outranks UI-SPEC when they disagree. Researcher flagged this in Open Question 3.", "phase": "10"},
+    {"decision": "Two new HTTP endpoints: GET /debug/topology (DAG) and GET /debug/throughput (EWMA per stream)", "rationale": "petgraph DAG and per-stream state already exist; only need JSON handlers + EWMA counters in AppState.", "phase": "10"},
+    {"decision": "Extend /debug/memory additively (add per_stream array) rather than add new endpoint", "rationale": "Existing endpoint is a rollup; UI-SPEC §7.4 needs per-stream bars. Researcher recommendation.", "phase": "10"},
+    {"decision": "1 Hz client polling, no SSE/WebSocket", "rationale": "Matches existing stateless HTTP surface, keeps debug UI simple.", "phase": "10"},
+    {"decision": "Dark-only theme, 4-size type scale (12/14/20/24), 6-token spacing scale (4/8/16/24/32/48). 12px spacing and 16px typography tokens explicitly prohibited.", "rationale": "UI-SPEC checker BLOCKED original spec with 5 font sizes and 12px token; revision fixed both. Final contract passes all 6 dimensions.", "phase": "10"},
+    {"decision": "Integration tests use raw TCP (matches tests/test_server.rs pattern), not reqwest", "rationale": "Zero-dep ethos, consistent with existing test patterns.", "phase": "10"}
+  ],
+  "uncommitted_files": [
+    ".planning/phases/10-debug-ui/10-RESEARCH.md",
+    "LOGO_PROMPT.md (unrelated, pre-existing)",
+    "TODOS.md (unrelated, pre-existing)"
+  ],
+  "next_action": "Resume with /gsd-autonomous --from 10 in a fresh session. Autonomous workflow will detect existing CONTEXT.md + UI-SPEC.md + RESEARCH.md and pick up at the planner step (commit RESEARCH.md first, then generate VALIDATION.md, then gsd-planner, then gsd-plan-checker, then execute).",
+  "context_notes": "Phase 10 is the last phase of v1.1. Everything pre-plan is done: stack decisions locked in CONTEXT.md, visual/interaction contract locked in approved UI-SPEC.md, technical approach mapped in RESEARCH.md with 9 pitfalls and 17 tests. The planner has a HIGH-confidence blueprint to work from. The ONE flagged risk is dagre-d3 0.6.4 (maintenance mode, last release 2020) paired with d3 v7 — browser smoke test required at vendor time. After Phase 10 ships, the milestone lifecycle (audit → complete → cleanup) runs automatically since /gsd-autonomous handles it. Pause reason: main-context usage hit 90% after the research step; planner call would have exceeded the remaining budget."
+}
