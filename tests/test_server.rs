@@ -12,13 +12,14 @@
 //! SRV-07: REGISTER with multiple feature types, PUSH returns computed features
 //! SRV-08: HTTP /health endpoint
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use tally::engine::pipeline::PipelineEngine;
 use tally::server::protocol::{self, OP_GET, OP_MSET, OP_PUSH, OP_REGISTER, OP_SET, STATUS_ERROR, STATUS_OK};
-use tally::server::tcp::{AppState, Metrics, SharedState};
+use tally::server::tcp::{AppState, BackfillTracker, Metrics, SharedState};
 use tally::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
@@ -33,6 +34,13 @@ async fn start_test_server() -> (u16, u16, SharedState) {
         metrics: Metrics::default(),
         snapshot_path: std::path::PathBuf::from("test.snapshot"),
         event_log: None,
+        backfill_tracker: Arc::new(BackfillTracker::default()),
+        backfill_complete: HashSet::new(),
+        snapshot_cycle: 0,
+        snapshot_seq: 1,
+        last_base_seq: 0,
+        previous_base_seq: 0,
+        throughput: tally::server::throughput::ThroughputTracker::new(),
     }));
 
     // Bind to port 0 for random assignment

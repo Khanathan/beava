@@ -27,6 +27,7 @@ fn make_tx_stream() -> StreamDefinition {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
+                    backfill: false,
                 },
             ),
             (
@@ -37,6 +38,7 @@ fn make_tx_stream() -> StreamDefinition {
                     bucket: Duration::from_secs(60),
                     optional: false,
                     where_expr: None,
+                    backfill: false,
                 },
             ),
         ],
@@ -75,6 +77,7 @@ fn test_snapshot_roundtrip_preserves_features() {
             key_field: "user_id".into(),
             raw_register_json: r#"{"name":"Transactions","key_field":"user_id","features":[{"name":"tx_count_1h","type":"count","window":"1h"},{"name":"tx_sum_1h","type":"sum","field":"amount","window":"1h"}]}"#.to_string(),
         }],
+        backfill_complete: vec![],
     };
 
     // Save and load
@@ -103,6 +106,7 @@ fn test_snapshot_version_mismatch_returns_none() {
     let snapshot = SnapshotState {
         entities: vec![],
         pipelines: vec![],
+        backfill_complete: vec![],
     };
     let mut bytes = save_snapshot(&snapshot).expect("save_snapshot should succeed");
     // Mutate version byte to invalid value
@@ -143,6 +147,7 @@ fn test_eviction_removes_old_entity() {
                     window: Duration::from_secs(1800), // 30m window
                     bucket: Duration::from_secs(60),
                     where_expr: None,
+                    backfill: false,
                 },
             )],
             depends_on: None,
@@ -199,6 +204,7 @@ fn test_eviction_preserves_entity_with_no_events() {
                     window: Duration::from_secs(1800),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
+                    backfill: false,
                 },
             )],
             depends_on: None,
@@ -232,6 +238,7 @@ fn test_snapshot_atomic_write() {
     let snapshot = SnapshotState {
         entities: vec![],
         pipelines: vec![],
+        backfill_complete: vec![],
     };
     let bytes = save_snapshot(&snapshot).expect("save_snapshot should succeed");
 
