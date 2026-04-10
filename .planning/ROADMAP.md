@@ -145,10 +145,11 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10
   3. User can see live per-edge throughput numbers on the DAG, refreshed from `/debug/throughput` at 1 Hz, with visual distinction between cascade and lookup edges
   4. The flat Streams / Entity / Memory tabs from Phase 10 are either removed or demoted to a secondary navigation surface — the interactive DAG becomes the primary Debug UI entry point
   5. Every DOM write for user-supplied strings (entity keys, feature values, stream names) continues to use `.textContent` or d3 `.text()` — zero `.innerHTML` for user data (preserved from Phase 10 XSS defense contract)
-**Plans:** 0 plans (to be planned)
-
+**Plans:** 3 plans
 Plans:
-- [ ] TBD (run /gsd-plan-phase 10.1 to break down)
+- [ ] 10.1-01-PLAN.md — Backend /debug/topology additive `operators` field (pass-through from raw_register_jsons) + 3 operator shape tests
+- [ ] 10.1-02-PLAN.md — Frontend shell rewrite (index.html + app.css) — split-view layout, delete tab bar, inherit Phase 10 tokens verbatim + 2 shell structure tests
+- [ ] 10.1-03-PLAN.md — Frontend behavior rewrite (app.js) — click-to-select drill-in panel, render-once dagre DAG, 1 Hz edge label updater, pause gate, stream-scoped entity lookup + browser smoke checkpoint
 
 ### Phase 10.2: Latency Debugger (INSERTED)
 **Goal**: Users can observe and debug per-command latency through percentile histograms (p50/p95/p99) broken down by TCP command (PUSH/GET/SET/MSET) and stream, surfaced as a new latency view in the Debug UI (exact surface determined by Phase 10.1's interactive layout) and a `/debug/latency` JSON endpoint on the HTTP management port
