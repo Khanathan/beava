@@ -31,12 +31,14 @@ class Count(OperatorBase):
         window: Duration string (e.g. "30m", "1h", "24h"). Required.
         where: Optional filter expression (e.g. "status == 'failed'").
         bucket: Optional bucket granularity (e.g. "1m").
+        backfill: If True, replay from event log on registration.
     """
 
-    def __init__(self, *, window: str, where: str | None = None, bucket: str | None = None) -> None:
+    def __init__(self, *, window: str, where: str | None = None, bucket: str | None = None, backfill: bool = False) -> None:
         self.window = window
         self.where_clause = where
         self.bucket = bucket
+        self.backfill = backfill
 
     def to_json(self, name: str) -> dict:
         d: dict = {"name": name, "type": "count", "window": self.window}
@@ -44,6 +46,8 @@ class Count(OperatorBase):
             d["where"] = self.where_clause
         if self.bucket is not None:
             d["bucket"] = self.bucket
+        if self.backfill:
+            d["backfill"] = True
         return d
 
 
@@ -55,13 +59,15 @@ class Sum(OperatorBase):
         window: Duration string. Required.
         optional: If True, missing field values are skipped instead of erroring.
         bucket: Optional bucket granularity.
+        backfill: If True, replay from event log on registration.
     """
 
-    def __init__(self, field: str, *, window: str, optional: bool = False, bucket: str | None = None) -> None:
+    def __init__(self, field: str, *, window: str, optional: bool = False, bucket: str | None = None, backfill: bool = False) -> None:
         self.field = field
         self.window = window
         self.optional = optional
         self.bucket = bucket
+        self.backfill = backfill
 
     def to_json(self, name: str) -> dict:
         d: dict = {"name": name, "type": "sum", "field": self.field, "window": self.window}
@@ -69,6 +75,8 @@ class Sum(OperatorBase):
             d["optional"] = True
         if self.bucket is not None:
             d["bucket"] = self.bucket
+        if self.backfill:
+            d["backfill"] = True
         return d
 
 
@@ -80,13 +88,15 @@ class Avg(OperatorBase):
         window: Duration string. Required.
         optional: If True, missing field values are skipped.
         bucket: Optional bucket granularity.
+        backfill: If True, replay from event log on registration.
     """
 
-    def __init__(self, field: str, *, window: str, optional: bool = False, bucket: str | None = None) -> None:
+    def __init__(self, field: str, *, window: str, optional: bool = False, bucket: str | None = None, backfill: bool = False) -> None:
         self.field = field
         self.window = window
         self.optional = optional
         self.bucket = bucket
+        self.backfill = backfill
 
     def to_json(self, name: str) -> dict:
         d: dict = {"name": name, "type": "avg", "field": self.field, "window": self.window}
@@ -94,6 +104,8 @@ class Avg(OperatorBase):
             d["optional"] = True
         if self.bucket is not None:
             d["bucket"] = self.bucket
+        if self.backfill:
+            d["backfill"] = True
         return d
 
 
@@ -104,17 +116,21 @@ class Min(OperatorBase):
         field: Name of the event field. Required (positional).
         window: Duration string. Required.
         bucket: Optional bucket granularity.
+        backfill: If True, replay from event log on registration.
     """
 
-    def __init__(self, field: str, *, window: str, bucket: str | None = None) -> None:
+    def __init__(self, field: str, *, window: str, bucket: str | None = None, backfill: bool = False) -> None:
         self.field = field
         self.window = window
         self.bucket = bucket
+        self.backfill = backfill
 
     def to_json(self, name: str) -> dict:
         d: dict = {"name": name, "type": "min", "field": self.field, "window": self.window}
         if self.bucket is not None:
             d["bucket"] = self.bucket
+        if self.backfill:
+            d["backfill"] = True
         return d
 
 
@@ -125,17 +141,21 @@ class Max(OperatorBase):
         field: Name of the event field. Required (positional).
         window: Duration string. Required.
         bucket: Optional bucket granularity.
+        backfill: If True, replay from event log on registration.
     """
 
-    def __init__(self, field: str, *, window: str, bucket: str | None = None) -> None:
+    def __init__(self, field: str, *, window: str, bucket: str | None = None, backfill: bool = False) -> None:
         self.field = field
         self.window = window
         self.bucket = bucket
+        self.backfill = backfill
 
     def to_json(self, name: str) -> dict:
         d: dict = {"name": name, "type": "max", "field": self.field, "window": self.window}
         if self.bucket is not None:
             d["bucket"] = self.bucket
+        if self.backfill:
+            d["backfill"] = True
         return d
 
 
@@ -146,17 +166,21 @@ class DistinctCount(OperatorBase):
         field: Name of the event field. Required (positional).
         window: Duration string. Required.
         bucket: Optional bucket granularity.
+        backfill: If True, replay from event log on registration.
     """
 
-    def __init__(self, field: str, *, window: str, bucket: str | None = None) -> None:
+    def __init__(self, field: str, *, window: str, bucket: str | None = None, backfill: bool = False) -> None:
         self.field = field
         self.window = window
         self.bucket = bucket
+        self.backfill = backfill
 
     def to_json(self, name: str) -> dict:
         d: dict = {"name": name, "type": "distinct_count", "field": self.field, "window": self.window}
         if self.bucket is not None:
             d["bucket"] = self.bucket
+        if self.backfill:
+            d["backfill"] = True
         return d
 
 
@@ -165,13 +189,18 @@ class Last(OperatorBase):
 
     Args:
         field: Name of the event field. Required (positional).
+        backfill: If True, replay from event log on registration.
     """
 
-    def __init__(self, field: str) -> None:
+    def __init__(self, field: str, *, backfill: bool = False) -> None:
         self.field = field
+        self.backfill = backfill
 
     def to_json(self, name: str) -> dict:
-        return {"name": name, "type": "last", "field": self.field}
+        d: dict = {"name": name, "type": "last", "field": self.field}
+        if self.backfill:
+            d["backfill"] = True
+        return d
 
 
 class Derive(OperatorBase):

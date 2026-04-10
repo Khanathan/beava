@@ -345,3 +345,61 @@ class TestLookup:
     def test_missing_on_raises(self) -> None:
         with pytest.raises(TypeError):
             Lookup("MerchantActivity.chargeback_count_24h")  # type: ignore[call-arg]
+
+
+# -----------------------------------------------------------------------
+# Backfill kwarg tests (SCHM-01/02)
+# -----------------------------------------------------------------------
+
+
+class TestBackfill:
+    def test_count_backfill_default_false(self) -> None:
+        """Count with default backfill should NOT include backfill key in JSON."""
+        result = Count(window="1h").to_json("c")
+        assert "backfill" not in result
+
+    def test_count_backfill_true(self) -> None:
+        """Count with backfill=True should include backfill: True in JSON."""
+        result = Count(window="1h", backfill=True).to_json("c")
+        assert result["backfill"] is True
+
+    def test_sum_backfill_true(self) -> None:
+        result = Sum("amount", window="1h", backfill=True).to_json("s")
+        assert result["backfill"] is True
+
+    def test_avg_backfill_true(self) -> None:
+        result = Avg("amount", window="1h", backfill=True).to_json("a")
+        assert result["backfill"] is True
+
+    def test_min_backfill_true(self) -> None:
+        result = Min("amount", window="1h", backfill=True).to_json("m")
+        assert result["backfill"] is True
+
+    def test_max_backfill_true(self) -> None:
+        result = Max("amount", window="1h", backfill=True).to_json("m")
+        assert result["backfill"] is True
+
+    def test_distinct_count_backfill_true(self) -> None:
+        result = DistinctCount("mid", window="1h", backfill=True).to_json("dc")
+        assert result["backfill"] is True
+
+    def test_last_backfill_true(self) -> None:
+        result = Last("country", backfill=True).to_json("l")
+        assert result["backfill"] is True
+
+    def test_derive_no_backfill(self) -> None:
+        """Derive does not have a backfill attribute."""
+        d = Derive("a + b")
+        assert not hasattr(d, "backfill")
+        result = d.to_json("d")
+        assert "backfill" not in result
+
+    def test_sum_backfill_false_excluded(self) -> None:
+        """backfill=False (default) should not appear in JSON."""
+        result = Sum("amount", window="1h", backfill=False).to_json("s")
+        assert "backfill" not in result
+
+    def test_last_backfill_false_excluded(self) -> None:
+        """backfill=False (default) should not appear in JSON."""
+        result = Last("country", backfill=False).to_json("l")
+        assert "backfill" not in result

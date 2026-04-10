@@ -253,7 +253,7 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                 Ok(vec![])
             } else {
                 let stream_def = protocol::convert_register_request(req)?;
-                let _diff = app.engine.register(stream_def)?;
+                let diff = app.engine.register(stream_def)?;
                 // Register stream with event log for persistence
                 let history_ttl = app.engine.get_stream(&def_name)
                     .and_then(|s| s.history_ttl);
@@ -261,7 +261,14 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                     let _ = log.register_stream(&def_name, history_ttl);
                 }
                 app.engine.store_raw_register_json(&def_name, raw_json);
-                Ok(vec![])
+                // Return diff JSON summary (SCHM-01/02)
+                let diff_json = serde_json::json!({
+                    "status": "ok",
+                    "added": diff.added,
+                    "removed": diff.removed,
+                    "backfilling": diff.backfilling,
+                });
+                Ok(serde_json::to_vec(&diff_json).unwrap())
             }
         }
         Command::Mget { keys } => {
@@ -529,7 +536,13 @@ mod tests {
         };
         let result = handle_sync_command(cmd, &state);
         assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
+        // REGISTER now returns diff JSON for streams (SCHM-01/02)
+        let response_bytes = result.unwrap();
+        assert!(!response_bytes.is_empty());
+        let diff_json: serde_json::Value = serde_json::from_slice(&response_bytes).unwrap();
+        assert_eq!(diff_json["status"], "ok");
+        assert!(diff_json["added"].as_array().unwrap().contains(&serde_json::json!("login_count_1h")));
+        assert!(diff_json["removed"].as_array().unwrap().is_empty());
 
         let app = state.lock().unwrap();
         assert_eq!(app.engine.stream_count(), 1);
