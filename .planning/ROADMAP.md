@@ -66,7 +66,7 @@ Plans:
   4. Downstream streams that depend on upstream values not yet computed receive null/missing values (LEFT JOIN semantics) rather than errors
 **Plans:** 4 plans
 Plans:
-- [ ] 07-01-PLAN.md — Rust type changes: keyless streams, depends_on, filter, petgraph dependency
+- [x] 07-01-PLAN.md — Rust type changes: keyless streams, depends_on, filter, petgraph dependency
 - [ ] 07-02-PLAN.md — Python SDK: optional key, depends_on, filter on @st.stream()
 - [ ] 07-03-PLAN.md — DAG construction with petgraph, cascade execution, cycle detection
 - [ ] 07-04-PLAN.md — TCP handler cascade integration + E2E tests

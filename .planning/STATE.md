@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
-status: verifying
-stopped_at: Completed 06-04-PLAN.md
-last_updated: "2026-04-09T23:57:18.893Z"
-last_activity: 2026-04-09
+status: executing
+stopped_at: Completed 07-01-PLAN.md
+last_updated: "2026-04-10T01:41:41.180Z"
+last_activity: 2026-04-10
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 4
-  completed_plans: 4
-  percent: 100
+  total_plans: 8
+  completed_plans: 5
+  percent: 63
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Events go in, features come out -- synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
-**Current focus:** Phase 6 — Foundation
+**Current focus:** Phase 7 — Composable Pipeline
 
 ## Current Position
 
-Phase: 6 (Foundation) — EXECUTING
-Plan: 4 of 4
-Status: Phase complete — ready for verification
-Last activity: 2026-04-09
+Phase: 7 (Composable Pipeline) — EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
+Last activity: 2026-04-10
 
 Progress: [..........] 0%
 
@@ -36,7 +36,7 @@ Progress: [..........] 0%
 
 **Velocity:**
 
-- Total plans completed: 19 (v1.0)
+- Total plans completed: 23 (v1.0)
 - Total phases completed: 5 (v1.0)
 - Total tasks completed: 36 (v1.0)
 
@@ -53,6 +53,7 @@ Progress: [..........] 0%
 | Phase 06 P02 | 9min | 2 tasks | 7 files |
 | Phase 06 P03 | 5min | 2 tasks | 6 files |
 | Phase 06 P04 | 3min | 2 tasks | 7 files |
+| Phase 07 P01 | 10min | 2 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -77,6 +78,8 @@ Key v1.1 architectural decisions (from research):
 - [Phase 06]: encode_mget uses simple [u32 count][u16-string key]... format matching Rust MGET handler
 - [Phase 06]: TTL fields conditionally omitted from RegisterRequest JSON when None for backward compatibility
 - [Phase 06]: Views reject entity_ttl/history_ttl at StreamMeta.__new__ level for consistent validation
+- [Phase 07]: key_field changed to Option<String> -- None = keyless stream, Some = keyed; keyless streams reject windowed operators
+- [Phase 07]: Stream-level filter evaluated early in push() before key extraction -- filtered events skip all processing
 
 ### Pending Todos
 
@@ -95,6 +98,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-09T23:57:18.891Z
-Stopped at: Completed 06-04-PLAN.md
+Last session: 2026-04-10T01:41:41.178Z
+Stopped at: Completed 07-01-PLAN.md
 Resume: `/gsd-plan-phase 6`
