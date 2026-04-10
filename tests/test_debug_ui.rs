@@ -740,3 +740,48 @@ async fn static_unknown_returns_404() {
     let (status, _headers, _body) = http_get(port, "/static/does-not-exist.css").await;
     assert_eq!(status, 404, "expected 404 for unknown static asset");
 }
+
+// ===========================================================================
+// Phase 10 review WR-03: XSS sink regression test for app.js
+// ===========================================================================
+//
+// Every entity-key DOM write in app.js goes through `.textContent` (or the
+// default dagre-d3 `labelType: 'text'` which emits an escaped <text> SVG
+// element). The XSS threat model (T-10-02) requires that no user-supplied
+// string reach an HTML-parsing sink. This test greps the served app.js bytes
+// for the forbidden sink substrings so that a future refactor which flips a
+// `.textContent` assignment over to `.innerHTML` fails `cargo test` instead
+// of silently regressing.
+//
+// This is a source-level check, not a rendered-DOM check — it complements,
+// does not replace, the planned Phase 10.2 headless-browser smoke test.
+// Vendor bundles are intentionally NOT scanned: htmx, d3, and dagre-d3 all
+// legitimately contain these substrings inside their library internals.
+
+#[tokio::test(flavor = "current_thread")]
+async fn app_js_has_no_innerhtml_or_eval_sinks() {
+    let (port, _state) = start_debug_ui_server().await;
+    let (status, _headers, body) = http_get(port, "/static/app.js").await;
+    assert_eq!(status, 200, "expected 200 for /static/app.js");
+    let text = String::from_utf8(body).expect("app.js is utf-8");
+
+    // These are the sinks forbidden by Plan 10-04's XSS contract. Any match
+    // indicates a regression — a user-supplied string is being written into
+    // the DOM via an HTML-parsing sink instead of `.textContent`.
+    for forbidden in &[
+        ".innerHTML",
+        ".outerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+        "eval(",
+        "new Function(",
+        "labelType: 'html'",
+        "labelType:\"html\"",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "forbidden XSS sink {:?} found in app.js — Phase 10 review WR-03",
+            forbidden
+        );
+    }
+}
