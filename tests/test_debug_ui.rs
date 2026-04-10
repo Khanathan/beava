@@ -782,6 +782,203 @@ async fn entity_lookup_reuses_existing_endpoint() {
 }
 
 // ===========================================================================
+// CR-01 regression guard (Phase 10.1 review)
+//
+// The client-side entity lookup filter in src/server/ui/app.js was originally
+// written as if /debug/key/{key} returned feature names in dotted
+// `StreamName.feature_name` form, but the authoritative server emits FLAT
+// names (see `StateStore::get_all_features`, src/state/store.rs). That
+// mismatch broke the filter: the dotted-name split unconditionally hit the
+// `continue` branch and every entity lookup reported "No features for {key}".
+//
+// The CR-01 fix in app.js reworks the filter to build an allow-list from the
+// selected topology node's `features` array and match against the flat keys.
+// This test pins down every part of that contract so the regression cannot
+// silently slip back in:
+//
+//   1. /debug/key/{key} must emit flat feature names for a two-stream
+//      pipeline (no "Transactions." or "Logins." prefix on the keys).
+//   2. /debug/topology must carry a per-stream `features` array matching
+//      those flat names exactly (so the frontend's allow-list will hit).
+//   3. The simulated frontend filter (built here from the topology
+//      allow-list + the flat computed_features) must return a non-empty
+//      subset for the selected stream — i.e. the feature the frontend was
+//      failing to render pre-CR-01 is now present.
+//   4. The served app.js must NOT contain the old dotted-name parsing
+//      pattern, and MUST contain the new allow-list markers. This is a
+//      source-level regression guard paralleling
+//      `app_js_has_no_innerhtml_or_eval_sinks`.
+// ===========================================================================
+
+#[tokio::test(flavor = "current_thread")]
+async fn entity_lookup_filter_uses_flat_feature_names() {
+    let (port, state) = start_debug_ui_server().await;
+    register_test_pipeline(&state);
+
+    // Push events for the SAME key on two different streams so
+    // computed_features carries one feature per stream. This is the
+    // cross-stream scenario the original dotted-name filter was (wrongly)
+    // trying to support.
+    push_event(
+        &state,
+        "Transactions",
+        &serde_json::json!({"user_id": "u_cr01", "amount": 9.0}),
+    );
+    push_event(
+        &state,
+        "Logins",
+        &serde_json::json!({"user_id": "u_cr01"}),
+    );
+
+    // --- (1) /debug/key/{key} must emit FLAT feature names.
+    let (status, _headers, body) = http_get(port, "/debug/key/u_cr01").await;
+    assert_eq!(status, 200, "expected 200 from /debug/key/u_cr01");
+    let key_json = body_json(&body);
+    let computed = key_json
+        .get("computed_features")
+        .and_then(|v| v.as_object())
+        .expect("computed_features object");
+
+    assert!(
+        computed.contains_key("tx_count_1h"),
+        "expected flat feature name tx_count_1h in computed_features, got keys {:?}",
+        computed.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        computed.contains_key("login_count_1h"),
+        "expected flat feature name login_count_1h in computed_features, got keys {:?}",
+        computed.keys().collect::<Vec<_>>()
+    );
+    for flat_key in computed.keys() {
+        assert!(
+            !flat_key.contains('.'),
+            "CR-01: computed_features key {:?} must be flat (no stream prefix) \
+             — frontend filter relies on flat names",
+            flat_key
+        );
+    }
+
+    // --- (2) /debug/topology must carry a per-stream `features` array that
+    //         contains the same flat names, which is the allow-list source
+    //         the frontend uses for its filter.
+    let (status, _headers, topo_body) = http_get(port, "/debug/topology").await;
+    assert_eq!(status, 200, "expected 200 from /debug/topology");
+    let topo = body_json(&topo_body);
+    let nodes = topo
+        .get("nodes")
+        .and_then(|v| v.as_array())
+        .expect("topology.nodes array");
+
+    let find_node = |name: &str| -> &serde_json::Value {
+        nodes
+            .iter()
+            .find(|n| n.get("name").and_then(|v| v.as_str()) == Some(name))
+            .unwrap_or_else(|| panic!("topology node {:?} missing", name))
+    };
+    let tx_node = find_node("Transactions");
+    let tx_features: Vec<&str> = tx_node
+        .get("features")
+        .and_then(|v| v.as_array())
+        .expect("Transactions.features array")
+        .iter()
+        .map(|v| v.as_str().expect("feature name is a string"))
+        .collect();
+    assert!(
+        tx_features.contains(&"tx_count_1h"),
+        "CR-01: Transactions.features must contain tx_count_1h so the \
+         frontend allow-list filter can match the flat computed_features \
+         key. Got {:?}",
+        tx_features
+    );
+    let logins_node = find_node("Logins");
+    let logins_features: Vec<&str> = logins_node
+        .get("features")
+        .and_then(|v| v.as_array())
+        .expect("Logins.features array")
+        .iter()
+        .map(|v| v.as_str().expect("feature name is a string"))
+        .collect();
+    assert!(
+        logins_features.contains(&"login_count_1h"),
+        "CR-01: Logins.features must contain login_count_1h. Got {:?}",
+        logins_features
+    );
+
+    // --- (3) Simulate the frontend filter: allow-list from the selected
+    //         stream's topology `features` array ∩ flat computed_features.
+    //         Pre-CR-01 this intersection was empty for every stream.
+    let allowed: std::collections::HashSet<&str> = tx_features.iter().copied().collect();
+    let filtered: Vec<&String> = computed
+        .keys()
+        .filter(|k| allowed.contains(k.as_str()))
+        .collect();
+    assert!(
+        filtered.iter().any(|k| k.as_str() == "tx_count_1h"),
+        "CR-01: simulated frontend filter for stream=Transactions must \
+         return tx_count_1h. filtered={:?}, allowed={:?}, computed={:?}",
+        filtered,
+        allowed,
+        computed.keys().collect::<Vec<_>>()
+    );
+    // Cross-stream isolation: Transactions' allow-list must NOT leak the
+    // Logins feature. This was never broken, but the intent was ambiguous
+    // pre-CR-01 — pin it down.
+    assert!(
+        !filtered.iter().any(|k| k.as_str() == "login_count_1h"),
+        "CR-01: Transactions allow-list must not include Logins' flat \
+         feature name. filtered={:?}",
+        filtered
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn app_js_entity_lookup_uses_allow_list_not_dotted_names() {
+    // Source-level regression guard complementing the functional test
+    // above. If a future refactor rewrites the filter as
+    //   `const dot = fullName.indexOf('.'); if (dot <= 0) continue;`
+    // (the original broken pattern), this test fails at compile-check
+    // speed — no server state, no event push required.
+    let (port, _state) = start_debug_ui_server().await;
+    let (status, _headers, body) = http_get(port, "/static/app.js").await;
+    assert_eq!(status, 200, "expected 200 for /static/app.js");
+    let text = String::from_utf8(body).expect("app.js is utf-8");
+
+    // Forbidden: the broken dotted-name parsing pattern. Any recurrence
+    // indicates a regression — the filter has gone back to assuming the
+    // server emits `Stream.feature` dotted names, which it does NOT.
+    for forbidden in &[
+        "fullName.indexOf('.')",
+        "fullName.substring(0, dot)",
+        "fullName.substring(dot + 1)",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "CR-01 regression: forbidden dotted-name filter token {:?} \
+             reappeared in app.js — the entity lookup filter must use the \
+             topology `features` allow-list instead",
+            forbidden
+        );
+    }
+
+    // Required: the new allow-list markers must be present. If someone
+    // deletes the filter block entirely (or the function), this catches
+    // it at test time.
+    for required in &[
+        "data.computed_features",
+        "(node && node.features)",
+        "allowed.has(name)",
+    ] {
+        assert!(
+            text.contains(required),
+            "CR-01 regression: expected allow-list marker {:?} missing from \
+             app.js — the entity lookup filter has been rewritten in an \
+             unexpected way",
+            required
+        );
+    }
+}
+
+// ===========================================================================
 // DBUI-04: /debug/memory (per-stream breakdown + backward compat)
 // ===========================================================================
 
