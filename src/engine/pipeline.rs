@@ -1229,4 +1229,228 @@ mod tests {
         }).unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(86400));
     }
+
+    // ======================== Phase 7 Plan 01: Keyless streams, depends_on, filter ========================
+
+    #[test]
+    fn test_keyless_stream_registers() {
+        let mut engine = PipelineEngine::new();
+        let stream = StreamDefinition {
+            name: "RawEvents".into(),
+            key_field: None,
+            features: vec![],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        engine.register(stream).unwrap();
+        assert_eq!(engine.stream_count(), 1);
+        assert!(engine.get_stream("RawEvents").is_some());
+    }
+
+    #[test]
+    fn test_keyless_rejects_windowed_ops() {
+        let mut engine = PipelineEngine::new();
+        let stream = StreamDefinition {
+            name: "RawEvents".into(),
+            key_field: None,
+            features: vec![
+                ("bad_count".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        let result = engine.register(stream);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("keyless"), "error should mention 'keyless', got: {}", err_msg);
+        assert!(err_msg.contains("windowed") || err_msg.contains("operator"),
+            "error should mention windowed/operator, got: {}", err_msg);
+    }
+
+    #[test]
+    fn test_keyless_with_derive_registers() {
+        let mut engine = PipelineEngine::new();
+        let stream = StreamDefinition {
+            name: "RawEvents".into(),
+            key_field: None,
+            features: vec![
+                ("doubled".into(), FeatureDef::Derive {
+                    expr: crate::engine::expression::parse_expr("_event.amount * 2.0").unwrap(),
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        engine.register(stream).unwrap();
+        assert_eq!(engine.stream_count(), 1);
+    }
+
+    #[test]
+    fn test_keyless_push_returns_empty() {
+        let mut engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        let stream = StreamDefinition {
+            name: "RawEvents".into(),
+            key_field: None,
+            features: vec![],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        engine.register(stream).unwrap();
+
+        let event = serde_json::json!({"user_id": "u123", "amount": 50.0});
+        let features = engine.push("RawEvents", &event, &mut store, ts(60_000)).unwrap();
+        assert!(features.is_empty(), "keyless stream push should return empty FeatureMap");
+    }
+
+    #[test]
+    fn test_keyed_with_depends_on_registers() {
+        let mut engine = PipelineEngine::new();
+        let stream = StreamDefinition {
+            name: "Enriched".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                }),
+            ],
+            depends_on: Some(vec!["RawEvents".into()]),
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        engine.register(stream).unwrap();
+        assert_eq!(engine.stream_count(), 1);
+        let s = engine.get_stream("Enriched").unwrap();
+        assert_eq!(s.depends_on.as_ref().unwrap(), &vec!["RawEvents".to_string()]);
+    }
+
+    #[test]
+    fn test_filter_parsed_at_registration() {
+        let mut engine = PipelineEngine::new();
+        // Valid filter
+        let stream = StreamDefinition {
+            name: "FailedOnly".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("cnt".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                }),
+            ],
+            depends_on: None,
+            filter: Some(crate::engine::expression::parse_expr("_event.status == 'failed'").unwrap()),
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        engine.register(stream).unwrap();
+        assert_eq!(engine.stream_count(), 1);
+    }
+
+    #[test]
+    fn test_filter_blocks_non_matching_events() {
+        let mut engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        let stream = StreamDefinition {
+            name: "FailedTx".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("cnt".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                }),
+            ],
+            depends_on: None,
+            filter: Some(crate::engine::expression::parse_expr("_event.status == 'failed'").unwrap()),
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        engine.register(stream).unwrap();
+        let now = ts(60_000);
+
+        // Push event with status: "success" -- should be filtered out
+        let features = engine.push("FailedTx", &serde_json::json!({
+            "user_id": "u123", "status": "success"
+        }), &mut store, now).unwrap();
+        assert!(features.is_empty(), "non-matching event should return empty features");
+
+        // Push event with status: "failed" -- should proceed
+        let features = engine.push("FailedTx", &serde_json::json!({
+            "user_id": "u123", "status": "failed"
+        }), &mut store, now).unwrap();
+        assert_eq!(features.get("cnt"), Some(&FeatureValue::Int(1)));
+    }
+
+    #[test]
+    fn test_fan_out_targets_excludes_keyless() {
+        let mut engine = PipelineEngine::new();
+        // Register a keyed stream
+        engine.register(StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        }).unwrap();
+        // Register a keyless stream
+        engine.register(StreamDefinition {
+            name: "RawEvents".into(),
+            key_field: None,
+            features: vec![],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        }).unwrap();
+
+        let targets = engine.fan_out_targets();
+        assert_eq!(targets.len(), 1, "fan_out_targets should only include keyed streams");
+        assert_eq!(targets[0].0, "Transactions");
+        assert_eq!(targets[0].1, "user_id");
+    }
+
+    #[test]
+    fn test_backward_compat_keyed_stream() {
+        // Existing pattern with key_field: Some(...) should work exactly as before
+        let mut engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        let stream = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        engine.register(stream).unwrap();
+        let now = ts(60_000);
+        let event = serde_json::json!({"user_id": "u123", "amount": 50.0});
+        let features = engine.push("Transactions", &event, &mut store, now).unwrap();
+        assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
+    }
 }

@@ -1628,4 +1628,116 @@ mod tests {
         assert_eq!(result, serde_json::json!([1, 2, 3]));
         assert_eq!(buf.len(), 0, "buffer should be empty after consuming JSON");
     }
+
+    // ======================== Phase 7 Plan 01: Keyless streams, depends_on, filter ========================
+
+    #[test]
+    fn test_register_request_optional_key_field() {
+        // key_field omitted from JSON -> should deserialize as None
+        let json = serde_json::json!({
+            "name": "RawEvents",
+            "features": []
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        assert!(req.key_field.is_none(), "key_field should be None when omitted");
+    }
+
+    #[test]
+    fn test_register_request_with_depends_on() {
+        let json = serde_json::json!({
+            "name": "TX",
+            "key_field": "user_id",
+            "depends_on": ["Raw"],
+            "features": []
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.depends_on, Some(vec!["Raw".to_string()]));
+    }
+
+    #[test]
+    fn test_register_request_with_filter() {
+        let json = serde_json::json!({
+            "name": "Failed",
+            "key_field": "user_id",
+            "filter": "_event.status == 'failed'",
+            "features": [{"name": "c", "type": "count", "window": "1h"}]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        assert!(req.filter.is_some(), "filter should be Some");
+        assert_eq!(req.filter.unwrap(), "_event.status == 'failed'");
+    }
+
+    #[test]
+    fn test_convert_keyless_register() {
+        let req = RegisterRequest {
+            name: "RawEvents".into(),
+            key_field: None,
+            definition_type: None,
+            entity_ttl: None,
+            history_ttl: None,
+            depends_on: None,
+            filter: None,
+            features: vec![],
+        };
+        let stream = convert_register_request(req).unwrap();
+        assert_eq!(stream.name, "RawEvents");
+        assert!(stream.key_field.is_none());
+    }
+
+    #[test]
+    fn test_convert_keyless_rejects_windowed() {
+        let req = RegisterRequest {
+            name: "RawEvents".into(),
+            key_field: None,
+            definition_type: None,
+            entity_ttl: None,
+            history_ttl: None,
+            depends_on: None,
+            filter: None,
+            features: vec![FeatureDefRequest {
+                name: "cnt".into(),
+                feature_type: "count".into(),
+                field: None,
+                window: Some("1h".into()),
+                bucket: None,
+                expr: None,
+                optional: None,
+                where_clause: None,
+                on: None,
+                target: None,
+            }],
+        };
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("keyless"), "error should mention 'keyless', got: {}", err_msg);
+    }
+
+    #[test]
+    fn test_convert_depends_on_and_filter() {
+        let req = RegisterRequest {
+            name: "FailedTx".into(),
+            key_field: Some("user_id".into()),
+            definition_type: None,
+            entity_ttl: None,
+            history_ttl: None,
+            depends_on: Some(vec!["RawEvents".into()]),
+            filter: Some("_event.status == 'failed'".into()),
+            features: vec![FeatureDefRequest {
+                name: "cnt".into(),
+                feature_type: "count".into(),
+                field: None,
+                window: Some("1h".into()),
+                bucket: None,
+                expr: None,
+                optional: None,
+                where_clause: None,
+                on: None,
+                target: None,
+            }],
+        };
+        let stream = convert_register_request(req).unwrap();
+        assert_eq!(stream.depends_on.as_ref().unwrap(), &vec!["RawEvents".to_string()]);
+        assert!(stream.filter.is_some());
+    }
 }
