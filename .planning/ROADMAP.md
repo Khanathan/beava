@@ -152,16 +152,18 @@ Plans:
 - [ ] 10.1-03-PLAN.md — Frontend behavior rewrite (app.js) — click-to-select drill-in panel, render-once dagre DAG, 1 Hz edge label updater, pause gate, stream-scoped entity lookup + browser smoke checkpoint
 
 ### Phase 10.2: Latency Debugger (INSERTED)
-**Goal**: Users can observe and debug per-command latency through percentile histograms (p50/p95/p99) broken down by TCP command (PUSH/GET/SET/MSET) and stream, surfaced as a new latency view in the Debug UI (exact surface determined by Phase 10.1's interactive layout) and a `/debug/latency` JSON endpoint on the HTTP management port
+**Goal**: Users can observe and debug per-command latency through percentile histograms (p50/p95/p99) broken down by TCP command (PUSH/GET/SET/MSET) and stream, surfaced as a contextual latency view in the Debug UI drill-in panel and a `/debug/latency` JSON endpoint on the HTTP management port
 **Depends on**: Phase 10, Phase 10.1
 **Requirements**: DBUI-07 (new -- added during discuss)
 **Success Criteria** (what must be TRUE):
   1. User can call GET /debug/latency and receive a JSON document with per-TCP-command p50/p95/p99 latencies plus per-stream breakdown
-  2. User can see live per-command latency histograms refreshing at 1 Hz somewhere in the Debug UI (as a tab, as a node drill-in panel, or as edge tooltips — decided in discuss after Phase 10.1 lands)
-  3. User can see a slow-query view listing the N slowest observed requests per command with the originating stream (if applicable)
+  2. User can see live per-command latency histograms refreshing at 1 Hz in the Debug UI drill-in panel
+  3. User can see a slow-query view listing the 20 slowest observed requests per command with the originating stream (if applicable)
   4. Latency tracking adds no measurable overhead to the PUSH hot path (p99 remains under 100us per existing Phase 6 budget)
-  5. The estimator is memory-bounded per stream regardless of request rate (explicit choice between t-digest, HDR histogram, or bucketed histogram made during discuss)
-**Plans:** 0 plans (to be planned)
+  5. The estimator is memory-bounded per stream regardless of request rate (bucketed histogram, ~248 bytes per histogram)
+**Plans:** 3 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 10.2 to break down)
+- [ ] 10.2-01-PLAN.md — Backend core: Histogram, RollingHistogram, SlowQueryHeap, LatencyTracker in src/server/latency.rs + unit tests
+- [ ] 10.2-02-PLAN.md — Backend integration: AppState wiring, TCP command instrumentation (PUSH/GET/SET/MSET), /debug/latency endpoint + integration test
+- [ ] 10.2-03-PLAN.md — Frontend: renderLatencySection, renderGlobalLatencyDashboard, histogram bars, slow-query list, 1 Hz polling + visual checkpoint
