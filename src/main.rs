@@ -60,6 +60,8 @@ async fn main() {
         backfill_complete: HashSet::new(),
         snapshot_cycle: 0,
         snapshot_seq: 1,
+        last_base_seq: 0,
+        previous_base_seq: 0,
     }));
 
     // Phase 9: how often to write a full base snapshot. Every Nth cycle is a
@@ -79,9 +81,15 @@ async fn main() {
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
     let recovery = load_incremental_snapshots(&snap_dir_startup, &snapshot_path);
-    if let Some((snapshot_state, next_seq)) = recovery {
+    if let Some((snapshot_state, next_seq, loaded_base_seq)) = recovery {
         let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
         app.snapshot_seq = next_seq;
+        // Phase 9 WR-02: restore the latest-base pointer so delta headers
+        // written after recovery embed the correct base_seq from the first
+        // tick after startup. `loaded_base_seq == 0` indicates a legacy v5
+        // recovery (no v6 base on disk) which is treated as "no base yet".
+        app.last_base_seq = loaded_base_seq;
+        app.previous_base_seq = 0;
         // Restore entity state
         app.store.restore_from_snapshot(snapshot_state.entities);
         // Clear any dirty/deleted tracking that restore_from_snapshot may have
@@ -123,6 +131,15 @@ async fn main() {
         // Restore backfill_complete markers from snapshot
         for (stream, feature) in &snapshot_state.backfill_complete {
             app.backfill_complete.insert((stream.clone(), feature.clone()));
+        }
+
+        // Phase 9 WR-05: one-shot GC pass. Drops operators for streams that
+        // were unregistered (or features that were removed) before any event
+        // arrived for a given entity, which would otherwise survive base +
+        // delta recovery as zombies until the next event touches that entity.
+        {
+            let valid_features = app.engine.valid_features_map();
+            app.store.gc_invalid_operators(&valid_features);
         }
 
         // Detect incomplete backfills: features with backfill=true that are not in
@@ -209,7 +226,9 @@ async fn main() {
             // Decide base vs delta, clone the required state, and advance
             // the cycle counter -- all under a single lock acquisition so
             // the dirty set cannot race with new events.
-            let prepared: Option<(SnapshotData, u64, bool, PathBuf)> = {
+            // Tuple: (data, seq, is_full, snap_dir, prev_base_seq_for_cleanup)
+            // prev_base_seq_for_cleanup is only meaningful when is_full==true.
+            let prepared: Option<(SnapshotData, u64, bool, PathBuf, u64)> = {
                 let mut app = snap_state.lock().unwrap_or_else(|e| e.into_inner());
                 let cycle = app.snapshot_cycle;
                 let seq = app.snapshot_seq;
@@ -219,6 +238,10 @@ async fn main() {
                     .unwrap_or_else(|| std::path::Path::new("."))
                     .to_path_buf();
 
+                // Phase 9 WR-02: delta headers embed the latest base's seq,
+                // not `seq - 1`. Captured here while the lock is held so the
+                // value is stable through the rest of this tick.
+                let last_base_seq_for_delta = app.last_base_seq;
                 if is_full {
                     // Full base snapshot -- clone everything.
                     let entities = app.store.clone_for_snapshot_with_gc(&valid_features);
@@ -263,7 +286,12 @@ async fn main() {
                     };
                     app.snapshot_cycle += 1;
                     app.snapshot_seq += 1;
-                    Some((SnapshotData::Base(base), seq, true, snap_dir))
+                    // Phase 9 WR-02/WR-03: remember the previous base before
+                    // we stamp the new one, so WR-03 cleanup can preserve it.
+                    let prev_base = app.last_base_seq;
+                    app.previous_base_seq = prev_base;
+                    app.last_base_seq = seq;
+                    Some((SnapshotData::Base(base), seq, true, snap_dir, prev_base))
                 } else {
                     // Delta -- clone only dirty entities.
                     let changed = app.store.clone_dirty_for_snapshot_with_gc(&valid_features);
@@ -279,8 +307,10 @@ async fn main() {
                     } else {
                         let delta = DeltaSnapshotState {
                             header: SnapshotHeader {
+                                // Phase 9 WR-02: stamp the delta with the
+                                // actual latest base seq, not `seq - 1`.
                                 snapshot_type: SnapshotType::Delta {
-                                    base_seq: seq.saturating_sub(1),
+                                    base_seq: last_base_seq_for_delta,
                                 },
                                 sequence: seq,
                             },
@@ -289,12 +319,13 @@ async fn main() {
                         };
                         app.snapshot_cycle += 1;
                         app.snapshot_seq += 1;
-                        Some((SnapshotData::Delta(delta), seq, false, snap_dir))
+                        // prev_base_seq is unused on the delta path; pass 0.
+                        Some((SnapshotData::Delta(delta), seq, false, snap_dir, 0))
                     }
                 }
             };
 
-            let (snapshot_data, seq, is_full, snap_dir) = match prepared {
+            let (snapshot_data, seq, is_full, snap_dir, prev_base_seq_for_cleanup) = match prepared {
                 Some(p) => p,
                 None => continue, // No changes this cycle
             };
@@ -340,10 +371,21 @@ async fn main() {
                 if let Ok(dir) = std::fs::File::open(&snap_dir) {
                     let _ = dir.sync_all();
                 }
-                // After a successful base write, delete old snapshot files
-                // whose sequence is strictly less than the current base's.
+                // After a successful base write, delete old snapshot files.
+                // Phase 9 WR-03: preserve the previous base as a fallback.
+                // `cutoff` is the minimum seq we keep; anything with
+                // seq < cutoff is fair game for deletion.
                 if is_full {
-                    cleanup_old_snapshots(&snap_dir, seq);
+                    // Keep the previous base and everything newer than it.
+                    // On the very first base (previous_base_seq == 0) there
+                    // is nothing to preserve, so we fall back to the old
+                    // "delete everything < seq" behaviour.
+                    let cutoff = if prev_base_seq_for_cleanup == 0 {
+                        seq
+                    } else {
+                        prev_base_seq_for_cleanup
+                    };
+                    cleanup_old_snapshots(&snap_dir, cutoff);
                 }
                 Ok::<usize, std::io::Error>(bytes.len())
             })
@@ -485,13 +527,17 @@ fn cleanup_old_snapshots(dir: &Path, current_base_seq: u64) {
 /// Scan the snapshot directory and load the latest base + subsequent deltas
 /// into a single `SnapshotState`. Falls back to the legacy v5 single-file
 /// format at `legacy_path` if no v6 files are found. Returns the merged
-/// state plus the next sequence number to use for future writes.
+/// state, the next sequence number to use for future writes, and the seq
+/// of the base that was actually loaded (0 if legacy v5 fallback).
+///
+/// Phase 9 WR-04: tries bases in descending seq order so a corrupt newest
+/// base does not strand a readable older base.
 ///
 /// Returns `None` if nothing loadable exists.
 pub(crate) fn load_incremental_snapshots(
     snap_dir: &Path,
     legacy_path: &Path,
-) -> Option<(SnapshotState, u64)> {
+) -> Option<(SnapshotState, u64, u64)> {
     // Step 1: Scan directory for v6 snapshot files.
     let mut bases: Vec<(u64, PathBuf)> = Vec::new();
     let mut deltas: Vec<(u64, PathBuf)> = Vec::new();
@@ -512,20 +558,22 @@ pub(crate) fn load_incremental_snapshots(
         }
     }
 
-    // Step 2: Find latest base by sequence.
+    // Step 2: Find the newest base that decodes successfully. WR-04: iterate
+    // in descending seq order so we can fall back to an older base if the
+    // newest is unreadable.
     bases.sort_by_key(|(seq, _)| *seq);
 
-    if let Some((base_seq, base_path)) = bases.last().cloned() {
-        // Load base bytes.
-        let bytes = std::fs::read(&base_path).ok()?;
-        let base = match load_snapshot_file(&bytes)? {
-            SnapshotFile::Base(b) => b,
+    let loaded = bases.iter().rev().find_map(|(seq, path)| {
+        let bytes = std::fs::read(path).ok()?;
+        match load_snapshot_file(&bytes)? {
+            SnapshotFile::Base(b) => Some((*seq, b)),
             // A file named "tally.snapshot.base.*" that decodes as a delta
-            // is a corruption signal -- bail out and start fresh rather
-            // than silently loading the wrong thing.
-            _ => return None,
-        };
+            // is a corruption signal -- skip it and try the next-older base.
+            _ => None,
+        }
+    });
 
+    if let Some((base_seq, base)) = loaded {
         // Build a scratch store, restore base entities, then apply deltas in
         // monotonic sequence order.
         let mut store = StateStore::new();
@@ -561,7 +609,7 @@ pub(crate) fn load_incremental_snapshots(
             pipelines: base.pipelines,
             backfill_complete: base.backfill_complete,
         };
-        return Some((state, max_seq + 1));
+        return Some((state, max_seq + 1, base_seq));
     }
 
     // Step 3: Fall back to legacy v5 single-file snapshot.
@@ -569,7 +617,8 @@ pub(crate) fn load_incremental_snapshots(
         let bytes = std::fs::read(legacy_path).ok()?;
         let legacy = load_legacy_v5(&bytes)?;
         eprintln!("Loaded legacy v5 snapshot from {}", legacy_path.display());
-        return Some((legacy, 1));
+        // base_seq == 0 signals "no v6 base loaded".
+        return Some((legacy, 1, 0));
     }
 
     None

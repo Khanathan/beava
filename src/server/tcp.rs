@@ -68,6 +68,16 @@ pub struct AppState {
     /// Phase 9: Next sequence number for snapshot files. Derived from disk on
     /// startup (max existing sequence + 1).
     pub snapshot_seq: u64,
+    /// Phase 9 WR-02: Sequence number of the most recently written base
+    /// snapshot. Used to stamp delta headers with the correct `base_seq` so
+    /// downstream tooling and recovery-time validation have a trustworthy
+    /// pointer back to the base a delta was built against.
+    pub last_base_seq: u64,
+    /// Phase 9 WR-03: Sequence number of the base snapshot that was current
+    /// BEFORE the most recent base write. Used by `cleanup_old_snapshots` to
+    /// keep the previous base on disk as a fallback in case the new base
+    /// turns out to be unreadable on startup.
+    pub previous_base_seq: u64,
 }
 
 /// Shared state handle for concurrent connection handlers.
@@ -533,6 +543,8 @@ mod tests {
             backfill_complete: HashSet::new(),
             snapshot_cycle: 0,
             snapshot_seq: 1,
+            last_base_seq: 0,
+            previous_base_seq: 0,
         }))
     }
 

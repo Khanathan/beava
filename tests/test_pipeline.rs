@@ -543,6 +543,8 @@ fn make_state_with_event_log(log_dir: &std::path::Path) -> Arc<Mutex<AppState>> 
         backfill_complete: HashSet::new(),
         snapshot_cycle: 0,
         snapshot_seq: 1,
+        last_base_seq: 0,
+        previous_base_seq: 0,
     }))
 }
 
