@@ -5,7 +5,9 @@
 //! -> evaluate derives -> return feature map.
 
 use std::time::{Duration, SystemTime};
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
+use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::algo::toposort;
 use crate::types::{FeatureValue, FeatureMap};
 use crate::error::TallyError;
 use crate::state::store::StateStore;
@@ -116,6 +118,12 @@ pub struct PipelineEngine {
     /// Stored on REGISTER so snapshots can persist pipeline definitions
     /// without serializing the Expr AST.
     raw_register_jsons: AHashMap<String, serde_json::Value>,
+    // DAG for cascade execution (composable pipeline)
+    dag: DiGraph<String, ()>,
+    node_indices: AHashMap<String, NodeIndex>,
+    topo_order: Vec<String>,
+    /// Pre-computed: for each stream, which streams are directly downstream.
+    downstream_map: AHashMap<String, Vec<String>>,
 }
 
 /// Create an operator instance from a FeatureDef (non-derive only).
@@ -168,6 +176,10 @@ impl PipelineEngine {
             streams: AHashMap::new(),
             views: AHashMap::new(),
             raw_register_jsons: AHashMap::new(),
+            dag: DiGraph::new(),
+            node_indices: AHashMap::new(),
+            topo_order: Vec::new(),
+            downstream_map: AHashMap::new(),
         }
     }
 
@@ -202,7 +214,14 @@ impl PipelineEngine {
                 let _ = name;
             }
         }
-        self.streams.insert(stream.name.clone(), stream);
+        let name_clone = stream.name.clone();
+        self.streams.insert(name_clone.clone(), stream);
+        // Rebuild DAG and validate (cycle detection)
+        if let Err(e) = self.rebuild_dag() {
+            // Registration failed due to cycle -- remove the stream we just added
+            self.streams.remove(&name_clone);
+            return Err(e);
+        }
         Ok(())
     }
 
@@ -368,6 +387,133 @@ impl PipelineEngine {
         Ok(features)
     }
 
+    /// Rebuild the DAG from all registered streams. Called after each registration.
+    /// Detects circular dependencies via topological sort.
+    fn rebuild_dag(&mut self) -> Result<(), TallyError> {
+        let mut dag = DiGraph::new();
+        let mut indices = AHashMap::new();
+
+        // Add all streams as nodes
+        for name in self.streams.keys() {
+            let idx = dag.add_node(name.clone());
+            indices.insert(name.clone(), idx);
+        }
+
+        // Add edges for depends_on relationships
+        for stream in self.streams.values() {
+            if let Some(ref deps) = stream.depends_on {
+                let downstream_idx = indices[&stream.name];
+                for dep in deps {
+                    if let Some(&upstream_idx) = indices.get(dep) {
+                        // Edge: upstream -> downstream (data flows this direction)
+                        dag.add_edge(upstream_idx, downstream_idx, ());
+                    }
+                    // If dep not registered yet, skip -- deferred resolution
+                }
+            }
+        }
+
+        // Topological sort -- detects cycles
+        let order = toposort(&dag, None).map_err(|cycle| {
+            let node = &dag[cycle.node_id()];
+            TallyError::Protocol(format!(
+                "circular dependency detected involving stream '{}'", node
+            ))
+        })?;
+
+        self.topo_order = order.iter().map(|idx| dag[*idx].clone()).collect();
+
+        // Build downstream map: for each stream, which streams directly depend on it
+        let mut downstream_map: AHashMap<String, Vec<String>> = AHashMap::new();
+        for stream in self.streams.values() {
+            if let Some(ref deps) = stream.depends_on {
+                for dep in deps {
+                    downstream_map.entry(dep.clone())
+                        .or_default()
+                        .push(stream.name.clone());
+                }
+            }
+        }
+
+        self.dag = dag;
+        self.node_indices = indices;
+        self.downstream_map = downstream_map;
+        Ok(())
+    }
+
+    /// Push event to a stream and cascade through all downstream streams
+    /// in topological order. Returns features from the primary (origin) stream.
+    pub fn push_with_cascade(
+        &self,
+        stream_name: &str,
+        event: &serde_json::Value,
+        store: &mut StateStore,
+        now: SystemTime,
+    ) -> Result<FeatureMap, TallyError> {
+        // Primary push
+        let primary_features = self.push(stream_name, event, store, now)?;
+
+        // Collect all reachable downstream streams via BFS
+        let mut visited = AHashSet::new();
+        visited.insert(stream_name.to_string());
+        let mut to_visit = Vec::new();
+
+        // Seed with direct downstream of origin
+        if let Some(direct_downstream) = self.downstream_map.get(stream_name) {
+            for ds in direct_downstream {
+                if visited.insert(ds.clone()) {
+                    to_visit.push(ds.clone());
+                }
+            }
+        }
+
+        // BFS to find all reachable downstream
+        let mut i = 0;
+        while i < to_visit.len() {
+            let current = to_visit[i].clone();
+            if let Some(next_downstream) = self.downstream_map.get(&current) {
+                for ds in next_downstream {
+                    if visited.insert(ds.clone()) {
+                        to_visit.push(ds.clone());
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        // Execute in topological order (iterate topo_order, skip non-reachable)
+        for stream_in_order in &self.topo_order {
+            if !to_visit.contains(stream_in_order) {
+                continue;
+            }
+            let downstream_def = match self.streams.get(stream_in_order) {
+                Some(d) => d,
+                None => continue,
+            };
+
+            // For keyed downstream: check if key_field exists in event
+            if let Some(ref key_field) = downstream_def.key_field {
+                match event.get(key_field) {
+                    Some(serde_json::Value::String(k)) if !k.is_empty() => {
+                        // Key present -- push to this downstream stream
+                        let _ = self.push(stream_in_order, event, store, now);
+                    }
+                    _ => continue, // Key missing -- skip (LEFT JOIN semantics)
+                }
+            } else {
+                // Keyless downstream -- push (returns empty, but may cascade further)
+                let _ = self.push(stream_in_order, event, store, now);
+            }
+        }
+
+        Ok(primary_features)
+    }
+
+    /// Return the current topological order (for testing/debugging).
+    pub fn get_topo_order(&self) -> &[String] {
+        &self.topo_order
+    }
+
     /// Feature retrieval for GET path.
     /// Calls store.get_all_features (which reads operators with &mut self to
     /// advance time and expire stale buckets), then evaluates derive expressions
@@ -508,7 +654,12 @@ impl PipelineEngine {
     /// Remove a stream definition by name. Returns true if found and removed.
     pub fn remove_stream(&mut self, name: &str) -> bool {
         self.raw_register_jsons.remove(name);
-        self.streams.remove(name).is_some()
+        let removed = self.streams.remove(name).is_some();
+        if removed {
+            // Rebuild DAG after removal (cannot fail -- removing nodes cannot create cycles)
+            let _ = self.rebuild_dag();
+        }
+        removed
     }
 
     /// Store the raw register JSON for a stream (called during REGISTER command processing).
