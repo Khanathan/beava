@@ -76,11 +76,19 @@ impl ThroughputTracker {
         }
     }
 
-    /// Fold one event into a stream's EWMAs using standard exponential decay.
-    /// First-ever event initializes the EWMAs to zero (cannot compute an
-    /// instantaneous rate without an inter-arrival time); subsequent events
-    /// decay the existing values by `exp(-dt / tau)` and add (1 / dt) as the
-    /// new instantaneous rate.
+    /// Fold one event into a stream's EWMAs using standard time-variable
+    /// alpha-mixing. For each time constant `tau`, the per-step mixing weight
+    /// is `alpha = 1 - exp(-dt / tau)` and the update is
+    /// `ewma += alpha * (instantaneous - ewma)`, where the instantaneous rate
+    /// is `1 / dt` events per second. At steady-state arrival rate `r`, this
+    /// converges to `ewma = r` — unlike the naive `ewma * exp(-dt/tau) + 1/dt`
+    /// recurrence, which converges to `r / (1 - exp(-1/(r*tau)))` and
+    /// over-reports rates by roughly a factor of `r*tau` at high rates
+    /// (Phase 10 review WR-01).
+    ///
+    /// First-ever event initializes `last_update` and leaves the EWMAs at
+    /// their default 0.0 — we cannot compute an instantaneous rate without a
+    /// prior inter-arrival time.
     fn fold_event(entry: &mut StreamThroughput, now: Instant) {
         #[cfg(test)]
         {
@@ -105,9 +113,12 @@ impl ThroughputTracker {
                     return;
                 }
                 let instantaneous = 1.0 / dt;
-                entry.ewma_5s = entry.ewma_5s * (-dt / TAU_5S).exp() + instantaneous;
-                entry.ewma_1m = entry.ewma_1m * (-dt / TAU_1M).exp() + instantaneous;
-                entry.ewma_5m = entry.ewma_5m * (-dt / TAU_5M).exp() + instantaneous;
+                let alpha_5s = 1.0 - (-dt / TAU_5S).exp();
+                let alpha_1m = 1.0 - (-dt / TAU_1M).exp();
+                let alpha_5m = 1.0 - (-dt / TAU_5M).exp();
+                entry.ewma_5s += alpha_5s * (instantaneous - entry.ewma_5s);
+                entry.ewma_1m += alpha_1m * (instantaneous - entry.ewma_1m);
+                entry.ewma_5m += alpha_5m * (instantaneous - entry.ewma_5m);
                 entry.last_update = Some(now);
             }
         }
@@ -251,5 +262,45 @@ mod tests {
         t.bump("A", now);
         // Implicit: no panic.
         assert_eq!(t.snapshot().len(), 1);
+    }
+
+    #[test]
+    fn ewma_calibrates_to_steady_state_rate() {
+        // Phase 10 review WR-01 regression: the old fold_event formula
+        // (`ewma * exp(-dt/tau) + 1/dt`) converged to `r / (1 - exp(-1/(r*tau)))`
+        // which is wildly inflated at high rates. The corrected alpha-mixing
+        // formula converges to the actual arrival rate `r` (events/sec).
+        //
+        // We drive 2000 events spaced exactly 10 ms apart — a steady state of
+        // 100 events/sec — and cover ~20 s of simulated wall time. That is
+        // roughly 4 time constants for the 5 s EWMA, which converges to
+        // `100 * (1 - exp(-4)) ≈ 98.17`. We assert the realised value lands
+        // within ±20 % of the true rate (80–120 band), which is easy to hit
+        // with the correct math and impossible with the old formula.
+        use std::collections::HashSet;
+        use std::time::Duration;
+
+        let mut tracker = ThroughputTracker::new();
+        let start = Instant::now();
+        // 2000 events, exactly 10 ms apart → steady state r = 100 ev/s.
+        for i in 0..2000u64 {
+            let now = start + Duration::from_millis(i * 10);
+            let mut touched: HashSet<&str> = HashSet::new();
+            touched.insert("stream_a");
+            tracker.bump_unique(touched.into_iter(), now);
+        }
+        // No decay step: we want to observe the EWMA at the last fold point.
+        let snap = tracker.snapshot();
+        let (_, s) = snap
+            .iter()
+            .find(|(name, _)| name == "stream_a")
+            .expect("stream_a must be tracked");
+        // With tau_5s = 5s and ~20s of steady input, the 5 s EWMA should be
+        // well within the 80-120 band for a true 100 ev/s stream.
+        assert!(
+            s.ewma_5s > 80.0 && s.ewma_5s < 120.0,
+            "ewma_5s {} not within 80-120 band for 100 ev/s input",
+            s.ewma_5s
+        );
     }
 }
