@@ -4,14 +4,14 @@ milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
 status: executing
 stopped_at: Completed 09-02-PLAN.md (incremental snapshot wiring)
-last_updated: "2026-04-10T05:01:09.573Z"
-last_activity: 2026-04-10
+last_updated: "2026-04-10T06:57:49.574Z"
+last_activity: 2026-04-10 -- Phase 10 execution started
 progress:
   total_phases: 5
   completed_phases: 4
-  total_plans: 12
+  total_plans: 17
   completed_plans: 12
-  percent: 100
+  percent: 71
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Events go in, features come out -- synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
-**Current focus:** Phase null
+**Current focus:** Phase 10 — Debug UI
 
 ## Current Position
 
-Phase: 10
-Plan: Not started
-Status: Executing Phase null
-Last activity: 2026-04-10
+Phase: 10 (Debug UI) — EXECUTING
+Plan: 1 of 5
+Status: Executing Phase 10
+Last activity: 2026-04-10 -- Phase 10 execution started
 
 Progress: [..........] 0%
 
@@ -105,7 +105,7 @@ Key v1.1 architectural decisions (from research):
 
 ### Pending Todos
 
-None yet.
+- **Phase 10.1 Latency Debugger (scope addition, 2026-04-10)** — After Phase 10 verification passes and BEFORE the v1.1 milestone lifecycle (audit → complete → cleanup), insert decimal phase 10.1 for a latency debugger. Scope sketch: percentile tracker (t-digest vs HDR vs bucketed — real research decision) per TCP command (PUSH/GET/SET/MSET) with per-stream breakdown, new `/debug/latency` JSON endpoint on port 6401, fifth tab in the Debug UI with p50/p95/p99 histograms + slow-query view, Nyquist tests via raw TCP matching `tests/test_debug_ui.rs`. Invoke via `gsd-insert-phase 10.1` or `gsd-add-phase`; run full discuss → research → plan → execute cycle (do NOT skip discuss — histogram-estimator choice needs explicit decision). Source: user request mid Phase 10 Wave 1.
 
 ### Blockers/Concerns
 
