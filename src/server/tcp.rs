@@ -363,6 +363,7 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
 
 /// Cooperative backfill: reads event log entries, pushes to new operators in 64-event chunks.
 /// On completion, adds (stream, feature) pairs to backfill_complete set for persistence.
+/// Clears existing operator state for backfill features before replay to ensure idempotent restart.
 pub async fn run_backfill(
     state: SharedState,
     stream_name: String,
@@ -370,6 +371,20 @@ pub async fn run_backfill(
     entries: Vec<LogEntry>,
     status: Arc<BackfillStatus>,
 ) {
+    // Clear any existing operator state for backfill features (idempotent restart).
+    // This ensures a re-run after crash produces the same result as a fresh run.
+    {
+        let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+        let keys: Vec<String> = app.store.entity_keys().collect();
+        for key in &keys {
+            if let Some(entity) = app.store.get_entity_mut(key) {
+                if let Some(stream_state) = entity.streams.get_mut(&stream_name) {
+                    stream_state.operators.retain(|(name, _)| !feature_names.contains(name));
+                }
+            }
+        }
+    }
+
     let total = entries.len();
     for (chunk_idx, chunk) in entries.chunks(64).enumerate() {
         {

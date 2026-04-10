@@ -378,6 +378,30 @@ async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse
     }
 }
 
+async fn debug_backfill(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let app = state.lock().unwrap_or_else(|e| e.into_inner());
+    let tasks = app.backfill_tracker.tasks.lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let task_list: Vec<serde_json::Value> = tasks.iter().map(|t| {
+        let processed = t.processed_events.load(std::sync::atomic::Ordering::Relaxed);
+        let completed = t.completed_at.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|_| true)
+            .unwrap_or(false);
+        serde_json::json!({
+            "stream": t.stream,
+            "features": t.features,
+            "total_events": t.total_events,
+            "processed_events": processed,
+            "completed": completed,
+            "status": if completed { "completed" } else { "running" },
+        })
+    }).collect();
+    Json(serde_json::json!({
+        "backfill_tasks": task_list,
+    }))
+}
+
 pub fn build_router(state: SharedState) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -389,6 +413,7 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/metrics", get(metrics_endpoint))
         .route("/debug/key/{key}", get(debug_key))
         .route("/debug/memory", get(debug_memory))
+        .route("/debug/backfill", get(debug_backfill))
         .route("/snapshot", post(trigger_snapshot))
         .with_state(state)
 }
