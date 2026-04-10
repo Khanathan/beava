@@ -30,7 +30,7 @@ Full details: [v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
 
 **Milestone Goal:** Transform Tally into a composable streaming pipeline with SSD event log for replay/backfill, operational improvements, and a debug UI for observability.
 
-- [ ] **Phase 6: Foundation** - EntityState refactor for per-stream isolation, SSD event log with history TTL and compaction, per-stream entity TTL, MGET
+- [x] **Phase 6: Foundation** - EntityState refactor for per-stream isolation, SSD event log with history TTL and compaction, per-stream entity TTL, MGET
 - [ ] **Phase 7: Composable Pipeline** - Keyless streams, keyed streams with depends_on, DAG execution with topological cascade, cycle detection, LEFT JOIN semantics
 - [ ] **Phase 8: Backfill & Schema Evolution** - Add/remove features without state reset, backfill replay from event log with event timestamps
 - [ ] **Phase 9: Incremental Snapshots** - Dirty-key tracking, delta snapshot files, base + delta recovery
@@ -64,7 +64,12 @@ Plans:
   2. User can define a keyed stream with `depends_on` declaring upstream dependencies, and pushing an event to an upstream stream automatically updates all downstream streams in correct topological order
   3. Registering a pipeline with circular dependencies is rejected with an error message identifying the cycle
   4. Downstream streams that depend on upstream values not yet computed receive null/missing values (LEFT JOIN semantics) rather than errors
-**Plans**: TBD
+**Plans:** 4 plans
+Plans:
+- [ ] 07-01-PLAN.md — Rust type changes: keyless streams, depends_on, filter, petgraph dependency
+- [ ] 07-02-PLAN.md — Python SDK: optional key, depends_on, filter on @st.stream()
+- [ ] 07-03-PLAN.md — DAG construction with petgraph, cascade execution, cycle detection
+- [ ] 07-04-PLAN.md — TCP handler cascade integration + E2E tests
 
 ### Phase 8: Backfill & Schema Evolution
 **Goal**: Users can evolve stream definitions over time -- adding and removing features without state reset -- and backfill new features from the event log for deterministic results
@@ -112,8 +117,8 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10
 | 3. Python SDK | v1.0 | 4/4 | Complete | 2026-04-09 |
 | 4. Persistence and Operational Readiness | v1.0 | 3/3 | Complete | 2026-04-09 |
 | 5. Advanced Operators and Cross-Stream | v1.0 | 3/3 | Complete | 2026-04-09 |
-| 6. Foundation | v1.1 | 0/4 | Not started | - |
-| 7. Composable Pipeline | v1.1 | 0/? | Not started | - |
+| 6. Foundation | v1.1 | 4/4 | Complete | 2026-04-10 |
+| 7. Composable Pipeline | v1.1 | 0/4 | Not started | - |
 | 8. Backfill & Schema Evolution | v1.1 | 0/? | Not started | - |
 | 9. Incremental Snapshots | v1.1 | 0/? | Not started | - |
 | 10. Debug UI | v1.1 | 0/? | Not started | - |
