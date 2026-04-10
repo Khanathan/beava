@@ -570,3 +570,76 @@ g.edgeLabel rect { fill: var(--bg-panel); }
     animation-duration: 0ms !important;
   }
 }
+
+/* ================================================================
+   Phase 10.2: Latency debugger styles
+   ================================================================ */
+
+/* Histogram bar chart */
+.histogram-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 48px;
+  padding: 8px 0;
+}
+.histogram-bar {
+  flex: 1;
+  background: var(--accent-primary);
+  min-width: 2px;
+  border-radius: 1px 1px 0 0;
+  transition: height 0.15s ease;
+}
+
+/* Latency overview table */
+.latency-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 8px 0;
+}
+.latency-table th,
+.latency-table td {
+  padding: 4px 8px;
+  text-align: right;
+}
+.latency-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.latency-table td:first-child {
+  text-align: left;
+  font-weight: 600;
+}
+
+/* Slow query list */
+.slow-query-item {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.slow-query-item .sq-time {
+  color: var(--text-secondary);
+  min-width: 60px;
+}
+.slow-query-item .sq-cmd {
+  font-weight: 600;
+  min-width: 40px;
+}
+.slow-query-item .sq-latency {
+  color: var(--accent-primary);
+  min-width: 60px;
+  text-align: right;
+}
+.slow-query-item .sq-stream {
+  color: var(--text-secondary);
+}
+.slow-query-item .sq-key {
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

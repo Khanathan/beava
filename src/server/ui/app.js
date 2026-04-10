@@ -116,6 +116,15 @@ function formatFeatureValue(v) {
   try { return JSON.stringify(v); } catch (_) { return String(v); }
 }
 
+// Phase 10.2: format microsecond latency as a compact human-readable label.
+function formatLatency(us) {
+  if (us == null || Number.isNaN(us)) return '--';
+  if (us < 1) return '<1us';
+  if (us < 1000) return Math.round(us) + 'us';
+  if (us < 1000000) return (us / 1000).toFixed(1) + 'ms';
+  return (us / 1000000).toFixed(2) + 's';
+}
+
 function fmtTime(d) {
   if (!d) return '—';
   const t = (d instanceof Date) ? d : new Date(d);
@@ -155,6 +164,7 @@ const state = {
   topology: null,    // last /debug/topology response
   throughput: null,  // last /debug/throughput response
   memory: null,      // last /debug/memory response
+  latency: null,     // last /debug/latency response (Phase 10.2)
   lastUpdate: null,  // Date of last successful tick
   health: null,
 };
@@ -193,11 +203,7 @@ function renderDrillInPanel(name) {
   clear(panel);
 
   if (name == null) {
-    panel.setAttribute('data-empty', 'true');
-    panel.appendChild(el('p', {
-      class: 'drill-in-placeholder',
-      text: 'Select a stream to see details',
-    }));
+    renderGlobalLatencyDashboard(panel, state.latency);
     return;
   }
   panel.removeAttribute('data-empty');
@@ -222,6 +228,7 @@ function renderDrillInPanel(name) {
     renderMemorySection(panel, node, state.memory);
     renderStateSection(panel, node);
     renderThroughputSection(panel, node, state.throughput);
+    renderLatencySection(panel, node, state.latency);
     renderEntityLookupSection(panel, node);
   }
 }
@@ -401,6 +408,162 @@ function renderThroughputSection(panel, node, throughput) {
   } else {
     panel.appendChild(section);
   }
+}
+
+// Phase 10.2: render per-stream PUSH latency in the drill-in panel.
+function renderLatencySection(panel, node, latency) {
+  const existing = panel.querySelector(
+    '.drill-in-section[data-section="latency"]'
+  );
+
+  const section = el('section', {
+    class: 'drill-in-section',
+    'data-section': 'latency',
+  });
+  section.appendChild(el('h3', { class: 'section-title', text: 'Latency' }));
+
+  var entry = null;
+  if (latency && latency.per_stream) {
+    for (const s of latency.per_stream) {
+      if (s.stream === node.name) { entry = s; break; }
+    }
+  }
+
+  var row = el('div', { class: 'stat-row' });
+  var cells = [['p50', 'p50_us'], ['p95', 'p95_us'], ['p99', 'p99_us']];
+  for (const pair of cells) {
+    var val = entry ? formatLatency(entry[pair[1]]) : '--';
+    row.appendChild(el('div', { class: 'stat' }, [
+      el('div', { class: 'stat-label', text: pair[0] }),
+      el('div', { class: 'stat-value', text: val }),
+    ]));
+  }
+  section.appendChild(row);
+
+  if (entry && entry.count > 0) {
+    section.appendChild(el('div', {
+      class: 'stat-label',
+      text: entry.count + ' samples',
+    }));
+  }
+
+  if (existing) {
+    existing.replaceWith(section);
+  } else {
+    panel.appendChild(section);
+  }
+}
+
+// Phase 10.2: render histogram bar chart using CSS bars (no charting lib).
+function renderHistogramBars(container, histogram) {
+  if (!histogram || !histogram.counts) return;
+  var maxCount = 0;
+  for (var i = 0; i < histogram.counts.length; i++) {
+    if (histogram.counts[i] > maxCount) maxCount = histogram.counts[i];
+  }
+  if (maxCount === 0) {
+    container.appendChild(el('div', {
+      class: 'stat-label',
+      text: 'No latency data',
+    }));
+    return;
+  }
+  var barContainer = el('div', { class: 'histogram-bars' });
+  for (var j = 0; j < histogram.counts.length; j++) {
+    var pct = (histogram.counts[j] / maxCount) * 100;
+    var bar = el('div', { class: 'histogram-bar' });
+    bar.style.height = pct + '%';
+    barContainer.appendChild(bar);
+  }
+  container.appendChild(barContainer);
+}
+
+// Phase 10.2: global latency dashboard when no node is selected.
+function renderGlobalLatencyDashboard(panel, latency) {
+  clear(panel);
+  panel.removeAttribute('data-empty');
+
+  var section = el('section', {
+    class: 'drill-in-section',
+    'data-section': 'latency-global',
+  });
+  section.appendChild(el('h3', { class: 'section-title', text: 'Latency Overview' }));
+
+  if (!latency || !latency.per_command) {
+    section.appendChild(el('div', {
+      class: 'stat-label',
+      text: 'Waiting for data...',
+    }));
+    panel.appendChild(section);
+    return;
+  }
+
+  // Per-command table
+  var table = el('table', { class: 'latency-table' });
+  var thead = el('tr');
+  var headers = ['Command', 'Count', 'p50', 'p95', 'p99'];
+  for (const h of headers) {
+    thead.appendChild(el('th', { text: h }));
+  }
+  table.appendChild(thead);
+  for (const cmd of latency.per_command) {
+    var tr = el('tr');
+    tr.appendChild(el('td', { text: cmd.command }));
+    tr.appendChild(el('td', { text: String(cmd.count) }));
+    tr.appendChild(el('td', { text: formatLatency(cmd.p50_us) }));
+    tr.appendChild(el('td', { text: formatLatency(cmd.p95_us) }));
+    tr.appendChild(el('td', { text: formatLatency(cmd.p99_us) }));
+    table.appendChild(tr);
+  }
+  section.appendChild(table);
+
+  // PUSH histogram bar chart
+  var pushEntry = null;
+  for (const cmd of latency.per_command) {
+    if (cmd.command === 'PUSH') { pushEntry = cmd; break; }
+  }
+  if (pushEntry && pushEntry.histogram) {
+    section.appendChild(el('h3', {
+      class: 'section-title',
+      text: 'PUSH Distribution',
+    }));
+    renderHistogramBars(section, pushEntry.histogram);
+  }
+
+  panel.appendChild(section);
+
+  // Slow queries section
+  var sqSection = el('section', {
+    class: 'drill-in-section',
+    'data-section': 'latency-slow',
+  });
+  sqSection.appendChild(el('h3', { class: 'section-title', text: 'Slow Queries' }));
+
+  if (!latency.slow_queries || latency.slow_queries.length === 0) {
+    sqSection.appendChild(el('div', {
+      class: 'stat-label',
+      text: 'No slow queries recorded',
+    }));
+  } else {
+    for (const sq of latency.slow_queries) {
+      var item = el('div', { class: 'slow-query-item' });
+      var ts = new Date(sq.timestamp_ms);
+      item.appendChild(el('span', { class: 'sq-time', text: fmtTime(ts) }));
+      item.appendChild(el('span', { class: 'sq-cmd', text: sq.command }));
+      item.appendChild(el('span', {
+        class: 'sq-latency',
+        text: formatLatency(sq.latency_us),
+      }));
+      if (sq.stream) {
+        item.appendChild(el('span', { class: 'sq-stream', text: sq.stream }));
+      }
+      if (sq.key_preview) {
+        item.appendChild(el('span', { class: 'sq-key', text: sq.key_preview }));
+      }
+      sqSection.appendChild(item);
+    }
+  }
+  panel.appendChild(sqSection);
 }
 
 function renderEntityLookupSection(panel, node) {
@@ -682,8 +845,17 @@ async function tickEdgeUpdater() {
   state.throughput = data;
   updateEdgeLabels(data);
 
+  // Phase 10.2: fetch latency in parallel (fire-and-forget pattern).
+  var latencyData = null;
+  try {
+    var latRes = await fetch('/debug/latency');
+    if (latRes.ok) latencyData = await latRes.json();
+  } catch (_) { /* silent */ }
+  if (state.paused) return;
+  state.latency = latencyData;
+
   // Granular re-render: if a stream is selected, update ONLY the Throughput
-  // section — never the entity input (Pitfall 6).
+  // and Latency sections — never the entity input (Pitfall 6).
   if (state.selectedStream) {
     const panel = document.getElementById('drill-in-panel');
     const node = findNode(state.selectedStream);
@@ -697,7 +869,12 @@ async function tickEdgeUpdater() {
       setSelected(null);
     } else if (panel && node.kind !== 'view') {
       renderThroughputSection(panel, node, data);
+      renderLatencySection(panel, node, latencyData);
     }
+  } else {
+    // No node selected: refresh the global latency dashboard.
+    var panel = document.getElementById('drill-in-panel');
+    if (panel) renderGlobalLatencyDashboard(panel, latencyData);
   }
 
   state.lastUpdate = new Date();
