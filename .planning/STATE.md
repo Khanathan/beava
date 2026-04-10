@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
 status: executing
-stopped_at: Completed 10-02-PLAN.md (ThroughputTracker + Push arm instrumentation)
-last_updated: "2026-04-10T12:45:02.628Z"
+stopped_at: Completed 10-03-PLAN.md (debug endpoints + embedded UI routes)
+last_updated: "2026-04-10T12:53:46.096Z"
 last_activity: 2026-04-10
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 17
-  completed_plans: 14
-  percent: 82
+  completed_plans: 15
+  percent: 88
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 ## Current Position
 
 Phase: 10 (Debug UI) — EXECUTING
-Plan: 3 of 5
+Plan: 4 of 5
 Status: Ready to execute
 Last activity: 2026-04-10
 
@@ -62,6 +62,7 @@ Progress: [..........] 0%
 | Phase 09 P01 | 6min | 2 tasks | 2 files |
 | Phase 09 P02 | 110m | 2 tasks | 6 files |
 | Phase 10 P02 | 10min | 2 tasks | 4 files |
+| Phase 10 P03 | 3min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -104,6 +105,7 @@ Key v1.1 architectural decisions (from research):
 - [Phase 09]: cleanup_old_snapshots runs only after successful base write so deltas are never deleted before their owning base exists
 - [Phase 09]: Eviction restructured to two-phase (collect plan, then apply) to allow mark_deleted without borrow checker conflict
 - [Phase 10]: [Phase 10]: ThroughputTracker uses lock-once instrumentation inside existing AppState mutex (RESEARCH Pattern 3 option A) — zero new contention on single-threaded core; bump_unique with HashSet dedup is the canonical Push-arm call site to prevent double-counting across primary/cascade/fan-out overlap (RESEARCH Pitfall 4)
+- [Phase 10]: Plan 10-03: /debug endpoints follow lock-once-then-build-JSON pattern (no .await across AppState mutex); /debug/memory extended additively (original 3 fields preserved + per_stream array); axum 0.8 brace-wildcard syntax for /static/{*file}; view nodes emit depends_on:[] and participate in DAG only via lookup edges; edge kind discriminator (cascade vs lookup) gives frontend a stable style hook
 
 ### Pending Todos
 
@@ -122,6 +124,6 @@ Key v1.1 architectural decisions (from research):
 
 ## Session Continuity
 
-Last session: 2026-04-10T12:44:51.136Z
-Stopped at: Completed 10-02-PLAN.md (ThroughputTracker + Push arm instrumentation)
+Last session: 2026-04-10T12:53:46.094Z
+Stopped at: Completed 10-03-PLAN.md (debug endpoints + embedded UI routes)
 Resume: `/gsd-plan-phase 6`

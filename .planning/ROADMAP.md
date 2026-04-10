@@ -108,11 +108,11 @@ Plans:
   3. User can search for any entity key and inspect its current feature values across all streams
   4. User can see a memory usage breakdown showing per-stream and total memory consumption
   5. The debug UI is embedded in the Tally binary with no separate process, npm build, or external files required
-**Plans:** 2/5 plans executed
+**Plans:** 3/5 plans executed
 Plans:
 - [x] 10-01-PLAN.md — Add rust-embed dep, vendor htmx/d3/dagre-d3, write VENDOR.md manifest, browser smoke test
 - [x] 10-02-PLAN.md — ThroughputTracker (EWMA 5s/60s/5m) + AppState wiring with cascade/fan-out dedup
-- [ ] 10-03-PLAN.md — Backend handlers: rust-embed UiAssets + /debug/topology + /debug/throughput + extended /debug/memory
+- [x] 10-03-PLAN.md — Backend handlers: rust-embed UiAssets + /debug/topology + /debug/throughput + extended /debug/memory
 - [ ] 10-04-PLAN.md — Frontend assets: index.html, app.css, app.js, icons.svg, favicon.svg + browser smoke test
 - [ ] 10-05-PLAN.md — Integration tests (test_debug_ui.rs, 15 cases, SHA256 pins) + fix stale test_server.rs AppState
 **UI hint**: yes
@@ -133,4 +133,4 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10
 | 7. Composable Pipeline | v1.1 | 4/4 | Complete | 2026-04-10 |
 | 8. Backfill & Schema Evolution | v1.1 | 2/2 | Complete | 2026-04-10 |
 | 9. Incremental Snapshots | v1.1 | 2/2 | Complete   | 2026-04-10 |
-| 10. Debug UI | v1.1 | 2/5 | In Progress|  |
+| 10. Debug UI | v1.1 | 3/5 | In Progress|  |
