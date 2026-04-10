@@ -63,12 +63,12 @@ async fn main() {
                             if let Ok(req) = req {
                                 let def_name = req.name.clone();
                                 let is_view = req.definition_type.as_deref() == Some("view");
-                                let registered = if is_view {
+                                let registered: Result<(), crate::error::TallyError> = if is_view {
                                     convert_view_register_request(req)
                                         .and_then(|view_def| app.engine.register_view(view_def))
                                 } else {
                                     convert_register_request(req)
-                                        .and_then(|stream_def| app.engine.register(stream_def))
+                                        .and_then(|stream_def| app.engine.register(stream_def).map(|_diff| ()))
                                 };
                                 if registered.is_ok() {
                                     app.engine.store_raw_register_json(&def_name, json_val);
@@ -121,7 +121,8 @@ async fn main() {
             // Clone state under lock (brief hold)
             let snapshot_data = {
                 let app = snap_state.lock().unwrap_or_else(|e| e.into_inner());
-                let entities = app.store.clone_for_snapshot();
+                let valid_features = app.engine.valid_features_map();
+                let entities = app.store.clone_for_snapshot_with_gc(&valid_features);
                 let mut pipelines: Vec<SerializablePipeline> = app
                     .engine
                     .list_streams()

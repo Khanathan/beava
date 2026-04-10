@@ -23,6 +23,7 @@ pub enum FeatureDef {
         window: Duration,
         bucket: Duration,
         where_expr: Option<Expr>,
+        backfill: bool,
     },
     Sum {
         field: String,
@@ -30,6 +31,7 @@ pub enum FeatureDef {
         bucket: Duration,
         optional: bool,
         where_expr: Option<Expr>,
+        backfill: bool,
     },
     Avg {
         field: String,
@@ -37,6 +39,7 @@ pub enum FeatureDef {
         bucket: Duration,
         optional: bool,
         where_expr: Option<Expr>,
+        backfill: bool,
     },
     Min {
         field: String,
@@ -44,6 +47,7 @@ pub enum FeatureDef {
         bucket: Duration,
         optional: bool,
         where_expr: Option<Expr>,
+        backfill: bool,
     },
     Max {
         field: String,
@@ -51,10 +55,12 @@ pub enum FeatureDef {
         bucket: Duration,
         optional: bool,
         where_expr: Option<Expr>,
+        backfill: bool,
     },
     Last {
         field: String,
         optional: bool,
+        backfill: bool,
     },
     DistinctCount {
         field: String,
@@ -62,10 +68,89 @@ pub enum FeatureDef {
         bucket: Duration,
         optional: bool,
         where_expr: Option<Expr>,
+        backfill: bool,
     },
     Derive {
         expr: Expr, // Parsed at registration time
     },
+}
+
+/// Schema diff result from re-registering a stream.
+/// Classifies features as added, removed, unchanged, or backfilling.
+#[derive(Debug, Clone)]
+pub struct SchemaDiff {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    pub unchanged: Vec<String>,
+    pub backfilling: Vec<String>,
+}
+
+/// Check if two FeatureDef variants are the same operator type
+/// (using std::mem::discriminant to compare enum variant identity).
+fn same_operator_type(a: &FeatureDef, b: &FeatureDef) -> bool {
+    std::mem::discriminant(a) == std::mem::discriminant(b)
+}
+
+/// Extract the backfill flag from a FeatureDef. Returns false for Derive (no state).
+pub fn get_backfill_flag(def: &FeatureDef) -> bool {
+    match def {
+        FeatureDef::Count { backfill, .. } => *backfill,
+        FeatureDef::Sum { backfill, .. } => *backfill,
+        FeatureDef::Avg { backfill, .. } => *backfill,
+        FeatureDef::Min { backfill, .. } => *backfill,
+        FeatureDef::Max { backfill, .. } => *backfill,
+        FeatureDef::Last { backfill, .. } => *backfill,
+        FeatureDef::DistinctCount { backfill, .. } => *backfill,
+        FeatureDef::Derive { .. } => false,
+    }
+}
+
+/// Compute the schema diff between old and new feature lists.
+/// Returns error if a feature name exists in both but with a different operator type.
+fn diff_features(
+    old: &[(String, FeatureDef)],
+    new: &[(String, FeatureDef)],
+) -> Result<SchemaDiff, TallyError> {
+    let old_map: AHashMap<&str, &FeatureDef> = old.iter()
+        .map(|(name, def)| (name.as_str(), def))
+        .collect();
+    let new_map: AHashMap<&str, &FeatureDef> = new.iter()
+        .map(|(name, def)| (name.as_str(), def))
+        .collect();
+
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut unchanged = Vec::new();
+    let mut backfilling = Vec::new();
+
+    // Check features in new definition
+    for (name, new_def) in &new_map {
+        if let Some(old_def) = old_map.get(name) {
+            // Feature exists in both -- check type compatibility
+            if !same_operator_type(old_def, new_def) {
+                return Err(TallyError::Protocol(format!(
+                    "feature '{}' type changed: cannot change operator type on re-registration; remove and re-add with a new name",
+                    name
+                )));
+            }
+            unchanged.push(name.to_string());
+        } else {
+            // New feature
+            added.push(name.to_string());
+            if get_backfill_flag(new_def) {
+                backfilling.push(name.to_string());
+            }
+        }
+    }
+
+    // Check features removed (in old but not new)
+    for (name, _) in &old_map {
+        if !new_map.contains_key(name) {
+            removed.push(name.to_string());
+        }
+    }
+
+    Ok(SchemaDiff { added, removed, unchanged, backfilling })
 }
 
 /// A view feature: either a derived expression or a cross-key lookup.
@@ -145,7 +230,7 @@ fn create_operator(def: &FeatureDef) -> Option<OperatorState> {
         FeatureDef::Max { field, window, bucket, optional, .. } => {
             Some(OperatorState::Max(MaxOp::new(field.clone(), *window, *bucket, *optional)))
         }
-        FeatureDef::Last { field, optional } => {
+        FeatureDef::Last { field, optional, .. } => {
             Some(OperatorState::Last(LastOp::new(field.clone(), *optional)))
         }
         FeatureDef::DistinctCount { field, window, bucket, optional, .. } => {
@@ -185,8 +270,9 @@ impl PipelineEngine {
 
     /// Register a stream definition. Validates derive expressions are parseable.
     /// Duplicate registration replaces the previous definition (idempotent).
+    /// Returns a SchemaDiff describing what changed (added/removed/unchanged features).
     /// Stream names must be non-empty (T-01-14 mitigation).
-    pub fn register(&mut self, stream: StreamDefinition) -> Result<(), TallyError> {
+    pub fn register(&mut self, stream: StreamDefinition) -> Result<SchemaDiff, TallyError> {
         if stream.name.is_empty() {
             return Err(TallyError::Protocol("stream name must not be empty".into()));
         }
@@ -214,6 +300,25 @@ impl PipelineEngine {
                 let _ = name;
             }
         }
+
+        // Compute schema diff before replacing the definition
+        let diff = if let Some(old_stream) = self.streams.get(&stream.name) {
+            diff_features(&old_stream.features, &stream.features)?
+        } else {
+            // First registration: all features are "added"
+            let added: Vec<String> = stream.features.iter().map(|(n, _)| n.clone()).collect();
+            let backfilling: Vec<String> = stream.features.iter()
+                .filter(|(_, def)| get_backfill_flag(def))
+                .map(|(n, _)| n.clone())
+                .collect();
+            SchemaDiff {
+                added,
+                removed: Vec::new(),
+                unchanged: Vec::new(),
+                backfilling,
+            }
+        };
+
         let name_clone = stream.name.clone();
         self.streams.insert(name_clone.clone(), stream);
         // Rebuild DAG and validate (cycle detection)
@@ -222,7 +327,7 @@ impl PipelineEngine {
             self.streams.remove(&name_clone);
             return Err(e);
         }
-        Ok(())
+        Ok(diff)
     }
 
     /// Synchronous push-through flow:
@@ -700,6 +805,19 @@ impl PipelineEngine {
         self.views.remove(name).is_some()
     }
 
+    /// Build a map of stream_name -> Vec<feature_name> for all stateful (non-Derive)
+    /// features in each registered stream. Used by clone_for_snapshot_with_gc to
+    /// determine which operators are still valid.
+    pub fn valid_features_map(&self) -> AHashMap<String, Vec<String>> {
+        self.streams.iter().map(|(name, def)| {
+            let feature_names: Vec<String> = def.features.iter()
+                .filter(|(_, fd)| !matches!(fd, FeatureDef::Derive { .. }))
+                .map(|(n, _)| n.clone())
+                .collect();
+            (name.clone(), feature_names)
+        }).collect()
+    }
+
     /// Return list of (stream_name, key_field) for all registered keyed streams.
     /// Used by PUSH handler for fan-out. Keyless streams are excluded (T-07-03).
     pub fn fan_out_targets(&self) -> Vec<(String, String)> {
@@ -747,6 +865,7 @@ mod tests {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
+                    backfill: false,
                 }),
                 ("tx_sum_1h".into(), FeatureDef::Sum {
                     field: "amount".into(),
@@ -754,6 +873,7 @@ mod tests {
                     bucket: Duration::from_secs(60),
                     optional: false,
                     where_expr: None,
+                    backfill: false,
                 }),
                 ("avg_amount_1h".into(), FeatureDef::Avg {
                     field: "amount".into(),
@@ -761,6 +881,7 @@ mod tests {
                     bucket: Duration::from_secs(60),
                     optional: false,
                     where_expr: None,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -877,6 +998,7 @@ mod tests {
                     window: Duration::from_secs(1800), // 30m
                     bucket: Duration::from_secs(60),
                     where_expr: None,
+                    backfill: false,
                 }),
                 ("s1".into(), FeatureDef::Sum {
                     field: "amount".into(),
@@ -884,6 +1006,7 @@ mod tests {
                     bucket: Duration::from_secs(60),
                     optional: false,
                     where_expr: None,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -899,6 +1022,7 @@ mod tests {
                     window: Duration::from_secs(900), // 15m
                     bucket: Duration::from_secs(60),
                     where_expr: None,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -997,6 +1121,7 @@ mod tests {
             bucket: Duration::from_secs(60),
             optional: false,
             where_expr: None,
+            backfill: false,
         };
         assert!(create_operator(&def).is_some());
     }
@@ -1009,6 +1134,7 @@ mod tests {
             bucket: Duration::from_secs(60),
             optional: false,
             where_expr: None,
+            backfill: false,
         };
         assert!(create_operator(&def).is_some());
     }
@@ -1018,6 +1144,7 @@ mod tests {
         let def = FeatureDef::Last {
             field: "country".into(),
             optional: false,
+            backfill: false,
         };
         assert!(create_operator(&def).is_some());
     }
@@ -1036,6 +1163,7 @@ mod tests {
                     bucket: Duration::from_secs(60),
                     optional: false,
                     where_expr: None,
+                    backfill: false,
                 }),
                 ("max_amount_1h".into(), FeatureDef::Max {
                     field: "amount".into(),
@@ -1043,10 +1171,12 @@ mod tests {
                     bucket: Duration::from_secs(60),
                     optional: false,
                     where_expr: None,
+                    backfill: false,
                 }),
                 ("last_country".into(), FeatureDef::Last {
                     field: "country".into(),
                     optional: false,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -1083,11 +1213,13 @@ mod tests {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
+                    backfill: false,
                 }),
                 ("failed_tx_1h".into(), FeatureDef::Count {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: Some(where_expr),
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -1123,6 +1255,7 @@ mod tests {
             bucket: Duration::from_secs(60),
             optional: false,
             where_expr: None,
+            backfill: false,
         };
         let op = create_operator(&def);
         assert!(op.is_some());
@@ -1146,6 +1279,7 @@ mod tests {
                     bucket: Duration::from_secs(300),
                     optional: false,
                     where_expr: None,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -1214,6 +1348,7 @@ mod tests {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -1229,6 +1364,7 @@ mod tests {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -1276,6 +1412,7 @@ mod tests {
                     window: Duration::from_secs(86400),
                     bucket: Duration::from_secs(300),
                     where_expr: None,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -1293,10 +1430,12 @@ mod tests {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
+                    backfill: false,
                 }),
                 ("last_merchant_id".into(), FeatureDef::Last {
                     field: "merchant_id".into(),
                     optional: true,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -1345,6 +1484,7 @@ mod tests {
                 ("last_merchant_id".into(), FeatureDef::Last {
                     field: "merchant_id".into(),
                     optional: true,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -1361,6 +1501,7 @@ mod tests {
                     window: Duration::from_secs(86400),
                     bucket: Duration::from_secs(300),
                     where_expr: None,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -1470,6 +1611,7 @@ mod tests {
                     bucket: Duration::from_secs(60),
                     optional: false,
                     where_expr: None,
+                    backfill: false,
                 }),
                 ("max_24h".into(), FeatureDef::Max {
                     field: "amount".into(),
@@ -1477,6 +1619,7 @@ mod tests {
                     bucket: Duration::from_secs(300),
                     optional: false,
                     where_expr: None,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -1517,6 +1660,7 @@ mod tests {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -1583,6 +1727,7 @@ mod tests {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
+                    backfill: false,
                 }),
             ],
             depends_on: Some(vec!["RawEvents".into()]),
@@ -1608,6 +1753,7 @@ mod tests {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -1631,6 +1777,7 @@ mod tests {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -1739,6 +1886,7 @@ mod tests {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
+                    backfill: false,
                 }),
             ],
             depends_on: None,
@@ -1751,5 +1899,338 @@ mod tests {
         let event = serde_json::json!({"user_id": "u123", "amount": 50.0});
         let features = engine.push("Transactions", &event, &mut store, now).unwrap();
         assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
+    }
+
+    // ======================== Phase 8 Plan 01: Schema Diff Tests ========================
+
+    #[test]
+    fn test_schema_diff_add_feature() {
+        let mut engine = PipelineEngine::new();
+        let stream1 = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        let diff1 = engine.register(stream1).unwrap();
+        assert!(diff1.added.contains(&"tx_count_1h".to_string()));
+        assert!(diff1.removed.is_empty());
+
+        // Re-register with added feature
+        let stream2 = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                }),
+                ("tx_sum_1h".into(), FeatureDef::Sum {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: false,
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        let diff2 = engine.register(stream2).unwrap();
+        assert!(diff2.added.contains(&"tx_sum_1h".to_string()));
+        assert!(diff2.unchanged.contains(&"tx_count_1h".to_string()));
+        assert!(diff2.removed.is_empty());
+    }
+
+    #[test]
+    fn test_schema_diff_remove_feature() {
+        let mut engine = PipelineEngine::new();
+        let stream1 = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                }),
+                ("tx_sum_1h".into(), FeatureDef::Sum {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: false,
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        engine.register(stream1).unwrap();
+
+        // Re-register with removed feature
+        let stream2 = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        let diff = engine.register(stream2).unwrap();
+        assert!(diff.removed.contains(&"tx_sum_1h".to_string()));
+        assert!(diff.unchanged.contains(&"tx_count_1h".to_string()));
+        assert!(diff.added.is_empty());
+    }
+
+    #[test]
+    fn test_schema_diff_type_change_rejected() {
+        let mut engine = PipelineEngine::new();
+        let stream1 = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("f1".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        engine.register(stream1).unwrap();
+
+        // Re-register with different type for same name
+        let stream2 = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("f1".into(), FeatureDef::Sum {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: false,
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        let result = engine.register(stream2);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("type changed"), "Error should contain 'type changed': {}", err);
+    }
+
+    #[test]
+    fn test_schema_diff_first_registration() {
+        let mut engine = PipelineEngine::new();
+        let stream = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                }),
+                ("tx_sum_1h".into(), FeatureDef::Sum {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: false,
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        let diff = engine.register(stream).unwrap();
+        assert_eq!(diff.added.len(), 2);
+        assert!(diff.removed.is_empty());
+        assert!(diff.unchanged.is_empty());
+    }
+
+    #[test]
+    fn test_backfill_flag_parsed() {
+        let def = FeatureDef::Count {
+            window: Duration::from_secs(3600),
+            bucket: Duration::from_secs(60),
+            where_expr: None,
+            backfill: true,
+        };
+        assert!(get_backfill_flag(&def));
+
+        let def_false = FeatureDef::Count {
+            window: Duration::from_secs(3600),
+            bucket: Duration::from_secs(60),
+            where_expr: None,
+            backfill: false,
+        };
+        assert!(!get_backfill_flag(&def_false));
+
+        // Derive should always return false
+        let derive_def = FeatureDef::Derive {
+            expr: crate::engine::expression::parse_expr("1 + 1").unwrap(),
+        };
+        assert!(!get_backfill_flag(&derive_def));
+    }
+
+    #[test]
+    fn test_reregister_preserves_state() {
+        let mut engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+
+        // Register stream with count feature
+        let stream1 = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        engine.register(stream1).unwrap();
+
+        // Push 5 events
+        for _ in 0..5 {
+            engine.push("Transactions", &serde_json::json!({
+                "user_id": "u123", "amount": 10.0
+            }), &mut store, now).unwrap();
+        }
+
+        // Re-register with an added feature
+        let stream2 = StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                }),
+                ("avg_amount_1h".into(), FeatureDef::Avg {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: false,
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        };
+        engine.register(stream2).unwrap();
+
+        // Push 1 more event
+        let features = engine.push("Transactions", &serde_json::json!({
+            "user_id": "u123", "amount": 10.0
+        }), &mut store, now).unwrap();
+
+        // Original feature count should be 6 (not reset)
+        assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(6)));
+        // New feature should have count=1
+        assert_eq!(features.get("avg_amount_1h"), Some(&FeatureValue::Float(10.0)));
+    }
+
+    #[test]
+    fn test_valid_features_map() {
+        let mut engine = PipelineEngine::new();
+        engine.register(StreamDefinition {
+            name: "Transactions".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("tx_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                }),
+                ("ratio".into(), FeatureDef::Derive {
+                    expr: crate::engine::expression::parse_expr("1 + 1").unwrap(),
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        }).unwrap();
+        engine.register(StreamDefinition {
+            name: "Logins".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                ("login_count_1h".into(), FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                }),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+        }).unwrap();
+
+        let vfm = engine.valid_features_map();
+        assert_eq!(vfm.len(), 2);
+        // Transactions should only have tx_count_1h (Derive excluded)
+        let tx_features = vfm.get("Transactions").unwrap();
+        assert_eq!(tx_features.len(), 1);
+        assert!(tx_features.contains(&"tx_count_1h".to_string()));
+        // Logins should have login_count_1h
+        let login_features = vfm.get("Logins").unwrap();
+        assert_eq!(login_features.len(), 1);
+        assert!(login_features.contains(&"login_count_1h".to_string()));
     }
 }

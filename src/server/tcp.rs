@@ -249,18 +249,20 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             if is_view {
                 let view_def = protocol::convert_view_register_request(req)?;
                 app.engine.register_view(view_def)?;
+                app.engine.store_raw_register_json(&def_name, raw_json);
+                Ok(vec![])
             } else {
                 let stream_def = protocol::convert_register_request(req)?;
-                app.engine.register(stream_def)?;
+                let _diff = app.engine.register(stream_def)?;
                 // Register stream with event log for persistence
                 let history_ttl = app.engine.get_stream(&def_name)
                     .and_then(|s| s.history_ttl);
                 if let Some(ref mut log) = app.event_log {
                     let _ = log.register_stream(&def_name, history_ttl);
                 }
+                app.engine.store_raw_register_json(&def_name, raw_json);
+                Ok(vec![])
             }
-            app.engine.store_raw_register_json(&def_name, raw_json);
-            Ok(vec![])
         }
         Command::Mget { keys } => {
             let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -361,6 +363,7 @@ mod tests {
                         window: Duration::from_secs(3600),
                         bucket: Duration::from_secs(60),
                         where_expr: None,
+                        backfill: false,
                     },
                 ),
                 (
@@ -371,6 +374,7 @@ mod tests {
                         bucket: Duration::from_secs(60),
                         optional: false,
                         where_expr: None,
+                        backfill: false,
                     },
                 ),
             ],
@@ -681,6 +685,7 @@ mod tests {
                         window: Duration::from_secs(3600),
                         bucket: Duration::from_secs(60),
                         where_expr: None,
+                        backfill: false,
                     },
                 ),
             ],

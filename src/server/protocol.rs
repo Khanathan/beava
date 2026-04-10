@@ -280,6 +280,8 @@ pub struct FeatureDefRequest {
     pub on: Option<String>,       // For lookup (used in Plan 03)
     #[serde(default)]
     pub target: Option<String>,   // For lookup (used in Plan 03)
+    #[serde(default)]
+    pub backfill: Option<bool>,   // For schema evolution (SCHM-01/02)
 }
 
 // ---------------------------------------------------------------------------
@@ -357,7 +359,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                     Some(b) => parse_duration_str(&b)?,
                     None => default_bucket(window),
                 };
-                FeatureDef::Count { window, bucket, where_expr }
+                FeatureDef::Count { window, bucket, where_expr, backfill: f.backfill.unwrap_or(false) }
             }
             "sum" => {
                 let field = f.field.ok_or_else(|| {
@@ -383,6 +385,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                     bucket,
                     optional: f.optional.unwrap_or(false),
                     where_expr,
+                    backfill: f.backfill.unwrap_or(false),
                 }
             }
             "avg" => {
@@ -409,6 +412,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                     bucket,
                     optional: f.optional.unwrap_or(false),
                     where_expr,
+                    backfill: f.backfill.unwrap_or(false),
                 }
             }
             "min" => {
@@ -435,6 +439,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                     bucket,
                     optional: f.optional.unwrap_or(false),
                     where_expr,
+                    backfill: f.backfill.unwrap_or(false),
                 }
             }
             "max" => {
@@ -461,6 +466,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                     bucket,
                     optional: f.optional.unwrap_or(false),
                     where_expr,
+                    backfill: f.backfill.unwrap_or(false),
                 }
             }
             "last" => {
@@ -473,6 +479,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                 FeatureDef::Last {
                     field,
                     optional: f.optional.unwrap_or(false),
+                    backfill: f.backfill.unwrap_or(false),
                 }
             }
             "distinct_count" => {
@@ -499,6 +506,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                     bucket,
                     optional: f.optional.unwrap_or(false),
                     where_expr,
+                    backfill: f.backfill.unwrap_or(false),
                 }
             }
             "derive" => {
@@ -1104,7 +1112,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "median".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None,
+                where_clause: None, on: None, target: None, backfill: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1127,7 +1135,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "histogram".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None,
+                where_clause: None, on: None, target: None, backfill: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1152,7 +1160,7 @@ mod tests {
                 name: "cnt".into(),
                 feature_type: "count".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None,
+                where_clause: None, on: None, target: None, backfill: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1175,7 +1183,7 @@ mod tests {
                 name: "total".into(),
                 feature_type: "sum".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None,
+                where_clause: None, on: None, target: None, backfill: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1198,7 +1206,7 @@ mod tests {
                 name: "total".into(),
                 feature_type: "sum".into(),
                 field: Some("amount".into()), window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None,
+                where_clause: None, on: None, target: None, backfill: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1221,7 +1229,7 @@ mod tests {
                 name: "mean".into(),
                 feature_type: "avg".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None,
+                where_clause: None, on: None, target: None, backfill: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1244,7 +1252,7 @@ mod tests {
                 name: "ratio".into(),
                 feature_type: "derive".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None,
+                where_clause: None, on: None, target: None, backfill: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1270,7 +1278,7 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::Min { field, window, bucket, optional, where_expr } => {
+            crate::engine::pipeline::FeatureDef::Min { field, window, bucket, optional, where_expr, .. } => {
                 assert_eq!(field, "amount");
                 assert_eq!(*window, std::time::Duration::from_secs(3600));
                 assert_eq!(*bucket, std::time::Duration::from_secs(120));
@@ -1321,7 +1329,7 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::Last { field, optional } => {
+            crate::engine::pipeline::FeatureDef::Last { field, optional, .. } => {
                 assert_eq!(field, "country");
                 assert!(!optional);
             }
@@ -1366,7 +1374,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "min".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None,
+                where_clause: None, on: None, target: None, backfill: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1389,7 +1397,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "last".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None,
+                where_clause: None, on: None, target: None, backfill: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1537,7 +1545,7 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::DistinctCount { field, window, bucket, optional, where_expr } => {
+            crate::engine::pipeline::FeatureDef::DistinctCount { field, window, bucket, optional, where_expr, .. } => {
                 assert_eq!(field, "merchant_id");
                 assert_eq!(*window, std::time::Duration::from_secs(86400));
                 assert!(!optional);
@@ -1563,7 +1571,7 @@ mod tests {
                 name: "dc".into(),
                 feature_type: "distinct_count".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None,
+                where_clause: None, on: None, target: None, backfill: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1756,6 +1764,7 @@ mod tests {
                 where_clause: None,
                 on: None,
                 target: None,
+                backfill: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1785,6 +1794,7 @@ mod tests {
                 where_clause: None,
                 on: None,
                 target: None,
+                backfill: None,
             }],
         };
         let stream = convert_register_request(req).unwrap();

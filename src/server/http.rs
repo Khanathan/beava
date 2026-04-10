@@ -78,6 +78,7 @@ async fn get_pipeline(
                     crate::engine::pipeline::FeatureDef::Last {
                         field,
                         optional,
+                        ..
                     } => {
                         serde_json::json!({"name": fname, "type": "last", "field": field, "optional": optional})
                     }
@@ -130,7 +131,7 @@ async fn create_pipeline(
     let def_name = req.name.clone();
     let is_view = req.definition_type.as_deref() == Some("view");
     let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-    let result = if is_view {
+    let result: Result<(), crate::error::TallyError> = if is_view {
         match crate::server::protocol::convert_view_register_request(req) {
             Ok(view_def) => app.engine.register_view(view_def),
             Err(e) => {
@@ -143,7 +144,7 @@ async fn create_pipeline(
         }
     } else {
         match convert_register_request(req) {
-            Ok(stream_def) => app.engine.register(stream_def),
+            Ok(stream_def) => app.engine.register(stream_def).map(|_diff| ()),
             Err(e) => {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -303,7 +304,8 @@ async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Valu
 async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse {
     let snapshot_data = {
         let app = state.lock().unwrap_or_else(|e| e.into_inner());
-        let entities = app.store.clone_for_snapshot();
+        let valid_features = app.engine.valid_features_map();
+        let entities = app.store.clone_for_snapshot_with_gc(&valid_features);
         // Populate pipelines from engine -- same pattern as periodic snapshot timer in Plan 02
         let mut pipelines: Vec<crate::state::snapshot::SerializablePipeline> = app
             .engine

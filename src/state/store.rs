@@ -193,6 +193,43 @@ impl StateStore {
         self.entities.keys().cloned()
     }
 
+    /// Clone full state for snapshot serialization with garbage collection of
+    /// removed operators. Filters out operators whose feature name is no longer
+    /// in the current stream definition (lazy GC on snapshot).
+    /// If a stream_name is not in valid_features (stream was unregistered entirely),
+    /// include all operators (defensive).
+    pub fn clone_for_snapshot_with_gc(
+        &self,
+        valid_features: &AHashMap<String, Vec<String>>,
+    ) -> Vec<(String, SerializableEntityState)> {
+        self.entities.iter().map(|(key, entity)| {
+            let streams: Vec<(String, SerializableStreamEntityState)> = entity.streams.iter()
+                .map(|(stream_name, stream_state)| {
+                    let operators = if let Some(valid) = valid_features.get(stream_name) {
+                        // Filter to only operators whose name is in the valid set
+                        stream_state.operators.iter()
+                            .filter(|(name, _)| valid.contains(name))
+                            .cloned()
+                            .collect()
+                    } else {
+                        // Stream not in valid_features -- include all (defensive)
+                        stream_state.operators.clone()
+                    };
+                    (stream_name.clone(), SerializableStreamEntityState {
+                        operators,
+                        last_event_at: stream_state.last_event_at,
+                    })
+                })
+                .collect();
+            (key.clone(), SerializableEntityState {
+                streams,
+                static_features: entity.static_features.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            })
+        }).collect()
+    }
+
     /// Clone full state for snapshot serialization (v4 format).
     /// AHashMap is not directly serializable by postcard -- convert to Vec<(K, V)>.
     pub fn clone_for_snapshot(&self) -> Vec<(String, SerializableEntityState)> {
@@ -585,6 +622,71 @@ mod tests {
     }
 
     // ======================== remove_empty_entities Tests ========================
+
+    // ======================== clone_for_snapshot_with_gc Tests ========================
+
+    #[test]
+    fn test_clone_for_snapshot_with_gc() {
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+
+        // Create entity with operators a, b, c in stream "Transactions"
+        {
+            let entity = store.get_or_create_entity("u123");
+            let stream = entity.get_or_create_stream("Transactions");
+            let mut op_a = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            op_a.push(&serde_json::json!({}), now).unwrap();
+            stream.operators.push(("a".to_string(), op_a));
+
+            let mut op_b = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            op_b.push(&serde_json::json!({}), now).unwrap();
+            stream.operators.push(("b".to_string(), op_b));
+
+            let mut op_c = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            op_c.push(&serde_json::json!({}), now).unwrap();
+            stream.operators.push(("c".to_string(), op_c));
+        }
+
+        // Valid features: only a and c (b was removed from definition)
+        let mut valid_features = ahash::AHashMap::new();
+        valid_features.insert("Transactions".to_string(), vec!["a".to_string(), "c".to_string()]);
+
+        let snapshot = store.clone_for_snapshot_with_gc(&valid_features);
+        assert_eq!(snapshot.len(), 1);
+        let stream_snap = &snapshot[0].1.streams[0];
+        assert_eq!(stream_snap.0, "Transactions");
+        // Only a and c should be present, b filtered out
+        let op_names: Vec<&String> = stream_snap.1.operators.iter().map(|(n, _)| n).collect();
+        assert_eq!(op_names.len(), 2);
+        assert!(op_names.contains(&&"a".to_string()));
+        assert!(op_names.contains(&&"c".to_string()));
+        assert!(!op_names.contains(&&"b".to_string()));
+    }
+
+    #[test]
+    fn test_clone_for_snapshot_with_gc_unknown_stream_includes_all() {
+        let mut store = StateStore::new();
+        let now = ts(60_000);
+
+        // Create entity with operators in stream "OldStream" (not in valid_features)
+        {
+            let entity = store.get_or_create_entity("u123");
+            let stream = entity.get_or_create_stream("OldStream");
+            let mut op_a = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            op_a.push(&serde_json::json!({}), now).unwrap();
+            stream.operators.push(("x".to_string(), op_a));
+        }
+
+        // Valid features map does not contain "OldStream"
+        let valid_features = ahash::AHashMap::new();
+
+        let snapshot = store.clone_for_snapshot_with_gc(&valid_features);
+        assert_eq!(snapshot.len(), 1);
+        let stream_snap = &snapshot[0].1.streams[0];
+        assert_eq!(stream_snap.0, "OldStream");
+        // All operators included (defensive behavior)
+        assert_eq!(stream_snap.1.operators.len(), 1);
+    }
 
     #[test]
     fn test_remove_empty_entities() {
