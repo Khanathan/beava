@@ -920,6 +920,184 @@ async fn static_css_is_embedded() {
     );
 }
 
+// ===========================================================================
+// Phase 10.1 DBUI-06: split-view shell regression tests
+// ===========================================================================
+//
+// Phase 10.1 deletes the Phase 10 four-tab layout and replaces it with a
+// split-view shell: a DAG canvas on the left and a drill-in panel on the
+// right. These two tests lock the contract of the shell REWRITE:
+//
+//   * `split_view_shell_has_no_tab_bar` — forbidden-substrings grep; every
+//     Phase 10 tab-bar identifier and htmx attribute must be gone.
+//   * `split_view_shell_has_dag_canvas_and_drill_in_panel` — required-
+//     substrings grep; new structural markers plus preserved header/footer
+//     hooks must all be present, and the vendor script order is asserted.
+//
+// Both tests are source-level (they grep the served HTML bytes); they
+// complement the existing `app_js_has_no_innerhtml_or_eval_sinks` sink-level
+// regression and the Phase 10 `static_index_is_embedded` title regression.
+
+#[tokio::test(flavor = "current_thread")]
+async fn split_view_shell_has_no_tab_bar() {
+    // Phase 10.1 DBUI-06: the four-tab flat layout from Phase 10 is deleted
+    // wholesale. The index.html served at `/` must contain zero references
+    // to the old tab-bar DOM. Regression guard — see RESEARCH Pitfall 8.
+    let (port, _state) = start_debug_ui_server().await;
+    let (status, _headers, body) = http_get(port, "/").await;
+    assert_eq!(status, 200, "GET / must succeed");
+    let body = body_string(&body);
+
+    for forbidden in &[
+        "class=\"tab-bar\"",
+        "id=\"tab-topology\"",
+        "id=\"tab-streams\"",
+        "id=\"tab-entity\"",
+        "id=\"tab-memory\"",
+        "id=\"panel-topology\"",
+        "id=\"panel-streams\"",
+        "id=\"panel-entity\"",
+        "id=\"panel-memory\"",
+        "role=\"tablist\"",
+        "role=\"tab\"",
+        "role=\"tabpanel\"",
+        "class=\"tab-panel\"",
+        "class=\"topology-card\"",
+        "class=\"streams-card\"",
+        "class=\"entity-search-card\"",
+        "class=\"memory-card\"",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "Phase 10.1 regression: legacy tab-bar markup {:?} must be removed from index.html",
+            forbidden
+        );
+    }
+
+    // Additionally: no htmx hx-* attributes in the static shell — Plan 03
+    // uses vanilla fetch + setInterval for all polling (RESEARCH Pitfall 2).
+    // Phase 10.1's index.html must not carry any of them.
+    for forbidden_htmx in &[
+        "hx-get=\"/debug/",
+        "hx-trigger=\"load",
+        "hx-trigger=\"every",
+        "hx-swap=\"",
+        "hx-on::",
+    ] {
+        assert!(
+            !body.contains(forbidden_htmx),
+            "Phase 10.1: no htmx attributes in static shell; found {:?}",
+            forbidden_htmx
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn split_view_shell_has_dag_canvas_and_drill_in_panel() {
+    // Phase 10.1 DBUI-06: the new split-view shell has a left-side DAG
+    // canvas and a right-side drill-in panel. This test locks the specific
+    // DOM hooks Plan 03's app.js will bind to.
+    let (port, _state) = start_debug_ui_server().await;
+    let (status, _headers, body) = http_get(port, "/").await;
+    assert_eq!(status, 200, "GET / must succeed");
+    let body = body_string(&body);
+
+    // Shell containers
+    assert!(
+        body.contains("class=\"split-view\"") || body.contains("class=\"app-main split-view\""),
+        "missing main.split-view container"
+    );
+    assert!(
+        body.contains("class=\"dag-canvas\""),
+        "missing .dag-canvas section"
+    );
+    assert!(
+        body.contains("class=\"drill-in-panel\"")
+            || body.contains("drill-in-panel\" data-empty")
+            || body.contains("data-empty=\"true\""),
+        "missing .drill-in-panel aside"
+    );
+
+    // SVG + ARIA
+    assert!(
+        body.contains("id=\"topology-svg\""),
+        "missing #topology-svg element"
+    );
+    assert!(
+        body.contains("role=\"img\""),
+        "missing role=\"img\" on SVG"
+    );
+    assert!(
+        body.contains("aria-label=\"Pipeline topology graph\""),
+        "missing SVG aria-label"
+    );
+
+    // Drill-in panel placeholder copy
+    assert!(
+        body.contains("Select a stream to see details"),
+        "missing drill-in placeholder copy"
+    );
+
+    // Header hooks preserved from Phase 10 (Plan 03 app.js binds to these)
+    assert!(
+        body.contains("id=\"pause-btn\""),
+        "missing pause button id"
+    );
+    assert!(
+        body.contains("id=\"poll-status\""),
+        "missing poll-status aria-live span"
+    );
+    assert!(
+        body.contains("id=\"poll-dot\"") || body.contains("class=\"poll-dot\""),
+        "missing poll-dot element"
+    );
+    assert!(
+        body.contains("id=\"poll-label\"") || body.contains("class=\"poll-label\""),
+        "missing poll-label element"
+    );
+
+    // Footer hooks preserved from Phase 10
+    assert!(
+        body.contains("id=\"footer-version\""),
+        "missing footer-version span"
+    );
+    assert!(
+        body.contains("id=\"footer-host\""),
+        "missing footer-host span"
+    );
+    assert!(
+        body.contains("id=\"footer-update\""),
+        "missing footer-update span"
+    );
+
+    // Title locked by Phase 10 regression test static_index_is_embedded,
+    // re-asserted here for defense-in-depth
+    assert!(
+        body.contains("tally \u{2014} debug"),
+        "title must remain 'tally — debug'"
+    );
+
+    // Vendor script order: d3 before dagre-d3 before htmx before app.js
+    let d3_pos = body.find("/static/vendor/d3.min.js").expect("d3 script");
+    let dagre_pos = body
+        .find("/static/vendor/dagre-d3.min.js")
+        .expect("dagre-d3 script");
+    let htmx_pos = body.find("/static/vendor/htmx.min.js").expect("htmx script");
+    let app_pos = body.find("/static/app.js").expect("app.js script");
+    assert!(
+        d3_pos < dagre_pos,
+        "d3 must load before dagre-d3 (dagre-d3 depends on d3)"
+    );
+    assert!(
+        dagre_pos < app_pos,
+        "dagre-d3 must load before app.js"
+    );
+    assert!(
+        htmx_pos < app_pos,
+        "htmx must load before app.js"
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn static_htmx_is_vendored_and_hashed() {
     let (port, _state) = start_debug_ui_server().await;
