@@ -34,7 +34,7 @@ Full details: [v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
 - [x] **Phase 7: Composable Pipeline** - Keyless streams, keyed streams with depends_on, DAG execution with topological cascade, cycle detection, LEFT JOIN semantics
 - [x] **Phase 8: Backfill & Schema Evolution** - Add/remove features without state reset, backfill replay from event log with event timestamps
 - [x] **Phase 9: Incremental Snapshots** - Dirty-key tracking, delta snapshot files, base + delta recovery (completed 2026-04-10)
-- [ ] **Phase 10: Debug UI** - Embedded web UI for stream topology DAG, live throughput, memory breakdown, entity inspection
+- [x] **Phase 10: Debug UI** - Embedded web UI for stream topology DAG, live throughput, memory breakdown, entity inspection (completed 2026-04-10)
 
 ## Phase Details
 
@@ -108,13 +108,13 @@ Plans:
   3. User can search for any entity key and inspect its current feature values across all streams
   4. User can see a memory usage breakdown showing per-stream and total memory consumption
   5. The debug UI is embedded in the Tally binary with no separate process, npm build, or external files required
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans complete
 Plans:
 - [x] 10-01-PLAN.md — Add rust-embed dep, vendor htmx/d3/dagre-d3, write VENDOR.md manifest, browser smoke test
 - [x] 10-02-PLAN.md — ThroughputTracker (EWMA 5s/60s/5m) + AppState wiring with cascade/fan-out dedup
 - [x] 10-03-PLAN.md — Backend handlers: rust-embed UiAssets + /debug/topology + /debug/throughput + extended /debug/memory
 - [x] 10-04-PLAN.md — Frontend assets: index.html, app.css, app.js, icons.svg, favicon.svg + browser smoke test
-- [ ] 10-05-PLAN.md — Integration tests (test_debug_ui.rs, 15 cases, SHA256 pins) + fix stale test_server.rs AppState
+- [x] 10-05-PLAN.md — Integration tests (test_debug_ui.rs, 15 cases, SHA256 pins) + fix stale test_server.rs AppState
 **UI hint**: yes
 
 ## Progress
@@ -133,4 +133,4 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10
 | 7. Composable Pipeline | v1.1 | 4/4 | Complete | 2026-04-10 |
 | 8. Backfill & Schema Evolution | v1.1 | 2/2 | Complete | 2026-04-10 |
 | 9. Incremental Snapshots | v1.1 | 2/2 | Complete   | 2026-04-10 |
-| 10. Debug UI | v1.1 | 4/5 | In Progress|  |
+| 10. Debug UI | v1.1 | 5/5 | Complete   | 2026-04-10 |
