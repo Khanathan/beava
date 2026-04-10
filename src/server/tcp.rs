@@ -15,7 +15,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::engine::pipeline::PipelineEngine;
 use crate::error::TallyError;
 use crate::server::protocol::{self, Command, STATUS_ERROR, STATUS_OK};
-use crate::server::throughput::ThroughputTracker;
 use crate::state::event_log::{EventLog, LogEntry};
 use crate::state::store::StateStore;
 use crate::types::{feature_map_to_json, FeatureValue};
@@ -83,7 +82,7 @@ pub struct AppState {
     /// unique stream per successful PUSH (primary + cascade + fan-out with
     /// HashSet dedup -- see handle_sync_command Push arm). Read by the
     /// /debug/throughput handler in src/server/http.rs.
-    pub throughput: ThroughputTracker,
+    pub throughput: crate::server::throughput::ThroughputTracker,
 }
 
 /// Shared state handle for concurrent connection handlers.
@@ -600,7 +599,7 @@ mod tests {
             snapshot_seq: 1,
             last_base_seq: 0,
             previous_base_seq: 0,
-            throughput: ThroughputTracker::new(),
+            throughput: crate::server::throughput::ThroughputTracker::new(),
         }))
     }
 
