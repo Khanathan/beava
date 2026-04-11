@@ -175,8 +175,8 @@ async fn handle_connection(
         // the STATUS_ERROR path.
         let response: Result<Option<Vec<u8>>, TallyError> = match cmd {
             Command::Mset { entries } => handle_mset(entries, &state).await.map(Some),
-            Command::PushAsync { stream_name, payload } => {
-                handle_push_async(&state, &stream_name, &payload, SystemTime::now()).map(|_| None)
+            Command::PushAsync { stream_name, payload, raw_payload } => {
+                handle_push_async(&state, &stream_name, &payload, &raw_payload, SystemTime::now()).map(|_| None)
             }
             Command::Flush => Ok(Some(Vec::new())),
             other => handle_sync_command(other, &state).map(Some),
@@ -254,6 +254,41 @@ fn handle_push_core(
     payload: &serde_json::Value,
     now: SystemTime,
 ) -> Result<crate::types::FeatureMap, TallyError> {
+    handle_push_core_ex(state, stream_name, payload, &[], now, true)
+}
+
+/// Build the event-log payload bytes for a push.
+///
+/// Plan 11-06: if we have the original binary wire bytes (`raw_payload`
+/// non-empty), prefix them with `LOG_FMT_BINARY` and return — zero JSON
+/// work on the hot path. If we don't have raw bytes (legacy code path,
+/// e.g. test helpers that construct a `Command::Push` by hand), fall
+/// back to serializing the decoded `serde_json::Value` and prefix with
+/// `LOG_FMT_JSON`.
+fn make_log_payload(payload: &serde_json::Value, raw_payload: &[u8]) -> Vec<u8> {
+    use crate::state::event_log::{LOG_FMT_BINARY, LOG_FMT_JSON};
+    if !raw_payload.is_empty() {
+        let mut out = Vec::with_capacity(1 + raw_payload.len());
+        out.push(LOG_FMT_BINARY);
+        out.extend_from_slice(raw_payload);
+        out
+    } else {
+        let json_bytes = serde_json::to_vec(payload).unwrap_or_default();
+        let mut out = Vec::with_capacity(1 + json_bytes.len());
+        out.push(LOG_FMT_JSON);
+        out.extend_from_slice(&json_bytes);
+        out
+    }
+}
+
+fn handle_push_core_ex(
+    state: &SharedState,
+    stream_name: &str,
+    payload: &serde_json::Value,
+    raw_payload: &[u8],
+    now: SystemTime,
+    read_features: bool,
+) -> Result<crate::types::FeatureMap, TallyError> {
     let push_start = std::time::Instant::now();
     let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
     let AppState {
@@ -263,8 +298,14 @@ fn handle_push_core(
         ..
     } = *app;
 
-    // Cascade-aware push: handles topological cascade through depends_on chains
-    let features = engine.push_with_cascade(stream_name, payload, store, now)?;
+    // Cascade-aware push: handles topological cascade through depends_on chains.
+    // Async path (read_features=false) skips HLL/derive reads for ~140x speedup
+    // on large pipelines — see pipeline.rs push_no_features doc.
+    let features = if read_features {
+        engine.push_with_cascade(stream_name, payload, store, now)?
+    } else {
+        engine.push_with_cascade_no_features(stream_name, payload, store, now)?
+    };
 
     // Mark primary key dirty for incremental snapshots (OPS-03).
     if let Some(stream_def) = engine.get_stream(stream_name) {
@@ -277,22 +318,22 @@ fn handle_push_core(
         }
     }
 
-    // Append raw event to primary stream's event log (ELOG-01, ELOG-02, ELOG-03)
-    // TODO(v1.3 perf): binary event log format. PERF-02 removed the JSON
-    // parse cost from PUSH, but `serde_json::to_vec` still runs here to
-    // serialize the binary-decoded payload for the event log. Writing the
-    // raw binary wire bytes directly to the log would eliminate the final
-    // bit of JSON on the PUSH hot path. Deferred to a later phase because
-    // it requires a versioned event-log format change + replay support.
+    // Append event to primary stream's event log (ELOG-01, ELOG-02, ELOG-03).
+    // Plan 11-06: writes raw binary wire bytes directly — no JSON serialize
+    // on the hot path. Event log readers dispatch on the format byte.
+    // Build once, reuse for primary + cascade + fan-out writes.
+    let log_payload = if event_log.is_some() {
+        make_log_payload(payload, raw_payload)
+    } else {
+        Vec::new()
+    };
     if let Some(ref mut log) = event_log {
-        let event_bytes = serde_json::to_vec(payload).unwrap_or_default();
-        let _ = log.append(stream_name, &event_bytes, now);
+        let _ = log.append(stream_name, &log_payload, now);
     }
 
     // Append event to downstream (cascade) streams' event logs (T-07-10)
     let cascade_targets = engine.get_cascade_targets(stream_name);
     if let Some(ref mut log) = event_log {
-        let event_bytes = serde_json::to_vec(payload).unwrap_or_default();
         for ds_name in &cascade_targets {
             let should_log = match engine.get_stream(ds_name) {
                 Some(d) => match &d.key_field {
@@ -302,7 +343,7 @@ fn handle_push_core(
                 None => false,
             };
             if should_log {
-                let _ = log.append(ds_name, &event_bytes, now);
+                let _ = log.append(ds_name, &log_payload, now);
             }
         }
     }
@@ -335,11 +376,22 @@ fn handle_push_core(
         }
         if let Some(serde_json::Value::String(key_val)) = payload.get(target_key_field.as_str()) {
             if !key_val.is_empty() {
-                let _ = engine.push(target_name, payload, store, now);
+                // PERF: honor async read_features flag for fan-out targets.
+                // Without this, fan-out calls engine.push (defaults to
+                // read_features=true) and still pays the HLL read cost on
+                // downstream streams — measured ~50x regression on `bench.py
+                // large` where 3 HLLs are spread across 3 streams via fan-out.
+                let _ = if read_features {
+                    engine.push(target_name, payload, store, now)
+                } else {
+                    engine.push_no_features(target_name, payload, store, now)
+                };
                 store.mark_dirty(key_val);
                 if let Some(ref mut log) = event_log {
-                    let event_bytes = serde_json::to_vec(payload).unwrap_or_default();
-                    let _ = log.append(target_name, &event_bytes, now);
+                    // Reuse the single log_payload built earlier (same bytes
+                    // for every target — the format prefix + payload is
+                    // stream-agnostic).
+                    let _ = log.append(target_name, &log_payload, now);
                 }
             }
         }
@@ -417,9 +469,16 @@ fn handle_push_async(
     state: &SharedState,
     stream_name: &str,
     payload: &serde_json::Value,
+    raw_payload: &[u8],
     now: SystemTime,
 ) -> Result<(), TallyError> {
-    let _features = handle_push_core(state, stream_name, payload, now)?;
+    // PERF: skip feature read + derive eval on the async hot path. The HLL
+    // read alone is ~300µs per distinct_count operator on 14-bit precision;
+    // discarding the result here (as we already do) and skipping the work
+    // upstream recovers ~140x throughput on pipelines with HyperLogLog.
+    // Plan 11-06: raw_payload is forwarded to the event log as-is, avoiding
+    // the final JSON serialize on the hot path.
+    let _features = handle_push_core_ex(state, stream_name, payload, raw_payload, now, false)?;
     Ok(())
 }
 
@@ -430,9 +489,18 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
         Command::Push {
             stream_name,
             payload,
+            raw_payload,
         } => {
-            let features = handle_push_core(state, &stream_name, &payload, now)?;
-            Ok(feature_map_to_json(&features))
+            // PERF: sync push path also skips feature read + derive eval. The
+            // response is a synchronous ack ({}) confirming the event was
+            // processed — callers that need features should use OP_GET after.
+            // This removes the HLL read cost from the sync hot path too, at
+            // the cost of breaking the v1.1 push_sync "returns features"
+            // contract. Clients relying on that contract must migrate to
+            // push() + get() or accept an empty map.
+            // Plan 11-06: raw_payload goes to the event log directly.
+            let _features = handle_push_core_ex(state, &stream_name, &payload, &raw_payload, now, false)?;
+            Ok(feature_map_to_json(&crate::types::FeatureMap::new()))
         }
         Command::Get { key } => {
             let get_start = std::time::Instant::now();
@@ -619,9 +687,24 @@ pub async fn run_backfill(
                 ..
             } = *app;
             for entry in chunk {
-                let event: serde_json::Value = match serde_json::from_slice(&entry.payload) {
-                    Ok(v) => v,
-                    Err(_) => continue, // Skip malformed entries (T-08-08)
+                // Plan 11-06: dispatch on log payload format byte.
+                // LOG_FMT_BINARY → decode binary wire format.
+                // LOG_FMT_JSON or legacy (no prefix) → serde_json::from_slice.
+                use crate::state::event_log::{decode_log_payload, LOG_FMT_BINARY, LOG_FMT_JSON};
+                let (fmt, body) = decode_log_payload(&entry.payload);
+                let event: serde_json::Value = match fmt {
+                    LOG_FMT_BINARY => {
+                        let mut buf = body;
+                        match crate::server::protocol::decode_event_binary(&mut buf) {
+                            Ok(v) => v,
+                            Err(_) => continue, // Skip malformed entries (T-08-08)
+                        }
+                    }
+                    LOG_FMT_JSON => match serde_json::from_slice(body) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    },
+                    _ => continue,
                 };
                 let _ = engine.push_for_backfill(
                     &stream_name,
@@ -786,21 +869,30 @@ mod tests {
     // --- PUSH command tests ---
 
     #[test]
-    fn test_push_registered_stream_returns_features() {
+    fn test_push_registered_stream_returns_empty_ack() {
+        // Phase 11 read-skip: sync push returns an empty feature map as an
+        // ack-only response. Callers that need features must use OP_GET.
         let state = make_shared_state();
         register_tx_stream(&state);
 
         let cmd = Command::Push {
             stream_name: "Transactions".into(),
             payload: serde_json::json!({"user_id": "u123", "amount": 50.0}),
+        raw_payload: Vec::new(),
         };
         let result = handle_sync_command(cmd, &state);
         assert!(result.is_ok());
 
         let bytes = result.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json["tx_count_1h"], 1);
-        assert_eq!(json["tx_sum_1h"], 50.0);
+        assert_eq!(json, serde_json::json!({}));
+
+        // Verify the underlying state WAS updated even though we didn't return it.
+        let get_cmd = Command::Get { key: "u123".into() };
+        let get_bytes = handle_sync_command(get_cmd, &state).unwrap();
+        let get_json: serde_json::Value = serde_json::from_slice(&get_bytes).unwrap();
+        assert_eq!(get_json["tx_count_1h"], 1);
+        assert_eq!(get_json["tx_sum_1h"], 50.0);
     }
 
     #[test]
@@ -809,6 +901,7 @@ mod tests {
         let cmd = Command::Push {
             stream_name: "NonExistent".into(),
             payload: serde_json::json!({"user_id": "u123"}),
+        raw_payload: Vec::new(),
         };
         let result = handle_sync_command(cmd, &state);
         assert!(result.is_err());
@@ -827,6 +920,7 @@ mod tests {
         let push_cmd = Command::Push {
             stream_name: "Transactions".into(),
             payload: serde_json::json!({"user_id": "u123", "amount": 50.0}),
+        raw_payload: Vec::new(),
         };
         handle_sync_command(push_cmd, &state).unwrap();
 
@@ -1095,7 +1189,9 @@ mod tests {
                 "merchant_id": "m456",
                 "amount": 50.0
             }),
-        };
+        
+            raw_payload: Vec::new(),
+};
         let result = handle_sync_command(cmd, &state);
         assert!(result.is_ok());
 
@@ -1110,7 +1206,10 @@ mod tests {
     }
 
     #[test]
-    fn test_fan_out_push_returns_primary_features_only() {
+    fn test_fan_out_push_ack_is_empty_but_state_updated() {
+        // Phase 11 read-skip: sync push returns an empty ack. Fan-out still
+        // runs (MerchantActivity is updated), but neither the primary nor the
+        // fan-out target's features are materialized in the response.
         let state = make_shared_state();
         register_tx_stream(&state);
         register_merchant_stream(&state);
@@ -1122,13 +1221,23 @@ mod tests {
                 "merchant_id": "m456",
                 "amount": 50.0
             }),
-        };
+        
+            raw_payload: Vec::new(),
+};
         let result = handle_sync_command(cmd, &state).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&result).unwrap();
 
-        // PUSH response should contain Transactions features, not MerchantActivity
-        assert!(json.get("tx_count_1h").is_some(), "should have primary stream feature");
-        assert!(json.get("merchant_tx_count_1h").is_none(), "should NOT have secondary stream feature");
+        // PUSH response is now an empty ack — neither primary nor fan-out features.
+        assert_eq!(json, serde_json::json!({}));
+
+        // But the fan-out still happened: MerchantActivity state was updated.
+        let mut app = state.lock().unwrap();
+        let merchant_features = app.store.get_all_features("m456", std::time::SystemTime::now());
+        assert_eq!(
+            merchant_features.get("merchant_tx_count_1h"),
+            Some(&FeatureValue::Int(1)),
+            "fan-out should still push to MerchantActivity"
+        );
     }
 
     #[test]
@@ -1145,7 +1254,9 @@ mod tests {
                 "merchant_id": "m456",
                 "amount": 50.0
             }),
-        };
+        
+            raw_payload: Vec::new(),
+};
         handle_sync_command(cmd, &state).unwrap();
 
         // user count should be 1 (pushed once, not twice)
@@ -1167,7 +1278,9 @@ mod tests {
                 "user_id": "u123",
                 "amount": 50.0
             }),
-        };
+        
+            raw_payload: Vec::new(),
+};
         handle_sync_command(cmd, &state).unwrap();
 
         // Merchant entity should NOT exist
@@ -1189,7 +1302,9 @@ mod tests {
                 "merchant_id": "",
                 "amount": 50.0
             }),
-        };
+        
+            raw_payload: Vec::new(),
+};
         handle_sync_command(cmd, &state).unwrap();
 
         // Should not create entity for empty key
@@ -1211,7 +1326,9 @@ mod tests {
                 "merchant_id": "m456",
                 "amount": 50.0
             }),
-        };
+        
+            raw_payload: Vec::new(),
+};
         handle_sync_command(cmd, &state).unwrap();
 
         // GET for user should return Transactions features
@@ -1238,6 +1355,7 @@ mod tests {
         let push_cmd = Command::Push {
             stream_name: "Transactions".into(),
             payload: serde_json::json!({"user_id": "u123", "amount": 50.0}),
+        raw_payload: Vec::new(),
         };
         handle_sync_command(push_cmd, &state).unwrap();
 
@@ -1274,6 +1392,7 @@ mod tests {
         let push_cmd = Command::Push {
             stream_name: "Transactions".into(),
             payload: serde_json::json!({"user_id": "u123", "amount": 50.0}),
+        raw_payload: Vec::new(),
         };
         handle_sync_command(push_cmd, &state).unwrap();
 
@@ -1323,7 +1442,9 @@ mod tests {
                     "merchant_id": "m1",
                     "amount": 10.0
                 }),
-            };
+            
+                raw_payload: Vec::new(),
+};
             handle_sync_command(cmd, &state).unwrap();
         }
 
