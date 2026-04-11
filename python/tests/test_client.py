@@ -367,3 +367,134 @@ class TestPhase11ClientPrimitives:
         finally:
             a.close()
             b.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 11 H-1/H-2: drain correctness under buffered + partial frames
+# ---------------------------------------------------------------------------
+
+
+class TestPhase11DrainCorrectness:
+    """Regression tests for the H-1 (non-blocking) and H-2 (multi-frame) fixes."""
+
+    def test_drain_errors_nonblock_multiple_error_frames(self):
+        """H-2: multiple buffered STATUS_ERROR frames drained in one call.
+
+        Three error frames are written to the socket in a single batch.
+        A single drain call must consume all of them. The FIRST error is
+        raised (FIFO); subsequent ones are dropped per first-error-sink
+        semantics. The drain buffer must be empty afterwards so the next
+        send_command cannot mis-pair with a stale error.
+        """
+        a, b = socket.socketpair()
+        try:
+            client = TallyClient("", 0)
+            client._sock = a
+            frames = (
+                _make_response_frame(STATUS_ERROR, b"err-1")
+                + _make_response_frame(STATUS_ERROR, b"err-2")
+                + _make_response_frame(STATUS_ERROR, b"err-3")
+            )
+            b.sendall(frames)
+            time.sleep(0.01)
+            with pytest.raises(ProtocolError, match="err-1"):
+                client.drain_errors_nonblock()
+            # All three frames must have been consumed — no residue.
+            assert len(client._drain_buf) == 0
+            # And a second drain immediately after must be a clean no-op.
+            client.drain_errors_nonblock()
+        finally:
+            a.close()
+            b.close()
+
+    def test_drain_errors_nonblock_partial_frame_does_not_block(self):
+        """H-1: a half-delivered frame in the kernel buffer does not stall.
+
+        We write a complete length header but only PART of the body. The
+        old implementation would call _recv_exact(length) and block up to
+        the socket timeout. The new drain must return immediately without
+        raising, and must buffer the partial bytes for the next call.
+        """
+        a, b = socket.socketpair()
+        try:
+            client = TallyClient("", 0)
+            client._sock = a
+            # Craft: header says 20-byte body, only 10 bytes sent.
+            header = struct.pack(">I", 20)
+            partial_body = bytes([STATUS_ERROR]) + b"hello"  # 6 of 20
+            b.sendall(header + partial_body)
+            time.sleep(0.01)
+            start = time.perf_counter()
+            client.drain_errors_nonblock()  # must NOT raise, must NOT block
+            elapsed = time.perf_counter() - start
+            assert elapsed < 0.5, f"drain blocked for {elapsed}s on partial frame"
+            # The partial bytes must be held for the next drain.
+            assert len(client._drain_buf) == 4 + 6
+
+            # Now deliver the remaining 14 bytes to complete the frame.
+            rest = b"x" * 14
+            b.sendall(rest)
+            time.sleep(0.01)
+            # Second drain sees the full frame and surfaces the error.
+            with pytest.raises(ProtocolError):
+                client.drain_errors_nonblock()
+            assert len(client._drain_buf) == 0
+        finally:
+            a.close()
+            b.close()
+
+    def test_send_command_raises_pending_async_error_before_send(self):
+        """H-2: an async error queued before send_command is raised first.
+
+        Simulates the desync scenario: the server sent a STATUS_ERROR
+        frame in response to a prior OP_PUSH_ASYNC, and the user now
+        calls send_command (e.g., a GET). send_command must drain the
+        stale error and raise it BEFORE writing its own frame — if the
+        send happened first, the stale error would be paired with the
+        new sync response and cause persistent off-by-one desync.
+        """
+        a, b = socket.socketpair()
+        try:
+            client = TallyClient("", 0)
+            client._sock = a
+            # Queue a stale async error on the socket.
+            b.sendall(_make_response_frame(STATUS_ERROR, b"async-boom"))
+            time.sleep(0.01)
+            with pytest.raises(ProtocolError, match="async-boom"):
+                client.send_command(0x02, b"some-get-payload")
+            # send_command must NOT have written anything to the socket,
+            # because the drain raised before the send.
+            b.setblocking(False)
+            try:
+                leftover = b.recv(4096)
+            except BlockingIOError:
+                leftover = b""
+            assert leftover == b"", f"send_command wrote {leftover!r} after raising"
+        finally:
+            a.close()
+            b.close()
+
+    def test_drain_errors_nonblock_fast_path_empty_buffer(self):
+        """H-1 fast path: drain on an idle socket must be trivially cheap.
+
+        Not a strict latency bound (CI noise), just asserts that the
+        method completes well under the previous select-based timeout
+        threshold when no data is pending. Also asserts no allocations
+        linger in _drain_buf.
+        """
+        a, b = socket.socketpair()
+        try:
+            client = TallyClient("", 0)
+            client._sock = a
+            # Warm up.
+            client.drain_errors_nonblock()
+            start = time.perf_counter()
+            for _ in range(1000):
+                client.drain_errors_nonblock()
+            elapsed = time.perf_counter() - start
+            # 1000 drains should comfortably complete in well under a second.
+            assert elapsed < 1.0, f"1000 drains took {elapsed}s (too slow)"
+            assert len(client._drain_buf) == 0
+        finally:
+            a.close()
+            b.close()
