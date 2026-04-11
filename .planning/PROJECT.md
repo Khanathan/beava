@@ -10,7 +10,7 @@ Events go in, features come out — synchronously, in one request-response cycle
 
 ## Current State
 
-Shipped v1.0 with 9,904 lines of Rust + 2,915 lines of Python (~12,800 total).
+Shipped v1.0, v1.1 (composable pipeline + event log + debug UI), and v1.2 (fire-and-forget PUSH + binary wire protocol hitting 128–142k eps single-client on medium pipelines).
 
 **Tech stack:** Rust (tokio, serde, postcard, winnow, ahash), Python SDK
 **Architecture:** Single-threaded tokio event loop, custom binary TCP protocol (port 6400), HTTP management API (port 6401)
@@ -42,41 +42,51 @@ Shipped v1.0 with 9,904 lines of Rust + 2,915 lines of Python (~12,800 total).
 - ✓ TTL-based key eviction — v1.0
 - ✓ MSET chunked yielding (cooperative, non-blocking) — v1.0
 - ✓ HTTP management API (health, metrics, debug, pipeline CRUD) — v1.0
+- ✓ EntityState per-stream isolation + SSD event log (append-only, history_ttl, compaction) — v1.1
+- ✓ Keyless streams for raw event ingestion — v1.1
+- ✓ Composable pipeline DAG (keyed depends_on, topological cascade, LEFT JOIN, cycle detection) — v1.1
+- ✓ Backfill & schema evolution (add/remove features without state reset, replay from event log) — v1.1
+- ✓ MGET batch reads — v1.1
+- ✓ Incremental snapshots (dirty-key tracking, base + delta files) — v1.1
+- ✓ Debug UI (interactive topology DAG, memory/throughput/state drill-ins, latency histograms) — v1.1
+- ✓ Fire-and-forget PUSH (`OP_PUSH_ASYNC` 0x07, `OP_FLUSH` 0x08, `app.push_sync`, `app.flush`) — v1.2
+- ✓ Binary wire event format on PUSH paths (replaces JSON serialize on hot path) — v1.2
+- ✓ 128–142k eps single-client on medium pipelines (5.7× v1.1 baseline) — v1.2
 
 ### Active
 
-#### Current Milestone: v1.1 Composable Pipeline & Event Log
+#### Current Milestone: v1.3 Concurrency & Client Batching
 
-**Goal:** Transform Tally into a composable streaming pipeline with SSD event log for replay/backfill, operational improvements, and a debug UI for observability.
+**Goal:** Break past the single-core ceiling v1.2 hit at ~140k eps. Target 500k–1M events/sec on a single node by parallelizing the engine, amortizing per-event fixed costs, and unblocking the main thread during snapshots — buying the headroom future milestones will need (disk/S3 spill, heavier operators, richer pipelines).
 
 **Target features:**
-- Keyless streams (raw event ingestion, append-only SSD log)
-- Keyed streams with explicit dependencies (LEFT JOIN semantics, DAG execution)
-- SSD event log for replay/backfill with configurable history TTL
-- Entity state TTL per dataset
-- Backfill flag on new feature definitions (replay from event log)
-- MGET (batch GET)
-- Schema evolution (add/remove features without reset)
-- Incremental snapshot serialization
-- Debug UI (stream watching, memory, throughput, real-time values)
+- Server-side async push coalescing (buffer per-connection, batch under one state lock)
+- SDK `push_many()` batch API + `OP_PUSH_BATCH` wire opcode (0x0A)
+- Key-partitioned multi-threaded engine (shard `EntityState` across `num_cpus` workers, no cross-thread locks on hot path)
+- Snapshot I/O off main thread (eliminate 15–25% duty-cycle loss during writes)
+
+**Performance targets:**
+- Phase 12 multi-client async: ≥ 200k eps @ 4 clients on medium pipeline
+- Phase 13 single-client via `push_many`: ≥ 300k eps on medium pipeline
+- Phase 14 aggregate multi-threaded: ≥ 1,000,000 eps @ 16 clients × 16 shards
+- Phase 15 snapshot stall regression: ≤ 5% async throughput loss during write (was 15–25%)
+- 532 existing tests remain green across all phases
 
 ### Out of Scope
 
-- Key-partitioned multi-threading — v1 is single-threaded like Redis; sharding is a future vertical scaling upgrade
 - Cluster mode / distributed operation — single-node by design
+- Client-side sharding / hash-ring routing across instances — document, don't build
+- Multi-tenancy / namespace isolation
+- Disk/S3 state spill — future milestone (v1.3 provides the headroom, not the implementation)
 - Bundled binary distribution (pip install tally) — requires v1 validated first
-- Schema evolution (add/remove features without reset) — post-v1 (TODOS.md P1)
-- Incremental snapshot serialization — post-v1 optimization (TODOS.md P1)
-- Batch GET (MGET) — post-v1 (TODOS.md P1)
-- Multi-tenancy / namespace isolation — post-v1 (TODOS.md P2)
-- Session windows — only sliding/tumbling in v1
-- WAL / full durability — violates <100us p99 latency target
+- Session windows — only sliding/tumbling
+- WAL / full durability — violates <100µs p99 latency target
 - Point-in-time historical replay — changes system from serving to storage
 
 ## Constraints
 
 - **Language**: Rust — memory safety, single binary distribution, performance
-- **Threading**: Single-threaded core (v1) — simplicity, no locks, no contention
+- **Threading**: Single-threaded core through v1.2; v1.3 introduces key-partitioned multi-threading (shard-per-worker, no cross-thread locks on hot path) — simplicity preserved per shard
 - **Protocol**: Custom binary TCP — HTTP too heavy for hot-path latency targets
 - **Persistence**: Periodic snapshots only — no WAL, no embedded KV, losing ~30s on crash is acceptable
 - **Performance**: <100us p99 PUSH latency, <50us p99 GET latency, >100K events/sec throughput
@@ -96,6 +106,9 @@ Shipped v1.0 with 9,904 lines of Rust + 2,915 lines of Python (~12,800 total).
 | OperatorState enum (not Box<dyn Operator>) | Required for postcard serialization; eliminates dynamic dispatch | ✓ Good |
 | Clone-then-spawn_blocking for snapshots | Up to 2x peak memory but non-blocking; acceptable for v1 | ⚠️ Revisit |
 | Rename from Streamlet to Tally | Shorter, punchier, approved during design review | ✓ Good |
+| Fire-and-forget PUSH (v1.2) | Decouple PUSH from feature response so clients stop round-tripping per event; unlocked 5.7× throughput on medium pipelines | ✓ Good |
+| Binary wire event format on PUSH paths (v1.2) | JSON serialize was ~30% of single-event cost; replacing it on hot path was prerequisite for >100k eps single-client | ✓ Good |
+| Key-partitioned multi-threading (v1.3 plan) | Single-core ceiling was hit in v1.2 (66% CPU at 142k eps); 47 idle cores is the highest-ROI lever. Shard-per-worker preserves lock-free hot path per shard | ⏳ Planned |
 
 ## Evolution
 
@@ -115,4 +128,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-09 after v1.1 milestone started*
+*Last updated: 2026-04-11 — v1.3 Concurrency & Client Batching milestone started*

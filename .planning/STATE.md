@@ -1,42 +1,41 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.2
-milestone_name: Performance
-status: shipped
-stopped_at: v1.2 shipped 2026-04-11 — Phase 11 complete; ready for v1.3 planning
-last_updated: "2026-04-11T16:00:00.000Z"
-last_activity: 2026-04-11 -- v1.2 milestone closed, v1.3 planned on roadmap
+milestone: v1.3
+milestone_name: Concurrency & Client Batching
+status: defining_requirements
+stopped_at: v1.3 started — research/requirements/roadmap in progress
+last_updated: "2026-04-11T17:00:00.000Z"
+last_activity: 2026-04-11 -- v1.3 milestone kicked off via /gsd-new-milestone
 progress:
-  total_phases: 1
-  completed_phases: 1
-  total_plans: 6
-  completed_plans: 6
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-09)
+See: .planning/PROJECT.md (updated 2026-04-11)
 
 **Core value:** Events go in, features come out -- synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
-**Current focus:** v1.3 planning pending (phases 12–15 drafted in ROADMAP.md)
+**Current focus:** v1.3 Concurrency & Client Batching — break past the single-core ceiling (500k–1M eps target) via async coalescing, client batch API, key-partitioned multi-threading, and off-main-thread snapshot I/O.
 
 ## Current Position
 
-Milestone: v1.2 Performance — SHIPPED 2026-04-11
-Phase: 11 (fire-and-forget-push) — COMPLETE
-Plans: 6/6 (11-01..11-05 + 11-06 subplan)
-Status: v1.2 closed, v1.3 planned
-Last activity: 2026-04-11 — v1.2 milestone finalized with final bench matrix
+Milestone: v1.3 Concurrency & Client Batching — STARTED 2026-04-11
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-11 — v1.3 milestone started, research/requirements pending
 
-Progress: Phase 11 delivered fire-and-forget async push + binary wire protocol + binary event log format. Final throughput (1 core, 1 client, 3-run mean):
-  - small async: 138k eps
-  - medium async: 142k eps
-  - large async: 128k eps
-  - sync p99 (all sizes): 87-90µs
-The 100k floor is hit on every pipeline size in async mode. The 1M ceiling is deferred to v1.3 multi-threading work. Large pipeline went from 865 eps to 128k eps (148x) after a post-verification discovery that DistinctCountOp::read was being invoked on every async push via pipeline.rs:459 inside process_event — fixed by threading a read_features flag through push → cascade → handle_push_core and also honoring it in the fan-out loop in tcp.rs.
+Prior milestone summary (v1.2 Performance — SHIPPED 2026-04-11):
+  - Phase 11 delivered fire-and-forget async push + binary wire protocol + binary event log format
+  - Final throughput (1 core, 1 client, 3-run mean): small 138k / medium 142k / large 128k eps async; sync p99 87–90µs across sizes
+  - 100k floor achieved on every pipeline size; the 1M ceiling deferred to v1.3 multi-threading work
+  - Large pipeline went from 865 eps to 128k eps (148×) after post-verification DistinctCountOp::read fix
 
 ## Performance Metrics
 
@@ -130,13 +129,11 @@ Key v1.1 architectural decisions (from research):
 
 ### Pending Todos
 
-- Phase 10.1 (Interactive UI Redesign) planning pending (discuss → research → plan → execute cycle).
-- Phase 10.2 (Latency Debugger) planning pending, blocked on Phase 10.1 completion.
+- v1.3 research → requirements → roadmap pending (milestone just started 2026-04-11).
 
 ### Blockers/Concerns
 
-- Phase 8: Backfill + live traffic boundary semantics need explicit design (live PUSH during mid-backfill)
-- Phase 9: Incremental snapshot recovery edge cases need test case design before implementation
+- None at milestone kickoff. v1.1 and v1.2 remain un-archived in MILESTONES.md — not blocking, can be retroactively closed later.
 
 ### Quick Tasks Completed
 
@@ -146,6 +143,6 @@ Key v1.1 architectural decisions (from research):
 
 ## Session Continuity
 
-Last session: 2026-04-10T18:22:31.954Z
-Stopped at: Completed 10.1-03-frontend-behavior-PLAN.md (Task 2 auto-approved; 31-step browser smoke test pending human verification)
-Resume: `/gsd-plan-phase 6`
+Last session: 2026-04-11T17:00:00.000Z
+Stopped at: v1.3 milestone started via /gsd-new-milestone — requirements/roadmap pending
+Resume: continue /gsd-autonomous to drive research → requirements → roadmap → phases 12–15
