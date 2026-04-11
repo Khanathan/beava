@@ -198,3 +198,20 @@ curl -s http://localhost:6401/debug/latency | python3 -m json.tool
 pkill -9 -f release/tally
 rm -rf /tmp/tally-bench /tmp/tally-bench.log
 ```
+
+## Phase 11 — Fire-and-Forget PUSH + Binary Wire Protocol
+
+**Date:** 2026-04-11
+**Target:** ≥ 100,000 events/sec on medium pipeline, single client, async mode
+**Build:** `cargo build --release` including Plans 11-01 .. 11-04
+
+| Mode  | Pipeline | Events  | Clients | Wall  | Throughput (eps) | p99 (us) |
+|-------|----------|---------|---------|-------|-----------------:|---------:|
+| async | medium   | 100,000 | 1       | 0.60s | **166,016**      |       —  |
+| sync  | medium   |  20,000 | 1       | 1.07s |  18,768          |     94   |
+
+**Gate:** PASS — 166k events/sec on the async medium single-client run, **9.5× the 17.5k v1.1 baseline** and well above the 100k Phase 11 target (also above the 150k stretch).
+
+**Sync regression:** 18.8k eps vs 17.5k v1.1 baseline — a small improvement from PERF-02 binary encoder. Sync p99 = 94us, within the 100us PUSH budget. No regression.
+
+Raw: `benchmark/tally-throughput/results/11-gate.json`

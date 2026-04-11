@@ -42,7 +42,7 @@ def test_register_and_push(app):
     """Register a stream and push one event; verify feature values."""
     app.register(Transactions)
 
-    features = app.push(Transactions, {"user_id": "u1", "amount": 100.0})
+    features = app.push_sync(Transactions, {"user_id": "u1", "amount": 100.0})
     assert features.tx_count_1h == 1
     assert features.tx_sum_1h == 100.0
     assert features.avg_amount_1h == 100.0
@@ -55,8 +55,8 @@ def test_register_and_push(app):
 
 def test_push_accumulates(app):
     """Multiple pushes accumulate feature values for the same key."""
-    app.push(Transactions, {"user_id": "u2", "amount": 50.0})
-    features = app.push(Transactions, {"user_id": "u2", "amount": 30.0})
+    app.push_sync(Transactions, {"user_id": "u2", "amount": 50.0})
+    features = app.push_sync(Transactions, {"user_id": "u2", "amount": 30.0})
 
     assert features.tx_count_1h == 2
     assert features.tx_sum_1h == 80.0
@@ -182,7 +182,7 @@ class DeviceEvents:
 def test_register_multiple_streams(app):
     """Register and push to a second stream on the same server."""
     app.register(DeviceEvents)
-    features = app.push(DeviceEvents, {"device_id": "d1"})
+    features = app.push_sync(DeviceEvents, {"device_id": "d1"})
     assert features.event_count_1h == 1
 
 
@@ -194,7 +194,7 @@ def test_register_multiple_streams(app):
 def test_push_returns_derive(app):
     """Push response includes derive features computed by the server."""
     # Push to a fresh key so we know exact state
-    features = app.push(Transactions, {"user_id": "u_derive", "amount": 200.0})
+    features = app.push_sync(Transactions, {"user_id": "u_derive", "amount": 200.0})
     # rate = tx_count_1h / tx_sum_1h = 1 / 200 = 0.005
     assert features.tx_count_1h == 1
     assert features.tx_sum_1h == 200.0
@@ -241,8 +241,8 @@ def test_cascade_keyless_to_keyed(tally_server):
     app = st.App(f"{host}:{tcp_port}")
     app.register(RawEvents_cascade1, UserTx_cascade1)
 
-    # Push to keyless stream
-    result = app.push(RawEvents_cascade1, {"user_id": "cascade_u1", "amount": 50.0})
+    # Push to keyless stream (use push_sync for the empty feature-map return)
+    result = app.push_sync(RawEvents_cascade1, {"user_id": "cascade_u1", "amount": 50.0})
     # Keyless stream returns empty features
     assert len(result._data) == 0
 

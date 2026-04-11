@@ -198,7 +198,21 @@ class TestRegister:
 
 
 class TestPush:
-    def test_push_sends_push_frame_and_returns_feature_result(self):
+    def test_push_returns_none(self):
+        """Phase 11: fire-and-forget push() returns None."""
+        def handler(conn):
+            opcode, _ = _recv_frame(conn)
+            # No response written — push() does not read
+            assert opcode == 0x07  # OP_PUSH_ASYNC
+
+        port, done = _start_mock_server(handler)
+        with App(f"127.0.0.1:{port}") as app:
+            result = app.push(Transactions, {"user_id": "u1", "amount": 50.0})
+        done.wait(timeout=2.0)
+        assert result is None
+
+    def test_push_sync_sends_push_frame_and_returns_feature_result(self):
+        """Phase 11: push_sync preserves v1.1 inline-response semantics using binary encoder."""
         features = {"tx_count_1h": 7, "tx_sum_1h": 350.0, "rate": 50.0}
         received = {}
 
@@ -212,7 +226,7 @@ class TestPush:
 
         port, done = _start_mock_server(handler)
         with App(f"127.0.0.1:{port}") as app:
-            result = app.push(Transactions, {"user_id": "u1", "amount": 50.0})
+            result = app.push_sync(Transactions, {"user_id": "u1", "amount": 50.0})
 
         done.wait(timeout=2.0)
         assert received["opcode"] == OP_PUSH
@@ -221,7 +235,8 @@ class TestPush:
         assert result.tx_sum_1h == 350.0
         assert result.rate == 50.0
 
-    def test_push_payload_contains_stream_name(self):
+    def test_push_sync_payload_contains_stream_name(self):
+        """Phase 11: binary-encoded push_sync payload still starts with [u16 len][name]."""
         received = {}
 
         def handler(conn):
@@ -233,7 +248,7 @@ class TestPush:
 
         port, done = _start_mock_server(handler)
         with App(f"127.0.0.1:{port}") as app:
-            app.push(Transactions, {"user_id": "u1"})
+            app.push_sync(Transactions, {"user_id": "u1"})
 
         done.wait(timeout=2.0)
         # PUSH payload starts with [u16 stream_name_len][stream_name bytes]
@@ -241,6 +256,60 @@ class TestPush:
         name_len = struct.unpack(">H", payload[:2])[0]
         stream_name = payload[2 : 2 + name_len].decode("utf-8")
         assert stream_name == "Transactions"
+
+    def test_flush_sends_op_flush_and_waits_for_ack(self):
+        """Phase 11: flush() sends OP_FLUSH and blocks until STATUS_OK."""
+        received = {}
+
+        def handler(conn):
+            opcode, payload = _recv_frame(conn)
+            received["opcode"] = opcode
+            received["payload"] = payload
+            conn.sendall(_make_response_frame(STATUS_OK, b""))
+
+        port, done = _start_mock_server(handler)
+        with App(f"127.0.0.1:{port}") as app:
+            app.flush()
+        done.wait(timeout=2.0)
+        assert received["opcode"] == 0x08  # OP_FLUSH
+        assert received["payload"] == b""
+
+    def test_error_on_next_call_after_bad_async(self):
+        """Phase 11: error from a prior async push surfaces on the next call via drain."""
+        events = {}
+
+        def handler(conn):
+            # Accept the async push, then proactively send a STATUS_ERROR frame
+            opcode, _ = _recv_frame(conn)
+            events["first_opcode"] = opcode
+            conn.sendall(_make_response_frame(STATUS_ERROR, b"bad async"))
+            # Give the client a moment to drain
+            try:
+                # Should never receive a second frame because drain raises
+                conn.settimeout(0.5)
+                _recv_frame(conn)
+            except (socket.timeout, OSError):
+                pass
+
+        port, done = _start_mock_server(handler)
+        app = App(f"127.0.0.1:{port}")
+        try:
+            # Fire-and-forget push triggers the handler which queues the error
+            app.push(Transactions, {"user_id": "u1"})
+            # Wait briefly for the server's error frame to arrive
+            import time as _t
+            _t.sleep(0.1)
+            # Next call must surface the error via drain_errors_nonblock
+            raised = False
+            try:
+                app.flush()
+            except ProtocolError as e:
+                raised = True
+                assert "bad async" in str(e)
+            assert raised, "pending async error did not surface on next call"
+        finally:
+            app.close()
+        done.wait(timeout=2.0)
 
 
 # ---------------------------------------------------------------------------
