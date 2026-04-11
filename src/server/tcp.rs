@@ -191,7 +191,29 @@ async fn handle_connection(
             }
         }
 
-        // Write response (Phase 11 three-way match)
+        // Write response (Phase 11 three-way match).
+        //
+        // I-3: BufWriter flush invariant.
+        //
+        // The three arms below maintain a strict invariant: any byte we
+        // write MUST be followed by an explicit flush before we loop to
+        // the next command. This is load-bearing because:
+        //
+        //   * `Ok(Some(payload))` (sync OK) flushes immediately — the
+        //     client is blocking on recv and would otherwise deadlock.
+        //   * `Err(e)` flushes immediately regardless of whether the
+        //     originating command was sync or async PUSH, so the client
+        //     drain path can pick up the error frame on its next probe.
+        //   * `Ok(None)` (fire-and-forget success) writes NOTHING at
+        //     all, so there is no unflushed byte. BufWriter accumulates
+        //     zero bytes on this branch, and the kernel-level pipelining
+        //     win of Phase 11 lives here.
+        //
+        // Consequence: at the point we drop `writer` (clean disconnect
+        // via `handle_connection` returning Ok), there are never any
+        // unflushed event ACKs in the BufWriter — the only way a byte
+        // gets buffered is via a flushed sync payload or a flushed
+        // error. Adding a new response arm MUST preserve this property.
         match response {
             Ok(None) => {
                 // Fire-and-forget success: no write, no flush. BufWriter keeps
@@ -256,6 +278,12 @@ fn handle_push_core(
     }
 
     // Append raw event to primary stream's event log (ELOG-01, ELOG-02, ELOG-03)
+    // TODO(v1.3 perf): binary event log format. PERF-02 removed the JSON
+    // parse cost from PUSH, but `serde_json::to_vec` still runs here to
+    // serialize the binary-decoded payload for the event log. Writing the
+    // raw binary wire bytes directly to the log would eliminate the final
+    // bit of JSON on the PUSH hot path. Deferred to a later phase because
+    // it requires a versioned event-log format change + replay support.
     if let Some(ref mut log) = event_log {
         let event_bytes = serde_json::to_vec(payload).unwrap_or_default();
         let _ = log.append(stream_name, &event_bytes, now);
@@ -545,6 +573,12 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             Ok(serde_json::to_vec(&serde_json::Value::Object(result)).unwrap())
         }
         Command::Mset { .. } => unreachable!("MSET handled separately"),
+        // I-2: PushAsync and Flush are intercepted in `handle_connection`
+        // BEFORE this function is called — see the three-way match on
+        // `command` around the `handle_push_core` / `Command::Flush`
+        // arms. They can only land here if that dispatch invariant is
+        // violated by a refactor; the `unreachable!` protects against
+        // that regression (panic in debug, UB-free abort in release).
         Command::PushAsync { .. } | Command::Flush => {
             unreachable!("PushAsync/Flush handled by handle_connection dispatch")
         }
