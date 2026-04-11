@@ -3,6 +3,17 @@
 //! SharedState wraps PipelineEngine + StateStore in Arc<Mutex<AppState>>.
 //! Synchronous commands (PUSH, GET, SET, REGISTER) lock, process, unlock with no .await.
 //! MSET releases the lock between 1024-key chunks and calls yield_now().
+//!
+//! Phase 12: server-side async push coalescing (PERF-03). Per-connection
+//! `ConnAccumulator` buffers `OP_PUSH_ASYNC` frames up to N=64 or a 200µs
+//! deadline and then dispatches them through `handle_push_batch` under a
+//! single state lock. See .planning/phases/12-server-side-async-push-coalescing
+//! CONTEXT.md decisions D-01..D-20 and pitfalls C-2/C-7/H-2.
+
+// Phase 12 C-7 gate: holding a std::MutexGuard across an .await inside
+// handle_connection (or anywhere else reached by its call graph) is a
+// compile-time error. Do NOT remove this without a documented deviation.
+#![deny(clippy::await_holding_lock)]
 
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -460,11 +471,262 @@ fn handle_push_core_ex(
     Ok(features)
 }
 
+// ============================================================
+// Phase 12: per-connection async push coalescing
+// ============================================================
+//
+// ConnAccumulator buffers OP_PUSH_ASYNC frames on the per-connection task
+// stack. When it hits BATCH_SIZE events or its deadline elapses, the whole
+// batch is handed to `handle_push_batch`, which takes ONE state.lock() and
+// groups events by primary stream name, issuing exactly one
+// `engine.push_batch_with_cascade_no_features` + one `event_log.append_many`
+// + one `store.mark_dirty_many` per group. Decisions D-01..D-20 in
+// 12-CONTEXT.md. Pitfalls C-2/C-7/H-2 in 12-RESEARCH.md.
+
+/// A single async push frame buffered inside a connection's accumulator.
+/// `seq` is the per-connection monotonic ordering stamp attached at
+/// accumulate time so that drain errors surface in push order regardless
+/// of stream-grouping reshuffles inside `handle_push_batch` (pitfall C-2).
+#[derive(Debug)]
+pub struct PendingAsync {
+    pub seq: u64,
+    pub stream_name: String,
+    pub payload: serde_json::Value,
+    pub raw_payload: Vec<u8>,
+    pub now: SystemTime,
+}
+
+impl PendingAsync {
+    /// Test/integration constructor — lets external tests build a batch
+    /// for `handle_push_batch` without having to go through the full
+    /// per-connection accumulator plumbing.
+    pub fn new(
+        seq: u64,
+        stream_name: String,
+        payload: serde_json::Value,
+        raw_payload: Vec<u8>,
+        now: SystemTime,
+    ) -> Self {
+        Self { seq, stream_name, payload, raw_payload, now }
+    }
+}
+
+/// Coalescing parameters locked in 12-CONTEXT.md (D-01 / D-02).
+pub const BATCH_SIZE: usize = 64;
+pub const BATCH_DEADLINE_US: u64 = 200;
+
+/// Stack-local per-connection accumulator. Never on AppState (D-15).
+pub struct ConnAccumulator {
+    buf: Vec<PendingAsync>,
+    next_seq: u64,
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl Default for ConnAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ConnAccumulator {
+    pub fn new() -> Self {
+        Self {
+            buf: Vec::with_capacity(BATCH_SIZE),
+            next_seq: 0,
+            deadline: None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.buf.len() >= BATCH_SIZE
+    }
+
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    pub fn next_seq_peek(&self) -> u64 {
+        self.next_seq
+    }
+
+    pub fn deadline(&self) -> Option<tokio::time::Instant> {
+        self.deadline
+    }
+
+    /// Push one async frame. Assigns the next monotonic seq. Arms the
+    /// deadline if this is the first frame since the last drain (D-03 —
+    /// deadline is an absolute `tokio::time::Instant`, NOT a
+    /// `sleep(duration)` that would hit the 1ms timer wheel floor).
+    pub fn push(
+        &mut self,
+        stream_name: String,
+        payload: serde_json::Value,
+        raw_payload: Vec<u8>,
+        now: SystemTime,
+    ) {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        if self.buf.is_empty() {
+            self.deadline = Some(
+                tokio::time::Instant::now()
+                    + std::time::Duration::from_micros(BATCH_DEADLINE_US),
+            );
+        }
+        self.buf.push(PendingAsync {
+            seq,
+            stream_name,
+            payload,
+            raw_payload,
+            now,
+        });
+    }
+
+    /// Drain all buffered frames and reset the deadline.
+    /// `next_seq` is NOT reset — it is per-connection monotonic for the
+    /// lifetime of the connection (D-12).
+    pub fn drain(&mut self) -> Vec<PendingAsync> {
+        self.deadline = None;
+        std::mem::take(&mut self.buf)
+    }
+}
+
+/// Synchronous batch dispatch: ONE `state.lock()`, ONE
+/// `push_batch_with_cascade_no_features` per stream group, ONE
+/// `append_many` per group, ONE `mark_dirty_many` per group. Returns
+/// per-event Results in INPUT order.
+///
+/// D-05..D-08: stream grouping happens BEFORE the lock; critical section
+/// is strictly synchronous; no `.await` inside. Cascade and fan-out are
+/// preserved via the Wave 1 `push_batch_with_cascade_no_features` primitive
+/// (NOT the primary-only `push_batch_no_features`).
+pub fn handle_push_batch(
+    state: &SharedState,
+    batch: &[PendingAsync],
+) -> Vec<Result<(), TallyError>> {
+    if batch.is_empty() {
+        return Vec::new();
+    }
+
+    // Group by stream name BEFORE taking the lock (D-05). Stack-allocated
+    // groups vec with capacity 4 — research confirmed smallvec NOT in
+    // Cargo.toml, fallback is Vec::with_capacity.
+    let mut groups: Vec<(&str, Vec<usize>)> = Vec::with_capacity(4);
+    for (idx, ev) in batch.iter().enumerate() {
+        let name = ev.stream_name.as_str();
+        if let Some((_, ids)) = groups.iter_mut().find(|(n, _)| *n == name) {
+            ids.push(idx);
+        } else {
+            groups.push((name, vec![idx]));
+        }
+    }
+
+    // Result slots in input order, pre-filled with Ok. Per-event errors
+    // from the cascade-aware batch primitive are scattered back to their
+    // input positions below.
+    let mut results: Vec<Result<(), TallyError>> =
+        (0..batch.len()).map(|_| Ok(())).collect();
+
+    // Single lock acquisition for the whole batch (D-06). The guard lives
+    // only for the synchronous body below — clippy::await_holding_lock
+    // enforces that at compile time.
+    let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+    let AppState {
+        ref engine,
+        ref mut store,
+        ref mut event_log,
+        ..
+    } = *app;
+
+    for (stream_name, indices) in &groups {
+        // Resolve stream metadata ONCE per group (D-07).
+        let stream_def = engine.get_stream(stream_name);
+        let key_field: Option<String> =
+            stream_def.and_then(|s| s.key_field.clone());
+
+        // Per-group event ref slice in seq (== input-order-within-group).
+        let events_refs: Vec<&serde_json::Value> =
+            indices.iter().map(|&i| &batch[i].payload).collect();
+
+        // Use the earliest `now` in the group as the batch timestamp —
+        // all buffered events arrived within ≤200µs of each other, so
+        // sub-microsecond timestamp drift is acceptable.
+        let now = indices
+            .iter()
+            .map(|&i| batch[i].now)
+            .min()
+            .unwrap_or_else(SystemTime::now);
+
+        // ONE engine.push_batch_with_cascade_no_features per group.
+        // CRITICAL: this is the cascade-aware primitive from Plan 12-01
+        // Task 3, NOT the plain primary-only push_batch_no_features.
+        // Cascade and fan-out are preserved. D-06/D-07 honored verbatim.
+        let per_event = engine.push_batch_with_cascade_no_features(
+            stream_name,
+            &events_refs,
+            store,
+            now,
+        );
+
+        // Scatter per-event Results back to input positions. The primitive
+        // returns Vec<Result<FeatureMap, _>>; we drop the (empty)
+        // FeatureMap and keep only the error discriminant.
+        for (slot_idx, res) in indices.iter().zip(per_event.into_iter()) {
+            if let Err(e) = res {
+                results[*slot_idx] = Err(e);
+            }
+        }
+
+        // ONE event_log.append_many per group (skip events that errored).
+        // Inline log payload construction mirrors `make_log_payload` in
+        // handle_push_core_ex — same binary/JSON format-tagged bytes.
+        if let Some(ref mut log) = event_log {
+            let log_payloads: Vec<Vec<u8>> = indices
+                .iter()
+                .filter(|&&i| results[i].is_ok())
+                .map(|&i| make_log_payload(&batch[i].payload, &batch[i].raw_payload))
+                .collect();
+            let log_refs: Vec<&[u8]> =
+                log_payloads.iter().map(|v| v.as_slice()).collect();
+            let _ = log.append_many(stream_name, &log_refs, now);
+        }
+
+        // ONE store.mark_dirty_many per group.
+        if let Some(kf) = key_field.as_deref() {
+            let keys: Vec<String> = indices
+                .iter()
+                .filter(|&&i| results[i].is_ok())
+                .filter_map(|&i| {
+                    batch[i]
+                        .payload
+                        .get(kf)
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                })
+                .collect();
+            if !keys.is_empty() {
+                store.mark_dirty_many(keys);
+            }
+        }
+    }
+
+    // Metrics bump once per batch — matches the per-event increment the
+    // legacy handle_push_core path performs, but amortized.
+    app.metrics.events_total += batch.len() as u64;
+
+    results
+}
+
 /// Fire-and-forget push (Phase 11, PERF-01).
 ///
 /// Runs the exact same side effects as sync PUSH but discards the computed
 /// FeatureMap. `handle_connection` signals "no response write on success"
 /// by seeing `Ok(())` here and skipping the writer.flush.
+#[allow(dead_code)] // Phase 12 Task 2 removes the last caller.
 fn handle_push_async(
     state: &SharedState,
     stream_name: &str,
