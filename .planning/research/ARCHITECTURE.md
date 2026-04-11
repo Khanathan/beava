@@ -1,839 +1,534 @@
-# Architecture Research: v1.1 Composable Pipeline & Event Log
+# Architecture Research: v1.3 Concurrency & Client Batching
 
-**Domain:** Integration of composable pipelines, SSD event log, backfill, debug UI into existing single-threaded real-time feature server
-**Researched:** 2026-04-09
-**Confidence:** HIGH (based on existing codebase analysis + Redis AOF patterns + Rust ecosystem)
+**Domain:** Integration of key-partitioned multi-threading, async coalescing, client batch API, and off-main-thread snapshots with Tally's existing single-threaded tokio + binary TCP + postcard snapshot architecture.
+**Researched:** 2026-04-11
+**Confidence:** HIGH for existing-shape analysis (code read directly); MEDIUM-HIGH for integration design (principles well-established, specific Tally-flavored tradeoffs rely on judgment).
 
-## Existing Architecture Summary
+---
 
-The v1.0 codebase (~8,400 lines of Rust) follows a single-threaded Redis-like architecture:
+## Executive Summary
 
-```
-main.rs
-  tokio::main(flavor = "current_thread")
-  Arc<Mutex<AppState>> shared across:
-    - TCP server (port 6400) -- hot path
-    - HTTP server (port 6401, axum) -- management
-    - Snapshot timer (30s interval, clone-then-spawn_blocking)
-    - Eviction timer (60s interval)
+v1.2's architecture is a **tightly-coupled Big Mutex** (`Arc<Mutex<AppState>>`) with a single `current_thread` tokio runtime. Every hot-path handler (`handle_push_core_ex`, `handle_mget`, snapshot tick, eviction, fsync, compaction) acquires the same lock. That is the thing v1.3 must carefully unwind.
 
-AppState {
-  engine: PipelineEngine       // stream/view defs, push/get orchestration
-  store: StateStore            // AHashMap<EntityKey, EntityState>
-  metrics: Metrics             // events_total, push_latency, snapshot_duration
-  snapshot_path: PathBuf
-}
-```
+The four v1.3 capabilities decompose naturally along the push path, but they are **not equally risky**:
 
-Key observation: The codebase uses `Arc<Mutex<AppState>>` (not `Rc<RefCell>` as the v1.0 architecture research recommended). This is because `spawn_blocking` for snapshots requires `Send`, and the HTTP server (axum) also needs `Send`. The Mutex is never contended in practice because all hot-path operations are synchronous (lock, process, unlock, no `.await` while locked).
+| Phase | Shape | Risk | Unlocks |
+|---|---|---|---|
+| 12 Coalescing | Additive to `handle_connection` read loop + new `handle_push_batch` sharing `handle_push_core_ex` | Low | Amortizes lock acquisition; prerequisite for 13 & 14 lock amortization |
+| 13 `push_many` / OP_PUSH_BATCH | Wire-format + Python client change; server reuses Phase 12 batch handler | Very low | Single-client throughput |
+| 14 Key-partitioned sharding | Full `AppState` refactor, runtime model change, cross-shard channels, snapshot format bump to v7 | **High** | Multi-core scaling — the actual milestone thesis |
+| 15 Off-thread snapshot | Extract snapshot writer into its own task that drains per-shard dirty sets | Medium | Eliminates 15-25% duty-cycle loss |
 
-## v1.1 Target Architecture
+**Recommended build order: 12 → 13 → 14 → 15** (the drafted order).
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Tally Server Process (v1.1)                       │
-│                                                                         │
-│  ┌──────────────────────┐    ┌────────────────────────────────────────┐ │
-│  │  TCP Listener 6400   │    │  HTTP Management 6401 (axum)          │ │
-│  │  PUSH GET SET MSET   │    │  /pipelines /health /metrics          │ │
-│  │  MGET REGISTER       │    │  /debug/* endpoints                   │ │
-│  └──────────┬───────────┘    │  /ui/* → embedded debug UI (SPA)      │ │
-│             │                └──────────┬─────────────────────────────┘ │
-│             │                           │                               │
-│  ┌──────────▼───────────────────────────▼──────────────────────────┐   │
-│  │                    AppState (Arc<Mutex<>>)                       │   │
-│  │                                                                  │   │
-│  │  ┌──────────────────────────────────────────────────────────┐   │   │
-│  │  │  PipelineEngine (MODIFIED)                               │   │   │
-│  │  │  - streams: AHashMap<String, StreamDefinition>           │   │   │
-│  │  │  - views: AHashMap<String, ViewDefinition>               │   │   │
-│  │  │  + keyless_streams: AHashMap<String, KeylessStreamDef>   │   │   │
-│  │  │  + dependency_graph: DependencyGraph (NEW)               │   │   │
-│  │  │  + schema_registry: SchemaRegistry (NEW)                 │   │   │
-│  │  └──────────────────────────────────────────────────────────┘   │   │
-│  │                                                                  │   │
-│  │  ┌──────────────────────────────────────────────────────────┐   │   │
-│  │  │  StateStore (MODIFIED)                                   │   │   │
-│  │  │  entities: AHashMap<EntityKey, EntityState>              │   │   │
-│  │  │  + per-dataset TTL configuration                         │   │   │
-│  │  └──────────────────────────────────────────────────────────┘   │   │
-│  │                                                                  │   │
-│  │  ┌──────────────────────────────────────────────────────────┐   │   │
-│  │  │  EventLog (NEW)                                          │   │   │
-│  │  │  - append_only_writer: BufWriter<File>                   │   │   │
-│  │  │  - log_index: AHashMap<StreamName, Vec<LogSegment>>      │   │   │
-│  │  │  - fsync_policy: FsyncPolicy (everysec / no)             │   │   │
-│  │  └──────────────────────────────────────────────────────────┘   │   │
-│  │                                                                  │   │
-│  │  Metrics (EXTENDED)                                              │   │
-│  │  + event_log_bytes, backfill_progress, per-stream counters      │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                                                         │
-│  Background Tasks:                                                      │
-│  - Snapshot timer (30s, MODIFIED for incremental)                       │
-│  - Eviction timer (60s, MODIFIED for per-dataset TTL)                   │
-│  + Fsync timer (1s, event log flush)                                    │
-│  + Log compaction timer (configurable, rewrites old segments)           │
-│  + Backfill task (on-demand, cooperative yielding)                      │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+---
 
-## Component Analysis: New vs Modified
+## 1. Existing Hot-Path Shape (v1.2 baseline)
 
-### NEW Components
+### 1.1 The Big Mutex
 
-| Component | File | Lines Est. | Purpose |
-|-----------|------|-----------|---------|
-| EventLog | `src/state/event_log.rs` | ~400 | Append-only SSD event log with segments, fsync, compaction |
-| KeylessStreamDef | `src/engine/pipeline.rs` (extend) | ~80 | Stream definitions without key field (raw event capture) |
-| DependencyGraph | `src/engine/dag.rs` | ~200 | Topological ordering of stream/view execution |
-| SchemaRegistry | `src/engine/schema.rs` | ~250 | Schema diff, evolution, feature add/remove logic |
-| BackfillEngine | `src/engine/backfill.rs` | ~300 | Replay events from log, cooperative yielding |
-| DebugUI | `src/server/debug_ui.rs` | ~100 | Embedded SPA assets, WebSocket for live data |
-| MGET handler | `src/server/tcp.rs` (extend) | ~40 | Batch GET command |
+`SharedState = Arc<Mutex<AppState>>`. `AppState` (src/server/tcp.rs:49-88) contains fields that do not belong together in v1.3:
 
-### MODIFIED Components
+- **Hot-path, per-key-sharded (→ v1.3 per-shard):** `engine` reads, `store`, per-stream `last_event_at`, dirty tracking
+- **Hot-path, global (→ v1.3 shared):** `engine` pipeline DAG (read-only after register), `metrics.events_total`, `latency` histograms, `throughput` EWMA
+- **Cold-path, periodic:** `snapshot_*`, `backfill_tracker`, `backfill_complete`
 
-| Component | File | Change Scope | What Changes |
-|-----------|------|-------------|--------------|
-| PipelineEngine | `src/engine/pipeline.rs` | Medium | Add keyless stream support, DAG execution order, schema evolution hooks |
-| StateStore | `src/state/store.rs` | Small | Per-dataset TTL, `get_many_features()` for MGET |
-| Snapshot | `src/state/snapshot.rs` | Medium | Incremental serialization (dirty-key tracking) |
-| Eviction | `src/state/eviction.rs` | Small | Per-dataset TTL instead of global TTL |
-| TCP handler | `src/server/tcp.rs` | Small | MGET opcode, event log write on PUSH, backfill trigger |
-| HTTP API | `src/server/http.rs` | Medium | Debug UI routes, backfill trigger endpoint, schema evolution endpoint |
-| Protocol | `src/server/protocol.rs` | Small | MGET command parsing, schema evolution register semantics |
-| main.rs | `src/main.rs` | Small | EventLog init, fsync timer, log compaction timer |
-| types.rs | `src/types.rs` | Minimal | No changes expected |
-| error.rs | `src/error.rs` | Small | New error variants for event log, backfill, schema |
+### 1.2 Push path under lock (measured cost from 11-VERIFICATION.md)
 
-## Detailed Component Designs
+For a single `OP_PUSH_ASYNC` (the hot path), `handle_push_core_ex` does **all** of this under one lock acquisition:
 
-### 1. Event Log (`src/state/event_log.rs`)
+1. `engine.push_with_cascade_no_features` → primary stream operator updates
+2. BFS over `downstream_map` → cascade pushes (same lock)
+3. `store.mark_dirty(primary_key)`
+4. `event_log.append(primary)` — in-memory buffered write
+5. `event_log.append(cascade_target)` × N
+6. `store.mark_dirty(cascade_key)` × N
+7. Fan-out loop: for each `engine.fan_out_targets()` whose `key_field` is in the payload, call `engine.push_no_features(target, ...)`, mark dirty, append log
+8. Throughput tracker `bump_unique` across all touched streams
+9. `metrics.push_latency_seconds` + `events_total`
+10. `latency.record_push` + optional slow-query capture
 
-**Design: Redis AOF-inspired, segmented, append-only.**
+At 142k eps on medium (post-11), that is ~7µs under lock per event. **Every fixed cost (lock acquire, `event_log.append` inner BufWriter write, dirty set insert) pays once per event.** That is the Phase 12 amortization target.
 
-The event log is the foundation for backfill and keyless streams. It must not degrade the <100us PUSH latency target.
+### 1.3 Why single-thread wins on single-client and loses on concurrent
+
+`#[tokio::main(flavor = "current_thread")]` in main.rs:27 means every task (TCP accept, per-connection loop, snapshot timer, eviction, fsync, compaction, HTTP handler) cooperatively shares one OS thread. Contended `std::sync::Mutex` on current-thread tokio is cheap, but **every `.await` inside a locked section would be a deadlock waiting to happen**. The code is correct: it never `.await`s while holding the lock. That invariant is load-bearing and must survive v1.3.
+
+---
+
+## 2. Phase 12 — Server-side Async Coalescing
+
+### 2.1 Where the per-connection accumulator lives
+
+**Proposal:** a local `ConnAccumulator` struct **stack-allocated inside `handle_connection`** (not on `AppState`, not heap-allocated per frame).
 
 ```rust
-/// Configuration for event log behavior
-struct EventLogConfig {
-    /// Base directory for log segments
-    log_dir: PathBuf,
-    /// Maximum segment size before rotation (default: 64MB)
-    max_segment_size: u64,
-    /// Fsync policy: Everysec (default) or No
-    fsync_policy: FsyncPolicy,
-    /// Per-stream history TTL (None = no logging for this stream)
-    /// Maps stream name -> retention duration
-    stream_ttls: AHashMap<String, Duration>,
+struct ConnAccumulator {
+    // Grouped by primary stream name.
+    by_stream: Vec<(String, Vec<PendingEvent>)>,
+    oldest_at: Option<Instant>,
+    total_frames: usize,
 }
-
-enum FsyncPolicy {
-    /// fsync every second via background timer (default, like Redis)
-    Everysec,
-    /// Never fsync, let OS handle it (fastest, least durable)
-    No,
-}
-
-/// A single log segment file
-struct LogSegment {
-    path: PathBuf,
-    stream_name: String,
-    start_offset: u64,
-    end_offset: u64,
-    created_at: SystemTime,
-    size_bytes: u64,
-}
-
-/// Entry in the event log
-struct LogEntry {
-    timestamp: SystemTime,
-    stream_name_len: u16,
-    stream_name: String,   // which stream this event belongs to
-    payload_len: u32,
-    payload: Vec<u8>,      // raw JSON bytes (same as PUSH payload)
-}
-
-struct EventLog {
-    config: EventLogConfig,
-    /// Current write segment per stream
-    writers: AHashMap<String, BufWriter<File>>,
-    /// Segment index per stream (for replay)
-    segments: AHashMap<String, Vec<LogSegment>>,
-    /// Bytes written since last fsync (for everysec tracking)
-    unfsynced_bytes: u64,
+struct PendingEvent {
+    payload: serde_json::Value, // decoded once by parse_command
+    raw_payload: Vec<u8>,       // for the binary event-log path
+    ts: SystemTime,
 }
 ```
 
-**Integration with PUSH hot path:**
+**Why connection-local, not `AppState`-local:** avoids ever locking `AppState` for a coalescing primitive; keeps the accumulator thread-local by construction.
 
-The event log write happens AFTER the in-memory state update but BEFORE the response is sent. This is critical: the log captures the raw event for replay, but the response latency includes the buffered write (NOT the fsync).
+### 2.2 Flush trigger hierarchy
 
-```
-PUSH arrives
-  1. Lock AppState
-  2. engine.push() -- update operators, compute features
-  3. event_log.append(stream_name, payload) -- buffered write, ~200ns
-  4. Unlock, return features
-  ...
-  [background: fsync timer fires every 1s, calls fdatasync()]
-```
+Four triggers, all additive; any one of them drains the accumulator via one `handle_push_batch` call:
 
-**Latency budget:** `BufWriter<File>::write()` for a ~300 byte event is ~100-300ns (memcpy into kernel page cache). No fsync on hot path. The 1-second fsync timer means at most 1 second of events lost on crash, which matches the existing ~30s snapshot loss tolerance.
+| Priority | Trigger | Default | Rationale |
+|---|---|---|---|
+| 1 (forced) | Any non-PushAsync command arrives (GET, SET, MGET, PUSH sync, FLUSH) | — | Guarantees ordering — sync commands cannot observe state that hasn't committed the async tail |
+| 2 (forced) | Connection close | — | No lost writes |
+| 3 (size) | `total_frames >= N` | 64 | Bound tail latency on steady load |
+| 4 (time) | `now - oldest_at >= T µs` | 200 | Bound tail latency on trickle load |
 
-**Per-stream opt-in:** Streams declare `history=True` in their definition. Streams without history skip the log write entirely (zero overhead). This is exposed in the Python SDK as:
-
-```python
-@st.stream(key="user_id", history=True)
-class Transactions:
-    ...
-```
-
-**Compaction:** A background timer periodically rewrites old segments. For keyed streams, compaction walks the current in-memory state and writes the minimal set of events that would reproduce it (similar to Redis AOF rewrite). The retention TTL per stream determines when segments are eligible for deletion.
-
-**Confidence:** HIGH. Redis AOF has proven this pattern at scale. The buffered-write + periodic-fsync approach is well-understood. `std::fs::File` wrapped in `BufWriter` with periodic `fdatasync()` is the standard Rust approach.
-
-### 2. Keyless Streams (`src/engine/pipeline.rs` extension)
-
-**Design: Append-only event capture without aggregation.**
-
-Keyless streams are event sinks. They have no key field, no operators, and no state in the in-memory store. They exist purely for the event log -- capturing raw events that downstream keyed streams can reference.
+**Flush-on-read-exhaustion opportunistic trigger:** after each `reader.read_u32().await`, if the socket read *would have blocked*, the accumulator has already taken its natural batch. **This is the highest-leverage trigger.**
 
 ```rust
-/// A keyless stream: raw event ingestion, no aggregation
-struct KeylessStreamDef {
-    name: String,
-    /// Always true -- keyless streams exist for the event log
-    history: bool,
-    /// Optional schema for validation (field names + types)
-    schema: Option<EventSchema>,
-}
-```
-
-**Integration with PUSH:**
-
-When a PUSH targets a keyless stream:
-1. Validate event against schema (if defined)
-2. Write to event log
-3. Fan out to any keyed streams that depend on this keyless stream (via DAG)
-4. Return OK (no features to return since there are no operators)
-
-**Why this matters:** Keyless streams enable the composable pipeline pattern where raw events are captured first, then processed into keyed aggregations. A `RawTransactions` keyless stream can feed both `UserTransactions` (keyed by user_id) and `MerchantTransactions` (keyed by merchant_id) via explicit dependencies.
-
-**Confidence:** HIGH. This is a straightforward extension. The existing PUSH handler already returns features -- for keyless streams it returns an empty map.
-
-### 3. Dependency Graph / DAG Execution (`src/engine/dag.rs`)
-
-**Design: Static topological ordering computed at registration time.**
-
-The current v1.0 system has implicit dependencies: PUSH updates operators, then evaluates derives, then fan-out fires. Views are evaluated lazily on GET. This works but doesn't support explicit composition like "when RawTransactions is pushed, also update UserTransactions."
-
-```rust
-/// Represents a node in the pipeline dependency graph
-enum PipelineNode {
-    KeylessStream(String),
-    KeyedStream(String),
-    View(String),
-}
-
-/// Edge: source feeds into target
-struct Dependency {
-    source: PipelineNode,
-    target: PipelineNode,
-    /// How the source feeds the target
-    join: JoinType,
-}
-
-enum JoinType {
-    /// Target uses source's key field directly
-    SameKey,
-    /// Target uses a different field from source events for its key
-    Rekey { source_field: String },
-    /// Cross-key lookup (existing v1 behavior)
-    Lookup { on_field: String },
-}
-
-struct DependencyGraph {
-    nodes: Vec<PipelineNode>,
-    edges: Vec<Dependency>,
-    /// Pre-computed topological order (recomputed on register/remove)
-    execution_order: Vec<PipelineNode>,
-}
-```
-
-**How it changes PUSH:**
-
-Current v1.0 PUSH flow:
-```
-PUSH(Transactions, event)
-  -> engine.push("Transactions", event) -- update operators
-  -> fan_out_targets() -- find other streams with matching key fields
-  -> for each target: engine.push(target, event)
-```
-
-v1.1 PUSH flow with DAG:
-```
-PUSH(RawTransactions, event)  -- or PUSH(Transactions, event)
-  -> event_log.append(stream_name, event)
-  -> execution_order = dag.get_execution_order(stream_name)
-  -> for each node in execution_order:
-       if keyless_stream: skip (already logged)
-       if keyed_stream: extract key, update operators
-       if view: skip (views are still lazy on GET)
-```
-
-**Cycle detection:** Computed at registration time. If adding a new stream/view would create a cycle, the REGISTER command returns an error. Uses Kahn's algorithm (BFS-based topological sort) which naturally detects cycles.
-
-**Implementation: Inline, not a crate dependency.** The graph is small (typically <20 nodes). A ~100-line topological sort is simpler and lighter than pulling in `daggy` or `petgraph`. The execution order is precomputed and stored as a `Vec` -- no graph traversal on the hot path.
-
-**Confidence:** HIGH. Topological sort is well-understood. The existing fan-out logic already does something similar (iterate streams, check key fields). The DAG replaces that implicit logic with an explicit, validated order.
-
-### 4. Schema Evolution (`src/engine/schema.rs`)
-
-**Design: Diff-based reconciliation on re-register.**
-
-Currently, re-registering a stream replaces the definition entirely (idempotent). Operator state for existing entities is preserved only because operator names happen to match. v1.1 makes this explicit.
-
-```rust
-struct SchemaRegistry {
-    /// Version counter per stream (incremented on each schema change)
-    versions: AHashMap<String, u64>,
-    /// Previous definitions for diff computation
-    previous_defs: AHashMap<String, StreamDefinition>,
-}
-
-enum SchemaChange {
-    /// New feature added -- needs backfill if history available
-    FeatureAdded { name: String, def: FeatureDef, needs_backfill: bool },
-    /// Feature removed -- drop operator state for this feature
-    FeatureRemoved { name: String },
-    /// Feature changed incompatibly -- reset operator state
-    FeatureChanged { name: String, old: FeatureDef, new: FeatureDef },
-    /// Feature unchanged -- preserve operator state
-    FeatureUnchanged { name: String },
-}
-```
-
-**Diff logic:**
-
-When a stream is re-registered:
-1. Compare old and new feature lists by name
-2. For each feature name:
-   - Present in both, same type/window/field: `FeatureUnchanged` (preserve state)
-   - Present in both, different type or window: `FeatureChanged` (reset this feature's operator state for all entities)
-   - Present in new only: `FeatureAdded` (create new operators; if `backfill=True` on the stream, queue backfill)
-   - Present in old only: `FeatureRemoved` (remove operator state from all entities)
-3. Apply changes to EntityState for all affected entities
-
-**State reconciliation on entities:**
-
-This requires iterating affected entities. For `FeatureRemoved`, iterate all entities and remove the operator by name from `live_operators`. For `FeatureAdded`, the new operator is lazily initialized on the next PUSH (existing behavior -- operators are created on first push if missing). For `FeatureChanged`, iterate and replace the operator.
-
-**The iterate-all-entities concern:** With 1M entities, iterating to remove/reset operators could block the event loop. Use the same cooperative yielding pattern as MSET: process 1024 entities per chunk, yield between chunks.
-
-**Confidence:** MEDIUM. The diff logic is straightforward. The concern is the entity iteration cost for feature removal/reset. The cooperative yielding pattern from MSET is proven, but this is a new application of it.
-
-### 5. Backfill Engine (`src/engine/backfill.rs`)
-
-**Design: Event replay from log with cooperative yielding.**
-
-When a new feature is added to a stream with `history=True`, backfill replays historical events from the event log to populate the new feature's operator state.
-
-```rust
-struct BackfillTask {
-    stream_name: String,
-    feature_names: Vec<String>,  // only the new features to populate
-    from_segment: usize,         // start segment index
-    events_processed: u64,
-    events_total: u64,           // for progress tracking
-    status: BackfillStatus,
-}
-
-enum BackfillStatus {
-    Queued,
-    Running { progress_pct: f32 },
-    Complete,
-    Failed(String),
-}
-```
-
-**How backfill works:**
-
-1. Schema evolution detects `FeatureAdded` with `needs_backfill=true`
-2. Creates a `BackfillTask` and starts it as an async task
-3. The task reads log segments sequentially:
-   a. Deserialize LogEntry
-   b. Extract entity key from event
-   c. Find or create the new operator for this entity
-   d. Call `operator.push(event, entry.timestamp)` with the HISTORICAL timestamp
-   e. Every 1024 events, yield to event loop
-4. During backfill, live PUSH events continue normally (new operator is already initialized, so new events update it concurrently with replay)
-
-**Critical design choice: Use historical timestamps.** The ring buffer's `advance_to()` must process events in timestamp order for correct window computation. Since events are replayed from the log (which is append-order ~ timestamp order), this works correctly. The only subtlety: if a live PUSH arrives during backfill with a timestamp newer than the replay position, the ring buffer handles this correctly (it advances forward).
-
-**Backfill does NOT re-run derives.** Derives are computed on read (GET), not stored. Only operator state needs population.
-
-**Progress tracking:** Exposed via `GET /debug/backfill` and the debug UI.
-
-**Confidence:** MEDIUM. The replay logic is straightforward, but the interaction between live pushes and historical replay on the same operator state needs careful testing. Edge cases: out-of-order timestamps, events spanning window boundaries during replay.
-
-### 6. MGET Command (`src/server/tcp.rs` + `src/server/protocol.rs`)
-
-**Design: Batch GET over the existing binary protocol.**
-
-```
-MGET (0x06)
-  count: u32
-  [key: string] x count
-  -> Response: JSON array of { key: string, features: { ... } }
-```
-
-**Implementation in tcp.rs:**
-
-```rust
-Command::Mget { keys } => {
-    let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-    let AppState { ref engine, ref mut store, .. } = *app;
-    let now = SystemTime::now();
-    let results: Vec<serde_json::Value> = keys.iter().map(|key| {
-        let features = engine.get_features(key, store, now);
-        let map: serde_json::Map<_, _> = features.iter()
-            .map(|(k, v)| (k.clone(), v.to_json_value()))
-            .collect();
-        serde_json::json!({ "key": key, "features": map })
-    }).collect();
-    Ok(serde_json::to_vec(&results).unwrap())
-}
-```
-
-MGET is a synchronous command (like GET). It does NOT use cooperative yielding because the caller is waiting for a single response. For very large MGET requests (>10K keys), the lock hold time could be 5-10ms. This is acceptable -- MGET is a batch operation, not a latency-sensitive hot path.
-
-**Confidence:** HIGH. This is a trivial extension of the existing GET logic. The protocol addition is mechanical.
-
-### 7. Incremental Snapshots (`src/state/snapshot.rs` modification)
-
-**Design: Dirty-key tracking with full snapshot fallback.**
-
-The current approach clones ALL entities for every snapshot. At 1M entities this causes a significant memory spike. Incremental snapshots track which entities changed since the last snapshot and only serialize those.
-
-```rust
-/// Tracks which entity keys have been modified since last snapshot
-struct DirtyTracker {
-    /// Keys modified since last snapshot
-    dirty_keys: AHashSet<String>,
-    /// Keys deleted since last snapshot (eviction)
-    deleted_keys: AHashSet<String>,
-    /// Sequence number, incremented per snapshot
-    snapshot_seq: u64,
-}
-```
-
-**How it works:**
-
-1. On every PUSH/SET/MSET that modifies an entity: `dirty_tracker.dirty_keys.insert(key)`
-2. On every eviction: `dirty_tracker.deleted_keys.insert(key)`
-3. On snapshot timer:
-   - If `dirty_keys.len() < total_entities * 0.5`: incremental snapshot
-     - Clone only dirty entities + serialize as delta
-     - Periodically (every N snapshots), do a full snapshot to compact
-   - Else: full snapshot (current behavior)
-4. On load: apply base snapshot + deltas in order
-
-**Snapshot file format:**
-
-```
-[1 byte: version]
-[1 byte: snapshot_type (0=full, 1=delta)]
-[8 bytes: snapshot_seq]
-[postcard-encoded payload]
-```
-
-For delta snapshots, the payload is:
-```rust
-struct DeltaSnapshot {
-    base_seq: u64,
-    upserted_entities: Vec<(String, SerializableEntityState)>,
-    deleted_keys: Vec<String>,
-    pipelines: Vec<SerializablePipeline>,  // always include full pipeline defs
-}
-```
-
-**Recovery:** On startup, find the latest full snapshot, then apply deltas in sequence order. If any delta is missing or corrupt, fall back to the last valid full snapshot.
-
-**Confidence:** MEDIUM. The dirty-key tracking is straightforward. The concern is the snapshot recovery complexity (base + deltas). A simpler v1.1 approach: just track dirty keys to reduce the clone size, but still write a full snapshot each time. This eliminates the delta recovery complexity while still solving the memory spike problem.
-
-**Recommendation:** Start with "clone only dirty keys + always write full snapshot" as v1.1 scope. True delta snapshots with recovery chaining is v1.2 optimization.
-
-### 8. Debug UI (`src/server/debug_ui.rs`)
-
-**Design: Embedded SPA served from the existing axum HTTP server.**
-
-The debug UI is a single-page application (HTML + JS + CSS) embedded in the Rust binary at compile time using `rust-embed`. It connects to the existing HTTP API endpoints and optionally a WebSocket for live updates.
-
-```rust
-use rust_embed::RustEmbed;
-
-#[derive(RustEmbed)]
-#[folder = "ui/dist/"]
-struct DebugAssets;
-
-/// Serve embedded UI assets
-async fn serve_ui(path: Path<String>) -> impl IntoResponse {
-    let path = if path.0.is_empty() { "index.html" } else { &path.0 };
-    match DebugAssets::get(path) {
-        Some(file) => {
-            let mime = mime_guess::from_path(path).first_or_octet_stream();
-            (StatusCode::OK, [(header::CONTENT_TYPE, mime.as_ref())], file.data).into_response()
+loop {
+    tokio::select! {
+        biased;
+        result = reader.read_u32() => {
+            // parse frame
+            match cmd {
+                Command::PushAsync { .. } => {
+                    accum.add(..);
+                    if accum.total_frames >= BATCH_N { flush_batch(&mut accum, &state).await?; }
+                }
+                other => {
+                    if !accum.is_empty() { flush_batch(&mut accum, &state).await?; }
+                    dispatch(other, ...).await?;
+                }
+            }
         }
-        None => {
-            // SPA fallback: serve index.html for client-side routing
-            let index = DebugAssets::get("index.html").unwrap();
-            (StatusCode::OK, [(header::CONTENT_TYPE, "text/html")], index.data).into_response()
+        _ = tokio::time::sleep_until(accum.deadline(BATCH_T)), if !accum.is_empty() => {
+            flush_batch(&mut accum, &state).await?;
         }
     }
 }
 ```
 
-**Routes added to axum router:**
+### 2.3 `handle_push_batch` — new batched handler, reuses `handle_push_core_ex`
 
-```rust
-.route("/ui", get(|| async { Redirect::permanent("/ui/") }))
-.route("/ui/", get(serve_ui))
-.route("/ui/*path", get(serve_ui))
-.route("/ws/live", get(websocket_handler))  // optional: live data feed
-```
+Inside the batch handler, acquire the lock **once**, then for each `(stream, events)` group:
 
-**UI tech stack:** Vanilla HTML + JS (no build step). The UI is a debug/observability tool, not a production application. Keeping it simple (no React, no build pipeline) means:
-- Zero additional build dependencies
-- Files go in `ui/dist/` in the repo
-- `rust-embed` bundles them into the binary
-- In dev mode (`debug-embed` feature disabled), files are served from disk for hot-reload
+1. Look up the stream's `key_field`, cascade targets, fan-out targets **once** (currently looked up per event)
+2. For each event, run the operator updates
+3. `event_log.append` can batch-write the whole group via a new `append_many(stream, &[bytes])`
+4. `mark_dirty` can take a batch (`mark_dirty_many(&[&str])`)
+5. Fan-out loop runs per event but reuses the same `fan_out_targets` Vec once
 
-**UI pages:**
-- **Dashboard:** Stream list, entity count, events/sec, memory usage (polls `/metrics` and `/debug/memory`)
-- **Stream Inspector:** Select a stream, see its definition, operator types, feature list
-- **Entity Inspector:** Enter a key, see all features (polls `/debug/key/:key`)
-- **Backfill Status:** Progress of any active backfill tasks (polls `/debug/backfill`)
-- **Event Log:** Show recent events for a stream (if history enabled)
+### 2.4 Error attribution — this is the subtle part
 
-**WebSocket for live updates (optional):** A WebSocket endpoint that pushes metric updates every second. This avoids polling overhead in the UI. The WebSocket handler reads from `Arc<Mutex<AppState>>` on a timer -- same pattern as the HTTP endpoints.
+**Current contract (post-11):** errors from PushAsync are written as STATUS_ERROR frames immediately by `handle_connection`. There is **no server-side error queue** — "drain semantic" is purely client-side: the Python client reads STATUS_ERROR frames off the socket before its next public call.
 
-**Confidence:** HIGH. `rust-embed` is mature (v8.11, January 2026). Axum has first-class static file serving support. The UI itself is simple HTML/JS that consumes existing HTTP API endpoints.
+**What Phase 12 must preserve:** if event #37 in a batch of 64 fails, the client must see (a) an error for event 37 specifically, and (b) events 38-63 must still be processed.
 
-### 9. Per-Dataset TTL (`src/state/eviction.rs` modification)
+**Proposed contract:**
 
-**Design: TTL configured per stream, not just global.**
-
-Currently, TTL = `ttl_multiplier * max_window_duration` (global). v1.1 allows per-stream TTL:
-
-```python
-@st.stream(key="user_id", ttl="7d")
-class Transactions:
-    ...
-```
-
-The eviction timer already iterates all entities. The change: instead of one global TTL, each entity's TTL is determined by which streams have state for that entity. The entity's TTL = max of all stream TTLs that have operators for that key.
-
-**Implementation detail:** `EntityState` already tracks `last_event_at`. We need to also track which streams contributed operators. This is already implicit in `live_operators` names -- but to make TTL per-stream efficient, store a `stream_name` field alongside each operator in `live_operators`:
-
-```rust
-// Current:  Vec<(String, OperatorState)>  -- (feature_name, state)
-// Proposed: Vec<(String, String, OperatorState)>  -- (feature_name, stream_name, state)
-```
-
-Or simpler: store per-stream `last_event_at` instead of per-entity. This requires a small structural change to `EntityState`.
-
-**Confidence:** HIGH. This is a small modification to the eviction logic. The main decision is the storage model for per-stream timestamps.
-
-## Data Flow Changes
-
-### v1.0 PUSH Flow (current)
-```
-Client -> TCP -> parse_command -> lock(AppState) ->
-  engine.push(stream, event, store) ->
-    extract key -> get_or_create entity -> push operators -> eval derives ->
-  fan_out to secondary streams ->
-  collect features -> unlock -> write response
-```
-
-### v1.1 PUSH Flow (proposed)
-```
-Client -> TCP -> parse_command -> lock(AppState) ->
-  IF keyless stream:
-    event_log.append(stream, event)  [buffered write, ~200ns]
-    dag.get_downstream(stream) -> for each keyed stream:
-      engine.push(keyed_stream, event, store)
-    unlock -> write response (empty features)
-  ELSE (keyed stream):
-    engine.push(stream, event, store)
-      extract key -> get_or_create entity -> push operators -> eval derives
-    IF stream.history:
-      event_log.append(stream, event)  [buffered write, ~200ns]
-    dag.get_downstream(stream) -> for each dependent:
-      engine.push(dependent, event, store)  [replaces fan_out_targets()]
-    unlock -> write response (features)
-```
-
-**Key difference:** Fan-out is replaced by explicit DAG traversal. The event log write is interleaved with the state update. The response includes only the primary stream's features (same as v1.0).
-
-### v1.1 GET Flow (unchanged for basic case)
-```
-Client -> TCP -> parse_command -> lock(AppState) ->
-  store.get_all_features(key) ->
-  engine.eval_derives(key, features) ->
-  engine.eval_views(key, features, store) ->
-  unlock -> write response
-```
-
-No changes to GET flow. Views are still evaluated lazily on GET.
-
-### v1.1 Schema Evolution Flow (new)
-```
-REGISTER arrives with updated definition ->
-  schema_registry.diff(old_def, new_def) -> Vec<SchemaChange> ->
-  for FeatureRemoved: iterate entities, remove operator (chunked + yield)
-  for FeatureChanged: iterate entities, reset operator (chunked + yield)
-  for FeatureAdded:
-    if stream.history && backfill requested:
-      spawn BackfillTask
-    else:
-      operator created lazily on next PUSH (existing behavior)
-  update PipelineEngine with new definition
-```
-
-### v1.1 Backfill Flow (new)
-```
-BackfillTask starts ->
-  read log segments for stream in timestamp order ->
-  for each LogEntry:
-    deserialize event JSON
-    extract entity key
-    find/create new operator in entity.live_operators
-    operator.push(event, historical_timestamp)
-    every 1024 events: yield_now()
-  mark BackfillTask as Complete
-```
-
-## File Structure Changes
-
-```
-tally/
-├── src/
-│   ├── main.rs              # + EventLog init, fsync timer, log compaction
-│   ├── types.rs             # (unchanged)
-│   ├── error.rs             # + EventLog, Backfill, Schema error variants
-│   ├── engine/
-│   │   ├── mod.rs
-│   │   ├── pipeline.rs      # + KeylessStreamDef, schema evolution hooks
-│   │   ├── dag.rs           # NEW: DependencyGraph, topological sort
-│   │   ├── schema.rs        # NEW: SchemaRegistry, diff logic
-│   │   ├── backfill.rs      # NEW: BackfillTask, replay engine
-│   │   ├── operators.rs     # (unchanged)
-│   │   ├── window.rs        # (unchanged)
-│   │   ├── expression.rs    # (unchanged)
-│   │   ├── hll.rs           # (unchanged)
-│   ├── server/
-│   │   ├── mod.rs
-│   │   ├── tcp.rs           # + MGET handler, event log on PUSH
-│   │   ├── protocol.rs      # + MGET opcode 0x06
-│   │   ├── http.rs          # + debug UI routes, backfill endpoints
-│   │   ├── debug_ui.rs      # NEW: rust-embed asset serving
-│   ├── state/
-│   │   ├── mod.rs
-│   │   ├── store.rs         # + get_many_features(), per-dataset TTL
-│   │   ├── snapshot.rs      # + dirty-key tracking, incremental serialize
-│   │   ├── eviction.rs      # + per-dataset TTL
-│   │   ├── event_log.rs     # NEW: append-only log, segments, compaction
-├── ui/
-│   └── dist/                # NEW: debug UI static assets
-│       ├── index.html
-│       ├── app.js
-│       └── style.css
-```
-
-## Suggested Build Order
-
-The build order is driven by dependencies between features. Each phase should be independently testable.
-
-### Phase 1: Foundation (MGET + Schema Evolution)
-**Why first:** MGET is trivial and independently useful. Schema evolution is the prerequisite for backfill (you need to detect FeatureAdded to know when to backfill).
-
-1. **MGET command** (protocol.rs, tcp.rs) -- ~1 hour
-   - Add OP_MGET opcode
-   - Parse N keys from payload
-   - Call get_features() for each key
-   - Tests: unit + integration
-   - *No dependencies on other v1.1 features*
-
-2. **Schema evolution** (schema.rs, pipeline.rs, store.rs) -- ~3 hours
-   - SchemaRegistry: diff old vs new definitions
-   - Feature add/remove/change detection
-   - Entity iteration with cooperative yielding for removals
-   - Tests: unit tests for diff logic, integration tests for re-register
-   - *Depends on: nothing new, uses existing PipelineEngine*
-
-3. **Per-dataset TTL** (eviction.rs, store.rs, pipeline.rs) -- ~2 hours
-   - Add TTL field to StreamDefinition
-   - Modify eviction to use per-stream TTL
-   - Track which stream contributed each operator
-   - Tests: eviction with mixed TTLs
-   - *Depends on: nothing new*
-
-### Phase 2: DAG Execution
-**Why second:** The DAG replaces the implicit fan-out logic. It must be in place before keyless streams can work (keyless streams depend on the DAG to know which keyed streams to feed).
-
-4. **Dependency graph** (dag.rs, pipeline.rs) -- ~3 hours
-   - DependencyGraph struct with topological sort
-   - Cycle detection at registration time
-   - Integration into PipelineEngine.register()
-   - Replace fan_out_targets() with DAG traversal in PUSH handler
-   - Tests: DAG construction, cycle detection, execution order
-   - *Depends on: nothing new, replaces existing fan-out*
-
-5. **Keyless streams** (pipeline.rs, tcp.rs) -- ~2 hours
-   - KeylessStreamDef type
-   - PUSH to keyless stream: validate, then DAG fan-out
-   - REGISTER for keyless streams
-   - Tests: keyless -> keyed flow
-   - *Depends on: Phase 2 step 4 (DAG)*
-
-### Phase 3: Event Log
-**Why third:** The event log is the foundation for backfill. It depends on keyless streams (keyless streams always log) and keyed streams with `history=True`.
-
-6. **Event log core** (event_log.rs) -- ~4 hours
-   - LogEntry format, segment management
-   - BufWriter append, segment rotation
-   - Fsync background timer
-   - Read iterator for replay
-   - Tests: write/read round-trip, segment rotation, corrupt segment handling
-   - *Depends on: nothing, but integrates with PUSH in step 7*
-
-7. **Event log integration** (tcp.rs, main.rs, pipeline.rs) -- ~2 hours
-   - Add `history: bool` to StreamDefinition
-   - Event log write on PUSH path (for streams with history=True)
-   - EventLog initialization in main.rs
-   - Fsync timer in main.rs
-   - Tests: E2E push with logging, verify log contents
-   - *Depends on: Phase 3 step 6 (event log core)*
-
-8. **Log compaction** (event_log.rs) -- ~2 hours
-   - Walk current state, write minimal reproduction
-   - Segment TTL-based deletion
-   - Background compaction timer
-   - Tests: compaction preserves replay correctness
-   - *Depends on: Phase 3 step 6, step 7*
-
-### Phase 4: Backfill
-**Why fourth:** Backfill requires both the event log (to read from) and schema evolution (to trigger). It is the most complex new feature.
-
-9. **Backfill engine** (backfill.rs) -- ~4 hours
-   - BackfillTask: read segments, replay events, cooperative yielding
-   - Integration with schema evolution (FeatureAdded triggers backfill)
-   - Progress tracking via Metrics
-   - Tests: backfill populates new feature correctly, concurrent live pushes
-   - *Depends on: Phase 1 step 2 (schema), Phase 3 steps 6-7 (event log)*
-
-### Phase 5: Incremental Snapshots
-**Why fifth:** This is an optimization. The existing full-snapshot approach works. Incremental snapshots reduce memory spikes.
-
-10. **Dirty-key tracking** (snapshot.rs, store.rs, tcp.rs) -- ~3 hours
-    - DirtyTracker: mark keys on PUSH/SET/MSET/eviction
-    - Clone only dirty keys for snapshot
-    - Still write full snapshot (no delta recovery needed)
-    - Tests: dirty tracking accuracy, snapshot size reduction
-    - *Depends on: nothing new, modifies existing snapshot flow*
-
-### Phase 6: Debug UI
-**Why last:** The debug UI is a consumer of all other features. It needs the metrics, backfill status, and event log endpoints to be useful.
-
-11. **Debug UI** (debug_ui.rs, http.rs, ui/dist/) -- ~4 hours
-    - Build simple HTML/JS dashboard
-    - rust-embed integration for compile-time bundling
-    - New HTTP endpoints: `/debug/backfill`, `/debug/event-log`
-    - WebSocket for live metrics (optional)
-    - Tests: HTTP 200 on UI routes, asset serving
-    - *Depends on: all other features (for full utility)*
-
-### Python SDK Updates (parallel with any phase)
-
-12. **SDK updates** (python/) -- ~2 hours
-    - `history=True` parameter on `@st.stream`
-    - `ttl="7d"` parameter on `@st.stream`
-    - `app.mget(["key1", "key2", ...])` method
-    - Keyless stream support: `@st.stream()` (no key parameter)
-    - *Can be done in parallel with server-side work*
-
-## Dependency Graph for Build Order
-
-```
-Phase 1: MGET ──────────────────────────────────────┐
-Phase 1: Schema Evolution ──────────────────────────┤
-Phase 1: Per-dataset TTL ──────────────────────────┤
-                                                    │
-Phase 2: DAG ──────────────────────────────────────┤
-Phase 2: Keyless Streams (needs DAG) ──────────────┤
-                                                    │
-Phase 3: Event Log Core ──────────────────────────┤
-Phase 3: Event Log Integration (needs log core) ──┤
-Phase 3: Log Compaction (needs log integration) ──┤
-                                                    │
-Phase 4: Backfill (needs schema + event log) ──────┤
-                                                    │
-Phase 5: Incremental Snapshots ────────────────────┤
-                                                    │
-Phase 6: Debug UI (needs all above) ───────────────┘
-```
-
-## Integration Points Summary
-
-| New Feature | Touches (existing files) | New Files |
-|-------------|-------------------------|-----------|
-| MGET | protocol.rs, tcp.rs | -- |
-| Schema Evolution | pipeline.rs, store.rs | schema.rs |
-| Per-dataset TTL | eviction.rs, store.rs, pipeline.rs | -- |
-| DAG Execution | pipeline.rs, tcp.rs | dag.rs |
-| Keyless Streams | pipeline.rs, tcp.rs, protocol.rs | -- |
-| Event Log | tcp.rs, main.rs, pipeline.rs | event_log.rs |
-| Log Compaction | event_log.rs | -- |
-| Backfill | pipeline.rs | backfill.rs |
-| Incremental Snapshots | snapshot.rs, store.rs, tcp.rs | -- |
-| Debug UI | http.rs | debug_ui.rs, ui/dist/* |
-
-## Risk Assessment
-
-| Feature | Risk | Mitigation |
-|---------|------|------------|
-| Event log latency impact | LOW | BufWriter + no hot-path fsync. ~200ns per write. |
-| Backfill + live push interaction | MEDIUM | Historical timestamps + forward-only ring buffer. Needs thorough testing. |
-| Schema evolution entity iteration | LOW | Cooperative yielding (proven pattern from MSET). |
-| DAG replacing fan-out | LOW | Same semantics, explicit instead of implicit. |
-| Incremental snapshot recovery | MEDIUM | Mitigated by starting with "clone dirty, write full" approach. |
-| Debug UI build complexity | LOW | Vanilla HTML/JS, no build pipeline. rust-embed is mature. |
-| Event log disk usage | MEDIUM | Per-stream opt-in + compaction + TTL. Document disk math clearly. |
-
-## Key Architectural Decisions
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Event log fsync policy | Everysec (like Redis) | <100us PUSH budget. No hot-path fsync. 1s data loss acceptable. |
-| Event log format | Custom binary (not JSON lines) | Compact, fast to write, fast to read sequentially. |
-| DAG library | Inline implementation | Graph is tiny (<20 nodes). No crate dependency needed. |
-| Debug UI framework | Vanilla HTML/JS | Zero build deps. Debug tool, not production UI. |
-| Debug UI embedding | rust-embed | Mature crate, compile-time bundling, zero runtime deps. |
-| Incremental snapshots v1.1 | Dirty-key tracking, full write | Simpler than delta recovery. Solves the memory spike problem. |
-| Keyless stream storage | Event log only, no in-memory state | They have no operators. Storing them in StateStore would waste memory. |
-| Schema evolution backfill trigger | Automatic on FeatureAdded + history | User doesn't manually request backfill. It just works. |
-
-## Sources
-
-- [Redis Persistence Documentation](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/) -- AOF design, fsync policies, rewrite strategy
-- [Redis 7.0 Multi-Part AOF Design](https://www.alibabacloud.com/blog/design-and-implementation-of-redis-7-0-multi-part-aof_599199) -- Segmented AOF architecture
-- [rust-embed crate (v8.11)](https://crates.io/crates/rust-embed) -- Compile-time static asset embedding
-- [Axum static file server example](https://github.com/tokio-rs/axum/blob/main/examples/static-file-server/src/main.rs) -- Serving static files with axum
-- [Tokio file I/O documentation](https://docs.rs/tokio/latest/tokio/fs/index.html) -- Async file operations (delegates to threadpool)
-- [daggy crate](https://github.com/mitchmindtree/daggy) -- Reference for DAG API design (not used as dependency)
+1. `handle_push_batch` returns `Vec<Result<(), TallyError>>` — one entry per input event in input order
+2. The read loop walks the result vector; for each `Err`, it writes **one STATUS_ERROR frame** immediately, with a payload that includes a batch index ("batch event #37: unknown stream 'X'")
+3. Successful events write nothing
 
 ---
-*Architecture research for: v1.1 Composable Pipeline & Event Log integration into existing Tally server*
-*Researched: 2026-04-09*
+
+## 3. Phase 13 — `push_many` + OP_PUSH_BATCH (0x0A)
+
+### 3.1 Wire format
+
+```
+Frame layout (after the generic [u32 len][u8 opcode] envelope):
+
+OP_PUSH_BATCH (0x0A)
+[u16 stream_name_len][stream_name_bytes]
+[u32 count]
+repeated count times:
+    [u32 event_len]
+    [event_bytes]  // same format as OP_PUSH_ASYNC payload
+```
+
+**Why `[u32 event_len]` prefix per event:** lets the server decode event i without having to peek at field-count + walk forward. Matches the outer frame-length convention.
+
+**All events in one OP_PUSH_BATCH frame must target the same stream.** This matches `push_many(Transactions, events)` Python API; lets server skip per-event stream lookup; clients that need multi-stream batches concatenate multiple OP_PUSH_BATCH frames.
+
+### 3.2 Python SDK integration
+
+`push_many` is a **separate code path** from `push`:
+
+- Takes `stream_cls` + iterable of event dicts
+- Calls `encode_push_binary_payload` once per event (the same function v1.2 `push` calls)
+- Prepends `[u16 stream_len][stream][u32 count]`, then for each event `[u32 event_len][event_bytes]`
+- Wraps in one `[u32 frame_len][u8 OP_PUSH_BATCH]` envelope
+- Sends via `send_frame_no_recv` (same as `push`)
+- Error drain via existing `drain_errors_nonblock` — unchanged
+
+### 3.3 Backward compat
+
+`OP_PUSH_ASYNC` (0x07) and `OP_PUSH_BATCH` (0x0A) coexist indefinitely. Keep `OP_PUSH_ASYNC` forever as the single-event fast path.
+
+---
+
+## 4. Phase 14 — Key-Partitioned Multi-Threaded Engine
+
+This is the big one. Right model for Tally is **thread-per-shard, shared-nothing hot path, message-passing for cross-shard work** (Seastar/ScyllaDB pattern).
+
+### 4.1 Runtime model change
+
+**Current:** one `current_thread` tokio runtime, one OS thread, all tasks cooperatively interleaved.
+
+**Proposed:**
+- **N shard workers**, where N = `std::thread::available_parallelism()` or from `TALLY_SHARDS` env var. Each is a dedicated OS thread running its own `current_thread` tokio runtime (Seastar/Glommio pattern), **not** one multi-thread tokio runtime.
+- **Why thread-per-shard not multi-thread tokio:** multi-thread tokio lets any task run on any worker, re-introducing cross-core cache invalidation. Thread-per-shard gives Redis-like locality.
+- **One "front door" thread** runs the TCP listener, accepts connections, and hands each TCP socket (fd) to a shard worker that handles the connection's entire lifetime.
+
+Cross-shard hops happen via message-passing when the push key doesn't belong to the connection's home shard. Clients that care about hotspot distribution open N connections.
+
+### 4.2 State decomposition
+
+| Field | v1.2 location | v1.3 location | Rationale |
+|---|---|---|---|
+| `StateStore.entities` | AppState mutex | **per-shard** `Mutex<ShardStore>` | Key-partitioned |
+| `StateStore.dirty_keys` | AppState mutex | **per-shard** | Snapshot drains per-shard |
+| `StateStore.deleted_keys` | AppState mutex | **per-shard** | Same |
+| `PipelineEngine.streams/views/dag/topo_order/downstream_map` | AppState mutex | **global `ArcSwap<PipelineEngine>`** | Read-only after register |
+| `event_log` (per-stream `LogWriter`) | AppState mutex | **per-shard** | Each shard writes its own per-stream log files |
+| `metrics.events_total` / `push_latency_seconds` | AppState mutex | **per-shard `AtomicU64`**, aggregated on read | No cross-shard contention |
+| `throughput: ThroughputTracker` | AppState mutex | **per-shard** | Merged on debug read |
+| `latency: LatencyTracker` | AppState mutex | **per-shard** histograms | hdrhistogram merges cheaply |
+| `backfill_tracker` | AppState mutex | **global `Mutex`** | Cold path |
+| Snapshot coordinator state | AppState mutex | **global `Mutex`** | Cold path |
+
+**Key insight — `PipelineEngine` is effectively read-only after register.** Putting the engine behind `arc_swap::ArcSwap<Arc<PipelineEngine>>` means every shard reads its own pointer with zero synchronization, and REGISTER publishes a new Arc atomically.
+
+### 4.3 Shard routing — hash function choice
+
+**Requirements:** (a) deterministic across process restarts, (b) stable across Rust/crate versions, (c) fast, (d) well-distributed.
+
+**Recommendation: `xxh3_64` with a fixed seed (e.g., 0), `shard = (xxh3_64(key) % N)`.**
+
+| Hash | Stable across versions? | Notes |
+|---|---|---|
+| `ahash` | **NO** — randomized seed, algorithm may change | **Do not use for shard routing.** |
+| `rustc-hash` / `FxHash` | Not explicit | Poor distribution on short keys |
+| `xxh3` via `xxhash-rust` | **YES** — spec-stable, version-stable | Very fast, well-tested |
+| `seahash` | **YES** — spec-stable | Less ecosystem momentum than xxh3 |
+
+**Do NOT use `N = 2^k` modulo-mask** — `num_cpus` often isn't power-of-two (12, 20, 24, 48 cores). `%` is irrelevant cost compared to per-event work.
+
+### 4.4 Cross-shard fan-out and cascade — the hard part
+
+**Three categories of cross-stream work:**
+
+1. **Same-key cascade** (`Transactions` → `FraudScore`, both keyed by `user_id`): same shard. **No cross-shard work.**
+2. **Fan-out to different key** (push to `Transactions` [user_id] also updates `MerchantActivity` [merchant_id]): **cross-shard.**
+3. **Cascade to different-key downstream** (`Transactions` [user_id] cascades to `UserRiskAggregate` [user_id]): same key field, same shard. Local.
+
+**So only category 2 needs a cross-shard channel.**
+
+**Proposed cross-shard mechanism:**
+- Each shard has a bounded MPSC inbox: `tokio::sync::mpsc::channel::<CrossShardMsg>(4096)`
+- `CrossShardMsg::PushBatch { target_stream, events: Vec<...> }` — always batched, never one-at-a-time
+- Home shard releases its lock first, then enqueues
+- Target shard's worker loop is a `select!` over (a) its TCP connections' frames and (b) its cross-shard inbox
+
+**Error handling:** cross-shard work is **fire-and-forget**. Origin shard does not `await` target shard's result. Errors logged to target shard's metrics but **not** propagated back to originating client. This is a **deliberate semantic change from v1.2** — surface in PITFALLS as a **locked decision** that needs user-facing documentation.
+
+**Ordering guarantees across shards:** none. Events A and B that fan out to different shards may be reordered. Acceptable because operators are per-entity and fan-out targets are per-entity too.
+
+### 4.5 Event log per-shard or global?
+
+**Recommendation: per-shard event log directory** (`events/shard-0/`, `events/shard-1/`, ...).
+
+- Each shard's log writer is a separate `BufWriter<File>` — no contention
+- fsync per-shard on its own 1-second timer
+- Per-stream log files become per-(shard, stream) log files: `events/shard-3/transactions.log`
+- **Backfill complication:** replay reads all shards' copies of that stream's log and interleaves. Acceptable cold-path cost.
+
+### 4.6 Snapshot format bump to v7, per-shard files, manifest
+
+```
+tally.snapshot.manifest.0000000005        # {seq: 5, num_shards: 12, shards: [0..11], format: 7}
+tally.snapshot.base.0000000005.shard-00
+tally.snapshot.base.0000000005.shard-01
+...
+tally.snapshot.delta.0000000006.shard-00
+tally.snapshot.delta.0000000006.shard-03  # only shards with dirty keys write deltas
+```
+
+**Manifest commit protocol:**
+1. Coordinator signals each shard "prepare snapshot at seq N"
+2. Each shard drains its dirty set under its own lock, releases, serializes off-thread, writes `.shard-K.tmp` → fsync → rename
+3. Coordinator waits for all shards to report done
+4. Coordinator writes `manifest.N.tmp` → fsync → rename → fsync parent dir
+5. Cleanup: delete files whose seq < previous manifest's seq
+
+**Crash recovery with a partial snapshot set:** if a manifest file for seq N does not exist but shard files for N do, N is incomplete. **Roll back to the previous manifest**. Same atomicity model as PostgreSQL commit files.
+
+**Backward compat with v1.2 single-file snapshots:**
+- On startup, check for `manifest.*` first (v7)
+- Fall back to `tally.snapshot.base.*` scan (v6) — current code, keep it
+- Load v6 into shard 0, re-shard by key on the fly: iterate `store.entities`, compute `xxh3(key) % N`, route each entity into the correct shard
+
+**Backward compat when `N` changes across restarts:** persist `num_shards` in a **config file** written on first run; user must explicitly change it (and accept the re-shard migration).
+
+### 4.7 REGISTER replication to shards
+
+`PipelineEngine` behind `arc_swap::ArcSwap<Arc<PipelineEngine>>`. REGISTER acquires a **separate** `Mutex<()>` (one at a time), builds a new `PipelineEngine`, publishes via `arcswap.store(Arc::new(new_engine))`. Every shard reads via `arcswap.load()` which is essentially free.
+
+Strictly better than the alternatives:
+- **Broadcast channel to all shards**: risk of partial application if a shard is stuck. Reject.
+- **Shared RwLock**: non-zero cost on every hot-path read. Reject.
+
+**Subtlety:** pipeline registration also touches `event_log.register_stream` — in v1.3 this must happen on every shard worker. Coordinator sends a `CoordMsg::RegisterStream { name, history_ttl }` to every shard's inbox after swapping the engine. Allowed to be slightly asynchronous: PUSH races with REGISTER can see an engine with the stream but log not yet open; log writer handles lazy-open.
+
+### 4.8 MGET + GET across shards
+
+MGET is already a batch op. In v1.3:
+- Route each key by hash to its shard
+- Scatter: for each involved shard, build a sub-MGET and send via oneshot-reply channel (`CrossShardMsg::MGet { keys, reply: oneshot::Sender }`)
+- Gather: the connection handler awaits all replies, merges in input order
+
+GET is just scatter-1 / gather-1.
+
+**Latency impact:** GET gains a channel round-trip (~1-2µs). Still well within `<50µs p99`.
+
+### 4.9 Debug UI / HTTP scatter-gather
+
+| Endpoint | Strategy |
+|---|---|
+| `/debug/topology` | Reads `ArcSwap<PipelineEngine>`. Zero change. |
+| `/debug/state/:key` | Hash key to shard, one-shot message. |
+| `/debug/memory` | Scatter to all shards, sum results. |
+| `/debug/throughput` | Scatter, merge per-stream EWMAs. |
+| `/debug/latency` | Scatter, merge histograms (hdrhistogram.merge). |
+| `/debug/backfill` | Coordinator-owned state, direct read. |
+| `/metrics` (Prometheus) | Scatter, sum. |
+
+---
+
+## 5. Phase 15 — Snapshot I/O Off Main Thread
+
+### 5.1 Today's state
+
+`main.rs:222-413` already uses `spawn_blocking` for the serialize + write part. The **clone-under-lock** is what blocks the main thread. Phase 9 incremental snapshots reduced this: on delta cycles, only dirty entities are cloned. Base snapshots still clone the entire store under the Big Mutex.
+
+### 5.2 Phase 15 after Phase 14 is the right order
+
+With Phase 14's per-shard state, Phase 15 becomes trivial: **each shard does its own clone under its own lock**, in parallel with the other shards. Per-shard stall is ~1/N of today's stall; PUSH throughput on other shards unaffected.
+
+```
+Snapshot coordinator
+   │
+   └──► CoordMsg::PrepareSnapshot { seq, full: bool }  ──► shard 0..N workers
+        │
+        │ Each shard, on receiving the message:
+        │   1. Acquire its own lock
+        │   2. Clone dirty (or full)
+        │   3. Release lock
+        │   4. spawn_blocking per-shard writer task
+        │   5. On success, reply via oneshot
+        │
+        ▼
+   Coordinator waits for all replies, writes manifest.N, cleans up
+```
+
+### 5.3 If Phase 15 landed before Phase 14
+
+Also useful as a standalone improvement to v1.2, but most of the machinery gets rewritten in Phase 14 anyway. Recommendation: ship after 14.
+
+### 5.4 Partial-write recovery
+
+Manifest file is the transaction boundary. Missing manifest → roll back to previous manifest. Orphan shard files are detected in cleanup pass.
+
+Manifest must be fsync'd to disk, directory fsync'd after rename, before coordinator reports success.
+
+---
+
+## 6. Build Order Recommendation
+
+**Recommended order: 12 → 13 → 14 → 15 (the drafted order).**
+
+### 6.1 Rationale
+
+**Why 12 before 13:** Phase 13 (OP_PUSH_BATCH) is a wire-format + SDK change whose server-side handler **is** the Phase 12 batch handler. Building 13 first means writing `handle_push_batch` twice. 12 first establishes the shared primitive.
+
+**Why 12+13 before 14:** (a) Phase 14 is the largest architectural change; going in with a well-tested `handle_push_batch` primitive that shard workers can reuse means Phase 14's cross-shard channel can send `PushBatch` messages from day one. (b) 12+13 are **independently shippable wins** that validate the milestone thesis before taking on the 2-3 week Phase 14 refactor. De-risks.
+
+**Why 14 before 15:** Phase 15 is dramatically simpler in a sharded world (§5.2). Doing 15 first means reworking it after 14.
+
+**Why NOT 14 first:** max risk upfront, no early wins, no shared primitives to reuse.
+
+**Why NOT 15 before 14:** 15% duty-cycle stall is real but not blocking. 1M eps goal depends on 14, not 15.
+
+### 6.2 Alternatives — brief verdicts
+
+| Alt | Verdict | Reasoning |
+|---|---|---|
+| 12 → 13 → 15 → 14 | **No.** | Phase 15 gets redone after 14 |
+| 14 → 12 → 13 → 15 | **No.** | Max risk front-loaded, no de-risking |
+| 12+13 parallel → 14 → 15 | **Maybe — if two engineers.** | Share `handle_push_batch`; solo dev should stay sequential |
+| **12 → 13 → 14 → 15** | **YES (drafted order)** | Shared primitives flow forward |
+
+---
+
+## 7. New Components Introduced by v1.3
+
+| Component | Phase | File (proposed) | Responsibility |
+|---|---|---|---|
+| `ConnAccumulator` | 12 | `src/server/accumulator.rs` | Per-connection buffer + flush triggers |
+| `handle_push_batch` | 12 | `src/server/tcp.rs` | Batched push under a single lock |
+| `engine.push_batch_no_features` | 12 | `src/engine/pipeline.rs` | Iterate events for a single stream, share lookups |
+| `event_log.append_many` | 12 | `src/state/event_log.rs` | Batch-append to one stream's log |
+| `store.mark_dirty_many` | 12 | `src/state/store.rs` | Batch dirty-set insert |
+| `OP_PUSH_BATCH (0x0A)` decoder | 13 | `src/server/protocol.rs` | Wire format decoder |
+| Python `App.push_many` | 13 | `python/tally/_app.py` | Client-side batching API |
+| `ShardStore` / `ShardWorker` | 14 | `src/shard/mod.rs` (new) | Owns one shard; runs its own current_thread runtime |
+| `Coordinator` | 14 | `src/shard/coordinator.rs` | Accepts TCP, assigns connections, REGISTER ArcSwap |
+| `CrossShardMsg` | 14 | `src/shard/message.rs` | Enum: PushBatch, MGet, DebugQuery, RegisterStream, PrepareSnapshot |
+| `ShardRouter` / `key_to_shard` | 14 | `src/shard/routing.rs` | `xxh3_64(key) % num_shards` |
+| `ArcSwap<PipelineEngine>` wrap | 14 | `src/engine/pipeline.rs` | Globally shared immutable snapshot |
+| `SnapshotManifest` + v7 format | 14 + 15 | `src/state/snapshot.rs` | New `.manifest.NNN` file |
+| `shard.clone_dirty_for_snapshot` | 14 | `src/shard/store.rs` | Per-shard version of existing clone |
+| `SnapshotCoordinator` | 15 | `src/state/snapshot_coord.rs` | Orchestrates per-shard snapshot cycles |
+
+---
+
+## 8. Architectural Risks (feed pitfalls researcher)
+
+1. **Cross-shard fan-out error swallowing** (§4.4). v1.2 surfaces fan-out errors on the originating PUSH. v1.3 cannot without re-introducing sync coordination. **Locked decision risk.** Mitigation: per-shard per-stream metrics; alert on cross-shard push error rate.
+2. **Deterministic hash compatibility** (§4.3). Pin the `xxhash-rust` crate version; include hash version in manifest header.
+3. **`num_shards` drift across restarts** (§4.6). Persist `num_shards` in manifest + config file; require explicit env var bump to trigger re-shard.
+4. **REGISTER vs. PUSH race under ArcSwap** (§4.7). Benign but subtle. Unit test.
+5. **Coalescing error ordering under multi-client** (§2.4). Per-connection accumulators are independent. OK if not shared across connections.
+6. **Bounded cross-shard channel backpressure** (§4.4). Hot shard falling behind creates backpressure on sender. Mitigation: channel size tuning, shed to metrics + drop, always batch.
+7. **Manifest fsync ordering** (§5.4). Strict: all shard writes → all shard fsyncs → parent dir fsync → manifest.tmp → fsync → rename → dir fsync.
+8. **Snapshot clone vs. active writes on same shard** (§5.2). Even per-shard, clone runs under own lock. Massive state in one shard (hot key) still stalls **itself**. Mitigation: rely on even distribution; Arc<EntityState> COW as v2 fallback.
+9. **Event log backfill across shards** (§4.5). Scatter-read + merge helper. Verify no global-ordering assumption in Phase 7 cascade backfill.
+10. **Thread-per-core cooperative scheduling** (§4.1). Long-running sync work on a shard starves its own tasks including cross-shard inbox. Mitigation: hard budget; `yield_now()` in MGET chunked loop.
+
+---
+
+## 9. Data Flow — Before and After
+
+### 9.1 PUSH path (v1.2 today)
+
+```
+TCP read  →  parse_command  →  acquire AppState mutex  →
+    engine.push_with_cascade_no_features  →
+    mark_dirty + event_log.append + fan-out  →
+    throughput.bump_unique + metrics + latency  →
+release mutex  →  (async: no response; sync: write frame)
+```
+
+### 9.2 PUSH path (v1.3 after Phase 12 — coalescing only, still single-threaded)
+
+```
+TCP read  →  parse_command  →
+  PushAsync? ↓ yes               ↓ no (sync command)
+  accumulator.add(event)         flush accumulator → acquire mutex → dispatch
+  accumulator full or timer? ↓ yes
+  flush = acquire mutex ONCE
+    for each group (stream, events):
+      engine.push_batch_no_features(stream, events)
+      event_log.append_many(stream, bytes_slice)
+      store.mark_dirty_many(&keys)
+      handle cross-stream fan-out
+    throughput.bump_unique(touched)  [once per batch]
+    metrics.events_total += N
+  release mutex
+  (write STATUS_ERROR frames for failures, if any)
+```
+
+### 9.3 PUSH path (v1.3 after Phase 14 — sharded)
+
+```
+Coordinator thread:  accept(TCP) → pick home shard S → handoff socket FD
+Shard S worker (own runtime, own mutex):
+  read frame → parse →
+  PushAsync? ↓ yes
+  accumulator.add → flush (size/time) →
+    for each (stream, events):
+      for event:
+        primary_key = extract(event, stream.key_field)
+        if hash(primary_key) % N == S:
+          shard[S].push_local(event)
+          for cascade_target in same_shard_targets:
+            shard[S].push_local(cascade_target)
+          for fan_out_target with key on other shard T:
+            cross_shard_outbox[T].push(event)  [accumulates]
+    for target_shard T with non-empty outbox:
+      shard[T].inbox.send(CrossShardMsg::PushBatch { stream, events })
+
+Shard T worker (its own thread):
+  select! over (own connections' reads, cross_shard inbox)
+    cross_shard_msg → push_batch_local_only(events)
+```
+
+### 9.4 Snapshot path
+
+**v1.2:**
+```
+Periodic timer (main thread)
+  → acquire mutex
+  → clone_for_snapshot_with_gc (2-7s for 1M keys, under lock)  ← THE STALL
+  → clear_dirty, release mutex
+  → spawn_blocking(serialize + write + fsync + rename)
+```
+
+**v1.3 after Phase 15 + 14:**
+```
+Coordinator (own thread) → broadcast CoordMsg::PrepareSnapshot to every shard
+
+Each shard (parallel):
+  → acquire own mutex
+  → clone_dirty for own subset (~1/N of v1.2 stall)  ← much shorter
+  → clear_dirty, release own mutex
+  → spawn_blocking(serialize own shard + write own file + fsync)
+  → reply via oneshot
+
+Coordinator:
+  → wait for all replies (bounded timeout; missing shard = abort cycle)
+  → write manifest.N.tmp → fsync → rename → fsync parent dir
+  → cleanup old files
+```
+
+---
+
+## 10. Confidence Assessment
+
+| Area | Confidence | Notes |
+|---|---|---|
+| Existing architecture shape | HIGH | Read directly from source |
+| Phase 12 coalescing design | HIGH | Standard pattern (Redis I/O threads, Netty batching) |
+| Phase 13 wire format + SDK | HIGH | Trivial extension of Phase 11 binary encoding |
+| Phase 14 sharding runtime model | MEDIUM-HIGH | Seastar/Glommio well-established; Rust tokio specifics need a 1-day spike |
+| Phase 14 cross-shard semantics | MEDIUM | Error-swallowing decision affects user-facing semantics — needs explicit CEO review |
+| Phase 14 snapshot format v7 | HIGH | Manifest pattern is standard |
+| Phase 15 post-sharding | HIGH | Trivial split of existing `spawn_blocking` |
+| Build order | HIGH | Dependency-driven, backed by shared-primitive reuse |
+
+**Confidence is weakest on Phase 14 cross-shard error semantics** because that is a product decision, not just technical. Flag for CEO review before Phase 14 execution.
+
+---
+
+## 11. Files referenced
+
+- `CLAUDE.md` (project charter)
+- `.planning/PROJECT.md` (current state, constraints, key decisions)
+- `.planning/ROADMAP.md` lines 210-275 (v1.3 drafted phases)
+- `src/main.rs` lines 27-500 (runtime construction, snapshot timer)
+- `src/server/tcp.rs` lines 49-88 (`AppState`), 124-235 (`handle_connection`), 238-483 (`handle_push_core_ex` and `handle_push_async`)
+- `src/state/store.rs` lines 83-200 (`StateStore` → `ShardStore`)
+- `src/state/snapshot.rs` lines 20-30 (v6 `SNAPSHOT_FORMAT_VERSION`; v7 manifest adds on top)
+- `src/engine/pipeline.rs` lines 580-678 (cascade — same-key stays local, fan-out goes cross-shard)
+- `src/engine/pipeline.rs` lines 973-980 (`fan_out_targets`)
+- `src/state/event_log.rs` lines 51-92 (EventLog per-stream writers)
+- `.planning/phases/11-fire-and-forget-push/11-VERIFICATION.md` lines 120-176 (post-verification bottleneck analysis)
+- `benchmark/tally-throughput/PATH-TO-100K-1M.md` lines 96-150 (Lever D/E analysis)
