@@ -18,7 +18,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use tally::engine::pipeline::PipelineEngine;
-use tally::server::protocol::{self, OP_GET, OP_MSET, OP_PUSH, OP_REGISTER, OP_SET, STATUS_ERROR, STATUS_OK};
+use tally::server::protocol::{
+    self, OP_FLUSH, OP_GET, OP_MSET, OP_PUSH, OP_PUSH_ASYNC, OP_REGISTER, OP_SET, STATUS_ERROR,
+    STATUS_OK, TYPE_BOOL, TYPE_F64, TYPE_I64, TYPE_NULL, TYPE_STR,
+};
 use tally::server::tcp::{AppState, BackfillTracker, Metrics, SharedState};
 use tally::state::store::StateStore;
 
@@ -99,10 +102,48 @@ async fn send_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) -> (u8, 
     (status, resp_payload)
 }
 
-/// Build PUSH payload: [u16 stream_name][JSON bytes]
+/// Build PUSH payload matching Phase 11's binary wire format.
+///
+/// Layout: `[u16 name_len][name utf-8][u16 field_count][field...]`
+/// where each field is `[u16 key_len][key utf-8][u8 type_tag][value bytes]`.
+///
+/// Accepts a `serde_json::Value::Object` and maps each value to the
+/// appropriate binary type tag. Nested arrays/objects panic — tests must
+/// use flat field dicts.
 fn build_push_payload(stream_name: &str, event: &serde_json::Value) -> Vec<u8> {
+    let obj = event
+        .as_object()
+        .expect("test fixture: event must be a JSON object");
     let mut buf = protocol::write_string(stream_name);
-    buf.extend_from_slice(&serde_json::to_vec(event).unwrap());
+    buf.extend_from_slice(&(obj.len() as u16).to_be_bytes());
+    for (k, v) in obj {
+        buf.extend_from_slice(&protocol::write_string(k));
+        match v {
+            serde_json::Value::Null => buf.push(TYPE_NULL),
+            serde_json::Value::Bool(b) => {
+                buf.push(TYPE_BOOL);
+                buf.push(if *b { 1 } else { 0 });
+            }
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    buf.push(TYPE_I64);
+                    buf.extend_from_slice(&i.to_be_bytes());
+                } else if let Some(f) = n.as_f64() {
+                    buf.push(TYPE_F64);
+                    buf.extend_from_slice(&f.to_be_bytes());
+                } else {
+                    panic!("unsupported JSON number: {}", n);
+                }
+            }
+            serde_json::Value::String(s) => {
+                buf.push(TYPE_STR);
+                buf.extend_from_slice(&protocol::write_string(s));
+            }
+            serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                panic!("binary PUSH test fixture does not support nested arrays/objects");
+            }
+        }
+    }
     buf
 }
 
@@ -961,5 +1002,83 @@ async fn test_cross_connection_state_visibility() {
     assert_eq!(
         json["tx_count_1h"], 1,
         "Connection B should see features written by Connection A"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 11: OP_PUSH_ASYNC, OP_FLUSH, malformed async push
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_push_async_roundtrip_then_get() {
+    use tokio::io::AsyncWriteExt;
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+    register_tx_stream(&mut stream).await;
+
+    // Fire-and-forget async push. Server processes it and sends NO response frame.
+    let push_payload = build_push_payload(
+        "Transactions",
+        &serde_json::json!({"user_id": "u-async-1", "amount": 25.0}),
+    );
+    let frame = protocol::encode_frame(OP_PUSH_ASYNC, &push_payload);
+    stream.write_all(&frame).await.expect("send async push");
+
+    // Follow-up GET. TCP in-order delivery + sequential handle_connection
+    // dispatch guarantees the async push has been processed before the GET
+    // hits the state lock.
+    let get_payload = build_get_payload("u-async-1");
+    let (status, resp) = send_frame(&mut stream, OP_GET, &get_payload).await;
+    assert_eq!(status, STATUS_OK);
+
+    let features: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        features["tx_count_1h"], 1,
+        "async push was not processed: features={features}"
+    );
+}
+
+#[tokio::test]
+async fn test_flush_roundtrip() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+
+    let (status, payload) = send_frame(&mut stream, OP_FLUSH, &[]).await;
+    assert_eq!(status, STATUS_OK, "FLUSH should return STATUS_OK");
+    assert!(
+        payload.is_empty(),
+        "FLUSH response body should be empty, got {} bytes",
+        payload.len()
+    );
+}
+
+#[tokio::test]
+async fn test_push_async_malformed_returns_error() {
+    let (tcp_port, _, _state) = start_test_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", tcp_port))
+        .await
+        .unwrap();
+    register_tx_stream(&mut stream).await;
+
+    // Build a malformed payload: stream_name ok, field_count=1, key ok, type_tag=0xFF.
+    let mut buf = protocol::write_string("Transactions");
+    buf.extend_from_slice(&1u16.to_be_bytes()); // field_count
+    buf.extend_from_slice(&protocol::write_string("user_id"));
+    buf.push(0xFF); // unknown type tag
+
+    // Async frame. Server MUST reply with STATUS_ERROR even though it's async.
+    let (status, payload) = send_frame(&mut stream, OP_PUSH_ASYNC, &buf).await;
+    assert_eq!(
+        status, STATUS_ERROR,
+        "malformed async push must produce STATUS_ERROR; got {status}"
+    );
+    let msg = std::str::from_utf8(&payload).unwrap_or("");
+    assert!(
+        msg.contains("type tag") || msg.contains("Protocol") || msg.contains("protocol"),
+        "error message should indicate protocol issue, got: {msg}"
     );
 }
