@@ -15,6 +15,32 @@ use serde::{Serialize, Deserialize};
 /// Default history TTL: 72 hours (3 days) per CONTEXT.md locked decision.
 pub const DEFAULT_HISTORY_TTL: Duration = Duration::from_secs(259200);
 
+/// Event log payload format markers (Plan 11-06).
+///
+/// New writes prefix the payload with one of these bytes so readers can
+/// dispatch between JSON and binary wire format without heuristics. Legacy
+/// files written before Plan 11-06 do not have a prefix byte and must be
+/// read via JSON fallback — see `decode_log_payload` below.
+pub const LOG_FMT_JSON: u8 = 0x00;
+pub const LOG_FMT_BINARY: u8 = 0x01;
+
+/// Decode an event-log entry payload, handling both new tagged formats and
+/// legacy untagged JSON payloads. Returns `(format, body_slice)`:
+///
+/// - `(LOG_FMT_JSON, &payload[1..])` if the first byte is `0x00`.
+/// - `(LOG_FMT_BINARY, &payload[1..])` if the first byte is `0x01`.
+/// - `(LOG_FMT_JSON, &payload[..])` otherwise (legacy untagged JSON —
+///   the payload starts directly with a JSON object byte like `{`).
+///
+/// Callers then parse `body_slice` with the appropriate decoder.
+pub fn decode_log_payload(payload: &[u8]) -> (u8, &[u8]) {
+    match payload.first() {
+        Some(&LOG_FMT_JSON) => (LOG_FMT_JSON, &payload[1..]),
+        Some(&LOG_FMT_BINARY) => (LOG_FMT_BINARY, &payload[1..]),
+        _ => (LOG_FMT_JSON, payload),
+    }
+}
+
 /// A single log entry: timestamp + raw event payload bytes.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LogEntry {
@@ -213,6 +239,42 @@ mod tests {
 
     fn ts(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    // ---------- Plan 11-06: format dispatch helper tests ----------
+
+    #[test]
+    fn test_decode_log_payload_json_tagged() {
+        let mut p = vec![LOG_FMT_JSON];
+        p.extend_from_slice(br#"{"a":1}"#);
+        let (fmt, body) = decode_log_payload(&p);
+        assert_eq!(fmt, LOG_FMT_JSON);
+        assert_eq!(body, br#"{"a":1}"#);
+    }
+
+    #[test]
+    fn test_decode_log_payload_binary_tagged() {
+        let p = vec![LOG_FMT_BINARY, 0x00, 0x01, 0x02, 0x03];
+        let (fmt, body) = decode_log_payload(&p);
+        assert_eq!(fmt, LOG_FMT_BINARY);
+        assert_eq!(body, &[0x00, 0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn test_decode_log_payload_legacy_untagged_json() {
+        // Legacy (pre-11-06) files start directly with a `{` (0x7B).
+        let p = br#"{"legacy":true}"#.to_vec();
+        let (fmt, body) = decode_log_payload(&p);
+        // Falls through to JSON fallback (legacy treated as JSON).
+        assert_eq!(fmt, LOG_FMT_JSON);
+        assert_eq!(body, br#"{"legacy":true}"#);
+    }
+
+    #[test]
+    fn test_decode_log_payload_empty() {
+        let (fmt, body) = decode_log_payload(&[]);
+        assert_eq!(fmt, LOG_FMT_JSON);
+        assert!(body.is_empty());
     }
 
     #[test]

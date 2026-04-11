@@ -240,16 +240,22 @@ async fn test_register_and_push() {
     // Register
     register_tx_stream(&mut stream).await;
 
-    // Push event
+    // Push event — Phase 11 sync push returns an empty ack
     let push_payload = build_push_payload(
         "Transactions",
         &serde_json::json!({"user_id": "u1", "amount": 50.0}),
     );
     let (status, resp) = send_frame(&mut stream, OP_PUSH, &push_payload).await;
     assert_eq!(status, STATUS_OK);
-
     let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
-    assert_eq!(json["tx_count_1h"], 1, "Count should be 1 after first push");
+    assert_eq!(json, serde_json::json!({}));
+
+    // State WAS updated — verify via GET
+    let get_payload = build_get_payload("u1");
+    let (get_status, get_resp) = send_frame(&mut stream, OP_GET, &get_payload).await;
+    assert_eq!(get_status, STATUS_OK);
+    let get_json: serde_json::Value = serde_json::from_slice(&get_resp).unwrap();
+    assert_eq!(get_json["tx_count_1h"], 1, "Count should be 1 after first push");
 }
 
 /// SRV-03: PUSH to unregistered stream returns error.
@@ -396,20 +402,25 @@ async fn test_register_with_derive() {
     let (status, _) = send_frame(&mut stream, OP_REGISTER, &reg_payload).await;
     assert_eq!(status, STATUS_OK, "REGISTER with derive should succeed");
 
-    // Push event
+    // Push event — Phase 11: sync push returns empty ack. Use GET to read features.
     let push_payload = build_push_payload(
         "Transactions",
         &serde_json::json!({"user_id": "u1", "amount": 100.0}),
     );
     let (status, resp) = send_frame(&mut stream, OP_PUSH, &push_payload).await;
     assert_eq!(status, STATUS_OK);
-
     let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
-    assert_eq!(json["tx_count"], 1);
-    assert_eq!(json["tx_sum"], 100.0);
-    assert_eq!(json["avg_amount"], 100.0);
-    // derive: tx_count / 1 = 1.0
-    assert_eq!(json["rate"], 1.0);
+    assert_eq!(json, serde_json::json!({}));
+
+    // GET: verifies the operators AND the derive expression evaluate correctly.
+    let get_payload = build_get_payload("u1");
+    let (gstatus, gresp) = send_frame(&mut stream, OP_GET, &get_payload).await;
+    assert_eq!(gstatus, STATUS_OK);
+    let gjson: serde_json::Value = serde_json::from_slice(&gresp).unwrap();
+    assert_eq!(gjson["tx_count"], 1);
+    assert_eq!(gjson["tx_sum"], 100.0);
+    assert_eq!(gjson["avg_amount"], 100.0);
+    assert_eq!(gjson["rate"], 1.0);
 }
 
 /// SRV-08: HTTP GET /health returns 200 with {"status": "ok"}.
@@ -466,7 +477,9 @@ async fn test_persistent_connection() {
     // Register
     register_tx_stream(&mut stream).await;
 
-    // Push 3 events on the same connection
+    // Push 3 events on the same connection — Phase 11 sync returns empty ack.
+    // After each push, use GET to verify the count increments correctly,
+    // exercising the persistent-connection path for PUSH+GET interleaving.
     for i in 1..=3 {
         let push_payload = build_push_payload(
             "Transactions",
@@ -474,10 +487,15 @@ async fn test_persistent_connection() {
         );
         let (status, resp) = send_frame(&mut stream, OP_PUSH, &push_payload).await;
         assert_eq!(status, STATUS_OK);
-
         let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+        assert_eq!(json, serde_json::json!({}));
+
+        let get_payload = build_get_payload("u1");
+        let (gstatus, gresp) = send_frame(&mut stream, OP_GET, &get_payload).await;
+        assert_eq!(gstatus, STATUS_OK);
+        let gjson: serde_json::Value = serde_json::from_slice(&gresp).unwrap();
         assert_eq!(
-            json["tx_count_1h"], i,
+            gjson["tx_count_1h"], i,
             "Count should increment to {} on push {}",
             i, i
         );
@@ -622,22 +640,28 @@ async fn test_register_duplicate_overwrites() {
     let (status, _) = send_frame(&mut stream, OP_REGISTER, &reg2).await;
     assert_eq!(status, STATUS_OK);
 
-    // Push event -- should use the second definition (sum, not count)
+    // Push event — Phase 11: sync push returns empty ack. Use GET to verify
+    // the second definition is the one being applied.
     let push_payload = build_push_payload(
         "Transactions",
         &serde_json::json!({"user_id": "u1", "amount": 100.0}),
     );
     let (status, resp) = send_frame(&mut stream, OP_PUSH, &push_payload).await;
     assert_eq!(status, STATUS_OK);
-
     let json: serde_json::Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(json, serde_json::json!({}));
+
+    let get_payload = build_get_payload("u1");
+    let (gstatus, gresp) = send_frame(&mut stream, OP_GET, &get_payload).await;
+    assert_eq!(gstatus, STATUS_OK);
+    let gjson: serde_json::Value = serde_json::from_slice(&gresp).unwrap();
     // Should have tx_sum from the second registration, not tx_count from the first
     assert_eq!(
-        json["tx_sum"], 100.0,
+        gjson["tx_sum"], 100.0,
         "Should use overwritten stream definition"
     );
     assert_eq!(
-        json.get("tx_count"),
+        gjson.get("tx_count"),
         None,
         "Old feature should not exist after overwrite"
     );

@@ -29,13 +29,20 @@ pub const TYPE_STR:  u8 = 0x04;
 /// Parsed command from a protocol frame.
 #[derive(Debug)]
 pub enum Command {
-    Push { stream_name: String, payload: serde_json::Value },
+    /// Synchronous push. `payload` is the decoded JSON view of the event,
+    /// `raw_payload` is the original binary wire bytes (empty when
+    /// synthesized by tests, populated by `parse_command`). The raw bytes
+    /// are forwarded to the event log as-is to avoid a re-serialize on the
+    /// hot path (Plan 11-06).
+    Push { stream_name: String, payload: serde_json::Value, raw_payload: Vec<u8> },
     Get { key: String },
     Set { key: String, payload: serde_json::Value },
     Mset { entries: Vec<(String, serde_json::Value)> },
     Register { payload: serde_json::Value },
     Mget { keys: Vec<String> },
-    PushAsync { stream_name: String, payload: serde_json::Value },
+    /// Fire-and-forget async push. Carries raw_payload for the same reason
+    /// as `Push` — see that variant's docs.
+    PushAsync { stream_name: String, payload: serde_json::Value, raw_payload: Vec<u8> },
     Flush,
 }
 
@@ -230,13 +237,18 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
     match opcode {
         OP_PUSH => {
             let stream_name = read_string(&mut buf)?;
+            // Capture the raw binary payload bytes before decoding so we
+            // can forward them verbatim to the event log (Plan 11-06, no
+            // JSON re-serialize on the hot path).
+            let raw_payload = buf.to_vec();
             let payload_value = decode_event_binary(&mut buf)?;
-            Ok(Command::Push { stream_name, payload: payload_value })
+            Ok(Command::Push { stream_name, payload: payload_value, raw_payload })
         }
         OP_PUSH_ASYNC => {
             let stream_name = read_string(&mut buf)?;
+            let raw_payload = buf.to_vec();
             let payload_value = decode_event_binary(&mut buf)?;
-            Ok(Command::PushAsync { stream_name, payload: payload_value })
+            Ok(Command::PushAsync { stream_name, payload: payload_value, raw_payload })
         }
         OP_FLUSH => Ok(Command::Flush),
         OP_GET => {
@@ -897,10 +909,11 @@ mod tests {
         );
         let cmd = parse_command(OP_PUSH, &payload).unwrap();
         match cmd {
-            Command::Push { stream_name, payload } => {
+            Command::Push { stream_name, payload, raw_payload } => {
                 assert_eq!(stream_name, "Transactions");
                 assert_eq!(payload["user_id"], "u123");
                 assert_eq!(payload["amount"], 50.0);
+                assert!(!raw_payload.is_empty(), "raw binary bytes must be captured");
             }
             _ => panic!("expected Push command"),
         }
@@ -911,9 +924,10 @@ mod tests {
         let payload = build_binary_push_payload("tx", &[("user_id", serde_json::json!("u1"))]);
         let cmd = parse_command(OP_PUSH, &payload).unwrap();
         match cmd {
-            Command::Push { stream_name, payload } => {
+            Command::Push { stream_name, payload, raw_payload } => {
                 assert_eq!(stream_name, "tx");
                 assert_eq!(payload["user_id"], "u1");
+                assert!(!raw_payload.is_empty());
             }
             _ => panic!("expected Push"),
         }
@@ -924,9 +938,10 @@ mod tests {
         let payload = build_binary_push_payload("tx", &[("user_id", serde_json::json!("u1"))]);
         let cmd = parse_command(OP_PUSH_ASYNC, &payload).unwrap();
         match cmd {
-            Command::PushAsync { stream_name, payload } => {
+            Command::PushAsync { stream_name, payload, raw_payload } => {
                 assert_eq!(stream_name, "tx");
                 assert_eq!(payload["user_id"], "u1");
+                assert!(!raw_payload.is_empty());
             }
             _ => panic!("expected PushAsync"),
         }
