@@ -4,7 +4,8 @@
 
 - v1.0 Core Feature Server — Phases 1-5 (shipped 2026-04-09)
 - v1.1 Composable Pipeline & Event Log — Phases 6-10.2 (shipped 2026-04-11)
-- v1.2 Performance — Phases 11+ (in progress)
+- v1.2 Performance — Phase 11 (shipped 2026-04-11)
+- v1.3 Concurrency & Client Batching — Phases 12-15 (planned)
 
 ## Phases
 
@@ -171,29 +172,103 @@ Plans:
 
 ---
 
-### v1.2 Performance
+### v1.2 Performance — SHIPPED 2026-04-11
 
-**Milestone Goal:** Lift single-node Tally throughput from ~17.5k eps (v1.1 baseline, single Python client, medium pipeline) toward the 100k-1M eps range by attacking the hot-path JSON cost, the round-trip response overhead, and eventually the single-threaded-runtime concurrency cliff. Each phase is independently measurable against the v1.1 baseline captured in `benchmark/tally-throughput/RESULTS.md`.
+**Milestone Goal:** Lift single-node Tally throughput from ~17.5k eps (v1.1 baseline, single Python client, medium pipeline) toward the 100k-1M eps range by attacking the hot-path JSON cost, the round-trip response overhead, and eventually the single-threaded-runtime concurrency cliff.
+
+**Outcome:** Phase 11 delivered the first big step — single-client async lands at 128–142k eps across small/medium/large pipelines on 1 core, with sync p99 = 87–90µs. Large pipeline moved from 865 eps → 128k eps (148×) after a mid-phase re-verification caught and fixed three latent bottlenecks:
+
+| Pipeline | Mode | EPS | p99 µs |
+|---|---|---:|---:|
+| small | async 1c | 138k | — |
+| medium | async 1c | 142k | — |
+| large | async 1c | 128k | — |
+| small | sync 1c | 20.4k | 87 |
+| medium | sync 1c | 20.2k | 87 |
+| large | sync 1c | 19.4k | 90 |
+
+The 100k floor is hit on every pipeline size; the 1M ceiling is deferred to v1.3 (multi-threading path). See `benchmark/tally-throughput/RESULTS.md` for the full matrix and `.planning/phases/11-fire-and-forget-push/11-VERIFICATION.md` for the post-verification fix analysis.
 
 **Context documents:**
 - `benchmark/FINDINGS.md` — original benchmark spike (synthetic Rust, macOS)
-- `benchmark/tally-throughput/RESULTS.md` — real v1.1 wall-clock numbers
+- `benchmark/tally-throughput/RESULTS.md` — real v1.1 wall-clock numbers + Phase 11 matrix
 - `benchmark/tally-throughput/PROFILE.md` — callgrind profile (46% JSON, 8% engine)
 - `benchmark/tally-throughput/FINDINGS-VS-REALITY.md` — scorecard of spike claims
 - `benchmark/tally-throughput/PATH-TO-100K-1M.md` — lever math and target tiers
 - `.planning/research/FINDINGS-GAP-ANALYSIS.md` — gap analysis vs FINDINGS
 
-### Phase 11: Fire-and-Forget PUSH + Binary Wire Protocol
+### Phase 11: Fire-and-Forget PUSH + Binary Wire Protocol — SHIPPED 2026-04-11
 **Goal:** Ship `app.push()` as fire-and-forget (no feature response) + `app.push_sync()` + `app.flush()`, and replace the JSON event payload with a typed binary format on PUSH paths. Targets **≥ 100k events/sec single Python client** on medium pipelines (5.7x over v1.1 baseline).
 **Depends on:** v1.1 complete
 **Requirements:** PERF-01 (fire-and-forget ingest), PERF-02 (binary event payload)
-**Success Criteria** (what must be TRUE):
-  1. `app.push(stream, event)` returns None and pipelines without waiting for a response
-  2. `app.push_sync(stream, event)` returns a FeatureResult (preserves v1.1 behavior)
-  3. `app.flush()` blocks until all in-flight async pushes have been processed; raises on error
-  4. Server errors on async push surface on the client's next `push` / `push_sync` / `flush` / `get` call
-  5. PUSH event payload is decoded from a binary format instead of `serde_json::from_slice`; callgrind shows JSON parse hotspots gone from PUSH path
-  6. Medium pipeline single-client throughput ≥ 100k events/sec (stretch: 150k)
-  7. All 569 existing tests remain green (raw-TCP tests updated for new binary payload format)
-**Plans:** TBD (research → plan phase)
+**Plans:** 6 total (11-01 binary decoder + opcodes, 11-02 Python SDK, 11-03 tcp.rs dispatch, 11-04 raw-TCP tests, 11-05 Python tests + bench gate, **11-06 binary event log format subplan**)
+**Result:** PASSED. Medium async single-client hit 166k eps at the original gate and 128–142k across all pipeline sizes after post-verification fixes. Sync p99 87–90µs across all sizes (v1.1 baseline was 129µs). 532/532 tests green. See `11-VERIFICATION.md` post-verification section for the three bugs (HLL read on async hot path, drain fast-path regression, residual JSON serialize) and `11-06-SUMMARY.md` for the mid-phase subplan.
 **Context:** [.planning/phases/11-fire-and-forget-push/11-CONTEXT.md](phases/11-fire-and-forget-push/11-CONTEXT.md)
+
+---
+
+### v1.3 Concurrency & Client Batching
+
+**Milestone Goal:** Break past the single-core ceiling hit in v1.2. Target **500k–1M eps on a single node** by (1) adding key-partitioned multi-threading so the 47 idle cores can carry load, (2) adding server-side async push coalescing to amortize per-event fixed costs, (3) adding an SDK batch-push API so a single client can produce events faster than the Python per-event loop ceiling, and (4) moving snapshot I/O off the main thread so large-state pipelines stop stalling during writes. Each phase is independently measurable against the v1.2 baseline in `benchmark/tally-throughput/RESULTS.md`.
+
+**Why v1.3:** Phase 11 proved that on 1 core the server is bound at ~128–142k eps (66% CPU utilization; 7µs per push of real work). With 47 other cores on a typical box sitting idle, multi-threading is the single highest-ROI change — estimated 10–40× on aggregate throughput with N concurrent clients. The other phases target residual per-event cost (coalescing + batching) and the 15–25% duty-cycle loss to snapshot stalls.
+
+**Context documents:**
+- `benchmark/tally-throughput/RESULTS.md` — v1.2 final matrix (baseline for v1.3 regression checks)
+- `.planning/phases/11-fire-and-forget-push/11-VERIFICATION.md` — post-verification perf analysis (bottleneck breakdown)
+- CLAUDE.md — "Scaling Path" section explicitly calls out key-partitioned multi-threading as the v2 upgrade
+
+### Phase 12: Server-side async push coalescing
+**Goal:** Buffer incoming `OP_PUSH_ASYNC` frames per-connection, process them in batches under a single `state.lock()` acquisition. Target **+50–100% async throughput** for multi-client workloads by amortizing fixed per-event costs (lock acquisition, event log append, fan-out target iteration, dirty-mark set insert).
+**Depends on:** v1.2 complete
+**Requirements:** PERF-03 (async coalescing)
+**Success Criteria** (what must be TRUE):
+  1. Server read loop accumulates up to N async push frames (default N=64) or waits up to T microseconds (default T=200µs) per connection before flushing to a single batch handler
+  2. `handle_push_batch` takes a single state lock, groups events by primary stream, and issues one `engine.push_no_features` call + one `event_log.append` per stream
+  3. Error attribution preserves the existing drain semantic: errors from events inside a batch surface on the client's next `push`/`flush`/`get` call, with stable ordering (first bad event first)
+  4. Multi-client aggregate async throughput on the medium pipeline ≥ 200k eps with 4 clients (v1.2 baseline for 4 clients was ~30k due to per-event lock contention)
+  5. Single-client async throughput on medium pipeline is within ±5% of the v1.2 baseline (142k) — coalescing must not regress single-client latency
+  6. Latency impact documented: coalescing adds up to T µs to async p50 (acceptable, async is already fire-and-forget)
+  7. All 532 existing tests remain green
+**Plans:** TBD (research → plan phase)
+
+### Phase 13: SDK batch push API + OP_PUSH_BATCH opcode
+**Goal:** Expose a client-side batching API (`app.push_many(stream, events)`) that wraps N events into a single wire frame, reducing Python per-event loop overhead from ~7µs to ~0.3µs. Target **single-client async ≥ 300k eps** on medium pipeline when using `push_many`.
+**Depends on:** Phase 12
+**Requirements:** PERF-04 (client batch API)
+**Success Criteria** (what must be TRUE):
+  1. `app.push_many(stream_cls, events)` accepts an iterable of event dicts, encodes them into one binary frame, sends via a new `OP_PUSH_BATCH` (0x0A) opcode
+  2. Server decodes the batch, dispatches to `handle_push_batch` (from Phase 12) for the grouped events
+  3. Backward-compatible: `app.push()` single-event API continues to work, emits `OP_PUSH_ASYNC`
+  4. Single-client async throughput on medium pipeline via `push_many` ≥ 300k eps (2× v1.2 single-client baseline)
+  5. Error semantic: batch-level failures surface via `drain_errors_nonblock` with a payload indicating the offending event index within the batch
+  6. Python SDK: `bench.py --mode async-batch` flag exercises the new API; results in `RESULTS.md`
+  7. All 532 existing tests remain green; new batch tests cover encode/decode roundtrip, mixed-valid/invalid event handling, partial batch errors
+**Plans:** TBD
+
+### Phase 14: Key-partitioned multi-threaded engine (v2 architectural upgrade)
+**Goal:** Break the single-core ceiling. Shard the `EntityState` map across N worker threads (N = `num_cpus::get()`) by hashing the entity key. Each worker owns its shard with no cross-thread locking. Target **aggregate 1M+ eps** on 16+ cores, proportional to core count.
+**Depends on:** Phase 12, Phase 13 (coalescing makes per-worker amortization more effective)
+**Requirements:** PERF-05 (key-partitioned concurrency)
+**Success Criteria** (what must be TRUE):
+  1. `StateStore` internals split into `Vec<Mutex<ShardStore>>` with `num_shards = num_cpus`; entity key → shard via stable hash
+  2. TCP read loop dispatches pushes to the correct shard's channel; shard worker runs on its own tokio thread or a dedicated std::thread
+  3. Cross-shard operations (fan-out to a different stream with a different key) go through an explicit cross-shard channel with batching
+  4. Snapshot serialization works per-shard and merges into a single file on recovery, preserving v1.2 snapshot format compatibility
+  5. Aggregate throughput on medium pipeline with 16 clients × 16 shards ≥ 1,000,000 eps (≈8× v1.2 single-core)
+  6. Single-client throughput is within ±10% of v1.2 (acceptable: some overhead from shard dispatch for workloads that don't benefit from parallelism)
+  7. All 532 existing tests remain green; new concurrency tests cover shard-routing correctness, cross-shard fan-out, and snapshot recovery from a multi-shard state
+**Plans:** TBD. This is the largest architectural change since v1.0; expect research + plan + multi-wave execution.
+
+### Phase 15: Snapshot I/O off main thread
+**Goal:** Move snapshot writes off the main event-loop thread so large-state pipelines don't stall during the 2–7 second full-snapshot windows that currently cause 15–25% duty-cycle loss on sustained workloads.
+**Depends on:** Phase 14 (easier to reason about with per-shard snapshots)
+**Requirements:** OPS-05 (non-blocking snapshot write)
+**Success Criteria** (what must be TRUE):
+  1. Full snapshot serialization runs on a dedicated `spawn_blocking` task or a separate thread pool
+  2. During a snapshot write, async PUSH throughput on the main path regresses by ≤ 5% (was 15–25% on v1.2 — measured by running a sustained-load bench during a snapshot cycle)
+  3. Snapshot write still completes within the OPS-01 budget (< 1 second per 100k entities)
+  4. Crash recovery from a partially-written snapshot is handled correctly (the existing `.tmp` → atomic rename pattern continues to work)
+  5. Incremental snapshot (Phase 9) dirty-tracking integrates with the off-thread write — dirty set is snapshotted under lock, write runs without the lock
+  6. All 532 existing tests + new "push during snapshot" stress tests green
+**Plans:** TBD

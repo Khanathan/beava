@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Performance
-status: discussing
-stopped_at: Phase 11 CONTEXT.md written — fire-and-forget PUSH + binary wire protocol. Target ≥100k events/sec single client. Ready for research phase.
-last_updated: "2026-04-11T02:12:29.440Z"
-last_activity: 2026-04-11
+status: shipped
+stopped_at: v1.2 shipped 2026-04-11 — Phase 11 complete; ready for v1.3 planning
+last_updated: "2026-04-11T16:00:00.000Z"
+last_activity: 2026-04-11 -- v1.2 milestone closed, v1.3 planned on roadmap
 progress:
-  total_phases: 7
-  completed_phases: 7
-  total_plans: 43
-  completed_plans: 43
+  total_phases: 1
+  completed_phases: 1
+  total_plans: 6
+  completed_plans: 6
   percent: 100
 ---
 
@@ -21,16 +21,22 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-09)
 
 **Core value:** Events go in, features come out -- synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
-**Current focus:** Phase 10.1 — Interactive Debug UI Redesign
+**Current focus:** v1.3 planning pending (phases 12–15 drafted in ROADMAP.md)
 
 ## Current Position
 
-Phase: 11 Fire-and-Forget PUSH + Binary Wire Protocol
-Plan: CONTEXT written, research pending
-Status: Discussing — ready for /gsd-plan-phase 11
-Last activity: 2026-04-11
+Milestone: v1.2 Performance — SHIPPED 2026-04-11
+Phase: 11 (fire-and-forget-push) — COMPLETE
+Plans: 6/6 (11-01..11-05 + 11-06 subplan)
+Status: v1.2 closed, v1.3 planned
+Last activity: 2026-04-11 — v1.2 milestone finalized with final bench matrix
 
-Progress: v1.2 milestone kickoff. Phase 11 CONTEXT.md captures 6 decisions (async+sync API split, OP_PUSH_ASYNC + OP_FLUSH opcodes, binary event payload for PUSH, non-blocking error drain, OP_FLUSH as no-op barrier, folded Phase 10.2 histogram). Target ≥100k eps single client (5.7x v1.1 baseline of 17.5k).
+Progress: Phase 11 delivered fire-and-forget async push + binary wire protocol + binary event log format. Final throughput (1 core, 1 client, 3-run mean):
+  - small async: 138k eps
+  - medium async: 142k eps
+  - large async: 128k eps
+  - sync p99 (all sizes): 87-90µs
+The 100k floor is hit on every pipeline size in async mode. The 1M ceiling is deferred to v1.3 multi-threading work. Large pipeline went from 865 eps to 128k eps (148x) after a post-verification discovery that DistinctCountOp::read was being invoked on every async push via pipeline.rs:459 inside process_event — fixed by threading a read_features flag through push → cascade → handle_push_core and also honoring it in the fan-out loop in tcp.rs.
 
 ## Performance Metrics
 
