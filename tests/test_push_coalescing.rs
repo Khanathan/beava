@@ -426,3 +426,255 @@ fn partial_failure_scatters_err_to_correct_seq() {
     // Two good A events applied.
     assert_eq!(get_count(&state, "A", "u1"), Some(2));
 }
+
+// ===========================================================================
+// Task 2: end-to-end select! loop + sync force-flush + drain isolation
+// ===========================================================================
+//
+// These tests spin up a real `handle_connection_public` on a random
+// 127.0.0.1 port and drive it via raw TCP frames. They exercise the
+// deadline-armed select! loop, the 64-frame auto-flush, sync force-flush
+// (pitfall H-2), seq-ordered drain (pitfall C-2), and per-connection
+// isolation of the drain queue.
+
+mod e2e {
+    use super::*;
+    use tally::server::protocol::{
+        self as proto, OP_GET, OP_PUSH_ASYNC, TYPE_I64, TYPE_STR, STATUS_OK, STATUS_ERROR,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    /// Build an OP_PUSH_ASYNC binary payload:
+    ///   [u16 name_len][name][u16 field_count][field...]
+    /// with TYPE_STR fields only (tests use user_id-style strings).
+    fn build_async_payload(stream_name: &str, fields: &[(&str, &str)]) -> Vec<u8> {
+        let mut buf = proto::write_string(stream_name);
+        buf.extend_from_slice(&(fields.len() as u16).to_be_bytes());
+        for (k, v) in fields {
+            buf.extend_from_slice(&proto::write_string(k));
+            buf.push(TYPE_STR);
+            buf.extend_from_slice(&proto::write_string(v));
+        }
+        buf
+    }
+
+    /// Build a GET payload: [u16 key_len][key].
+    fn build_get_payload(key: &str) -> Vec<u8> {
+        proto::write_string(key)
+    }
+
+    /// Send a framed command (no response read).
+    async fn send_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) {
+        let len = (1 + payload.len()) as u32;
+        stream.write_u32(len).await.unwrap();
+        stream.write_u8(opcode).await.unwrap();
+        if !payload.is_empty() {
+            stream.write_all(payload).await.unwrap();
+        }
+        stream.flush().await.unwrap();
+    }
+
+    /// Read exactly one response frame: [u32 len][u8 status][payload].
+    async fn read_frame(stream: &mut TcpStream) -> (u8, Vec<u8>) {
+        let len = stream.read_u32().await.unwrap() as usize;
+        let status = stream.read_u8().await.unwrap();
+        let mut body = vec![0u8; len - 1];
+        if !body.is_empty() {
+            stream.read_exact(&mut body).await.unwrap();
+        }
+        (status, body)
+    }
+
+    /// Spawn a test server using the Phase 12 coalescing handler and return
+    /// (addr, state).
+    async fn spawn_server() -> (std::net::SocketAddr, SharedState) {
+        let state = make_state();
+        register(&state, vec![count_stream("A", "user_id")]);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv_state = state.clone();
+        tokio::spawn(async move {
+            let _ = tally::server::tcp::run_tcp_server_with_listener(listener, srv_state).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        (addr, state)
+    }
+
+    #[tokio::test]
+    async fn sixty_four_frames_dispatch_and_count_matches() {
+        // 64 back-to-back OP_PUSH_ASYNC frames trigger the full-accumulator
+        // auto-flush path. Assert the primary stream saw exactly 64 events.
+        let (addr, state) = spawn_server().await;
+        let mut client = TcpStream::connect(addr).await.unwrap();
+
+        for _ in 0..64 {
+            let payload = build_async_payload("A", &[("user_id", "u1")]);
+            send_frame(&mut client, OP_PUSH_ASYNC, &payload).await;
+        }
+
+        // Force a sync GET so any in-flight buffered events flush first.
+        let get = build_get_payload("u1");
+        send_frame(&mut client, OP_GET, &get).await;
+        let (status, _) = read_frame(&mut client).await;
+        assert_eq!(status, STATUS_OK);
+
+        assert_eq!(get_count(&state, "A", "u1"), Some(64));
+    }
+
+    #[tokio::test]
+    async fn five_frames_deadline_flush_then_get_reflects_mutations() {
+        // Five async frames followed by a sleep > BATCH_DEADLINE_US. The
+        // deadline branch of the select! loop must fire and flush the
+        // accumulator even though there is no sync command following.
+        let (addr, state) = spawn_server().await;
+        let mut client = TcpStream::connect(addr).await.unwrap();
+
+        for _ in 0..5 {
+            let payload = build_async_payload("A", &[("user_id", "u2")]);
+            send_frame(&mut client, OP_PUSH_ASYNC, &payload).await;
+        }
+        // Wait comfortably longer than the 200µs deadline and also long
+        // enough to avoid the tokio test runtime wheel floor.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        // Now confirm the state has been mutated WITHOUT sending any
+        // additional async frames that would sync-flush.
+        assert_eq!(get_count(&state, "A", "u2"), Some(5));
+    }
+
+    #[tokio::test]
+    async fn sync_force_flush_before_dispatch() {
+        // Three async frames followed by a sync GET with no delay. The GET
+        // must observe all three async mutations because the sync arm
+        // force-flushes the accumulator first (H-2).
+        let (addr, _state) = spawn_server().await;
+        let mut client = TcpStream::connect(addr).await.unwrap();
+
+        for _ in 0..3 {
+            let payload = build_async_payload("A", &[("user_id", "u3")]);
+            send_frame(&mut client, OP_PUSH_ASYNC, &payload).await;
+        }
+
+        let get = build_get_payload("u3");
+        send_frame(&mut client, OP_GET, &get).await;
+        let (status, body) = read_frame(&mut client).await;
+        assert_eq!(status, STATUS_OK);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["count_1h"], 3);
+    }
+
+    #[tokio::test]
+    async fn mixed_sync_async_interleaved_no_hangs() {
+        // 10 async + 1 sync + 10 async + 1 sync. All data consistent; no
+        // timeouts; the second sync observes all 20 async mutations.
+        let (addr, _state) = spawn_server().await;
+        let mut client = TcpStream::connect(addr).await.unwrap();
+
+        for _ in 0..10 {
+            let payload = build_async_payload("A", &[("user_id", "u4")]);
+            send_frame(&mut client, OP_PUSH_ASYNC, &payload).await;
+        }
+        // First sync GET — force-flush path.
+        let get = build_get_payload("u4");
+        send_frame(&mut client, OP_GET, &get).await;
+        let (status, body) = read_frame(&mut client).await;
+        assert_eq!(status, STATUS_OK);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["count_1h"], 10);
+
+        for _ in 0..10 {
+            let payload = build_async_payload("A", &[("user_id", "u4")]);
+            send_frame(&mut client, OP_PUSH_ASYNC, &payload).await;
+        }
+        send_frame(&mut client, OP_GET, &get).await;
+        let (status, body) = read_frame(&mut client).await;
+        assert_eq!(status, STATUS_OK);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["count_1h"], 20);
+    }
+
+    #[tokio::test]
+    async fn bad_async_event_drains_before_next_sync_response() {
+        // An async push to an unknown stream becomes a pending drain error.
+        // On the next sync GET the server must write a STATUS_ERROR frame
+        // BEFORE the sync response frame, and the good events must still
+        // have been applied.
+        let (addr, _state) = spawn_server().await;
+        let mut client = TcpStream::connect(addr).await.unwrap();
+
+        // Good event 1.
+        send_frame(
+            &mut client,
+            OP_PUSH_ASYNC,
+            &build_async_payload("A", &[("user_id", "u5")]),
+        )
+        .await;
+        // Bad event (unknown stream).
+        send_frame(
+            &mut client,
+            OP_PUSH_ASYNC,
+            &build_async_payload("GHOST", &[("user_id", "u5")]),
+        )
+        .await;
+        // Good event 2.
+        send_frame(
+            &mut client,
+            OP_PUSH_ASYNC,
+            &build_async_payload("A", &[("user_id", "u5")]),
+        )
+        .await;
+
+        // Sync GET triggers: force-flush -> drain errors -> sync response.
+        // First read must be the drain error frame; second read the sync OK.
+        let get = build_get_payload("u5");
+        send_frame(&mut client, OP_GET, &get).await;
+
+        let (s1, _) = read_frame(&mut client).await;
+        assert_eq!(s1, STATUS_ERROR, "first frame is drained async error");
+        let (s2, body2) = read_frame(&mut client).await;
+        assert_eq!(s2, STATUS_OK, "second frame is the GET response");
+        let json: serde_json::Value = serde_json::from_slice(&body2).unwrap();
+        assert_eq!(json["count_1h"], 2, "two good events still applied");
+    }
+
+    #[tokio::test]
+    async fn two_connections_drain_isolation() {
+        // Open two concurrent connections against the same server. A bad
+        // async event on conn A must NOT surface on conn B's drain.
+        let (addr, _state) = spawn_server().await;
+
+        let mut conn_a = TcpStream::connect(addr).await.unwrap();
+        let mut conn_b = TcpStream::connect(addr).await.unwrap();
+
+        // conn A: push one bad event.
+        send_frame(
+            &mut conn_a,
+            OP_PUSH_ASYNC,
+            &build_async_payload("GHOST", &[("user_id", "uA")]),
+        )
+        .await;
+
+        // conn B: push one good event, then sync GET. conn B must see only
+        // STATUS_OK — no drain error from conn A.
+        send_frame(
+            &mut conn_b,
+            OP_PUSH_ASYNC,
+            &build_async_payload("A", &[("user_id", "uB")]),
+        )
+        .await;
+        let get = build_get_payload("uB");
+        send_frame(&mut conn_b, OP_GET, &get).await;
+        let (status, body) = read_frame(&mut conn_b).await;
+        assert_eq!(
+            status, STATUS_OK,
+            "conn B must not inherit conn A's drain error"
+        );
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["count_1h"], 1);
+
+        // Sanity: conn A's next sync would have surfaced the error, but we
+        // don't need to prove it — isolation is the target assertion.
+        let _ = TYPE_I64;
+    }
+}

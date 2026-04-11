@@ -131,7 +131,22 @@ pub async fn handle_connection_public(
     handle_connection(stream, state).await
 }
 
-/// Handle a single persistent TCP connection: read frames in a loop, dispatch commands.
+/// Handle a single persistent TCP connection: read frames in a loop,
+/// dispatch commands.
+///
+/// Phase 12 rewrite:
+/// - The read loop is now a `tokio::select! { biased; read | deadline }`.
+/// - `OP_PUSH_ASYNC` frames accumulate into a stack-local `ConnAccumulator`.
+/// - The accumulator is flushed via `handle_push_batch` when:
+///     (a) it hits `BATCH_SIZE` events,
+///     (b) its deadline elapses (200µs armed on first buffered event),
+///     (c) any non-async opcode arrives (sync force-flush, pitfall H-2),
+///     (d) the client disconnects.
+/// - Per-event errors from the batch path are surfaced on the NEXT sync
+///   call (or on clean disconnect), in per-connection `seq` order (C-2).
+/// - The `BufWriter` I-3 invariant is preserved: every byte written is
+///   followed by an explicit `flush` in the same loop iteration, except
+///   for the zero-byte async-push success path.
 async fn handle_connection(
     stream: TcpStream,
     state: SharedState,
@@ -140,110 +155,200 @@ async fn handle_connection(
     let mut reader = BufReader::new(reader);
     let mut writer = BufWriter::new(writer);
 
+    let mut accumulator = ConnAccumulator::new();
+    // Per-connection drain queue for async push errors. (seq, err_string).
+    // Sorted by seq and flushed before the next sync response (D-13/D-14).
+    let mut pending_drain: Vec<(u64, String)> = Vec::new();
+
     loop {
-        // Read 4-byte length (u32 BE)
-        let len = match reader.read_u32().await {
-            Ok(len) => len as usize,
-            Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()), // Clean disconnect
-            Err(e) => return Err(e.into()),
-        };
+        let deadline_opt = accumulator.deadline();
 
-        if len == 0 || len > 64 * 1024 * 1024 {
-            // Zero-length or >64MB frame: send error, close connection
-            let resp = protocol::encode_response(STATUS_ERROR, b"invalid frame length");
-            writer.write_all(&resp).await?;
-            writer.flush().await?;
-            return Ok(());
+        enum FrameOrDeadline {
+            Frame(usize),
+            Deadline,
         }
 
-        // Read opcode (1 byte)
-        let opcode = reader.read_u8().await?;
+        let next = tokio::select! {
+            biased;
 
-        // Read payload (len - 1 bytes, since len includes opcode)
-        let payload_len = len - 1;
-        let mut payload = vec![0u8; payload_len];
-        if payload_len > 0 {
-            reader.read_exact(&mut payload).await?;
-        }
+            // BRANCH 1: read the next frame length. Always armed. The
+            // `biased;` ordering means a pending frame short-circuits the
+            // deadline branch when both are ready (D-04).
+            read_result = reader.read_u32() => {
+                match read_result {
+                    Ok(len) => FrameOrDeadline::Frame(len as usize),
+                    Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        // Clean disconnect: flush any buffered async frames
+                        // before returning so we don't lose events.
+                        if !accumulator.is_empty() {
+                            let batch = accumulator.drain();
+                            let results = handle_push_batch(&state, &batch);
+                            for (ev, res) in batch.iter().zip(results.iter()) {
+                                if let Err(err) = res {
+                                    pending_drain.push((ev.seq, err.to_string()));
+                                }
+                            }
+                            // Errors on drain flush to the client so
+                            // close-initiating peers still pick them up.
+                            flush_drain(&mut writer, &mut pending_drain).await?;
+                        }
+                        return Ok(());
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
 
-        // Parse command from opcode + payload
-        let cmd = match protocol::parse_command(opcode, &payload) {
-            Ok(cmd) => cmd,
-            Err(e) => {
-                // Malformed frame: send error, close connection
-                let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
-                writer.write_all(&resp).await?;
-                writer.flush().await?;
-                return Ok(());
+            // BRANCH 2: deadline elapsed on an in-flight accumulator. Only
+            // armed when the accumulator has ≥1 frame (the `if` gate on
+            // select! branches). Uses `sleep_until` on an absolute Instant
+            // so we don't hit the 1ms tokio timer-wheel floor (D-03).
+            _ = async {
+                match deadline_opt {
+                    Some(d) => tokio::time::sleep_until(d).await,
+                    None => std::future::pending::<()>().await,
+                }
+            }, if deadline_opt.is_some() => {
+                FrameOrDeadline::Deadline
             }
         };
 
-        // Dispatch command
-        let cmd_start = std::time::Instant::now();
-        let is_mset = matches!(&cmd, Command::Mset { .. });
-        // Phase 11: dispatch returns Option<Vec<u8>> so async PUSH can signal
-        // "no response write" via Ok(None) and still funnel errors through
-        // the STATUS_ERROR path.
-        let response: Result<Option<Vec<u8>>, TallyError> = match cmd {
-            Command::Mset { entries } => handle_mset(entries, &state).await.map(Some),
-            Command::PushAsync { stream_name, payload, raw_payload } => {
-                handle_push_async(&state, &stream_name, &payload, &raw_payload, SystemTime::now()).map(|_| None)
+        match next {
+            FrameOrDeadline::Deadline => {
+                // Flush accumulator via handle_push_batch, queue any errors
+                // for the next sync response, and loop back to the read arm.
+                let batch = accumulator.drain();
+                let results = handle_push_batch(&state, &batch);
+                for (ev, res) in batch.iter().zip(results.iter()) {
+                    if let Err(err) = res {
+                        pending_drain.push((ev.seq, err.to_string()));
+                    }
+                }
+                continue;
             }
-            Command::Flush => Ok(Some(Vec::new())),
-            other => handle_sync_command(other, &state).map(Some),
-        };
-        // Phase 10.2: record MSET latency AFTER async completion, in a separate lock
-        if is_mset {
-            let mset_us = cmd_start.elapsed().as_secs_f64() * 1_000_000.0;
-            let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-            app.latency.record_command(crate::server::latency::CommandKind::Mset, mset_us, std::time::Instant::now());
-            if app.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Mset, mset_us) {
-                app.latency.maybe_record_slow(crate::server::latency::CommandKind::Mset, None, mset_us, String::new());
-            }
-        }
+            FrameOrDeadline::Frame(len) => {
+                if len == 0 || len > 64 * 1024 * 1024 {
+                    let resp = protocol::encode_response(STATUS_ERROR, b"invalid frame length");
+                    writer.write_all(&resp).await?;
+                    writer.flush().await?;
+                    return Ok(());
+                }
 
-        // Write response (Phase 11 three-way match).
-        //
-        // I-3: BufWriter flush invariant.
-        //
-        // The three arms below maintain a strict invariant: any byte we
-        // write MUST be followed by an explicit flush before we loop to
-        // the next command. This is load-bearing because:
-        //
-        //   * `Ok(Some(payload))` (sync OK) flushes immediately — the
-        //     client is blocking on recv and would otherwise deadlock.
-        //   * `Err(e)` flushes immediately regardless of whether the
-        //     originating command was sync or async PUSH, so the client
-        //     drain path can pick up the error frame on its next probe.
-        //   * `Ok(None)` (fire-and-forget success) writes NOTHING at
-        //     all, so there is no unflushed byte. BufWriter accumulates
-        //     zero bytes on this branch, and the kernel-level pipelining
-        //     win of Phase 11 lives here.
-        //
-        // Consequence: at the point we drop `writer` (clean disconnect
-        // via `handle_connection` returning Ok), there are never any
-        // unflushed event ACKs in the BufWriter — the only way a byte
-        // gets buffered is via a flushed sync payload or a flushed
-        // error. Adding a new response arm MUST preserve this property.
-        match response {
-            Ok(None) => {
-                // Fire-and-forget success: no write, no flush. BufWriter keeps
-                // accumulating bytes for later writes; the kernel-level pipelining
-                // win lives here.
-            }
-            Ok(Some(payload)) => {
-                let resp = protocol::encode_response(STATUS_OK, &payload);
-                writer.write_all(&resp).await?;
-                writer.flush().await?;
-            }
-            Err(e) => {
-                // Errors always fly, even on async push, so the client drain picks them up.
-                let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
-                writer.write_all(&resp).await?;
-                writer.flush().await?;
+                let opcode = reader.read_u8().await?;
+                let payload_len = len - 1;
+                let mut payload = vec![0u8; payload_len];
+                if payload_len > 0 {
+                    reader.read_exact(&mut payload).await?;
+                }
+
+                let cmd = match protocol::parse_command(opcode, &payload) {
+                    Ok(cmd) => cmd,
+                    Err(e) => {
+                        let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
+                        writer.write_all(&resp).await?;
+                        writer.flush().await?;
+                        return Ok(());
+                    }
+                };
+
+                // Phase 12 H-2: any non-async opcode force-flushes the
+                // accumulator BEFORE the sync handler runs, so the sync
+                // response observes all buffered async mutations.
+                let is_async_push = matches!(&cmd, Command::PushAsync { .. });
+                if !is_async_push && !accumulator.is_empty() {
+                    let batch = accumulator.drain();
+                    let results = handle_push_batch(&state, &batch);
+                    for (ev, res) in batch.iter().zip(results.iter()) {
+                        if let Err(err) = res {
+                            pending_drain.push((ev.seq, err.to_string()));
+                        }
+                    }
+                }
+
+                // Async push: accumulate, maybe auto-flush at BATCH_SIZE,
+                // then loop for the next frame.
+                if let Command::PushAsync { stream_name, payload, raw_payload } = cmd {
+                    accumulator.push(stream_name, payload, raw_payload, SystemTime::now());
+                    if accumulator.is_full() {
+                        let batch = accumulator.drain();
+                        let results = handle_push_batch(&state, &batch);
+                        for (ev, res) in batch.iter().zip(results.iter()) {
+                            if let Err(err) = res {
+                                pending_drain.push((ev.seq, err.to_string()));
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // Sync dispatch path. cmd is one of Mset/Flush/other.
+                let cmd_start = std::time::Instant::now();
+                let is_mset = matches!(&cmd, Command::Mset { .. });
+                let response: Result<Option<Vec<u8>>, TallyError> = match cmd {
+                    Command::Mset { entries } => handle_mset(entries, &state).await.map(Some),
+                    Command::Flush => Ok(Some(Vec::new())),
+                    Command::PushAsync { .. } => unreachable!("handled above"),
+                    other => handle_sync_command(other, &state).map(Some),
+                };
+                // Phase 10.2: record MSET latency AFTER async completion,
+                // in a separate lock. No guard held across the .await above.
+                if is_mset {
+                    let mset_us = cmd_start.elapsed().as_secs_f64() * 1_000_000.0;
+                    let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+                    app.latency.record_command(crate::server::latency::CommandKind::Mset, mset_us, std::time::Instant::now());
+                    if app.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Mset, mset_us) {
+                        app.latency.maybe_record_slow(crate::server::latency::CommandKind::Mset, None, mset_us, String::new());
+                    }
+                }
+
+                // D-13: drain async errors BEFORE the sync response, in
+                // per-connection seq order. flush_drain sorts and flushes.
+                flush_drain(&mut writer, &mut pending_drain).await?;
+
+                // Write response (Phase 11 three-way match).
+                //
+                // I-3: BufWriter flush invariant.
+                //
+                // Every byte we write is followed by an explicit flush
+                // before we loop back to the read arm. Ok(None) is the
+                // zero-byte async-push success path (unreachable here —
+                // async pushes are accumulated above), Ok(Some) and Err
+                // both flush. flush_drain above also ends in flush().
+                match response {
+                    Ok(None) => { /* unreachable on the sync path */ }
+                    Ok(Some(payload)) => {
+                        let resp = protocol::encode_response(STATUS_OK, &payload);
+                        writer.write_all(&resp).await?;
+                        writer.flush().await?;
+                    }
+                    Err(e) => {
+                        let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
+                        writer.write_all(&resp).await?;
+                        writer.flush().await?;
+                    }
+                }
             }
         }
     }
+}
+
+/// Flush queued async-push errors to the writer in per-connection seq order
+/// (D-13) and clear the queue. Writes nothing and returns immediately if the
+/// queue is empty. Every write is followed by an explicit flush so the
+/// BufWriter I-3 invariant is preserved.
+async fn flush_drain(
+    writer: &mut BufWriter<tokio::net::tcp::OwnedWriteHalf>,
+    pending: &mut Vec<(u64, String)>,
+) -> std::io::Result<()> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    pending.sort_by_key(|(seq, _)| *seq);
+    for (_seq, msg) in pending.drain(..) {
+        let resp = protocol::encode_response(STATUS_ERROR, msg.as_bytes());
+        writer.write_all(&resp).await?;
+    }
+    writer.flush().await?;
+    Ok(())
 }
 
 /// Core PUSH side-effect pipeline shared by sync and async push paths (Phase 11).
@@ -259,6 +364,7 @@ async fn handle_connection(
 ///
 /// Returns the computed FeatureMap. The sync PUSH arm converts it to JSON;
 /// the async PUSH wrapper discards it.
+#[allow(dead_code)] // Phase 12: legacy single-event wrapper; kept for symmetry.
 fn handle_push_core(
     state: &SharedState,
     stream_name: &str,
@@ -721,28 +827,9 @@ pub fn handle_push_batch(
     results
 }
 
-/// Fire-and-forget push (Phase 11, PERF-01).
-///
-/// Runs the exact same side effects as sync PUSH but discards the computed
-/// FeatureMap. `handle_connection` signals "no response write on success"
-/// by seeing `Ok(())` here and skipping the writer.flush.
-#[allow(dead_code)] // Phase 12 Task 2 removes the last caller.
-fn handle_push_async(
-    state: &SharedState,
-    stream_name: &str,
-    payload: &serde_json::Value,
-    raw_payload: &[u8],
-    now: SystemTime,
-) -> Result<(), TallyError> {
-    // PERF: skip feature read + derive eval on the async hot path. The HLL
-    // read alone is ~300µs per distinct_count operator on 14-bit precision;
-    // discarding the result here (as we already do) and skipping the work
-    // upstream recovers ~140x throughput on pipelines with HyperLogLog.
-    // Plan 11-06: raw_payload is forwarded to the event log as-is, avoiding
-    // the final JSON serialize on the hot path.
-    let _features = handle_push_core_ex(state, stream_name, payload, raw_payload, now, false)?;
-    Ok(())
-}
+// Phase 12 Task 2: `handle_push_async` removed. All async pushes now flow
+// through the per-connection `ConnAccumulator` → `handle_push_batch` path in
+// `handle_connection`. The batch path is the only async push path.
 
 /// Handle synchronous commands: lock, process, unlock. No .await while locked.
 fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, TallyError> {
