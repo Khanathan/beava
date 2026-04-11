@@ -1,18 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.3
-milestone_name: Concurrency & Client Batching
-status: roadmap_drafted
-stopped_at: v1.3 ROADMAP.md refined with research+locked decisions; next_phase 12 ready for /gsd-plan-phase
-next_phase: 12
-last_updated: "2026-04-11T17:45:00.000Z"
-last_activity: 2026-04-11 -- gsd-roadmapper refined v1.3 phases 12-15 with research findings and LD-1..LD-4
+milestone: v1.1
+milestone_name: Composable Pipeline & Event Log
+status: Roadmap refined with research findings and locked decisions LD-1..LD-4; ready for plan-phase
+stopped_at: Completed 12-01-PLAN.md — batch primitives landed
+last_updated: "2026-04-11T23:08:29.448Z"
+last_activity: 2026-04-11 — gsd-roadmapper refined phases 12-15 in place
 progress:
-  total_phases: 4
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_phases: 7
+  completed_phases: 7
+  total_plans: 43
+  completed_plans: 43
+  percent: 100
 ---
 
 # Project State
@@ -33,12 +32,14 @@ Status: Roadmap refined with research findings and locked decisions LD-1..LD-4; 
 Last activity: 2026-04-11 — gsd-roadmapper refined phases 12-15 in place
 
 **v1.3 phase summary:**
+
 - Phase 12: Server-side async push coalescing (PERF-03) — no new crates, `sleep_until` deadline pattern, sync PUSH bypass, Phase-11-class matrix bench
 - Phase 13: SDK batch push + OP_PUSH_BATCH 0x0A (PERF-04) — 16,384 hard cap, `(batch_id, event_index)` drain errors, pure-Python SDK
 - Phase 14: Key-partitioned multi-threaded engine (PERF-05) — 5 new crates (parking_lot, crossbeam-channel ≥0.5.15, crossbeam-utils, core_affinity gated, xxhash-rust), LD-1..LD-4 lock-ins, 1-day runtime spike pre-plan
 - Phase 15: Off-thread snapshot I/O per shard (OPS-05) — no new crates, manifest commit boundary, snapshot-cycle serialization, bench DURING write
 
 Prior milestone summary (v1.2 Performance — SHIPPED 2026-04-11):
+
   - Phase 11 delivered fire-and-forget async push + binary wire protocol + binary event log format
   - Final throughput (1 core, 1 client, 3-run mean): small 138k / medium 142k / large 128k eps async; sync p99 87–90µs across sizes
   - 100k floor achieved on every pipeline size; the 1M ceiling deferred to v1.3 multi-threading work
@@ -78,6 +79,7 @@ Prior milestone summary (v1.2 Performance — SHIPPED 2026-04-11):
 | Phase 10.1 P01 | 6min | 2 tasks | 2 files |
 | Phase 10.1 P02 | 5min | 3 tasks | 3 files |
 | Phase 10.1 P03 | ~25min | 2 tasks | 1 files |
+| Phase 12 P01 | ~25min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -86,6 +88,7 @@ Prior milestone summary (v1.2 Performance — SHIPPED 2026-04-11):
 All v1.0 decisions archived in PROJECT.md Key Decisions table.
 
 **v1.3 Locked Decisions (adopted during research, approved for Phase 14 execution):**
+
 - **LD-1** Cross-shard fan-out errors are fire-and-forget (per-shard metrics, NOT origin drain queue). Preserves shared-nothing hot path.
 - **LD-2** `num_shards` persisted in manifest + config; changing requires `TALLY_ALLOW_RESHARD=1` + re-route migration.
 - **LD-3** Snapshots are shard-local consistent (per-shard hash-match, not same logical moment). Sibling to "lose ~30s on crash".
@@ -133,6 +136,7 @@ Key v1.1 architectural decisions (from research):
 - [Phase 10.1]: Static HTML shell owns zero htmx attributes; app.js uses vanilla fetch + setInterval for polling
 - [Phase 10.1]: Grep-based shell regression tests (forbidden + required substring pairs) as enforcement layer for wholesale rewrites
 - [Phase 10.1]: app.js wholesale rewrite for interactive Debug UI — render-once dagre-d3 + d3-text-in-place edge labels, shared state.paused gate, stream-scoped entity lookup with 7 sub-states, el()/svgEl() textContent chokepoint for XSS safety
+- [Phase 12]: push_batch_with_cascade_no_features inlines fan-out filter logic at call entry (mirrors TCP handler src/server/tcp.rs:364-398) — Rule 2 deviation to make the load-bearing fan-out test pass; cascade-only delegation alone did not satisfy v1.2 parity
 
 ### Roadmap Evolution
 
@@ -159,6 +163,6 @@ Key v1.1 architectural decisions (from research):
 
 ## Session Continuity
 
-Last session: 2026-04-11T17:45:00.000Z
-Stopped at: v1.3 ROADMAP.md refined; awaiting plan-phase 12
+Last session: 2026-04-11T23:08:29.445Z
+Stopped at: Completed 12-01-PLAN.md — batch primitives landed
 Resume: `/gsd-plan-phase 12` to decompose Phase 12 (Server-side async push coalescing) into executable plans

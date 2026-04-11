@@ -139,7 +139,7 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10 -> 10.1 -> 10.2 -> 11 ->
 | 10.1 Interactive Debug UI | v1.1 | 3/3 | Complete | 2026-04-10 |
 | 10.2 Latency Debugger | v1.1 | 3/3 | Complete | 2026-04-10 |
 | 11. Fire-and-Forget PUSH + Binary Wire | v1.2 | 6/6 | Complete | 2026-04-11 |
-| 12. Server-side async push coalescing | v1.3 | 0/? | Not started | - |
+| 12. Server-side async push coalescing | v1.3 | 1/3 | In Progress|  |
 | 13. SDK batch push + OP_PUSH_BATCH | v1.3 | 0/? | Not started | - |
 | 14. Key-partitioned multi-threaded engine | v1.3 | 0/? | Not started | - |
 | 15. Off-thread snapshot I/O | v1.3 | 0/? | Not started | - |
@@ -255,7 +255,11 @@ The 100k floor is hit on every pipeline size; the 1M ceiling is deferred to v1.3
   9. Bench gate covers **small / medium / large × sync / async** matrix (Phase 11 lesson — pitfall "Phase 11 class"); each run is a 5-run median with σ < 10%
   10. Latency impact documented: coalescing adds up to T µs to async p50 (acceptable, async is already fire-and-forget)
   11. All 532 existing tests remain green
-**Plans:** TBD (research → plan phase)
+**Plans:** 1/3 plans executed
+Plans:
+- [x] 12-01-PLAN.md — Add batch primitives (append_many, mark_dirty_many, push_batch_no_features) + unit tests
+- [ ] 12-02-PLAN.md — ConnAccumulator + handle_push_batch + select!/sleep_until deadline loop + sync force-flush + seq-ordered drain + await_holding_lock gate
+- [ ] 12-03-PLAN.md — Bench matrix + mixed-mode harness + PERF-03 gate run + RESULTS.md + human verification
 
 ### Phase 13: SDK batch push API + OP_PUSH_BATCH opcode
 **Goal:** Expose a client-side batching API (`app.push_many(stream, events)`) that wraps N events into a single wire frame, reducing Python per-event loop overhead from ~7µs to ~0.3µs. Target **single-client async ≥ 300k eps** on medium pipeline when using `push_many`. Server-side handler is Phase 12's `handle_push_batch` verbatim — zero new hot-path logic.

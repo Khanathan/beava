@@ -153,7 +153,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DBUI-07 | Phase 10.2 | Complete |
 | PERF-01 | Phase 11 | Complete |
 | PERF-02 | Phase 11 | Complete |
-| PERF-03 | Phase 12 | Pending |
+| PERF-03 | Phase 12 | In Progress |
 | PERF-04 | Phase 13 | Pending |
 | PERF-05 | Phase 14 | Pending |
 | OPS-05  | Phase 15 | Pending |
