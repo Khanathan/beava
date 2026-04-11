@@ -650,6 +650,109 @@ impl PipelineEngine {
         self.push_with_cascade_internal(stream_name, event, store, now, false)
     }
 
+    /// Batch cascade-aware push with no feature read. This is the hot-path
+    /// primitive used by `handle_push_batch` (Phase 12) under the coalescer.
+    ///
+    /// Per-event semantics are **identical** to `push_with_cascade_no_features`:
+    /// same filter eval, same key extraction, same operator mutation on both
+    /// primary and cascade targets, same fan-out dispatch. Critically, this
+    /// honors D-06 / D-07 of Phase 12's CONTEXT.md — no silent reduction of
+    /// cascade scope and no silent drop of fan-out.
+    ///
+    /// Amortization commitments at the method boundary (D-07):
+    ///   - `get_stream(stream_name)` is resolved ONCE per call; unknown stream
+    ///     short-circuits into `Vec<Err(Protocol)>` for every input event.
+    ///   - `fan_out_targets()` is resolved ONCE per call (the returned Vec is
+    ///     not re-walked inside the per-event delegation today, but the
+    ///     HashMap lookup + allocation happens only once at entry — leaving
+    ///     headroom for a Wave 3 micro-refactor that inlines the loop body).
+    ///
+    /// The body delegates to the existing single-event
+    /// `push_with_cascade_no_features` worker per event. The Phase 12 win at
+    /// the caller (`handle_push_batch`) is that the AppState mutex is held
+    /// exactly once for the whole batch — correctness first, fine-grained
+    /// amortization second. If Wave 3 benches show that the per-event
+    /// re-resolution of metadata inside the single-event worker dominates, a
+    /// follow-up extraction of
+    /// `push_with_cascade_no_features_inner(primary: &StreamDefinition, ...)`
+    /// is the next optimization, but it is NOT required for correctness.
+    ///
+    /// Returns a `Vec` of per-event `Result<FeatureMap, TallyError>` in
+    /// **input order** (the `FeatureMap` is always empty — `no_features`
+    /// mode skips the read). An error at index `i` does NOT halt the batch.
+    pub fn push_batch_with_cascade_no_features(
+        &self,
+        stream_name: &str,
+        events: &[&serde_json::Value],
+        store: &mut StateStore,
+        now: SystemTime,
+    ) -> Vec<Result<FeatureMap, TallyError>> {
+        if events.is_empty() {
+            return Vec::new();
+        }
+
+        // Resolve primary stream definition ONCE (D-07). Unknown primary
+        // short-circuits with an error per input event; zero state mutation.
+        if self.get_stream(stream_name).is_none() {
+            return events
+                .iter()
+                .map(|_| Err(TallyError::Protocol(format!("unknown stream: {}", stream_name))))
+                .collect();
+        }
+
+        // Resolve fan-out targets ONCE (D-07) and compute the filtered list
+        // of targets this primary should actually fan out to. The TCP
+        // handler's per-event fan-out loop (src/server/tcp.rs:364+) skips:
+        //   (a) the primary stream itself,
+        //   (b) any target sharing the primary's key_field,
+        //   (c) any target already reached through the cascade DAG.
+        // We mirror that filter here so batch semantics match what
+        // handle_push and handle_push_async do for a single event.
+        let primary_key_field = self
+            .get_stream(stream_name)
+            .and_then(|s| s.key_field.clone());
+        let cascade_targets = self.get_cascade_targets(stream_name);
+        let fan_out_all = self.fan_out_targets();
+        let fan_out: Vec<(String, String)> = fan_out_all
+            .into_iter()
+            .filter(|(target_name, target_key_field)| {
+                if target_name == stream_name {
+                    return false;
+                }
+                if primary_key_field.as_deref() == Some(target_key_field.as_str()) {
+                    return false;
+                }
+                if cascade_targets.iter().any(|ct| ct == target_name) {
+                    return false;
+                }
+                true
+            })
+            .collect();
+
+        let mut out = Vec::with_capacity(events.len());
+        for event in events {
+            // 1. Primary + cascade via the existing single-event worker.
+            //    Preserves depends_on DAG cascade semantics EXACTLY (D-06).
+            let res = self.push_with_cascade_no_features(stream_name, event, store, now);
+
+            // 2. Fan-out dispatch mirrors the TCP handler's per-event fan-out
+            //    block. Each qualifying target receives exactly ONE push per
+            //    event — matching v1.2 semantics for async pushes.
+            if res.is_ok() {
+                for (target_name, target_key_field) in &fan_out {
+                    if let Some(serde_json::Value::String(key_val)) = event.get(target_key_field.as_str()) {
+                        if !key_val.is_empty() {
+                            let _ = self.push_no_features(target_name, event, store, now);
+                        }
+                    }
+                }
+            }
+
+            out.push(res);
+        }
+        out
+    }
+
     fn push_with_cascade_internal(
         &self,
         stream_name: &str,

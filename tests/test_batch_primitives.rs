@@ -250,4 +250,148 @@ mod push_batch_no_features {
     }
 }
 
-// Task 3 (push_batch_with_cascade_no_features) module appended by Task 3.
+// ============================================================================
+// push_batch_with_cascade_no_features (cascade + fan-out)
+// ============================================================================
+
+mod push_batch_with_cascade_no_features {
+    use super::*;
+
+    fn build_cascade_engine() -> PipelineEngine {
+        let mut engine = PipelineEngine::new();
+        engine.register(make_count_stream("Txns", "user_id")).unwrap();
+        engine.register(make_cascade_child("UserRisk", "user_id", "Txns")).unwrap();
+        engine
+    }
+
+    #[test]
+    fn empty_batch_returns_empty_vec() {
+        let engine = build_cascade_engine();
+        let mut store = StateStore::new();
+        let events: Vec<&serde_json::Value> = vec![];
+        let out = engine.push_batch_with_cascade_no_features("Txns", &events, &mut store, ts(1000));
+        assert!(out.is_empty());
+        assert_eq!(store.entity_count(), 0);
+    }
+
+    #[test]
+    fn unknown_stream_errors_all() {
+        let engine = build_cascade_engine();
+        let mut store = StateStore::new();
+        let e = json!({"user_id": "u1"});
+        let events = vec![&e, &e];
+        let out = engine.push_batch_with_cascade_no_features("ghost", &events, &mut store, ts(1000));
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|r| r.is_err()));
+        assert_eq!(store.entity_count(), 0);
+    }
+
+    #[test]
+    fn cascade_equivalence_3_events() {
+        // Engine A receives a batch; Engine B receives sequential single-event
+        // cascade pushes. After both, feature state on every stream/key pair
+        // must match exactly — that's the D-06 / D-07 guarantee.
+        let engine_a = build_cascade_engine();
+        let engine_b = build_cascade_engine();
+        let mut store_a = StateStore::new();
+        let mut store_b = StateStore::new();
+
+        let e0 = json!({"user_id": "u1"});
+        let e1 = json!({"user_id": "u2"});
+        let e2 = json!({"user_id": "u1"});
+        let events = vec![&e0, &e1, &e2];
+        let now = ts(1000);
+
+        // Batch path on A
+        let out_a = engine_a.push_batch_with_cascade_no_features("Txns", &events, &mut store_a, now);
+        assert_eq!(out_a.len(), 3);
+        assert!(out_a.iter().all(|r| r.is_ok()));
+
+        // Single-event path on B
+        for ev in &events {
+            engine_b.push_with_cascade_no_features("Txns", ev, &mut store_b, now).unwrap();
+        }
+
+        // u1 should have count == 2 on both engines (after cascade to UserRisk)
+        let a_u1 = engine_a.get_features("u1", &mut store_a, now);
+        let b_u1 = engine_b.get_features("u1", &mut store_b, now);
+        assert_eq!(a_u1.get("count_1h"), b_u1.get("count_1h"));
+        assert_eq!(a_u1.get("count_1h"), Some(&FeatureValue::Int(2)));
+
+        let a_u2 = engine_a.get_features("u2", &mut store_a, now);
+        let b_u2 = engine_b.get_features("u2", &mut store_b, now);
+        assert_eq!(a_u2.get("count_1h"), b_u2.get("count_1h"));
+        assert_eq!(a_u2.get("count_1h"), Some(&FeatureValue::Int(1)));
+
+        assert_eq!(store_a.entity_count(), store_b.entity_count());
+    }
+
+    #[test]
+    fn fan_out_single_update_per_event_on_target_key() {
+        // Two keyed streams sharing a fan-out target. A Txns push that
+        // contains both user_id AND merchant_id should apply to
+        // MerchantActivity exactly once per event (not zero, not 16).
+        let mut engine = PipelineEngine::new();
+        engine.register(make_count_stream("Txns", "user_id")).unwrap();
+        engine.register(make_count_stream("MerchantActivity", "merchant_id")).unwrap();
+        let mut store = StateStore::new();
+
+        let e0 = json!({"user_id": "u1", "merchant_id": "m1"});
+        let e1 = json!({"user_id": "u2", "merchant_id": "m1"});
+        let e2 = json!({"user_id": "u3", "merchant_id": "m1"});
+        let e3 = json!({"user_id": "u4", "merchant_id": "m1"});
+        let events = vec![&e0, &e1, &e2, &e3];
+        let now = ts(1000);
+
+        let out = engine.push_batch_with_cascade_no_features("Txns", &events, &mut store, now);
+        assert_eq!(out.len(), 4);
+        assert!(out.iter().all(|r| r.is_ok()));
+
+        // MerchantActivity on m1 should have exactly 4 counts (one per event).
+        let m1 = engine.get_features("m1", &mut store, now);
+        assert_eq!(m1.get("count_1h"), Some(&FeatureValue::Int(4)));
+
+        // And each user should have exactly 1 count on Txns.
+        for user in &["u1", "u2", "u3", "u4"] {
+            let f = engine.get_features(user, &mut store, now);
+            assert_eq!(f.get("count_1h"), Some(&FeatureValue::Int(1)), "user {} count", user);
+        }
+    }
+
+    #[test]
+    fn error_order_preserved_on_partial_failure() {
+        let engine = build_cascade_engine();
+        let mut store = StateStore::new();
+        let e0 = json!({"user_id": "u1"});
+        let e1 = json!({"user_id": ""}); // bad
+        let e2 = json!({"user_id": "u2"});
+        let events = vec![&e0, &e1, &e2];
+        let now = ts(1000);
+
+        let out = engine.push_batch_with_cascade_no_features("Txns", &events, &mut store, now);
+        assert_eq!(out.len(), 3);
+        assert!(out[0].is_ok());
+        assert!(out[1].is_err());
+        assert!(out[2].is_ok());
+
+        // Good events applied, bad event did not.
+        let u1 = engine.get_features("u1", &mut store, now);
+        assert_eq!(u1.get("count_1h"), Some(&FeatureValue::Int(1)));
+        let u2 = engine.get_features("u2", &mut store, now);
+        assert_eq!(u2.get("count_1h"), Some(&FeatureValue::Int(1)));
+    }
+
+    #[test]
+    fn unknown_stream_returns_errors_in_order_without_side_effects() {
+        let engine = build_cascade_engine();
+        let mut store = StateStore::new();
+        let e = json!({"user_id": "u1"});
+        let events = vec![&e, &e, &e];
+
+        let out = engine.push_batch_with_cascade_no_features("nope", &events, &mut store, ts(1000));
+        assert_eq!(out.len(), 3);
+        assert!(out.iter().all(|r| r.is_err()));
+        assert_eq!(store.entity_count(), 0);
+        assert_eq!(store.dirty_count(), 0);
+    }
+}
