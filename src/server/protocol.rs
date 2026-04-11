@@ -153,7 +153,14 @@ pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, TallyEr
     }
     let field_count = u16::from_be_bytes([buf[0], buf[1]]) as usize;
     *buf = &buf[2..];
-    let mut map = serde_json::Map::with_capacity(field_count);
+    // L-2: bound the pre-allocation against the remaining buffer size.
+    // Each field needs at least 4 bytes on the wire (u16 key_len + u8
+    // type tag + at least 1 byte of key data), so `buf.len() / 4` is a
+    // tight upper bound on the number of decodable fields and keeps
+    // an attacker-controlled u16 from triggering a wasted ~1.5 MB map
+    // reservation when the payload is actually empty/truncated.
+    let cap = field_count.min(buf.len() / 4);
+    let mut map = serde_json::Map::with_capacity(cap);
     for _ in 0..field_count {
         let key = read_string(buf)?;
         if buf.is_empty() {
@@ -200,6 +207,11 @@ pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, TallyEr
                 return Err(TallyError::Protocol(format!("unknown type tag 0x{:02x}", tag)));
             }
         };
+        // I-1: duplicate field keys are silently last-wins. This matches
+        // JSON object semantics (and the JSON PUSH path via
+        // serde_json::from_slice behaves identically), so clients can
+        // rely on the last occurrence of a repeated key. A duplicate is
+        // not a protocol error.
         map.insert(key, value);
     }
     Ok(serde_json::Value::Object(map))
