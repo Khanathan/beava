@@ -45,10 +45,42 @@ Requirements for milestone v1.1: Composable Pipeline & Event Log.
 - [x] **DBUI-03**: User can inspect current feature values for any entity key
 - [x] **DBUI-04**: User can see memory usage breakdown (per stream, total)
 - [x] **DBUI-05**: Debug UI is embedded in the binary (no separate process or npm build)
-- [x] **DBUI-06**: User can explore the running pipeline through an interactive topology DAG with clickable nodes that drill into per-stream memory, state, throughput, and entity lookup (Phase 10.1 — added during discuss)
-- [ ] **DBUI-07**: User can observe per-command latency histograms (p50/p95/p99) per TCP command and stream, via /debug/latency endpoint and Debug UI surface (Phase 10.2 — added during discuss)
+- [x] **DBUI-06**: User can explore the running pipeline through an interactive topology DAG with clickable nodes that drill into per-stream memory, state, throughput, and entity lookup (Phase 10.1)
+- [x] **DBUI-07**: User can observe per-command latency histograms (p50/p95/p99) per TCP command and stream, via /debug/latency endpoint and Debug UI surface (Phase 10.2)
 
-## v1.2+ Requirements
+## v1.2 Requirements
+
+Requirements for milestone v1.2: Performance — fire-and-forget PUSH and binary wire protocol. **Shipped 2026-04-11.**
+
+### Performance
+
+- [x] **PERF-01**: User can push events in fire-and-forget mode via `app.push()` without paying round-trip latency for feature responses; errors surface on next call via `drain_errors_nonblock` (Phase 11)
+- [x] **PERF-02**: Event payloads on the PUSH hot path use a typed binary format instead of JSON, eliminating JSON serialization cost per event (Phase 11)
+
+## v1.3 Requirements
+
+Requirements for milestone v1.3: Concurrency & Client Batching. **Active.**
+
+### Performance
+
+- [ ] **PERF-03**: Server-side async push coalescing — the server accumulates up to N async push frames (default 64) or T microseconds (default 200µs) per connection before dispatching them to a single batched handler under one state-lock acquisition. Multi-client aggregate async throughput on medium pipeline ≥ 200k eps @ 4 clients, and single-client async throughput is within ±5% of v1.2 baseline (Phase 12)
+- [ ] **PERF-04**: Client-side batch push API — `app.push_many(stream, events)` wraps N events into one `OP_PUSH_BATCH` (0x0A) wire frame, reducing Python per-event loop overhead. Single-client async throughput via `push_many` ≥ 300k eps on medium pipeline. Error attribution surfaces `(batch_id, event_index)` via existing drain semantic; `app.push()` single-event API continues to work unchanged (Phase 13)
+- [ ] **PERF-05**: Key-partitioned multi-threaded engine — `StateStore` is sharded across `num_shards` worker threads (default `std::thread::available_parallelism()`), each owning an exclusive `ShardStore` with no cross-thread locks on the hot path. Entity key → shard via stable `xxh3_64` hash. Cross-shard fan-out is fire-and-forget via bounded MPMC channels. Aggregate throughput on medium pipeline with 16 clients × 16 shards ≥ 1,000,000 eps; single-client throughput within ±10% of v1.2 (Phase 14)
+
+### Operational
+
+- [ ] **OPS-05**: Snapshot serialization runs off the main event-loop thread per shard — during a snapshot write, async PUSH throughput on the main path regresses by ≤ 5% (was 15–25% on v1.2). Snapshot write completes within the OPS-01-class budget (< 1 second per 100k entities). New v7 snapshot format uses a per-cycle manifest file as the atomic commit boundary across per-shard files; recovery from a partially-written snapshot set rolls back to the previous manifest (Phase 15)
+
+### Locked Decisions (v1.3)
+
+These are product-level tradeoffs accepted by research and approved for Phase 14 execution:
+
+- **LD-1**: Cross-shard fan-out errors are fire-and-forget — target-shard errors surface in per-shard metrics, NOT in the originating client's `drain_errors_nonblock` queue. This is a deliberate regression from v1.2 semantics, required to preserve the shared-nothing hot path.
+- **LD-2**: `num_shards` is persisted in the snapshot manifest + a config file. Changing shard count across restarts requires explicit `TALLY_ALLOW_RESHARD=1` and triggers a one-time re-route migration on load.
+- **LD-3**: Snapshots are **shard-local consistent**, not globally consistent. A fan-out event may land in target-shard snapshot but not origin-shard snapshot within one cycle. Manifest guarantees per-shard files exist and hash-match, not that they reflect the same logical moment. Sibling to the existing "lose ~30s on crash" contract.
+- **LD-4**: Shard routing uses `xxh3_64` with a fixed seed (not ahash, which isn't spec-stable across crate versions). Hash version byte is included in the manifest header.
+
+## v1.4+ Requirements
 
 Deferred to future release. Tracked but not in current roadmap.
 
@@ -64,6 +96,12 @@ Deferred to future release. Tracked but not in current roadmap.
 
 - **PIPE-F1**: Complex DAG transformations (map, filter, flatMap on keyless streams)
 
+### Performance (future)
+
+- **PERF-F1**: Awaitable cross-shard fan-out with deadline (opt-in, preserves v1.2 error semantics for non-hot-path callers)
+- **PERF-F2**: Dynamic shard rebalancing (hot-key migration across shards at runtime)
+- **PERF-F3**: Disk/S3 state spill for entities exceeding RAM budget
+
 ## Out of Scope
 
 Explicitly excluded. Documented to prevent scope creep.
@@ -75,8 +113,11 @@ Explicitly excluded. Documented to prevent scope creep.
 | Distributed event log replication | Single-node by design; back up snapshots externally |
 | Kafka-compatible event log API | Tally consumes, doesn't produce; event log is internal |
 | Temporal joins with watermarks | Flink-level complexity; LEFT JOIN + lookups sufficient for feature serving |
-| Key-partitioned multi-threading | v1 is single-threaded; sharding is a future vertical scaling upgrade |
 | Cluster mode / distributed operation | Single-node by design |
+| Client-side sharding / hash-ring routing across instances | Document, don't build — users can run N Tally instances with their own routing |
+| Dynamic shard rebalancing (live MIGRATE) | Redis Cluster's MIGRATE took years to ship correctly; not justified for v1.3's target audience |
+| Multi-tenancy / namespace isolation | Out of domain for a real-time feature server |
+| Session windows | Only sliding/tumbling windows; session windows require watermarks |
 
 ## Traceability
 
@@ -108,14 +149,21 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DBUI-03 | Phase 10 | Complete |
 | DBUI-04 | Phase 10 | Complete |
 | DBUI-05 | Phase 10 | Complete |
-| DBUI-06 | Phase 10.1 | In progress |
-| DBUI-07 | Phase 10.2 | Pending |
+| DBUI-06 | Phase 10.1 | Complete |
+| DBUI-07 | Phase 10.2 | Complete |
+| PERF-01 | Phase 11 | Complete |
+| PERF-02 | Phase 11 | Complete |
+| PERF-03 | Phase 12 | Pending |
+| PERF-04 | Phase 13 | Pending |
+| PERF-05 | Phase 14 | Pending |
+| OPS-05  | Phase 15 | Pending |
 
 **Coverage:**
-- v1.1 requirements: 26 total
-- Mapped to phases: 26
-- Unmapped: 0
+- v1.1 requirements: 28 total, all mapped, all complete (DBUI-07 added post-original-roadmap via Phase 10.2)
+- v1.2 requirements: 2 total, all mapped, all complete
+- v1.3 requirements: 4 total, all mapped to phases 12–15
+- Total: 34 requirements, 34 mapped, 0 unmapped
 
 ---
 *Requirements defined: 2026-04-09*
-*Last updated: 2026-04-09 after roadmap creation*
+*Last updated: 2026-04-11 — v1.3 requirements (PERF-03, PERF-04, PERF-05, OPS-05) added; v1.2 backfilled*
