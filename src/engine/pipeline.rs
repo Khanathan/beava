@@ -367,6 +367,46 @@ impl PipelineEngine {
         self.push_internal(stream_name, event, store, now, false)
     }
 
+    /// Batch primary-only push with no feature read.
+    ///
+    /// Iterates events under a **single** `get_stream` lookup and calls the
+    /// existing `push_internal(_, _, _, _, false)` per event. This primitive
+    /// does NOT perform cascade or fan-out — the caller is responsible for
+    /// any cross-stream updates. For the async coalescing hot path
+    /// (Phase 12), use [`push_batch_with_cascade_no_features`] instead.
+    ///
+    /// Returns a `Vec` of per-event `Result`s in **input order**. An error
+    /// at index `i` does NOT halt the batch; subsequent events continue to
+    /// apply their operator mutations.
+    ///
+    /// Empty slice → `Vec::new()`. Unknown stream name → a Vec of
+    /// `Err(Protocol)` for every input event (no partial state mutation).
+    pub fn push_batch_no_features(
+        &self,
+        stream_name: &str,
+        events: &[&serde_json::Value],
+        store: &mut StateStore,
+        now: SystemTime,
+    ) -> Vec<Result<FeatureMap, TallyError>> {
+        if events.is_empty() {
+            return Vec::new();
+        }
+        // Resolve the primary stream ONCE per call (D-07). If the stream is
+        // unknown, surface an error for every input event without touching
+        // state.
+        if self.get_stream(stream_name).is_none() {
+            return events
+                .iter()
+                .map(|_| Err(TallyError::Protocol(format!("unknown stream: {}", stream_name))))
+                .collect();
+        }
+        let mut out = Vec::with_capacity(events.len());
+        for event in events {
+            out.push(self.push_internal(stream_name, event, store, now, false));
+        }
+        out
+    }
+
     fn push_internal(
         &self,
         stream_name: &str,

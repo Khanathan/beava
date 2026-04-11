@@ -177,5 +177,77 @@ mod mark_dirty_many {
     }
 }
 
-// Task 2 (push_batch_no_features) and Task 3
-// (push_batch_with_cascade_no_features) modules are appended by those tasks.
+// ============================================================================
+// push_batch_no_features (primary-only)
+// ============================================================================
+
+mod push_batch_no_features {
+    use super::*;
+
+    #[test]
+    fn empty_batch_returns_empty_vec() {
+        let mut engine = PipelineEngine::new();
+        engine.register(make_count_stream("Txns", "user_id")).unwrap();
+        let mut store = StateStore::new();
+
+        let events: Vec<&serde_json::Value> = vec![];
+        let out = engine.push_batch_no_features("Txns", &events, &mut store, ts(1000));
+        assert!(out.is_empty());
+        assert_eq!(store.entity_count(), 0);
+    }
+
+    #[test]
+    fn three_events_return_three_results_in_order() {
+        let mut engine = PipelineEngine::new();
+        engine.register(make_count_stream("Txns", "user_id")).unwrap();
+        let mut store = StateStore::new();
+
+        let e0 = json!({"user_id": "u1"});
+        let e1 = json!({"user_id": "u2"});
+        let e2 = json!({"user_id": "u3"});
+        let events = vec![&e0, &e1, &e2];
+
+        let out = engine.push_batch_no_features("Txns", &events, &mut store, ts(1000));
+        assert_eq!(out.len(), 3);
+        assert!(out.iter().all(|r| r.is_ok()));
+        assert_eq!(store.entity_count(), 3);
+    }
+
+    #[test]
+    fn partial_failure_does_not_halt_and_preserves_side_effects() {
+        let mut engine = PipelineEngine::new();
+        engine.register(make_count_stream("Txns", "user_id")).unwrap();
+        let mut store = StateStore::new();
+
+        let e0 = json!({"user_id": "u1"});
+        let e1 = json!({"user_id": ""}); // empty key -> Protocol error
+        let e2 = json!({"user_id": "u2"});
+        let events = vec![&e0, &e1, &e2];
+
+        let out = engine.push_batch_no_features("Txns", &events, &mut store, ts(1000));
+        assert_eq!(out.len(), 3);
+        assert!(out[0].is_ok(), "event 0 should apply");
+        assert!(out[1].is_err(), "event 1 (empty key) should error");
+        assert!(out[2].is_ok(), "event 2 should apply despite event 1's error");
+
+        let f1 = store.get_all_features("u1", ts(1000));
+        assert_eq!(f1.get("count_1h"), Some(&FeatureValue::Int(1)));
+        let f2 = store.get_all_features("u2", ts(1000));
+        assert_eq!(f2.get("count_1h"), Some(&FeatureValue::Int(1)));
+    }
+
+    #[test]
+    fn unknown_stream_errors_all_events() {
+        let engine = PipelineEngine::new();
+        let mut store = StateStore::new();
+        let e = json!({"user_id": "u1"});
+        let events = vec![&e, &e, &e];
+
+        let out = engine.push_batch_no_features("nonexistent", &events, &mut store, ts(1000));
+        assert_eq!(out.len(), 3);
+        assert!(out.iter().all(|r| r.is_err()));
+        assert_eq!(store.entity_count(), 0);
+    }
+}
+
+// Task 3 (push_batch_with_cascade_no_features) module appended by Task 3.
