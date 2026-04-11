@@ -3,7 +3,8 @@
 ## Milestones
 
 - v1.0 Core Feature Server — Phases 1-5 (shipped 2026-04-09)
-- v1.1 Composable Pipeline & Event Log — Phases 6-10 (in progress)
+- v1.1 Composable Pipeline & Event Log — Phases 6-10.2 (shipped 2026-04-11)
+- v1.2 Performance — Phases 11+ (in progress)
 
 ## Phases
 
@@ -161,9 +162,38 @@ Plans:
   3. User can see a slow-query view listing the 20 slowest observed requests per command with the originating stream (if applicable)
   4. Latency tracking adds no measurable overhead to the PUSH hot path (p99 remains under 100us per existing Phase 6 budget)
   5. The estimator is memory-bounded per stream regardless of request rate (bucketed histogram, ~248 bytes per histogram)
-**Plans:** 3 plans
+**Plans:** 3/3 plans complete
 
 Plans:
-- [ ] 10.2-01-PLAN.md — Backend core: Histogram, RollingHistogram, SlowQueryHeap, LatencyTracker in src/server/latency.rs + unit tests
-- [ ] 10.2-02-PLAN.md — Backend integration: AppState wiring, TCP command instrumentation (PUSH/GET/SET/MSET), /debug/latency endpoint + integration test
-- [ ] 10.2-03-PLAN.md — Frontend: renderLatencySection, renderGlobalLatencyDashboard, histogram bars, slow-query list, 1 Hz polling + visual checkpoint
+- [x] 10.2-01-PLAN.md — Backend core: Histogram, RollingHistogram, SlowQueryHeap, LatencyTracker in src/server/latency.rs + unit tests
+- [x] 10.2-02-PLAN.md — Backend integration: AppState wiring, TCP command instrumentation (PUSH/GET/SET/MSET), /debug/latency endpoint + integration test
+- [x] 10.2-03-PLAN.md — Frontend: renderLatencySection, renderGlobalLatencyDashboard, histogram bars, slow-query list, 1 Hz polling + visual checkpoint
+
+---
+
+### v1.2 Performance
+
+**Milestone Goal:** Lift single-node Tally throughput from ~17.5k eps (v1.1 baseline, single Python client, medium pipeline) toward the 100k-1M eps range by attacking the hot-path JSON cost, the round-trip response overhead, and eventually the single-threaded-runtime concurrency cliff. Each phase is independently measurable against the v1.1 baseline captured in `benchmark/tally-throughput/RESULTS.md`.
+
+**Context documents:**
+- `benchmark/FINDINGS.md` — original benchmark spike (synthetic Rust, macOS)
+- `benchmark/tally-throughput/RESULTS.md` — real v1.1 wall-clock numbers
+- `benchmark/tally-throughput/PROFILE.md` — callgrind profile (46% JSON, 8% engine)
+- `benchmark/tally-throughput/FINDINGS-VS-REALITY.md` — scorecard of spike claims
+- `benchmark/tally-throughput/PATH-TO-100K-1M.md` — lever math and target tiers
+- `.planning/research/FINDINGS-GAP-ANALYSIS.md` — gap analysis vs FINDINGS
+
+### Phase 11: Fire-and-Forget PUSH + Binary Wire Protocol
+**Goal:** Ship `app.push()` as fire-and-forget (no feature response) + `app.push_sync()` + `app.flush()`, and replace the JSON event payload with a typed binary format on PUSH paths. Targets **≥ 100k events/sec single Python client** on medium pipelines (5.7x over v1.1 baseline).
+**Depends on:** v1.1 complete
+**Requirements:** PERF-01 (fire-and-forget ingest), PERF-02 (binary event payload)
+**Success Criteria** (what must be TRUE):
+  1. `app.push(stream, event)` returns None and pipelines without waiting for a response
+  2. `app.push_sync(stream, event)` returns a FeatureResult (preserves v1.1 behavior)
+  3. `app.flush()` blocks until all in-flight async pushes have been processed; raises on error
+  4. Server errors on async push surface on the client's next `push` / `push_sync` / `flush` / `get` call
+  5. PUSH event payload is decoded from a binary format instead of `serde_json::from_slice`; callgrind shows JSON parse hotspots gone from PUSH path
+  6. Medium pipeline single-client throughput ≥ 100k events/sec (stretch: 150k)
+  7. All 569 existing tests remain green (raw-TCP tests updated for new binary payload format)
+**Plans:** TBD (research → plan phase)
+**Context:** [.planning/phases/11-fire-and-forget-push/11-CONTEXT.md](phases/11-fire-and-forget-push/11-CONTEXT.md)

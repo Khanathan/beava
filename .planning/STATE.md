@@ -1,9 +1,9 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.1
-milestone_name: Composable Pipeline & Event Log
-status: complete
-stopped_at: v1.1 milestone complete. All 7 phases and 43 plans shipped. Next up — v1.2 Performance (per FINDINGS.md gap analysis).
+milestone: v1.2
+milestone_name: Performance
+status: discussing
+stopped_at: Phase 11 CONTEXT.md written — fire-and-forget PUSH + binary wire protocol. Target ≥100k events/sec single client. Ready for research phase.
 last_updated: "2026-04-11T02:12:29.440Z"
 last_activity: 2026-04-11
 progress:
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-04-09)
 
 ## Current Position
 
-Phase: v1.1 complete
-Plan: n/a
-Status: Milestone complete — moving to v1.2 Performance
+Phase: 11 Fire-and-Forget PUSH + Binary Wire Protocol
+Plan: CONTEXT written, research pending
+Status: Discussing — ready for /gsd-plan-phase 11
 Last activity: 2026-04-11
 
-Progress: [██████████] 100% (7/7 phases complete, 43/43 plans)
+Progress: v1.2 milestone kickoff. Phase 11 CONTEXT.md captures 6 decisions (async+sync API split, OP_PUSH_ASYNC + OP_FLUSH opcodes, binary event payload for PUSH, non-blocking error drain, OP_FLUSH as no-op barrier, folded Phase 10.2 histogram). Target ≥100k eps single client (5.7x v1.1 baseline of 17.5k).
 
 ## Performance Metrics
 
