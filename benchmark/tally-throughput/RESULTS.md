@@ -215,3 +215,56 @@ rm -rf /tmp/tally-bench /tmp/tally-bench.log
 **Sync regression:** 18.8k eps vs 17.5k v1.1 baseline — a small improvement from PERF-02 binary encoder. Sync p99 = 94us, within the 100us PUSH budget. No regression.
 
 Raw: `benchmark/tally-throughput/results/11-gate.json`
+
+## Phase 11 — Post-verification perf matrix (multi-pipeline, multi-entity)
+
+**Date:** 2026-04-11 (same day, after the code review surfaced L-3 and a multi-pipeline re-verification found two latent performance bugs)
+**Target:** 100k–1M eps across small, medium, and large pipelines
+**Build:** commits `bc93031`, `06b3604`, `65c6d40` (HLL read-skip + binary event log + drain fast-path)
+
+### Hardware/config
+- 1 tokio current-thread server on a single CPU core (v1 architecture)
+- 1 Python client, single thread
+- `bench.py` default entity pool: 1000 users × 100 merchants × 500 devices
+- Fresh server per test, `/tmp` data dir (674 GB available)
+
+### Final matrix (3-run mean)
+
+| Pipeline | Mode    | Events | **Client EPS** | p99 µs | Server %CPU |
+|----------|---------|-------:|---------------:|-------:|------------:|
+| small    | async 1c | 200k  | **138,000**    | —      | ~67%        |
+| medium   | async 1c | 200k  | **142,000**    | —      | ~67%        |
+| large    | async 1c | 200k  | **128,000** (σ 7k) | —  | ~67%        |
+| small    | sync 1c  | 100k  | **20,418**     | 87     | —           |
+| medium   | sync 1c  | 100k  | **20,173**     | 87     | —           |
+| large    | sync 1c  | 50k   | **19,423**     | 90     | —           |
+
+### Before/after the post-verification fixes
+
+| Config | Before | After | Speedup |
+|---|---:|---:|---:|
+| large async 1c  | 865     | **128,000** | **148×** |
+| large sync 1c   | 989     | **19,423**  | **20×** |
+| small async 1c  | 130,319 | 138,000     | +6%     |
+| medium async 1c | 140,057 | 142,000     | +1%     |
+| sync p99 (all)  | 91–97 µs | **87–90 µs** | -7 µs |
+
+### Three bugs fixed post-verification
+
+1. **HLL read on async hot path.** `DistinctCountOp::read` scans 16k HLL registers × up to 30 buckets per call (~300µs/HLL) and was called on every push via `pipeline.rs:459` inside `process_event`, then discarded on the async path. For `large` (3 HLLs through fan-out), that was 3 × 300µs ≈ 900µs/push ceiling ≈ 1k eps. Fix: thread `read_features: bool` through push → cascade → handle_push_core, skip the read block on async, route fan-out through `engine.push_no_features`. Result: large async 865 → 128k (148×).
+
+2. **Drain fast-path regression from the code-review auto-fix.** `drain_errors_nonblock` flipped blocking mode on every call (5 syscalls) — since `app.push()` drains per event, it added 5 syscalls × 200k events = 1M extra syscalls and dropped async from 166k → 1k eps. Fix: add `select([sock],[],[],0)` fast path at the top; falls through to non-blocking drain only when data or a partial frame is pending.
+
+3. **JSON serialize on the event log path (Plan 11-06 subplan).** `handle_push_core` called `serde_json::to_vec(payload)` 2–N times per push to produce event log bytes (L-3 from code review). Fix: new `LOG_FMT_JSON=0x00` / `LOG_FMT_BINARY=0x01` format tags + `decode_log_payload()` dispatch helper; raw wire bytes from `parse_command` forwarded to the event log verbatim; backfill reader dispatches on the prefix byte. Sync p99 dropped 91–97µs → 87–90µs (-7µs), sync throughput +3–7% across sizes.
+
+### Headroom and bottleneck analysis
+
+- **Server is the bottleneck.** On large async, 128k eps at 66–70% of 1 core → ~7µs per push of server CPU work. HLL inserts + operator bookkeeping dominate residual cost.
+- **1 core × 47 idle.** `nproc` reports 48; Tally uses 1 (tokio current_thread). v2 key-partitioned multi-threading is the path to the 1M target.
+- **Sync is RTT-bound.** ~50µs round-trip on localhost yields ~20k eps per connection regardless of pipeline complexity. Pipelining (multi in-flight per conn) or multi-client are the only unlocks.
+
+### Phase 11 gate result
+
+**PASS — all pipeline sizes hit the 100k floor on async single-client.** The original 166k gate on medium was the measurement from the `--no-transition` execute run; after the HLL read-skip, small/medium are ~140k and large is ~128k, all well above the 100k minimum. The 1M ceiling is a v2 goal and intentionally out of scope for the single-threaded v1.2 milestone.
+
+Raw run JSONs: `benchmark/tally-throughput/results/20260411-15*.json`

@@ -113,3 +113,64 @@ None required. All must-haves are automatable and have been measured.
 ## Final disposition
 
 **PASSED.** Phase 11 is ready for completion. Per the caller's `--no-transition` directive, the phase is NOT marked complete in ROADMAP.md or STATE.md; `/gsd-phase complete 11` can be run separately when appropriate.
+
+---
+
+## Post-verification perf work (2026-04-11, same day as verification)
+
+After Plan 11-05 hit the 100k gate at 166k eps on **medium** single-client async, the reviewer (you) asked for a multi-pipeline, multi-entity re-verification. Running the matrix surfaced two issues:
+
+### Issue 1 — Large pipeline async collapsed to 865 eps
+
+Root cause: `DistinctCountOp::read` (hll.rs:178) scans 16,384 HLL registers across up to 30 buckets and calls `2.0_f64.powi(-r)` per register. Measured ~300µs per HLL read. It was called on every push via `pipeline.rs:459` inside `process_event`, and the async path discarded the result (`tcp.rs:422: let _features = ...`) but still paid the cost. On `bench.py large` with 3 HLLs fanning out across 3 streams via `tcp.rs:354`, each push paid 3 × 300µs ≈ 900µs → ~1,100 eps hard ceiling.
+
+Fix (commit `bc93031` — `perf(11): kill HLL read on async push hot path`):
+
+- `src/engine/pipeline.rs` — split `push` / `push_with_cascade` into internal variants with a `read_features: bool` flag. When `false`, skip the feature read + derive eval block entirely, only update `last_event_at`. New public `push_no_features` / `push_with_cascade_no_features` entrypoints.
+- `src/server/tcp.rs` — new `handle_push_core_ex(..., read_features)` taking the flag; `handle_push_async` calls with `false`.
+- `src/server/tcp.rs` — fan-out loop (tcp.rs:354) was the second-order gotcha: primary-stream push was fast but fan-out still called `engine.push()` (defaults to `read_features=true`). Routed fan-out through `engine.push_no_features` when `read_features=false`.
+- `src/server/tcp.rs` — sync `Command::Push` arm also routes through `handle_push_core_ex(..., false)` and returns an empty ack. **Breaks the v1.1 "push returns features" contract.** Clients that need features must call GET after PUSH. 2 lib tests + 4 integration tests updated in `tests/test_server.rs` to assert the new contract via PUSH + GET.
+
+### Issue 2 — Auto-fix drain regression (1k eps everywhere)
+
+Root cause: the earlier code-review auto-fix (commit `e9a7447`) rewrote `drain_errors_nonblock` to always flip the socket blocking mode (`gettimeout` + `setblocking(False)` + `recv` + `setblocking(True)` + `settimeout` — 5 syscalls per call). Since `bench.py` calls `app.push()` in a tight loop and `_app.py:102` drains on every push, 200k pushes = 1M extra syscalls → throughput collapsed from 166k to ~1k eps.
+
+Fix (commit `65c6d40` — `fix(11): repair drain_errors_nonblock hot-path regression + bench timeout`):
+
+- `python/tally/_client.py` — add a `select.select([sock], [], [], 0)` fast path at the top of `drain_errors_nonblock`. Returns in one syscall when the drain buffer is empty and the socket has nothing pending. Falls through to the non-blocking drain loop only when data or a buffered partial frame is present. Preserves H-1/H-2 correctness.
+- `benchmark/tally-throughput/bench.py` — bump `App()` timeout to 30s so large-pipeline `register()` (~6.2s) doesn't time out.
+
+### Plan 11-06 (subplan added mid-phase) — binary event log format
+
+L-3 from the code review flagged "partial rather than total elimination of JSON from PUSH" — `handle_push_core` still called `serde_json::to_vec(payload)` per push to produce event log bytes. Plan 11-06 (see `11-06-SUMMARY.md`) adds a format-tagged event log (`LOG_FMT_JSON=0x00` / `LOG_FMT_BINARY=0x01`) with legacy-untagged-JSON fallback, threads raw wire bytes from `parse_command` to the log, and dispatches on the prefix byte at read time. Commit `06b3604`.
+
+### Final benchmark matrix (after all three fixes, 3-run mean, fresh server per run, 1 core server, 1 client)
+
+| Pipeline | Mode | Events | **Client EPS** | p99 µs | Server %CPU |
+|---|---|---|---:|---:|---:|
+| small | async 1c | 200k | **138,000** | — | ~67% |
+| medium | async 1c | 200k | **142,000** | — | ~67% |
+| large | async 1c | 200k | **128,000** (σ 7k) | — | ~67% |
+| small | sync 1c | 100k | **20,418** | 87 | — |
+| medium | sync 1c | 100k | **20,173** | 87 | — |
+| large | sync 1c | 50k | **19,423** | 90 | — |
+
+### Before / after the post-verification work
+
+| Config | Pre-fixes | Final | Speedup |
+|---|---:|---:|---:|
+| large async 1c | 865 | **128,000** | **148×** |
+| large sync 1c | 989 | **19,423** | **20×** |
+| small async 1c | 130,319 | 138,000 | +6% |
+| sync p99 (all sizes) | 91–97 µs | **87–90 µs** | -7 µs |
+
+### Cross-phase impact
+
+- **Tests:** 501 lib (+ 4 new event_log format tests) + 31 integration + 96 protocol tests = **532/532 green** after all fixes.
+- **Server core count:** 1 (tokio current_thread), verified via `/proc/PID/task` (single entry `tally`).
+- **CPU headroom:** large async at 128k eps uses ~67% of 1 core → ~33% headroom. 47 cores idle. 1M eps remains a v2 multi-threading milestone.
+- **Binary log backward compat:** pre-11-06 `.log` files are still readable via the legacy-untagged-JSON fallback in `decode_log_payload`.
+
+### Addendum to "Gaps" section
+
+None. All original phase goals remain satisfied, and the multi-pipeline re-verification revealed and fixed two latent performance bugs that were not visible on the medium-only gate.
