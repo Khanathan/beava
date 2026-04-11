@@ -638,6 +638,140 @@ mod e2e {
         assert_eq!(json["count_1h"], 2, "two good events still applied");
     }
 
+    // ------------------------------------------------------------------
+    // Phase 12 Plan 03: mixed workload sync p99 shape-based sanity test.
+    //
+    // Spawns two concurrent TCP clients against one server:
+    //   - Task A (saturator): pushes OP_PUSH_ASYNC frames as fast as it
+    //     can, then FLUSH at the end.
+    //   - Task B (sampler):  concurrently sends sync OP_PUSH frames with
+    //     ~500µs spacing and records wall-clock response latency.
+    //
+    // We do NOT assert the tight 91.4µs bench gate here — in-process
+    // `cargo test` (debug build, single-threaded tokio) shares the
+    // runtime with both clients AND both server handler tasks, which
+    // inflates absolute numbers 500-1000× vs a dedicated release bench
+    // because the sampler is scheduled cooperatively against a saturator
+    // that never yields mid-batch. The purpose of this test is structural:
+    //   1. sync_p99 < 100ms (pathological deadlock / starvation catch —
+    //      in a correctly wired coalescer even the debug-runtime sampler
+    //      completes within 100ms per sample; a hang or cross-connection
+    //      drain leak would blow past this)
+    //   2. sync_p50 < sync_p99 (distribution sanity)
+    //   3. sync_p99 < 3.0 * sync_p50 (tail-shape guard: p99 no more than
+    //      3× p50 — catches "async saturation explodes sync tail"
+    //      pathological regressions REGARDLESS of the in-test noise
+    //      floor; this is the primary defense in cargo-test mode)
+    // The tight ±5% bench gate — sync p99 in [82.6, 91.4]µs under
+    // release-build multi-core saturation — lives in
+    // benchmark/tally-throughput/bench.py and is evaluated by `--mode mixed`.
+    #[tokio::test]
+    async fn mixed_workload_sync_p99() {
+        let (addr, _state) = spawn_server().await;
+
+        // Pre-connect both clients so socket setup is not part of the
+        // measurement and both are registered with the server before the
+        // saturator starts hogging the runtime.
+        let mut sat_sock = TcpStream::connect(addr).await.unwrap();
+        let mut smp_sock = TcpStream::connect(addr).await.unwrap();
+
+        // Sampler warmup OUTSIDE the concurrent section — no cold-cache
+        // samples enter p99.
+        for _ in 0..20u32 {
+            let payload = build_async_payload("A", &[("user_id", "smp")]);
+            send_frame(&mut smp_sock, proto::OP_PUSH, &payload).await;
+            let _ = read_frame(&mut smp_sock).await;
+        }
+
+        // Sampler task: fixed 60 samples @ 500µs pacing = ~30ms of work.
+        // Spawned first so the single-threaded runtime starts polling it
+        // before the saturator hogs the socket.
+        let sampler = tokio::spawn(async move {
+            let mut latencies_us: Vec<f64> = Vec::with_capacity(80);
+            for _ in 0..60u32 {
+                let payload = build_async_payload("A", &[("user_id", "smp")]);
+                let t0 = std::time::Instant::now();
+                send_frame(&mut smp_sock, proto::OP_PUSH, &payload).await;
+                let (_s, _body) = read_frame(&mut smp_sock).await;
+                let dt = t0.elapsed();
+                latencies_us.push(dt.as_nanos() as f64 / 1000.0);
+                tokio::time::sleep(std::time::Duration::from_micros(500)).await;
+            }
+            latencies_us
+        });
+
+        // Saturator task: OP_PUSH_ASYNC frames in bursts of 64 (one full
+        // accumulator) with a short sleep between bursts so the single-
+        // threaded test runtime has a chance to service the sampler's
+        // sync OP_PUSH between dispatches. In a release multi-core bench
+        // this pacing is unnecessary; in the debug cargo-test runtime it
+        // is what makes the shape-based sanity test meaningful (without
+        // it, the sampler just sits in the server's accept queue until
+        // the saturator is 100% done). See plan H-2 rationale.
+        let saturator = tokio::spawn(async move {
+            for burst in 0..20u32 {
+                for _ in 0..64u32 {
+                    let payload = build_async_payload("A", &[("user_id", "sat")]);
+                    send_frame(&mut sat_sock, OP_PUSH_ASYNC, &payload).await;
+                }
+                // Yield the runtime between bursts so the sampler gets serviced.
+                tokio::time::sleep(std::time::Duration::from_micros(500)).await;
+                let _ = burst;
+            }
+            send_frame(&mut sat_sock, proto::OP_FLUSH, &[]).await;
+            let _ = read_frame(&mut sat_sock).await;
+        });
+
+        let (sat_res, smp_res) = tokio::join!(saturator, sampler);
+        sat_res.unwrap();
+        let mut latencies = smp_res.unwrap();
+        assert!(
+            latencies.len() >= 20,
+            "mixed workload sampler collected too few samples: {}",
+            latencies.len()
+        );
+
+        latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p50_idx = latencies.len() / 2;
+        let p99_idx = (latencies.len() as f64 * 0.99) as usize;
+        let p99_idx = p99_idx.min(latencies.len() - 1);
+        let sync_p50_us = latencies[p50_idx];
+        let sync_p99_us = latencies[p99_idx];
+
+        eprintln!(
+            "mixed_workload_sync_p99: samples={} p50={:.2}µs p99={:.2}µs",
+            latencies.len(),
+            sync_p50_us,
+            sync_p99_us
+        );
+
+        // 1. Absolute pathological ceiling — catches deadlock /
+        //    cross-connection drain leak / indefinite starvation. See
+        //    doc comment above for why this is 100ms not 200µs in the
+        //    debug cargo-test runtime (the tight 91.4µs gate lives in
+        //    the release bench).
+        assert!(
+            sync_p99_us < 100_000.0,
+            "sync p99 under async saturation exceeded 100ms pathological ceiling: {:.2}µs",
+            sync_p99_us
+        );
+        // 2. Sanity: p50 strictly less than p99 (non-degenerate distribution).
+        assert!(
+            sync_p50_us < sync_p99_us,
+            "sync p50 >= p99 ({} >= {}) — sampler likely too sparse",
+            sync_p50_us,
+            sync_p99_us
+        );
+        // 3. Shape: p99 no more than 3× p50 — tail-blowup guard.
+        assert!(
+            sync_p99_us < 3.0 * sync_p50_us,
+            "sync p99 tail blew up under async saturation: p50={:.2}µs p99={:.2}µs (ratio={:.2}× > 3×)",
+            sync_p50_us,
+            sync_p99_us,
+            sync_p99_us / sync_p50_us
+        );
+    }
+
     #[tokio::test]
     async fn two_connections_drain_isolation() {
         // Open two concurrent connections against the same server. A bad
