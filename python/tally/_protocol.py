@@ -75,6 +75,24 @@ def encode_string(s: str) -> bytes:
 _I64_MIN = -(1 << 63)
 _I64_MAX = (1 << 63) - 1
 
+# Maximum byte length for any u16-length-prefixed wire field
+# (stream_name, field key, or TYPE_STR value). Matches the Rust server
+# decoder which reads a u16 BE length prefix.
+_U16_MAX: int = 0xFFFF
+
+
+def _check_u16_len(field: str, value_bytes: bytes) -> None:
+    """Raise ProtocolError if ``value_bytes`` exceeds u16::MAX (65535).
+
+    Provides a typed error for oversized fields instead of a raw
+    struct.error from ``_U16.pack``. Called from ``encode_push_binary``
+    before every u16 length write on the binary PUSH hot path.
+    """
+    if len(value_bytes) > _U16_MAX:
+        raise ProtocolError(
+            f"{field} exceeds {_U16_MAX} bytes: got {len(value_bytes)}"
+        )
+
 
 def encode_push_binary(stream_name: str, event: dict) -> bytes:
     """Encode a PUSH payload in the Phase 11 binary format (PERF-02).
@@ -103,11 +121,17 @@ def encode_push_binary(stream_name: str, event: dict) -> bytes:
     """
     buf = bytearray()
     name_bytes = stream_name.encode("utf-8")
+    _check_u16_len("stream_name", name_bytes)
     buf += _U16.pack(len(name_bytes))
     buf += name_bytes
+    if len(event) > _U16_MAX:
+        raise ProtocolError(
+            f"event field_count exceeds {_U16_MAX}: got {len(event)}"
+        )
     buf += _U16.pack(len(event))
     for key, value in event.items():
         key_bytes = key.encode("utf-8")
+        _check_u16_len(f"field key {key!r}", key_bytes)
         buf += _U16.pack(len(key_bytes))
         buf += key_bytes
         if value is None:
@@ -131,6 +155,7 @@ def encode_push_binary(stream_name: str, event: dict) -> bytes:
             buf += _F64.pack(value)
         elif isinstance(value, str):
             v_bytes = value.encode("utf-8")
+            _check_u16_len(f"string value for key {key!r}", v_bytes)
             buf.append(TYPE_STR)
             buf += _U16.pack(len(v_bytes))
             buf += v_bytes
