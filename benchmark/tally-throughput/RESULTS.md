@@ -268,3 +268,117 @@ Raw: `benchmark/tally-throughput/results/11-gate.json`
 **PASS — all pipeline sizes hit the 100k floor on async single-client.** The original 166k gate on medium was the measurement from the `--no-transition` execute run; after the HLL read-skip, small/medium are ~140k and large is ~128k, all well above the 100k minimum. The 1M ceiling is a v2 goal and intentionally out of scope for the single-threaded v1.2 milestone.
 
 Raw run JSONs: `benchmark/tally-throughput/results/20260411-15*.json`
+
+## Phase 12: Server-side async push coalescing — 2026-04-11
+
+**Build:** `cargo build --release` on `179d799` (Phase 12 Wave 2 coalescer landed + Wave 3 bench harness)
+**Hardware:** Intel(R) Xeon(R) 6975P-C, 48 cores, 371 GiB RAM (tally binary pinned to single tokio current_thread runtime — 1 core used)
+**Runtime:** default release build, single tally instance, TALLY_DATA_DIR=/tmp/tally-bench
+**Baseline references:** v1.2 numbers from the Phase 11 perf matrix (138k small / 142k medium / 128k large async single-client, sync p99 87-90µs)
+
+### 6-scenario matrix gate (D-17, D-18)
+
+| scenario          | runs | median eps | σ/median | v1.2 baseline | Δ vs v1.2 | gate |
+|-------------------|------|------------|----------|---------------|-----------|------|
+| small   × sync    | 5    | 19,675     | 1.24%    | ~20k          | -1.6%     | ok (within ±5%) |
+| small   × async   | 5    | 123,466    | 8.94%    | 138k          | **-10.5%**| **FAIL** (outside ±5%) |
+| medium  × sync    | 5    | 19,979     | 2.96%    | ~20k          | -0.1%     | ok |
+| medium  × async   | 5    | 124,743    | 4.13%    | 142k          | **-12.2%**| **FAIL** (outside ±5%) |
+| large   × sync    | 5    | 18,582     | 3.29%    | ~19.4k        | -4.2%     | ok |
+| large   × async   | 5    | 123,743    | 4.48%    | 128k          | **-3.3%** | ok (within ±5%) |
+
+All 6 scenarios have σ/median < 10% — measurement stability is good. Single-client async throughput regressed on small (-10.5%) and medium (-12.2%) versus v1.2; large (-3.3%) is within ±5% of baseline. This is the single-client single-connection path where coalescing's 200µs deadline per batch adds latency without unlocking parallelism.
+
+### Async p50 Latency Impact (D-10 / ROADMAP criterion #10)
+
+Closes ROADMAP §Phase 12 success criterion #10: "Latency impact documented: coalescing adds up to T µs to async p50 (acceptable, async is already fire-and-forget)." Expected additive impact per scenario: ≤ 200µs (= BATCH_DEADLINE_US). Bench matrix emits per-push async enqueue latencies (the time the client-side `push()` call blocks on socket write + SDK enqueue, which is the metric directly affected by server-side coalescing's batch deadline from the caller's perspective).
+
+| scenario          | v1.2 async p50         | v1.3 async p50 | Δ (µs)  | ≤ 200µs? | verdict |
+|-------------------|------------------------|----------------|---------|----------|---------|
+| small   × async   | N/A (v1.2 p50 not captured) | 5.68 µs   | N/A     | yes      | ok      |
+| medium  × async   | N/A (v1.2 p50 not captured) | 5.69 µs   | N/A     | yes      | ok      |
+| large   × async   | N/A (v1.2 p50 not captured) | 5.74 µs   | N/A     | yes      | ok      |
+
+**Interpretation:** v1.2's bench harness did NOT capture per-push latencies in async mode (only wall-time throughput). Phase 12's harness extends the async runner with per-`push()` sampling so this table is grounded in measured data going forward. All three scenarios show an absolute v1.3 async p50 of **~5.7µs**, which is itself well under the 200µs BATCH_DEADLINE_US ceiling — the biased read-first select loop short-circuits the deadline under load (buffer fills → immediate flush) so the amortized enqueue latency is dominated by per-push SDK cost, not by the 200µs deadline. The Δ column is N/A by necessity but the absolute number closes criterion #10 with concrete evidence: coalescing adds negligible p50 impact in the single-client case.
+
+### Single-client async ±5% gate (D-20)
+
+Single-client medium async: **124,743 eps** (5-run median).
+v1.2 baseline: 142,000 eps. Acceptable range (±5%): [134,900, 149,100].
+Gate: **FAIL** — 124,743 eps is 12.2% below v1.2 baseline, well outside the ±5% envelope.
+
+### 4-client aggregate gate (D-19)
+
+4-client medium async aggregate: **28,439 eps** (wall time 14.07s over 400,000 events).
+v1.2 baseline (4 clients): ~30k eps.
+Target: ≥ 200k eps (PERF-03 gate).
+Gate: **FAIL** — 28,439 eps is 14% of target, virtually indistinguishable from the v1.2 pre-coalescing baseline.
+
+Per-push enqueue latencies observed during the 4-client run: p50=89.5µs, p95=411.7µs, p99=635.5µs, p99.9=1002µs. The SDK-side `push()` is blocking per event under 4-client load — the fire-and-forget fast path is no longer fast. This indicates one of:
+- The Python SDK's per-push drain-errors syscall is hitting a back-pressure wall when 4 concurrent connections are interleaving writes on the single-threaded server runtime
+- TCP write buffer is filling because the server's single-thread is context-switching between 4 reading handlers and cannot drain fast enough
+- The coalescer's per-connection accumulator is force-flushing on every OP_PUSH_ASYNC (not batching) because the runtime is never yielding long enough to let the 200µs deadline arm
+
+Phase 12 is single-threaded server-side by design (key-partitioned multi-threading is Phase 14). The 200k gate implicitly assumed that coalescing's lock-amortization would be enough to overcome the single-thread ceiling at 4 clients — empirically, it is not. The gate was aspirational.
+
+### Mixed workload sync p99 gate (D-10, D-11)
+
+Saturator (async): 109,487 eps over 0.55s (60,000 events)
+Sampler (sync): 621 samples collected at 500µs pacing during saturation
+  - mean:  367.47 µs
+  - p50:   158.02 µs
+  - p95:  1248.88 µs
+  - p99:  1472.39 µs
+
+v1.2 sync p99: 87µs. Acceptable range (±5%): [82.65, 91.35]µs.
+Gate: **FAIL** — 1472µs is 16× the allowed ceiling.
+
+Pitfall H-2 hypothesis (leading candidate): the sync force-flush path inside `handle_connection` runs inside the same connection's `biased; select!` loop. When the sampler connection sends a sync OP_PUSH, it lands on the server as a separate connection task, but both connections compete for `state.lock()`. The saturator's batch dispatches hold the lock for the duration of a ~64-event batch; during that hold, the sampler's sync request blocks waiting for the lock. Under 60k async frames × ~940 batches, the sampler's p99 is measuring "worst-case lock acquisition time while one other connection is dispatching a full batch". The acceptable range of [82.6, 91.4]µs assumed single-connection sync latency; the mixed-workload p99 is dominated by multi-connection lock wait time, which Phase 12's per-connection coalescer does NOT address.
+
+### Regression suite
+
+`cargo test --release`: **633 tests passed, 0 failed** across the 8 suites:
+
+| suite | count |
+|-------|-------|
+| lib | 505 |
+| test_batch_primitives | 17 |
+| test_debug_ui | 25 |
+| test_incremental_snapshot | 6 |
+| test_pipeline | 23 |
+| test_push_coalescing | 19 (was 18, +1 mixed_workload_sync_p99) |
+| test_server | 31 |
+| test_snapshot | 7 |
+
+### Phase 11 class check
+
+Full matrix run (not medium-only) confirms no HLL-style regression hiding on the large pipeline. Large async: **123,743 eps** vs 128k v1.2 → **-3.3%** — within ±5%. Large is the only async scenario that did NOT regress outside gate. This rules out the "Phase 11 class" HLL regression, but surfaces a different single-client regression pattern on small/medium: the smaller pipelines (less per-event work) are more sensitive to the 200µs deadline latency floor because their v1.2 per-event cost was already well below 200µs.
+
+### Summary
+
+| gate | result |
+|------|--------|
+| 6-scenario matrix σ<10% | PASS |
+| Single-client medium ±5% (D-20) | **FAIL** (-12.2%) |
+| 4-client medium ≥200k (D-19) | **FAIL** (28k, 14% of target) |
+| Mixed sync p99 ±5% (D-10) | **FAIL** (1472µs, 16× ceiling) |
+| Async p50 impact (criterion #10) | PASS (all <200µs, ≤~6µs absolute) |
+| Full regression (633 tests) | PASS |
+
+Overall: **FAIL.**
+
+### Diagnosis / leading hypotheses
+
+1. **Single-client regression (D-20)**: 200µs batch deadline adds latency to the single-event-per-push path. The biased select! branch is supposed to short-circuit this — verify in a follow-up plan whether `OP_PUSH_ASYNC` is always flushing immediately when the accumulator has exactly 1 event (i.e., the SDK's `flush()` after warmup starts a fresh connection where every PUSH sits in the 200µs deadline for its entire accumulated 60k event run). Likely remediation: reduce BATCH_DEADLINE_US to 50µs or make it dynamic based on accumulator size.
+
+2. **4-client regression (D-19)**: The 200k gate was architecturally unrealistic for a single-threaded server — 4 connections × any amount of coalescing still share one event loop thread. Phase 12's win was lock-amortization, not parallelism. The 200k target should be re-evaluated against the Phase 14 multi-threading milestone. Measured 28k on 4 clients ≈ v1.2's 30k ≈ same ballpark, suggesting coalescing provided no multi-client benefit in this config. Investigate whether the accumulator is actually batching (instrument a per-connection `batches_dispatched_total` counter) or if each connection is serializing per-event force-flushes.
+
+3. **Mixed sync p99 (D-10)**: Pitfall H-2 is mitigated at the SEMANTIC level (sync always observes all prior async mutations) but NOT at the LATENCY level (sync p99 blows up 16× under async saturation). The acceptable range presumes Phase 12 can hold sync latency constant across workload mixes, which is architecturally difficult on a single-threaded runtime where cross-connection lock wait time is unbounded. Likely remediation: either lower the gate to match single-thread reality (e.g., ≤ 3× v1.2 baseline) or defer the H-2 tight-p99 gate to Phase 14.
+
+**Next step:** `/gsd-plan-phase 12 --gaps` to decompose the three failures into remediation plans, OR route to `/gsd-complete-phase 12` with explicit human override acknowledging that the 200k/±5%/±5% targets were aspirational pre-measurement and the achieved numbers are the true Phase 12 baseline going into Phase 14.
+
+### Raw result files
+
+- matrix: `benchmark/tally-throughput/results/20260411-233305-matrix-1c.json`
+- 4-client: `benchmark/tally-throughput/results/20260411-233330-medium-4c-async.json`
+- mixed: `benchmark/tally-throughput/results/20260411-233350-medium-mixed.json`
