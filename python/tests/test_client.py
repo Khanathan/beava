@@ -271,3 +271,99 @@ class TestContextManager:
         # After context manager exit, socket should be None.
         assert client._sock is None
         done.wait(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 11: drain_errors_nonblock + send_frame_no_recv
+# ---------------------------------------------------------------------------
+
+
+class TestPhase11ClientPrimitives:
+    """Tests for the fire-and-forget drain + no-recv send primitives."""
+
+    def test_drain_errors_nonblock_sock_none(self):
+        """Drain is a no-op when the socket has never been opened."""
+        client = TallyClient("127.0.0.1", 9999)
+        assert client._sock is None
+        client.drain_errors_nonblock()
+        # must NOT trigger a connect
+        assert client._sock is None
+
+    def test_drain_errors_nonblock_pending_error(self):
+        """A stored pending error is raised and cleared on next drain."""
+        client = TallyClient("127.0.0.1", 9999)
+        client._pending_error = ProtocolError("previous")
+        with pytest.raises(ProtocolError, match="previous"):
+            client.drain_errors_nonblock()
+        assert client._pending_error is None
+
+    def test_drain_errors_nonblock_no_data(self):
+        """Drain on a connected socket with nothing readable is a silent no-op."""
+        a, b = socket.socketpair()
+        try:
+            client = TallyClient("", 0)
+            client._sock = a
+            client.drain_errors_nonblock()  # no data on b side
+        finally:
+            a.close()
+            b.close()
+
+    def test_drain_errors_nonblock_ok_frame_discarded(self):
+        """A STATUS_OK frame (stray ACK) is silently consumed."""
+        a, b = socket.socketpair()
+        try:
+            client = TallyClient("", 0)
+            client._sock = a
+            ok_frame = _make_response_frame(STATUS_OK, b"")
+            b.sendall(ok_frame)
+            time.sleep(0.01)
+            client.drain_errors_nonblock()  # should not raise
+        finally:
+            a.close()
+            b.close()
+
+    def test_drain_errors_nonblock_error_frame(self):
+        """A STATUS_ERROR frame is raised as ProtocolError with the message."""
+        a, b = socket.socketpair()
+        try:
+            client = TallyClient("", 0)
+            client._sock = a
+            err_frame = _make_response_frame(STATUS_ERROR, b"boom")
+            b.sendall(err_frame)
+            time.sleep(0.01)
+            with pytest.raises(ProtocolError, match="boom"):
+                client.drain_errors_nonblock()
+        finally:
+            a.close()
+            b.close()
+
+    def test_send_frame_no_recv_sends_bytes(self):
+        """send_frame_no_recv writes a full frame and does NOT read."""
+        a, b = socket.socketpair()
+        try:
+            client = TallyClient("", 0)
+            client._sock = a
+            client.send_frame_no_recv(0x07, b"xyz")
+            expected = encode_frame(0x07, b"xyz")
+            received = b.recv(len(expected))
+            assert received == expected
+            # client should not have touched the read buffer
+            assert client._sock is a
+        finally:
+            a.close()
+            b.close()
+
+    def test_send_frame_no_recv_does_not_block_on_recv(self):
+        """Ensure send_frame_no_recv returns immediately without reading a response."""
+        a, b = socket.socketpair()
+        try:
+            client = TallyClient("", 0)
+            client._sock = a
+            # No response ever sent from b; this must still return.
+            start = time.perf_counter()
+            client.send_frame_no_recv(0x07, b"hi")
+            elapsed = time.perf_counter() - start
+            assert elapsed < 0.5, f"send_frame_no_recv blocked for {elapsed}s"
+        finally:
+            a.close()
+            b.close()

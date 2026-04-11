@@ -17,12 +17,20 @@ from tally._protocol import (
     OP_MSET,
     OP_MGET,
     OP_REGISTER,
+    OP_PUSH_ASYNC,
+    OP_FLUSH,
     STATUS_OK,
     STATUS_ERROR,
     MAX_FRAME_SIZE,
+    TYPE_NULL,
+    TYPE_BOOL,
+    TYPE_I64,
+    TYPE_F64,
+    TYPE_STR,
     encode_frame,
     encode_string,
     encode_push,
+    encode_push_binary,
     encode_get,
     encode_mget,
     encode_set,
@@ -301,3 +309,129 @@ class TestParseResponse:
         data = struct.pack(">I", 10) + bytes([STATUS_OK]) + b"x"
         with pytest.raises(ProtocolError):
             parse_response(data)
+
+
+# ---------------------------------------------------------------------------
+# Phase 11: binary event payload encoder
+# ---------------------------------------------------------------------------
+
+
+class TestEncodePushBinary:
+    """Byte-level tests for ``encode_push_binary`` matching the Rust decoder."""
+
+    def test_phase11_constants(self):
+        assert OP_PUSH_ASYNC == 0x07
+        assert OP_FLUSH == 0x08
+        assert TYPE_NULL == 0x00
+        assert TYPE_BOOL == 0x01
+        assert TYPE_I64 == 0x02
+        assert TYPE_F64 == 0x03
+        assert TYPE_STR == 0x04
+
+    def test_encode_push_binary_empty_event(self):
+        result = encode_push_binary("tx", {})
+        # [u16 name_len=2]["tx"][u16 field_count=0]
+        expected = struct.pack(">H", 2) + b"tx" + struct.pack(">H", 0)
+        assert result == expected
+
+    def test_encode_push_binary_string_field(self):
+        result = encode_push_binary("tx", {"user_id": "u1"})
+        expected = (
+            struct.pack(">H", 2) + b"tx"
+            + struct.pack(">H", 1)
+            + struct.pack(">H", 7) + b"user_id"
+            + bytes([TYPE_STR])
+            + struct.pack(">H", 2) + b"u1"
+        )
+        assert result == expected
+
+    def test_encode_push_binary_int_field(self):
+        result = encode_push_binary("s", {"count": 42})
+        expected = (
+            struct.pack(">H", 1) + b"s"
+            + struct.pack(">H", 1)
+            + struct.pack(">H", 5) + b"count"
+            + bytes([TYPE_I64])
+            + struct.pack(">q", 42)
+        )
+        assert result == expected
+
+    def test_encode_push_binary_negative_int(self):
+        result = encode_push_binary("s", {"x": -7})
+        # find the type tag byte
+        assert bytes([TYPE_I64]) in result
+        assert struct.pack(">q", -7) in result
+
+    def test_encode_push_binary_float_field(self):
+        result = encode_push_binary("s", {"amount": 3.14})
+        expected = (
+            struct.pack(">H", 1) + b"s"
+            + struct.pack(">H", 1)
+            + struct.pack(">H", 6) + b"amount"
+            + bytes([TYPE_F64])
+            + struct.pack(">d", 3.14)
+        )
+        assert result == expected
+
+    def test_encode_push_binary_bool_field_true(self):
+        """Bool-before-int guard: True must encode as TYPE_BOOL not TYPE_I64."""
+        result = encode_push_binary("s", {"active": True})
+        # structure: [u16=1][s][u16=1][u16=6][active][tag][value]
+        tag_pos = 2 + 1 + 2 + 2 + 6
+        assert result[tag_pos] == TYPE_BOOL, (
+            f"expected TYPE_BOOL (0x01) at position {tag_pos}, got 0x{result[tag_pos]:02x}"
+        )
+        assert result[tag_pos + 1] == 0x01
+        # Explicit guard against int encoding (bool-before-int pitfall)
+        assert result[tag_pos] != TYPE_I64
+
+    def test_encode_push_binary_bool_field_false(self):
+        result = encode_push_binary("s", {"active": False})
+        tag_pos = 2 + 1 + 2 + 2 + 6
+        assert result[tag_pos] == TYPE_BOOL
+        assert result[tag_pos + 1] == 0x00
+
+    def test_encode_push_binary_null_field(self):
+        result = encode_push_binary("s", {"country": None})
+        # [u16=1][s][u16=1][u16=7][country][TYPE_NULL]
+        expected = (
+            struct.pack(">H", 1) + b"s"
+            + struct.pack(">H", 1)
+            + struct.pack(">H", 7) + b"country"
+            + bytes([TYPE_NULL])
+        )
+        assert result == expected
+
+    def test_encode_push_binary_mixed(self):
+        event = {"a": None, "b": True, "c": 3, "d": 1.5, "e": "x"}
+        result = encode_push_binary("mix", event)
+        # all five type tags should appear
+        for tag in (TYPE_NULL, TYPE_BOOL, TYPE_I64, TYPE_F64, TYPE_STR):
+            assert bytes([tag]) in result
+
+    def test_encode_push_binary_unsupported_type_list(self):
+        with pytest.raises(ProtocolError, match="unsupported event field type"):
+            encode_push_binary("s", {"tags": [1, 2]})
+
+    def test_encode_push_binary_unsupported_type_dict(self):
+        with pytest.raises(ProtocolError, match="unsupported event field type"):
+            encode_push_binary("s", {"nested": {"a": 1}})
+
+    def test_encode_push_binary_float_nan(self):
+        with pytest.raises(ProtocolError, match="not finite"):
+            encode_push_binary("s", {"x": float("nan")})
+
+    def test_encode_push_binary_float_inf(self):
+        with pytest.raises(ProtocolError, match="not finite"):
+            encode_push_binary("s", {"x": float("inf")})
+
+    def test_encode_push_binary_int_out_of_range(self):
+        with pytest.raises(ProtocolError, match="out of i64 range"):
+            encode_push_binary("s", {"x": 1 << 64})
+
+    def test_encode_push_binary_utf8_key_and_value(self):
+        result = encode_push_binary("café", {"naïve": "résumé"})
+        # round-trip the utf-8 bytes
+        assert "café".encode("utf-8") in result
+        assert "naïve".encode("utf-8") in result
+        assert "résumé".encode("utf-8") in result

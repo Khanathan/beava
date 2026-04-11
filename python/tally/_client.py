@@ -17,10 +17,11 @@ Or as a context manager::
 
 from __future__ import annotations
 
+import select
 import socket
 import struct
 
-from tally._protocol import encode_frame, MAX_FRAME_SIZE
+from tally._protocol import MAX_FRAME_SIZE, STATUS_ERROR, encode_frame
 from tally._types import ConnectionError, ProtocolError
 
 
@@ -41,6 +42,9 @@ class TallyClient:
         self._port = port
         self._timeout = timeout
         self._sock: socket.socket | None = None
+        # Phase 11: a deferred ProtocolError (from a prior async push) to be
+        # raised on the next drain call.
+        self._pending_error: ProtocolError | None = None
 
     def _connect(self) -> None:
         """Open a new TCP connection to the server."""
@@ -98,6 +102,61 @@ class TallyClient:
         status = body[0]
         payload = body[1:]
         return status, payload
+
+    def drain_errors_nonblock(self) -> None:
+        """Non-blocking readability probe for pending server error frames.
+
+        Called by App before every user-facing operation (push, push_sync,
+        flush, get, set, mset, register). Reads at most ONE frame per call;
+        the sync request/response path still owns all subsequent frames.
+
+        Raises ``ProtocolError`` if:
+
+        - a deferred ``self._pending_error`` is set (from a previous drain
+          that surfaced the error), OR
+        - the server has a readable frame with ``STATUS_ERROR``.
+        """
+        if self._pending_error is not None:
+            err, self._pending_error = self._pending_error, None
+            raise err
+
+        if self._sock is None:
+            return
+
+        try:
+            ready, _, _ = select.select([self._sock], [], [], 0)
+        except (OSError, ValueError):
+            # Socket is in a bad state; let the next real op surface the issue.
+            return
+
+        if not ready:
+            return
+
+        try:
+            status, payload = self._recv_frame()
+        except ConnectionError:
+            # Connection dead; next real op will reconnect.
+            self._sock = None
+            return
+
+        if status == STATUS_ERROR:
+            raise ProtocolError(payload.decode("utf-8", errors="replace"))
+        # status == STATUS_OK: discard; it's a stray ACK from a prior path.
+
+    def send_frame_no_recv(self, opcode: int, payload: bytes) -> None:
+        """Send one wire frame with NO response read (fire-and-forget).
+
+        Used by ``App.push()`` for ``OP_PUSH_ASYNC`` and ``App.flush()`` for
+        ``OP_FLUSH``. Auto-reconnects once on broken pipe, mirroring
+        :meth:`send_command`.
+        """
+        self._ensure_connected()
+        try:
+            self._send_frame(opcode, payload)
+        except (OSError, ConnectionError):
+            self._sock = None
+            self._connect()
+            self._send_frame(opcode, payload)
 
     def send_command(self, opcode: int, payload: bytes) -> tuple[int, bytes]:
         """Send a command and return the response ``(status, payload)``.

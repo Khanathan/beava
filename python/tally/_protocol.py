@@ -25,12 +25,26 @@ OP_SET: int = 0x03
 OP_MSET: int = 0x04
 OP_REGISTER: int = 0x05
 OP_MGET: int = 0x06
+OP_PUSH_ASYNC: int = 0x07
+OP_FLUSH: int = 0x08
 
 STATUS_OK: int = 0x00
 STATUS_ERROR: int = 0x01
 
+# Binary event payload type tags (PERF-02)
+TYPE_NULL: int = 0x00
+TYPE_BOOL: int = 0x01
+TYPE_I64: int = 0x02
+TYPE_F64: int = 0x03
+TYPE_STR: int = 0x04
+
 # Maximum frame size (64 MB) -- reject before allocating buffer (DoS protection)
 MAX_FRAME_SIZE: int = 64 * 1024 * 1024
+
+# Pre-compiled struct instances (hot path)
+_U16 = struct.Struct(">H")
+_I64 = struct.Struct(">q")
+_F64 = struct.Struct(">d")
 
 
 # ---------------------------------------------------------------------------
@@ -58,9 +72,73 @@ def encode_string(s: str) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def encode_push(stream_name: str, event: dict) -> bytes:
-    """Encode PUSH payload: [u16-string stream_name][JSON event bytes]."""
-    return encode_string(stream_name) + json.dumps(event).encode("utf-8")
+_I64_MIN = -(1 << 63)
+_I64_MAX = (1 << 63) - 1
+
+
+def encode_push_binary(stream_name: str, event: dict) -> bytes:
+    """Encode a PUSH payload in the Phase 11 binary format (PERF-02).
+
+    Wire format matches the Rust ``decode_event_binary``:
+
+    - ``[u16 BE name_len][name utf-8]``
+    - ``[u16 BE field_count]``
+    - For each field: ``[u16 BE key_len][key utf-8][u8 type_tag][value bytes]``
+
+    Type tags:
+
+    - ``TYPE_NULL`` (0) — 0 value bytes
+    - ``TYPE_BOOL`` (1) — 1 value byte (0 = false, 1 = true)
+    - ``TYPE_I64`` (2)  — 8 value bytes (big-endian signed 64-bit)
+    - ``TYPE_F64`` (3)  — 8 value bytes (big-endian IEEE754 double; NaN/Inf rejected)
+    - ``TYPE_STR`` (4)  — ``[u16 BE len][utf-8]``
+
+    Raises ``ProtocolError`` for unsupported value types, integers outside
+    the signed 64-bit range, or non-finite floats.
+
+    **Critical:** ``isinstance(value, bool)`` MUST come before
+    ``isinstance(value, int)`` because ``bool`` is a subclass of ``int`` in
+    Python. Otherwise ``True`` would encode as ``TYPE_I64`` and the
+    server-side decoder would return an integer instead of a bool.
+    """
+    buf = bytearray()
+    name_bytes = stream_name.encode("utf-8")
+    buf += _U16.pack(len(name_bytes))
+    buf += name_bytes
+    buf += _U16.pack(len(event))
+    for key, value in event.items():
+        key_bytes = key.encode("utf-8")
+        buf += _U16.pack(len(key_bytes))
+        buf += key_bytes
+        if value is None:
+            buf.append(TYPE_NULL)
+        elif isinstance(value, bool):  # MUST come before int check
+            buf.append(TYPE_BOOL)
+            buf.append(0x01 if value else 0x00)
+        elif isinstance(value, int):
+            if value < _I64_MIN or value > _I64_MAX:
+                raise ProtocolError(
+                    f"integer field {key!r} out of i64 range: {value}"
+                )
+            buf.append(TYPE_I64)
+            buf += _I64.pack(value)
+        elif isinstance(value, float):
+            if value != value or value == float("inf") or value == float("-inf"):
+                raise ProtocolError(
+                    f"float field {key!r} is not finite: {value}"
+                )
+            buf.append(TYPE_F64)
+            buf += _F64.pack(value)
+        elif isinstance(value, str):
+            v_bytes = value.encode("utf-8")
+            buf.append(TYPE_STR)
+            buf += _U16.pack(len(v_bytes))
+            buf += v_bytes
+        else:
+            raise ProtocolError(
+                f"unsupported event field type for key {key!r}: {type(value).__name__}"
+            )
+    return bytes(buf)
 
 
 def encode_get(key: str) -> bytes:
