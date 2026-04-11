@@ -134,7 +134,7 @@ def run_single_client_sync(primary_cls, events_per_client, client_id, warmup=100
 
     Returns (latencies_us, wall_seconds). Latencies are measured per event.
     """
-    app = st.App('localhost:6400')
+    app = st.App('localhost:6400', timeout=30.0)
     latencies = []
 
     # Warmup
@@ -161,7 +161,7 @@ def run_single_client_async(primary_cls, events_per_client, client_id, warmup=10
     async push returns immediately, so individual "latency" would be
     meaningless. Only throughput is reported.
     """
-    app = st.App('localhost:6400')
+    app = st.App('localhost:6400', timeout=30.0)
 
     # Warmup in async mode; flush to exclude warmup from measured wall
     for i in range(warmup):
@@ -201,7 +201,7 @@ def run_benchmark(args):
 
     # Register pipeline
     streams, primary = PIPELINES[args.pipeline]()
-    app = st.App('localhost:6400')
+    app = st.App('localhost:6400', timeout=30.0)
     app.register(*streams)
     print(f'Registered {len(streams)} streams/views. Primary: {primary.__name__}')
 

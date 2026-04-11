@@ -17,6 +17,7 @@ Or as a context manager::
 
 from __future__ import annotations
 
+import select
 import socket
 import struct
 
@@ -142,6 +143,23 @@ class TallyClient:
             return
 
         sock = self._sock
+
+        # PERF fast path (Phase 11 hot-path repair): if there are no buffered
+        # partial-frame bytes from a prior drain AND select reports the socket
+        # has nothing readable right now, return in a single syscall. The Phase
+        # 11 benchmark loop calls this on EVERY async push, so the happy-path
+        # cost must be ~1 syscall, not 5 (gettimeout + setblocking(False) +
+        # recv + setblocking(True) + settimeout).
+        if not self._drain_buf:
+            try:
+                readable, _, _ = select.select([sock], [], [], 0)
+            except (OSError, ValueError):
+                # Socket in a bad state; let the next real op surface it.
+                return
+            if not readable:
+                return
+
+        # Slow path: there's data to drain (or a partial frame carried over).
         # Preserve current blocking/timeout state, flip to non-blocking.
         try:
             prev_timeout = sock.gettimeout()
