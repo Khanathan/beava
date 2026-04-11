@@ -122,7 +122,7 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10
+Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10 -> 10.1 -> 10.2 -> 11 -> 12 -> 13 -> 14 -> 15
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -136,6 +136,13 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10
 | 8. Backfill & Schema Evolution | v1.1 | 2/2 | Complete | 2026-04-10 |
 | 9. Incremental Snapshots | v1.1 | 2/2 | Complete   | 2026-04-10 |
 | 10. Debug UI | v1.1 | 5/5 | Complete   | 2026-04-10 |
+| 10.1 Interactive Debug UI | v1.1 | 3/3 | Complete | 2026-04-10 |
+| 10.2 Latency Debugger | v1.1 | 3/3 | Complete | 2026-04-10 |
+| 11. Fire-and-Forget PUSH + Binary Wire | v1.2 | 6/6 | Complete | 2026-04-11 |
+| 12. Server-side async push coalescing | v1.3 | 0/? | Not started | - |
+| 13. SDK batch push + OP_PUSH_BATCH | v1.3 | 0/? | Not started | - |
+| 14. Key-partitioned multi-threaded engine | v1.3 | 0/? | Not started | - |
+| 15. Off-thread snapshot I/O | v1.3 | 0/? | Not started | - |
 
 ### Phase 10.1: Interactive Debug UI Redesign (INSERTED)
 **Goal**: Users can explore the running pipeline through an interactive topology DAG where nodes are clickable drill-ins showing per-stream memory profile, state, and entity lookup scoped to that stream, and edges carry live throughput numbers updated at the existing 1 Hz polling cadence
@@ -209,66 +216,110 @@ The 100k floor is hit on every pipeline size; the 1M ceiling is deferred to v1.3
 
 ### v1.3 Concurrency & Client Batching
 
-**Milestone Goal:** Break past the single-core ceiling hit in v1.2. Target **500k–1M eps on a single node** by (1) adding key-partitioned multi-threading so the 47 idle cores can carry load, (2) adding server-side async push coalescing to amortize per-event fixed costs, (3) adding an SDK batch-push API so a single client can produce events faster than the Python per-event loop ceiling, and (4) moving snapshot I/O off the main thread so large-state pipelines stop stalling during writes. Each phase is independently measurable against the v1.2 baseline in `benchmark/tally-throughput/RESULTS.md`.
+**Milestone Goal:** Break past the single-core ceiling hit in v1.2. Target **500k–1M eps on a single node** by (1) adding server-side async push coalescing to amortize per-event fixed costs, (2) adding an SDK batch-push API so a single client can produce events faster than the Python per-event loop ceiling, (3) adding key-partitioned multi-threading so the 47 idle cores can carry load, and (4) moving snapshot I/O off the main thread so large-state pipelines stop stalling during writes. Each phase is independently measurable against the v1.2 baseline in `benchmark/tally-throughput/RESULTS.md`.
 
-**Why v1.3:** Phase 11 proved that on 1 core the server is bound at ~128–142k eps (66% CPU utilization; 7µs per push of real work). With 47 other cores on a typical box sitting idle, multi-threading is the single highest-ROI change — estimated 10–40× on aggregate throughput with N concurrent clients. The other phases target residual per-event cost (coalescing + batching) and the 15–25% duty-cycle loss to snapshot stalls.
+**Why v1.3:** Phase 11 proved that on 1 core the server is bound at ~128–142k eps (66% CPU utilization; ~7µs per push of real work). With 47 other cores on a typical box sitting idle, multi-threading is the single highest-ROI change — estimated 10–40× on aggregate throughput with N concurrent clients. The other phases target residual per-event cost (coalescing + batching) and the 15–25% duty-cycle loss to snapshot stalls.
+
+**Build order:** 12 → 13 → 14 → 15. Phase 12 establishes `handle_push_batch` as the shared primitive that Phase 13's wire format reuses verbatim and Phase 14's cross-shard workers reuse as their inbound dispatch handler. Phase 15 becomes a trivial parallel-split after Phase 14.
+
+**Locked Decisions (v1.3) — see REQUIREMENTS.md LD-1..LD-4:**
+- **LD-1:** Cross-shard fan-out errors are **fire-and-forget** — target-shard errors surface in per-shard metrics, NOT in the originating client's drain queue. Deliberate regression from v1.2 semantics, required to preserve shared-nothing hot path.
+- **LD-2:** `num_shards` persisted in snapshot manifest + config file. Changing across restarts requires `TALLY_ALLOW_RESHARD=1` + one-time re-route migration on load.
+- **LD-3:** Snapshots are **shard-local consistent**, not globally consistent. Manifest guarantees per-shard files exist and hash-match, not that they reflect the same logical moment.
+- **LD-4:** Shard routing uses `xxh3_64` with a fixed seed (not ahash). Hash-version byte included in manifest header.
 
 **Context documents:**
 - `benchmark/tally-throughput/RESULTS.md` — v1.2 final matrix (baseline for v1.3 regression checks)
 - `.planning/phases/11-fire-and-forget-push/11-VERIFICATION.md` — post-verification perf analysis (bottleneck breakdown)
+- `.planning/research/SUMMARY.md` — v1.3 research consolidated index
+- `.planning/research/STACK.md` — per-crate evaluations (parking_lot, crossbeam-channel ≥0.5.15, crossbeam-utils, core_affinity, xxhash-rust)
+- `.planning/research/ARCHITECTURE.md` — integration seams per phase, cross-shard fan-out mechanism, snapshot v7 manifest protocol
+- `.planning/research/PITFALLS.md` — 24 pitfalls (7 CRITICAL), Phase 11-class bench-matrix meta-lesson
+- `.planning/research/FEATURES.md` — table stakes vs differentiators, competitor matrix, concrete API shapes
 - CLAUDE.md — "Scaling Path" section explicitly calls out key-partitioned multi-threading as the v2 upgrade
 
 ### Phase 12: Server-side async push coalescing
-**Goal:** Buffer incoming `OP_PUSH_ASYNC` frames per-connection, process them in batches under a single `state.lock()` acquisition. Target **+50–100% async throughput** for multi-client workloads by amortizing fixed per-event costs (lock acquisition, event log append, fan-out target iteration, dirty-mark set insert).
+**Goal:** Buffer incoming `OP_PUSH_ASYNC` frames per-connection, process them in batches under a single `state.lock()` acquisition. Amortizes fixed per-event costs (lock acquisition, event log append, fan-out target iteration, dirty-mark set insert). Establishes `handle_push_batch` as the shared primitive reused by Phase 13 (wire format) and Phase 14 (cross-shard dispatch).
 **Depends on:** v1.2 complete
 **Requirements:** PERF-03 (async coalescing)
+**Stack additions:** None. Uses existing `tokio::time::Instant` + explicit `sleep_until(deadline)` inside `select!` — **no `tokio::time::sleep(200µs)` which hits the 1ms wheel floor.** Deadline-armed `select!` with `biased;` branch on the read.
 **Success Criteria** (what must be TRUE):
-  1. Server read loop accumulates up to N async push frames (default N=64) or waits up to T microseconds (default T=200µs) per connection before flushing to a single batch handler
-  2. `handle_push_batch` takes a single state lock, groups events by primary stream, and issues one `engine.push_no_features` call + one `event_log.append` per stream
-  3. Error attribution preserves the existing drain semantic: errors from events inside a batch surface on the client's next `push`/`flush`/`get` call, with stable ordering (first bad event first)
-  4. Multi-client aggregate async throughput on the medium pipeline ≥ 200k eps with 4 clients (v1.2 baseline for 4 clients was ~30k due to per-event lock contention)
-  5. Single-client async throughput on medium pipeline is within ±5% of the v1.2 baseline (142k) — coalescing must not regress single-client latency
-  6. Latency impact documented: coalescing adds up to T µs to async p50 (acceptable, async is already fire-and-forget)
-  7. All 532 existing tests remain green
+  1. Server read loop accumulates up to N async push frames (default N=64) or waits up to T microseconds (default T=200µs) per connection before flushing to a single batch handler via `select! { biased; read | sleep_until(deadline) if !empty }`
+  2. `handle_push_batch` takes a single state lock, groups events by primary stream, and issues one `engine.push_batch_no_features` call + one `event_log.append_many` + one `store.mark_dirty_many` per stream group (stream lookups — `key_field`, cascade targets, `fan_out_targets` — happen once per group, not once per event)
+  3. **Sync PUSH bypasses the coalescer entirely** (pitfall H-2): any non-`OP_PUSH_ASYNC` opcode arriving on a connection force-flushes the accumulator before dispatch, and sync PUSH p99 on medium pipeline is **within ±5% of v1.2 baseline (87µs)**. Mixed sync+async workload test asserts sync p99 unchanged.
+  4. Error attribution preserves the existing drain semantic: errors from events inside a batch surface on the client's next `push`/`flush`/`get` call, in **per-connection seq order** (monotonic `seq: u64` attached pre-dispatch, drain streams sorted by seq — pitfall C-2)
+  5. Accumulator is **connection-local stack-allocated** (never on `AppState`) — no new shared state, no lock contention introduced by coalescing itself
+  6. `std::MutexGuard` never held across `.await` inside `handle_connection` (pitfall C-7); batch critical section stays strictly synchronous
+  7. Multi-client aggregate async throughput on the medium pipeline ≥ **200k eps with 4 clients** (v1.2 baseline for 4 clients was ~30k due to per-event lock contention)
+  8. Single-client async throughput on medium pipeline is **within ±5% of the v1.2 baseline (142k)** — coalescing must not regress single-client latency
+  9. Bench gate covers **small / medium / large × sync / async** matrix (Phase 11 lesson — pitfall "Phase 11 class"); each run is a 5-run median with σ < 10%
+  10. Latency impact documented: coalescing adds up to T µs to async p50 (acceptable, async is already fire-and-forget)
+  11. All 532 existing tests remain green
 **Plans:** TBD (research → plan phase)
 
 ### Phase 13: SDK batch push API + OP_PUSH_BATCH opcode
-**Goal:** Expose a client-side batching API (`app.push_many(stream, events)`) that wraps N events into a single wire frame, reducing Python per-event loop overhead from ~7µs to ~0.3µs. Target **single-client async ≥ 300k eps** on medium pipeline when using `push_many`.
+**Goal:** Expose a client-side batching API (`app.push_many(stream, events)`) that wraps N events into a single wire frame, reducing Python per-event loop overhead from ~7µs to ~0.3µs. Target **single-client async ≥ 300k eps** on medium pipeline when using `push_many`. Server-side handler is Phase 12's `handle_push_batch` verbatim — zero new hot-path logic.
 **Depends on:** Phase 12
 **Requirements:** PERF-04 (client batch API)
+**Stack additions:** None. Hand-rolled wire encoding for consistency with `OP_PUSH_ASYNC`; pure-Python SDK side (no C extension — pitfall M-5).
 **Success Criteria** (what must be TRUE):
-  1. `app.push_many(stream_cls, events)` accepts an iterable of event dicts, encodes them into one binary frame, sends via a new `OP_PUSH_BATCH` (0x0A) opcode
-  2. Server decodes the batch, dispatches to `handle_push_batch` (from Phase 12) for the grouped events
-  3. Backward-compatible: `app.push()` single-event API continues to work, emits `OP_PUSH_ASYNC`
-  4. Single-client async throughput on medium pipeline via `push_many` ≥ 300k eps (2× v1.2 single-client baseline)
-  5. Error semantic: batch-level failures surface via `drain_errors_nonblock` with a payload indicating the offending event index within the batch
-  6. Python SDK: `bench.py --mode async-batch` flag exercises the new API; results in `RESULTS.md`
-  7. All 532 existing tests remain green; new batch tests cover encode/decode roundtrip, mixed-valid/invalid event handling, partial batch errors
+  1. `app.push_many(stream_cls, events)` accepts an iterable of event dicts, encodes them into one binary frame via existing `encode_push_binary_payload` (zero new serialization code), sends via a new `OP_PUSH_BATCH` (0x0A) opcode. Wire format: `[u16 stream_len][stream][u32 batch_id][u32 count][for each: [u32 event_len][event_bytes]]`
+  2. Server decodes the batch into a pre-sized `Vec<DecodedEvent>` and dispatches to `handle_push_batch` (from Phase 12) for the grouped events — zero new hot-path logic
+  3. **Batch size is hard-capped at 16,384 events per frame** (pitfall H-7 — OOM attack); frames claiming more are rejected with `STATUS_ERROR "batch too large"` and the connection is closed. Raw-TCP test asserts clean reject with no OOM and no crash on `count=10B`.
+  4. Backward-compatible: `app.push()` single-event API continues to work unchanged, still emits `OP_PUSH_ASYNC` (0x07). Both opcodes coexist indefinitely.
+  5. Single-client async throughput on medium pipeline via `push_many` ≥ **300k eps** (2× v1.2 single-client baseline)
+  6. Error semantic: batch-level failures surface via `drain_errors_nonblock` with a payload indicating `(batch_id, event_index)` — reuses the per-connection seq ordering from Phase 12 criterion 4
+  7. Python SDK: `bench.py --mode async-batch` flag exercises the new API; results recorded in `RESULTS.md` across small / medium / large pipeline sizes (Phase 11-class bench matrix)
+  8. Decode path benchmarked in isolation before wiring into the server (pitfall H-6)
+  9. All 532 existing tests remain green; new batch tests cover encode/decode roundtrip, mixed-valid/invalid event handling, partial batch errors, oversized-frame reject
 **Plans:** TBD
 
 ### Phase 14: Key-partitioned multi-threaded engine (v2 architectural upgrade)
-**Goal:** Break the single-core ceiling. Shard the `EntityState` map across N worker threads (N = `num_cpus::get()`) by hashing the entity key. Each worker owns its shard with no cross-thread locking. Target **aggregate 1M+ eps** on 16+ cores, proportional to core count.
-**Depends on:** Phase 12, Phase 13 (coalescing makes per-worker amortization more effective)
+**Goal:** Break the single-core ceiling. Shard the `EntityState` map across N worker threads (`num_shards` defaults to `std::thread::available_parallelism()`), each owning an exclusive `ShardStore` with **no cross-thread locks on the hot path**. Thread-per-shard shared-nothing model (Seastar/Glommio/Dragonfly pattern). Aggregate target: **≥ 1M eps** on 16+ cores.
+**Depends on:** Phase 12, Phase 13 (coalescing + batch primitive make per-worker amortization effective; cross-shard channel sends `PushBatch` messages reusing Phase 12's handler from day one)
 **Requirements:** PERF-05 (key-partitioned concurrency)
+**Stack additions (5 crates, all research-validated):**
+  - `parking_lot = "0.12"` — per-shard `Mutex<ShardStore>`; **no poisoning** (load-bearing for panic-in-operator safety per pitfall C-5); ~25ns uncontended vs std ~60ns
+  - `crossbeam-channel = ">=0.5.15"` **(pinned minimum)** — sync MPMC for cross-shard fan-out; MUST be ≥0.5.15 to avoid RUSTSEC-2025-0024 (double-free on Drop in 0.5.12–0.5.14)
+  - `crossbeam-utils = "0.8"` — `CachePadded<T>` wrap on shard vec + per-shard counters (pitfall C-6 — non-negotiable for false-sharing defense)
+  - `core_affinity = "0.8"` **feature-gated** behind `--features core-affinity` (default OFF) — bare-metal NUMA 5–15% win, containers often no-op
+  - `xxhash-rust = "0.8"` (pinned exactly) — `xxh3_64` for shard routing with fixed seed (LD-4 — ahash is NOT spec-stable across crate versions; routing must survive `cargo update`)
+**Pre-plan spike (1 day, before any implementation plan is written):** Validate the runtime coordination model — one dedicated `std::thread` per shard each running its own `current_thread` tokio runtime, PLUS one multi-thread tokio runtime for TCP accept + HTTP management. Research flagged this as MEDIUM confidence without hands-on validation. Spike deliverable: minimal Rust prototype that accepts a TCP connection on the front-door runtime, hands off the FD to a shard worker, and round-trips one PUSH through the worker's inbox. Feeds directly into plan decomposition.
 **Success Criteria** (what must be TRUE):
-  1. `StateStore` internals split into `Vec<Mutex<ShardStore>>` with `num_shards = num_cpus`; entity key → shard via stable hash
-  2. TCP read loop dispatches pushes to the correct shard's channel; shard worker runs on its own tokio thread or a dedicated std::thread
-  3. Cross-shard operations (fan-out to a different stream with a different key) go through an explicit cross-shard channel with batching
-  4. Snapshot serialization works per-shard and merges into a single file on recovery, preserving v1.2 snapshot format compatibility
-  5. Aggregate throughput on medium pipeline with 16 clients × 16 shards ≥ 1,000,000 eps (≈8× v1.2 single-core)
-  6. Single-client throughput is within ±10% of v1.2 (acceptable: some overhead from shard dispatch for workloads that don't benefit from parallelism)
-  7. All 532 existing tests remain green; new concurrency tests cover shard-routing correctness, cross-shard fan-out, and snapshot recovery from a multi-shard state
-**Plans:** TBD. This is the largest architectural change since v1.0; expect research + plan + multi-wave execution.
+  1. `StateStore` internals split into `Arc<[CachePadded<parking_lot::Mutex<ShardStore>>]>` — `CachePadded` wrap on the shard vec and on every per-shard hot field (pitfall C-6); **benchmarking 1/2/4/8/16 shards on empty-operator pipeline shows linear or super-linear scaling**. Sub-linear = false sharing; verified with `perf c2c` if any doubt.
+  2. Entity key → shard via `xxh3_64(key, seed=0) % num_shards` (LD-4) — deterministic across process restarts and across crate `cargo update`. Hash-version byte included in snapshot manifest header.
+  3. Runtime model: N dedicated `std::thread`s for shard workers (each a `current_thread` tokio runtime) + 1 multi-thread tokio runtime (`worker_threads=2`, `max_blocking_threads=2`) for TCP accept + HTTP management. Multi-thread runtime immediately compile-errors on any `std::MutexGuard` held across `.await` (pitfall C-7 — free correctness gate).
+  4. **`ThroughputTracker` and `LatencyTracker` are per-shard, not shared atomics** (pitfall H-1) — each shard owns plain structs mutated only by its own worker; `/metrics` + `/debug/*` endpoints do scatter-gather merges on read. Aggregate throughput on an empty pipeline scales linearly with shard count (not capped at shared-counter contention).
+  5. **Cross-shard fan-out is fire-and-forget** (LD-1) — origin shard releases its lock BEFORE enqueueing to target shard's bounded crossbeam inbox; target-shard errors log to per-shard per-stream metrics and NOT to originating client's drain queue. AB-BA deadlock impossible by construction (pitfall C-1). Loom test with 2 shards + 2 fan-out directions passes.
+  6. **Cross-shard messages are always batched** — `CrossShardMsg::PushBatch { stream, events: Vec<...> }` never single-event. Channel bounded at 4096; target-full surfaces via origin-shard metrics (not drain).
+  7. `PipelineEngine` lives behind `arc_swap::ArcSwap<Arc<PipelineEngine>>` — every shard reads its own pointer with zero synchronization cost; REGISTER publishes a new Arc atomically. REGISTER vs PUSH race test passes (lazy log-open on target shard).
+  8. Event log becomes **per-shard directory**: `events/shard-NN/stream.log`. Each shard owns its own `BufWriter<File>` + fsync timer. Backfill cold path interleaves across shards.
+  9. Snapshot format **v7 with manifest** (LD-3): `tally.snapshot.manifest.{seq}` contains `{seq, num_shards, per_shard_hashes (SHA-256), format_version: 7, hash_version}`. Per-shard files: `tally.snapshot.base.{seq}.shard-NN`. Manifest atomic-rename is the commit point. Missing manifest → roll back to previous (Postgres commit-file model).
+  10. **`num_shards` persistence + migration gate (LD-2)**: `num_shards` stored in manifest header + config file. Restart with different shard count fails fast unless `TALLY_ALLOW_RESHARD=1` is set, which triggers a one-time re-route migration on load (walks old-shard entities, re-routes via `xxh3_64 % new_N`). Explicit migration test.
+  11. v6 backward compat: on startup, check for manifest first (v7), fall back to v6 single-file scan, load into shard 0 and re-shard on the fly via `xxh3_64 % N`.
+  12. MGET/GET scatter-gather: connection handler hashes each key to shard, sends `CrossShardMsg::MGet { keys, reply: oneshot }`, merges replies in input order. GET p99 stays **< 50µs** (adds ~1–2µs channel round-trip).
+  13. Aggregate throughput on medium pipeline with **16 clients × 16 shards ≥ 1,000,000 eps** (~8× v1.2 single-core)
+  14. Single-client throughput is within **±10% of v1.2** (acceptable: some overhead from shard dispatch for workloads that don't benefit from parallelism)
+  15. **Bench gate matrix: small / medium / large × sync / async × Zipfian multi-key** (pitfall "Phase 11 class") — Zipfian multi-key is mandatory because single-key bench never touches the cross-shard path. Measure **per-shard throughput and latency separately**, not just aggregate (aggregate 1M can hide one shard at 800k and fifteen at 13k). Bench runs DURING a snapshot cycle too (Phase 15 prep).
+  16. All operator `push`/`read` paths audited for panics → converted to `TallyError` returns (no `unwrap`/`expect`/integer overflow in hot code); panic on one shard resets that shard and reloads from last snapshot — local crash, not global corruption (pitfall C-5)
+  17. All 532 existing tests remain green; new concurrency tests cover shard-routing correctness, cross-shard fan-out, snapshot recovery from a multi-shard state, TALLY_ALLOW_RESHARD migration, REGISTER-vs-PUSH race
+**Plans:** TBD. This is the largest architectural change since v1.0; expect 1-day spike → research → plan → multi-wave execution.
 
 ### Phase 15: Snapshot I/O off main thread
-**Goal:** Move snapshot writes off the main event-loop thread so large-state pipelines don't stall during the 2–7 second full-snapshot windows that currently cause 15–25% duty-cycle loss on sustained workloads.
-**Depends on:** Phase 14 (easier to reason about with per-shard snapshots)
+**Goal:** Move snapshot writes off the main event-loop thread (per shard) so large-state pipelines don't stall during full-snapshot windows. After Phase 14 this becomes a trivial parallel-split: each shard clones its own dirty subset under its own lock, releases, then `spawn_blocking` writes its own shard file — all N shards in parallel.
+**Depends on:** Phase 14 (per-shard state makes per-shard parallel snapshot straightforward)
 **Requirements:** OPS-05 (non-blocking snapshot write)
+**Stack additions:** None. Uses existing `tokio::task::spawn_blocking` with `max_blocking_threads(2)`.
 **Success Criteria** (what must be TRUE):
-  1. Full snapshot serialization runs on a dedicated `spawn_blocking` task or a separate thread pool
-  2. During a snapshot write, async PUSH throughput on the main path regresses by ≤ 5% (was 15–25% on v1.2 — measured by running a sustained-load bench during a snapshot cycle)
-  3. Snapshot write still completes within the OPS-01 budget (< 1 second per 100k entities)
-  4. Crash recovery from a partially-written snapshot is handled correctly (the existing `.tmp` → atomic rename pattern continues to work)
-  5. Incremental snapshot (Phase 9) dirty-tracking integrates with the off-thread write — dirty set is snapshotted under lock, write runs without the lock
-  6. All 532 existing tests + new "push during snapshot" stress tests green
+  1. `SnapshotCoordinator` broadcasts `CoordMsg::PrepareSnapshot { seq, full }` to every shard worker via their existing inboxes; each shard acquires its own lock, clones dirty (or full), releases lock, `spawn_blocking` serializes + writes + fsyncs its own shard file, replies via `oneshot`
+  2. Per-shard stall is ~1/N of v1.2's stall; PUSH throughput on other shards is unaffected while one shard is cloning
+  3. **Never start a new snapshot cycle while the previous one is still writing** (pitfall H-4 — dirty-set backpressure): snapshot cycle is serialized on itself. Metric for skipped cycles; `/metrics` alerts if > 0. Test: sustained 500k eps with snapshot interval shorter than write time — asserts no cycle overlap, asserts dirty set does not grow unbounded.
+  4. During a snapshot write, async PUSH throughput on the main path regresses by **≤ 5%** (was 15–25% on v1.2) — measured by running a sustained-load bench that DELIBERATELY OVERLAPS a snapshot cycle (Phase 11 lesson — snapshot regression is only meaningful if the bench runs during the write, not between)
+  5. Snapshot write completes within the existing budget (**< 1 second per 100k entities**) aggregated across shards
+  6. Manifest commit protocol: coordinator waits for all shard replies → `manifest.{seq}.tmp` → fsync → rename → fsync parent dir → cleanup old shard files whose seq < previous manifest. Strict fsync ordering (pitfall H-5): all shard writes → all shard fsyncs → parent dir fsync → manifest.tmp → fsync → rename → dir fsync.
+  7. Crash recovery from a partially-written snapshot set: missing manifest for seq N with shard files for N present → incomplete cycle → roll back to previous manifest (LD-3, pitfall C-3)
+  8. Incremental dirty set is per-shard (never global — pitfall C-3); integrates with off-thread write
+  9. `POST /snapshot?wait=true&timeout_ms=N` (differentiator D3) added as a trivial extension — mirrors Redis `SAVE` vs `BGSAVE`; returns 200 with `{bytes, duration_ms}` on success, 408 on timeout
+  10. `cleanup_old_snapshots` extended to glob `tally.snapshot.*.shard-*` patterns and match on cycle seq; unit tested
+  11. All 532 existing tests + new "push during snapshot" stress tests remain green
 **Plans:** TBD
