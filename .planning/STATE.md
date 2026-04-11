@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
 status: Roadmap refined with research findings and locked decisions LD-1..LD-4; ready for plan-phase
-stopped_at: Completed 12-01-PLAN.md — batch primitives landed
-last_updated: "2026-04-11T23:08:29.448Z"
-last_activity: 2026-04-11 — gsd-roadmapper refined phases 12-15 in place
+stopped_at: Completed 12-02-PLAN.md — per-connection coalescer wired
+last_updated: "2026-04-11T23:30:00.000Z"
+last_activity: 2026-04-11 — Phase 12 Wave 2 coalescer landed (ConnAccumulator + select! loop + single-lock handle_push_batch)
 progress:
   total_phases: 7
   completed_phases: 7
@@ -80,6 +80,7 @@ Prior milestone summary (v1.2 Performance — SHIPPED 2026-04-11):
 | Phase 10.1 P02 | 5min | 3 tasks | 3 files |
 | Phase 10.1 P03 | ~25min | 2 tasks | 1 files |
 | Phase 12 P01 | ~25min | 3 tasks | 4 files |
+| Phase 12 P02 | ~25min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -137,6 +138,7 @@ Key v1.1 architectural decisions (from research):
 - [Phase 10.1]: Grep-based shell regression tests (forbidden + required substring pairs) as enforcement layer for wholesale rewrites
 - [Phase 10.1]: app.js wholesale rewrite for interactive Debug UI — render-once dagre-d3 + d3-text-in-place edge labels, shared state.paused gate, stream-scoped entity lookup with 7 sub-states, el()/svgEl() textContent chokepoint for XSS safety
 - [Phase 12]: push_batch_with_cascade_no_features inlines fan-out filter logic at call entry (mirrors TCP handler src/server/tcp.rs:364-398) — Rule 2 deviation to make the load-bearing fan-out test pass; cascade-only delegation alone did not satisfy v1.2 parity
+- [Phase 12 Wave 2]: per-connection ConnAccumulator (stack-local, N=64, 200µs deadline via absolute tokio::time::Instant + sleep_until) wired into handle_connection as a biased tokio::select! { read | sleep_until } loop; handle_push_batch takes one state.lock() per batch and routes cascade + fan-out via the Wave 1 push_batch_with_cascade_no_features primitive; handle_push_async removed entirely (batch path is the only async path); #![deny(clippy::await_holding_lock)] at src/server/tcp.rs top is the compile-time C-7 gate; per-connection pending_drain Vec<(u64, String)> sorted by seq flushes BEFORE every sync response (D-13), guaranteeing per-connection isolation and seq-ordered error attribution
 
 ### Roadmap Evolution
 
@@ -163,6 +165,6 @@ Key v1.1 architectural decisions (from research):
 
 ## Session Continuity
 
-Last session: 2026-04-11T23:08:29.445Z
-Stopped at: Completed 12-01-PLAN.md — batch primitives landed
-Resume: `/gsd-plan-phase 12` to decompose Phase 12 (Server-side async push coalescing) into executable plans
+Last session: 2026-04-11T23:30:00.000Z
+Stopped at: Completed 12-02-PLAN.md — per-connection coalescer wired (ConnAccumulator + select! + handle_push_batch, 632 tests green)
+Resume: `/gsd-execute-phase 12` next wave (12-03 bench matrix gate, if planned)
