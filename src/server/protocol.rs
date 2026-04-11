@@ -12,10 +12,19 @@ pub const OP_SET: u8 = 0x03;
 pub const OP_MSET: u8 = 0x04;
 pub const OP_REGISTER: u8 = 0x05;
 pub const OP_MGET: u8 = 0x06;
+pub const OP_PUSH_ASYNC: u8 = 0x07;
+pub const OP_FLUSH: u8 = 0x08;
 
 // Response status codes
 pub const STATUS_OK: u8 = 0x00;
 pub const STATUS_ERROR: u8 = 0x01;
+
+// Binary event payload type tags (PERF-02)
+pub const TYPE_NULL: u8 = 0x00;
+pub const TYPE_BOOL: u8 = 0x01;
+pub const TYPE_I64:  u8 = 0x02;
+pub const TYPE_F64:  u8 = 0x03;
+pub const TYPE_STR:  u8 = 0x04;
 
 /// Parsed command from a protocol frame.
 #[derive(Debug)]
@@ -26,6 +35,8 @@ pub enum Command {
     Mset { entries: Vec<(String, serde_json::Value)> },
     Register { payload: serde_json::Value },
     Mget { keys: Vec<String> },
+    PushAsync { stream_name: String, payload: serde_json::Value },
+    Flush,
 }
 
 /// Encode a frame: [4-byte BE length][opcode][payload].
@@ -120,6 +131,80 @@ pub fn read_json_payload(buf: &mut &[u8]) -> Result<serde_json::Value, TallyErro
     Ok(value)
 }
 
+/// Decode a binary event payload (PERF-02).
+///
+/// Wire format:
+///   [u16 BE field_count]
+///   field := [u16 BE key_len][key utf-8][u8 type_tag][value bytes]
+///
+/// Type tags:
+///   TYPE_NULL (0x00) — 0 value bytes
+///   TYPE_BOOL (0x01) — 1 value byte (0 = false, non-zero = true)
+///   TYPE_I64  (0x02) — 8 value bytes (big-endian i64)
+///   TYPE_F64  (0x03) — 8 value bytes (big-endian f64; NaN/Inf rejected)
+///   TYPE_STR  (0x04) — [u16 BE len][utf-8 bytes]
+///
+/// Returns a `serde_json::Value::Object` with fields inserted in file order.
+/// Advances `*buf` past all consumed bytes. Truncation, unknown tags,
+/// and non-finite floats return `TallyError::Protocol`.
+pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, TallyError> {
+    if buf.len() < 2 {
+        return Err(TallyError::Protocol("field_count header truncated: need 2 bytes".into()));
+    }
+    let field_count = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+    *buf = &buf[2..];
+    let mut map = serde_json::Map::with_capacity(field_count);
+    for _ in 0..field_count {
+        let key = read_string(buf)?;
+        if buf.is_empty() {
+            return Err(TallyError::Protocol("type tag truncated".into()));
+        }
+        let tag = buf[0];
+        *buf = &buf[1..];
+        let value = match tag {
+            TYPE_NULL => serde_json::Value::Null,
+            TYPE_BOOL => {
+                if buf.is_empty() {
+                    return Err(TallyError::Protocol("bool value truncated".into()));
+                }
+                let b = buf[0] != 0;
+                *buf = &buf[1..];
+                serde_json::Value::Bool(b)
+            }
+            TYPE_I64 => {
+                if buf.len() < 8 {
+                    return Err(TallyError::Protocol("i64 value truncated: need 8 bytes".into()));
+                }
+                let i = i64::from_be_bytes(buf[..8].try_into().unwrap());
+                *buf = &buf[8..];
+                serde_json::Value::Number(i.into())
+            }
+            TYPE_F64 => {
+                if buf.len() < 8 {
+                    return Err(TallyError::Protocol("f64 value truncated: need 8 bytes".into()));
+                }
+                let n = f64::from_be_bytes(buf[..8].try_into().unwrap());
+                *buf = &buf[8..];
+                if n.is_nan() || n.is_infinite() {
+                    return Err(TallyError::Protocol(format!("f64 value is not finite: {}", n)));
+                }
+                let num = serde_json::Number::from_f64(n)
+                    .ok_or_else(|| TallyError::Protocol("f64 could not be represented as JSON number".into()))?;
+                serde_json::Value::Number(num)
+            }
+            TYPE_STR => {
+                let s = read_string(buf)?;
+                serde_json::Value::String(s)
+            }
+            _ => {
+                return Err(TallyError::Protocol(format!("unknown type tag 0x{:02x}", tag)));
+            }
+        };
+        map.insert(key, value);
+    }
+    Ok(serde_json::Value::Object(map))
+}
+
 /// Parse a command from opcode + payload bytes.
 ///
 /// - PUSH (0x01): read_string for stream_name, remaining bytes as JSON
@@ -133,9 +218,15 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
     match opcode {
         OP_PUSH => {
             let stream_name = read_string(&mut buf)?;
-            let payload_value = read_json_payload(&mut buf)?;
+            let payload_value = decode_event_binary(&mut buf)?;
             Ok(Command::Push { stream_name, payload: payload_value })
         }
+        OP_PUSH_ASYNC => {
+            let stream_name = read_string(&mut buf)?;
+            let payload_value = decode_event_binary(&mut buf)?;
+            Ok(Command::PushAsync { stream_name, payload: payload_value })
+        }
+        OP_FLUSH => Ok(Command::Flush),
         OP_GET => {
             let key = read_string(&mut buf)?;
             Ok(Command::Get { key })
@@ -722,12 +813,76 @@ mod tests {
 
     // --- Command parsing tests ---
 
+    // --- Binary PUSH payload test helpers ---
+
+    fn build_binary_push_payload(stream: &str, fields: &[(&str, serde_json::Value)]) -> Vec<u8> {
+        let mut buf = write_string(stream);
+        buf.extend_from_slice(&(fields.len() as u16).to_be_bytes());
+        for (k, v) in fields {
+            buf.extend_from_slice(&write_string(k));
+            match v {
+                serde_json::Value::Null => buf.push(TYPE_NULL),
+                serde_json::Value::Bool(b) => {
+                    buf.push(TYPE_BOOL);
+                    buf.push(if *b { 1 } else { 0 });
+                }
+                serde_json::Value::Number(n) if n.is_i64() => {
+                    buf.push(TYPE_I64);
+                    buf.extend_from_slice(&n.as_i64().unwrap().to_be_bytes());
+                }
+                serde_json::Value::Number(n) => {
+                    buf.push(TYPE_F64);
+                    buf.extend_from_slice(&n.as_f64().unwrap().to_be_bytes());
+                }
+                serde_json::Value::String(s) => {
+                    buf.push(TYPE_STR);
+                    buf.extend_from_slice(&write_string(s));
+                }
+                _ => panic!("unsupported test fixture type"),
+            }
+        }
+        buf
+    }
+
+    fn build_event_only(fields: &[(&str, serde_json::Value)]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(fields.len() as u16).to_be_bytes());
+        for (k, v) in fields {
+            buf.extend_from_slice(&write_string(k));
+            match v {
+                serde_json::Value::Null => buf.push(TYPE_NULL),
+                serde_json::Value::Bool(b) => {
+                    buf.push(TYPE_BOOL);
+                    buf.push(if *b { 1 } else { 0 });
+                }
+                serde_json::Value::Number(n) if n.is_i64() => {
+                    buf.push(TYPE_I64);
+                    buf.extend_from_slice(&n.as_i64().unwrap().to_be_bytes());
+                }
+                serde_json::Value::Number(n) => {
+                    buf.push(TYPE_F64);
+                    buf.extend_from_slice(&n.as_f64().unwrap().to_be_bytes());
+                }
+                serde_json::Value::String(s) => {
+                    buf.push(TYPE_STR);
+                    buf.extend_from_slice(&write_string(s));
+                }
+                _ => panic!("unsupported test fixture type"),
+            }
+        }
+        buf
+    }
+
     #[test]
     fn test_parse_command_push() {
-        // PUSH: stream_name string + JSON payload
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&write_string("Transactions"));
-        payload.extend_from_slice(b"{\"user_id\":\"u123\",\"amount\":50.0}");
+        // PUSH uses binary payload format (Phase 11)
+        let payload = build_binary_push_payload(
+            "Transactions",
+            &[
+                ("user_id", serde_json::json!("u123")),
+                ("amount", serde_json::json!(50.0)),
+            ],
+        );
         let cmd = parse_command(OP_PUSH, &payload).unwrap();
         match cmd {
             Command::Push { stream_name, payload } => {
@@ -737,6 +892,221 @@ mod tests {
             }
             _ => panic!("expected Push command"),
         }
+    }
+
+    #[test]
+    fn test_parse_command_push_binary() {
+        let payload = build_binary_push_payload("tx", &[("user_id", serde_json::json!("u1"))]);
+        let cmd = parse_command(OP_PUSH, &payload).unwrap();
+        match cmd {
+            Command::Push { stream_name, payload } => {
+                assert_eq!(stream_name, "tx");
+                assert_eq!(payload["user_id"], "u1");
+            }
+            _ => panic!("expected Push"),
+        }
+    }
+
+    #[test]
+    fn test_parse_command_push_async_binary() {
+        let payload = build_binary_push_payload("tx", &[("user_id", serde_json::json!("u1"))]);
+        let cmd = parse_command(OP_PUSH_ASYNC, &payload).unwrap();
+        match cmd {
+            Command::PushAsync { stream_name, payload } => {
+                assert_eq!(stream_name, "tx");
+                assert_eq!(payload["user_id"], "u1");
+            }
+            _ => panic!("expected PushAsync"),
+        }
+    }
+
+    #[test]
+    fn test_parse_command_flush() {
+        let cmd = parse_command(OP_FLUSH, &[]).unwrap();
+        assert!(matches!(cmd, Command::Flush));
+    }
+
+    #[test]
+    fn test_parse_command_push_rejects_json() {
+        // v1.1 JSON-style payload should now fail: the JSON '{' byte (0x7B)
+        // is interpreted as a u16 field_count header, leading to truncation or unknown tag.
+        let mut payload = write_string("tx");
+        payload.extend_from_slice(b"{\"user_id\":\"u1\"}");
+        let result = parse_command(OP_PUSH, &payload);
+        assert!(result.is_err(), "v1.1 JSON payload must be rejected by the binary decoder");
+    }
+
+    #[test]
+    fn test_parse_command_unknown_opcode_still_errors() {
+        let result = parse_command(0xFE, &[]);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TallyError::Protocol(msg) => assert!(msg.contains("unknown opcode")),
+            _ => panic!("expected Protocol error"),
+        }
+    }
+
+    // --- decode_event_binary tests ---
+
+    #[test]
+    fn test_decode_event_binary_empty() {
+        let data = build_event_only(&[]);
+        let mut buf: &[u8] = &data;
+        let v = decode_event_binary(&mut buf).unwrap();
+        assert_eq!(v, serde_json::json!({}));
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn test_decode_event_binary_null() {
+        let data = build_event_only(&[("x", serde_json::Value::Null)]);
+        let mut buf: &[u8] = &data;
+        let v = decode_event_binary(&mut buf).unwrap();
+        assert_eq!(v["x"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn test_decode_event_binary_bool_true() {
+        let data = build_event_only(&[("x", serde_json::json!(true))]);
+        let mut buf: &[u8] = &data;
+        let v = decode_event_binary(&mut buf).unwrap();
+        assert_eq!(v["x"], serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn test_decode_event_binary_bool_false() {
+        let data = build_event_only(&[("x", serde_json::json!(false))]);
+        let mut buf: &[u8] = &data;
+        let v = decode_event_binary(&mut buf).unwrap();
+        assert_eq!(v["x"], serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn test_decode_event_binary_i64_positive() {
+        let data = build_event_only(&[("n", serde_json::json!(42_i64))]);
+        let mut buf: &[u8] = &data;
+        let v = decode_event_binary(&mut buf).unwrap();
+        assert_eq!(v["n"].as_i64(), Some(42));
+    }
+
+    #[test]
+    fn test_decode_event_binary_i64_negative() {
+        let data = build_event_only(&[("n", serde_json::json!(-42_i64))]);
+        let mut buf: &[u8] = &data;
+        let v = decode_event_binary(&mut buf).unwrap();
+        assert_eq!(v["n"].as_i64(), Some(-42));
+    }
+
+    #[test]
+    fn test_decode_event_binary_f64() {
+        let data = build_event_only(&[("f", serde_json::json!(3.14))]);
+        let mut buf: &[u8] = &data;
+        let v = decode_event_binary(&mut buf).unwrap();
+        assert!((v["f"].as_f64().unwrap() - 3.14).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_decode_event_binary_string() {
+        let data = build_event_only(&[("s", serde_json::json!("hello"))]);
+        let mut buf: &[u8] = &data;
+        let v = decode_event_binary(&mut buf).unwrap();
+        assert_eq!(v["s"], "hello");
+    }
+
+    #[test]
+    fn test_decode_event_binary_mixed() {
+        let data = build_event_only(&[
+            ("a", serde_json::Value::Null),
+            ("b", serde_json::json!(true)),
+            ("c", serde_json::json!(7_i64)),
+            ("d", serde_json::json!(1.5)),
+            ("e", serde_json::json!("x")),
+        ]);
+        let mut buf: &[u8] = &data;
+        let v = decode_event_binary(&mut buf).unwrap();
+        assert_eq!(v["a"], serde_json::Value::Null);
+        assert_eq!(v["b"], true);
+        assert_eq!(v["c"].as_i64(), Some(7));
+        assert!((v["d"].as_f64().unwrap() - 1.5).abs() < 1e-9);
+        assert_eq!(v["e"], "x");
+    }
+
+    #[test]
+    fn test_decode_event_binary_truncated_field_count() {
+        let data: [u8; 0] = [];
+        let mut buf: &[u8] = &data;
+        assert!(decode_event_binary(&mut buf).is_err());
+    }
+
+    #[test]
+    fn test_decode_event_binary_truncated_type_tag() {
+        // field_count=1, key="k", then nothing
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u16.to_be_bytes());
+        data.extend_from_slice(&write_string("k"));
+        let mut buf: &[u8] = &data;
+        let r = decode_event_binary(&mut buf);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_decode_event_binary_truncated_i64() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u16.to_be_bytes());
+        data.extend_from_slice(&write_string("n"));
+        data.push(TYPE_I64);
+        data.extend_from_slice(&[0, 0, 0, 0]); // only 4 bytes
+        let mut buf: &[u8] = &data;
+        assert!(decode_event_binary(&mut buf).is_err());
+    }
+
+    #[test]
+    fn test_decode_event_binary_f64_nan() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u16.to_be_bytes());
+        data.extend_from_slice(&write_string("f"));
+        data.push(TYPE_F64);
+        data.extend_from_slice(&f64::NAN.to_be_bytes());
+        let mut buf: &[u8] = &data;
+        let r = decode_event_binary(&mut buf);
+        assert!(r.is_err());
+        let msg = format!("{:?}", r.unwrap_err());
+        assert!(msg.contains("not finite"), "expected 'not finite' in {}", msg);
+    }
+
+    #[test]
+    fn test_decode_event_binary_f64_inf() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u16.to_be_bytes());
+        data.extend_from_slice(&write_string("f"));
+        data.push(TYPE_F64);
+        data.extend_from_slice(&f64::INFINITY.to_be_bytes());
+        let mut buf: &[u8] = &data;
+        assert!(decode_event_binary(&mut buf).is_err());
+    }
+
+    #[test]
+    fn test_decode_event_binary_unknown_tag() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u16.to_be_bytes());
+        data.extend_from_slice(&write_string("k"));
+        data.push(0xFF);
+        let mut buf: &[u8] = &data;
+        let r = decode_event_binary(&mut buf);
+        assert!(r.is_err());
+        let msg = format!("{:?}", r.unwrap_err());
+        assert!(msg.contains("unknown type tag"));
+    }
+
+    #[test]
+    fn test_decode_event_binary_advances_buffer() {
+        let data = build_event_only(&[
+            ("a", serde_json::json!(1_i64)),
+            ("b", serde_json::json!("z")),
+        ]);
+        let mut buf: &[u8] = &data;
+        let _ = decode_event_binary(&mut buf).unwrap();
+        assert!(buf.is_empty(), "decoder should consume all bytes");
     }
 
     #[test]

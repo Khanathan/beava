@@ -512,6 +512,13 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             Ok(serde_json::to_vec(&serde_json::Value::Object(result)).unwrap())
         }
         Command::Mset { .. } => unreachable!("MSET handled separately"),
+        // Plan 11-03 wires these into the dispatch layer directly; handle_sync_command
+        // never sees them. Provide a defensive arm so the lib compiles in Plan 11-01.
+        Command::PushAsync { .. } | Command::Flush => {
+            Err(TallyError::Protocol(
+                "PushAsync/Flush must be handled by handle_connection dispatch".into(),
+            ))
+        }
     }
 }
 
