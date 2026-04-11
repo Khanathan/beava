@@ -170,9 +170,16 @@ async fn handle_connection(
         // Dispatch command
         let cmd_start = std::time::Instant::now();
         let is_mset = matches!(&cmd, Command::Mset { .. });
-        let response = match cmd {
-            Command::Mset { entries } => handle_mset(entries, &state).await,
-            other => handle_sync_command(other, &state),
+        // Phase 11: dispatch returns Option<Vec<u8>> so async PUSH can signal
+        // "no response write" via Ok(None) and still funnel errors through
+        // the STATUS_ERROR path.
+        let response: Result<Option<Vec<u8>>, TallyError> = match cmd {
+            Command::Mset { entries } => handle_mset(entries, &state).await.map(Some),
+            Command::PushAsync { stream_name, payload } => {
+                handle_push_async(&state, &stream_name, &payload, SystemTime::now()).map(|_| None)
+            }
+            Command::Flush => Ok(Some(Vec::new())),
+            other => handle_sync_command(other, &state).map(Some),
         };
         // Phase 10.2: record MSET latency AFTER async completion, in a separate lock
         if is_mset {
@@ -184,14 +191,208 @@ async fn handle_connection(
             }
         }
 
-        // Write response
-        let resp_bytes = match response {
-            Ok(payload) => protocol::encode_response(STATUS_OK, &payload),
-            Err(e) => protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes()),
-        };
-        writer.write_all(&resp_bytes).await?;
-        writer.flush().await?;
+        // Write response (Phase 11 three-way match)
+        match response {
+            Ok(None) => {
+                // Fire-and-forget success: no write, no flush. BufWriter keeps
+                // accumulating bytes for later writes; the kernel-level pipelining
+                // win lives here.
+            }
+            Ok(Some(payload)) => {
+                let resp = protocol::encode_response(STATUS_OK, &payload);
+                writer.write_all(&resp).await?;
+                writer.flush().await?;
+            }
+            Err(e) => {
+                // Errors always fly, even on async push, so the client drain picks them up.
+                let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
+                writer.write_all(&resp).await?;
+                writer.flush().await?;
+            }
+        }
     }
+}
+
+/// Core PUSH side-effect pipeline shared by sync and async push paths (Phase 11).
+///
+/// Performs the full PUSH work under a single lock acquisition:
+/// - engine.push_with_cascade
+/// - mark_dirty for the primary key
+/// - event log append (primary + cascade)
+/// - fan-out (engine.push + log + dirty)
+/// - dedup'd throughput bump across all touched streams
+/// - push_latency_seconds metric + events_total
+/// - Phase 10.2 latency histogram + slow-query capture
+///
+/// Returns the computed FeatureMap. The sync PUSH arm converts it to JSON;
+/// the async PUSH wrapper discards it.
+fn handle_push_core(
+    state: &SharedState,
+    stream_name: &str,
+    payload: &serde_json::Value,
+    now: SystemTime,
+) -> Result<crate::types::FeatureMap, TallyError> {
+    let push_start = std::time::Instant::now();
+    let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+    let AppState {
+        ref engine,
+        ref mut store,
+        ref mut event_log,
+        ..
+    } = *app;
+
+    // Cascade-aware push: handles topological cascade through depends_on chains
+    let features = engine.push_with_cascade(stream_name, payload, store, now)?;
+
+    // Mark primary key dirty for incremental snapshots (OPS-03).
+    if let Some(stream_def) = engine.get_stream(stream_name) {
+        if let Some(ref kf) = stream_def.key_field {
+            if let Some(serde_json::Value::String(key_val)) = payload.get(kf.as_str()) {
+                if !key_val.is_empty() {
+                    store.mark_dirty(key_val);
+                }
+            }
+        }
+    }
+
+    // Append raw event to primary stream's event log (ELOG-01, ELOG-02, ELOG-03)
+    if let Some(ref mut log) = event_log {
+        let event_bytes = serde_json::to_vec(payload).unwrap_or_default();
+        let _ = log.append(stream_name, &event_bytes, now);
+    }
+
+    // Append event to downstream (cascade) streams' event logs (T-07-10)
+    let cascade_targets = engine.get_cascade_targets(stream_name);
+    if let Some(ref mut log) = event_log {
+        let event_bytes = serde_json::to_vec(payload).unwrap_or_default();
+        for ds_name in &cascade_targets {
+            let should_log = match engine.get_stream(ds_name) {
+                Some(d) => match &d.key_field {
+                    Some(kf) => matches!(payload.get(kf.as_str()), Some(serde_json::Value::String(s)) if !s.is_empty()),
+                    None => true,
+                },
+                None => false,
+            };
+            if should_log {
+                let _ = log.append(ds_name, &event_bytes, now);
+            }
+        }
+    }
+
+    // Mark cascade target keys dirty for incremental snapshots (OPS-03).
+    for ds_name in &cascade_targets {
+        if let Some(d) = engine.get_stream(ds_name) {
+            if let Some(ref kf) = d.key_field {
+                if let Some(serde_json::Value::String(key_val)) = payload.get(kf.as_str()) {
+                    if !key_val.is_empty() {
+                        store.mark_dirty(key_val);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fan-out: push to other streams whose key_field exists in the event.
+    let primary_key_field = engine.get_stream(stream_name).and_then(|s| s.key_field.as_deref());
+    let targets = engine.fan_out_targets();
+    for (target_name, target_key_field) in &targets {
+        if target_name == stream_name {
+            continue;
+        }
+        if primary_key_field == Some(target_key_field.as_str()) {
+            continue;
+        }
+        if cascade_targets.iter().any(|ct| ct == target_name) {
+            continue;
+        }
+        if let Some(serde_json::Value::String(key_val)) = payload.get(target_key_field.as_str()) {
+            if !key_val.is_empty() {
+                let _ = engine.push(target_name, payload, store, now);
+                store.mark_dirty(key_val);
+                if let Some(ref mut log) = event_log {
+                    let event_bytes = serde_json::to_vec(payload).unwrap_or_default();
+                    let _ = log.append(target_name, &event_bytes, now);
+                }
+            }
+        }
+    }
+
+    // DBUI-02: throughput bump across unique touched streams.
+    {
+        let now_inst = std::time::Instant::now();
+        let primary_key_field_for_tp = app
+            .engine
+            .get_stream(stream_name)
+            .and_then(|s| s.key_field.clone());
+        let tp_targets_all = app.engine.fan_out_targets();
+        let mut touched: Vec<&str> =
+            Vec::with_capacity(1 + cascade_targets.len() + tp_targets_all.len());
+        touched.push(stream_name);
+        for ds in &cascade_targets {
+            touched.push(ds.as_str());
+        }
+        for (target_name, target_key_field) in &tp_targets_all {
+            if target_name == stream_name {
+                continue;
+            }
+            if primary_key_field_for_tp.as_deref() == Some(target_key_field.as_str()) {
+                continue;
+            }
+            if cascade_targets.iter().any(|ct| ct == target_name) {
+                continue;
+            }
+            let key_present = matches!(
+                payload.get(target_key_field.as_str()),
+                Some(serde_json::Value::String(s)) if !s.is_empty()
+            );
+            if !key_present {
+                continue;
+            }
+            touched.push(target_name.as_str());
+        }
+        app.throughput.bump_unique(touched.into_iter(), now_inst);
+    }
+
+    let push_elapsed = push_start.elapsed();
+    app.metrics.push_latency_seconds = push_elapsed.as_secs_f64();
+    app.metrics.events_total += 1;
+
+    // Phase 10.2: record latency into histogram tracker
+    let push_us = push_elapsed.as_secs_f64() * 1_000_000.0;
+    app.latency.record_push(stream_name, push_us, std::time::Instant::now());
+    if app.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Push, push_us) {
+        let key_preview = app.engine.get_stream(stream_name)
+            .and_then(|s| s.key_field.clone())
+            .and_then(|kf| payload.get(&kf).and_then(|v| v.as_str()).map(|s| {
+                let mut kp = s.to_string();
+                kp.truncate(32);
+                kp
+            }))
+            .unwrap_or_default();
+        app.latency.maybe_record_slow(
+            crate::server::latency::CommandKind::Push,
+            Some(stream_name),
+            push_us,
+            key_preview,
+        );
+    }
+
+    Ok(features)
+}
+
+/// Fire-and-forget push (Phase 11, PERF-01).
+///
+/// Runs the exact same side effects as sync PUSH but discards the computed
+/// FeatureMap. `handle_connection` signals "no response write on success"
+/// by seeing `Ok(())` here and skipping the writer.flush.
+fn handle_push_async(
+    state: &SharedState,
+    stream_name: &str,
+    payload: &serde_json::Value,
+    now: SystemTime,
+) -> Result<(), TallyError> {
+    let _features = handle_push_core(state, stream_name, payload, now)?;
+    Ok(())
 }
 
 /// Handle synchronous commands: lock, process, unlock. No .await while locked.
@@ -202,176 +403,8 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             stream_name,
             payload,
         } => {
-            let push_start = std::time::Instant::now();
-            let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-            let AppState {
-                ref engine,
-                ref mut store,
-                ref mut event_log,
-                ..
-            } = *app;
-
-            // Cascade-aware push: handles topological cascade through depends_on chains
-            let features = engine.push_with_cascade(&stream_name, &payload, store, now)?;
-            let result = feature_map_to_json(&features);
-
-            // Mark primary key dirty for incremental snapshots (OPS-03).
-            if let Some(stream_def) = engine.get_stream(&stream_name) {
-                if let Some(ref kf) = stream_def.key_field {
-                    if let Some(serde_json::Value::String(key_val)) = payload.get(kf.as_str()) {
-                        if !key_val.is_empty() {
-                            store.mark_dirty(key_val);
-                        }
-                    }
-                }
-            }
-
-            // Append raw event to primary stream's event log (ELOG-01, ELOG-02, ELOG-03)
-            if let Some(ref mut log) = event_log {
-                let event_bytes = serde_json::to_vec(&payload).unwrap_or_default();
-                let _ = log.append(&stream_name, &event_bytes, now);
-            }
-
-            // Append event to downstream (cascade) streams' event logs (T-07-10)
-            let cascade_targets = engine.get_cascade_targets(&stream_name);
-            if let Some(ref mut log) = event_log {
-                let event_bytes = serde_json::to_vec(&payload).unwrap_or_default();
-                for ds_name in &cascade_targets {
-                    // Only log if downstream actually processed (key_field present in event)
-                    let should_log = match engine.get_stream(ds_name) {
-                        Some(d) => match &d.key_field {
-                            Some(kf) => matches!(payload.get(kf.as_str()), Some(serde_json::Value::String(s)) if !s.is_empty()),
-                            None => true, // keyless downstream always logs
-                        },
-                        None => false,
-                    };
-                    if should_log {
-                        let _ = log.append(ds_name, &event_bytes, now);
-                    }
-                }
-            }
-
-            // Mark cascade target keys dirty for incremental snapshots (OPS-03).
-            // Each cascade target may use a different key_field; extract per-target.
-            for ds_name in &cascade_targets {
-                if let Some(d) = engine.get_stream(ds_name) {
-                    if let Some(ref kf) = d.key_field {
-                        if let Some(serde_json::Value::String(key_val)) = payload.get(kf.as_str()) {
-                            if !key_val.is_empty() {
-                                store.mark_dirty(key_val);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Fan-out: push to other streams whose key_field exists in the event.
-            // Only fan out to streams with a DIFFERENT key_field than the primary
-            // stream. Streams in the cascade DAG are excluded to prevent double-processing (T-07-09).
-            let primary_key_field = engine.get_stream(&stream_name).and_then(|s| s.key_field.as_deref());
-            let targets = engine.fan_out_targets();
-            for (target_name, target_key_field) in &targets {
-                if target_name == &stream_name {
-                    continue; // Skip primary stream (already pushed)
-                }
-                if primary_key_field == Some(target_key_field.as_str()) {
-                    continue; // Skip streams with the same key_field
-                }
-                // Skip streams that are cascade targets (avoid double-processing)
-                if cascade_targets.iter().any(|ct| ct == target_name) {
-                    continue;
-                }
-                // Check if event contains this stream's key_field as a non-empty string
-                if let Some(serde_json::Value::String(key_val)) = payload.get(target_key_field.as_str()) {
-                    if !key_val.is_empty() {
-                        // Push to secondary stream -- ignore errors (primary already committed)
-                        let _ = engine.push(target_name, &payload, store, now);
-                        // Mark fan-out target's key dirty for incremental snapshots (OPS-03)
-                        store.mark_dirty(key_val);
-                        // Also append to fan-out stream's event log
-                        if let Some(ref mut log) = event_log {
-                            let event_bytes = serde_json::to_vec(&payload).unwrap_or_default();
-                            let _ = log.append(target_name, &event_bytes, now);
-                        }
-                    }
-                }
-            }
-
-            // DBUI-02: record throughput for primary + cascade + fan-out targets.
-            // One bump per UNIQUE stream touched by this push. See
-            // src/server/throughput.rs and RESEARCH §Pitfall 4 for why dedup
-            // matters: cascade_targets and fan-out can overlap with the
-            // primary and (in pathological pipelines) with each other.
-            //
-            // The destructured `engine`/`store`/`event_log` references from
-            // the top of this arm are no longer used past this point, but we
-            // re-borrow `app.engine` immutably here to re-derive the skip
-            // decisions. `app.throughput` is the only `&mut` borrow of `app`
-            // in this block, so no conflict with the earlier destructure.
-            {
-                let now_inst = std::time::Instant::now();
-                // Re-derive the same fan-out targets that were actually pushed
-                // above so we bump exactly the streams whose state changed.
-                let primary_key_field_for_tp = app
-                    .engine
-                    .get_stream(&stream_name)
-                    .and_then(|s| s.key_field.clone());
-                let tp_targets_all = app.engine.fan_out_targets();
-                let mut touched: Vec<&str> =
-                    Vec::with_capacity(1 + cascade_targets.len() + tp_targets_all.len());
-                touched.push(stream_name.as_str());
-                for ds in &cascade_targets {
-                    touched.push(ds.as_str());
-                }
-                for (target_name, target_key_field) in &tp_targets_all {
-                    if target_name == &stream_name {
-                        continue;
-                    }
-                    if primary_key_field_for_tp.as_deref() == Some(target_key_field.as_str()) {
-                        continue;
-                    }
-                    if cascade_targets.iter().any(|ct| ct == target_name) {
-                        continue;
-                    }
-                    // Skip if the event did not contain a non-empty key for this target.
-                    let key_present = matches!(
-                        payload.get(target_key_field.as_str()),
-                        Some(serde_json::Value::String(s)) if !s.is_empty()
-                    );
-                    if !key_present {
-                        continue;
-                    }
-                    touched.push(target_name.as_str());
-                }
-                app.throughput.bump_unique(touched.into_iter(), now_inst);
-            }
-
-            let push_elapsed = push_start.elapsed();
-            app.metrics.push_latency_seconds = push_elapsed.as_secs_f64();
-            app.metrics.events_total += 1;
-
-            // Phase 10.2: record latency into histogram tracker
-            let push_us = push_elapsed.as_secs_f64() * 1_000_000.0;
-            app.latency.record_push(&stream_name, push_us, std::time::Instant::now());
-            // Slow query: extract key preview (first 32 chars of entity key)
-            if app.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Push, push_us) {
-                let key_preview = app.engine.get_stream(&stream_name)
-                    .and_then(|s| s.key_field.clone())
-                    .and_then(|kf| payload.get(&kf).and_then(|v| v.as_str()).map(|s| {
-                        let mut kp = s.to_string();
-                        kp.truncate(32);
-                        kp
-                    }))
-                    .unwrap_or_default();
-                app.latency.maybe_record_slow(
-                    crate::server::latency::CommandKind::Push,
-                    Some(&stream_name),
-                    push_us,
-                    key_preview,
-                );
-            }
-
-            Ok(result)
+            let features = handle_push_core(state, &stream_name, &payload, now)?;
+            Ok(feature_map_to_json(&features))
         }
         Command::Get { key } => {
             let get_start = std::time::Instant::now();
@@ -512,12 +545,8 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             Ok(serde_json::to_vec(&serde_json::Value::Object(result)).unwrap())
         }
         Command::Mset { .. } => unreachable!("MSET handled separately"),
-        // Plan 11-03 wires these into the dispatch layer directly; handle_sync_command
-        // never sees them. Provide a defensive arm so the lib compiles in Plan 11-01.
         Command::PushAsync { .. } | Command::Flush => {
-            Err(TallyError::Protocol(
-                "PushAsync/Flush must be handled by handle_connection dispatch".into(),
-            ))
+            unreachable!("PushAsync/Flush handled by handle_connection dispatch")
         }
     }
 }
