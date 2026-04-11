@@ -106,6 +106,46 @@ impl EventLog {
         Ok(true)
     }
 
+    /// Batch-append multiple raw events to the stream's log file.
+    ///
+    /// Returns `Ok(n)` where `n` is the number of events successfully written.
+    /// Returns `Ok(0)` if the stream is not registered (mirrors the single
+    /// `append` method's `Ok(false)` contract — no error).
+    ///
+    /// All events share the same `now` timestamp. Performs a **single**
+    /// `writers.get_mut` lookup for the whole batch, then encodes and writes
+    /// each event under that one writer handle. This is the amortization
+    /// win Phase 12 needs on the async push coalescing hot path — per-event
+    /// HashMap lookups are hoisted to once-per-batch.
+    pub fn append_many(
+        &mut self,
+        stream_name: &str,
+        event_bytes_list: &[&[u8]],
+        now: SystemTime,
+    ) -> std::io::Result<usize> {
+        if event_bytes_list.is_empty() {
+            return Ok(0);
+        }
+        let writer = match self.writers.get_mut(stream_name) {
+            Some(w) => w,
+            None => return Ok(0),
+        };
+        let mut written = 0usize;
+        for bytes in event_bytes_list {
+            let entry = LogEntry {
+                timestamp: now,
+                payload: bytes.to_vec(),
+            };
+            let encoded = postcard::to_stdvec(&entry)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let len = encoded.len() as u32;
+            writer.write_all(&len.to_be_bytes())?;
+            writer.write_all(&encoded)?;
+            written += 1;
+        }
+        Ok(written)
+    }
+
     /// Read all log entries for a stream.
     /// Opens the file independently from the writer.
     pub fn read_entries(&self, stream_name: &str) -> std::io::Result<Vec<LogEntry>> {

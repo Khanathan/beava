@@ -206,6 +206,22 @@ impl StateStore {
         self.dirty_keys.insert(key.to_string());
     }
 
+    /// Batch-mark entity keys as dirty. Idempotent. O(n) inserts into the
+    /// `dirty_keys` HashSet using a single `extend` call. Mirrors `mark_dirty`
+    /// semantics — does **not** touch `deleted_keys` (a key already in
+    /// `deleted_keys` remains there; this matches the single-key `mark_dirty`
+    /// contract which also does not cross-mutate the delete set).
+    ///
+    /// Used by Phase 12's `handle_push_batch` to amortize the per-event
+    /// dirty-mark cost: one call per stream group instead of one per event.
+    pub fn mark_dirty_many<I, S>(&mut self, keys: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.dirty_keys.extend(keys.into_iter().map(Into::into));
+    }
+
     /// Mark an entity key as deleted since the last snapshot clear. A deleted
     /// key is automatically removed from the dirty set so it does not appear
     /// in the next delta's `changed_entities` (avoids ambiguity).
