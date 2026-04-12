@@ -234,6 +234,31 @@ pub struct ViewDefinition {
     pub features: Vec<(String, ViewFeatureDef)>,
 }
 
+/// Feature projection: filters the FeatureMap before returning from push/get.
+/// Applied AFTER derives evaluate (so derives can reference any feature), but
+/// BEFORE the response is sent to the client.
+#[derive(Debug, Clone)]
+pub enum Projection {
+    /// Only return features whose names are in this set.
+    Select(AHashSet<String>),
+    /// Return all features EXCEPT those whose names are in this set.
+    Drop(AHashSet<String>),
+}
+
+impl Projection {
+    /// Filter `features` in-place according to this projection.
+    pub fn apply(&self, features: &mut FeatureMap) {
+        match self {
+            Projection::Select(allowed) => {
+                features.retain(|k, _| allowed.contains(k));
+            }
+            Projection::Drop(excluded) => {
+                features.retain(|k, _| !excluded.contains(k));
+            }
+        }
+    }
+}
+
 /// A stream definition: a named stream with a key field and a list of named features.
 #[derive(Debug, Clone)]
 pub struct StreamDefinition {
@@ -255,6 +280,14 @@ pub struct StreamDefinition {
     /// How long to retain events in the event log for this stream.
     /// Default: None (uses global default). Used by event log compaction.
     pub history_ttl: Option<Duration>,
+    /// Feature projection: filters the response FeatureMap after derive evaluation.
+    pub projection: Option<Projection>,
+    /// Whether this pipeline is ephemeral (schema-only, no runtime enforcement yet).
+    pub ephemeral: Option<bool>,
+    /// Pipeline-level TTL (schema-only, no runtime enforcement yet).
+    pub pipeline_ttl: Option<Duration>,
+    /// Maximum number of entity keys for this stream (schema-only, no runtime enforcement yet).
+    pub max_keys: Option<u64>,
 }
 
 /// The pipeline engine. Holds registered stream definitions and coordinates
@@ -668,7 +701,12 @@ impl PipelineEngine {
         // 6. Update last_event_at on the stream
         entity.streams.get_mut(stream_name).unwrap().last_event_at = Some(now);
 
-        // 7. Return features
+        // 7. Apply projection filter (after derives, before return)
+        if let Some(ref proj) = stream.projection {
+            proj.apply(&mut features);
+        }
+
+        // 8. Return features
         Ok(features)
     }
 
@@ -1126,6 +1164,14 @@ impl PipelineEngine {
             features.insert(name, value);
         }
 
+        // Apply per-stream projections to filter response features
+        // (after derives are evaluated -- they need all features)
+        for stream in self.streams.values() {
+            if let Some(ref proj) = stream.projection {
+                proj.apply(&mut features);
+            }
+        }
+
         // Evaluate view features (cross-stream derives and cross-key lookups)
         let mut view_results: Vec<(String, FeatureValue)> = Vec::new();
         for view in self.views.values() {
@@ -1357,6 +1403,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }
     }
 
@@ -1380,6 +1430,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         assert!(engine.register(stream).is_err());
     }
@@ -1482,6 +1536,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
         engine.register(StreamDefinition {
             name: "stream2".into(),
@@ -1498,6 +1556,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(3600));
     }
@@ -1523,6 +1585,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
         assert_eq!(engine.max_window_duration(), Duration::ZERO);
     }
@@ -1652,6 +1718,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(stream).unwrap();
         let now = ts(60_000);
@@ -1695,6 +1765,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(stream).unwrap();
         let now = ts(60_000);
@@ -1755,6 +1829,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(86400));
     }
@@ -1824,6 +1902,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
         engine.register(StreamDefinition {
             name: "Logins".into(),
@@ -1840,6 +1922,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
 
         // Register a view that derives from both streams
@@ -1888,6 +1974,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
 
         // Register Transactions stream with last_merchant_id to store the foreign key
@@ -1911,6 +2001,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
 
         // Register a view with lookup
@@ -1960,6 +2054,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
 
         engine.register(StreamDefinition {
@@ -1977,6 +2075,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
 
         let view = ViewDefinition {
@@ -2012,6 +2114,10 @@ mod tests {
             filter: None,
             entity_ttl: Some(Duration::from_secs(300)),
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         assert_eq!(stream.entity_ttl, Some(Duration::from_secs(300)));
     }
@@ -2026,6 +2132,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         assert_eq!(stream.entity_ttl, None);
         assert_eq!(stream.history_ttl, None);
@@ -2042,6 +2152,10 @@ mod tests {
             filter: None,
             entity_ttl: Some(Duration::from_secs(300)),
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
         assert_eq!(engine.get_stream_entity_ttl("Transactions"), Some(Duration::from_secs(300)));
     }
@@ -2057,6 +2171,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
         assert_eq!(engine.get_stream_entity_ttl("Transactions"), None);
     }
@@ -2095,6 +2213,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(86400));
     }
@@ -2112,6 +2234,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(stream).unwrap();
         assert_eq!(engine.stream_count(), 1);
@@ -2136,6 +2262,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         let result = engine.register(stream);
         assert!(result.is_err());
@@ -2160,6 +2290,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(stream).unwrap();
         assert_eq!(engine.stream_count(), 1);
@@ -2177,6 +2311,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(stream).unwrap();
 
@@ -2203,6 +2341,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(stream).unwrap();
         assert_eq!(engine.stream_count(), 1);
@@ -2229,6 +2371,10 @@ mod tests {
             filter: Some(crate::engine::expression::parse_expr("_event.status == 'failed'").unwrap()),
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(stream).unwrap();
         assert_eq!(engine.stream_count(), 1);
@@ -2253,6 +2399,10 @@ mod tests {
             filter: Some(crate::engine::expression::parse_expr("_event.status == 'failed'").unwrap()),
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(stream).unwrap();
         let now = ts(60_000);
@@ -2282,6 +2432,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
         // Register a keyless stream
         engine.register(StreamDefinition {
@@ -2292,6 +2446,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
 
         let targets = engine.fan_out_targets();
@@ -2319,16 +2477,19 @@ mod tests {
             name: "C".into(), key_field: Some("uid".into()),
             features: vec![], entity_ttl: None, history_ttl: None,
             depends_on: Some(vec!["B".into()]), filter: None,
+            projection: None, ephemeral: None, pipeline_ttl: None, max_keys: None,
         };
         let b = StreamDefinition {
             name: "B".into(), key_field: Some("uid".into()),
             features: vec![], entity_ttl: None, history_ttl: None,
             depends_on: Some(vec!["A".into()]), filter: None,
+            projection: None, ephemeral: None, pipeline_ttl: None, max_keys: None,
         };
         let a = StreamDefinition {
             name: "A".into(), key_field: None,
             features: vec![], entity_ttl: None, history_ttl: None,
             depends_on: None, filter: None,
+            projection: None, ephemeral: None, pipeline_ttl: None, max_keys: None,
         };
         engine.register(c).unwrap();
         engine.register(b).unwrap();
@@ -2362,6 +2523,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(stream).unwrap();
         let now = ts(60_000);
@@ -2390,6 +2555,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         let diff1 = engine.register(stream1).unwrap();
         assert!(diff1.added.contains(&"tx_count_1h".to_string()));
@@ -2419,6 +2588,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         let diff2 = engine.register(stream2).unwrap();
         assert!(diff2.added.contains(&"tx_sum_1h".to_string()));
@@ -2452,6 +2625,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(stream1).unwrap();
 
@@ -2471,6 +2648,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         let diff = engine.register(stream2).unwrap();
         assert!(diff.removed.contains(&"tx_sum_1h".to_string()));
@@ -2496,6 +2677,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(stream1).unwrap();
 
@@ -2517,6 +2702,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         let result = engine.register(stream2);
         assert!(result.is_err());
@@ -2550,6 +2739,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         let diff = engine.register(stream).unwrap();
         assert_eq!(diff.added.len(), 2);
@@ -2604,6 +2797,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(stream1).unwrap();
 
@@ -2638,6 +2835,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(stream2).unwrap();
 
@@ -2673,6 +2874,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
         engine.register(StreamDefinition {
             name: "Logins".into(),
@@ -2689,6 +2894,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
 
         let vfm = engine.valid_features_map();
@@ -2734,6 +2943,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(stream).unwrap();
 
@@ -2772,6 +2985,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(stream).unwrap();
 

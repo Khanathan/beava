@@ -44,6 +44,10 @@ fn make_count_stream(name: &str, key: &str) -> StreamDefinition {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }
 }
 
@@ -63,6 +67,10 @@ fn make_cascade_child(name: &str, key: &str, parent: &str) -> StreamDefinition {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }
 }
 

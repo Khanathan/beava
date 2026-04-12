@@ -421,6 +421,24 @@ pub struct RegisterRequest {
     pub entity_ttl: Option<String>,    // e.g., "5m", "1h"
     #[serde(default)]
     pub history_ttl: Option<String>,   // e.g., "72h", "7d"
+    #[serde(default)]
+    pub projection: Option<ProjectionRequest>,
+    #[serde(default)]
+    pub ephemeral: Option<bool>,
+    #[serde(default)]
+    pub ttl: Option<String>,           // pipeline-level TTL, e.g., "1h"
+    #[serde(default)]
+    pub max_keys: Option<u64>,
+}
+
+/// Projection configuration in the REGISTER JSON payload.
+/// Exactly one of `select` or `drop` must be provided (mutual exclusion).
+#[derive(Debug, Deserialize)]
+pub struct ProjectionRequest {
+    #[serde(default)]
+    pub select: Option<Vec<String>>,
+    #[serde(default)]
+    pub drop: Option<Vec<String>>,
 }
 
 /// A single feature definition in the REGISTER JSON payload.
@@ -932,6 +950,36 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
         .map(|s| parse_duration_str(&s))
         .transpose()?;
 
+    // Parse projection: validate select/drop mutual exclusion
+    let projection = match req.projection {
+        Some(pr) => {
+            match (pr.select, pr.drop) {
+                (Some(sel), None) => {
+                    Some(crate::engine::pipeline::Projection::Select(
+                        sel.into_iter().collect(),
+                    ))
+                }
+                (None, Some(drp)) => {
+                    Some(crate::engine::pipeline::Projection::Drop(
+                        drp.into_iter().collect(),
+                    ))
+                }
+                (Some(_), Some(_)) => {
+                    return Err(TallyError::Protocol(
+                        "projection: select and drop are mutually exclusive".into(),
+                    ));
+                }
+                (None, None) => None,
+            }
+        }
+        None => None,
+    };
+
+    // Parse pipeline-level TTL
+    let pipeline_ttl = req.ttl
+        .map(|s| parse_duration_str(&s))
+        .transpose()?;
+
     Ok(StreamDefinition {
         name: req.name,
         key_field: req.key_field,
@@ -940,6 +988,10 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
         filter,
         entity_ttl,
         history_ttl,
+        projection,
+        ephemeral: req.ephemeral,
+        pipeline_ttl,
+        max_keys: req.max_keys,
     })
 }
 
@@ -1776,6 +1828,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            ttl: None,
+            max_keys: None,
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "median".into(),
@@ -1799,6 +1855,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            ttl: None,
+            max_keys: None,
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "histogram".into(),
@@ -1824,6 +1884,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            ttl: None,
+            max_keys: None,
             features: vec![FeatureDefRequest {
                 name: "cnt".into(),
                 feature_type: "count".into(),
@@ -1847,6 +1911,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            ttl: None,
+            max_keys: None,
             features: vec![FeatureDefRequest {
                 name: "total".into(),
                 feature_type: "sum".into(),
@@ -1870,6 +1938,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            ttl: None,
+            max_keys: None,
             features: vec![FeatureDefRequest {
                 name: "total".into(),
                 feature_type: "sum".into(),
@@ -1893,6 +1965,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            ttl: None,
+            max_keys: None,
             features: vec![FeatureDefRequest {
                 name: "mean".into(),
                 feature_type: "avg".into(),
@@ -1916,6 +1992,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            ttl: None,
+            max_keys: None,
             features: vec![FeatureDefRequest {
                 name: "ratio".into(),
                 feature_type: "derive".into(),
@@ -2038,6 +2118,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            ttl: None,
+            max_keys: None,
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "min".into(),
@@ -2061,6 +2145,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            ttl: None,
+            max_keys: None,
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "last".into(),
@@ -2235,6 +2323,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            ttl: None,
+            max_keys: None,
             features: vec![FeatureDefRequest {
                 name: "dc".into(),
                 feature_type: "distinct_count".into(),
@@ -2402,6 +2494,10 @@ mod tests {
             definition_type: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            ttl: None,
+            max_keys: None,
             depends_on: None,
             filter: None,
             features: vec![],
@@ -2419,6 +2515,10 @@ mod tests {
             definition_type: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            ttl: None,
+            max_keys: None,
             depends_on: None,
             filter: None,
             features: vec![FeatureDefRequest {
@@ -2451,6 +2551,10 @@ mod tests {
             definition_type: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            ttl: None,
+            max_keys: None,
             depends_on: Some(vec!["RawEvents".into()]),
             filter: Some("_event.status == 'failed'".into()),
             features: vec![FeatureDefRequest {

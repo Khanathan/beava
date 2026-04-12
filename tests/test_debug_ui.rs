@@ -150,6 +150,10 @@ fn register_test_pipeline(state: &SharedState) {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     };
     engine.register(transactions).expect("register Transactions");
 
@@ -169,6 +173,10 @@ fn register_test_pipeline(state: &SharedState) {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     };
     engine.register(logins).expect("register Logins");
 
@@ -191,6 +199,10 @@ fn register_test_pipeline(state: &SharedState) {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     };
     engine.register(aggregates).expect("register Aggregates");
 
@@ -388,6 +400,10 @@ async fn topology_nodes_include_operators_field() {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(tx_def).expect("register Transactions");
         engine.store_raw_register_json(
@@ -464,6 +480,10 @@ async fn topology_operators_pass_through_where_clause() {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(tx_def).expect("register Transactions");
         engine.store_raw_register_json(
@@ -536,6 +556,10 @@ async fn topology_view_operators_include_lookup_shape() {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine
             .register(merchant_def)

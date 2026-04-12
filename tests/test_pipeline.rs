@@ -49,6 +49,10 @@ fn make_tx_stream_with_derive() -> StreamDefinition {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }
 }
 
@@ -123,6 +127,10 @@ fn test_derive_division_by_zero_returns_missing() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     };
 
     let mut engine = PipelineEngine::new();
@@ -178,6 +186,10 @@ fn test_window_expiration_end_to_end() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     };
 
     let mut engine = PipelineEngine::new();
@@ -231,6 +243,10 @@ fn test_derive_with_event_field_access() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     };
 
     let mut engine = PipelineEngine::new();
@@ -282,6 +298,10 @@ fn make_keyless_stream(name: &str) -> StreamDefinition {
         features: vec![],
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
         depends_on: None,
         filter: None,
     }
@@ -301,6 +321,10 @@ fn make_keyed_dependent_stream(name: &str, key: &str, deps: Vec<&str>) -> Stream
         ],
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
         depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
         filter: None,
     }
@@ -443,6 +467,10 @@ fn test_keyed_to_keyed_cascade() {
             backfill: false,
         })],
         entity_ttl: None, history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
         depends_on: None, filter: None,
     };
     let b = StreamDefinition {
@@ -455,6 +483,10 @@ fn test_keyed_to_keyed_cascade() {
             backfill: false,
         })],
         entity_ttl: None, history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
         depends_on: Some(vec!["A".into()]), filter: None,
     };
     engine.register(a).unwrap();
@@ -603,6 +635,10 @@ async fn test_backfill_replay_deterministic() {
             }),
         ],
         depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     };
     {
         state.engine.write().register(stream1).unwrap();
@@ -649,6 +685,10 @@ async fn test_backfill_replay_deterministic() {
             }),
         ],
         depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     };
     {
         let mut engine = state.engine.write();
@@ -722,6 +762,10 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
             }),
         ],
         depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     };
     {
         state.engine.write().register(stream1).unwrap();
@@ -762,6 +806,10 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
             }),
         ],
         depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     };
     {
         let mut engine = state.engine.write();
@@ -841,6 +889,10 @@ fn test_schema_evolution_add_remove() {
             }),
         ],
         depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     };
     engine.register(stream1).unwrap();
 
@@ -875,6 +927,10 @@ fn test_schema_evolution_add_remove() {
             }),
         ],
         depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     };
     let diff = engine.register(stream2).unwrap();
     assert!(diff.removed.contains(&"sum_1h".to_string()));
@@ -911,6 +967,10 @@ async fn test_backfill_idempotent_restart() {
             }),
         ],
         depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     };
     {
         state.engine.write().register(stream1).unwrap();
@@ -958,6 +1018,10 @@ async fn test_backfill_idempotent_restart() {
             }),
         ],
         depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     };
 
     {
@@ -1156,6 +1220,10 @@ fn test_enriched_derive_to_downstream_sum() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     // Stage 2: CurrencyNorm (keyed, depends on RawTxns, derives amount_usd)
@@ -1171,6 +1239,10 @@ fn test_enriched_derive_to_downstream_sum() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     // Stage 3: UserStats (keyed, depends on CurrencyNorm, sums CurrencyNorm.amount_usd)
@@ -1191,6 +1263,10 @@ fn test_enriched_derive_to_downstream_sum() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     // Push event: amount=100, exchange_rate=1.2 -> amount_usd = 120.0
@@ -1222,6 +1298,10 @@ fn test_enriched_multi_hop_cascade() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     // B: keyed, depends on A, derives computed_b = _event.raw_value * 2
@@ -1237,6 +1317,10 @@ fn test_enriched_multi_hop_cascade() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     // C: keyed, depends on B, sums B.computed_b and derives computed_c = B.computed_b + 10
@@ -1260,6 +1344,10 @@ fn test_enriched_multi_hop_cascade() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     // D: keyed, depends on C, sums C.computed_c
@@ -1280,6 +1368,10 @@ fn test_enriched_multi_hop_cascade() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     // Push event: raw_value=5
@@ -1317,6 +1409,10 @@ fn test_enriched_cascade_async_mode() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     engine.register(StreamDefinition {
@@ -1331,6 +1427,10 @@ fn test_enriched_cascade_async_mode() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     engine.register(StreamDefinition {
@@ -1350,6 +1450,10 @@ fn test_enriched_cascade_async_mode() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     // Async push (no features returned)
@@ -1384,6 +1488,10 @@ fn test_enriched_where_clause() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     engine.register(StreamDefinition {
@@ -1398,6 +1506,10 @@ fn test_enriched_where_clause() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     // Downstream with where clause referencing enriched field
@@ -1416,6 +1528,10 @@ fn test_enriched_where_clause() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     // Push event where amount_usd = 100*1.2 = 120 > 50 -> should increment
@@ -1452,6 +1568,10 @@ fn test_enriched_field_resolution_qualified() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     engine.register(StreamDefinition {
@@ -1466,6 +1586,10 @@ fn test_enriched_field_resolution_qualified() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     engine.register(StreamDefinition {
@@ -1485,6 +1609,10 @@ fn test_enriched_field_resolution_qualified() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     let _ = engine.push_with_cascade("QualRaw", &json!({
@@ -1511,6 +1639,10 @@ fn test_enriched_field_resolution_unqualified() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     engine.register(StreamDefinition {
@@ -1525,6 +1657,10 @@ fn test_enriched_field_resolution_unqualified() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     // Use unqualified field name "uval" (not "UnqualNorm.uval")
@@ -1545,6 +1681,10 @@ fn test_enriched_field_resolution_unqualified() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     let _ = engine.push_with_cascade("UnqualRaw", &json!({
@@ -1589,6 +1729,10 @@ fn test_enriched_no_cascade_unchanged() {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     // Use push_with_cascade on a single-stream (no downstream)

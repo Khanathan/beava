@@ -46,6 +46,10 @@ fn make_tx_stream() -> StreamDefinition {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }
 }
 
@@ -154,6 +158,10 @@ fn test_eviction_removes_old_entity() {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         })
         .unwrap();
 
@@ -211,6 +219,10 @@ fn test_eviction_preserves_entity_with_no_events() {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         })
         .unwrap();
 

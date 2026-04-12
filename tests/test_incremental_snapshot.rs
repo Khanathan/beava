@@ -58,6 +58,10 @@ fn tx_stream() -> StreamDefinition {
         filter: None,
         entity_ttl: None,
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }
 }
 
@@ -309,6 +313,10 @@ fn test_eviction_marks_deleted_and_delta_includes_it() {
         filter: None,
         entity_ttl: Some(Duration::from_secs(300)),
         history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
     }).unwrap();
 
     let mut store = StateStore::new();

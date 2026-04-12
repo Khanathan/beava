@@ -136,6 +136,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }
     }
 
@@ -230,6 +234,10 @@ mod tests {
             filter: None,
             entity_ttl: ttl_secs.map(|s| Duration::from_secs(s)),
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }
     }
 
@@ -337,6 +345,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         }).unwrap();
 
         {

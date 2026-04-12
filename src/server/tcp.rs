@@ -1443,6 +1443,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         state.engine.write().register(stream).unwrap();
     }
@@ -1767,6 +1771,10 @@ mod tests {
             filter: None,
             entity_ttl: None,
             history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         state.engine.write().register(stream).unwrap();
     }
