@@ -82,8 +82,8 @@ Requirements for milestone v2.0: New API & Engine. **Active.**
 - [x] **API-03**: User can declare typed input schemas with `EventSet` and output schemas with `FeatureSet` using `Field` descriptors with IDE autocomplete via `dataclass_transform`
 - [x] **API-04**: User can explicitly aggregate events with `.group_by("key").agg(count=tl.count(window="1h"), ...)` instead of implicit keying
 - [x] **API-05**: User can merge multiple event sources into one dataset with `tl.union(source_a, source_b)`
-- [ ] **API-06**: User can call `pipeline.validate()` locally to check DAG validity (cycles, missing deps, type mismatches) before server submission
-- [ ] **API-07**: Pipeline definitions are portable — the same JSON format works for startup registration, runtime REGISTER, and future ephemeral pipelines
+- [x] **API-06**: User can call `pipeline.validate()` locally to check DAG validity (cycles, missing deps, type mismatches) before server submission
+- [x] **API-07**: Pipeline definitions are portable — the same JSON format works for startup registration, runtime REGISTER, and future ephemeral pipelines
 
 ### Engine
 
@@ -184,8 +184,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | API-03 | Phase 16 | Complete |
 | API-04 | Phase 16 | Complete |
 | API-05 | Phase 16 | Complete |
-| API-06 | Phase 16 | Pending |
-| API-07 | Phase 16 | Pending |
+| API-06 | Phase 16 | Complete |
+| API-07 | Phase 16 | Complete |
 | ENG-01 | Phase 17 | Pending |
 | ENG-02 | Phase 18 | Pending |
 | ENG-03 | Phase 18 | Pending |

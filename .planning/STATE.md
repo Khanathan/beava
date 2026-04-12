@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: New API & Engine
-status: executing
-stopped_at: Completed 16-01-PLAN.md
-last_updated: "2026-04-12T22:08:21.004Z"
+status: verifying
+stopped_at: Completed 16-02-PLAN.md
+last_updated: "2026-04-12T22:13:45.019Z"
 last_activity: 2026-04-12
 progress:
   total_phases: 16
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
-  percent: 50
+  completed_plans: 2
+  percent: 100
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-12)
 Milestone: v2.0 New API & Engine
 Phase: 16 (Python SDK -- New Types and Decorators) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-12
 
 Progress: [░░░░░░░░░░] 0%
@@ -57,6 +57,7 @@ All v1.0-v1.3 decisions archived in PROJECT.md Key Decisions table.
 - All new RegisterRequest fields use #[serde(default)] for backward compat
 - [Phase 16]: Used __init_subclass__ (not metaclass) for EventSet/FeatureSet schema types
 - [Phase 16]: SourceDef/DatasetDef are plain objects returned by decorators, not modified classes
+- [Phase 16]: Kahn's algorithm for cycle detection in validate() -- O(V+E), pure Python, no server
 
 ### Critical Pitfalls (from research)
 
@@ -76,6 +77,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-12T22:08:21.002Z
-Stopped at: Completed 16-01-PLAN.md
+Last session: 2026-04-12T22:13:45.017Z
+Stopped at: Completed 16-02-PLAN.md
 Resume: `/gsd-plan-phase 16`
