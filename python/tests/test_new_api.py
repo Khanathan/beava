@@ -372,3 +372,125 @@ class TestUnion:
         assert "SourceA" in reg_names
         assert "SourceB" in reg_names
         assert "Combined" in reg_names
+
+
+class TestValidate:
+    """Tests for validate() from _validate.py."""
+
+    def _make_source(self, name="RawTxns", event_schema=None):
+        from tally._source import SourceDef
+        return SourceDef(name=name, event_schema=event_schema)
+
+    def _make_dataset(self, name, depends_on, grouped=None, extra_features=None):
+        from tally._dataset import DatasetDef
+        return DatasetDef(
+            name=name,
+            depends_on=depends_on,
+            grouped_dataset=grouped,
+            extra_features=extra_features,
+        )
+
+    def test_valid_pipeline_returns_empty_list(self):
+        from tally._validate import validate
+        from tally._dataset import group_by
+        from tally._operators import Count
+
+        src = self._make_source()
+        ds = self._make_dataset(
+            "UserTxns",
+            depends_on=[src],
+            grouped=group_by("user_id").agg(tx_count=Count(window="1h")),
+        )
+        errors = validate(src, ds)
+        assert errors == []
+
+    def test_cycle_detection_two_nodes(self):
+        from tally._validate import validate, ValidationError
+
+        # A depends on B, B depends on A
+        a = self._make_dataset("A", depends_on=[])
+        b = self._make_dataset("B", depends_on=[])
+        # Manually wire circular deps
+        a._depends_on = [b]
+        b._depends_on = [a]
+        errors = validate(a, b)
+        assert len(errors) >= 1
+        assert any(e.kind == "cycle" for e in errors)
+
+    def test_missing_dep_detection(self):
+        from tally._validate import validate, ValidationError
+
+        # Dataset depends on a source not in the validate() call
+        unregistered = self._make_source("Ghost")
+        ds = self._make_dataset("MyDS", depends_on=[unregistered])
+        errors = validate(ds)  # Ghost not passed to validate
+        assert len(errors) >= 1
+        assert any(e.kind == "missing_dep" for e in errors)
+
+    def test_validation_error_attributes(self):
+        from tally._validate import ValidationError
+
+        err = ValidationError(path="A -> B", message="cycle detected", kind="cycle")
+        assert err.path == "A -> B"
+        assert err.message == "cycle detected"
+        assert err.kind == "cycle"
+        assert "cycle" in repr(err)
+
+    def test_type_mismatch_field_not_in_eventset(self):
+        from tally._validate import validate
+        from tally._schema import EventSet, Field
+        from tally._dataset import group_by
+        from tally._operators import Sum
+
+        class TxnEvent(EventSet):
+            user_id: str = Field()
+            amount: float = Field()
+
+        src = self._make_source("RawTxns", event_schema=TxnEvent)
+        # Sum on "nonexistent_field" which is not in TxnEvent
+        ds = self._make_dataset(
+            "UserTxns",
+            depends_on=[src],
+            grouped=group_by("user_id").agg(
+                bad_sum=Sum("nonexistent_field", window="1h"),
+            ),
+        )
+        errors = validate(src, ds)
+        assert len(errors) >= 1
+        assert any(e.kind == "type_mismatch" for e in errors)
+
+    def test_validate_with_union_sources(self):
+        from tally._validate import validate
+        from tally._dataset import group_by, union
+        from tally._operators import Count
+
+        src_a = self._make_source("SourceA")
+        src_b = self._make_source("SourceB")
+        ds = self._make_dataset(
+            "Combined",
+            depends_on=[union(src_a, src_b)],
+            grouped=group_by("key").agg(total=Count(window="1h")),
+        )
+        errors = validate(src_a, src_b, ds)
+        assert errors == []
+
+    def test_self_referencing_dataset_returns_cycle(self):
+        from tally._validate import validate
+
+        ds = self._make_dataset("SelfRef", depends_on=[])
+        ds._depends_on = [ds]  # self-reference
+        errors = validate(ds)
+        assert len(errors) >= 1
+        assert any(e.kind == "cycle" for e in errors)
+
+    def test_validate_is_pure_function_no_network(self):
+        """validate() should not import any network/socket modules."""
+        import importlib
+        import tally._validate as mod
+        source_code = importlib.util.find_spec("tally._validate")
+        # Check the module doesn't reference network
+        import inspect
+        src = inspect.getsource(mod)
+        assert "socket" not in src
+        assert "TallyClient" not in src
+        assert "_client" not in src
