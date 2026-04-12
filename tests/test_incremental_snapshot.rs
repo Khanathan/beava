@@ -78,12 +78,12 @@ fn test_incremental_snapshot_delta_contains_only_dirty_entities() {
 
     // Push to u1 and u3 (will be dirty). u2 exists from a prior push but its
     // dirty flag will be cleared to simulate a clean entity across snapshots.
-    push(&mut store, &engine, "u1", 10.0, now);
-    push(&mut store, &engine, "u2", 20.0, now);
+    push(&store, &engine, "u1", 10.0, now);
+    push(&store, &engine, "u2", 20.0, now);
     store.clear_dirty();
     // After clear, another push to u1 and u3
-    push(&mut store, &engine, "u1", 11.0, now);
-    push(&mut store, &engine, "u3", 30.0, now);
+    push(&store, &engine, "u1", 11.0, now);
+    push(&store, &engine, "u3", 30.0, now);
 
     let valid_features = engine.valid_features_map();
     let changed = store.clone_dirty_for_snapshot_with_gc(&valid_features);
@@ -109,8 +109,8 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
     let now = ts(60_000);
 
     // Cycle 0: push u1, u2 -> write base snapshot (seq=0)
-    push(&mut store, &engine, "u1", 10.0, now);
-    push(&mut store, &engine, "u2", 20.0, now);
+    push(&store, &engine, "u1", 10.0, now);
+    push(&store, &engine, "u2", 20.0, now);
 
     let entities = store.clone_for_snapshot_with_gc(&engine.valid_features_map());
     let base = BaseSnapshotState {
@@ -129,7 +129,7 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
     let _ = store.take_deleted();
 
     // Cycle 1: push u3 -> delta with only u3 (seq=1)
-    push(&mut store, &engine, "u3", 30.0, now);
+    push(&store, &engine, "u3", 30.0, now);
     let changed = store.clone_dirty_for_snapshot_with_gc(&engine.valid_features_map());
     let delta1 = DeltaSnapshotState {
         header: SnapshotHeader {
@@ -144,7 +144,7 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
     store.clear_dirty();
 
     // Cycle 2: update u1 -> delta with only u1 (seq=2)
-    push(&mut store, &engine, "u1", 5.0, now);
+    push(&store, &engine, "u1", 5.0, now);
     let changed = store.clone_dirty_for_snapshot_with_gc(&engine.valid_features_map());
     let delta2 = DeltaSnapshotState {
         header: SnapshotHeader {
@@ -196,9 +196,9 @@ fn test_incremental_snapshot_deleted_keys_removed_on_recovery() {
     let now = ts(60_000);
 
     // Base contains u1, u2, u3.
-    push(&mut store, &engine, "u1", 10.0, now);
-    push(&mut store, &engine, "u2", 20.0, now);
-    push(&mut store, &engine, "u3", 30.0, now);
+    push(&store, &engine, "u1", 10.0, now);
+    push(&store, &engine, "u2", 20.0, now);
+    push(&store, &engine, "u3", 30.0, now);
     let entities = store.clone_for_snapshot_with_gc(&engine.valid_features_map());
     let base = BaseSnapshotState {
         header: SnapshotHeader { snapshot_type: SnapshotType::Base, sequence: 0 },
@@ -247,7 +247,7 @@ fn test_legacy_v5_migration_loads_as_initial_base() {
     let now = ts(60_000);
     for amount in [10.0, 20.0, 30.0] {
         let event = serde_json::json!({"user_id": "u_legacy", "amount": amount});
-        engine.push("Transactions", &event, &mut store, now).unwrap();
+        engine.push("Transactions", &event, &store, now).unwrap();
     }
 
     let v5_state = SnapshotState {
@@ -322,7 +322,7 @@ fn test_eviction_marks_deleted_and_delta_includes_it() {
 
     let now = ts(100_000);
     // Entity is 99_000s old, TTL is 300s -> evicted.
-    let evicted = evict_expired_keys(&mut store, &engine, now, 2);
+    let evicted = evict_expired_keys(&store, &engine, now, 2);
     assert_eq!(evicted, 1);
     assert_eq!(store.entity_count(), 0);
 

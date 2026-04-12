@@ -60,7 +60,7 @@ fn test_push_single_event_returns_all_features() {
 
     let now = ts(60_000);
     let event = json!({"user_id": "u123", "amount": 50.0});
-    let features = engine.push("Transactions", &event, &mut store, now).unwrap();
+    let features = engine.push("Transactions", &event, &store, now).unwrap();
 
     assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
     assert_eq!(features.get("tx_sum_1h"), Some(&FeatureValue::Float(50.0)));
@@ -75,9 +75,9 @@ fn test_push_multiple_events_aggregates_correctly() {
     engine.register(make_tx_stream_with_derive()).unwrap();
 
     let now = ts(60_000);
-    engine.push("Transactions", &json!({"user_id": "u123", "amount": 10.0}), &mut store, now).unwrap();
-    engine.push("Transactions", &json!({"user_id": "u123", "amount": 20.0}), &mut store, now).unwrap();
-    let features = engine.push("Transactions", &json!({"user_id": "u123", "amount": 30.0}), &mut store, now).unwrap();
+    engine.push("Transactions", &json!({"user_id": "u123", "amount": 10.0}), &store, now).unwrap();
+    engine.push("Transactions", &json!({"user_id": "u123", "amount": 20.0}), &store, now).unwrap();
+    let features = engine.push("Transactions", &json!({"user_id": "u123", "amount": 30.0}), &store, now).unwrap();
 
     assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(3)));
     assert_eq!(features.get("tx_sum_1h"), Some(&FeatureValue::Float(60.0)));
@@ -92,8 +92,8 @@ fn test_different_keys_have_separate_state() {
     engine.register(make_tx_stream_with_derive()).unwrap();
 
     let now = ts(60_000);
-    engine.push("Transactions", &json!({"user_id": "u123", "amount": 100.0}), &mut store, now).unwrap();
-    engine.push("Transactions", &json!({"user_id": "u456", "amount": 200.0}), &mut store, now).unwrap();
+    engine.push("Transactions", &json!({"user_id": "u123", "amount": 100.0}), &store, now).unwrap();
+    engine.push("Transactions", &json!({"user_id": "u456", "amount": 200.0}), &store, now).unwrap();
 
     let f1 = store.get_all_features("u123", now);
     let f2 = store.get_all_features("u456", now);
@@ -130,7 +130,7 @@ fn test_derive_division_by_zero_returns_missing() {
     engine.register(stream).unwrap();
 
     let now = ts(60_000);
-    let features = engine.push("Test", &json!({"id": "k1"}), &mut store, now).unwrap();
+    let features = engine.push("Test", &json!({"id": "k1"}), &store, now).unwrap();
 
     // nonexistent_feature -> Missing, division with Missing -> Missing
     assert_eq!(features.get("ratio"), Some(&FeatureValue::Missing));
@@ -140,7 +140,7 @@ fn test_derive_division_by_zero_returns_missing() {
 fn test_get_features_unknown_key_returns_empty() {
     let engine = PipelineEngine::new();
     let mut store = StateStore::new();
-    let features = engine.get_features("nonexistent", &mut store, ts(1000));
+    let features = engine.get_features("nonexistent", &store, ts(1000));
     assert!(features.is_empty());
 }
 
@@ -151,12 +151,12 @@ fn test_static_feature_alongside_live_features() {
     engine.register(make_tx_stream_with_derive()).unwrap();
 
     let now = ts(60_000);
-    engine.push("Transactions", &json!({"user_id": "u123", "amount": 50.0}), &mut store, now).unwrap();
+    engine.push("Transactions", &json!({"user_id": "u123", "amount": 50.0}), &store, now).unwrap();
 
     // Write a static feature
     store.set_static("u123", "lifetime_value", FeatureValue::Float(4500.0), now);
 
-    let features = engine.get_features("u123", &mut store, now);
+    let features = engine.get_features("u123", &store, now);
     assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
     assert_eq!(features.get("lifetime_value"), Some(&FeatureValue::Float(4500.0)));
 }
@@ -185,7 +185,7 @@ fn test_window_expiration_end_to_end() {
     engine.register(stream).unwrap();
 
     let t0 = ts(60_000);
-    engine.push("Short", &json!({"id": "k1"}), &mut store, t0).unwrap();
+    engine.push("Short", &json!({"id": "k1"}), &store, t0).unwrap();
 
     // Verify count is 1 at t0
     let f = store.get_all_features("k1", t0);
@@ -205,7 +205,7 @@ fn test_push_type_error_on_non_numeric_sum_field() {
 
     let now = ts(60_000);
     let event = json!({"user_id": "u123", "amount": "not_a_number"});
-    let result = engine.push("Transactions", &event, &mut store, now);
+    let result = engine.push("Transactions", &event, &store, now);
     assert!(result.is_err());
 }
 
@@ -239,9 +239,9 @@ fn test_derive_with_event_field_access() {
 
     let now = ts(60_000);
     // Push first event: avg=10
-    engine.push("Test", &json!({"id": "k1", "amount": 10.0}), &mut store, now).unwrap();
+    engine.push("Test", &json!({"id": "k1", "amount": 10.0}), &store, now).unwrap();
     // Push second event: avg=15, event.amount=20, ratio=20/15=1.333...
-    let features = engine.push("Test", &json!({"id": "k1", "amount": 20.0}), &mut store, now).unwrap();
+    let features = engine.push("Test", &json!({"id": "k1", "amount": 20.0}), &store, now).unwrap();
 
     let ratio = features.get("amount_vs_avg").unwrap();
     if let FeatureValue::Float(v) = ratio {
@@ -259,10 +259,10 @@ fn test_get_features_returns_live_and_derived() {
 
     let now = ts(60_000);
     // Push two events so derive (avg_via_derive = sum/count) is meaningful
-    engine.push("Transactions", &json!({"user_id": "u1", "amount": 30.0}), &mut store, now).unwrap();
-    engine.push("Transactions", &json!({"user_id": "u1", "amount": 70.0}), &mut store, now).unwrap();
+    engine.push("Transactions", &json!({"user_id": "u1", "amount": 30.0}), &store, now).unwrap();
+    engine.push("Transactions", &json!({"user_id": "u1", "amount": 70.0}), &store, now).unwrap();
 
-    let features = engine.get_features("u1", &mut store, now);
+    let features = engine.get_features("u1", &store, now);
 
     // Live features
     assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(2)));
@@ -318,13 +318,13 @@ fn test_cascade_push_keyless_to_keyed() {
     // Push to keyless stream -- should cascade to UserTx
     let features = engine.push_with_cascade("RawEvents", &json!({
         "user_id": "u1", "amount": 50.0
-    }), &mut store, now).unwrap();
+    }), &store, now).unwrap();
 
     // Primary push to keyless returns empty
     assert!(features.is_empty());
 
     // But downstream keyed stream should have entity state
-    let all = engine.get_features("u1", &mut store, now);
+    let all = engine.get_features("u1", &store, now);
     assert_eq!(all.get("count_1h"), Some(&FeatureValue::Int(1)));
 }
 
@@ -343,12 +343,12 @@ fn test_multi_level_cascade() {
 
     let features = engine.push_with_cascade("Raw", &json!({
         "user_id": "u1", "amount": 10.0
-    }), &mut store, now).unwrap();
+    }), &store, now).unwrap();
 
     assert!(features.is_empty()); // keyless returns empty
 
     // Both Level1 and Level2 should have state
-    let all = engine.get_features("u1", &mut store, now);
+    let all = engine.get_features("u1", &store, now);
     assert!(all.contains_key("count_1h"));
 }
 
@@ -365,10 +365,10 @@ fn test_cascade_skips_missing_key_field() {
     // Push event WITHOUT merchant_id -- MerchantTx should be skipped
     let _ = engine.push_with_cascade("Raw", &json!({
         "user_id": "u1", "amount": 50.0
-    }), &mut store, now).unwrap();
+    }), &store, now).unwrap();
 
     // UserTx has state, MerchantTx does not
-    let user_features = engine.get_features("u1", &mut store, now);
+    let user_features = engine.get_features("u1", &store, now);
     assert!(user_features.contains_key("count_1h"));
 
     // No merchant entity should exist
@@ -415,14 +415,14 @@ fn test_cascade_with_filter_on_downstream() {
     // Push success event -- should NOT cascade to Failed
     let _ = engine.push_with_cascade("Raw", &json!({
         "user_id": "u1", "status": "success"
-    }), &mut store, now).unwrap();
+    }), &store, now).unwrap();
     assert_eq!(store.entity_count(), 0); // no entity created
 
     // Push failed event -- SHOULD cascade to Failed
     let _ = engine.push_with_cascade("Raw", &json!({
         "user_id": "u1", "status": "failed"
-    }), &mut store, now).unwrap();
-    let all = engine.get_features("u1", &mut store, now);
+    }), &store, now).unwrap();
+    let all = engine.get_features("u1", &store, now);
     assert_eq!(all.get("count_1h"), Some(&FeatureValue::Int(1)));
 }
 
@@ -463,13 +463,13 @@ fn test_keyed_to_keyed_cascade() {
     // Push to A -- should cascade to B
     let features = engine.push_with_cascade("A", &json!({
         "user_id": "u1"
-    }), &mut store, now).unwrap();
+    }), &store, now).unwrap();
 
     // Features from primary push (stream A)
     assert_eq!(features.get("a_count"), Some(&FeatureValue::Int(1)));
 
     // B should also have been updated
-    let all = engine.get_features("u1", &mut store, now);
+    let all = engine.get_features("u1", &store, now);
     assert_eq!(all.get("b_count"), Some(&FeatureValue::Int(1)));
 }
 
@@ -487,15 +487,15 @@ fn test_multiple_depends_on_sources() {
     // Push to A -- should cascade to C
     let _ = engine.push_with_cascade("A", &json!({
         "user_id": "u1"
-    }), &mut store, now).unwrap();
-    let all = engine.get_features("u1", &mut store, now);
+    }), &store, now).unwrap();
+    let all = engine.get_features("u1", &store, now);
     assert_eq!(all.get("count_1h"), Some(&FeatureValue::Int(1)));
 
     // Push to B -- should also cascade to C
     let _ = engine.push_with_cascade("B", &json!({
         "user_id": "u1"
-    }), &mut store, now).unwrap();
-    let all = engine.get_features("u1", &mut store, now);
+    }), &store, now).unwrap();
+    let all = engine.get_features("u1", &store, now);
     assert_eq!(all.get("count_1h"), Some(&FeatureValue::Int(2)));
 }
 
@@ -551,8 +551,8 @@ fn push_events(
 ) {
     for (event, &t) in events.iter().zip(times.iter()) {
         let engine = state.engine.read();
-        let mut store = state.store.lock();
-        let _ = engine.push(stream_name, event, &mut *store, t);
+        let store = &state.store;
+        let _ = engine.push(stream_name, event, &state.store, t);
         drop(store);
         drop(engine);
         let mut event_log = state.event_log.lock();
@@ -621,8 +621,8 @@ async fn test_backfill_replay_deterministic() {
     // Verify count_1h reads 10
     {
         let engine = state.engine.read();
-        let mut store = state.store.lock();
-        let features = engine.get_features("u1", &mut *store, base_time + Duration::from_secs(9));
+        let store = &state.store;
+        let features = engine.get_features("u1", &state.store, base_time + Duration::from_secs(9));
         assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(10)));
     }
 
@@ -694,8 +694,8 @@ async fn test_backfill_replay_deterministic() {
     // Verify sum_1h equals sum of all 10 event amounts: 10+20+30+...+100 = 550
     {
         let engine = state.engine.read();
-        let mut store = state.store.lock();
-        let features = engine.get_features("u1", &mut *store, base_time + Duration::from_secs(9));
+        let store = &state.store;
+        let features = engine.get_features("u1", &state.store, base_time + Duration::from_secs(9));
         assert_eq!(features.get("sum_1h"), Some(&FeatureValue::Float(550.0)));
         // count_1h should still be 10
         assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(10)));
@@ -804,8 +804,8 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
     // Read count_30m at time T+7200 -- should be 5 (only the second batch within 30m window)
     {
         let engine = state.engine.read();
-        let mut store = state.store.lock();
-        let features = engine.get_features("u1", &mut *store, t2);
+        let store = &state.store;
+        let features = engine.get_features("u1", &state.store, t2);
         let count_30m = features.get("count_30m");
         assert_eq!(count_30m, Some(&FeatureValue::Int(5)),
             "count_30m should be 5 (only events within 30m window at T+7200), got {:?}", count_30m);
@@ -844,7 +844,7 @@ fn test_schema_evolution_add_remove() {
 
     // Push 5 events
     for i in 0..5 {
-        engine.push("Txns", &json!({"user_id": "u1", "amount": (i + 1) as f64 * 10.0}), &mut store, now).unwrap();
+        engine.push("Txns", &json!({"user_id": "u1", "amount": (i + 1) as f64 * 10.0}), &store, now).unwrap();
     }
 
     // Verify
@@ -881,11 +881,11 @@ fn test_schema_evolution_add_remove() {
 
     // Push 3 more events
     for i in 0..3 {
-        engine.push("Txns", &json!({"user_id": "u1", "amount": (i + 1) as f64 * 5.0}), &mut store, now).unwrap();
+        engine.push("Txns", &json!({"user_id": "u1", "amount": (i + 1) as f64 * 5.0}), &store, now).unwrap();
     }
 
     // Verify count_1h=8 (preserved, continued counting)
-    let features = engine.get_features("u1", &mut store, now);
+    let features = engine.get_features("u1", &store, now);
     assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(8)));
     // avg_1h should have correct value (only 3 events since it was added)
     assert_eq!(features.get("avg_1h"), Some(&FeatureValue::Float(10.0))); // (5+10+15)/3 = 10
@@ -1004,7 +1004,7 @@ async fn test_backfill_idempotent_restart() {
     // Step 7: Save snapshot with backfill_complete included
     let snapshot_bytes = {
         let engine = state.engine.read();
-        let store = state.store.lock();
+        let store = &state.store;
         let valid_features = engine.valid_features_map();
         let entities = store.clone_for_snapshot_with_gc(&valid_features);
         let pipelines = vec![SerializablePipeline {
@@ -1087,7 +1087,7 @@ async fn test_backfill_idempotent_restart() {
         // Re-run backfill and verify deterministic result
         let state2 = make_state_with_event_log(tmp.path());
         {
-            state2.store.lock().restore_from_snapshot(restored.entities);
+            state2.store.restore_from_snapshot(restored.entities);
             let mut engine2w = state2.engine.write();
             for pipeline in &restored.pipelines {
                 let parsed: serde_json::Value = serde_json::from_str(&pipeline.raw_register_json).unwrap();
@@ -1128,7 +1128,7 @@ async fn test_backfill_idempotent_restart() {
 
         // Verify same deterministic result: sum should be 550
         let engine2r = state2.engine.read();
-        let mut store2 = state2.store.lock();
+        let store2 = &state2.store;
         let features = engine2r.get_features("u1", &mut *store2, base_time + Duration::from_secs(9));
         assert_eq!(features.get("sum_1h"), Some(&FeatureValue::Float(550.0)),
             "Re-run backfill should produce same deterministic result");

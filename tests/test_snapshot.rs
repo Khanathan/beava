@@ -65,7 +65,7 @@ fn test_snapshot_roundtrip_preserves_features() {
             "user_id": "u123",
             "amount": amount
         });
-        engine.push("Transactions", &event, &mut store, now).unwrap();
+        engine.push("Transactions", &event, &store, now).unwrap();
     }
 
     // Clone state for snapshot
@@ -183,7 +183,7 @@ fn test_eviction_removes_old_entity() {
     // old_user: 3601s old > 3600s TTL -> evicted
     // boundary_user: 3600s old = 3600s TTL -> kept (at boundary)
     // recent_user: 60s old < 3600s TTL -> kept
-    let evicted = evict_expired_keys(&mut store, &engine, now, 2);
+    let evicted = evict_expired_keys(&store, &engine, now, 2);
     assert_eq!(evicted, 1);
     assert!(store.get_entity("old_user").is_none());
     assert!(store.get_entity("boundary_user").is_some());
@@ -221,7 +221,7 @@ fn test_eviction_preserves_entity_with_no_events() {
     }
 
     let now = ts(100_000);
-    let evicted = evict_expired_keys(&mut store, &engine, now, 2);
+    let evicted = evict_expired_keys(&store, &engine, now, 2);
     assert_eq!(evicted, 0);
     assert!(store.get_entity("no_event_user").is_some());
 }

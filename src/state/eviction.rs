@@ -18,7 +18,7 @@ use crate::engine::pipeline::PipelineEngine;
 ///
 /// Returns the number of stream entries evicted.
 pub fn evict_expired_stream_entries(
-    store: &mut StateStore,
+    store: &StateStore,
     engine: &PipelineEngine,
     now: SystemTime,
     ttl_multiplier: u32,
@@ -33,7 +33,7 @@ pub fn evict_expired_stream_entries(
     let mut total_evicted = 0;
 
     // Phase 1: Collect eviction decisions using only immutable borrows, so we
-    // can separately call mark_deleted (which needs &mut store) before mutating
+    // can separately call mark_deleted before mutating
     // the entity streams. Each plan entry is (key, streams_to_remove, will_be_empty).
     let entity_keys: Vec<String> = store.entity_keys();
     let mut eviction_plan: Vec<(String, Vec<String>, bool)> = Vec::new();
@@ -102,7 +102,7 @@ pub fn evict_expired_stream_entries(
 /// Delegates to evict_expired_stream_entries for per-stream eviction behavior.
 /// Returns the number of stream entries evicted.
 pub fn evict_expired_keys(
-    store: &mut StateStore,
+    store: &StateStore,
     engine: &PipelineEngine,
     now: SystemTime,
     ttl_multiplier: u32,
@@ -154,7 +154,7 @@ mod tests {
 
         let now = ts(100_000);
         // TTL = 2 * 3600 = 7200 seconds. Entity is 99000 seconds old -> evicted.
-        let evicted = evict_expired_keys(&mut store, &engine, now, 2);
+        let evicted = evict_expired_keys(&store, &engine, now, 2);
         assert_eq!(evicted, 1);
         assert_eq!(store.entity_count(), 0);
     }
@@ -174,7 +174,7 @@ mod tests {
 
         let now = ts(100_000);
         // TTL = 2 * 3600 = 7200 seconds. Entity is 1000 seconds old -> kept.
-        let evicted = evict_expired_keys(&mut store, &engine, now, 2);
+        let evicted = evict_expired_keys(&store, &engine, now, 2);
         assert_eq!(evicted, 0);
         assert_eq!(store.entity_count(), 1);
     }
@@ -192,7 +192,7 @@ mod tests {
         }
 
         let now = ts(100_000);
-        let evicted = evict_expired_keys(&mut store, &engine, now, 2);
+        let evicted = evict_expired_keys(&store, &engine, now, 2);
         assert_eq!(evicted, 0);
         assert_eq!(store.entity_count(), 1);
     }
@@ -209,7 +209,7 @@ mod tests {
         }
 
         let now = ts(100_000);
-        let evicted = evict_expired_keys(&mut store, &engine, now, 2);
+        let evicted = evict_expired_keys(&store, &engine, now, 2);
         assert_eq!(evicted, 0);
         assert_eq!(store.entity_count(), 1); // Not evicted because no streams -> no max window
     }
@@ -253,7 +253,7 @@ mod tests {
         }
 
         let now = ts(100_000);
-        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
         assert_eq!(evicted, 1, "only stream_short should be evicted");
 
         let entity = store.get_entity("user1").unwrap();
@@ -274,7 +274,7 @@ mod tests {
         }
 
         let now = ts(100_000);
-        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
         assert_eq!(evicted, 1);
         assert_eq!(store.entity_count(), 0, "entity should be removed when all streams evicted and no static features");
     }
@@ -294,7 +294,7 @@ mod tests {
         store.set_static("user1", "lifetime_value", crate::types::FeatureValue::Float(100.0), ts(1000));
 
         let now = ts(100_000);
-        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
         assert_eq!(evicted, 1, "stream1 should be evicted");
         assert_eq!(store.entity_count(), 1, "entity should be kept because of static features");
         let entity = store.get_entity("user1").unwrap();
@@ -316,7 +316,7 @@ mod tests {
         }
 
         let now = ts(100_000);
-        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
         assert_eq!(evicted, 1, "stream with None entity_ttl should fall back to global TTL");
     }
 
@@ -346,7 +346,7 @@ mod tests {
         }
 
         let now = ts(100_000);
-        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
         assert_eq!(evicted, 0, "should not evict when entity_ttl=None and max_window=0");
     }
 
@@ -363,7 +363,7 @@ mod tests {
         }
 
         let now = ts(100_000);
-        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
         assert_eq!(evicted, 0, "stream with no last_event_at should not be evicted");
     }
 
@@ -386,7 +386,7 @@ mod tests {
         }
 
         let now = ts(100_000);
-        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
         assert_eq!(evicted, 1, "only stream_custom should be evicted");
         let entity = store.get_entity("user1").unwrap();
         assert!(entity.streams.get("stream_custom").is_none());
@@ -418,7 +418,7 @@ mod tests {
         }
 
         let now = ts(100_000);
-        let evicted = evict_expired_keys(&mut store, &engine, now, 2);
+        let evicted = evict_expired_keys(&store, &engine, now, 2);
         assert_eq!(evicted, 1);
         assert_eq!(store.entity_count(), 2);
         assert!(store.get_entity("old_user").is_none());
@@ -442,7 +442,7 @@ mod tests {
         }
 
         let now = ts(100_000);
-        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
         assert_eq!(evicted, 1);
         assert_eq!(store.entity_count(), 0, "entity should be fully removed");
 
@@ -470,7 +470,7 @@ mod tests {
         );
 
         let now = ts(100_000);
-        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
         assert_eq!(evicted, 1, "stream1 should be evicted");
         assert_eq!(store.entity_count(), 1, "entity kept due to static features");
 
@@ -496,7 +496,7 @@ mod tests {
         }
 
         let now = ts(100_000);
-        let evicted = evict_expired_stream_entries(&mut store, &engine, now, 2);
+        let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
         assert_eq!(evicted, 1);
         assert_eq!(store.entity_count(), 1, "entity kept because stream_long remains");
 

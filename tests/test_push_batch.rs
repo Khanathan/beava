@@ -77,8 +77,8 @@ fn register(state: &SharedState, defs: Vec<StreamDefinition>) {
 fn get_count(state: &SharedState, stream: &str, key: &str) -> Option<i64> {
     let now = ts(1000);
     let engine = state.engine.read();
-    let mut store = state.store.lock();
-    let features = engine.get_features(key, &mut *store, now);
+    let store = &state.store;
+    let features = engine.get_features(key, &state.store, now);
     let qualified = format!("{}.count_1h", stream);
     if let Some(fv) = features.get(&qualified).or_else(|| features.get("count_1h")) {
         match fv {

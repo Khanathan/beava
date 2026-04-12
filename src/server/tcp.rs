@@ -74,8 +74,9 @@ pub struct ConcurrentAppState {
     /// write only on REGISTER (D-04).
     pub engine: RwLock<PipelineEngine>,
 
-    /// Entity + static feature state — separate lock from engine.
-    pub store: PLMutex<StateStore>,
+    /// Entity + static feature state — DashMap provides per-key concurrency,
+    /// no outer lock needed.
+    pub store: StateStore,
 
     /// Optional event log — independent lock.
     pub event_log: PLMutex<Option<EventLog>>,
@@ -118,7 +119,7 @@ pub fn make_concurrent_state(
 ) -> SharedState {
     Arc::new(ConcurrentAppState {
         engine: RwLock::new(engine),
-        store: PLMutex::new(store),
+        store,
         event_log: PLMutex::new(event_log),
         metrics: PLMutex::new(Metrics::default()),
         snapshot_path,
@@ -586,16 +587,20 @@ fn handle_push_core_ex(
 ) -> Result<crate::types::FeatureMap, TallyError> {
     let push_start = std::time::Instant::now();
     let engine = state.engine.read();
-    let mut store = state.store.lock();
-    let mut event_log = state.event_log.lock();
+    let store = &state.store;
+
+    // Phase 14 fix: Do NOT acquire event_log lock during entity state work.
+    // Entity state mutations use DashMap (lock-free per key). Event log
+    // append is deferred to after all state work completes so the event_log
+    // lock does not serialize concurrent connections.
 
     // Cascade-aware push: handles topological cascade through depends_on chains.
     // Async path (read_features=false) skips HLL/derive reads for ~140x speedup
     // on large pipelines — see pipeline.rs push_no_features doc.
     let features = if read_features {
-        engine.push_with_cascade(stream_name, payload, &mut *store, now)?
+        engine.push_with_cascade(stream_name, payload, store, now)?
     } else {
-        engine.push_with_cascade_no_features(stream_name, payload, &mut *store, now)?
+        engine.push_with_cascade_no_features(stream_name, payload, store, now)?
     };
 
     // Mark primary key dirty for incremental snapshots (OPS-03).
@@ -609,32 +614,32 @@ fn handle_push_core_ex(
         }
     }
 
-    // Append event to primary stream's event log (ELOG-01, ELOG-02, ELOG-03).
-    // Plan 11-06: writes raw binary wire bytes directly — no JSON serialize
-    // on the hot path. Event log readers dispatch on the format byte.
-    // Build once, reuse for primary + cascade + fan-out writes.
-    let log_payload = if event_log.is_some() {
-        make_log_payload(payload, raw_payload)
-    } else {
-        Vec::new()
-    };
-    if let Some(ref mut log) = *event_log {
-        let _ = log.append(stream_name, &log_payload, now);
-    }
-
-    // Append event to downstream (cascade) streams' event logs (T-07-10)
+    // Fan-out: push to other streams whose key_field exists in the event.
     let cascade_targets = engine.get_cascade_targets(stream_name);
-    if let Some(ref mut log) = *event_log {
-        for ds_name in &cascade_targets {
-            let should_log = match engine.get_stream(ds_name) {
-                Some(d) => match &d.key_field {
-                    Some(kf) => matches!(payload.get(kf.as_str()), Some(serde_json::Value::String(s)) if !s.is_empty()),
-                    None => true,
-                },
-                None => false,
-            };
-            if should_log {
-                let _ = log.append(ds_name, &log_payload, now);
+    let primary_key_field = engine.get_stream(stream_name).and_then(|s| s.key_field.as_deref());
+    let targets = engine.fan_out_targets();
+    // Collect fan-out stream names for event log (need to know which streams were touched)
+    let mut fan_out_logged: Vec<&str> = Vec::new();
+    for (target_name, target_key_field) in &targets {
+        if target_name == stream_name {
+            continue;
+        }
+        if primary_key_field == Some(target_key_field.as_str()) {
+            continue;
+        }
+        if cascade_targets.iter().any(|ct| ct == target_name) {
+            continue;
+        }
+        if let Some(serde_json::Value::String(key_val)) = payload.get(target_key_field.as_str()) {
+            if !key_val.is_empty() {
+                // PERF: honor async read_features flag for fan-out targets.
+                let _ = if read_features {
+                    engine.push(target_name, payload, store, now)
+                } else {
+                    engine.push_no_features(target_name, payload, store, now)
+                };
+                store.mark_dirty(key_val);
+                fan_out_logged.push(target_name);
             }
         }
     }
@@ -652,46 +657,36 @@ fn handle_push_core_ex(
         }
     }
 
-    // Fan-out: push to other streams whose key_field exists in the event.
-    let primary_key_field = engine.get_stream(stream_name).and_then(|s| s.key_field.as_deref());
-    let targets = engine.fan_out_targets();
-    for (target_name, target_key_field) in &targets {
-        if target_name == stream_name {
-            continue;
-        }
-        if primary_key_field == Some(target_key_field.as_str()) {
-            continue;
-        }
-        if cascade_targets.iter().any(|ct| ct == target_name) {
-            continue;
-        }
-        if let Some(serde_json::Value::String(key_val)) = payload.get(target_key_field.as_str()) {
-            if !key_val.is_empty() {
-                // PERF: honor async read_features flag for fan-out targets.
-                // Without this, fan-out calls engine.push (defaults to
-                // read_features=true) and still pays the HLL read cost on
-                // downstream streams — measured ~50x regression on `bench.py
-                // large` where 3 HLLs are spread across 3 streams via fan-out.
-                let _ = if read_features {
-                    engine.push(target_name, payload, &mut *store, now)
-                } else {
-                    engine.push_no_features(target_name, payload, &mut *store, now)
+    // NOW acquire event_log lock — only for the append I/O, not during state work.
+    {
+        let mut event_log = state.event_log.lock();
+        let log_payload = if event_log.is_some() {
+            make_log_payload(payload, raw_payload)
+        } else {
+            Vec::new()
+        };
+        if let Some(ref mut log) = *event_log {
+            // Primary stream
+            let _ = log.append(stream_name, &log_payload, now);
+            // Cascade targets (T-07-10)
+            for ds_name in &cascade_targets {
+                let should_log = match engine.get_stream(ds_name) {
+                    Some(d) => match &d.key_field {
+                        Some(kf) => matches!(payload.get(kf.as_str()), Some(serde_json::Value::String(s)) if !s.is_empty()),
+                        None => true,
+                    },
+                    None => false,
                 };
-                store.mark_dirty(key_val);
-                if let Some(ref mut log) = *event_log {
-                    // Reuse the single log_payload built earlier (same bytes
-                    // for every target — the format prefix + payload is
-                    // stream-agnostic).
-                    let _ = log.append(target_name, &log_payload, now);
+                if should_log {
+                    let _ = log.append(ds_name, &log_payload, now);
                 }
             }
+            // Fan-out targets
+            for target_name in &fan_out_logged {
+                let _ = log.append(target_name, &log_payload, now);
+            }
         }
-    }
-
-    // DBUI-02: throughput bump across unique touched streams.
-    // Drop store and event_log locks before acquiring throughput/metrics locks.
-    drop(store);
-    drop(event_log);
+    } // event_log lock dropped here
     {
         let now_inst = std::time::Instant::now();
         let primary_key_field_for_tp = engine
@@ -932,13 +927,11 @@ pub fn handle_push_batch(
     let mut results: Vec<Result<(), TallyError>> =
         (0..batch.len()).map(|_| Ok(())).collect();
 
-    // Phase 14: acquire individual locks instead of one global lock.
-    // Engine read lock + store lock + event_log lock. The guards live
-    // only for the synchronous body below — clippy::await_holding_lock
-    // enforces that at compile time.
+    // Phase 14 fix: engine read lock only. Store is accessed via DashMap
+    // (no lock needed). Event log lock is deferred to AFTER all entity state
+    // work so it does not serialize concurrent connections.
     let engine = state.engine.read();
-    let mut store = state.store.lock();
-    let mut event_log = state.event_log.lock();
+    let store = &state.store;
 
     if all_same_stream {
         // Single-stream fast path: no grouping needed, no index indirection.
@@ -956,7 +949,7 @@ pub fn handle_push_batch(
         let per_event = engine.push_batch_with_cascade_no_features(
             stream_name,
             &events_refs,
-            &mut *store,
+            store,
             now,
         );
 
@@ -964,19 +957,6 @@ pub fn handle_push_batch(
         for (idx, res) in per_event.into_iter().enumerate() {
             if let Err(e) = res {
                 results[idx] = Err(e);
-            }
-        }
-
-        // Per-event event log append — avoids intermediate Vec<Vec<u8>>
-        // allocation. Each call reuses the writer lookup from EventLog's
-        // internal HashMap (one HashMap probe per call, amortized by branch
-        // prediction on the repeated stream name).
-        if let Some(ref mut log) = *event_log {
-            for (idx, ev) in batch.iter().enumerate() {
-                if results[idx].is_ok() {
-                    let lp = make_log_payload(&ev.payload, &ev.raw_payload);
-                    let _ = log.append(stream_name, &lp, now);
-                }
             }
         }
 
@@ -988,6 +968,19 @@ pub fn handle_push_batch(
                         if !key_val.is_empty() {
                             store.mark_dirty(key_val);
                         }
+                    }
+                }
+            }
+        }
+
+        // Deferred event log append — acquire lock only for I/O.
+        {
+            let mut event_log = state.event_log.lock();
+            if let Some(ref mut log) = *event_log {
+                for (idx, ev) in batch.iter().enumerate() {
+                    if results[idx].is_ok() {
+                        let lp = make_log_payload(&ev.payload, &ev.raw_payload);
+                        let _ = log.append(stream_name, &lp, now);
                     }
                 }
             }
@@ -1021,23 +1014,13 @@ pub fn handle_push_batch(
             let per_event = engine.push_batch_with_cascade_no_features(
                 stream_name,
                 &events_refs,
-                &mut *store,
+                store,
                 now,
             );
 
             for (slot_idx, res) in indices.iter().zip(per_event.into_iter()) {
                 if let Err(e) = res {
                     results[*slot_idx] = Err(e);
-                }
-            }
-
-            // Per-event log append (avoids Vec<Vec<u8>> allocation).
-            if let Some(ref mut log) = *event_log {
-                for &i in indices {
-                    if results[i].is_ok() {
-                        let lp = make_log_payload(&batch[i].payload, &batch[i].raw_payload);
-                        let _ = log.append(stream_name, &lp, now);
-                    }
                 }
             }
 
@@ -1054,13 +1037,24 @@ pub fn handle_push_batch(
                 }
             }
         }
+
+        // Deferred event log append — acquire lock only for I/O.
+        {
+            let mut event_log = state.event_log.lock();
+            if let Some(ref mut log) = *event_log {
+                for (stream_name, indices) in &groups {
+                    for &i in indices {
+                        if results[i].is_ok() {
+                            let lp = make_log_payload(&batch[i].payload, &batch[i].raw_payload);
+                            let _ = log.append(stream_name, &lp, batch[i].now);
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    // Metrics bump once per batch — matches the per-event increment the
-    // legacy handle_push_core path performs, but amortized.
-    // Drop store/event_log before acquiring metrics lock.
-    drop(store);
-    drop(event_log);
+    // Metrics bump once per batch.
     state.metrics.lock().events_total += batch.len() as u64;
 
     results
@@ -1093,10 +1087,8 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
         Command::Get { key } => {
             let get_start = std::time::Instant::now();
             let engine = state.engine.read();
-            let mut store = state.store.lock();
-            let features = engine.get_features(&key, &mut *store, now);
+            let features = engine.get_features(&key, &state.store, now);
             let result = feature_map_to_json(&features);
-            drop(store);
             drop(engine);
             // Phase 10.2: record GET latency
             let get_us = get_start.elapsed().as_secs_f64() * 1_000_000.0;
@@ -1112,15 +1104,14 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
         Command::Set { key, payload } => {
             let set_start = std::time::Instant::now();
             {
-                let mut store = state.store.lock();
                 // payload is a JSON object; iterate its key-value pairs
                 if let serde_json::Value::Object(map) = payload {
                     for (feat_name, val) in map {
                         let fv = json_to_feature_value(val);
-                        store.set_static(&key, &feat_name, fv, now);
+                        state.store.set_static(&key, &feat_name, fv, now);
                     }
                     // Mark entity key dirty for incremental snapshots (OPS-03)
-                    store.mark_dirty(&key);
+                    state.store.mark_dirty(&key);
                 } else {
                     return Err(TallyError::Protocol(
                         "SET payload must be a JSON object".into(),
@@ -1230,10 +1221,9 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
         }
         Command::Mget { keys } => {
             let engine = state.engine.read();
-            let mut store = state.store.lock();
             let mut result = serde_json::Map::new();
             for key in &keys {
-                let features = engine.get_features(key, &mut *store, now);
+                let features = engine.get_features(key, &state.store, now);
                 let feature_json = feature_map_to_json(&features);
                 // Parse the JSON bytes back to a Value for nesting
                 let mut value: serde_json::Value = serde_json::from_slice(&feature_json)
@@ -1273,10 +1263,9 @@ pub async fn run_backfill(
     // Clear any existing operator state for backfill features (idempotent restart).
     // This ensures a re-run after crash produces the same result as a fresh run.
     {
-        let mut store = state.store.lock();
-        let keys: Vec<String> = store.entity_keys();
+        let keys: Vec<String> = state.store.entity_keys();
         for key in &keys {
-            if let Some(mut entity) = store.get_entity_mut(key) {
+            if let Some(mut entity) = state.store.get_entity_mut(key) {
                 if let Some(stream_state) = entity.streams.get_mut(&stream_name) {
                     stream_state.operators.retain(|(name, _)| !feature_names.contains(name));
                 }
@@ -1288,7 +1277,6 @@ pub async fn run_backfill(
     for (chunk_idx, chunk) in entries.chunks(64).enumerate() {
         {
             let engine = state.engine.read();
-            let mut store = state.store.lock();
             for entry in chunk {
                 // Plan 11-06: dispatch on log payload format byte.
                 // LOG_FMT_BINARY → decode binary wire format.
@@ -1312,7 +1300,7 @@ pub async fn run_backfill(
                 let _ = engine.push_for_backfill(
                     &stream_name,
                     &event,
-                    &mut *store,
+                    &state.store,
                     entry.timestamp, // Event timestamp for determinism (SCHM-05)
                     &feature_names,
                 );
@@ -1321,13 +1309,13 @@ pub async fn run_backfill(
                     if let Some(ref kf) = stream_def.key_field {
                         if let Some(serde_json::Value::String(key_val)) = event.get(kf.as_str()) {
                             if !key_val.is_empty() {
-                                store.mark_dirty(key_val);
+                                state.store.mark_dirty(key_val);
                             }
                         }
                     }
                 }
             }
-        } // Locks released before yield
+        } // Engine read lock released before yield
         // Update progress
         let processed = std::cmp::min((chunk_idx + 1) * 64, total);
         status.processed_events.store(processed, Ordering::Relaxed);
@@ -1370,20 +1358,17 @@ async fn handle_mset(
 ) -> Result<Vec<u8>, TallyError> {
     let now = SystemTime::now();
     for chunk in entries.chunks(1024) {
-        {
-            let mut store = state.store.lock();
-            for (key, payload) in chunk {
-                if let serde_json::Value::Object(map) = payload {
-                    for (feat_name, val) in map {
-                        let fv = json_to_feature_value(val.clone());
-                        store.set_static(key, feat_name, fv, now);
-                    }
-                    // Mark entity key dirty once per chunk iteration (OPS-03)
-                    store.mark_dirty(key);
+        for (key, payload) in chunk {
+            if let serde_json::Value::Object(map) = payload {
+                for (feat_name, val) in map {
+                    let fv = json_to_feature_value(val.clone());
+                    state.store.set_static(key, feat_name, fv, now);
                 }
-                // Skip non-object payloads silently (defensive)
+                // Mark entity key dirty once per chunk iteration (OPS-03)
+                state.store.mark_dirty(key);
             }
-        } // Lock released before yield
+            // Skip non-object payloads silently (defensive)
+        }
         tokio::task::yield_now().await;
     }
     Ok(vec![])
@@ -1448,7 +1433,7 @@ mod tests {
     fn test_app_state_wraps_engine_and_store() {
         let state = make_shared_state();
         assert_eq!(state.engine.read().stream_count(), 0);
-        assert_eq!(state.store.lock().entity_count(), 0);
+        assert_eq!(state.store.entity_count(), 0);
     }
 
     #[test]
@@ -1557,8 +1542,7 @@ mod tests {
         assert!(result.unwrap().is_empty()); // Empty payload on success
 
         // Verify the features were written
-        let store = state.store.lock();
-        let entity = store.get_entity("u123").unwrap();
+        let entity = state.store.get_entity("u123").unwrap();
         assert_eq!(
             entity.static_features.get("segment").unwrap().value,
             FeatureValue::String("high_value".into())
@@ -1637,7 +1621,7 @@ mod tests {
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
 
-        assert_eq!(state.store.lock().entity_count(), 2);
+        assert_eq!(state.store.entity_count(), 2);
     }
 
     #[tokio::test]
@@ -1650,7 +1634,7 @@ mod tests {
         let result = handle_mset(entries, &state).await;
         assert!(result.is_ok());
 
-        assert_eq!(state.store.lock().entity_count(), 2050);
+        assert_eq!(state.store.entity_count(), 2050);
     }
 
     // --- json_to_feature_value tests ---
@@ -1708,34 +1692,32 @@ mod tests {
         let result = handle_mset(entries, &state).await;
         assert!(result.is_ok());
 
-        let store = state.store.lock();
         // k1 and k3 should be written (object payloads)
-        assert!(store.get_entity("k1").is_some(), "k1 should be written");
-        assert!(store.get_entity("k3").is_some(), "k3 should be written");
+        assert!(state.store.get_entity("k1").is_some(), "k1 should be written");
+        assert!(state.store.get_entity("k3").is_some(), "k3 should be written");
         // k2 should NOT be written (non-object payload was skipped)
         assert!(
-            store.get_entity("k2").is_none(),
+            state.store.get_entity("k2").is_none(),
             "k2 should be skipped (non-object)"
         );
     }
 
-    // --- parking_lot mutex panic recovery test ---
-    // parking_lot does not poison on panic (unlike std::sync::Mutex),
+    // --- panic recovery test ---
+    // DashMap + parking_lot do not poison on panic (unlike std::sync::Mutex),
     // so this test verifies that the state is still usable after a panic.
 
     #[test]
-    fn test_parking_lot_mutex_no_poisoning() {
+    fn test_no_poisoning_after_panic() {
         let state = make_shared_state();
-        // parking_lot Mutex does NOT poison on panic (unlike std::Mutex).
-        // Attempt a panic inside a lock scope.
+        // Attempt a panic inside an engine write lock scope.
         let state2 = state.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _store = state2.store.lock();
+            let _engine = state2.engine.write();
             panic!("intentional panic inside parking_lot lock");
         }));
         assert!(result.is_err()); // Panic was caught
 
-        // parking_lot does not poison — the lock is still usable.
+        // State is still usable — no poisoning.
         let cmd = Command::Get {
             key: "test".into(),
         };
@@ -1790,8 +1772,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify merchant entity was created via fan-out
-        let mut store = state.store.lock();
-        let merchant_features = store.get_all_features("m456", std::time::SystemTime::now());
+        let merchant_features = state.store.get_all_features("m456", std::time::SystemTime::now());
         assert_eq!(
             merchant_features.get("merchant_tx_count_1h"),
             Some(&FeatureValue::Int(1)),
@@ -1825,8 +1806,7 @@ mod tests {
         assert_eq!(json, serde_json::json!({}));
 
         // But the fan-out still happened: MerchantActivity state was updated.
-        let mut store = state.store.lock();
-        let merchant_features = store.get_all_features("m456", std::time::SystemTime::now());
+        let merchant_features = state.store.get_all_features("m456", std::time::SystemTime::now());
         assert_eq!(
             merchant_features.get("merchant_tx_count_1h"),
             Some(&FeatureValue::Int(1)),
@@ -1854,8 +1834,7 @@ mod tests {
         handle_sync_command(cmd, &state).unwrap();
 
         // user count should be 1 (pushed once, not twice)
-        let mut store = state.store.lock();
-        let user_features = store.get_all_features("u123", std::time::SystemTime::now());
+        let user_features = state.store.get_all_features("u123", std::time::SystemTime::now());
         assert_eq!(user_features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
     }
 
@@ -1878,7 +1857,7 @@ mod tests {
         handle_sync_command(cmd, &state).unwrap();
 
         // Merchant entity should NOT exist
-        assert!(state.store.lock().get_entity("m456").is_none(), "no fan-out without key field");
+        assert!(state.store.get_entity("m456").is_none(), "no fan-out without key field");
     }
 
     #[test]
@@ -1901,7 +1880,7 @@ mod tests {
         handle_sync_command(cmd, &state).unwrap();
 
         // Should not create entity for empty key
-        assert_eq!(state.store.lock().entity_count(), 1, "only u123 entity, not empty merchant");
+        assert_eq!(state.store.entity_count(), 1, "only u123 entity, not empty merchant");
     }
 
     #[test]

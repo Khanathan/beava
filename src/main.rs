@@ -23,7 +23,7 @@ enum SnapshotData {
     Delta(DeltaSnapshotState),
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
     let tcp_port = std::env::var("TALLY_TCP_PORT").unwrap_or_else(|_| "6400".into());
     let http_port = std::env::var("TALLY_HTTP_PORT").unwrap_or_else(|_| "6401".into());
@@ -77,10 +77,10 @@ async fn main() {
         *state.previous_base_seq.lock() = 0;
 
         // Restore entity state
-        state.store.lock().restore_from_snapshot(snapshot_state.entities);
+        state.store.restore_from_snapshot(snapshot_state.entities);
         // Clear any dirty/deleted tracking
-        state.store.lock().clear_dirty();
-        let _ = state.store.lock().take_deleted();
+        state.store.clear_dirty();
+        let _ = state.store.take_deleted();
 
         // Re-register pipelines from stored JSON
         {
@@ -130,7 +130,7 @@ async fn main() {
         {
             let engine = state.engine.read();
             let valid_features = engine.valid_features_map();
-            state.store.lock().gc_invalid_operators(&valid_features);
+            state.store.gc_invalid_operators(&valid_features);
         }
 
         // Detect incomplete backfills
@@ -210,7 +210,7 @@ async fn main() {
             // the cycle counter — using individual locks.
             let prepared: Option<(SnapshotData, u64, bool, PathBuf, u64)> = {
                 let engine = snap_state.engine.read();
-                let mut store = snap_state.store.lock();
+                let store = &snap_state.store;
                 let cycle = *snap_state.snapshot_cycle.lock();
                 let seq = *snap_state.snapshot_seq.lock();
                 let is_full = cycle % full_snapshot_interval == 0;
@@ -370,8 +370,7 @@ async fn main() {
             interval.tick().await;
             let now = std::time::SystemTime::now();
             let engine = evict_state.engine.read();
-            let mut store = evict_state.store.lock();
-            let evicted = evict_expired_keys(&mut *store, &*engine, now, ttl_multiplier);
+            let evicted = evict_expired_keys(&evict_state.store, &*engine, now, ttl_multiplier);
             if evicted > 0 {
                 eprintln!("Evicted {} expired keys", evicted);
             }
@@ -504,7 +503,7 @@ pub(crate) fn load_incremental_snapshots(
     });
 
     if let Some((base_seq, base)) = loaded {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         store.restore_from_snapshot(base.entities.clone());
 
         let mut applicable: Vec<(u64, PathBuf)> = deltas

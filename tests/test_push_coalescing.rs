@@ -98,8 +98,8 @@ fn pending(seq: u64, stream: &str, payload: serde_json::Value, now: SystemTime) 
 fn get_count(state: &SharedState, stream: &str, key: &str) -> Option<i64> {
     let now = ts(1000);
     let engine = state.engine.read();
-    let mut store = state.store.lock();
-    let features = engine.get_features(key, &mut *store, now);
+    let store = &state.store;
+    let features = engine.get_features(key, &state.store, now);
     let qualified = format!("{}.count_1h", stream);
     if let Some(fv) = features.get(&qualified).or_else(|| features.get("count_1h")) {
         match fv {
@@ -370,10 +370,10 @@ fn cascade_equivalence_3_events_batch_vs_sequential() {
     // Sequential path.
     {
         let engine = seq_state.engine.read();
-        let mut store = seq_state.store.lock();
+        let store = &seq_state.store;
         for e in &events {
             engine
-                .push_with_cascade_no_features("A", e, &mut *store, ts(1000))
+                .push_with_cascade_no_features("A", e, &state.store, ts(1000))
                 .unwrap();
         }
     }

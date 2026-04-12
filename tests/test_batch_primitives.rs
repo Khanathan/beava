@@ -191,7 +191,7 @@ mod push_batch_no_features {
         let mut store = StateStore::new();
 
         let events: Vec<&serde_json::Value> = vec![];
-        let out = engine.push_batch_no_features("Txns", &events, &mut store, ts(1000));
+        let out = engine.push_batch_no_features("Txns", &events, &store, ts(1000));
         assert!(out.is_empty());
         assert_eq!(store.entity_count(), 0);
     }
@@ -207,7 +207,7 @@ mod push_batch_no_features {
         let e2 = json!({"user_id": "u3"});
         let events = vec![&e0, &e1, &e2];
 
-        let out = engine.push_batch_no_features("Txns", &events, &mut store, ts(1000));
+        let out = engine.push_batch_no_features("Txns", &events, &store, ts(1000));
         assert_eq!(out.len(), 3);
         assert!(out.iter().all(|r| r.is_ok()));
         assert_eq!(store.entity_count(), 3);
@@ -224,7 +224,7 @@ mod push_batch_no_features {
         let e2 = json!({"user_id": "u2"});
         let events = vec![&e0, &e1, &e2];
 
-        let out = engine.push_batch_no_features("Txns", &events, &mut store, ts(1000));
+        let out = engine.push_batch_no_features("Txns", &events, &store, ts(1000));
         assert_eq!(out.len(), 3);
         assert!(out[0].is_ok(), "event 0 should apply");
         assert!(out[1].is_err(), "event 1 (empty key) should error");
@@ -243,7 +243,7 @@ mod push_batch_no_features {
         let e = json!({"user_id": "u1"});
         let events = vec![&e, &e, &e];
 
-        let out = engine.push_batch_no_features("nonexistent", &events, &mut store, ts(1000));
+        let out = engine.push_batch_no_features("nonexistent", &events, &store, ts(1000));
         assert_eq!(out.len(), 3);
         assert!(out.iter().all(|r| r.is_err()));
         assert_eq!(store.entity_count(), 0);
@@ -269,7 +269,7 @@ mod push_batch_with_cascade_no_features {
         let engine = build_cascade_engine();
         let mut store = StateStore::new();
         let events: Vec<&serde_json::Value> = vec![];
-        let out = engine.push_batch_with_cascade_no_features("Txns", &events, &mut store, ts(1000));
+        let out = engine.push_batch_with_cascade_no_features("Txns", &events, &store, ts(1000));
         assert!(out.is_empty());
         assert_eq!(store.entity_count(), 0);
     }
@@ -280,7 +280,7 @@ mod push_batch_with_cascade_no_features {
         let mut store = StateStore::new();
         let e = json!({"user_id": "u1"});
         let events = vec![&e, &e];
-        let out = engine.push_batch_with_cascade_no_features("ghost", &events, &mut store, ts(1000));
+        let out = engine.push_batch_with_cascade_no_features("ghost", &events, &store, ts(1000));
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(|r| r.is_err()));
         assert_eq!(store.entity_count(), 0);
@@ -343,17 +343,17 @@ mod push_batch_with_cascade_no_features {
         let events = vec![&e0, &e1, &e2, &e3];
         let now = ts(1000);
 
-        let out = engine.push_batch_with_cascade_no_features("Txns", &events, &mut store, now);
+        let out = engine.push_batch_with_cascade_no_features("Txns", &events, &store, now);
         assert_eq!(out.len(), 4);
         assert!(out.iter().all(|r| r.is_ok()));
 
         // MerchantActivity on m1 should have exactly 4 counts (one per event).
-        let m1 = engine.get_features("m1", &mut store, now);
+        let m1 = engine.get_features("m1", &store, now);
         assert_eq!(m1.get("count_1h"), Some(&FeatureValue::Int(4)));
 
         // And each user should have exactly 1 count on Txns.
         for user in &["u1", "u2", "u3", "u4"] {
-            let f = engine.get_features(user, &mut store, now);
+            let f = engine.get_features(user, &store, now);
             assert_eq!(f.get("count_1h"), Some(&FeatureValue::Int(1)), "user {} count", user);
         }
     }
@@ -368,16 +368,16 @@ mod push_batch_with_cascade_no_features {
         let events = vec![&e0, &e1, &e2];
         let now = ts(1000);
 
-        let out = engine.push_batch_with_cascade_no_features("Txns", &events, &mut store, now);
+        let out = engine.push_batch_with_cascade_no_features("Txns", &events, &store, now);
         assert_eq!(out.len(), 3);
         assert!(out[0].is_ok());
         assert!(out[1].is_err());
         assert!(out[2].is_ok());
 
         // Good events applied, bad event did not.
-        let u1 = engine.get_features("u1", &mut store, now);
+        let u1 = engine.get_features("u1", &store, now);
         assert_eq!(u1.get("count_1h"), Some(&FeatureValue::Int(1)));
-        let u2 = engine.get_features("u2", &mut store, now);
+        let u2 = engine.get_features("u2", &store, now);
         assert_eq!(u2.get("count_1h"), Some(&FeatureValue::Int(1)));
     }
 
@@ -388,7 +388,7 @@ mod push_batch_with_cascade_no_features {
         let e = json!({"user_id": "u1"});
         let events = vec![&e, &e, &e];
 
-        let out = engine.push_batch_with_cascade_no_features("nope", &events, &mut store, ts(1000));
+        let out = engine.push_batch_with_cascade_no_features("nope", &events, &store, ts(1000));
         assert_eq!(out.len(), 3);
         assert!(out.iter().all(|r| r.is_err()));
         assert_eq!(store.entity_count(), 0);

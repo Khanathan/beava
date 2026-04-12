@@ -220,8 +220,8 @@ fn push_event(state: &SharedState, stream: &str, event: &serde_json::Value) {
     let now_inst = Instant::now();
     {
         let engine = state.engine.read();
-        let mut store = state.store.lock();
-        let _ = engine.push(stream, event, &mut *store, now_ts);
+        let store = &state.store;
+        let _ = engine.push(stream, event, &state.store, now_ts);
     }
     // Bump the throughput tracker so the /debug/throughput endpoint observes
     // the push. We pass a single-element slice of the stream name.
