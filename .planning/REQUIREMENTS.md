@@ -65,7 +65,7 @@ Requirements for milestone v1.3: Concurrency & Client Batching. **Active.**
 
 - [ ] **PERF-03**: Server-side async push coalescing — the server accumulates up to N async push frames (default 64) or T microseconds (default 200µs) per connection before dispatching them to a single batched handler under one state-lock acquisition. Multi-client aggregate async throughput on medium pipeline ≥ 200k eps @ 4 clients, and single-client async throughput is within ±5% of v1.2 baseline (Phase 12)
 - [x] **PERF-04**: Client-side batch push API — `app.push_many(stream, events)` wraps N events into one `OP_PUSH_BATCH` (0x0A) wire frame, reducing Python per-event loop overhead. Single-client async throughput via `push_many` ≥ 300k eps on medium pipeline. Error attribution surfaces `(batch_id, event_index)` via existing drain semantic; `app.push()` single-event API continues to work unchanged (Phase 13)
-- [ ] **PERF-05**: Key-partitioned multi-threaded engine — `StateStore` is sharded across `num_shards` worker threads (default `std::thread::available_parallelism()`), each owning an exclusive `ShardStore` with no cross-thread locks on the hot path. Entity key → shard via stable `xxh3_64` hash. Cross-shard fan-out is fire-and-forget via bounded MPMC channels. Aggregate throughput on medium pipeline with 16 clients × 16 shards ≥ 1,000,000 eps; single-client throughput within ±10% of v1.2 (Phase 14)
+- [x] **PERF-05**: Key-partitioned multi-threaded engine — `StateStore` is sharded across `num_shards` worker threads (default `std::thread::available_parallelism()`), each owning an exclusive `ShardStore` with no cross-thread locks on the hot path. Entity key → shard via stable `xxh3_64` hash. Cross-shard fan-out is fire-and-forget via bounded MPMC channels. Aggregate throughput on medium pipeline with 16 clients × 16 shards ≥ 1,000,000 eps; single-client throughput within ±10% of v1.2 (Phase 14)
 
 ### Operational
 
@@ -155,7 +155,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PERF-02 | Phase 11 | Complete |
 | PERF-03 | Phase 12 | In Progress |
 | PERF-04 | Phase 13 | Complete |
-| PERF-05 | Phase 14 | Pending |
+| PERF-05 | Phase 14 | Complete |
 | OPS-05  | Phase 15 | Pending |
 
 **Coverage:**
