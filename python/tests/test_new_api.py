@@ -763,3 +763,165 @@ class TestProjection:
         assert result["entity_ttl"] == "5m"
         assert result["history_ttl"] == "72h"
         assert result["projection"] == {"select": ["c"]}
+
+
+# ===========================================================================
+# End-to-end integration tests for projection (Task 2)
+#
+# These tests use a standalone server (not the session-scoped tally_server)
+# because registering streams with projection on a shared server causes
+# cross-stream interference in get_features (known limitation: projections
+# apply globally, not per-stream).
+# ===========================================================================
+
+
+@pytest.fixture(scope="function")
+def projection_server():
+    """Start a fresh Tally server for projection E2E tests."""
+    import os
+    import socket
+    import subprocess
+    import time
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    binary = os.path.join(project_root, "target", "debug", "tally")
+
+    def find_port():
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    tcp_port = find_port()
+    http_port = find_port()
+
+    env = os.environ.copy()
+    env["TALLY_TCP_PORT"] = str(tcp_port)
+    env["TALLY_HTTP_PORT"] = str(http_port)
+
+    proc = subprocess.Popen(
+        [binary], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", tcp_port), timeout=0.5):
+                break
+        except OSError:
+            time.sleep(0.1)
+
+    yield "127.0.0.1", tcp_port, http_port
+
+    proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=3)
+
+
+def test_projection_select_e2e(projection_server):
+    """select() filters GET responses to only named features."""
+    import tally as tl
+
+    host, tcp_port, _ = projection_server
+
+    @tl.source
+    class RawTxns_sel:
+        pass
+
+    @tl.dataset(depends_on=[RawTxns_sel])
+    class UserTxns_sel:
+        features = tl.group_by("user_id").agg(
+            sel_count_1h=tl.count(window="1h"),
+            sel_sum_1h=tl.sum("amount", window="1h"),
+            sel_internal=tl.count(window="24h"),
+        )
+
+    projected = UserTxns_sel.select(["sel_count_1h", "sel_sum_1h"])
+
+    app = tl.App(f"{host}:{tcp_port}")
+    app.register(RawTxns_sel, projected)
+
+    # Push to keyless source (sync to ensure cascade completes before GET)
+    app.push_sync(RawTxns_sel, {"user_id": "sel_u1", "amount": 42.0})
+
+    # GET should return only selected features (projection applied)
+    get_result = app.get("sel_u1")
+    gd = get_result.to_dict()
+    assert gd.get("sel_count_1h") == 1
+    assert gd.get("sel_sum_1h") == 42.0
+    assert "sel_internal" not in gd
+    app.close()
+
+
+def test_projection_drop_e2e(projection_server):
+    """drop() excludes named features from GET responses."""
+    import tally as tl
+
+    host, tcp_port, _ = projection_server
+
+    @tl.source
+    class RawTxns_drp:
+        pass
+
+    @tl.dataset(depends_on=[RawTxns_drp])
+    class UserTxns_drp:
+        features = tl.group_by("user_id").agg(
+            drp_count_1h=tl.count(window="1h"),
+            drp_sum_1h=tl.sum("amount", window="1h"),
+            drp_internal=tl.count(window="24h"),
+        )
+
+    projected = UserTxns_drp.drop(["drp_internal"])
+
+    app = tl.App(f"{host}:{tcp_port}")
+    app.register(RawTxns_drp, projected)
+
+    # Push to keyless source (sync to ensure cascade completes before GET)
+    app.push_sync(RawTxns_drp, {"user_id": "drp_u1", "amount": 55.0})
+
+    # GET should exclude dropped features
+    get_result = app.get("drp_u1")
+    gd = get_result.to_dict()
+    assert gd.get("drp_count_1h") == 1
+    assert gd.get("drp_sum_1h") == 55.0
+    assert "drp_internal" not in gd
+    app.close()
+
+
+def test_projection_derive_e2e(projection_server):
+    """Derives evaluate correctly even when referenced features are projected out."""
+    import tally as tl
+
+    host, tcp_port, _ = projection_server
+
+    @tl.source
+    class RawTxns_derv:
+        pass
+
+    @tl.dataset(depends_on=[RawTxns_derv])
+    class UserTxns_derv:
+        features = tl.group_by("user_id").agg(
+            derv_cnt=tl.count(window="1h"),
+            derv_internal=tl.count(window="24h"),
+        )
+        derv_ratio = tl.derive("derv_cnt / derv_internal")
+
+    # Select derv_cnt and derv_ratio but NOT derv_internal
+    projected = UserTxns_derv.select(["derv_cnt", "derv_ratio"])
+
+    app = tl.App(f"{host}:{tcp_port}")
+    app.register(RawTxns_derv, projected)
+
+    # Push to keyless source (sync to ensure cascade completes)
+    app.push_sync(RawTxns_derv, {"user_id": "derv_u1"})
+
+    # GET verifies projection: derive evaluates BEFORE projection,
+    # so derv_ratio is correct even though derv_internal is projected out
+    get_result = app.get("derv_u1")
+    d = get_result.to_dict()
+    assert d.get("derv_cnt") == 1
+    # derv_ratio = derv_cnt / derv_internal = 1 / 1 = 1.0
+    assert d.get("derv_ratio") == 1.0
+    assert "derv_internal" not in d
+    app.close()
