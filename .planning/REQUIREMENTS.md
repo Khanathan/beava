@@ -59,30 +59,54 @@ Requirements for milestone v1.2: Performance — fire-and-forget PUSH and binary
 
 ## v1.3 Requirements
 
-Requirements for milestone v1.3: Concurrency & Client Batching. **Active.**
+Requirements for milestone v1.3: Concurrency & Client Batching. **Partially shipped 2026-04-12.**
 
 ### Performance
 
-- [ ] **PERF-03**: Server-side async push coalescing — the server accumulates up to N async push frames (default 64) or T microseconds (default 200µs) per connection before dispatching them to a single batched handler under one state-lock acquisition. Multi-client aggregate async throughput on medium pipeline ≥ 200k eps @ 4 clients, and single-client async throughput is within ±5% of v1.2 baseline (Phase 12)
-- [x] **PERF-04**: Client-side batch push API — `app.push_many(stream, events)` wraps N events into one `OP_PUSH_BATCH` (0x0A) wire frame, reducing Python per-event loop overhead. Single-client async throughput via `push_many` ≥ 300k eps on medium pipeline. Error attribution surfaces `(batch_id, event_index)` via existing drain semantic; `app.push()` single-event API continues to work unchanged (Phase 13)
-- [x] **PERF-05**: Key-partitioned multi-threaded engine — `StateStore` is sharded across `num_shards` worker threads (default `std::thread::available_parallelism()`), each owning an exclusive `ShardStore` with no cross-thread locks on the hot path. Entity key → shard via stable `xxh3_64` hash. Cross-shard fan-out is fire-and-forget via bounded MPMC channels. Aggregate throughput on medium pipeline with 16 clients × 16 shards ≥ 1,000,000 eps; single-client throughput within ±10% of v1.2 (Phase 14)
+- [ ] **PERF-03**: Server-side async push coalescing — deferred (low ROI vs batch API)
+- [x] **PERF-04**: Client-side batch push API — `app.push_many(stream, events)` wraps N events into one `OP_PUSH_BATCH` (0x0A) wire frame. 359k eps single-client batch on medium pipeline (Phase 13)
+- [x] **PERF-05**: DashMap per-stream entity concurrency + parking_lot RwLock PipelineEngine. 1.1M eps aggregate @ 8 proc (Phase 14)
 
 ### Operational
 
-- [ ] **OPS-05**: Snapshot serialization runs off the main event-loop thread per shard — during a snapshot write, async PUSH throughput on the main path regresses by ≤ 5% (was 15–25% on v1.2). Snapshot write completes within the OPS-01-class budget (< 1 second per 100k entities). New v7 snapshot format uses a per-cycle manifest file as the atomic commit boundary across per-shard files; recovery from a partially-written snapshot set rolls back to the previous manifest (Phase 15)
+- [ ] **OPS-05**: Off-thread snapshot I/O — deferred to post-launch
 
-### Locked Decisions (v1.3)
+## v2.0 Requirements
 
-These are product-level tradeoffs accepted by research and approved for Phase 14 execution:
+Requirements for milestone v2.0: New API & Engine. **Active.**
 
-- **LD-1**: Cross-shard fan-out errors are fire-and-forget — target-shard errors surface in per-shard metrics, NOT in the originating client's `drain_errors_nonblock` queue. This is a deliberate regression from v1.2 semantics, required to preserve the shared-nothing hot path.
-- **LD-2**: `num_shards` is persisted in the snapshot manifest + a config file. Changing shard count across restarts requires explicit `TALLY_ALLOW_RESHARD=1` and triggers a one-time re-route migration on load.
-- **LD-3**: Snapshots are **shard-local consistent**, not globally consistent. A fan-out event may land in target-shard snapshot but not origin-shard snapshot within one cycle. Manifest guarantees per-shard files exist and hash-match, not that they reflect the same logical moment. Sibling to the existing "lose ~30s on crash" contract.
-- **LD-4**: Shard routing uses `xxh3_64` with a fixed seed (not ahash, which isn't spec-stable across crate versions). Hash version byte is included in the manifest header.
+### SDK API
 
-## v1.4+ Requirements
+- [ ] **API-01**: User can define an event source with `@tl.source` decorator that compiles to a keyless stream RegisterRequest
+- [ ] **API-02**: User can define a derived dataset with `@tl.dataset(depends_on=[...])` decorator that declares upstream dependencies and compiles to a keyed stream RegisterRequest
+- [ ] **API-03**: User can declare typed input schemas with `EventSet` and output schemas with `FeatureSet` using `Field` descriptors with IDE autocomplete via `dataclass_transform`
+- [ ] **API-04**: User can explicitly aggregate events with `.group_by("key").agg(count=tl.count(window="1h"), ...)` instead of implicit keying
+- [ ] **API-05**: User can merge multiple event sources into one dataset with `tl.union(source_a, source_b)`
+- [ ] **API-06**: User can call `pipeline.validate()` locally to check DAG validity (cycles, missing deps, type mismatches) before server submission
+- [ ] **API-07**: Pipeline definitions are portable — the same JSON format works for startup registration, runtime REGISTER, and future ephemeral pipelines
+
+### Engine
+
+- [ ] **ENG-01**: Enriched event propagation — upstream derive results are visible to downstream datasets via a side-channel accumulator (not event clone), enabling multi-stage computed features
+- [ ] **ENG-02**: Feature projection — `select()`/`drop()` on a dataset restricts which features appear in PUSH/GET responses (response-layer filtering)
+- [ ] **ENG-03**: Ephemeral pipeline flag — `ephemeral: bool`, `ttl`, `max_keys` fields on RegisterRequest with `#[serde(default)]` (schema-only, lifecycle deferred post-launch)
+
+### Migration
+
+- [ ] **MIG-01**: All existing tests (>= 744) are ported to the new `@tl.source`/`@tl.dataset` API before old API removal
+- [ ] **MIG-02**: Old `@st.stream`, `@st.view`, and `_dataframe.py` public API are removed from the SDK
+- [ ] **MIG-03**: No performance regression — full benchmark matrix passes within -5% of 1.1M eps baseline after all changes
+
+## v2.1+ Requirements
 
 Deferred to future release. Tracked but not in current roadmap.
+
+### On-Demand Compute
+
+- **FUT-01**: On-demand compute lifecycle — TTL enforcement, memory limits, pipeline-level eviction for ephemeral pipelines
+- **FUT-02**: One-shot replay queries via S3 replay log
+- **FUT-03**: Typed schema validation at REGISTER time
+- **FUT-04**: Computation-pruning projection (skip unused operator evaluation)
 
 ### Event Log
 
@@ -92,15 +116,13 @@ Deferred to future release. Tracked but not in current roadmap.
 
 - **SCHM-F1**: Live schema migration of running operators (change window size)
 
-### Pipeline
-
-- **PIPE-F1**: Complex DAG transformations (map, filter, flatMap on keyless streams)
-
 ### Performance (future)
 
-- **PERF-F1**: Awaitable cross-shard fan-out with deadline (opt-in, preserves v1.2 error semantics for non-hot-path callers)
+- **PERF-F1**: Awaitable cross-shard fan-out with deadline (opt-in)
 - **PERF-F2**: Dynamic shard rebalancing (hot-key migration across shards at runtime)
 - **PERF-F3**: Disk/S3 state spill for entities exceeding RAM budget
+- **PERF-03**: Server-side async push coalescing (deferred from v1.3)
+- **OPS-05**: Off-thread snapshot I/O per shard (deferred from v1.3)
 
 ## Out of Scope
 
@@ -153,17 +175,31 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DBUI-07 | Phase 10.2 | Complete |
 | PERF-01 | Phase 11 | Complete |
 | PERF-02 | Phase 11 | Complete |
-| PERF-03 | Phase 12 | In Progress |
+| PERF-03 | — | Deferred |
 | PERF-04 | Phase 13 | Complete |
 | PERF-05 | Phase 14 | Complete |
-| OPS-05  | Phase 15 | Pending |
+| OPS-05  | — | Deferred |
+| API-01 | TBD | Pending |
+| API-02 | TBD | Pending |
+| API-03 | TBD | Pending |
+| API-04 | TBD | Pending |
+| API-05 | TBD | Pending |
+| API-06 | TBD | Pending |
+| API-07 | TBD | Pending |
+| ENG-01 | TBD | Pending |
+| ENG-02 | TBD | Pending |
+| ENG-03 | TBD | Pending |
+| MIG-01 | TBD | Pending |
+| MIG-02 | TBD | Pending |
+| MIG-03 | TBD | Pending |
 
 **Coverage:**
-- v1.1 requirements: 28 total, all mapped, all complete (DBUI-07 added post-original-roadmap via Phase 10.2)
-- v1.2 requirements: 2 total, all mapped, all complete
-- v1.3 requirements: 4 total, all mapped to phases 12–15
-- Total: 34 requirements, 34 mapped, 0 unmapped
+- v1.1 requirements: 28 total, all complete
+- v1.2 requirements: 2 total, all complete
+- v1.3 requirements: 2 complete (PERF-04, PERF-05), 2 deferred (PERF-03, OPS-05)
+- v2.0 requirements: 13 total, all pending, awaiting roadmap phase mapping
+- Total: 45 requirements, 32 complete, 13 pending, 0 unmapped
 
 ---
 *Requirements defined: 2026-04-09*
-*Last updated: 2026-04-11 — v1.3 requirements (PERF-03, PERF-04, PERF-05, OPS-05) added; v1.2 backfilled*
+*Last updated: 2026-04-12 — v2.0 requirements (API-01..07, ENG-01..03, MIG-01..03) added; v1.3 PERF-03/OPS-05 deferred*
