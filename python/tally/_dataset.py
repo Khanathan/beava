@@ -128,6 +128,35 @@ class DatasetDef:
         self._event_schema = event_schema
         self._entity_ttl = entity_ttl
         self._history_ttl = history_ttl
+        self._projection: dict | None = None
+
+    def select(self, feature_names: list[str]) -> DatasetDef:
+        """Return a new DatasetDef that only includes the named features in responses."""
+        new = DatasetDef(
+            name=self._name,
+            depends_on=self._depends_on,
+            grouped_dataset=self._grouped_dataset,
+            extra_features=self._extra_features,
+            event_schema=self._event_schema,
+            entity_ttl=self._entity_ttl,
+            history_ttl=self._history_ttl,
+        )
+        new._projection = {"select": list(feature_names)}
+        return new
+
+    def drop(self, feature_names: list[str]) -> DatasetDef:
+        """Return a new DatasetDef that excludes the named features from responses."""
+        new = DatasetDef(
+            name=self._name,
+            depends_on=self._depends_on,
+            grouped_dataset=self._grouped_dataset,
+            extra_features=self._extra_features,
+            event_schema=self._event_schema,
+            entity_ttl=self._entity_ttl,
+            history_ttl=self._history_ttl,
+        )
+        new._projection = {"drop": list(feature_names)}
+        return new
 
     @property
     def _tally_stream_name(self) -> str:
@@ -173,6 +202,9 @@ class DatasetDef:
             d["entity_ttl"] = self._entity_ttl
         if self._history_ttl is not None:
             d["history_ttl"] = self._history_ttl
+
+        if self._projection is not None:
+            d["projection"] = self._projection
 
         return d
 

@@ -672,3 +672,94 @@ class TestIntegration:
             assert "name" in reg
             assert "key_field" in reg
             assert "features" in reg
+
+
+class TestProjection:
+    """Tests for DatasetDef.select() and .drop() projection methods."""
+
+    def _make_source(self):
+        from tally._source import source
+
+        @source
+        class RawTxns:
+            pass
+
+        return RawTxns
+
+    def _make_dataset(self):
+        from tally._dataset import dataset, group_by
+        from tally._operators import Count, Sum, Derive
+
+        src = self._make_source()
+
+        @dataset(depends_on=[src])
+        class UserTxns:
+            features = group_by("user_id").agg(
+                tx_count=Count(window="1h"),
+                tx_sum=Sum("amount", window="1h"),
+            )
+            ratio = Derive("tx_count / tx_sum")
+
+        return UserTxns
+
+    def test_select_returns_new_instance(self):
+        ds = self._make_dataset()
+        projected = ds.select(["tx_count", "tx_sum"])
+        assert projected is not ds
+        assert id(projected) != id(ds)
+
+    def test_select_compile_emits_projection(self):
+        ds = self._make_dataset()
+        projected = ds.select(["tx_count", "tx_sum"])
+        result = projected._compile()
+        assert "projection" in result
+        assert result["projection"] == {"select": ["tx_count", "tx_sum"]}
+
+    def test_drop_compile_emits_projection(self):
+        ds = self._make_dataset()
+        projected = ds.drop(["ratio"])
+        result = projected._compile()
+        assert "projection" in result
+        assert result["projection"] == {"drop": ["ratio"]}
+
+    def test_select_preserves_original(self):
+        ds = self._make_dataset()
+        _ = ds.select(["tx_count"])
+        result = ds._compile()
+        assert "projection" not in result
+
+    def test_no_projection_by_default(self):
+        ds = self._make_dataset()
+        result = ds._compile()
+        assert "projection" not in result
+
+    def test_select_preserves_fields(self):
+        ds = self._make_dataset()
+        projected = ds.select(["tx_count"])
+        original_compile = ds._compile()
+        projected_compile = projected._compile()
+
+        # Name, key_field, depends_on, features should match
+        assert projected_compile["name"] == original_compile["name"]
+        assert projected_compile["key_field"] == original_compile["key_field"]
+        assert projected_compile.get("depends_on") == original_compile.get("depends_on")
+        assert projected_compile["features"] == original_compile["features"]
+
+    def test_select_preserves_ttls(self):
+        from tally._dataset import dataset, group_by
+        from tally._operators import Count
+        from tally._source import source
+
+        @source
+        class Src:
+            pass
+
+        @dataset(depends_on=[Src], entity_ttl="5m", history_ttl="72h")
+        class DS:
+            features = group_by("k").agg(c=Count(window="1h"))
+
+        projected = DS.select(["c"])
+        result = projected._compile()
+        assert result["entity_ttl"] == "5m"
+        assert result["history_ttl"] == "72h"
+        assert result["projection"] == {"select": ["c"]}
