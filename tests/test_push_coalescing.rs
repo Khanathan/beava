@@ -40,6 +40,8 @@ fn make_state() -> SharedState {
         None,
         std::path::PathBuf::from("test.snapshot"),
         Arc::new(BackfillTracker::default()),
+        true,
+        true,
     )
 }
 

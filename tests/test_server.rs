@@ -36,6 +36,8 @@ async fn start_test_server() -> (u16, u16, SharedState) {
         None,
         std::path::PathBuf::from("test.snapshot"),
         Arc::new(BackfillTracker::default()),
+        true,
+        true,
     );
 
     // Bind to port 0 for random assignment

@@ -102,6 +102,12 @@ pub struct ConcurrentAppState {
 
     /// Phase 10.2 DBUI-07: per-command and per-stream latency histograms.
     pub latency: PLMutex<crate::server::latency::LatencyTracker>,
+
+    /// Whether snapshot persistence is enabled (TALLY_SNAPSHOT env var).
+    pub snapshot_enabled: bool,
+
+    /// Whether the event log is enabled (TALLY_EVENT_LOG env var).
+    pub event_log_enabled: bool,
 }
 
 /// Shared state handle for concurrent connection handlers.
@@ -116,6 +122,8 @@ pub fn make_concurrent_state(
     event_log: Option<EventLog>,
     snapshot_path: std::path::PathBuf,
     backfill_tracker: Arc<BackfillTracker>,
+    snapshot_enabled: bool,
+    event_log_enabled: bool,
 ) -> SharedState {
     Arc::new(ConcurrentAppState {
         engine: RwLock::new(engine),
@@ -131,6 +139,8 @@ pub fn make_concurrent_state(
         backfill_complete: PLMutex::new(HashSet::new()),
         throughput: PLMutex::new(crate::server::throughput::ThroughputTracker::new()),
         latency: PLMutex::new(crate::server::latency::LatencyTracker::new()),
+        snapshot_enabled,
+        event_log_enabled,
     })
 }
 

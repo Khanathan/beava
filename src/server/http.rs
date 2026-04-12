@@ -534,6 +534,13 @@ async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Valu
 }
 
 async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse {
+    if !state.snapshot_enabled {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "snapshots disabled"})),
+        )
+            .into_response();
+    }
     // Manual trigger always writes a full v6 base snapshot.
     let (snapshot_data, seq, snap_dir) = {
         let engine = state.engine.read();

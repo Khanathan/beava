@@ -539,6 +539,8 @@ fn make_state_with_event_log(log_dir: &std::path::Path) -> SharedState {
         event_log,
         log_dir.join("test.snapshot"),
         Arc::new(BackfillTracker::default()),
+        true,
+        true,
     )
 }
 

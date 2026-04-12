@@ -41,6 +41,8 @@ async fn start_server() -> (u16, SharedState) {
         None,
         std::path::PathBuf::from("test-concurrent.snapshot"),
         Arc::new(BackfillTracker::default()),
+        true,
+        true,
     );
 
     let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
