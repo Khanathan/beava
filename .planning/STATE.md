@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: New API & Engine
-status: executing
-stopped_at: Completed 18-01-PLAN.md
-last_updated: "2026-04-12T23:30:52.253Z"
+status: verifying
+stopped_at: Completed 18-02-PLAN.md
+last_updated: "2026-04-12T23:44:46.271Z"
 last_activity: 2026-04-12
 progress:
   total_phases: 16
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 7
-  completed_plans: 6
-  percent: 86
+  completed_plans: 7
+  percent: 100
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-12)
 Milestone: v2.0 New API & Engine
 Phase: 18 (Feature Projection and Ephemeral Schema) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-12
 
 Progress: [░░░░░░░░░░] 0%
@@ -64,6 +64,7 @@ All v1.0-v1.3 decisions archived in PROJECT.md Key Decisions table.
 - [Phase 17]: Concurrent enrichment test uses TCP wire protocol for real DashMap concurrency path
 - [Phase 18]: Projection applied after derives but before views -- derives can reference any feature regardless of projection
 - [Phase 18]: Ephemeral fields are schema-only -- stored on StreamDefinition but no runtime enforcement yet
+- [Phase 18]: select()/drop() immutable builder pattern on DatasetDef; function-scoped server for projection E2E isolation
 
 ### Critical Pitfalls (from research)
 
@@ -83,6 +84,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-12T23:30:52.251Z
-Stopped at: Completed 18-01-PLAN.md
+Last session: 2026-04-12T23:44:46.268Z
+Stopped at: Completed 18-02-PLAN.md
 Resume: `/gsd-plan-phase 16`
