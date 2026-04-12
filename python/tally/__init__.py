@@ -15,6 +15,10 @@ from tally._view import view
 from tally._app import App
 from tally._protocol import OP_PUSH, OP_GET, OP_SET, OP_MSET, OP_MGET, OP_REGISTER
 
+# DataFrame-style API
+from tally._expr import Column, Expr, EventProxy
+from tally._dataframe import Stream as DataStream, Table, GroupBy, JoinedTable, Dataset
+
 __all__ = [
     # Types and exceptions
     "FeatureResult",
@@ -31,7 +35,7 @@ __all__ = [
     "last",
     "derive",
     "lookup",
-    # Decorators
+    # Decorators (legacy API)
     "stream",
     "view",
     # App
@@ -43,4 +47,13 @@ __all__ = [
     "OP_MSET",
     "OP_MGET",
     "OP_REGISTER",
+    # DataFrame-style API
+    "Column",
+    "Expr",
+    "EventProxy",
+    "DataStream",
+    "Table",
+    "GroupBy",
+    "JoinedTable",
+    "Dataset",
 ]

@@ -9,11 +9,22 @@ Usage::
     app.register(Transactions)
     features = app.push(Transactions, {"user_id": "u1", "amount": 50.0})
     print(features.tx_count_1h)
+
+DataFrame-style usage::
+
+    app = st.App("localhost:6400")
+    raw = app.source("transactions_raw")
+    user_features = raw.group_by("user_id").agg(
+        tx_count_1h=st.count(window="1h"),
+    )
+    app.serve(user_features)
+    app.register_all()
 """
 
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
 from tally._client import TallyClient
 from tally._protocol import (
@@ -37,6 +48,9 @@ from tally._protocol import (
 )
 from tally._types import FeatureResult, ProtocolError
 
+if TYPE_CHECKING:
+    from tally._dataframe import Dataset, Stream
+
 
 class App:
     """Tally application client.
@@ -44,6 +58,9 @@ class App:
     Connects to a running Tally server and exposes ``register``, ``push``,
     ``get``, ``set``, and ``mset`` methods for pipeline management and
     feature operations.
+
+    Also supports the DataFrame-style API via ``source()``, ``serve()``,
+    and ``register_all()``.
 
     Args:
         address: Server address as ``"host:port"`` or ``"host"`` (default port 6400).
@@ -54,6 +71,9 @@ class App:
         host, port = self._parse_address(address)
         self._client = TallyClient(host, port, timeout=timeout)
         self._batch_id_counter: int = 0
+        # DataFrame API state
+        self._sources: list[Stream] = []
+        self._served: list[Dataset] = []
 
     @staticmethod
     def _parse_address(address: str) -> tuple[str, int]:
@@ -73,17 +93,83 @@ class App:
             raise ProtocolError(resp.decode("utf-8", errors="replace"))
         return resp
 
-    def register(self, *stream_classes: type) -> None:
-        """Register one or more stream/view classes with the server.
+    # ------------------------------------------------------------------
+    # DataFrame-style API: source(), serve(), register_all()
+    # ------------------------------------------------------------------
 
-        Each class must have been decorated with ``@tally.stream`` or
-        ``@tally.view`` and therefore have a ``_to_register_json()`` method.
+    def source(self, name: str) -> Stream:
+        """Create a keyless event Stream (DataFrame API).
+
+        This is the entry point for the DataFrame-style pipeline definition.
+        Returns a Stream object that supports ``.map()``, ``.filter()``,
+        and ``.group_by().agg()``.
+
+        Args:
+            name: Name of the source stream (e.g., ``"transactions_raw"``).
+        """
+        from tally._dataframe import Stream as DFStream
+
+        s = DFStream(name)
+        self._sources.append(s)
+        return s
+
+    def serve(self, dataset: Dataset) -> None:
+        """Mark a dataset for persistence and GET serving.
+
+        Only served datasets get snapshot persistence and are queryable
+        via ``app.get(key)``. Non-served datasets are transient
+        (intermediate computation stages).
+
+        Args:
+            dataset: A Table, JoinedTable, or Stream to serve.
+        """
+        self._served.append(dataset)
+
+    def register_all(self) -> None:
+        """Compile and register all served datasets with the server.
+
+        Walks the DAG of all served datasets, collects their transitive
+        dependencies, deduplicates, and sends REGISTER commands in
+        dependency order.
+        """
+        self._client.drain_errors_nonblock()
+        # Collect all registrations from served datasets
+        seen_names: set[str] = set()
+        ordered: list[dict] = []
+        for dataset in self._served:
+            for reg in dataset._collect_registrations():
+                name = reg["name"]
+                if name not in seen_names:
+                    seen_names.add(name)
+                    ordered.append(reg)
+        # Register in dependency order (collect_registrations returns deps first)
+        for definition in ordered:
+            payload = encode_register(definition)
+            self._send(OP_REGISTER, payload)
+
+    # ------------------------------------------------------------------
+    # Legacy decorator API: register()
+    # ------------------------------------------------------------------
+
+    def register(self, *stream_classes) -> None:
+        """Register one or more stream/view classes or DataFrame datasets.
+
+        Accepts both ``@tally.stream``/``@tally.view`` decorated classes
+        and DataFrame API objects (Table, JoinedTable, Stream) -- anything
+        with a ``_to_register_json()`` method.
         """
         self._client.drain_errors_nonblock()
         for cls in stream_classes:
-            definition = cls._to_register_json()
-            payload = encode_register(definition)
-            self._send(OP_REGISTER, payload)
+            # Support both decorator classes and DataFrame datasets
+            if hasattr(cls, '_collect_registrations'):
+                # DataFrame dataset: register all transitive deps
+                for reg in cls._collect_registrations():
+                    payload = encode_register(reg)
+                    self._send(OP_REGISTER, payload)
+            else:
+                definition = cls._to_register_json()
+                payload = encode_register(definition)
+                self._send(OP_REGISTER, payload)
 
     def push(self, stream_class: type, event: dict) -> None:
         """Push an event to a stream (fire-and-forget).
