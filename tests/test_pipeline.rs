@@ -5,10 +5,11 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::json;
-use tally::engine::pipeline::{PipelineEngine, StreamDefinition, FeatureDef};
+use tally::engine::pipeline::{PipelineEngine, StreamDefinition, FeatureDef, Projection};
 use tally::engine::expression::parse_expr;
 use tally::state::store::StateStore;
 use tally::types::FeatureValue;
+use ahash::AHashSet;
 
 fn ts(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)
@@ -1752,4 +1753,379 @@ fn test_enriched_no_cascade_unchanged() {
     assert_eq!(features2.get("count_1h"), Some(&FeatureValue::Int(2)));
     assert_eq!(features2.get("sum_1h"), Some(&FeatureValue::Float(100.0)));
     assert_eq!(features2.get("ratio"), Some(&FeatureValue::Float(50.0)));
+}
+
+// ======================== Phase 18 Plan 01: Projection Integration Tests ========================
+
+#[test]
+fn test_projection_select_push() {
+    let mut engine = PipelineEngine::new();
+    let store = StateStore::new();
+    let now = ts(60_000);
+
+    engine.register(StreamDefinition {
+        name: "Txns".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("count_1h".into(), FeatureDef::Count {
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                where_expr: None,
+                backfill: false,
+            }),
+            ("sum_1h".into(), FeatureDef::Sum {
+                field: "amount".into(),
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                optional: false,
+                where_expr: None,
+                backfill: false,
+            }),
+            ("internal_count_24h".into(), FeatureDef::Count {
+                window: Duration::from_secs(86400),
+                bucket: Duration::from_secs(600),
+                where_expr: None,
+                backfill: false,
+            }),
+        ],
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+        projection: Some(Projection::Select(
+            AHashSet::from_iter(["count_1h".into(), "sum_1h".into()])
+        )),
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
+    }).unwrap();
+
+    let features = engine.push("Txns", &json!({
+        "user_id": "u1", "amount": 42.0
+    }), &store, now).unwrap();
+
+    assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
+    assert_eq!(features.get("sum_1h"), Some(&FeatureValue::Float(42.0)));
+    assert!(features.get("internal_count_24h").is_none(), "internal feature should be filtered by Select projection");
+}
+
+#[test]
+fn test_projection_drop_push() {
+    let mut engine = PipelineEngine::new();
+    let store = StateStore::new();
+    let now = ts(60_000);
+
+    engine.register(StreamDefinition {
+        name: "Txns".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("count_1h".into(), FeatureDef::Count {
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                where_expr: None,
+                backfill: false,
+            }),
+            ("sum_1h".into(), FeatureDef::Sum {
+                field: "amount".into(),
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                optional: false,
+                where_expr: None,
+                backfill: false,
+            }),
+            ("internal_count_24h".into(), FeatureDef::Count {
+                window: Duration::from_secs(86400),
+                bucket: Duration::from_secs(600),
+                where_expr: None,
+                backfill: false,
+            }),
+        ],
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+        projection: Some(Projection::Drop(
+            AHashSet::from_iter(["internal_count_24h".into()])
+        )),
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
+    }).unwrap();
+
+    let features = engine.push("Txns", &json!({
+        "user_id": "u1", "amount": 42.0
+    }), &store, now).unwrap();
+
+    assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
+    assert_eq!(features.get("sum_1h"), Some(&FeatureValue::Float(42.0)));
+    assert!(features.get("internal_count_24h").is_none(), "internal feature should be filtered by Drop projection");
+}
+
+#[test]
+fn test_projection_select_get() {
+    let mut engine = PipelineEngine::new();
+    let store = StateStore::new();
+    let now = ts(60_000);
+
+    engine.register(StreamDefinition {
+        name: "Txns".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("count_1h".into(), FeatureDef::Count {
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                where_expr: None,
+                backfill: false,
+            }),
+            ("internal_count_24h".into(), FeatureDef::Count {
+                window: Duration::from_secs(86400),
+                bucket: Duration::from_secs(600),
+                where_expr: None,
+                backfill: false,
+            }),
+        ],
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+        projection: Some(Projection::Select(
+            AHashSet::from_iter(["count_1h".into()])
+        )),
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
+    }).unwrap();
+
+    engine.push("Txns", &json!({"user_id": "u1"}), &store, now).unwrap();
+
+    let features = engine.get_features("u1", &store, now);
+    assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
+    assert!(features.get("internal_count_24h").is_none(), "GET should also apply Select projection");
+}
+
+#[test]
+fn test_projection_drop_get() {
+    let mut engine = PipelineEngine::new();
+    let store = StateStore::new();
+    let now = ts(60_000);
+
+    engine.register(StreamDefinition {
+        name: "Txns".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("count_1h".into(), FeatureDef::Count {
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                where_expr: None,
+                backfill: false,
+            }),
+            ("internal_count_24h".into(), FeatureDef::Count {
+                window: Duration::from_secs(86400),
+                bucket: Duration::from_secs(600),
+                where_expr: None,
+                backfill: false,
+            }),
+        ],
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+        projection: Some(Projection::Drop(
+            AHashSet::from_iter(["internal_count_24h".into()])
+        )),
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
+    }).unwrap();
+
+    engine.push("Txns", &json!({"user_id": "u1"}), &store, now).unwrap();
+
+    let features = engine.get_features("u1", &store, now);
+    assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
+    assert!(features.get("internal_count_24h").is_none(), "GET should also apply Drop projection");
+}
+
+#[test]
+fn test_projection_derive_still_evaluates() {
+    // Derive references a dropped feature but derive itself is in the select list.
+    // Derives evaluate BEFORE projection, so the derive should compute correctly.
+    let mut engine = PipelineEngine::new();
+    let store = StateStore::new();
+    let now = ts(60_000);
+
+    engine.register(StreamDefinition {
+        name: "Txns".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("count_1h".into(), FeatureDef::Count {
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                where_expr: None,
+                backfill: false,
+            }),
+            ("internal_count_24h".into(), FeatureDef::Count {
+                window: Duration::from_secs(86400),
+                bucket: Duration::from_secs(600),
+                where_expr: None,
+                backfill: false,
+            }),
+            ("ratio".into(), FeatureDef::Derive {
+                expr: parse_expr("count_1h / internal_count_24h").unwrap(),
+            }),
+        ],
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+        projection: Some(Projection::Select(
+            AHashSet::from_iter(["count_1h".into(), "ratio".into()])
+        )),
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
+    }).unwrap();
+
+    let features = engine.push("Txns", &json!({
+        "user_id": "u1"
+    }), &store, now).unwrap();
+
+    // count_1h should be present (selected)
+    assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
+    // ratio should be present and correctly computed (1/1 = 1.0)
+    assert_eq!(features.get("ratio"), Some(&FeatureValue::Float(1.0)));
+    // internal_count_24h should be ABSENT (not in select list)
+    assert!(features.get("internal_count_24h").is_none(),
+        "internal_count_24h should be filtered out even though derive references it");
+}
+
+#[test]
+fn test_v1_3_register_backward_compat() {
+    // v1.3-format JSON: no projection, ephemeral, ttl, max_keys fields
+    let json_val: serde_json::Value = json!({
+        "name": "Transactions",
+        "key_field": "user_id",
+        "features": [
+            {"name": "tx_count_1h", "type": "count", "window": "1h"}
+        ]
+    });
+    let req: RegisterRequest = serde_json::from_value(json_val).unwrap();
+    let stream = convert_register_request(req).unwrap();
+    assert_eq!(stream.name, "Transactions");
+    assert!(stream.projection.is_none());
+    assert!(stream.ephemeral.is_none());
+    assert!(stream.pipeline_ttl.is_none());
+    assert!(stream.max_keys.is_none());
+
+    // Verify it actually works end-to-end
+    let mut engine = PipelineEngine::new();
+    let store = StateStore::new();
+    engine.register(stream).unwrap();
+    let features = engine.push("Transactions", &json!({
+        "user_id": "u1"
+    }), &store, ts(60_000)).unwrap();
+    assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
+}
+
+#[test]
+fn test_ephemeral_fields_roundtrip() {
+    let json_val: serde_json::Value = json!({
+        "name": "EphemeralStream",
+        "key_field": "user_id",
+        "features": [
+            {"name": "count_1h", "type": "count", "window": "1h"}
+        ],
+        "ephemeral": true,
+        "ttl": "1h",
+        "max_keys": 1000
+    });
+    let req: RegisterRequest = serde_json::from_value(json_val).unwrap();
+    let stream = convert_register_request(req).unwrap();
+
+    assert_eq!(stream.ephemeral, Some(true));
+    assert_eq!(stream.pipeline_ttl, Some(Duration::from_secs(3600)));
+    assert_eq!(stream.max_keys, Some(1000));
+
+    // Verify no runtime side effects -- push works normally
+    let mut engine = PipelineEngine::new();
+    let store = StateStore::new();
+    engine.register(stream).unwrap();
+    let features = engine.push("EphemeralStream", &json!({
+        "user_id": "u1"
+    }), &store, ts(60_000)).unwrap();
+    assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
+}
+
+#[test]
+fn test_snapshot_roundtrip_new_fields() {
+    // Register a stream with projection + ephemeral fields via raw JSON
+    let mut engine = PipelineEngine::new();
+    let store = StateStore::new();
+    let now = ts(60_000);
+
+    let raw_json = json!({
+        "name": "Txns",
+        "key_field": "user_id",
+        "features": [
+            {"name": "count_1h", "type": "count", "window": "1h"},
+            {"name": "internal_count_24h", "type": "count", "window": "24h"}
+        ],
+        "projection": {"select": ["count_1h"]},
+        "ephemeral": true,
+        "ttl": "2h",
+        "max_keys": 500
+    });
+
+    let req: RegisterRequest = serde_json::from_value(raw_json.clone()).unwrap();
+    let stream = convert_register_request(req).unwrap();
+    engine.register(stream).unwrap();
+    engine.store_raw_register_json("Txns", raw_json.clone());
+
+    // Push an event
+    let features = engine.push("Txns", &json!({
+        "user_id": "u1"
+    }), &store, now).unwrap();
+
+    // Verify projection works before snapshot
+    assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
+    assert!(features.get("internal_count_24h").is_none(), "should be filtered before snapshot");
+
+    // Create snapshot
+    let entities = store.clone_for_snapshot();
+    let snapshot = SnapshotState {
+        entities,
+        pipelines: vec![SerializablePipeline {
+            name: "Txns".into(),
+            key_field: "user_id".into(),
+            raw_register_json: serde_json::to_string(&raw_json).unwrap(),
+        }],
+        backfill_complete: vec![],
+    };
+
+    let bytes = save_snapshot(&snapshot).expect("save should succeed");
+    let restored = load_snapshot(&bytes).expect("load should succeed");
+
+    // Restore into new engine + store
+    let mut new_engine = PipelineEngine::new();
+    let new_store = StateStore::new();
+    new_store.restore_from_snapshot(restored.entities);
+
+    // Re-register from restored pipeline JSON
+    for pipeline in &restored.pipelines {
+        let json_val: serde_json::Value = serde_json::from_str(&pipeline.raw_register_json).unwrap();
+        let req: RegisterRequest = serde_json::from_value(json_val.clone()).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        // Verify new fields survived round-trip
+        assert!(stream.projection.is_some(), "projection should survive snapshot round-trip");
+        assert_eq!(stream.ephemeral, Some(true), "ephemeral should survive snapshot round-trip");
+        assert_eq!(stream.pipeline_ttl, Some(Duration::from_secs(7200)));
+        assert_eq!(stream.max_keys, Some(500));
+        new_engine.register(stream).unwrap();
+        new_engine.store_raw_register_json(&pipeline.name, json_val);
+    }
+
+    // Verify projection still works after restore
+    let restored_features = new_engine.get_features("u1", &new_store, now);
+    assert_eq!(restored_features.get("count_1h"), Some(&FeatureValue::Int(1)));
+    assert!(restored_features.get("internal_count_24h").is_none(),
+        "projection should still filter after snapshot round-trip");
 }
