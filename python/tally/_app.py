@@ -157,6 +157,9 @@ class App:
         Accepts both ``@tally.stream``/``@tally.view`` decorated classes
         and DataFrame API objects (Table, JoinedTable, Stream) -- anything
         with a ``_to_register_json()`` method.
+
+        Also accepts v2.0 API objects (SourceDef, DatasetDef) -- they implement
+        _collect_registrations() and _to_register_json() protocols.
         """
         self._client.drain_errors_nonblock()
         for cls in stream_classes:

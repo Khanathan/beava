@@ -494,3 +494,181 @@ class TestValidate:
         assert "socket" not in src
         assert "TallyClient" not in src
         assert "_client" not in src
+
+
+class TestExports:
+    """Tests that all new API symbols are importable via 'import tally as tl'."""
+
+    def test_source_importable(self):
+        import tally as tl
+        from tally._source import source
+        assert tl.source is source
+
+    def test_dataset_importable(self):
+        import tally as tl
+        from tally._dataset import dataset
+        assert tl.dataset is dataset
+
+    def test_group_by_importable(self):
+        import tally as tl
+        from tally._dataset import group_by
+        assert tl.group_by is group_by
+
+    def test_union_importable(self):
+        import tally as tl
+        from tally._dataset import union
+        assert tl.union is union
+
+    def test_validate_importable(self):
+        import tally as tl
+        from tally._validate import validate
+        assert tl.validate is validate
+
+    def test_eventset_importable(self):
+        import tally as tl
+        from tally._schema import EventSet
+        assert tl.EventSet is EventSet
+
+    def test_featureset_importable(self):
+        import tally as tl
+        from tally._schema import FeatureSet
+        assert tl.FeatureSet is FeatureSet
+
+    def test_field_importable(self):
+        import tally as tl
+        from tally._schema import Field
+        assert tl.Field is Field
+
+    def test_validation_error_importable(self):
+        import tally as tl
+        from tally._validate import ValidationError
+        assert tl.ValidationError is ValidationError
+
+    def test_old_api_still_works(self):
+        import tally as tl
+        assert hasattr(tl, "stream")
+        assert hasattr(tl, "view")
+        assert hasattr(tl, "App")
+
+
+class TestJsonCompat:
+    """Tests that new API JSON output matches old API format."""
+
+    def test_keyed_stream_json_matches(self):
+        """Old @st.stream(key=...) and new @tl.dataset produce same JSON shape."""
+        import tally as tl
+        from tally._stream import stream as st_stream
+        from tally._source import source
+        from tally._dataset import dataset, group_by
+        from tally._operators import Count, Sum
+
+        # Old API
+        @st_stream(key="user_id")
+        class OldTxns:
+            tx_count = Count(window="1h")
+            tx_sum = Sum("amount", window="1h")
+
+        old_json = OldTxns._to_register_json()
+
+        # New API
+        @source
+        class RawTxns:
+            pass
+
+        @dataset(depends_on=[RawTxns])
+        class NewTxns:
+            features = group_by("user_id").agg(
+                tx_count=Count(window="1h"),
+                tx_sum=Sum("amount", window="1h"),
+            )
+
+        new_json = NewTxns._to_register_json()
+
+        # Key field must match
+        assert old_json["key_field"] == new_json["key_field"] == "user_id"
+
+        # Features must match (same dicts, order may differ)
+        old_features = sorted(old_json["features"], key=lambda f: f["name"])
+        new_features = sorted(new_json["features"], key=lambda f: f["name"])
+        assert old_features == new_features
+
+    def test_keyless_source_json_matches(self):
+        """Old keyless @st.stream() and new @tl.source produce same JSON shape."""
+        from tally._stream import stream as st_stream
+        from tally._source import source
+
+        @st_stream()
+        class OldRaw:
+            pass
+
+        old_json = OldRaw._to_register_json()
+
+        @source
+        class NewRaw:
+            pass
+
+        new_json = NewRaw._to_register_json()
+
+        # Both keyless
+        assert old_json["key_field"] is None
+        assert new_json["key_field"] is None
+        # Both empty features
+        assert old_json["features"] == []
+        assert new_json["features"] == []
+
+
+class TestIntegration:
+    """Integration tests: _collect_registrations ordering and App.register compat."""
+
+    def test_collect_registrations_deps_first(self):
+        """_collect_registrations() returns sources before datasets."""
+        from tally._source import source
+        from tally._dataset import dataset, group_by
+        from tally._operators import Count
+
+        @source
+        class RawTxns:
+            pass
+
+        @dataset(depends_on=[RawTxns])
+        class UserTxns:
+            features = group_by("user_id").agg(tx_count=Count(window="1h"))
+
+        regs = UserTxns._collect_registrations()
+        names = [r["name"] for r in regs]
+        assert names == ["RawTxns", "UserTxns"]
+
+    def test_register_accepts_new_api_objects(self):
+        """App.register() should not raise for SourceDef/DatasetDef objects.
+
+        We test the JSON generation path without an actual server connection
+        by verifying _collect_registrations works and produces valid dicts.
+        """
+        from tally._source import source
+        from tally._dataset import dataset, group_by
+        from tally._operators import Count
+
+        @source
+        class RawTxns:
+            pass
+
+        @dataset(depends_on=[RawTxns])
+        class UserTxns:
+            features = group_by("user_id").agg(tx_count=Count(window="1h"))
+
+        # Verify _collect_registrations works (this is what App.register calls)
+        assert hasattr(RawTxns, "_collect_registrations")
+        assert hasattr(UserTxns, "_collect_registrations")
+
+        src_regs = RawTxns._collect_registrations()
+        assert len(src_regs) == 1
+        assert "name" in src_regs[0]
+        assert "key_field" in src_regs[0]
+        assert "features" in src_regs[0]
+
+        ds_regs = UserTxns._collect_registrations()
+        assert len(ds_regs) == 2
+        for reg in ds_regs:
+            assert "name" in reg
+            assert "key_field" in reg
+            assert "features" in reg

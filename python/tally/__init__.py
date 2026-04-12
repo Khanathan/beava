@@ -27,6 +27,12 @@ from tally._protocol import OP_PUSH, OP_GET, OP_SET, OP_MSET, OP_MGET, OP_REGIST
 from tally._expr import Column, Expr, EventProxy
 from tally._dataframe import Stream as DataStream, Table, GroupBy, JoinedTable, Dataset
 
+# New API (v2.0)
+from tally._schema import EventSet, FeatureSet, Field
+from tally._source import source
+from tally._dataset import dataset, group_by, union
+from tally._validate import validate, ValidationError
+
 __all__ = [
     # Types and exceptions
     "FeatureResult",
@@ -72,4 +78,14 @@ __all__ = [
     "GroupBy",
     "JoinedTable",
     "Dataset",
+    # New API (v2.0)
+    "EventSet",
+    "FeatureSet",
+    "Field",
+    "source",
+    "dataset",
+    "group_by",
+    "union",
+    "validate",
+    "ValidationError",
 ]
