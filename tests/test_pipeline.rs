@@ -1131,7 +1131,7 @@ async fn test_backfill_idempotent_restart() {
         // Verify same deterministic result: sum should be 550
         let engine2r = state2.engine.read();
         let store2 = &state2.store;
-        let features = engine2r.get_features("u1", &mut *store2, base_time + Duration::from_secs(9));
+        let features = engine2r.get_features("u1", store2, base_time + Duration::from_secs(9));
         assert_eq!(features.get("sum_1h"), Some(&FeatureValue::Float(550.0)),
             "Re-run backfill should produce same deterministic result");
     }

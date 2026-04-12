@@ -375,7 +375,7 @@ fn cascade_equivalence_3_events_batch_vs_sequential() {
         let store = &seq_state.store;
         for e in &events {
             engine
-                .push_with_cascade_no_features("A", e, &state.store, ts(1000))
+                .push_with_cascade_no_features("A", e, store, ts(1000))
                 .unwrap();
         }
     }

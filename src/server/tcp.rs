@@ -1399,6 +1399,8 @@ mod tests {
             None,
             std::path::PathBuf::from("test.snapshot"),
             Arc::new(BackfillTracker::default()),
+            true,
+            false,
         )
     }
 

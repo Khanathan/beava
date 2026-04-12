@@ -438,7 +438,7 @@ impl PipelineEngine {
         &self,
         stream_name: &str,
         event: &serde_json::Value,
-        store: &mut StateStore,
+        store: &StateStore,
         now: SystemTime,
     ) -> Result<FeatureMap, TallyError> {
         self.push_internal(stream_name, event, store, now, true)
@@ -457,7 +457,7 @@ impl PipelineEngine {
         &self,
         stream_name: &str,
         event: &serde_json::Value,
-        store: &mut StateStore,
+        store: &StateStore,
         now: SystemTime,
     ) -> Result<FeatureMap, TallyError> {
         self.push_internal(stream_name, event, store, now, false)
@@ -481,7 +481,7 @@ impl PipelineEngine {
         &self,
         stream_name: &str,
         events: &[&serde_json::Value],
-        store: &mut StateStore,
+        store: &StateStore,
         now: SystemTime,
     ) -> Vec<Result<FeatureMap, TallyError>> {
         if events.is_empty() {
@@ -507,7 +507,7 @@ impl PipelineEngine {
         &self,
         stream_name: &str,
         event: &serde_json::Value,
-        store: &mut StateStore,
+        store: &StateStore,
         now: SystemTime,
         read_features: bool,
     ) -> Result<FeatureMap, TallyError> {
@@ -727,7 +727,7 @@ impl PipelineEngine {
         &self,
         stream_name: &str,
         event: &serde_json::Value,
-        store: &mut StateStore,
+        store: &StateStore,
         now: SystemTime,
     ) -> Result<FeatureMap, TallyError> {
         self.push_with_cascade_internal(stream_name, event, store, now, true)
@@ -740,7 +740,7 @@ impl PipelineEngine {
         &self,
         stream_name: &str,
         event: &serde_json::Value,
-        store: &mut StateStore,
+        store: &StateStore,
         now: SystemTime,
     ) -> Result<FeatureMap, TallyError> {
         self.push_with_cascade_internal(stream_name, event, store, now, false)
@@ -780,7 +780,7 @@ impl PipelineEngine {
         &self,
         stream_name: &str,
         events: &[&serde_json::Value],
-        store: &mut StateStore,
+        store: &StateStore,
         now: SystemTime,
     ) -> Vec<Result<FeatureMap, TallyError>> {
         if events.is_empty() {
@@ -853,7 +853,7 @@ impl PipelineEngine {
         &self,
         stream_name: &str,
         event: &serde_json::Value,
-        store: &mut StateStore,
+        store: &StateStore,
         now: SystemTime,
         read_features: bool,
     ) -> Result<FeatureMap, TallyError> {
@@ -924,7 +924,7 @@ impl PipelineEngine {
         &self,
         stream_name: &str,
         event: &serde_json::Value,
-        store: &mut StateStore,
+        store: &StateStore,
         event_time: SystemTime,
         backfill_features: &[String],
     ) -> Result<(), TallyError> {
@@ -1017,7 +1017,7 @@ impl PipelineEngine {
     pub fn get_features(
         &self,
         key: &str,
-        store: &mut StateStore,
+        store: &StateStore,
         now: SystemTime,
     ) -> FeatureMap {
         let mut features = store.get_all_features(key, now);

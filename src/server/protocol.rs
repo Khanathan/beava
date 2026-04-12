@@ -1780,8 +1780,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "median".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None,
-                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1804,8 +1803,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "histogram".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None,
-                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1830,8 +1828,7 @@ mod tests {
                 name: "cnt".into(),
                 feature_type: "count".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None,
-                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1854,8 +1851,7 @@ mod tests {
                 name: "total".into(),
                 feature_type: "sum".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None,
-                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1878,8 +1874,7 @@ mod tests {
                 name: "total".into(),
                 feature_type: "sum".into(),
                 field: Some("amount".into()), window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None,
-                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1902,8 +1897,7 @@ mod tests {
                 name: "mean".into(),
                 feature_type: "avg".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None,
-                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1926,8 +1920,7 @@ mod tests {
                 name: "ratio".into(),
                 feature_type: "derive".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None,
-                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -2049,8 +2042,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "min".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None,
-                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -2073,8 +2065,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "last".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None,
-                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -2248,8 +2239,7 @@ mod tests {
                 name: "dc".into(),
                 feature_type: "distinct_count".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None,
-                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -2443,7 +2433,6 @@ mod tests {
                 on: None,
                 target: None,
                 backfill: None, quantile: None,
-                backfill: None,
                 n: None,
                 half_life: None,
             }],
@@ -2476,7 +2465,6 @@ mod tests {
                 on: None,
                 target: None,
                 backfill: None, quantile: None,
-                backfill: None,
                 n: None,
                 half_life: None,
             }],

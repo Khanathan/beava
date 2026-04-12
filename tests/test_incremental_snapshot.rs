@@ -61,7 +61,7 @@ fn tx_stream() -> StreamDefinition {
     }
 }
 
-fn push(store: &mut StateStore, engine: &PipelineEngine, key: &str, amount: f64, now: SystemTime) {
+fn push(store: &StateStore, engine: &PipelineEngine, key: &str, amount: f64, now: SystemTime) {
     let event = serde_json::json!({"user_id": key, "amount": amount});
     engine.push("Transactions", &event, store, now).unwrap();
     store.mark_dirty(key);

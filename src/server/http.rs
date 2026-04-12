@@ -237,9 +237,7 @@ async fn delete_pipeline(
 }
 
 async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse {
-    let store = state.store.lock();
-    let keys_total = store.entity_count();
-    drop(store);
+    let keys_total = state.store.entity_count();
     let metrics = state.metrics.lock();
     let events_total = metrics.events_total;
     let push_latency = metrics.push_latency_seconds;
@@ -276,7 +274,7 @@ async fn debug_key(
     State(state): State<SharedState>,
     Path(key): Path<String>,
 ) -> impl IntoResponse {
-    let mut store = state.store.lock();
+    let store = &state.store;
     let now = SystemTime::now();
     // First check if entity exists
     let entity_exists = store.get_entity(&key).is_some();
@@ -310,18 +308,18 @@ async fn debug_key(
         let last_event_at = entity.streams.values()
             .filter_map(|s| s.last_event_at)
             .max()
-            .map(|t| {
+            .map(|t: SystemTime| {
                 t.duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs()
             });
         (live_ops, static_feats, last_event_at)
     };
-    // Now get computed features (mutable borrow for window advancement)
+    // Now get computed features
     let features = store.get_all_features(&key, now);
     let feature_json: serde_json::Map<String, serde_json::Value> = features
         .iter()
-        .map(|(k, v)| (k.clone(), v.to_json_value()))
+        .map(|(k, v): (&String, &crate::types::FeatureValue)| (k.clone(), v.to_json_value()))
         .collect();
     (
         StatusCode::OK,
@@ -492,7 +490,7 @@ async fn debug_latency(State(state): State<SharedState>) -> Json<serde_json::Val
 
 /// GET /debug/memory — Memory rollup + per-stream breakdown.
 async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Value> {
-    let store = state.store.lock();
+    let store = &state.store;
     let engine = state.engine.read();
 
     let mut per_stream_counts: ahash::AHashMap<String, u64> = ahash::AHashMap::new();
@@ -500,7 +498,7 @@ async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Valu
     for key in &keys {
         if let Some(entity) = store.get_entity(key) {
             for stream_name in entity.streams.keys() {
-                *per_stream_counts.entry(stream_name.clone()).or_insert(0) += 1;
+                *per_stream_counts.entry(stream_name.clone()).or_insert(0usize as u64) += 1;
             }
         }
     }
@@ -544,7 +542,7 @@ async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse
     // Manual trigger always writes a full v6 base snapshot.
     let (snapshot_data, seq, snap_dir) = {
         let engine = state.engine.read();
-        let mut store = state.store.lock();
+        let store = &state.store;
         let seq = *state.snapshot_seq.lock();
         let valid_features = engine.valid_features_map();
         let entities = store.clone_for_snapshot_with_gc(&valid_features);
