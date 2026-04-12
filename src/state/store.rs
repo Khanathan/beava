@@ -1,8 +1,13 @@
-//! In-memory state store: EntityState + StateStore.
+//! In-memory state store: EntityState + StateStore + StreamStore.
 //!
 //! EntityState stores per-key features from streaming operators (live) and
 //! direct writes (static). StateStore maps entity keys to EntityState using
 //! AHashMap (not std HashMap) per locked decision.
+//!
+//! Phase 14: StreamStore provides per-stream `DashMap<EntityKey, StreamEntityState>`
+//! for entity-level concurrency. ConcurrentAppState (in tcp.rs) uses StreamStore
+//! per registered stream so events for different streams and different entity keys
+//! proceed concurrently.
 //!
 //! v1.1: EntityState groups live operators by stream name using
 //! AHashMap<String, StreamEntityState>. Each stream has its own operators
@@ -10,6 +15,7 @@
 
 use std::time::SystemTime;
 use ahash::{AHashMap, AHashSet};
+use dashmap::DashMap;
 use serde::{Serialize, Deserialize};
 use crate::types::{EntityKey, FeatureValue, FeatureMap};
 use crate::state::snapshot::{OperatorState, SerializableEntityState, SerializableStreamEntityState};
@@ -458,6 +464,154 @@ impl StateStore {
                     false
                 }
             });
+        }
+    }
+}
+
+// ============================================================
+// Phase 14: StreamStore — per-stream DashMap for entity-level concurrency
+// ============================================================
+
+/// Per-stream entity storage backed by `DashMap` (D-02, D-03).
+///
+/// Each registered stream gets its own `StreamStore`. Events targeting
+/// different entity keys within the same stream proceed concurrently
+/// via DashMap's internal sharded locking. Events targeting different
+/// streams use entirely different `StreamStore` instances.
+pub struct StreamStore {
+    /// Entity-level concurrent map: key -> stream entity state.
+    pub entities: DashMap<String, StreamEntityState>,
+    /// Keys modified since last snapshot clear. Protected by parking_lot::Mutex.
+    pub dirty_keys: parking_lot::Mutex<AHashSet<String>>,
+    /// Keys deleted since last snapshot clear. Protected by parking_lot::Mutex.
+    pub deleted_keys: parking_lot::Mutex<AHashSet<String>>,
+}
+
+impl StreamStore {
+    /// Create an empty StreamStore.
+    pub fn new() -> Self {
+        Self {
+            entities: DashMap::new(),
+            dirty_keys: parking_lot::Mutex::new(AHashSet::new()),
+            deleted_keys: parking_lot::Mutex::new(AHashSet::new()),
+        }
+    }
+
+    /// Number of entity keys in this stream store.
+    pub fn entity_count(&self) -> usize {
+        self.entities.len()
+    }
+}
+
+impl Default for StreamStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StateStore {
+    /// Convert flat entity state into per-stream `StreamStore` DashMaps and a
+    /// static feature `DashMap`. Used during startup to populate
+    /// `ConcurrentAppState` from a recovered snapshot.
+    ///
+    /// Each entity's `streams` map is distributed: for each `(stream_name,
+    /// StreamEntityState)`, the entry is inserted into the corresponding
+    /// `StreamStore`'s DashMap keyed by entity key. Static features are
+    /// collected into a separate DashMap.
+    pub fn to_concurrent(
+        &self,
+    ) -> (
+        DashMap<String, StreamStore>,
+        DashMap<String, AHashMap<String, StaticFeature>>,
+    ) {
+        let stream_stores: DashMap<String, StreamStore> = DashMap::new();
+        let static_store: DashMap<String, AHashMap<String, StaticFeature>> = DashMap::new();
+
+        for (entity_key, entity_state) in &self.entities {
+            // Distribute stream entries into per-stream StreamStores
+            for (stream_name, stream_entity_state) in &entity_state.streams {
+                let store = stream_stores
+                    .entry(stream_name.clone())
+                    .or_insert_with(StreamStore::new);
+                store.entities.insert(
+                    entity_key.clone(),
+                    stream_entity_state.clone(),
+                );
+            }
+
+            // Collect static features
+            if !entity_state.static_features.is_empty() {
+                static_store.insert(
+                    entity_key.clone(),
+                    entity_state.static_features.clone(),
+                );
+            }
+        }
+
+        // Distribute dirty/deleted keys to per-stream stores
+        for key in &self.dirty_keys {
+            for entry in stream_stores.iter() {
+                if entry.value().entities.contains_key(key) {
+                    entry.value().dirty_keys.lock().insert(key.clone());
+                }
+            }
+        }
+
+        (stream_stores, static_store)
+    }
+
+    /// Reconstitute a `StateStore` from per-stream DashMaps and a static
+    /// feature DashMap. Used for snapshot serialization (temporary approach;
+    /// Plan 02 will optimize to iterate DashMaps directly).
+    pub fn from_concurrent(
+        stream_stores: &DashMap<String, StreamStore>,
+        static_store: &DashMap<String, AHashMap<String, StaticFeature>>,
+    ) -> Self {
+        let mut entities: AHashMap<EntityKey, EntityState> = AHashMap::new();
+        let mut dirty_keys = AHashSet::new();
+        let mut deleted_keys = AHashSet::new();
+
+        // Collect stream entity state from each StreamStore
+        for entry in stream_stores.iter() {
+            let stream_name = entry.key();
+            let store = entry.value();
+
+            // Collect dirty/deleted from this stream
+            for k in store.dirty_keys.lock().iter() {
+                dirty_keys.insert(k.clone());
+            }
+            for k in store.deleted_keys.lock().iter() {
+                deleted_keys.insert(k.clone());
+            }
+
+            // Distribute entities
+            for entity_entry in store.entities.iter() {
+                let entity_key = entity_entry.key();
+                let stream_entity_state = entity_entry.value();
+
+                let entity = entities
+                    .entry(entity_key.clone())
+                    .or_insert_with(EntityState::new);
+                entity
+                    .streams
+                    .insert(stream_name.clone(), stream_entity_state.clone());
+            }
+        }
+
+        // Overlay static features
+        for entry in static_store.iter() {
+            let entity_key = entry.key();
+            let static_features = entry.value();
+            let entity = entities
+                .entry(entity_key.clone())
+                .or_insert_with(EntityState::new);
+            entity.static_features = static_features.clone();
+        }
+
+        StateStore {
+            entities,
+            dirty_keys,
+            deleted_keys,
         }
     }
 }

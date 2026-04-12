@@ -15,13 +15,15 @@
 // compile-time error. Do NOT remove this without a documented deviation.
 #![deny(clippy::await_holding_lock)]
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use parking_lot::{Mutex as PLMutex, RwLock};
 
 use crate::engine::pipeline::PipelineEngine;
 use crate::error::TallyError;
@@ -47,59 +49,89 @@ pub struct BackfillStatus {
     pub total_events: usize,
     pub processed_events: Arc<AtomicUsize>,
     pub started_at: SystemTime,
-    pub completed_at: Mutex<Option<SystemTime>>,
+    pub completed_at: std::sync::Mutex<Option<SystemTime>>,
 }
 
 /// Tracks all active and recently completed backfill tasks.
 #[derive(Debug, Default)]
 pub struct BackfillTracker {
-    pub tasks: Mutex<Vec<Arc<BackfillStatus>>>,
+    pub tasks: std::sync::Mutex<Vec<Arc<BackfillStatus>>>,
 }
 
-/// Application state: engine + store + metrics.
-pub struct AppState {
-    pub engine: PipelineEngine,
-    pub store: StateStore,
-    pub metrics: Metrics,
-    /// Snapshot file path. Single source of truth for both periodic and manual snapshot triggers.
+/// Phase 14: Concurrent application state (D-01). Replaces the global
+/// `Arc<Mutex<AppState>>`. Each field is independently lockable — no single
+/// lock serializes all connections.
+///
+/// - `engine`: `RwLock` — many concurrent reads on hot path (PUSH/GET),
+///   write only on REGISTER (D-04).
+/// - `store`: `PLMutex` — separate from engine, metrics, throughput, latency.
+///   Handlers that need the store acquire only this lock.
+/// - `event_log`: `PLMutex<Option<EventLog>>` — independent from store/engine.
+/// - `metrics`, `throughput`, `latency`: each behind their own small `PLMutex`.
+/// - `snapshot_*`, `backfill_*`: each behind their own small `PLMutex`.
+pub struct ConcurrentAppState {
+    /// Stream definitions — RwLock: many concurrent reads on hot path,
+    /// write only on REGISTER (D-04).
+    pub engine: RwLock<PipelineEngine>,
+
+    /// Entity + static feature state — separate lock from engine.
+    pub store: PLMutex<StateStore>,
+
+    /// Optional event log — independent lock.
+    pub event_log: PLMutex<Option<EventLog>>,
+
+    /// Operational metrics — small independent lock.
+    pub metrics: PLMutex<Metrics>,
+
+    /// Snapshot file path (immutable after startup).
     pub snapshot_path: std::path::PathBuf,
-    /// Optional event log for persisting raw events to per-stream log files.
-    /// None if event log initialization failed or is disabled.
-    pub event_log: Option<EventLog>,
-    /// Tracks active and completed backfill tasks for /debug/backfill endpoint.
+
+    /// Phase 9: Snapshot coordination — small independent lock.
+    pub snapshot_cycle: PLMutex<u64>,
+    pub snapshot_seq: PLMutex<u64>,
+    pub last_base_seq: PLMutex<u64>,
+    pub previous_base_seq: PLMutex<u64>,
+
+    /// Backfill tracking.
     pub backfill_tracker: Arc<BackfillTracker>,
-    /// Persistent set of (stream_name, feature_name) pairs that have completed backfill.
-    /// Written to snapshot for crash recovery. On restart, features with backfill=true
-    /// that are NOT in this set are re-run (idempotent restart per CONTEXT.md locked decision).
-    pub backfill_complete: HashSet<(String, String)>,
-    /// Phase 9: Current snapshot cycle number. Incremented after each successful
-    /// snapshot write. When cycle % full_snapshot_interval == 0 the periodic
-    /// timer writes a full base instead of a delta.
-    pub snapshot_cycle: u64,
-    /// Phase 9: Next sequence number for snapshot files. Derived from disk on
-    /// startup (max existing sequence + 1).
-    pub snapshot_seq: u64,
-    /// Phase 9 WR-02: Sequence number of the most recently written base
-    /// snapshot. Used to stamp delta headers with the correct `base_seq` so
-    /// downstream tooling and recovery-time validation have a trustworthy
-    /// pointer back to the base a delta was built against.
-    pub last_base_seq: u64,
-    /// Phase 9 WR-03: Sequence number of the base snapshot that was current
-    /// BEFORE the most recent base write. Used by `cleanup_old_snapshots` to
-    /// keep the previous base on disk as a fallback in case the new base
-    /// turns out to be unreadable on startup.
-    pub previous_base_seq: u64,
-    /// Phase 10 DBUI-02: per-stream EWMA throughput tracker. Updated once per
-    /// unique stream per successful PUSH (primary + cascade + fan-out with
-    /// HashSet dedup -- see handle_sync_command Push arm). Read by the
-    /// /debug/throughput handler in src/server/http.rs.
-    pub throughput: crate::server::throughput::ThroughputTracker,
+    pub backfill_complete: PLMutex<HashSet<(String, String)>>,
+
+    /// Phase 10 DBUI-02: per-stream EWMA throughput tracker.
+    pub throughput: PLMutex<crate::server::throughput::ThroughputTracker>,
+
     /// Phase 10.2 DBUI-07: per-command and per-stream latency histograms.
-    pub latency: crate::server::latency::LatencyTracker,
+    pub latency: PLMutex<crate::server::latency::LatencyTracker>,
 }
 
 /// Shared state handle for concurrent connection handlers.
-pub type SharedState = Arc<Mutex<AppState>>;
+/// Phase 14: `Arc<ConcurrentAppState>` — each field independently lockable.
+pub type SharedState = Arc<ConcurrentAppState>;
+
+/// Helper: create a `SharedState` with the given initial values.
+/// Replaces the old `Arc::new(Mutex::new(AppState { ... }))` pattern.
+pub fn make_concurrent_state(
+    engine: PipelineEngine,
+    store: StateStore,
+    event_log: Option<EventLog>,
+    snapshot_path: std::path::PathBuf,
+    backfill_tracker: Arc<BackfillTracker>,
+) -> SharedState {
+    Arc::new(ConcurrentAppState {
+        engine: RwLock::new(engine),
+        store: PLMutex::new(store),
+        event_log: PLMutex::new(event_log),
+        metrics: PLMutex::new(Metrics::default()),
+        snapshot_path,
+        snapshot_cycle: PLMutex::new(0),
+        snapshot_seq: PLMutex::new(1),
+        last_base_seq: PLMutex::new(0),
+        previous_base_seq: PLMutex::new(0),
+        backfill_tracker,
+        backfill_complete: PLMutex::new(HashSet::new()),
+        throughput: PLMutex::new(crate::server::throughput::ThroughputTracker::new()),
+        latency: PLMutex::new(crate::server::latency::LatencyTracker::new()),
+    })
+}
 
 /// Start the TCP server on the given address. Loops forever accepting connections.
 pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::io::Error> {
@@ -363,10 +395,10 @@ async fn handle_connection(
                         };
                         if is_mset {
                             let mset_us = cmd_start.elapsed().as_secs_f64() * 1_000_000.0;
-                            let mut app2 = state.lock().unwrap_or_else(|e| e.into_inner());
-                            app2.latency.record_command(crate::server::latency::CommandKind::Mset, mset_us, std::time::Instant::now());
-                            if app2.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Mset, mset_us) {
-                                app2.latency.maybe_record_slow(crate::server::latency::CommandKind::Mset, None, mset_us, String::new());
+                            let mut latency = state.latency.lock();
+                            latency.record_command(crate::server::latency::CommandKind::Mset, mset_us, std::time::Instant::now());
+                            if latency.slow_queries_would_accept(crate::server::latency::CommandKind::Mset, mset_us) {
+                                latency.maybe_record_slow(crate::server::latency::CommandKind::Mset, None, mset_us, String::new());
                             }
                         }
                         flush_drain(&mut writer, &mut pending_drain).await?;
@@ -441,10 +473,10 @@ async fn handle_connection(
         // in a separate lock. No guard held across the .await above.
         if is_mset {
             let mset_us = cmd_start.elapsed().as_secs_f64() * 1_000_000.0;
-            let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-            app.latency.record_command(crate::server::latency::CommandKind::Mset, mset_us, std::time::Instant::now());
-            if app.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Mset, mset_us) {
-                app.latency.maybe_record_slow(crate::server::latency::CommandKind::Mset, None, mset_us, String::new());
+            let mut latency = state.latency.lock();
+            latency.record_command(crate::server::latency::CommandKind::Mset, mset_us, std::time::Instant::now());
+            if latency.slow_queries_would_accept(crate::server::latency::CommandKind::Mset, mset_us) {
+                latency.maybe_record_slow(crate::server::latency::CommandKind::Mset, None, mset_us, String::new());
             }
         }
 
@@ -553,21 +585,17 @@ fn handle_push_core_ex(
     read_features: bool,
 ) -> Result<crate::types::FeatureMap, TallyError> {
     let push_start = std::time::Instant::now();
-    let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-    let AppState {
-        ref engine,
-        ref mut store,
-        ref mut event_log,
-        ..
-    } = *app;
+    let engine = state.engine.read();
+    let mut store = state.store.lock();
+    let mut event_log = state.event_log.lock();
 
     // Cascade-aware push: handles topological cascade through depends_on chains.
     // Async path (read_features=false) skips HLL/derive reads for ~140x speedup
     // on large pipelines — see pipeline.rs push_no_features doc.
     let features = if read_features {
-        engine.push_with_cascade(stream_name, payload, store, now)?
+        engine.push_with_cascade(stream_name, payload, &mut *store, now)?
     } else {
-        engine.push_with_cascade_no_features(stream_name, payload, store, now)?
+        engine.push_with_cascade_no_features(stream_name, payload, &mut *store, now)?
     };
 
     // Mark primary key dirty for incremental snapshots (OPS-03).
@@ -590,13 +618,13 @@ fn handle_push_core_ex(
     } else {
         Vec::new()
     };
-    if let Some(ref mut log) = event_log {
+    if let Some(ref mut log) = *event_log {
         let _ = log.append(stream_name, &log_payload, now);
     }
 
     // Append event to downstream (cascade) streams' event logs (T-07-10)
     let cascade_targets = engine.get_cascade_targets(stream_name);
-    if let Some(ref mut log) = event_log {
+    if let Some(ref mut log) = *event_log {
         for ds_name in &cascade_targets {
             let should_log = match engine.get_stream(ds_name) {
                 Some(d) => match &d.key_field {
@@ -645,12 +673,12 @@ fn handle_push_core_ex(
                 // downstream streams — measured ~50x regression on `bench.py
                 // large` where 3 HLLs are spread across 3 streams via fan-out.
                 let _ = if read_features {
-                    engine.push(target_name, payload, store, now)
+                    engine.push(target_name, payload, &mut *store, now)
                 } else {
-                    engine.push_no_features(target_name, payload, store, now)
+                    engine.push_no_features(target_name, payload, &mut *store, now)
                 };
                 store.mark_dirty(key_val);
-                if let Some(ref mut log) = event_log {
+                if let Some(ref mut log) = *event_log {
                     // Reuse the single log_payload built earlier (same bytes
                     // for every target — the format prefix + payload is
                     // stream-agnostic).
@@ -661,13 +689,15 @@ fn handle_push_core_ex(
     }
 
     // DBUI-02: throughput bump across unique touched streams.
+    // Drop store and event_log locks before acquiring throughput/metrics locks.
+    drop(store);
+    drop(event_log);
     {
         let now_inst = std::time::Instant::now();
-        let primary_key_field_for_tp = app
-            .engine
+        let primary_key_field_for_tp = engine
             .get_stream(stream_name)
             .and_then(|s| s.key_field.clone());
-        let tp_targets_all = app.engine.fan_out_targets();
+        let tp_targets_all = engine.fan_out_targets();
         let mut touched: Vec<&str> =
             Vec::with_capacity(1 + cascade_targets.len() + tp_targets_all.len());
         touched.push(stream_name);
@@ -693,31 +723,37 @@ fn handle_push_core_ex(
             }
             touched.push(target_name.as_str());
         }
-        app.throughput.bump_unique(touched.into_iter(), now_inst);
+        state.throughput.lock().bump_unique(touched.into_iter(), now_inst);
     }
 
     let push_elapsed = push_start.elapsed();
-    app.metrics.push_latency_seconds = push_elapsed.as_secs_f64();
-    app.metrics.events_total += 1;
+    {
+        let mut metrics = state.metrics.lock();
+        metrics.push_latency_seconds = push_elapsed.as_secs_f64();
+        metrics.events_total += 1;
+    }
 
     // Phase 10.2: record latency into histogram tracker
     let push_us = push_elapsed.as_secs_f64() * 1_000_000.0;
-    app.latency.record_push(stream_name, push_us, std::time::Instant::now());
-    if app.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Push, push_us) {
-        let key_preview = app.engine.get_stream(stream_name)
-            .and_then(|s| s.key_field.clone())
-            .and_then(|kf| payload.get(&kf).and_then(|v| v.as_str()).map(|s| {
-                let mut kp = s.to_string();
-                kp.truncate(32);
-                kp
-            }))
-            .unwrap_or_default();
-        app.latency.maybe_record_slow(
-            crate::server::latency::CommandKind::Push,
-            Some(stream_name),
-            push_us,
-            key_preview,
-        );
+    {
+        let mut latency = state.latency.lock();
+        latency.record_push(stream_name, push_us, std::time::Instant::now());
+        if latency.slow_queries_would_accept(crate::server::latency::CommandKind::Push, push_us) {
+            let key_preview = engine.get_stream(stream_name)
+                .and_then(|s| s.key_field.clone())
+                .and_then(|kf| payload.get(&kf).and_then(|v| v.as_str()).map(|s| {
+                    let mut kp = s.to_string();
+                    kp.truncate(32);
+                    kp
+                }))
+                .unwrap_or_default();
+            latency.maybe_record_slow(
+                crate::server::latency::CommandKind::Push,
+                Some(stream_name),
+                push_us,
+                key_preview,
+            );
+        }
     }
 
     Ok(features)
@@ -896,16 +932,13 @@ pub fn handle_push_batch(
     let mut results: Vec<Result<(), TallyError>> =
         (0..batch.len()).map(|_| Ok(())).collect();
 
-    // Single lock acquisition for the whole batch (D-06). The guard lives
+    // Phase 14: acquire individual locks instead of one global lock.
+    // Engine read lock + store lock + event_log lock. The guards live
     // only for the synchronous body below — clippy::await_holding_lock
     // enforces that at compile time.
-    let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-    let AppState {
-        ref engine,
-        ref mut store,
-        ref mut event_log,
-        ..
-    } = *app;
+    let engine = state.engine.read();
+    let mut store = state.store.lock();
+    let mut event_log = state.event_log.lock();
 
     if all_same_stream {
         // Single-stream fast path: no grouping needed, no index indirection.
@@ -923,7 +956,7 @@ pub fn handle_push_batch(
         let per_event = engine.push_batch_with_cascade_no_features(
             stream_name,
             &events_refs,
-            store,
+            &mut *store,
             now,
         );
 
@@ -938,7 +971,7 @@ pub fn handle_push_batch(
         // allocation. Each call reuses the writer lookup from EventLog's
         // internal HashMap (one HashMap probe per call, amortized by branch
         // prediction on the repeated stream name).
-        if let Some(ref mut log) = event_log {
+        if let Some(ref mut log) = *event_log {
             for (idx, ev) in batch.iter().enumerate() {
                 if results[idx].is_ok() {
                     let lp = make_log_payload(&ev.payload, &ev.raw_payload);
@@ -988,7 +1021,7 @@ pub fn handle_push_batch(
             let per_event = engine.push_batch_with_cascade_no_features(
                 stream_name,
                 &events_refs,
-                store,
+                &mut *store,
                 now,
             );
 
@@ -999,7 +1032,7 @@ pub fn handle_push_batch(
             }
 
             // Per-event log append (avoids Vec<Vec<u8>> allocation).
-            if let Some(ref mut log) = event_log {
+            if let Some(ref mut log) = *event_log {
                 for &i in indices {
                     if results[i].is_ok() {
                         let lp = make_log_payload(&batch[i].payload, &batch[i].raw_payload);
@@ -1025,7 +1058,10 @@ pub fn handle_push_batch(
 
     // Metrics bump once per batch — matches the per-event increment the
     // legacy handle_push_core path performs, but amortized.
-    app.metrics.events_total += batch.len() as u64;
+    // Drop store/event_log before acquiring metrics lock.
+    drop(store);
+    drop(event_log);
+    state.metrics.lock().events_total += batch.len() as u64;
 
     results
 }
@@ -1056,47 +1092,49 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
         }
         Command::Get { key } => {
             let get_start = std::time::Instant::now();
-            let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-            let AppState {
-                ref engine,
-                ref mut store,
-                ..
-            } = *app;
-            let features = engine.get_features(&key, store, now);
+            let engine = state.engine.read();
+            let mut store = state.store.lock();
+            let features = engine.get_features(&key, &mut *store, now);
             let result = feature_map_to_json(&features);
+            drop(store);
+            drop(engine);
             // Phase 10.2: record GET latency
             let get_us = get_start.elapsed().as_secs_f64() * 1_000_000.0;
-            app.latency.record_command(crate::server::latency::CommandKind::Get, get_us, std::time::Instant::now());
-            if app.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Get, get_us) {
+            let mut latency = state.latency.lock();
+            latency.record_command(crate::server::latency::CommandKind::Get, get_us, std::time::Instant::now());
+            if latency.slow_queries_would_accept(crate::server::latency::CommandKind::Get, get_us) {
                 let mut kp = key.clone();
                 kp.truncate(32);
-                app.latency.maybe_record_slow(crate::server::latency::CommandKind::Get, None, get_us, kp);
+                latency.maybe_record_slow(crate::server::latency::CommandKind::Get, None, get_us, kp);
             }
             Ok(result)
         }
         Command::Set { key, payload } => {
             let set_start = std::time::Instant::now();
-            let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-            // payload is a JSON object; iterate its key-value pairs
-            if let serde_json::Value::Object(map) = payload {
-                for (feat_name, val) in map {
-                    let fv = json_to_feature_value(val);
-                    app.store.set_static(&key, &feat_name, fv, now);
+            {
+                let mut store = state.store.lock();
+                // payload is a JSON object; iterate its key-value pairs
+                if let serde_json::Value::Object(map) = payload {
+                    for (feat_name, val) in map {
+                        let fv = json_to_feature_value(val);
+                        store.set_static(&key, &feat_name, fv, now);
+                    }
+                    // Mark entity key dirty for incremental snapshots (OPS-03)
+                    store.mark_dirty(&key);
+                } else {
+                    return Err(TallyError::Protocol(
+                        "SET payload must be a JSON object".into(),
+                    ));
                 }
-                // Mark entity key dirty for incremental snapshots (OPS-03)
-                app.store.mark_dirty(&key);
-            } else {
-                return Err(TallyError::Protocol(
-                    "SET payload must be a JSON object".into(),
-                ));
             }
             // Phase 10.2: record SET latency
             let set_us = set_start.elapsed().as_secs_f64() * 1_000_000.0;
-            app.latency.record_command(crate::server::latency::CommandKind::Set, set_us, std::time::Instant::now());
-            if app.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Set, set_us) {
+            let mut latency = state.latency.lock();
+            latency.record_command(crate::server::latency::CommandKind::Set, set_us, std::time::Instant::now());
+            if latency.slow_queries_would_accept(crate::server::latency::CommandKind::Set, set_us) {
                 let mut kp = key.clone();
                 kp.truncate(32);
-                app.latency.maybe_record_slow(crate::server::latency::CommandKind::Set, None, set_us, kp);
+                latency.maybe_record_slow(crate::server::latency::CommandKind::Set, None, set_us, kp);
             }
             Ok(vec![])
         }
@@ -1106,33 +1144,43 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                 .map_err(|e| TallyError::Protocol(format!("invalid register payload: {}", e)))?;
             let def_name = req.name.clone();
             let is_view = req.definition_type.as_deref() == Some("view");
-            let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+            // REGISTER needs engine write lock (D-04).
+            let mut engine = state.engine.write();
             if is_view {
                 let view_def = protocol::convert_view_register_request(req)?;
-                app.engine.register_view(view_def)?;
-                app.engine.store_raw_register_json(&def_name, raw_json);
+                engine.register_view(view_def)?;
+                engine.store_raw_register_json(&def_name, raw_json);
                 Ok(vec![])
             } else {
                 let stream_def = protocol::convert_register_request(req)?;
-                let diff = app.engine.register(stream_def)?;
+                let diff = engine.register(stream_def)?;
                 // Register stream with event log for persistence
-                let history_ttl = app.engine.get_stream(&def_name)
+                let history_ttl = engine.get_stream(&def_name)
                     .and_then(|s| s.history_ttl);
-                if let Some(ref mut log) = app.event_log {
-                    let _ = log.register_stream(&def_name, history_ttl);
+                {
+                    let mut event_log = state.event_log.lock();
+                    if let Some(ref mut log) = *event_log {
+                        let _ = log.register_stream(&def_name, history_ttl);
+                    }
                 }
-                app.engine.store_raw_register_json(&def_name, raw_json);
+                engine.store_raw_register_json(&def_name, raw_json);
 
                 // If there are features to backfill, spawn async task (SCHM-03)
                 if !diff.backfilling.is_empty() {
                     // Flush event log to ensure all events are readable
-                    if let Some(ref mut log) = app.event_log {
-                        let _ = log.fsync_all();
+                    {
+                        let mut event_log = state.event_log.lock();
+                        if let Some(ref mut log) = *event_log {
+                            let _ = log.fsync_all();
+                        }
                     }
                     // Read event log entries for this stream
-                    let entries = app.event_log.as_ref()
-                        .map(|log| log.read_entries(&def_name).unwrap_or_default())
-                        .unwrap_or_default();
+                    let entries = {
+                        let event_log = state.event_log.lock();
+                        event_log.as_ref()
+                            .map(|log| log.read_entries(&def_name).unwrap_or_default())
+                            .unwrap_or_default()
+                    };
                     let backfill_features = diff.backfilling.clone();
 
                     if !entries.is_empty() {
@@ -1142,13 +1190,15 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                             total_events: entries.len(),
                             processed_events: Arc::new(AtomicUsize::new(0)),
                             started_at: SystemTime::now(),
-                            completed_at: Mutex::new(None),
+                            completed_at: std::sync::Mutex::new(None),
                         });
-                        app.backfill_tracker.tasks.lock()
+                        state.backfill_tracker.tasks.lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .push(Arc::clone(&status));
 
                         let state_clone = state.clone();
+                        // Drop engine write lock before spawning (no lock across .await)
+                        drop(engine);
                         tokio::spawn(run_backfill(
                             state_clone,
                             def_name.clone(),
@@ -1156,6 +1206,15 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                             entries,
                             status,
                         ));
+
+                        // Return diff JSON summary (SCHM-01/02)
+                        let diff_json = serde_json::json!({
+                            "status": "ok",
+                            "added": diff.added,
+                            "removed": diff.removed,
+                            "backfilling": diff.backfilling,
+                        });
+                        return Ok(serde_json::to_vec(&diff_json).unwrap());
                     }
                 }
 
@@ -1170,15 +1229,11 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             }
         }
         Command::Mget { keys } => {
-            let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-            let AppState {
-                ref engine,
-                ref mut store,
-                ..
-            } = *app;
+            let engine = state.engine.read();
+            let mut store = state.store.lock();
             let mut result = serde_json::Map::new();
             for key in &keys {
-                let features = engine.get_features(key, store, now);
+                let features = engine.get_features(key, &mut *store, now);
                 let feature_json = feature_map_to_json(&features);
                 // Parse the JSON bytes back to a Value for nesting
                 let mut value: serde_json::Value = serde_json::from_slice(&feature_json)
@@ -1218,10 +1273,10 @@ pub async fn run_backfill(
     // Clear any existing operator state for backfill features (idempotent restart).
     // This ensures a re-run after crash produces the same result as a fresh run.
     {
-        let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-        let keys: Vec<String> = app.store.entity_keys().collect();
+        let mut store = state.store.lock();
+        let keys: Vec<String> = store.entity_keys().collect();
         for key in &keys {
-            if let Some(entity) = app.store.get_entity_mut(key) {
+            if let Some(entity) = store.get_entity_mut(key) {
                 if let Some(stream_state) = entity.streams.get_mut(&stream_name) {
                     stream_state.operators.retain(|(name, _)| !feature_names.contains(name));
                 }
@@ -1232,12 +1287,8 @@ pub async fn run_backfill(
     let total = entries.len();
     for (chunk_idx, chunk) in entries.chunks(64).enumerate() {
         {
-            let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-            let AppState {
-                ref engine,
-                ref mut store,
-                ..
-            } = *app;
+            let engine = state.engine.read();
+            let mut store = state.store.lock();
             for entry in chunk {
                 // Plan 11-06: dispatch on log payload format byte.
                 // LOG_FMT_BINARY → decode binary wire format.
@@ -1261,7 +1312,7 @@ pub async fn run_backfill(
                 let _ = engine.push_for_backfill(
                     &stream_name,
                     &event,
-                    store,
+                    &mut *store,
                     entry.timestamp, // Event timestamp for determinism (SCHM-05)
                     &feature_names,
                 );
@@ -1276,7 +1327,7 @@ pub async fn run_backfill(
                     }
                 }
             }
-        } // Lock released before yield
+        } // Locks released before yield
         // Update progress
         let processed = std::cmp::min((chunk_idx + 1) * 64, total);
         status.processed_events.store(processed, Ordering::Relaxed);
@@ -1286,9 +1337,9 @@ pub async fn run_backfill(
     *status.completed_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(SystemTime::now());
     // Persist completion markers so restart detects this backfill as done
     {
-        let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut backfill_complete = state.backfill_complete.lock();
         for feat in &feature_names {
-            app.backfill_complete.insert((stream_name.clone(), feat.clone()));
+            backfill_complete.insert((stream_name.clone(), feat.clone()));
         }
     }
 }
@@ -1320,15 +1371,15 @@ async fn handle_mset(
     let now = SystemTime::now();
     for chunk in entries.chunks(1024) {
         {
-            let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut store = state.store.lock();
             for (key, payload) in chunk {
                 if let serde_json::Value::Object(map) = payload {
                     for (feat_name, val) in map {
                         let fv = json_to_feature_value(val.clone());
-                        app.store.set_static(key, feat_name, fv, now);
+                        store.set_static(key, feat_name, fv, now);
                     }
                     // Mark entity key dirty once per chunk iteration (OPS-03)
-                    app.store.mark_dirty(key);
+                    store.mark_dirty(key);
                 }
                 // Skip non-object payloads silently (defensive)
             }
@@ -1345,22 +1396,15 @@ mod tests {
     use std::time::Duration;
 
     /// Helper: create shared state with empty engine + store.
+    /// Phase 14: creates Arc<ConcurrentAppState> instead of Arc<Mutex<AppState>>.
     fn make_shared_state() -> SharedState {
-        Arc::new(Mutex::new(AppState {
-            engine: PipelineEngine::new(),
-            store: StateStore::new(),
-            metrics: Metrics::default(),
-            snapshot_path: std::path::PathBuf::from("test.snapshot"),
-            event_log: None,
-            backfill_tracker: Arc::new(BackfillTracker::default()),
-            backfill_complete: HashSet::new(),
-            snapshot_cycle: 0,
-            snapshot_seq: 1,
-            last_base_seq: 0,
-            previous_base_seq: 0,
-            throughput: crate::server::throughput::ThroughputTracker::new(),
-            latency: crate::server::latency::LatencyTracker::new(),
-        }))
+        make_concurrent_state(
+            PipelineEngine::new(),
+            StateStore::new(),
+            None,
+            std::path::PathBuf::from("test.snapshot"),
+            Arc::new(BackfillTracker::default()),
+        )
     }
 
     /// Helper: register a simple stream with count and sum features.
@@ -1395,27 +1439,25 @@ mod tests {
             entity_ttl: None,
             history_ttl: None,
         };
-        let mut app = state.lock().unwrap();
-        app.engine.register(stream).unwrap();
+        state.engine.write().register(stream).unwrap();
     }
 
-    // --- AppState and SharedState type tests ---
+    // --- ConcurrentAppState type tests ---
 
     #[test]
     fn test_app_state_wraps_engine_and_store() {
         let state = make_shared_state();
-        let app = state.lock().unwrap();
-        assert_eq!(app.engine.stream_count(), 0);
-        assert_eq!(app.store.entity_count(), 0);
+        assert_eq!(state.engine.read().stream_count(), 0);
+        assert_eq!(state.store.lock().entity_count(), 0);
     }
 
     #[test]
-    fn test_shared_state_is_arc_mutex() {
-        // Verify SharedState is Arc<Mutex<AppState>> by cloning
+    fn test_shared_state_is_arc_concurrent() {
+        // Verify SharedState is Arc<ConcurrentAppState> by cloning
         let state: SharedState = make_shared_state();
         let state2 = state.clone();
         drop(state2); // Would fail if not Arc
-        let _app = state.lock().unwrap(); // Would fail if not Mutex
+        let _engine = state.engine.read(); // Would fail if not RwLock
     }
 
     // --- PUSH command tests ---
@@ -1515,8 +1557,8 @@ mod tests {
         assert!(result.unwrap().is_empty()); // Empty payload on success
 
         // Verify the features were written
-        let app = state.lock().unwrap();
-        let entity = app.store.get_entity("u123").unwrap();
+        let store = state.store.lock();
+        let entity = store.get_entity("u123").unwrap();
         assert_eq!(
             entity.static_features.get("segment").unwrap().value,
             FeatureValue::String("high_value".into())
@@ -1560,9 +1602,9 @@ mod tests {
         assert!(diff_json["added"].as_array().unwrap().contains(&serde_json::json!("login_count_1h")));
         assert!(diff_json["removed"].as_array().unwrap().is_empty());
 
-        let app = state.lock().unwrap();
-        assert_eq!(app.engine.stream_count(), 1);
-        assert!(app.engine.get_stream("Logins").is_some());
+        let engine = state.engine.read();
+        assert_eq!(engine.stream_count(), 1);
+        assert!(engine.get_stream("Logins").is_some());
     }
 
     #[test]
@@ -1595,8 +1637,7 @@ mod tests {
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
 
-        let app = state.lock().unwrap();
-        assert_eq!(app.store.entity_count(), 2);
+        assert_eq!(state.store.lock().entity_count(), 2);
     }
 
     #[tokio::test]
@@ -1609,8 +1650,7 @@ mod tests {
         let result = handle_mset(entries, &state).await;
         assert!(result.is_ok());
 
-        let app = state.lock().unwrap();
-        assert_eq!(app.store.entity_count(), 2050);
+        assert_eq!(state.store.lock().entity_count(), 2050);
     }
 
     // --- json_to_feature_value tests ---
@@ -1668,31 +1708,34 @@ mod tests {
         let result = handle_mset(entries, &state).await;
         assert!(result.is_ok());
 
-        let app = state.lock().unwrap();
+        let store = state.store.lock();
         // k1 and k3 should be written (object payloads)
-        assert!(app.store.get_entity("k1").is_some(), "k1 should be written");
-        assert!(app.store.get_entity("k3").is_some(), "k3 should be written");
+        assert!(store.get_entity("k1").is_some(), "k1 should be written");
+        assert!(store.get_entity("k3").is_some(), "k3 should be written");
         // k2 should NOT be written (non-object payload was skipped)
         assert!(
-            app.store.get_entity("k2").is_none(),
+            store.get_entity("k2").is_none(),
             "k2 should be skipped (non-object)"
         );
     }
 
-    // --- Mutex poisoning recovery test ---
+    // --- parking_lot mutex panic recovery test ---
+    // parking_lot does not poison on panic (unlike std::sync::Mutex),
+    // so this test verifies that the state is still usable after a panic.
 
     #[test]
-    fn test_poisoned_mutex_recovery() {
+    fn test_parking_lot_mutex_no_poisoning() {
         let state = make_shared_state();
-        // Poison the mutex by panicking inside a lock
+        // parking_lot Mutex does NOT poison on panic (unlike std::Mutex).
+        // Attempt a panic inside a lock scope.
         let state2 = state.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _app = state2.lock().unwrap();
-            panic!("intentional panic to poison mutex");
+            let _store = state2.store.lock();
+            panic!("intentional panic inside parking_lot lock");
         }));
         assert!(result.is_err()); // Panic was caught
 
-        // Should still be able to use the state via unwrap_or_else recovery
+        // parking_lot does not poison — the lock is still usable.
         let cmd = Command::Get {
             key: "test".into(),
         };
@@ -1723,8 +1766,7 @@ mod tests {
             entity_ttl: None,
             history_ttl: None,
         };
-        let mut app = state.lock().unwrap();
-        app.engine.register(stream).unwrap();
+        state.engine.write().register(stream).unwrap();
     }
 
     #[test]
@@ -1748,8 +1790,8 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify merchant entity was created via fan-out
-        let mut app = state.lock().unwrap();
-        let merchant_features = app.store.get_all_features("m456", std::time::SystemTime::now());
+        let mut store = state.store.lock();
+        let merchant_features = store.get_all_features("m456", std::time::SystemTime::now());
         assert_eq!(
             merchant_features.get("merchant_tx_count_1h"),
             Some(&FeatureValue::Int(1)),
@@ -1783,8 +1825,8 @@ mod tests {
         assert_eq!(json, serde_json::json!({}));
 
         // But the fan-out still happened: MerchantActivity state was updated.
-        let mut app = state.lock().unwrap();
-        let merchant_features = app.store.get_all_features("m456", std::time::SystemTime::now());
+        let mut store = state.store.lock();
+        let merchant_features = store.get_all_features("m456", std::time::SystemTime::now());
         assert_eq!(
             merchant_features.get("merchant_tx_count_1h"),
             Some(&FeatureValue::Int(1)),
@@ -1812,8 +1854,8 @@ mod tests {
         handle_sync_command(cmd, &state).unwrap();
 
         // user count should be 1 (pushed once, not twice)
-        let mut app = state.lock().unwrap();
-        let user_features = app.store.get_all_features("u123", std::time::SystemTime::now());
+        let mut store = state.store.lock();
+        let user_features = store.get_all_features("u123", std::time::SystemTime::now());
         assert_eq!(user_features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
     }
 
@@ -1836,8 +1878,7 @@ mod tests {
         handle_sync_command(cmd, &state).unwrap();
 
         // Merchant entity should NOT exist
-        let app = state.lock().unwrap();
-        assert!(app.store.get_entity("m456").is_none(), "no fan-out without key field");
+        assert!(state.store.lock().get_entity("m456").is_none(), "no fan-out without key field");
     }
 
     #[test]
@@ -1860,8 +1901,7 @@ mod tests {
         handle_sync_command(cmd, &state).unwrap();
 
         // Should not create entity for empty key
-        let app = state.lock().unwrap();
-        assert_eq!(app.store.entity_count(), 1, "only u123 entity, not empty merchant");
+        assert_eq!(state.store.lock().entity_count(), 1, "only u123 entity, not empty merchant");
     }
 
     #[test]
