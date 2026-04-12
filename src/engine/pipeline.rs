@@ -11,7 +11,7 @@ use petgraph::algo::toposort;
 use crate::types::{FeatureValue, FeatureMap};
 use crate::error::TallyError;
 use crate::state::store::StateStore;
-use super::operators::{CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp};
+use super::operators::{CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp, StddevOp, PercentileOp};
 use super::hll::DistinctCountOp;
 use crate::state::snapshot::OperatorState;
 use super::expression::{Expr, EvalContext, eval};
@@ -70,6 +70,23 @@ pub enum FeatureDef {
         where_expr: Option<Expr>,
         backfill: bool,
     },
+    Stddev {
+        field: String,
+        window: Duration,
+        bucket: Duration,
+        optional: bool,
+        where_expr: Option<Expr>,
+        backfill: bool,
+    },
+    Percentile {
+        field: String,
+        quantile: f64,
+        window: Duration,
+        bucket: Duration,
+        optional: bool,
+        where_expr: Option<Expr>,
+        backfill: bool,
+    },
     Derive {
         expr: Expr, // Parsed at registration time
     },
@@ -101,6 +118,8 @@ pub fn get_backfill_flag(def: &FeatureDef) -> bool {
         FeatureDef::Max { backfill, .. } => *backfill,
         FeatureDef::Last { backfill, .. } => *backfill,
         FeatureDef::DistinctCount { backfill, .. } => *backfill,
+        FeatureDef::Stddev { backfill, .. } => *backfill,
+        FeatureDef::Percentile { backfill, .. } => *backfill,
         FeatureDef::Derive { .. } => false,
     }
 }
@@ -236,6 +255,12 @@ fn create_operator(def: &FeatureDef) -> Option<OperatorState> {
         FeatureDef::DistinctCount { field, window, bucket, optional, .. } => {
             Some(OperatorState::DistinctCount(DistinctCountOp::new(field.clone(), *window, *bucket, *optional)))
         }
+        FeatureDef::Stddev { field, window, bucket, optional, .. } => {
+            Some(OperatorState::Stddev(StddevOp::new(field.clone(), *window, *bucket, *optional)))
+        }
+        FeatureDef::Percentile { field, quantile, window, bucket, optional, .. } => {
+            Some(OperatorState::Percentile(PercentileOp::new(field.clone(), *quantile, *window, *bucket, *optional)))
+        }
         FeatureDef::Derive { .. } => None, // Derives have no operator state
     }
 }
@@ -250,6 +275,8 @@ fn get_where_expr(def: &FeatureDef) -> Option<&Expr> {
         FeatureDef::Max { where_expr, .. } => where_expr.as_ref(),
         FeatureDef::Last { .. } => None,
         FeatureDef::DistinctCount { where_expr, .. } => where_expr.as_ref(),
+        FeatureDef::Stddev { where_expr, .. } => where_expr.as_ref(),
+        FeatureDef::Percentile { where_expr, .. } => where_expr.as_ref(),
         FeatureDef::Derive { .. } => None,
     }
 }
@@ -282,7 +309,7 @@ impl PipelineEngine {
                 let is_windowed = matches!(def,
                     FeatureDef::Count { .. } | FeatureDef::Sum { .. } | FeatureDef::Avg { .. } |
                     FeatureDef::Min { .. } | FeatureDef::Max { .. } | FeatureDef::DistinctCount { .. } |
-                    FeatureDef::Last { .. }
+                    FeatureDef::Last { .. } | FeatureDef::Stddev { .. } | FeatureDef::Percentile { .. }
                 );
                 if is_windowed {
                     return Err(TallyError::Protocol(format!(
@@ -1039,6 +1066,8 @@ impl PipelineEngine {
                 FeatureDef::Max { window, .. } => Some(*window),
                 FeatureDef::Last { .. } => None, // No window
                 FeatureDef::DistinctCount { window, .. } => Some(*window),
+                FeatureDef::Stddev { window, .. } => Some(*window),
+                FeatureDef::Percentile { window, .. } => Some(*window),
                 FeatureDef::Derive { .. } => None,
             })
             .max()

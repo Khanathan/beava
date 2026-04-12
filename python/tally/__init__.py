@@ -7,6 +7,8 @@ from tally._operators import (
     Max as max,
     DistinctCount as distinct_count,
     Last as last,
+    Stddev as stddev,
+    Percentile as percentile,
     Derive as derive,
     Lookup as lookup,
 )
@@ -33,6 +35,8 @@ __all__ = [
     "max",
     "distinct_count",
     "last",
+    "stddev",
+    "percentile",
     "derive",
     "lookup",
     # Decorators (legacy API)

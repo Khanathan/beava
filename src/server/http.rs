@@ -94,6 +94,25 @@ async fn get_pipeline(
                     } => {
                         serde_json::json!({"name": fname, "type": "distinct_count", "field": field, "window_secs": window.as_secs(), "bucket_secs": bucket.as_secs(), "optional": optional})
                     }
+                    crate::engine::pipeline::FeatureDef::Stddev {
+                        field,
+                        window,
+                        bucket,
+                        optional,
+                        ..
+                    } => {
+                        serde_json::json!({"name": fname, "type": "stddev", "field": field, "window_secs": window.as_secs(), "bucket_secs": bucket.as_secs(), "optional": optional})
+                    }
+                    crate::engine::pipeline::FeatureDef::Percentile {
+                        field,
+                        quantile,
+                        window,
+                        bucket,
+                        optional,
+                        ..
+                    } => {
+                        serde_json::json!({"name": fname, "type": "percentile", "field": field, "quantile": quantile, "window_secs": window.as_secs(), "bucket_secs": bucket.as_secs(), "optional": optional})
+                    }
                     crate::engine::pipeline::FeatureDef::Derive { .. } => {
                         serde_json::json!({"name": fname, "type": "derive"})
                     }
