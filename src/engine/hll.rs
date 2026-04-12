@@ -137,8 +137,8 @@ impl DistinctCountOp {
 }
 
 impl Operator for DistinctCountOp {
-    fn push(&mut self, event: &serde_json::Value, now: SystemTime) -> Result<(), TallyError> {
-        match event.get(&self.field) {
+    fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError> {
+        match crate::engine::operators::resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
                     Ok(())
@@ -363,7 +363,7 @@ mod tests {
         let t0 = ts(1000 * 60);
         for i in 0..5 {
             let ev = event("merchant_id", serde_json::Value::String(format!("m{}", i)));
-            op.push(&ev, t0).unwrap();
+            op.push(&ev, None, t0).unwrap();
         }
         match op.read(t0) {
             FeatureValue::Float(v) => {
@@ -380,7 +380,7 @@ mod tests {
         let t0 = ts(1000 * 60);
         for _ in 0..5 {
             let ev = event("merchant_id", serde_json::Value::String("m_same".into()));
-            op.push(&ev, t0).unwrap();
+            op.push(&ev, None, t0).unwrap();
         }
         match op.read(t0) {
             FeatureValue::Float(v) => {
@@ -405,7 +405,7 @@ mod tests {
 
         // Push event at t0
         let ev = event("merchant_id", serde_json::Value::String("m1".into()));
-        op.push(&ev, t0).unwrap();
+        op.push(&ev, None, t0).unwrap();
 
         // Read at t0 -- should have data
         assert_ne!(op.read(t0), FeatureValue::Missing);
@@ -424,7 +424,7 @@ mod tests {
         for i in 0..3 {
             let t = t0 + Duration::from_secs(i * 60);
             let ev = event("merchant_id", serde_json::Value::String(format!("m{}", i)));
-            op.push(&ev, t).unwrap();
+            op.push(&ev, None, t).unwrap();
         }
 
         // Read should merge all buckets, returning ~3 distinct
@@ -445,7 +445,7 @@ mod tests {
 
         // Event without the field
         let ev = serde_json::json!({"other_field": "value"});
-        assert!(op.push(&ev, t0).is_ok());
+        assert!(op.push(&ev, None, t0).is_ok());
 
         // No events with the field -- should be Missing
         assert_eq!(op.read(t0), FeatureValue::Missing);
@@ -457,7 +457,7 @@ mod tests {
         let t0 = ts(1000 * 60);
 
         let ev = serde_json::json!({"other_field": "value"});
-        let result = op.push(&ev, t0);
+        let result = op.push(&ev, None, t0);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("absent"), "Error should mention absent: {}", err);
@@ -470,7 +470,7 @@ mod tests {
 
         // Array value -- not string or numeric
         let ev = serde_json::json!({"merchant_id": [1, 2, 3]});
-        let result = op.push(&ev, t0);
+        let result = op.push(&ev, None, t0);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("string or numeric"),
@@ -485,7 +485,7 @@ mod tests {
         // Numeric values should be accepted (converted to string for hashing)
         for i in 0..5 {
             let ev = serde_json::json!({"merchant_id": i});
-            op.push(&ev, t0).unwrap();
+            op.push(&ev, None, t0).unwrap();
         }
         match op.read(t0) {
             FeatureValue::Float(v) => {
@@ -503,8 +503,8 @@ mod tests {
 
         let ev1 = serde_json::json!({"merchant_id": true});
         let ev2 = serde_json::json!({"merchant_id": false});
-        op.push(&ev1, t0).unwrap();
-        op.push(&ev2, t0).unwrap();
+        op.push(&ev1, None, t0).unwrap();
+        op.push(&ev2, None, t0).unwrap();
 
         match op.read(t0) {
             FeatureValue::Float(v) => {
@@ -522,7 +522,7 @@ mod tests {
 
         for i in 0..10 {
             let ev = event("merchant_id", serde_json::Value::String(format!("m{}", i)));
-            op.push(&ev, t0).unwrap();
+            op.push(&ev, None, t0).unwrap();
         }
         let val_before = op.read(t0);
 
