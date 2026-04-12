@@ -10,13 +10,16 @@ Events go in, features come out — synchronously, in one request-response cycle
 
 ## Current State
 
-Shipped v1.0, v1.1 (composable pipeline + event log + debug UI), and v1.2 (fire-and-forget PUSH + binary wire protocol hitting 128–142k eps single-client on medium pipelines).
+Shipped v1.0 through v1.3. Branch `v1.3-concurrency` carries all work.
 
-**Tech stack:** Rust (tokio, serde, postcard, winnow, ahash), Python SDK
-**Architecture:** Single-threaded tokio event loop, custom binary TCP protocol (port 6400), HTTP management API (port 6401)
-**Operators:** count, sum, avg, min, max, last, distinct_count (HLL), derive, lookup
-**Persistence:** Periodic postcard snapshots to disk, crash recovery on startup
-**Testing:** 110+ Rust unit tests, 12 Python E2E integration tests
+**Tech stack:** Rust (tokio, serde, postcard, winnow, ahash, dashmap, parking_lot), Python SDK
+**Architecture:** Multi-threaded tokio runtime, DashMap per-stream entity concurrency, custom binary TCP protocol (port 6400), HTTP management API (port 6401)
+**Operators:** 16 total — count, sum, avg, min, max, last, distinct_count (HLL), derive, lookup, stddev, percentile, lag, ema, last_n, first, exact_min, exact_max
+**Expressions:** 18 builtins — if/coalesce/is_missing, lower/upper/len/contains/starts_with/concat, sqrt/log/pow/ceil/floor/round/clamp
+**Persistence:** Periodic postcard snapshots + SSD event log (both disable-able via flags), SlateDB state backend (feature-gated)
+**Performance:** 1.1M eps (8 proc), 359k batch (1c), 139k async (1c)
+**Testing:** 744 tests (622 lib + 122 integration), all green
+**SDK:** DataFrame API (Column proxy + Table + Stream + GroupBy + JoinedTable) alongside legacy @st.stream API
 
 ## Requirements
 
@@ -52,44 +55,52 @@ Shipped v1.0, v1.1 (composable pipeline + event log + debug UI), and v1.2 (fire-
 - ✓ Fire-and-forget PUSH (`OP_PUSH_ASYNC` 0x07, `OP_FLUSH` 0x08, `app.push_sync`, `app.flush`) — v1.2
 - ✓ Binary wire event format on PUSH paths (replaces JSON serialize on hot path) — v1.2
 - ✓ 128–142k eps single-client on medium pipelines (5.7× v1.1 baseline) — v1.2
+- ✓ SDK `push_many()` batch API + `OP_PUSH_BATCH` wire opcode (0x0A) — v1.3
+- ✓ DashMap per-stream entity concurrency + parking_lot RwLock PipelineEngine — v1.3
+- ✓ Multi-threaded tokio runtime with per-stream locks — v1.3
+- ✓ 1.1M eps aggregate (8 proc), 359k batch (1c), 139k async (1c) — v1.3
+- ✓ 8 additional operators: stddev, percentile, lag, ema, last_n, first, exact_min, exact_max — v1.3/v1.4
+- ✓ 18 expression builtins (conditionals, string ops, math) — v1.3/v1.4
+- ✓ DataFrame SDK (Column proxy, Table, Stream, GroupBy, JoinedTable) — v1.3/v1.4
+- ✓ SlateDB state backend (write-through cache, feature-gated) — v1.3/v1.4
+- ✓ Event log + snapshot disable flags — v1.3/v1.4
+- ✓ Snapshot cycle guard + manual trigger endpoint — v1.3/v1.4
 
 ### Active
 
-#### Current Milestone: v1.3 Concurrency & Client Batching
+#### Current Milestone: v2.0 New API & Engine
 
-**Goal:** Break past the single-core ceiling v1.2 hit at ~140k eps. Target 500k–1M events/sec on a single node by parallelizing the engine, amortizing per-event fixed costs, and unblocking the main thread during snapshots — buying the headroom future milestones will need (disk/S3 spill, heavier operators, richer pipelines).
+**Goal:** Replace the `@st.stream` decorator API with a function-based `@tl.dataset(depends_on=[...])` pipeline pattern using `EventSet`/`FeatureSet` types. Fill engine gaps (enriched event propagation, feature projection, union node). Remove old API. Architect for on-demand compute.
 
 **Target features:**
-- Server-side async push coalescing (buffer per-connection, batch under one state lock)
-- SDK `push_many()` batch API + `OP_PUSH_BATCH` wire opcode (0x0A)
-- Key-partitioned multi-threaded engine (shard `EntityState` across `num_cpus` workers, no cross-thread locks on hot path)
-- Snapshot I/O off main thread (eliminate 15–25% duty-cycle loss during writes)
-
-**Performance targets:**
-- Phase 12 multi-client async: ≥ 200k eps @ 4 clients on medium pipeline
-- Phase 13 single-client via `push_many`: ≥ 300k eps on medium pipeline
-- Phase 14 aggregate multi-threaded: ≥ 1,000,000 eps @ 16 clients × 16 shards
-- Phase 15 snapshot stall regression: ≤ 5% async throughput loss during write (was 15–25%)
-- 532 existing tests remain green across all phases
+- New Python SDK API: `@tl.source`, `@tl.dataset(depends_on=[...])`, `EventSet`/`FeatureSet` types, explicit `.group_by("key").agg(...)`
+- Engine: enriched event propagation (~50 LOC Rust), feature projection, union node
+- Full test plans per phase (upfront test design, not afterthought)
+- Remove old `@st.stream`/`@st.view` API entirely
+- Architect for on-demand compute: keep REGISTER as runtime operation, ephemeral pipeline flag, portable definitions (same format for pre-registered and on-demand)
 
 ### Out of Scope
 
 - Cluster mode / distributed operation — single-node by design
 - Client-side sharding / hash-ring routing across instances — document, don't build
 - Multi-tenancy / namespace isolation
-- Disk/S3 state spill — future milestone (v1.3 provides the headroom, not the implementation)
-- Bundled binary distribution (pip install tally) — requires v1 validated first
+- Disk/S3 state spill — future milestone post-launch (S3 replay log is month 1 post-launch)
+- On-demand compute product layer — architect for it in v2.0, build post-launch
+- Cross-key queries ("count across all users where...") — fundamentally at odds with per-key state model
 - Session windows — only sliding/tumbling
 - WAL / full durability — violates <100µs p99 latency target
-- Point-in-time historical replay — changes system from serving to storage
+- DataFrame simulation (tl.DF) — users expect Pandas behavior; rejected in favor of honest EventSet/FeatureSet types
+- Server-side async push coalescing (PERF-03) — deferred from v1.3, low ROI vs batch API
+- Off-thread snapshot I/O (OPS-05) — deferred from v1.3, revisit post-launch
 
 ## Constraints
 
 - **Language**: Rust — memory safety, single binary distribution, performance
-- **Threading**: Single-threaded core through v1.2; v1.3 introduces key-partitioned multi-threading (shard-per-worker, no cross-thread locks on hot path) — simplicity preserved per shard
+- **Threading**: Multi-threaded tokio runtime with DashMap per-stream entity concurrency (since v1.3)
 - **Protocol**: Custom binary TCP — HTTP too heavy for hot-path latency targets
-- **Persistence**: Periodic snapshots only — no WAL, no embedded KV, losing ~30s on crash is acceptable
-- **Performance**: <100us p99 PUSH latency, <50us p99 GET latency, >100K events/sec throughput
+- **Persistence**: Periodic snapshots + optional SSD event log + optional SlateDB state backend
+- **Performance**: <100us p99 PUSH latency, <50us p99 GET latency, 1M+ eps aggregate throughput
+- **API compatibility**: v2.0 is a breaking change — old @st.stream API removed, not deprecated alongside
 
 ## Key Decisions
 
@@ -108,7 +119,11 @@ Shipped v1.0, v1.1 (composable pipeline + event log + debug UI), and v1.2 (fire-
 | Rename from Streamlet to Tally | Shorter, punchier, approved during design review | ✓ Good |
 | Fire-and-forget PUSH (v1.2) | Decouple PUSH from feature response so clients stop round-tripping per event; unlocked 5.7× throughput on medium pipelines | ✓ Good |
 | Binary wire event format on PUSH paths (v1.2) | JSON serialize was ~30% of single-event cost; replacing it on hot path was prerequisite for >100k eps single-client | ✓ Good |
-| Key-partitioned multi-threading (v1.3 plan) | Single-core ceiling was hit in v1.2 (66% CPU at 142k eps); 47 idle cores is the highest-ROI lever. Shard-per-worker preserves lock-free hot path per shard | ⏳ Planned |
+| DashMap + per-stream locks (v1.3) | Incremental concurrency over full key-partitioned sharding; DashMap entity-level concurrency + parking_lot RwLock PipelineEngine; 1.1M eps @ 8 proc | ✓ Good |
+| Function-based API over decorators (v2.0) | @st.stream hides aggregation key; function pattern is testable, composable, explicit about dependencies. Informed by Fennel experience | — Pending |
+| EventSet/FeatureSet over DataFrame (v2.0) | DataFrame simulation is a trap — users expect Pandas behavior. Honest types communicate what the system actually does | — Pending |
+| Remove old API, not deprecate (v2.0) | Maintaining two APIs doubles surface area; clean break before launch is the right time | — Pending |
+| REGISTER stays runtime operation (v2.0) | Enables sub-second pipeline creation — the primitive that unlocks on-demand compute post-launch | — Pending |
 
 ## Evolution
 
@@ -128,4 +143,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-11 — v1.3 Concurrency & Client Batching milestone started*
+*Last updated: 2026-04-12 — v2.0 New API & Engine milestone started*
