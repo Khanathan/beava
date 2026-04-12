@@ -459,7 +459,7 @@ async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Valu
     let engine = state.engine.read();
 
     let mut per_stream_counts: ahash::AHashMap<String, u64> = ahash::AHashMap::new();
-    let keys: Vec<String> = store.entity_keys().collect();
+    let keys: Vec<String> = store.entity_keys();
     for key in &keys {
         if let Some(entity) = store.get_entity(key) {
             for stream_name in entity.streams.keys() {

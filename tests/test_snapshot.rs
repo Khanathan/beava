@@ -159,21 +159,21 @@ fn test_eviction_removes_old_entity() {
 
     // Entity with old last_event_at (strictly older than TTL)
     {
-        let entity = store.get_or_create_entity("old_user");
+        let mut entity = store.get_or_create_entity("old_user");
         let stream = entity.get_or_create_stream("stream1");
         stream.last_event_at = Some(ts(96_399)); // 100_000 - 96_399 = 3601s > 3600s TTL -> evicted
     }
 
     // Entity at exactly TTL boundary (should be kept)
     {
-        let entity = store.get_or_create_entity("boundary_user");
+        let mut entity = store.get_or_create_entity("boundary_user");
         let stream = entity.get_or_create_stream("stream1");
         stream.last_event_at = Some(ts(96_400)); // 100_000 - 96_400 = 3600s = TTL -> kept
     }
 
     // Entity with recent last_event_at (1 minute ago)
     {
-        let entity = store.get_or_create_entity("recent_user");
+        let mut entity = store.get_or_create_entity("recent_user");
         let stream = entity.get_or_create_stream("stream1");
         stream.last_event_at = Some(ts(99_940)); // 100_000 - 99_940 = 60s < 3600s TTL -> kept
     }
@@ -216,7 +216,7 @@ fn test_eviction_preserves_entity_with_no_events() {
 
     // Entity with a stream but no last_event_at (never received event)
     {
-        let entity = store.get_or_create_entity("no_event_user");
+        let mut entity = store.get_or_create_entity("no_event_user");
         entity.get_or_create_stream("stream1"); // has a stream entry, so not empty
     }
 

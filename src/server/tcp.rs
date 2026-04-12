@@ -1274,9 +1274,9 @@ pub async fn run_backfill(
     // This ensures a re-run after crash produces the same result as a fresh run.
     {
         let mut store = state.store.lock();
-        let keys: Vec<String> = store.entity_keys().collect();
+        let keys: Vec<String> = store.entity_keys();
         for key in &keys {
-            if let Some(entity) = store.get_entity_mut(key) {
+            if let Some(mut entity) = store.get_entity_mut(key) {
                 if let Some(stream_state) = entity.streams.get_mut(&stream_name) {
                     stream_state.operators.retain(|(name, _)| !feature_names.contains(name));
                 }

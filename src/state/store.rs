@@ -87,26 +87,40 @@ impl EntityState {
 }
 
 /// The top-level state store. Maps entity keys to their state.
-/// Uses AHashMap per STATE.md locked decision (not std HashMap).
+///
+/// v1.3: `entities` is a `DashMap` for per-key concurrency — two events
+/// targeting different entity keys never contend on the same lock.
+/// `dirty_keys` and `deleted_keys` are wrapped in fine-grained `PLMutex`
+/// so snapshot tracking does not require a global store lock.
 ///
 /// v1.1 Phase 9: tracks dirty and deleted keys since the last snapshot clear
 /// for incremental snapshot serialization.
-#[derive(Debug)]
 pub struct StateStore {
-    entities: AHashMap<EntityKey, EntityState>,
+    entities: DashMap<EntityKey, EntityState>,
     /// Keys modified since last snapshot clear (mutation-touched).
-    dirty_keys: AHashSet<EntityKey>,
+    dirty_keys: parking_lot::Mutex<AHashSet<EntityKey>>,
     /// Keys evicted/deleted since last snapshot clear. Populated by eviction
     /// and explicit deletes; consumed by delta snapshot serialization.
-    deleted_keys: AHashSet<EntityKey>,
+    deleted_keys: parking_lot::Mutex<AHashSet<EntityKey>>,
+}
+
+// DashMap does not implement Debug, so implement manually.
+impl std::fmt::Debug for StateStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StateStore")
+            .field("entity_count", &self.entities.len())
+            .field("dirty_count", &self.dirty_keys.lock().len())
+            .field("deleted_count", &self.deleted_keys.lock().len())
+            .finish()
+    }
 }
 
 impl Default for StateStore {
     fn default() -> Self {
         Self {
-            entities: AHashMap::new(),
-            dirty_keys: AHashSet::new(),
-            deleted_keys: AHashSet::new(),
+            entities: DashMap::new(),
+            dirty_keys: parking_lot::Mutex::new(AHashSet::new()),
+            deleted_keys: parking_lot::Mutex::new(AHashSet::new()),
         }
     }
 }
@@ -118,27 +132,31 @@ impl StateStore {
     }
 
     /// Get or create an EntityState for the given key.
-    /// Returns a mutable reference to the entity's state.
-    pub fn get_or_create_entity(&mut self, key: &str) -> &mut EntityState {
+    /// Returns a DashMap RefMut guard that derefs to `&mut EntityState`.
+    /// The guard must be dropped before accessing a different key in the
+    /// same DashMap to avoid potential deadlock on the same shard.
+    pub fn get_or_create_entity(&self, key: &str) -> dashmap::mapref::one::RefMut<'_, String, EntityState> {
         self.entities
             .entry(key.to_string())
             .or_insert_with(EntityState::new)
     }
 
     /// Read-only access to an entity's state. Returns None if key not found.
-    pub fn get_entity(&self, key: &str) -> Option<&EntityState> {
+    /// Returns a DashMap Ref guard that derefs to `&EntityState`.
+    pub fn get_entity(&self, key: &str) -> Option<dashmap::mapref::one::Ref<'_, String, EntityState>> {
         self.entities.get(key)
     }
 
     /// Mutable access to an entity's state. Returns None if key not found.
-    pub fn get_entity_mut(&mut self, key: &str) -> Option<&mut EntityState> {
+    /// Returns a DashMap RefMut guard that derefs to `&mut EntityState`.
+    pub fn get_entity_mut(&self, key: &str) -> Option<dashmap::mapref::one::RefMut<'_, String, EntityState>> {
         self.entities.get_mut(key)
     }
 
     /// Write a static feature for an entity. Creates the entity if absent.
     /// Accepts an explicit `now` timestamp for determinism and testability (WR-05).
-    pub fn set_static(&mut self, key: &str, feature_name: &str, value: FeatureValue, now: SystemTime) {
-        let entity = self.get_or_create_entity(key);
+    pub fn set_static(&self, key: &str, feature_name: &str, value: FeatureValue, now: SystemTime) {
+        let mut entity = self.get_or_create_entity(key);
         entity.static_features.insert(
             feature_name.to_string(),
             StaticFeature {
@@ -152,9 +170,9 @@ impl StateStore {
     /// Iterates all streams' operators calling read(now) (which advances time
     /// to expire stale buckets), then overlays static_features. Static features
     /// with the same name override live features (direct writes take precedence).
-    /// Takes &mut self because operator read() requires mutable access.
-    pub fn get_all_features(&mut self, key: &str, now: SystemTime) -> FeatureMap {
-        let entity = match self.entities.get_mut(key) {
+    /// DashMap get_mut provides interior mutability for operator read().
+    pub fn get_all_features(&self, key: &str, now: SystemTime) -> FeatureMap {
+        let mut entity = match self.entities.get_mut(key) {
             Some(e) => e,
             None => return FeatureMap::default(),
         };
@@ -178,9 +196,9 @@ impl StateStore {
 
     /// Read a single feature value for an entity. Used by cross-key lookups.
     /// Returns Missing if entity or feature not found.
-    /// Takes &mut self because operator read() requires mutable access.
-    pub fn get_feature_value(&mut self, key: &str, feature_name: &str, now: SystemTime) -> FeatureValue {
-        let entity = match self.entities.get_mut(key) {
+    /// DashMap get_mut provides interior mutability for operator read().
+    pub fn get_feature_value(&self, key: &str, feature_name: &str, now: SystemTime) -> FeatureValue {
+        let mut entity = match self.entities.get_mut(key) {
             Some(e) => e,
             None => return FeatureValue::Missing,
         };
@@ -208,8 +226,8 @@ impl StateStore {
 
     /// Mark an entity key as dirty (mutated since the last snapshot clear).
     /// Idempotent -- repeated calls leave the dirty set unchanged.
-    pub fn mark_dirty(&mut self, key: &str) {
-        self.dirty_keys.insert(key.to_string());
+    pub fn mark_dirty(&self, key: &str) {
+        self.dirty_keys.lock().insert(key.to_string());
     }
 
     /// Batch-mark entity keys as dirty. Idempotent. O(n) inserts into the
@@ -220,41 +238,41 @@ impl StateStore {
     ///
     /// Used by Phase 12's `handle_push_batch` to amortize the per-event
     /// dirty-mark cost: one call per stream group instead of one per event.
-    pub fn mark_dirty_many<I, S>(&mut self, keys: I)
+    pub fn mark_dirty_many<I, S>(&self, keys: I)
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.dirty_keys.extend(keys.into_iter().map(Into::into));
+        self.dirty_keys.lock().extend(keys.into_iter().map(Into::into));
     }
 
     /// Mark an entity key as deleted since the last snapshot clear. A deleted
     /// key is automatically removed from the dirty set so it does not appear
     /// in the next delta's `changed_entities` (avoids ambiguity).
-    pub fn mark_deleted(&mut self, key: &str) {
-        self.deleted_keys.insert(key.to_string());
-        self.dirty_keys.remove(key);
+    pub fn mark_deleted(&self, key: &str) {
+        self.deleted_keys.lock().insert(key.to_string());
+        self.dirty_keys.lock().remove(key);
     }
 
     /// Clear the dirty set. Called after a successful snapshot write.
-    pub fn clear_dirty(&mut self) {
-        self.dirty_keys.clear();
+    pub fn clear_dirty(&self) {
+        self.dirty_keys.lock().clear();
     }
 
     /// Drain the deleted key set into a Vec. Leaves the set empty.
-    pub fn take_deleted(&mut self) -> Vec<String> {
-        self.deleted_keys.drain().collect()
+    pub fn take_deleted(&self) -> Vec<String> {
+        self.deleted_keys.lock().drain().collect()
     }
 
     /// Number of keys currently marked dirty.
     pub fn dirty_count(&self) -> usize {
-        self.dirty_keys.len()
+        self.dirty_keys.lock().len()
     }
 
-    /// Read-only view of the dirty key set. Primarily for tests and debug APIs.
+    /// Read-only view of the dirty key set (clone). Primarily for tests and debug APIs.
     #[cfg(test)]
-    pub(crate) fn dirty_keys(&self) -> &AHashSet<EntityKey> {
-        &self.dirty_keys
+    pub(crate) fn dirty_keys(&self) -> AHashSet<EntityKey> {
+        self.dirty_keys.lock().clone()
     }
 
     /// Clone only dirty entities for a delta snapshot, applying the same lazy
@@ -266,9 +284,12 @@ impl StateStore {
         &self,
         valid_features: &AHashMap<String, Vec<String>>,
     ) -> Vec<(String, SerializableEntityState)> {
+        let dirty = self.dirty_keys.lock();
         self.entities.iter()
-            .filter(|(key, _)| self.dirty_keys.contains(key.as_str()))
-            .map(|(key, entity)| {
+            .filter(|entry| dirty.contains(entry.key().as_str()))
+            .map(|entry| {
+                let key = entry.key();
+                let entity = entry.value();
                 let streams: Vec<(String, SerializableStreamEntityState)> = entity.streams.iter()
                     .map(|(stream_name, stream_state)| {
                         let operators = if let Some(valid) = valid_features.get(stream_name) {
@@ -295,9 +316,10 @@ impl StateStore {
             .collect()
     }
 
-    /// Iterate over all entity keys.
-    pub fn entity_keys(&self) -> impl Iterator<Item = String> + '_ {
-        self.entities.keys().cloned()
+    /// Collect all entity keys into a Vec. DashMap iteration returns
+    /// guards, so we collect to owned Strings to avoid lifetime issues.
+    pub fn entity_keys(&self) -> Vec<String> {
+        self.entities.iter().map(|entry| entry.key().clone()).collect()
     }
 
     /// Clone full state for snapshot serialization with garbage collection of
@@ -309,7 +331,9 @@ impl StateStore {
         &self,
         valid_features: &AHashMap<String, Vec<String>>,
     ) -> Vec<(String, SerializableEntityState)> {
-        self.entities.iter().map(|(key, entity)| {
+        self.entities.iter().map(|entry| {
+            let key = entry.key();
+            let entity = entry.value();
             let streams: Vec<(String, SerializableStreamEntityState)> = entity.streams.iter()
                 .map(|(stream_name, stream_state)| {
                     let operators = if let Some(valid) = valid_features.get(stream_name) {
@@ -338,9 +362,11 @@ impl StateStore {
     }
 
     /// Clone full state for snapshot serialization (v4 format).
-    /// AHashMap is not directly serializable by postcard -- convert to Vec<(K, V)>.
+    /// DashMap is not directly serializable by postcard -- convert to Vec<(K, V)>.
     pub fn clone_for_snapshot(&self) -> Vec<(String, SerializableEntityState)> {
-        self.entities.iter().map(|(key, entity)| {
+        self.entities.iter().map(|entry| {
+            let key = entry.key();
+            let entity = entry.value();
             let streams: Vec<(String, SerializableStreamEntityState)> = entity.streams.iter()
                 .map(|(stream_name, stream_state)| {
                     (stream_name.clone(), SerializableStreamEntityState {
@@ -359,7 +385,7 @@ impl StateStore {
     }
 
     /// Restore state from a snapshot (v4 format). Clears existing state first.
-    pub fn restore_from_snapshot(&mut self, entities: Vec<(String, SerializableEntityState)>) {
+    pub fn restore_from_snapshot(&self, entities: Vec<(String, SerializableEntityState)>) {
         self.entities.clear();
         for (key, state) in entities {
             let mut streams = AHashMap::new();
@@ -385,7 +411,7 @@ impl StateStore {
     /// tracking sets are NOT modified -- applying a delta during recovery
     /// should not produce new dirty tracking.
     pub fn apply_delta(
-        &mut self,
+        &self,
         changed_entities: Vec<(String, SerializableEntityState)>,
         deleted_keys: Vec<String>,
     ) {
@@ -416,7 +442,7 @@ impl StateStore {
     /// have a last_event_at are not evicted (never received an event).
     /// Entities exactly at TTL age are kept (evicted only after TTL has fully elapsed).
     /// Returns the count of evicted entities.
-    pub fn remove_expired_entities(&mut self, now: SystemTime, ttl: std::time::Duration) -> usize {
+    pub fn remove_expired_entities(&self, now: SystemTime, ttl: std::time::Duration) -> usize {
         let before = self.entities.len();
         self.entities.retain(|_key, entity| {
             // Find the most recent last_event_at across all streams
@@ -441,7 +467,7 @@ impl StateStore {
     /// the deletion and lets recovery resurrect the entity from the base
     /// snapshot. The eviction path obeys this contract; any new caller
     /// should do the same or accept the resurrection risk.
-    pub fn remove_empty_entities(&mut self) {
+    pub fn remove_empty_entities(&self) {
         self.entities.retain(|_key, entity| !entity.is_empty());
     }
 
@@ -453,9 +479,9 @@ impl StateStore {
     /// entity between an unregister and the next base write.
     ///
     /// Streams not present in `valid_features` are removed entirely (defensive).
-    pub fn gc_invalid_operators(&mut self, valid_features: &AHashMap<String, Vec<String>>) {
-        for entity in self.entities.values_mut() {
-            entity.streams.retain(|stream_name, stream_state| {
+    pub fn gc_invalid_operators(&self, valid_features: &AHashMap<String, Vec<String>>) {
+        for mut entry in self.entities.iter_mut() {
+            entry.value_mut().streams.retain(|stream_name, stream_state| {
                 if let Some(valid) = valid_features.get(stream_name) {
                     stream_state.operators.retain(|(name, _)| valid.contains(name));
                     !stream_state.operators.is_empty()
@@ -527,7 +553,9 @@ impl StateStore {
         let stream_stores: DashMap<String, StreamStore> = DashMap::new();
         let static_store: DashMap<String, AHashMap<String, StaticFeature>> = DashMap::new();
 
-        for (entity_key, entity_state) in &self.entities {
+        for entry in self.entities.iter() {
+            let entity_key = entry.key();
+            let entity_state = entry.value();
             // Distribute stream entries into per-stream StreamStores
             for (stream_name, stream_entity_state) in &entity_state.streams {
                 let store = stream_stores
@@ -549,7 +577,8 @@ impl StateStore {
         }
 
         // Distribute dirty/deleted keys to per-stream stores
-        for key in &self.dirty_keys {
+        let dirty = self.dirty_keys.lock();
+        for key in dirty.iter() {
             for entry in stream_stores.iter() {
                 if entry.value().entities.contains_key(key) {
                     entry.value().dirty_keys.lock().insert(key.clone());
@@ -567,9 +596,9 @@ impl StateStore {
         stream_stores: &DashMap<String, StreamStore>,
         static_store: &DashMap<String, AHashMap<String, StaticFeature>>,
     ) -> Self {
-        let mut entities: AHashMap<EntityKey, EntityState> = AHashMap::new();
-        let mut dirty_keys = AHashSet::new();
-        let mut deleted_keys = AHashSet::new();
+        let entities: DashMap<EntityKey, EntityState> = DashMap::new();
+        let dirty_keys = AHashSet::new();
+        let deleted_keys = AHashSet::new();
 
         // Collect stream entity state from each StreamStore
         for entry in stream_stores.iter() {
@@ -577,19 +606,14 @@ impl StateStore {
             let store = entry.value();
 
             // Collect dirty/deleted from this stream
-            for k in store.dirty_keys.lock().iter() {
-                dirty_keys.insert(k.clone());
-            }
-            for k in store.deleted_keys.lock().iter() {
-                deleted_keys.insert(k.clone());
-            }
+            // (dirty_keys/deleted_keys collected into local AHashSets, then wrapped)
 
             // Distribute entities
             for entity_entry in store.entities.iter() {
                 let entity_key = entity_entry.key();
                 let stream_entity_state = entity_entry.value();
 
-                let entity = entities
+                let mut entity = entities
                     .entry(entity_key.clone())
                     .or_insert_with(EntityState::new);
                 entity
@@ -598,11 +622,24 @@ impl StateStore {
             }
         }
 
+        // Collect dirty/deleted in a second pass (avoid holding DashMap guards simultaneously)
+        let mut dirty_keys = dirty_keys;
+        let mut deleted_keys = deleted_keys;
+        for entry in stream_stores.iter() {
+            let store = entry.value();
+            for k in store.dirty_keys.lock().iter() {
+                dirty_keys.insert(k.clone());
+            }
+            for k in store.deleted_keys.lock().iter() {
+                deleted_keys.insert(k.clone());
+            }
+        }
+
         // Overlay static features
         for entry in static_store.iter() {
             let entity_key = entry.key();
             let static_features = entry.value();
-            let entity = entities
+            let mut entity = entities
                 .entry(entity_key.clone())
                 .or_insert_with(EntityState::new);
             entity.static_features = static_features.clone();
@@ -610,8 +647,8 @@ impl StateStore {
 
         StateStore {
             entities,
-            dirty_keys,
-            deleted_keys,
+            dirty_keys: parking_lot::Mutex::new(dirty_keys),
+            deleted_keys: parking_lot::Mutex::new(deleted_keys),
         }
     }
 }
@@ -635,22 +672,24 @@ mod tests {
 
     #[test]
     fn test_get_or_create_entity_creates_new() {
-        let mut store = StateStore::new();
-        let entity = store.get_or_create_entity("u123");
-        assert!(entity.streams.is_empty());
-        assert!(entity.static_features.is_empty());
-        assert!(entity.is_empty());
+        let store = StateStore::new();
+        {
+            let entity = store.get_or_create_entity("u123");
+            assert!(entity.streams.is_empty());
+            assert!(entity.static_features.is_empty());
+            assert!(entity.is_empty());
+        }
         assert_eq!(store.entity_count(), 1);
     }
 
     #[test]
     fn test_get_or_create_entity_returns_existing() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         // First call creates
         store.get_or_create_entity("u123");
         // Mutate the entity so we can verify it's the same one
         {
-            let entity = store.get_or_create_entity("u123");
+            let mut entity = store.get_or_create_entity("u123");
             let stream_state = entity.get_or_create_stream("TestStream");
             stream_state.last_event_at = Some(ts(1000));
         }
@@ -682,7 +721,7 @@ mod tests {
 
     #[test]
     fn test_entity_state_stores_static_features() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         store.set_static("u123", "lifetime_value", FeatureValue::Float(4500.0), ts(1000));
         let entity = store.get_entity("u123").unwrap();
         assert_eq!(entity.static_features.len(), 1);
@@ -694,12 +733,12 @@ mod tests {
 
     #[test]
     fn test_get_all_features_merges_all_streams_and_static() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         // Add a live operator in a named stream
         {
-            let entity = store.get_or_create_entity("u123");
+            let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("Transactions");
             let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
             op.push(&serde_json::json!({}), now).unwrap();
@@ -716,12 +755,12 @@ mod tests {
 
     #[test]
     fn test_static_feature_overrides_live_feature_same_name() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         // Add a live operator named "score" in a stream
         {
-            let entity = store.get_or_create_entity("u123");
+            let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("Transactions");
             let mut op = OperatorState::Sum(SumOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false));
             op.push(&serde_json::json!({"amount": 100.0}), now).unwrap();
@@ -738,12 +777,12 @@ mod tests {
 
     #[test]
     fn test_get_feature_value_searches_across_all_streams() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         // Add operators in two different streams
         {
-            let entity = store.get_or_create_entity("u123");
+            let mut entity = store.get_or_create_entity("u123");
             let stream1 = entity.get_or_create_stream("Transactions");
             let mut op1 = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
             op1.push(&serde_json::json!({}), now).unwrap();
@@ -765,7 +804,7 @@ mod tests {
 
     #[test]
     fn test_get_all_features_unknown_key_returns_empty() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let features = store.get_all_features("nonexistent", ts(1000));
         assert!(features.is_empty());
     }
@@ -791,12 +830,12 @@ mod tests {
 
     #[test]
     fn test_clone_for_snapshot_preserves_per_stream_state() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         // Add an entity with a live operator in a named stream and static feature
         {
-            let entity = store.get_or_create_entity("u123");
+            let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("Transactions");
             let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
             op.push(&serde_json::json!({}), now).unwrap();
@@ -825,7 +864,7 @@ mod tests {
 
     #[test]
     fn test_restore_from_snapshot_v4() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
@@ -865,15 +904,17 @@ mod tests {
 
     #[test]
     fn test_get_feature_value_returns_live_operator_value() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
-        let entity = store.get_or_create_entity("u123");
-        let stream = entity.get_or_create_stream("TestStream");
-        let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
-        op.push(&serde_json::json!({}), now).unwrap();
-        op.push(&serde_json::json!({}), now).unwrap();
-        stream.operators.push(("tx_count".to_string(), op));
+        {
+            let mut entity = store.get_or_create_entity("u123");
+            let stream = entity.get_or_create_stream("TestStream");
+            let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            op.push(&serde_json::json!({}), now).unwrap();
+            op.push(&serde_json::json!({}), now).unwrap();
+            stream.operators.push(("tx_count".to_string(), op));
+        }
 
         let val = store.get_feature_value("u123", "tx_count", now);
         assert_eq!(val, FeatureValue::Int(2));
@@ -881,7 +922,7 @@ mod tests {
 
     #[test]
     fn test_get_feature_value_returns_static_feature() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
         store.set_static("u123", "segment", FeatureValue::String("premium".into()), now);
 
@@ -891,14 +932,14 @@ mod tests {
 
     #[test]
     fn test_get_feature_value_returns_missing_for_unknown_entity() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let val = store.get_feature_value("nonexistent", "anything", ts(60_000));
         assert_eq!(val, FeatureValue::Missing);
     }
 
     #[test]
     fn test_get_feature_value_returns_missing_for_unknown_feature() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         store.get_or_create_entity("u123");
         let val = store.get_feature_value("u123", "nonexistent_feature", ts(60_000));
         assert_eq!(val, FeatureValue::Missing);
@@ -908,20 +949,20 @@ mod tests {
 
     #[test]
     fn test_remove_expired_entities() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(100_000);
         let ttl = Duration::from_secs(3600); // 1 hour TTL
 
         // Entity with old last_event_at (should be evicted)
         {
-            let entity = store.get_or_create_entity("old_user");
+            let mut entity = store.get_or_create_entity("old_user");
             let stream = entity.get_or_create_stream("TestStream");
             stream.last_event_at = Some(ts(1000)); // Very old
         }
 
         // Entity with recent last_event_at (should be kept)
         {
-            let entity = store.get_or_create_entity("recent_user");
+            let mut entity = store.get_or_create_entity("recent_user");
             let stream = entity.get_or_create_stream("TestStream");
             stream.last_event_at = Some(ts(99_000)); // Recent
         }
@@ -944,12 +985,12 @@ mod tests {
 
     #[test]
     fn test_clone_for_snapshot_with_gc() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         // Create entity with operators a, b, c in stream "Transactions"
         {
-            let entity = store.get_or_create_entity("u123");
+            let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("Transactions");
             let mut op_a = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
             op_a.push(&serde_json::json!({}), now).unwrap();
@@ -982,12 +1023,12 @@ mod tests {
 
     #[test]
     fn test_clone_for_snapshot_with_gc_unknown_stream_includes_all() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         // Create entity with operators in stream "OldStream" (not in valid_features)
         {
-            let entity = store.get_or_create_entity("u123");
+            let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("OldStream");
             let mut op_a = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
             op_a.push(&serde_json::json!({}), now).unwrap();
@@ -1007,14 +1048,14 @@ mod tests {
 
     #[test]
     fn test_remove_empty_entities() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
 
         // Empty entity (should be removed)
         store.get_or_create_entity("empty");
 
         // Entity with a stream (should be kept)
         {
-            let entity = store.get_or_create_entity("has_stream");
+            let mut entity = store.get_or_create_entity("has_stream");
             entity.get_or_create_stream("TestStream");
         }
 
@@ -1033,7 +1074,7 @@ mod tests {
 
     #[test]
     fn test_mark_dirty_inserts_key() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         store.mark_dirty("u123");
         assert_eq!(store.dirty_count(), 1);
         assert!(store.dirty_keys().contains("u123"));
@@ -1041,7 +1082,7 @@ mod tests {
 
     #[test]
     fn test_mark_dirty_is_idempotent() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         store.mark_dirty("u123");
         store.mark_dirty("u123");
         store.mark_dirty("u123");
@@ -1050,7 +1091,7 @@ mod tests {
 
     #[test]
     fn test_mark_dirty_multiple_keys() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         store.mark_dirty("u1");
         store.mark_dirty("u2");
         store.mark_dirty("u3");
@@ -1059,7 +1100,7 @@ mod tests {
 
     #[test]
     fn test_clear_dirty_empties_the_set() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         store.mark_dirty("u1");
         store.mark_dirty("u2");
         assert_eq!(store.dirty_count(), 2);
@@ -1070,7 +1111,7 @@ mod tests {
 
     #[test]
     fn test_mark_deleted_records_key() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         store.mark_deleted("u456");
         let deleted = store.take_deleted();
         assert_eq!(deleted.len(), 1);
@@ -1081,7 +1122,7 @@ mod tests {
     fn test_mark_deleted_removes_from_dirty() {
         // A key that was marked dirty and then deleted should NOT appear in
         // the dirty set -- it must only appear in the deleted list.
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         store.mark_dirty("u789");
         assert_eq!(store.dirty_count(), 1);
 
@@ -1094,7 +1135,7 @@ mod tests {
 
     #[test]
     fn test_take_deleted_clears_the_set() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         store.mark_deleted("a");
         store.mark_deleted("b");
 
@@ -1114,12 +1155,12 @@ mod tests {
 
     #[test]
     fn test_clone_dirty_for_snapshot_returns_only_dirty_entities() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         // Create three entities with live operators
         for key in &["u1", "u2", "u3"] {
-            let entity = store.get_or_create_entity(key);
+            let mut entity = store.get_or_create_entity(key);
             let stream = entity.get_or_create_stream("Transactions");
             let mut op = OperatorState::Count(CountOp::new(
                 Duration::from_secs(3600),
@@ -1145,18 +1186,20 @@ mod tests {
 
     #[test]
     fn test_clone_dirty_for_snapshot_empty_when_no_dirty() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         // Create an entity but do NOT mark it dirty
-        let entity = store.get_or_create_entity("u1");
-        let stream = entity.get_or_create_stream("Transactions");
-        let mut op = OperatorState::Count(CountOp::new(
-            Duration::from_secs(3600),
-            Duration::from_secs(60),
-        ));
-        op.push(&serde_json::json!({}), now).unwrap();
-        stream.operators.push(("tx_count".to_string(), op));
+        {
+            let mut entity = store.get_or_create_entity("u1");
+            let stream = entity.get_or_create_stream("Transactions");
+            let mut op = OperatorState::Count(CountOp::new(
+                Duration::from_secs(3600),
+                Duration::from_secs(60),
+            ));
+            op.push(&serde_json::json!({}), now).unwrap();
+            stream.operators.push(("tx_count".to_string(), op));
+        }
 
         let valid_features = ahash::AHashMap::new();
         let snapshot = store.clone_dirty_for_snapshot_with_gc(&valid_features);
@@ -1165,12 +1208,12 @@ mod tests {
 
     #[test]
     fn test_clone_dirty_for_snapshot_applies_gc_filtering() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         // Create entity with operators a, b, c in stream "Transactions"
         {
-            let entity = store.get_or_create_entity("u123");
+            let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("Transactions");
             for name in &["a", "b", "c"] {
                 let mut op = OperatorState::Count(CountOp::new(
@@ -1200,11 +1243,11 @@ mod tests {
 
     #[test]
     fn test_clone_dirty_for_snapshot_unknown_stream_includes_all() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         {
-            let entity = store.get_or_create_entity("u1");
+            let mut entity = store.get_or_create_entity("u1");
             let stream = entity.get_or_create_stream("OldStream");
             let mut op = OperatorState::Count(CountOp::new(
                 Duration::from_secs(3600),
@@ -1226,7 +1269,7 @@ mod tests {
     fn test_clone_dirty_skips_keys_that_are_dirty_but_not_in_entities() {
         // Edge case: a key was marked dirty but the underlying entity was removed
         // (e.g., via remove_empty_entities). clone_dirty should simply skip it.
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         store.mark_dirty("ghost");
         // No entity for "ghost" was ever created
         let valid_features = ahash::AHashMap::new();

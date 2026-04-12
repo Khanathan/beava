@@ -471,7 +471,7 @@ impl PipelineEngine {
         };
 
         // 3. Get or create EntityState
-        let entity = store.get_or_create_entity(&key);
+        let mut entity = store.get_or_create_entity(&key);
 
         // 4. Get or create the stream's state within the entity.
         // Each stream has its own operators and last_event_at for independent
@@ -862,7 +862,7 @@ impl PipelineEngine {
             _ => return Ok(()), // Skip events without valid key (defensive)
         };
 
-        let entity = store.get_or_create_entity(&key);
+        let mut entity = store.get_or_create_entity(&key);
         entity.get_or_create_stream(stream_name);
 
         // Only push to backfill operators

@@ -314,7 +314,7 @@ fn test_eviction_marks_deleted_and_delta_includes_it() {
     let mut store = StateStore::new();
     // Entity with an event long ago
     {
-        let entity = store.get_or_create_entity("doomed");
+        let mut entity = store.get_or_create_entity("doomed");
         let s = entity.get_or_create_stream("stream_short");
         s.last_event_at = Some(ts(1000));
     }

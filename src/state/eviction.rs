@@ -35,7 +35,7 @@ pub fn evict_expired_stream_entries(
     // Phase 1: Collect eviction decisions using only immutable borrows, so we
     // can separately call mark_deleted (which needs &mut store) before mutating
     // the entity streams. Each plan entry is (key, streams_to_remove, will_be_empty).
-    let entity_keys: Vec<String> = store.entity_keys().collect();
+    let entity_keys: Vec<String> = store.entity_keys();
     let mut eviction_plan: Vec<(String, Vec<String>, bool)> = Vec::new();
 
     for key in &entity_keys {
@@ -84,7 +84,7 @@ pub fn evict_expired_stream_entries(
         if *will_be_empty {
             store.mark_deleted(key);
         }
-        if let Some(entity) = store.get_entity_mut(key) {
+        if let Some(mut entity) = store.get_entity_mut(key) {
             for stream_name in streams_to_remove {
                 entity.streams.remove(stream_name);
             }
@@ -147,7 +147,7 @@ mod tests {
 
         // Add entity with old last_event_at
         {
-            let entity = store.get_or_create_entity("old_user");
+            let mut entity = store.get_or_create_entity("old_user");
             let stream = entity.get_or_create_stream("stream1");
             stream.last_event_at = Some(ts(1000)); // Very old
         }
@@ -167,7 +167,7 @@ mod tests {
 
         // Add entity with recent last_event_at
         {
-            let entity = store.get_or_create_entity("recent_user");
+            let mut entity = store.get_or_create_entity("recent_user");
             let stream = entity.get_or_create_stream("stream1");
             stream.last_event_at = Some(ts(99_000)); // Recent
         }
@@ -187,7 +187,7 @@ mod tests {
 
         // Add entity with a stream but no last_event_at (never pushed)
         {
-            let entity = store.get_or_create_entity("no_event_user");
+            let mut entity = store.get_or_create_entity("no_event_user");
             entity.get_or_create_stream("stream1"); // has a stream entry, so not empty
         }
 
@@ -203,7 +203,7 @@ mod tests {
         let engine = PipelineEngine::new(); // No streams registered
 
         {
-            let entity = store.get_or_create_entity("user");
+            let mut entity = store.get_or_create_entity("user");
             let stream = entity.get_or_create_stream("SomeStream");
             stream.last_event_at = Some(ts(1000));
         }
@@ -245,7 +245,7 @@ mod tests {
 
         // Entity with two streams; stream_short is old, stream_long is recent
         {
-            let entity = store.get_or_create_entity("user1");
+            let mut entity = store.get_or_create_entity("user1");
             let short = entity.get_or_create_stream("stream_short");
             short.last_event_at = Some(ts(1000)); // Very old
             let long = entity.get_or_create_stream("stream_long");
@@ -268,7 +268,7 @@ mod tests {
         engine.register(make_stream_with_ttl("stream1", 3600, Some(300))).unwrap();
 
         {
-            let entity = store.get_or_create_entity("user1");
+            let mut entity = store.get_or_create_entity("user1");
             let stream = entity.get_or_create_stream("stream1");
             stream.last_event_at = Some(ts(1000)); // Old
         }
@@ -286,7 +286,7 @@ mod tests {
         engine.register(make_stream_with_ttl("stream1", 3600, Some(300))).unwrap();
 
         {
-            let entity = store.get_or_create_entity("user1");
+            let mut entity = store.get_or_create_entity("user1");
             let stream = entity.get_or_create_stream("stream1");
             stream.last_event_at = Some(ts(1000)); // Old
         }
@@ -310,7 +310,7 @@ mod tests {
         engine.register(make_stream_with_window("stream_global", 3600)).unwrap();
 
         {
-            let entity = store.get_or_create_entity("user1");
+            let mut entity = store.get_or_create_entity("user1");
             let stream = entity.get_or_create_stream("stream_global");
             stream.last_event_at = Some(ts(1000)); // 99000 seconds old -> exceeds 7200 TTL
         }
@@ -340,7 +340,7 @@ mod tests {
         }).unwrap();
 
         {
-            let entity = store.get_or_create_entity("user1");
+            let mut entity = store.get_or_create_entity("user1");
             let stream = entity.get_or_create_stream("derived_only");
             stream.last_event_at = Some(ts(1000)); // Very old
         }
@@ -357,7 +357,7 @@ mod tests {
         engine.register(make_stream_with_ttl("stream1", 3600, Some(300))).unwrap();
 
         {
-            let entity = store.get_or_create_entity("user1");
+            let mut entity = store.get_or_create_entity("user1");
             entity.get_or_create_stream("stream1");
             // last_event_at is None (default)
         }
@@ -376,7 +376,7 @@ mod tests {
         engine.register(make_stream_with_window("stream_global", 3600)).unwrap();
 
         {
-            let entity = store.get_or_create_entity("user1");
+            let mut entity = store.get_or_create_entity("user1");
             // stream_custom: old (should be evicted with 300s TTL)
             let custom = entity.get_or_create_stream("stream_custom");
             custom.last_event_at = Some(ts(99_000)); // 1000s old > 300s TTL
@@ -401,19 +401,19 @@ mod tests {
 
         // Old entity (should be evicted -- stream entry removed, then entity removed because empty)
         {
-            let entity = store.get_or_create_entity("old_user");
+            let mut entity = store.get_or_create_entity("old_user");
             let stream = entity.get_or_create_stream("stream1");
             stream.last_event_at = Some(ts(1000));
         }
         // Recent entity (should be kept)
         {
-            let entity = store.get_or_create_entity("recent_user");
+            let mut entity = store.get_or_create_entity("recent_user");
             let stream = entity.get_or_create_stream("stream1");
             stream.last_event_at = Some(ts(99_000));
         }
         // No event entity with a stream (should be kept -- no last_event_at means not evicted)
         {
-            let entity = store.get_or_create_entity("no_event_user");
+            let mut entity = store.get_or_create_entity("no_event_user");
             entity.get_or_create_stream("stream1"); // has a stream entry, not empty
         }
 
@@ -436,7 +436,7 @@ mod tests {
 
         // Entity whose only stream will be evicted and has no static features
         {
-            let entity = store.get_or_create_entity("doomed");
+            let mut entity = store.get_or_create_entity("doomed");
             let stream = entity.get_or_create_stream("stream1");
             stream.last_event_at = Some(ts(1000)); // Very old
         }
@@ -458,7 +458,7 @@ mod tests {
         engine.register(make_stream_with_ttl("stream1", 3600, Some(300))).unwrap();
 
         {
-            let entity = store.get_or_create_entity("user1");
+            let mut entity = store.get_or_create_entity("user1");
             let stream = entity.get_or_create_stream("stream1");
             stream.last_event_at = Some(ts(1000)); // Old
         }
@@ -488,7 +488,7 @@ mod tests {
         engine.register(make_stream_with_ttl("stream_long", 3600, Some(7200))).unwrap();
 
         {
-            let entity = store.get_or_create_entity("user1");
+            let mut entity = store.get_or_create_entity("user1");
             let short = entity.get_or_create_stream("stream_short");
             short.last_event_at = Some(ts(1000)); // Old
             let long = entity.get_or_create_stream("stream_long");
