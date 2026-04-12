@@ -266,7 +266,11 @@ Plans:
   1. User can define a multi-stage pipeline where an upstream dataset computes a derived field and a downstream dataset aggregates that derived field, and PUSH returns the correct downstream result in a single request-response cycle
   2. Enriched fields propagate via a side-channel accumulator (not event clone) and full benchmark matrix passes within -5% of 1.1M eps baseline (pitfall C-1 gate)
   3. Enrichment works correctly under multi-threaded tokio runtime with 8 concurrent clients (pitfall C-5 -- enrichment values never re-enter DashMap during downstream push)
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 17-01-PLAN.md — Operator trait + EvalContext enrichment parameter (contracts)
+- [ ] 17-02-PLAN.md — Cascade enrichment accumulator in push_with_cascade_internal
+- [ ] 17-03-PLAN.md — Integration tests + concurrent correctness + benchmark gate
 
 ### Phase 18: Feature Projection and Ephemeral Schema
 **Goal**: Users can control which features appear in PUSH/GET responses, and the RegisterRequest schema is extended with ephemeral pipeline fields for future on-demand compute
@@ -314,7 +318,7 @@ Phases execute in numeric order: 16 -> 17 -> 18 -> 19
 | 13. SDK batch push + OP_PUSH_BATCH | v1.3 | 2/2 | Complete | 2026-04-12 |
 | 14. Per-stream locks + DashMap concurrency | v1.3 | 3/3 | Complete | 2026-04-12 |
 | 15. Snapshot I/O off main thread | v1.3 | 0/? | Deferred | - |
-| 16. Python SDK -- New Types and Decorators | v2.0 | 2/2 | Complete   | 2026-04-12 |
-| 17. Enriched Event Propagation | v2.0 | 0/? | Not started | - |
+| 16. Python SDK -- New Types and Decorators | v2.0 | 2/2 | Complete    | 2026-04-12 |
+| 17. Enriched Event Propagation | v2.0 | 0/3 | Not started | - |
 | 18. Feature Projection and Ephemeral Schema | v2.0 | 0/? | Not started | - |
 | 19. Test Migration and Old API Removal | v2.0 | 0/? | Not started | - |
