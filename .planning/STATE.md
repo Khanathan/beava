@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
 status: Roadmap refined with research findings and locked decisions LD-1..LD-4; ready for plan-phase
-stopped_at: Completed 12-02-PLAN.md — per-connection coalescer wired
-last_updated: "2026-04-11T23:30:00.000Z"
-last_activity: 2026-04-11 — Phase 12 Wave 2 coalescer landed (ConnAccumulator + select! loop + single-lock handle_push_batch)
+stopped_at: Phase 12 complete — verification passed
+last_updated: "2026-04-12T02:15:52.035Z"
+last_activity: 2026-04-11 — gsd-roadmapper refined phases 12-15 in place
 progress:
   total_phases: 7
   completed_phases: 7
@@ -165,6 +165,6 @@ Key v1.1 architectural decisions (from research):
 
 ## Session Continuity
 
-Last session: 2026-04-11T23:30:00.000Z
-Stopped at: Completed 12-02-PLAN.md — per-connection coalescer wired (ConnAccumulator + select! + handle_push_batch, 632 tests green)
+Last session: 2026-04-12T02:15:52.032Z
+Stopped at: Phase 12 complete — verification passed
 Resume: `/gsd-execute-phase 12` next wave (12-03 bench matrix gate, if planned)
