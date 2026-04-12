@@ -141,7 +141,7 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10 -> 10.1 -> 10.2 -> 11 ->
 | 11. Fire-and-Forget PUSH + Binary Wire | v1.2 | 6/6 | Complete | 2026-04-11 |
 | 12. Server-side async push coalescing | v1.3 | 1/3 | In Progress|  |
 | 13. SDK batch push + OP_PUSH_BATCH | v1.3 | 2/2 | Complete   | 2026-04-12 |
-| 14. Key-partitioned multi-threaded engine | v1.3 | 2/3 | In Progress|  |
+| 14. Key-partitioned multi-threaded engine | v1.3 | 3/3 | Complete   | 2026-04-12 |
 | 15. Off-thread snapshot I/O | v1.3 | 0/? | Not started | - |
 
 ### Phase 10.1: Interactive Debug UI Redesign (INSERTED)
@@ -299,11 +299,11 @@ Plans:
   8. 5+ concurrency integration tests pass under multi-threaded tokio runtime
   9. All 505+ existing tests remain green
   10. `#![deny(clippy::await_holding_lock)]` C-7 gate preserved
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 Plans:
 - [x] 14-01-PLAN.md — Core refactor: ConcurrentAppState, StreamStore with DashMap, refactor all state.lock() call sites
 - [x] 14-02-PLAN.md — Background systems: snapshot/eviction/event-log DashMap adaptation + concurrency integration tests
-- [ ] 14-03-PLAN.md — Benchmark gate: multi-client throughput, single-client regression check, results documentation
+- [x] 14-03-PLAN.md — Benchmark gate: multi-client throughput, single-client regression check, results documentation
 
 ### Phase 15: Snapshot I/O off main thread
 **Goal:** Move snapshot writes off the main event-loop thread (per shard) so large-state pipelines don't stall during full-snapshot windows. After Phase 14 this becomes a trivial parallel-split: each shard clones its own dirty subset under its own lock, releases, then `spawn_blocking` writes its own shard file — all N shards in parallel.

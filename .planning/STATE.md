@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
 status: Roadmap refined with research findings and locked decisions LD-1..LD-4; ready for plan-phase
-stopped_at: Completed 14-02-PLAN.md
-last_updated: "2026-04-12T04:06:20.795Z"
+stopped_at: Completed 14-03-PLAN.md (pending human verification checkpoint)
+last_updated: "2026-04-12T04:17:33.465Z"
 last_activity: 2026-04-11 — gsd-roadmapper refined phases 12-15 in place
 progress:
   total_phases: 7
@@ -147,6 +147,7 @@ Key v1.1 architectural decisions (from research):
 - [Phase 13]: encode_push_batch inlines event body encoding with key cache and local refs for 542k eps pure-Python encoding (1.7x over naive _encode_event_body per-event)
 - [Phase 14]: Global Mutex<AppState> replaced with ConcurrentAppState: RwLock<PipelineEngine> + PLMutex<StateStore> + 8 independent small locks for metrics/throughput/latency/snapshot/backfill/event_log; StreamStore with DashMap defined for per-stream entity concurrency
 - [Phase 14]: Task 1 (background systems) was no-op due to Plan 01 PLMutex<StateStore> deviation; rt-multi-thread added to tokio for multi-threaded test runtime
+- [Phase 14]: Multi-client async throughput flat at 28k under current_thread runtime — per-field locking is prerequisite for multi-thread benefit, not sufficient alone; batch mode 2.7x improvement (483k eps) is real from reduced background-task contention
 
 ### Roadmap Evolution
 
@@ -173,6 +174,6 @@ Key v1.1 architectural decisions (from research):
 
 ## Session Continuity
 
-Last session: 2026-04-12T04:06:20.792Z
-Stopped at: Completed 14-02-PLAN.md
+Last session: 2026-04-12T04:17:28.331Z
+Stopped at: Completed 14-03-PLAN.md (pending human verification checkpoint)
 Resume: `/gsd-execute-phase 12` next wave (12-03 bench matrix gate, if planned)
