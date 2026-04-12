@@ -8,8 +8,7 @@
 //! Test case names MUST match `.planning/phases/10-debug-ui/10-VALIDATION.md`
 //! exactly; the Phase 10 verifier greps the file for these names.
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -17,31 +16,22 @@ use tokio::net::TcpStream;
 use tally::engine::pipeline::{
     FeatureDef, PipelineEngine, StreamDefinition, ViewDefinition, ViewFeatureDef,
 };
-use tally::server::tcp::{AppState, BackfillTracker, Metrics, SharedState};
+use tally::server::tcp::{BackfillTracker, SharedState, make_concurrent_state};
 use tally::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
 // Helper A: start a Tally HTTP server on a random localhost port.
 // ---------------------------------------------------------------------------
 
-/// Build a fresh `SharedState` with an empty engine/store and every `AppState`
-/// field populated (matches `tests/test_pipeline.rs::make_state_with_event_log`).
+/// Build a fresh `SharedState` with an empty engine/store.
 fn make_test_state() -> SharedState {
-    Arc::new(Mutex::new(AppState {
-        engine: PipelineEngine::new(),
-        store: StateStore::new(),
-        metrics: Metrics::default(),
-        snapshot_path: std::path::PathBuf::from("test-debug-ui.snapshot"),
-        event_log: None,
-        backfill_tracker: Arc::new(BackfillTracker::default()),
-        backfill_complete: HashSet::new(),
-        snapshot_cycle: 0,
-        snapshot_seq: 1,
-        last_base_seq: 0,
-        previous_base_seq: 0,
-        throughput: tally::server::throughput::ThroughputTracker::new(),
-        latency: tally::server::latency::LatencyTracker::new(),
-    }))
+    make_concurrent_state(
+        PipelineEngine::new(),
+        StateStore::new(),
+        None,
+        std::path::PathBuf::from("test-debug-ui.snapshot"),
+        Arc::new(BackfillTracker::default()),
+    )
 }
 
 /// Start a Tally HTTP server on a random loopback port. Returns
@@ -140,7 +130,7 @@ fn body_json(bytes: &[u8]) -> serde_json::Value {
 // ---------------------------------------------------------------------------
 
 fn register_test_pipeline(state: &SharedState) {
-    let mut app = state.lock().unwrap();
+    let mut engine = state.engine.write();
 
     let transactions = StreamDefinition {
         name: "Transactions".into(),
@@ -159,7 +149,7 @@ fn register_test_pipeline(state: &SharedState) {
         entity_ttl: None,
         history_ttl: None,
     };
-    app.engine.register(transactions).expect("register Transactions");
+    engine.register(transactions).expect("register Transactions");
 
     let logins = StreamDefinition {
         name: "Logins".into(),
@@ -178,7 +168,7 @@ fn register_test_pipeline(state: &SharedState) {
         entity_ttl: None,
         history_ttl: None,
     };
-    app.engine.register(logins).expect("register Logins");
+    engine.register(logins).expect("register Logins");
 
     let aggregates = StreamDefinition {
         name: "Aggregates".into(),
@@ -200,7 +190,7 @@ fn register_test_pipeline(state: &SharedState) {
         entity_ttl: None,
         history_ttl: None,
     };
-    app.engine.register(aggregates).expect("register Aggregates");
+    engine.register(aggregates).expect("register Aggregates");
 
     // View with a lookup feature pointing back at Transactions.
     // Emits a lookup edge in /debug/topology with kind="lookup".
@@ -216,7 +206,7 @@ fn register_test_pipeline(state: &SharedState) {
             },
         )],
     };
-    app.engine.register_view(user_risk).expect("register UserRisk");
+    engine.register_view(user_risk).expect("register UserRisk");
 }
 
 // ---------------------------------------------------------------------------
@@ -226,21 +216,17 @@ fn register_test_pipeline(state: &SharedState) {
 
 fn push_event(state: &SharedState, stream: &str, event: &serde_json::Value) {
     use std::time::Instant;
-    let mut app = state.lock().unwrap();
     let now_ts = SystemTime::now();
     let now_inst = Instant::now();
     {
-        let AppState {
-            ref engine,
-            ref mut store,
-            ..
-        } = *app;
-        let _ = engine.push(stream, event, store, now_ts);
+        let engine = state.engine.read();
+        let mut store = state.store.lock();
+        let _ = engine.push(stream, event, &mut *store, now_ts);
     }
     // Bump the throughput tracker so the /debug/throughput endpoint observes
     // the push. We pass a single-element slice of the stream name.
     let name = stream.to_string();
-    app.throughput.bump_unique([name.as_str()], now_inst);
+    state.throughput.lock().bump_unique([name.as_str()], now_inst);
 }
 
 // ---------------------------------------------------------------------------
@@ -383,7 +369,7 @@ async fn topology_nodes_include_operators_field() {
     // main.rs / tcp.rs / http.rs follow. Without the raw JSON store we would
     // hit the Pitfall 7 empty-array fallback instead.
     {
-        let mut app = state.lock().unwrap();
+        let mut engine = state.engine.write();
         let tx_def = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
@@ -401,8 +387,8 @@ async fn topology_nodes_include_operators_field() {
             entity_ttl: None,
             history_ttl: None,
         };
-        app.engine.register(tx_def).expect("register Transactions");
-        app.engine.store_raw_register_json(
+        engine.register(tx_def).expect("register Transactions");
+        engine.store_raw_register_json(
             "Transactions",
             serde_json::json!({
                 "name": "Transactions",
@@ -459,7 +445,7 @@ async fn topology_operators_pass_through_where_clause() {
     let (port, state) = start_debug_ui_server().await;
 
     {
-        let mut app = state.lock().unwrap();
+        let mut engine = state.engine.write();
         let tx_def = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
@@ -477,8 +463,8 @@ async fn topology_operators_pass_through_where_clause() {
             entity_ttl: None,
             history_ttl: None,
         };
-        app.engine.register(tx_def).expect("register Transactions");
-        app.engine.store_raw_register_json(
+        engine.register(tx_def).expect("register Transactions");
+        engine.store_raw_register_json(
             "Transactions",
             serde_json::json!({
                 "name": "Transactions",
@@ -530,7 +516,7 @@ async fn topology_view_operators_include_lookup_shape() {
     // lookup target exists. Then register the view. Both need
     // raw_register_jsons entries for the operators projection to emit.
     {
-        let mut app = state.lock().unwrap();
+        let mut engine = state.engine.write();
 
         let merchant_def = StreamDefinition {
             name: "MerchantActivity".into(),
@@ -549,10 +535,10 @@ async fn topology_view_operators_include_lookup_shape() {
             entity_ttl: None,
             history_ttl: None,
         };
-        app.engine
+        engine
             .register(merchant_def)
             .expect("register MerchantActivity");
-        app.engine.store_raw_register_json(
+        engine.store_raw_register_json(
             "MerchantActivity",
             serde_json::json!({
                 "name": "MerchantActivity",
@@ -575,10 +561,10 @@ async fn topology_view_operators_include_lookup_shape() {
                 },
             )],
         };
-        app.engine
+        engine
             .register_view(view_def)
             .expect("register FraudSignals");
-        app.engine.store_raw_register_json(
+        engine.store_raw_register_json(
             "FraudSignals",
             serde_json::json!({
                 "name": "FraudSignals",

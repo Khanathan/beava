@@ -523,67 +523,56 @@ fn test_feature_value_json_round_trip() {
 // ======================== Phase 8 Plan 02: Backfill Integration Tests ========================
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use tally::server::tcp::{AppState, BackfillStatus, BackfillTracker, Metrics, run_backfill};
+use tally::server::tcp::{BackfillStatus, BackfillTracker, run_backfill, SharedState, make_concurrent_state};
 use tally::state::event_log::EventLog;
 use tally::state::snapshot::{SnapshotState, SerializablePipeline, save_snapshot, load_snapshot};
 use tally::server::protocol::{RegisterRequest, convert_register_request};
 
 /// Helper: create a SharedState with event log enabled in a temp dir.
-fn make_state_with_event_log(log_dir: &std::path::Path) -> Arc<Mutex<AppState>> {
+fn make_state_with_event_log(log_dir: &std::path::Path) -> SharedState {
     let event_log = EventLog::new(log_dir.to_path_buf()).ok();
-    Arc::new(Mutex::new(AppState {
-        engine: PipelineEngine::new(),
-        store: tally::state::store::StateStore::new(),
-        metrics: Metrics::default(),
-        snapshot_path: log_dir.join("test.snapshot"),
+    make_concurrent_state(
+        PipelineEngine::new(),
+        tally::state::store::StateStore::new(),
         event_log,
-        backfill_tracker: Arc::new(BackfillTracker::default()),
-        backfill_complete: HashSet::new(),
-        snapshot_cycle: 0,
-        snapshot_seq: 1,
-        last_base_seq: 0,
-        previous_base_seq: 0,
-        throughput: tally::server::throughput::ThroughputTracker::new(),
-        latency: tally::server::latency::LatencyTracker::new(),
-    }))
+        log_dir.join("test.snapshot"),
+        Arc::new(BackfillTracker::default()),
+    )
 }
 
 /// Helper: push events to a stream via the engine, also writing to event log.
 fn push_events(
-    state: &Arc<Mutex<AppState>>,
+    state: &SharedState,
     stream_name: &str,
     events: &[serde_json::Value],
     times: &[SystemTime],
 ) {
     for (event, &t) in events.iter().zip(times.iter()) {
-        let mut app = state.lock().unwrap();
-        let AppState {
-            ref engine,
-            ref mut store,
-            ref mut event_log,
-            ..
-        } = *app;
-        let _ = engine.push(stream_name, event, store, t);
-        if let Some(ref mut log) = event_log {
+        let engine = state.engine.read();
+        let mut store = state.store.lock();
+        let _ = engine.push(stream_name, event, &mut *store, t);
+        drop(store);
+        drop(engine);
+        let mut event_log = state.event_log.lock();
+        if let Some(ref mut log) = *event_log {
             let event_bytes = serde_json::to_vec(event).unwrap();
             let _ = log.append(stream_name, &event_bytes, t);
         }
     }
     // Flush event log
-    let mut app = state.lock().unwrap();
-    if let Some(ref mut log) = app.event_log {
+    let mut event_log = state.event_log.lock();
+    if let Some(ref mut log) = *event_log {
         let _ = log.fsync_all();
     }
 }
 
 /// Helper: wait for a backfill to complete (yield loop, max 200 iterations).
-async fn wait_for_backfill_complete(state: &Arc<Mutex<AppState>>, stream_name: &str) {
+async fn wait_for_backfill_complete(state: &SharedState, stream_name: &str) {
     for _ in 0..200 {
         tokio::task::yield_now().await;
-        let app = state.lock().unwrap();
-        let tasks = app.backfill_tracker.tasks.lock().unwrap();
+        let tasks = state.backfill_tracker.tasks.lock().unwrap();
         let all_done = tasks.iter()
             .filter(|t| t.stream == stream_name)
             .all(|t| t.completed_at.lock().unwrap().is_some());
@@ -614,9 +603,9 @@ async fn test_backfill_replay_deterministic() {
         depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
     };
     {
-        let mut app = state.lock().unwrap();
-        app.engine.register(stream1).unwrap();
-        if let Some(ref mut log) = app.event_log {
+        state.engine.write().register(stream1).unwrap();
+        let mut event_log = state.event_log.lock();
+        if let Some(ref mut log) = *event_log {
             let _ = log.register_stream("Transactions", None);
         }
     }
@@ -631,9 +620,9 @@ async fn test_backfill_replay_deterministic() {
 
     // Verify count_1h reads 10
     {
-        let mut app = state.lock().unwrap();
-        let AppState { ref engine, ref mut store, .. } = *app;
-        let features = engine.get_features("u1", store, base_time + Duration::from_secs(9));
+        let engine = state.engine.read();
+        let mut store = state.store.lock();
+        let features = engine.get_features("u1", &mut *store, base_time + Duration::from_secs(9));
         assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(10)));
     }
 
@@ -660,17 +649,24 @@ async fn test_backfill_replay_deterministic() {
         depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
     };
     {
-        let mut app = state.lock().unwrap();
-        let diff = app.engine.register(stream2).unwrap();
+        let mut engine = state.engine.write();
+        let diff = engine.register(stream2).unwrap();
         assert!(diff.backfilling.contains(&"sum_1h".to_string()));
+        drop(engine);
 
         // Spawn backfill
-        if let Some(ref mut log) = app.event_log {
-            let _ = log.fsync_all();
+        {
+            let mut event_log = state.event_log.lock();
+            if let Some(ref mut log) = *event_log {
+                let _ = log.fsync_all();
+            }
         }
-        let entries = app.event_log.as_ref()
-            .map(|log| log.read_entries("Transactions").unwrap_or_default())
-            .unwrap_or_default();
+        let entries = {
+            let event_log = state.event_log.lock();
+            event_log.as_ref()
+                .map(|log| log.read_entries("Transactions").unwrap_or_default())
+                .unwrap_or_default()
+        };
         assert_eq!(entries.len(), 10);
 
         let status = Arc::new(BackfillStatus {
@@ -679,9 +675,9 @@ async fn test_backfill_replay_deterministic() {
             total_events: entries.len(),
             processed_events: Arc::new(AtomicUsize::new(0)),
             started_at: SystemTime::now(),
-            completed_at: Mutex::new(None),
+            completed_at: std::sync::Mutex::new(None),
         });
-        app.backfill_tracker.tasks.lock().unwrap().push(Arc::clone(&status));
+        state.backfill_tracker.tasks.lock().unwrap().push(Arc::clone(&status));
         let state_clone = state.clone();
         tokio::spawn(run_backfill(
             state_clone,
@@ -697,9 +693,9 @@ async fn test_backfill_replay_deterministic() {
 
     // Verify sum_1h equals sum of all 10 event amounts: 10+20+30+...+100 = 550
     {
-        let mut app = state.lock().unwrap();
-        let AppState { ref engine, ref mut store, .. } = *app;
-        let features = engine.get_features("u1", store, base_time + Duration::from_secs(9));
+        let engine = state.engine.read();
+        let mut store = state.store.lock();
+        let features = engine.get_features("u1", &mut *store, base_time + Duration::from_secs(9));
         assert_eq!(features.get("sum_1h"), Some(&FeatureValue::Float(550.0)));
         // count_1h should still be 10
         assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(10)));
@@ -726,9 +722,9 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
         depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
     };
     {
-        let mut app = state.lock().unwrap();
-        app.engine.register(stream1).unwrap();
-        if let Some(ref mut log) = app.event_log {
+        state.engine.write().register(stream1).unwrap();
+        let mut event_log = state.event_log.lock();
+        if let Some(ref mut log) = *event_log {
             let _ = log.register_stream("Txns", None);
         }
     }
@@ -766,16 +762,23 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
         depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
     };
     {
-        let mut app = state.lock().unwrap();
-        let diff = app.engine.register(stream2).unwrap();
+        let mut engine = state.engine.write();
+        let diff = engine.register(stream2).unwrap();
         assert!(diff.backfilling.contains(&"count_30m".to_string()));
+        drop(engine);
 
-        if let Some(ref mut log) = app.event_log {
-            let _ = log.fsync_all();
+        {
+            let mut event_log = state.event_log.lock();
+            if let Some(ref mut log) = *event_log {
+                let _ = log.fsync_all();
+            }
         }
-        let entries = app.event_log.as_ref()
-            .map(|log| log.read_entries("Txns").unwrap_or_default())
-            .unwrap_or_default();
+        let entries = {
+            let event_log = state.event_log.lock();
+            event_log.as_ref()
+                .map(|log| log.read_entries("Txns").unwrap_or_default())
+                .unwrap_or_default()
+        };
         assert_eq!(entries.len(), 10);
 
         let status = Arc::new(BackfillStatus {
@@ -784,9 +787,9 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
             total_events: entries.len(),
             processed_events: Arc::new(AtomicUsize::new(0)),
             started_at: SystemTime::now(),
-            completed_at: Mutex::new(None),
+            completed_at: std::sync::Mutex::new(None),
         });
-        app.backfill_tracker.tasks.lock().unwrap().push(Arc::clone(&status));
+        state.backfill_tracker.tasks.lock().unwrap().push(Arc::clone(&status));
         tokio::spawn(run_backfill(
             state.clone(),
             "Txns".into(),
@@ -800,9 +803,9 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
 
     // Read count_30m at time T+7200 -- should be 5 (only the second batch within 30m window)
     {
-        let mut app = state.lock().unwrap();
-        let AppState { ref engine, ref mut store, .. } = *app;
-        let features = engine.get_features("u1", store, t2);
+        let engine = state.engine.read();
+        let mut store = state.store.lock();
+        let features = engine.get_features("u1", &mut *store, t2);
         let count_30m = features.get("count_30m");
         assert_eq!(count_30m, Some(&FeatureValue::Int(5)),
             "count_30m should be 5 (only events within 30m window at T+7200), got {:?}", count_30m);
@@ -908,9 +911,9 @@ async fn test_backfill_idempotent_restart() {
         depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
     };
     {
-        let mut app = state.lock().unwrap();
-        app.engine.register(stream1).unwrap();
-        if let Some(ref mut log) = app.event_log {
+        state.engine.write().register(stream1).unwrap();
+        let mut event_log = state.event_log.lock();
+        if let Some(ref mut log) = *event_log {
             let _ = log.register_stream("Txns", None);
         }
     }
@@ -956,17 +959,24 @@ async fn test_backfill_idempotent_restart() {
     };
 
     {
-        let mut app = state.lock().unwrap();
-        let diff = app.engine.register(stream2).unwrap();
-        app.engine.store_raw_register_json("Txns", raw_register_json.clone());
+        let mut engine = state.engine.write();
+        let diff = engine.register(stream2).unwrap();
+        engine.store_raw_register_json("Txns", raw_register_json.clone());
         assert!(diff.backfilling.contains(&"sum_1h".to_string()));
+        drop(engine);
 
-        if let Some(ref mut log) = app.event_log {
-            let _ = log.fsync_all();
+        {
+            let mut event_log = state.event_log.lock();
+            if let Some(ref mut log) = *event_log {
+                let _ = log.fsync_all();
+            }
         }
-        let entries = app.event_log.as_ref()
-            .map(|log| log.read_entries("Txns").unwrap_or_default())
-            .unwrap_or_default();
+        let entries = {
+            let event_log = state.event_log.lock();
+            event_log.as_ref()
+                .map(|log| log.read_entries("Txns").unwrap_or_default())
+                .unwrap_or_default()
+        };
 
         let status = Arc::new(BackfillStatus {
             stream: "Txns".into(),
@@ -974,9 +984,9 @@ async fn test_backfill_idempotent_restart() {
             total_events: entries.len(),
             processed_events: Arc::new(AtomicUsize::new(0)),
             started_at: SystemTime::now(),
-            completed_at: Mutex::new(None),
+            completed_at: std::sync::Mutex::new(None),
         });
-        app.backfill_tracker.tasks.lock().unwrap().push(Arc::clone(&status));
+        state.backfill_tracker.tasks.lock().unwrap().push(Arc::clone(&status));
         tokio::spawn(run_backfill(
             state.clone(), "Txns".into(), vec!["sum_1h".into()], entries, status,
         ));
@@ -986,22 +996,23 @@ async fn test_backfill_idempotent_restart() {
 
     // Step 6: Verify backfill_complete contains ("Txns", "sum_1h")
     {
-        let app = state.lock().unwrap();
-        assert!(app.backfill_complete.contains(&("Txns".to_string(), "sum_1h".to_string())),
+        let bc = state.backfill_complete.lock();
+        assert!(bc.contains(&("Txns".to_string(), "sum_1h".to_string())),
             "backfill_complete should contain (Txns, sum_1h)");
     }
 
     // Step 7: Save snapshot with backfill_complete included
     let snapshot_bytes = {
-        let app = state.lock().unwrap();
-        let valid_features = app.engine.valid_features_map();
-        let entities = app.store.clone_for_snapshot_with_gc(&valid_features);
+        let engine = state.engine.read();
+        let store = state.store.lock();
+        let valid_features = engine.valid_features_map();
+        let entities = store.clone_for_snapshot_with_gc(&valid_features);
         let pipelines = vec![SerializablePipeline {
             name: "Txns".to_string(),
             key_field: "user_id".to_string(),
             raw_register_json: serde_json::to_string(&raw_register_json).unwrap(),
         }];
-        let backfill_complete: Vec<(String, String)> = app.backfill_complete.iter().cloned().collect();
+        let backfill_complete: Vec<(String, String)> = state.backfill_complete.lock().iter().cloned().collect();
         let snap = SnapshotState { entities, pipelines, backfill_complete };
         save_snapshot(&snap).unwrap()
     };
@@ -1076,23 +1087,25 @@ async fn test_backfill_idempotent_restart() {
         // Re-run backfill and verify deterministic result
         let state2 = make_state_with_event_log(tmp.path());
         {
-            let mut app2 = state2.lock().unwrap();
-            app2.store.restore_from_snapshot(restored.entities);
+            state2.store.lock().restore_from_snapshot(restored.entities);
+            let mut engine2w = state2.engine.write();
             for pipeline in &restored.pipelines {
                 let parsed: serde_json::Value = serde_json::from_str(&pipeline.raw_register_json).unwrap();
                 let req: RegisterRequest = serde_json::from_value(parsed).unwrap();
                 let stream_def = convert_register_request(req).unwrap();
-                app2.engine.register(stream_def).unwrap();
+                engine2w.register(stream_def).unwrap();
             }
-            if let Some(ref mut log) = app2.event_log {
+            drop(engine2w);
+            let mut event_log = state2.event_log.lock();
+            if let Some(ref mut log) = *event_log {
                 let _ = log.register_stream("Txns", None);
             }
         }
 
         // Read entries and spawn backfill
         let entries = {
-            let app2 = state2.lock().unwrap();
-            app2.event_log.as_ref()
+            let event_log = state2.event_log.lock();
+            event_log.as_ref()
                 .map(|log| log.read_entries("Txns").unwrap_or_default())
                 .unwrap_or_default()
         };
@@ -1104,12 +1117,9 @@ async fn test_backfill_idempotent_restart() {
             total_events: entries.len(),
             processed_events: Arc::new(AtomicUsize::new(0)),
             started_at: SystemTime::now(),
-            completed_at: Mutex::new(None),
+            completed_at: std::sync::Mutex::new(None),
         });
-        {
-            let app2 = state2.lock().unwrap();
-            app2.backfill_tracker.tasks.lock().unwrap().push(Arc::clone(&status));
-        }
+        state2.backfill_tracker.tasks.lock().unwrap().push(Arc::clone(&status));
         tokio::spawn(run_backfill(
             state2.clone(), "Txns".into(), vec!["sum_1h".into()], entries, status,
         ));
@@ -1117,9 +1127,9 @@ async fn test_backfill_idempotent_restart() {
         wait_for_backfill_complete(&state2, "Txns").await;
 
         // Verify same deterministic result: sum should be 550
-        let mut app2 = state2.lock().unwrap();
-        let AppState { ref engine, ref mut store, .. } = *app2;
-        let features = engine.get_features("u1", store, base_time + Duration::from_secs(9));
+        let engine2r = state2.engine.read();
+        let mut store2 = state2.store.lock();
+        let features = engine2r.get_features("u1", &mut *store2, base_time + Duration::from_secs(9));
         assert_eq!(features.get("sum_1h"), Some(&FeatureValue::Float(550.0)),
             "Re-run backfill should produce same deterministic result");
     }

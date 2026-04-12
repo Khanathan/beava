@@ -12,8 +12,7 @@
 //! SRV-07: REGISTER with multiple feature types, PUSH returns computed features
 //! SRV-08: HTTP /health endpoint
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -22,7 +21,7 @@ use tally::server::protocol::{
     self, OP_FLUSH, OP_GET, OP_MSET, OP_PUSH, OP_PUSH_ASYNC, OP_REGISTER, OP_SET, STATUS_ERROR,
     STATUS_OK, TYPE_BOOL, TYPE_F64, TYPE_I64, TYPE_NULL, TYPE_STR,
 };
-use tally::server::tcp::{AppState, BackfillTracker, Metrics, SharedState};
+use tally::server::tcp::{BackfillTracker, SharedState, make_concurrent_state};
 use tally::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
@@ -31,21 +30,13 @@ use tally::state::store::StateStore;
 
 /// Start a test server on random ports. Returns (tcp_port, http_port, state).
 async fn start_test_server() -> (u16, u16, SharedState) {
-    let state: SharedState = Arc::new(Mutex::new(AppState {
-        engine: PipelineEngine::new(),
-        store: StateStore::new(),
-        metrics: Metrics::default(),
-        snapshot_path: std::path::PathBuf::from("test.snapshot"),
-        event_log: None,
-        backfill_tracker: Arc::new(BackfillTracker::default()),
-        backfill_complete: HashSet::new(),
-        snapshot_cycle: 0,
-        snapshot_seq: 1,
-        last_base_seq: 0,
-        previous_base_seq: 0,
-        throughput: tally::server::throughput::ThroughputTracker::new(),
-        latency: tally::server::latency::LatencyTracker::new(),
-    }));
+    let state: SharedState = make_concurrent_state(
+        PipelineEngine::new(),
+        StateStore::new(),
+        None,
+        std::path::PathBuf::from("test.snapshot"),
+        Arc::new(BackfillTracker::default()),
+    );
 
     // Bind to port 0 for random assignment
     let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

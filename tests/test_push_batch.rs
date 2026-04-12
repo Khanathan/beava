@@ -13,8 +13,7 @@
 
 #![allow(dead_code, unused_imports)]
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
@@ -25,8 +24,8 @@ use tally::server::protocol::{
     STATUS_ERROR, STATUS_OK, TYPE_F64, TYPE_I64, TYPE_STR,
 };
 use tally::server::tcp::{
-    handle_push_batch, AppState, BackfillTracker, ConnAccumulator, Metrics, PendingAsync,
-    SharedState, BATCH_DEADLINE_US, BATCH_SIZE,
+    handle_push_batch, BackfillTracker, ConnAccumulator, PendingAsync,
+    SharedState, BATCH_DEADLINE_US, BATCH_SIZE, make_concurrent_state,
 };
 use tally::state::store::StateStore;
 
@@ -39,21 +38,13 @@ fn ts(secs: u64) -> SystemTime {
 }
 
 fn make_state() -> SharedState {
-    Arc::new(Mutex::new(AppState {
-        engine: PipelineEngine::new(),
-        store: StateStore::new(),
-        metrics: Metrics::default(),
-        snapshot_path: std::path::PathBuf::from("test.snapshot"),
-        event_log: None,
-        backfill_tracker: Arc::new(BackfillTracker::default()),
-        backfill_complete: HashSet::new(),
-        snapshot_cycle: 0,
-        snapshot_seq: 1,
-        last_base_seq: 0,
-        previous_base_seq: 0,
-        throughput: tally::server::throughput::ThroughputTracker::new(),
-        latency: tally::server::latency::LatencyTracker::new(),
-    }))
+    make_concurrent_state(
+        PipelineEngine::new(),
+        StateStore::new(),
+        None,
+        std::path::PathBuf::from("test.snapshot"),
+        Arc::new(BackfillTracker::default()),
+    )
 }
 
 fn count_stream(name: &str, key: &str) -> StreamDefinition {
@@ -77,17 +68,17 @@ fn count_stream(name: &str, key: &str) -> StreamDefinition {
 }
 
 fn register(state: &SharedState, defs: Vec<StreamDefinition>) {
-    let mut app = state.lock().unwrap();
+    let mut engine = state.engine.write();
     for def in defs {
-        app.engine.register(def).unwrap();
+        engine.register(def).unwrap();
     }
 }
 
 fn get_count(state: &SharedState, stream: &str, key: &str) -> Option<i64> {
-    let mut app = state.lock().unwrap();
     let now = ts(1000);
-    let AppState { ref engine, ref mut store, .. } = *app;
-    let features = engine.get_features(key, store, now);
+    let engine = state.engine.read();
+    let mut store = state.store.lock();
+    let features = engine.get_features(key, &mut *store, now);
     let qualified = format!("{}.count_1h", stream);
     if let Some(fv) = features.get(&qualified).or_else(|| features.get("count_1h")) {
         match fv {

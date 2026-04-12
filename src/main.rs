@@ -1,13 +1,12 @@
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, SystemTime};
 
 use tally::engine::pipeline::PipelineEngine;
 use tally::server::http::run_http_server;
 use tally::server::protocol::{RegisterRequest, convert_register_request, convert_view_register_request};
-use tally::server::tcp::{AppState, BackfillStatus, BackfillTracker, Metrics, run_backfill, run_tcp_server};
+use tally::server::tcp::{BackfillStatus, BackfillTracker, make_concurrent_state, run_backfill, run_tcp_server, SharedState};
 use tally::state::event_log::EventLog;
 use tally::state::eviction::evict_expired_keys;
 use tally::state::snapshot::{
@@ -50,21 +49,14 @@ async fn main() {
             None
         });
 
-    let state = Arc::new(Mutex::new(AppState {
-        engine: PipelineEngine::new(),
-        store: StateStore::new(),
-        metrics: Metrics::default(),
-        snapshot_path: snapshot_path.clone(),
+    // Phase 14: ConcurrentAppState with per-field locking.
+    let state: SharedState = make_concurrent_state(
+        PipelineEngine::new(),
+        StateStore::new(),
         event_log,
-        backfill_tracker: Arc::new(BackfillTracker::default()),
-        backfill_complete: HashSet::new(),
-        snapshot_cycle: 0,
-        snapshot_seq: 1,
-        last_base_seq: 0,
-        previous_base_seq: 0,
-        throughput: tally::server::throughput::ThroughputTracker::new(),
-        latency: tally::server::latency::LatencyTracker::new(),
-    }));
+        snapshot_path.clone(),
+        Arc::new(BackfillTracker::default()),
+    );
 
     // Phase 9: how often to write a full base snapshot. Every Nth cycle is a
     // base, all other cycles are deltas. Default 10 (= one base per ~5 minutes
@@ -75,101 +67,96 @@ async fn main() {
         .unwrap_or(10);
 
     // Load snapshot on startup -- incremental recovery (OPS-04).
-    // Scans the snapshot directory for v6 base+delta files, merges them into
-    // a single state, and falls back to the legacy v5 single-file snapshot if
-    // no v6 files are found. Updates snapshot_seq to max_seen + 1 so the next
-    // timer tick continues the numbering.
     let snap_dir_startup = snapshot_path.parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
     let recovery = load_incremental_snapshots(&snap_dir_startup, &snapshot_path);
     if let Some((snapshot_state, next_seq, loaded_base_seq)) = recovery {
-        let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-        app.snapshot_seq = next_seq;
-        // Phase 9 WR-02: restore the latest-base pointer so delta headers
-        // written after recovery embed the correct base_seq from the first
-        // tick after startup. `loaded_base_seq == 0` indicates a legacy v5
-        // recovery (no v6 base on disk) which is treated as "no base yet".
-        app.last_base_seq = loaded_base_seq;
-        app.previous_base_seq = 0;
+        *state.snapshot_seq.lock() = next_seq;
+        *state.last_base_seq.lock() = loaded_base_seq;
+        *state.previous_base_seq.lock() = 0;
+
         // Restore entity state
-        app.store.restore_from_snapshot(snapshot_state.entities);
-        // Clear any dirty/deleted tracking that restore_from_snapshot may have
-        // introduced (belt-and-suspenders: apply_delta explicitly avoids
-        // touching the tracking sets, but a fresh start is cleaner).
-        app.store.clear_dirty();
-        let _ = app.store.take_deleted();
+        state.store.lock().restore_from_snapshot(snapshot_state.entities);
+        // Clear any dirty/deleted tracking
+        state.store.lock().clear_dirty();
+        let _ = state.store.lock().take_deleted();
+
         // Re-register pipelines from stored JSON
-        for pipeline in snapshot_state.pipelines {
-            let parsed: Result<serde_json::Value, _> =
-                serde_json::from_str(&pipeline.raw_register_json);
-            if let Ok(json_val) = parsed {
-                let req: Result<RegisterRequest, _> =
-                    serde_json::from_value(json_val.clone());
-                if let Ok(req) = req {
-                    let def_name = req.name.clone();
-                    let is_view = req.definition_type.as_deref() == Some("view");
-                    let registered: Result<(), tally::error::TallyError> = if is_view {
-                        convert_view_register_request(req)
-                            .and_then(|view_def| app.engine.register_view(view_def))
-                    } else {
-                        convert_register_request(req)
-                            .and_then(|stream_def| app.engine.register(stream_def).map(|_diff| ()))
-                    };
-                    if registered.is_ok() {
-                        app.engine.store_raw_register_json(&def_name, json_val);
-                        // Register stream with event log for persistence
-                        if !is_view {
-                            let history_ttl = app.engine.get_stream(&def_name)
-                                .and_then(|s| s.history_ttl);
-                            if let Some(ref mut log) = app.event_log {
-                                let _ = log.register_stream(&def_name, history_ttl);
+        {
+            let mut engine = state.engine.write();
+            for pipeline in snapshot_state.pipelines {
+                let parsed: Result<serde_json::Value, _> =
+                    serde_json::from_str(&pipeline.raw_register_json);
+                if let Ok(json_val) = parsed {
+                    let req: Result<RegisterRequest, _> =
+                        serde_json::from_value(json_val.clone());
+                    if let Ok(req) = req {
+                        let def_name = req.name.clone();
+                        let is_view = req.definition_type.as_deref() == Some("view");
+                        let registered: Result<(), tally::error::TallyError> = if is_view {
+                            convert_view_register_request(req)
+                                .and_then(|view_def| engine.register_view(view_def))
+                        } else {
+                            convert_register_request(req)
+                                .and_then(|stream_def| engine.register(stream_def).map(|_diff| ()))
+                        };
+                        if registered.is_ok() {
+                            engine.store_raw_register_json(&def_name, json_val);
+                            // Register stream with event log for persistence
+                            if !is_view {
+                                let history_ttl = engine.get_stream(&def_name)
+                                    .and_then(|s| s.history_ttl);
+                                let mut event_log = state.event_log.lock();
+                                if let Some(ref mut log) = *event_log {
+                                    let _ = log.register_stream(&def_name, history_ttl);
+                                }
                             }
                         }
                     }
                 }
             }
         }
+
         // Restore backfill_complete markers from snapshot
-        for (stream, feature) in &snapshot_state.backfill_complete {
-            app.backfill_complete.insert((stream.clone(), feature.clone()));
-        }
-
-        // Phase 9 WR-05: one-shot GC pass. Drops operators for streams that
-        // were unregistered (or features that were removed) before any event
-        // arrived for a given entity, which would otherwise survive base +
-        // delta recovery as zombies until the next event touches that entity.
         {
-            let valid_features = app.engine.valid_features_map();
-            app.store.gc_invalid_operators(&valid_features);
+            let mut bc = state.backfill_complete.lock();
+            for (stream, feature) in &snapshot_state.backfill_complete {
+                bc.insert((stream.clone(), feature.clone()));
+            }
         }
 
-        // Detect incomplete backfills: features with backfill=true that are not in
-        // the backfill_complete set. Re-spawn backfill for them (idempotent restart
-        // per CONTEXT.md locked decision). Operators are deterministic so replay
-        // from start produces the same result.
+        // Phase 9 WR-05: one-shot GC pass.
+        {
+            let engine = state.engine.read();
+            let valid_features = engine.valid_features_map();
+            state.store.lock().gc_invalid_operators(&valid_features);
+        }
+
+        // Detect incomplete backfills
         let mut incomplete_backfills: Vec<(String, Vec<String>)> = Vec::new();
-        for stream in app.engine.list_streams() {
-            let missing: Vec<String> = stream.features.iter()
-                .filter(|(_, def)| tally::engine::pipeline::get_backfill_flag(def))
-                .filter(|(name, _)| !app.backfill_complete.contains(&(stream.name.clone(), name.clone())))
-                .map(|(name, _)| name.clone())
-                .collect();
-            if !missing.is_empty() {
-                incomplete_backfills.push((stream.name.clone(), missing));
+        {
+            let engine = state.engine.read();
+            let bc = state.backfill_complete.lock();
+            for stream in engine.list_streams() {
+                let missing: Vec<String> = stream.features.iter()
+                    .filter(|(_, def)| tally::engine::pipeline::get_backfill_flag(def))
+                    .filter(|(name, _)| !bc.contains(&(stream.name.clone(), name.clone())))
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                if !missing.is_empty() {
+                    incomplete_backfills.push((stream.name.clone(), missing));
+                }
             }
         }
 
         eprintln!("Loaded snapshot (next_seq={})", next_seq);
 
-        // Must drop the lock before spawning backfill tasks
-        drop(app);
-
-        // Spawn backfill tasks for incomplete backfills (outside lock)
+        // Spawn backfill tasks for incomplete backfills
         for (stream_name, features) in incomplete_backfills {
             let entries = {
-                let app = state.lock().unwrap_or_else(|e| e.into_inner());
-                app.event_log.as_ref()
+                let event_log = state.event_log.lock();
+                event_log.as_ref()
                     .map(|log| log.read_entries(&stream_name).unwrap_or_default())
                     .unwrap_or_default()
             };
@@ -180,14 +167,11 @@ async fn main() {
                     total_events: entries.len(),
                     processed_events: Arc::new(AtomicUsize::new(0)),
                     started_at: SystemTime::now(),
-                    completed_at: Mutex::new(None),
+                    completed_at: std::sync::Mutex::new(None),
                 });
-                {
-                    let app = state.lock().unwrap_or_else(|e| e.into_inner());
-                    app.backfill_tracker.tasks.lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .push(Arc::clone(&status));
-                }
+                state.backfill_tracker.tasks.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(Arc::clone(&status));
                 eprintln!("Resuming incomplete backfill for {} features: {:?}", stream_name, features);
                 tokio::spawn(run_backfill(
                     state.clone(),
@@ -215,9 +199,6 @@ async fn main() {
     });
 
     // Periodic incremental snapshot timer (PERS-01, PERS-04, OPS-03).
-    // Writes a delta every 30s by default, with a full base every
-    // full_snapshot_interval cycles. No-op cycles (no dirty, no deleted)
-    // are skipped entirely. Old files are cleaned up after each base.
     let snap_state = state.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
@@ -226,32 +207,26 @@ async fn main() {
             interval.tick().await;
 
             // Decide base vs delta, clone the required state, and advance
-            // the cycle counter -- all under a single lock acquisition so
-            // the dirty set cannot race with new events.
-            // Tuple: (data, seq, is_full, snap_dir, prev_base_seq_for_cleanup)
-            // prev_base_seq_for_cleanup is only meaningful when is_full==true.
+            // the cycle counter — using individual locks.
             let prepared: Option<(SnapshotData, u64, bool, PathBuf, u64)> = {
-                let mut app = snap_state.lock().unwrap_or_else(|e| e.into_inner());
-                let cycle = app.snapshot_cycle;
-                let seq = app.snapshot_seq;
+                let engine = snap_state.engine.read();
+                let mut store = snap_state.store.lock();
+                let cycle = *snap_state.snapshot_cycle.lock();
+                let seq = *snap_state.snapshot_seq.lock();
                 let is_full = cycle % full_snapshot_interval == 0;
-                let valid_features = app.engine.valid_features_map();
-                let snap_dir = app.snapshot_path.parent()
+                let valid_features = engine.valid_features_map();
+                let snap_dir = snap_state.snapshot_path.parent()
                     .unwrap_or_else(|| std::path::Path::new("."))
                     .to_path_buf();
 
-                // Phase 9 WR-02: delta headers embed the latest base's seq,
-                // not `seq - 1`. Captured here while the lock is held so the
-                // value is stable through the rest of this tick.
-                let last_base_seq_for_delta = app.last_base_seq;
+                let last_base_seq_for_delta = *snap_state.last_base_seq.lock();
                 if is_full {
                     // Full base snapshot -- clone everything.
-                    let entities = app.store.clone_for_snapshot_with_gc(&valid_features);
-                    let mut pipelines: Vec<SerializablePipeline> = app
-                        .engine
+                    let entities = store.clone_for_snapshot_with_gc(&valid_features);
+                    let mut pipelines: Vec<SerializablePipeline> = engine
                         .list_streams()
                         .filter_map(|stream| {
-                            app.engine
+                            engine
                                 .get_raw_register_json(&stream.name)
                                 .map(|json| SerializablePipeline {
                                     name: stream.name.clone(),
@@ -261,8 +236,8 @@ async fn main() {
                                 })
                         })
                         .collect();
-                    for view in app.engine.list_views() {
-                        if let Some(json) = app.engine.get_raw_register_json(&view.name) {
+                    for view in engine.list_views() {
+                        if let Some(json) = engine.get_raw_register_json(&view.name) {
                             pipelines.push(SerializablePipeline {
                                 name: view.name.clone(),
                                 key_field: view.key_field.clone(),
@@ -272,10 +247,10 @@ async fn main() {
                         }
                     }
                     let backfill_complete: Vec<(String, String)> =
-                        app.backfill_complete.iter().cloned().collect();
-                    // Clear tracking -- a full base supersedes any pending delta.
-                    app.store.clear_dirty();
-                    let _ = app.store.take_deleted();
+                        snap_state.backfill_complete.lock().iter().cloned().collect();
+                    // Clear tracking
+                    store.clear_dirty();
+                    let _ = store.take_deleted();
 
                     let base = BaseSnapshotState {
                         header: SnapshotHeader {
@@ -286,31 +261,24 @@ async fn main() {
                         pipelines,
                         backfill_complete,
                     };
-                    app.snapshot_cycle += 1;
-                    app.snapshot_seq += 1;
-                    // Phase 9 WR-02/WR-03: remember the previous base before
-                    // we stamp the new one, so WR-03 cleanup can preserve it.
-                    let prev_base = app.last_base_seq;
-                    app.previous_base_seq = prev_base;
-                    app.last_base_seq = seq;
+                    *snap_state.snapshot_cycle.lock() = cycle + 1;
+                    *snap_state.snapshot_seq.lock() = seq + 1;
+                    let prev_base = *snap_state.last_base_seq.lock();
+                    *snap_state.previous_base_seq.lock() = prev_base;
+                    *snap_state.last_base_seq.lock() = seq;
                     Some((SnapshotData::Base(base), seq, true, snap_dir, prev_base))
                 } else {
                     // Delta -- clone only dirty entities.
-                    let changed = app.store.clone_dirty_for_snapshot_with_gc(&valid_features);
-                    let deleted = app.store.take_deleted();
-                    app.store.clear_dirty();
+                    let changed = store.clone_dirty_for_snapshot_with_gc(&valid_features);
+                    let deleted = store.take_deleted();
+                    store.clear_dirty();
 
-                    // No-change cycle: advance cycle counter and skip the
-                    // write entirely. Seq stays put so the next written file
-                    // has no gap.
                     if changed.is_empty() && deleted.is_empty() {
-                        app.snapshot_cycle += 1;
+                        *snap_state.snapshot_cycle.lock() = cycle + 1;
                         None
                     } else {
                         let delta = DeltaSnapshotState {
                             header: SnapshotHeader {
-                                // Phase 9 WR-02: stamp the delta with the
-                                // actual latest base seq, not `seq - 1`.
                                 snapshot_type: SnapshotType::Delta {
                                     base_seq: last_base_seq_for_delta,
                                 },
@@ -319,9 +287,8 @@ async fn main() {
                             changed_entities: changed,
                             deleted_keys: deleted,
                         };
-                        app.snapshot_cycle += 1;
-                        app.snapshot_seq += 1;
-                        // prev_base_seq is unused on the delta path; pass 0.
+                        *snap_state.snapshot_cycle.lock() = cycle + 1;
+                        *snap_state.snapshot_seq.lock() = seq + 1;
                         Some((SnapshotData::Delta(delta), seq, false, snap_dir, 0))
                     }
                 }
@@ -332,7 +299,7 @@ async fn main() {
                 None => continue, // No changes this cycle
             };
 
-            // Serialize on blocking thread pool (PERS-04: does not block event loop)
+            // Serialize on blocking thread pool
             let snap_start = std::time::Instant::now();
             let result = tokio::task::spawn_blocking(move || {
                 let (bytes, filename) = match snapshot_data {
@@ -350,13 +317,7 @@ async fn main() {
                     }
                 }?;
                 let file_path = snap_dir.join(&filename);
-                // Phase 9 CR-01: unique tmp filename per (type, seq) to avoid
-                // races between concurrent snapshot writers (periodic timer +
-                // manual /snapshot). `with_extension("tmp")` would drop the
-                // sequence number and produce a shared `tally.snapshot.base.tmp`.
                 let tmp_path = snap_dir.join(format!("{}.tmp", filename));
-                // Phase 9 WR-01: fsync the tmp file before rename so we don't
-                // end up with a zero-byte snapshot after a power loss.
                 {
                     use std::fs::OpenOptions;
                     use std::io::Write;
@@ -369,19 +330,10 @@ async fn main() {
                     f.sync_all()?;
                 }
                 std::fs::rename(&tmp_path, &file_path)?;
-                // Fsync the directory so the rename itself is durable.
                 if let Ok(dir) = std::fs::File::open(&snap_dir) {
                     let _ = dir.sync_all();
                 }
-                // After a successful base write, delete old snapshot files.
-                // Phase 9 WR-03: preserve the previous base as a fallback.
-                // `cutoff` is the minimum seq we keep; anything with
-                // seq < cutoff is fair game for deletion.
                 if is_full {
-                    // Keep the previous base and everything newer than it.
-                    // On the very first base (previous_base_seq == 0) there
-                    // is nothing to preserve, so we fall back to the old
-                    // "delete everything < seq" behaviour.
                     let cutoff = if prev_base_seq_for_cleanup == 0 {
                         seq
                     } else {
@@ -395,10 +347,7 @@ async fn main() {
             match result {
                 Ok(Ok(size)) => {
                     let snap_elapsed = snap_start.elapsed();
-                    {
-                        let mut app = snap_state.lock().unwrap_or_else(|e| e.into_inner());
-                        app.metrics.snapshot_duration_ms = snap_elapsed.as_millis() as u64;
-                    }
+                    snap_state.metrics.lock().snapshot_duration_ms = snap_elapsed.as_millis() as u64;
                     eprintln!(
                         "Snapshot saved ({} bytes, {}ms, {})",
                         size,
@@ -420,13 +369,9 @@ async fn main() {
         loop {
             interval.tick().await;
             let now = std::time::SystemTime::now();
-            let mut app = evict_state.lock().unwrap_or_else(|e| e.into_inner());
-            let AppState {
-                ref engine,
-                ref mut store,
-                ..
-            } = *app;
-            let evicted = evict_expired_keys(store, engine, now, ttl_multiplier);
+            let engine = evict_state.engine.read();
+            let mut store = evict_state.store.lock();
+            let evicted = evict_expired_keys(&mut *store, &*engine, now, ttl_multiplier);
             if evicted > 0 {
                 eprintln!("Evicted {} expired keys", evicted);
             }
@@ -441,8 +386,8 @@ async fn main() {
         loop {
             interval.tick().await;
             let result = {
-                let mut app = fsync_state.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(ref mut log) = app.event_log {
+                let mut event_log = fsync_state.event_log.lock();
+                if let Some(ref mut log) = *event_log {
                     log.fsync_all()
                 } else {
                     Ok(())
@@ -464,8 +409,8 @@ async fn main() {
             let now = SystemTime::now();
             // Get list of streams to compact
             let streams_to_compact: Vec<String> = {
-                let app = compact_state.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(ref log) = app.event_log {
+                let event_log = compact_state.event_log.lock();
+                if let Some(ref log) = *event_log {
                     log.registered_streams().map(String::from).collect()
                 } else {
                     vec![]
@@ -474,8 +419,8 @@ async fn main() {
             // Compact each stream (re-acquires lock per stream for cooperative yielding)
             for stream_name in &streams_to_compact {
                 {
-                    let mut app = compact_state.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(ref mut log) = app.event_log {
+                    let mut event_log = compact_state.event_log.lock();
+                    if let Some(ref mut log) = *event_log {
                         match log.compact_stream(stream_name, now) {
                             Ok(removed) if removed > 0 => {
                                 eprintln!("Compacted {}: removed {} expired entries", stream_name, removed);
@@ -502,9 +447,7 @@ async fn main() {
 // ================ Phase 9: Incremental Snapshot Helpers ================
 
 /// Remove snapshot files whose sequence is strictly less than the current
-/// base's sequence. Runs after a successful base write. Silently ignores
-/// filesystem errors (bounded-effort cleanup; snapshot correctness does not
-/// depend on it).
+/// base's sequence.
 fn cleanup_old_snapshots(dir: &Path, current_base_seq: u64) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -526,21 +469,11 @@ fn cleanup_old_snapshots(dir: &Path, current_base_seq: u64) {
     }
 }
 
-/// Scan the snapshot directory and load the latest base + subsequent deltas
-/// into a single `SnapshotState`. Falls back to the legacy v5 single-file
-/// format at `legacy_path` if no v6 files are found. Returns the merged
-/// state, the next sequence number to use for future writes, and the seq
-/// of the base that was actually loaded (0 if legacy v5 fallback).
-///
-/// Phase 9 WR-04: tries bases in descending seq order so a corrupt newest
-/// base does not strand a readable older base.
-///
-/// Returns `None` if nothing loadable exists.
+/// Scan the snapshot directory and load the latest base + subsequent deltas.
 pub(crate) fn load_incremental_snapshots(
     snap_dir: &Path,
     legacy_path: &Path,
 ) -> Option<(SnapshotState, u64, u64)> {
-    // Step 1: Scan directory for v6 snapshot files.
     let mut bases: Vec<(u64, PathBuf)> = Vec::new();
     let mut deltas: Vec<(u64, PathBuf)> = Vec::new();
 
@@ -560,24 +493,17 @@ pub(crate) fn load_incremental_snapshots(
         }
     }
 
-    // Step 2: Find the newest base that decodes successfully. WR-04: iterate
-    // in descending seq order so we can fall back to an older base if the
-    // newest is unreadable.
     bases.sort_by_key(|(seq, _)| *seq);
 
     let loaded = bases.iter().rev().find_map(|(seq, path)| {
         let bytes = std::fs::read(path).ok()?;
         match load_snapshot_file(&bytes)? {
             SnapshotFile::Base(b) => Some((*seq, b)),
-            // A file named "tally.snapshot.base.*" that decodes as a delta
-            // is a corruption signal -- skip it and try the next-older base.
             _ => None,
         }
     });
 
     if let Some((base_seq, base)) = loaded {
-        // Build a scratch store, restore base entities, then apply deltas in
-        // monotonic sequence order.
         let mut store = StateStore::new();
         store.restore_from_snapshot(base.entities.clone());
 
@@ -591,7 +517,7 @@ pub(crate) fn load_incremental_snapshots(
         for (seq, delta_path) in &applicable {
             let bytes = match std::fs::read(delta_path) {
                 Ok(b) => b,
-                Err(_) => continue, // Skip unreadable files
+                Err(_) => continue,
             };
             match load_snapshot_file(&bytes) {
                 Some(SnapshotFile::Delta(delta)) => {
@@ -600,8 +526,6 @@ pub(crate) fn load_incremental_snapshots(
                         max_seq = *seq;
                     }
                 }
-                // Skip files that claim to be deltas but fail to decode,
-                // or are mis-named bases (corruption-tolerant recovery).
                 _ => continue,
             }
         }
@@ -614,12 +538,10 @@ pub(crate) fn load_incremental_snapshots(
         return Some((state, max_seq + 1, base_seq));
     }
 
-    // Step 3: Fall back to legacy v5 single-file snapshot.
     if legacy_path.exists() {
         let bytes = std::fs::read(legacy_path).ok()?;
         let legacy = load_legacy_v5(&bytes)?;
         eprintln!("Loaded legacy v5 snapshot from {}", legacy_path.display());
-        // base_seq == 0 signals "no v6 base loaded".
         return Some((legacy, 1, 0));
     }
 
