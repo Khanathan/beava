@@ -480,9 +480,18 @@ fn eval_unary(op: UnOp, val: FeatureValue) -> FeatureValue {
     }
 }
 
+/// Helper: extract a string from a FeatureValue, returning None for non-String types.
+fn as_string(val: &FeatureValue) -> Option<&str> {
+    match val {
+        FeatureValue::String(s) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
 /// Evaluate a builtin function call.
 fn eval_fn_call(name: &str, args: &[Expr], ctx: &EvalContext) -> FeatureValue {
     match name {
+        // ----- Existing builtins -----
         "abs" => {
             if args.len() != 1 {
                 return FeatureValue::Missing;
@@ -531,6 +540,242 @@ fn eval_fn_call(name: &str, args: &[Expr], ctx: &EvalContext) -> FeatureValue {
                 .as_secs_f64();
             FeatureValue::Float(secs)
         }
+
+        // ----- Conditional expressions -----
+        "if" => {
+            if args.len() != 3 {
+                return FeatureValue::Missing;
+            }
+            let cond = eval(&args[0], ctx);
+            if cond.is_missing() {
+                return FeatureValue::Missing;
+            }
+            // Truthy: any non-zero numeric value
+            let is_true = match &cond {
+                FeatureValue::Int(i) => *i != 0,
+                FeatureValue::Float(f) => *f != 0.0,
+                FeatureValue::String(s) => !s.is_empty(),
+                FeatureValue::Missing => false,
+            };
+            if is_true {
+                eval(&args[1], ctx)
+            } else {
+                eval(&args[2], ctx)
+            }
+        }
+        "coalesce" | "default" => {
+            if args.len() != 2 {
+                return FeatureValue::Missing;
+            }
+            let a = eval(&args[0], ctx);
+            if !a.is_missing() {
+                a
+            } else {
+                eval(&args[1], ctx)
+            }
+        }
+        "is_missing" => {
+            if args.len() != 1 {
+                return FeatureValue::Missing;
+            }
+            let val = eval(&args[0], ctx);
+            FeatureValue::Float(if val.is_missing() { 1.0 } else { 0.0 })
+        }
+
+        // ----- String functions -----
+        "len" => {
+            if args.len() != 1 {
+                return FeatureValue::Missing;
+            }
+            let val = eval(&args[0], ctx);
+            if val.is_missing() {
+                return FeatureValue::Missing;
+            }
+            match as_string(&val) {
+                Some(s) => FeatureValue::Float(s.len() as f64),
+                None => FeatureValue::Missing,
+            }
+        }
+        "lower" => {
+            if args.len() != 1 {
+                return FeatureValue::Missing;
+            }
+            let val = eval(&args[0], ctx);
+            if val.is_missing() {
+                return FeatureValue::Missing;
+            }
+            match as_string(&val) {
+                Some(s) => FeatureValue::String(s.to_lowercase()),
+                None => FeatureValue::Missing,
+            }
+        }
+        "upper" => {
+            if args.len() != 1 {
+                return FeatureValue::Missing;
+            }
+            let val = eval(&args[0], ctx);
+            if val.is_missing() {
+                return FeatureValue::Missing;
+            }
+            match as_string(&val) {
+                Some(s) => FeatureValue::String(s.to_uppercase()),
+                None => FeatureValue::Missing,
+            }
+        }
+        "contains" => {
+            if args.len() != 2 {
+                return FeatureValue::Missing;
+            }
+            let haystack = eval(&args[0], ctx);
+            let needle = eval(&args[1], ctx);
+            if haystack.is_missing() || needle.is_missing() {
+                return FeatureValue::Missing;
+            }
+            match (as_string(&haystack), as_string(&needle)) {
+                (Some(h), Some(n)) => FeatureValue::Float(if h.contains(n) { 1.0 } else { 0.0 }),
+                _ => FeatureValue::Missing,
+            }
+        }
+        "starts_with" => {
+            if args.len() != 2 {
+                return FeatureValue::Missing;
+            }
+            let s = eval(&args[0], ctx);
+            let prefix = eval(&args[1], ctx);
+            if s.is_missing() || prefix.is_missing() {
+                return FeatureValue::Missing;
+            }
+            match (as_string(&s), as_string(&prefix)) {
+                (Some(sv), Some(pv)) => {
+                    FeatureValue::Float(if sv.starts_with(pv) { 1.0 } else { 0.0 })
+                }
+                _ => FeatureValue::Missing,
+            }
+        }
+        "concat" => {
+            if args.len() != 2 {
+                return FeatureValue::Missing;
+            }
+            let a = eval(&args[0], ctx);
+            let b = eval(&args[1], ctx);
+            if a.is_missing() || b.is_missing() {
+                return FeatureValue::Missing;
+            }
+            match (as_string(&a), as_string(&b)) {
+                (Some(sa), Some(sb)) => FeatureValue::String(format!("{}{}", sa, sb)),
+                _ => FeatureValue::Missing,
+            }
+        }
+
+        // ----- Math functions -----
+        "sqrt" => {
+            if args.len() != 1 {
+                return FeatureValue::Missing;
+            }
+            let val = eval(&args[0], ctx);
+            if val.is_missing() {
+                return FeatureValue::Missing;
+            }
+            match val.as_f64() {
+                Some(f) => guard_float(f.sqrt()),
+                None => FeatureValue::Missing,
+            }
+        }
+        "log" => {
+            if args.len() != 1 {
+                return FeatureValue::Missing;
+            }
+            let val = eval(&args[0], ctx);
+            if val.is_missing() {
+                return FeatureValue::Missing;
+            }
+            match val.as_f64() {
+                Some(f) if f > 0.0 => guard_float(f.ln()),
+                _ => FeatureValue::Missing,
+            }
+        }
+        "log10" => {
+            if args.len() != 1 {
+                return FeatureValue::Missing;
+            }
+            let val = eval(&args[0], ctx);
+            if val.is_missing() {
+                return FeatureValue::Missing;
+            }
+            match val.as_f64() {
+                Some(f) if f > 0.0 => guard_float(f.log10()),
+                _ => FeatureValue::Missing,
+            }
+        }
+        "pow" => {
+            if args.len() != 2 {
+                return FeatureValue::Missing;
+            }
+            let base = eval(&args[0], ctx);
+            let exp = eval(&args[1], ctx);
+            if base.is_missing() || exp.is_missing() {
+                return FeatureValue::Missing;
+            }
+            match (base.as_f64(), exp.as_f64()) {
+                (Some(b), Some(e)) => guard_float(b.powf(e)),
+                _ => FeatureValue::Missing,
+            }
+        }
+        "ceil" => {
+            if args.len() != 1 {
+                return FeatureValue::Missing;
+            }
+            let val = eval(&args[0], ctx);
+            if val.is_missing() {
+                return FeatureValue::Missing;
+            }
+            match val.as_f64() {
+                Some(f) => guard_float(f.ceil()),
+                None => FeatureValue::Missing,
+            }
+        }
+        "floor" => {
+            if args.len() != 1 {
+                return FeatureValue::Missing;
+            }
+            let val = eval(&args[0], ctx);
+            if val.is_missing() {
+                return FeatureValue::Missing;
+            }
+            match val.as_f64() {
+                Some(f) => guard_float(f.floor()),
+                None => FeatureValue::Missing,
+            }
+        }
+        "round" => {
+            if args.len() != 1 {
+                return FeatureValue::Missing;
+            }
+            let val = eval(&args[0], ctx);
+            if val.is_missing() {
+                return FeatureValue::Missing;
+            }
+            match val.as_f64() {
+                Some(f) => guard_float(f.round()),
+                None => FeatureValue::Missing,
+            }
+        }
+        "clamp" => {
+            if args.len() != 3 {
+                return FeatureValue::Missing;
+            }
+            let x = eval(&args[0], ctx);
+            let lo = eval(&args[1], ctx);
+            let hi = eval(&args[2], ctx);
+            if x.is_missing() || lo.is_missing() || hi.is_missing() {
+                return FeatureValue::Missing;
+            }
+            match (x.as_f64(), lo.as_f64(), hi.as_f64()) {
+                (Some(xv), Some(lov), Some(hiv)) => guard_float(xv.clamp(lov, hiv)),
+                _ => FeatureValue::Missing,
+            }
+        }
+
         _ => FeatureValue::Missing,
     }
 }
@@ -1269,5 +1514,447 @@ mod tests {
             ("c", FeatureValue::Float(3.0)),
         ]);
         assert_eq!(result, FeatureValue::Missing);
+    }
+
+    // ======================== Conditional: if() ========================
+
+    #[test]
+    fn test_eval_if_true_branch() {
+        let result = eval_with("if(a > 10, 1, 0)", &[("a", FeatureValue::Int(15))]);
+        assert_eq!(result, FeatureValue::Float(1.0));
+    }
+
+    #[test]
+    fn test_eval_if_false_branch() {
+        let result = eval_with("if(a > 10, 1, 0)", &[("a", FeatureValue::Int(5))]);
+        assert_eq!(result, FeatureValue::Float(0.0));
+    }
+
+    #[test]
+    fn test_eval_if_returns_string() {
+        let result = eval_with(
+            "if(a > 10, 'high', 'low')",
+            &[("a", FeatureValue::Int(15))],
+        );
+        assert_eq!(result, FeatureValue::String("high".into()));
+    }
+
+    #[test]
+    fn test_eval_if_missing_condition() {
+        let result = eval_with("if(a > 10, 1, 0)", &[]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_if_wrong_arity() {
+        let result = eval_with("if(a, b)", &[
+            ("a", FeatureValue::Int(1)),
+            ("b", FeatureValue::Int(2)),
+        ]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_if_string_condition_truthy() {
+        let result = eval_with(
+            "if(a, 1, 0)",
+            &[("a", FeatureValue::String("nonempty".into()))],
+        );
+        assert_eq!(result, FeatureValue::Float(1.0));
+    }
+
+    #[test]
+    fn test_eval_if_string_condition_falsy() {
+        let result = eval_with(
+            "if(a, 1, 0)",
+            &[("a", FeatureValue::String("".into()))],
+        );
+        assert_eq!(result, FeatureValue::Float(0.0));
+    }
+
+    // ======================== Null handling: coalesce / default / is_missing ========================
+
+    #[test]
+    fn test_eval_coalesce_present() {
+        let result = eval_with("coalesce(a, 0)", &[("a", FeatureValue::Float(5.0))]);
+        assert_eq!(result, FeatureValue::Float(5.0));
+    }
+
+    #[test]
+    fn test_eval_coalesce_missing_returns_fallback() {
+        let result = eval_with("coalesce(a, 42)", &[]);
+        assert_eq!(result, FeatureValue::Float(42.0));
+    }
+
+    #[test]
+    fn test_eval_default_alias() {
+        let result = eval_with("default(a, 99)", &[]);
+        assert_eq!(result, FeatureValue::Float(99.0));
+    }
+
+    #[test]
+    fn test_eval_default_present() {
+        let result = eval_with("default(a, 99)", &[("a", FeatureValue::Int(7))]);
+        assert_eq!(result, FeatureValue::Int(7));
+    }
+
+    #[test]
+    fn test_eval_coalesce_wrong_arity() {
+        let result = eval_with("coalesce(a)", &[("a", FeatureValue::Int(1))]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_is_missing_true() {
+        let result = eval_with("is_missing(a)", &[]);
+        assert_eq!(result, FeatureValue::Float(1.0));
+    }
+
+    #[test]
+    fn test_eval_is_missing_false() {
+        let result = eval_with("is_missing(a)", &[("a", FeatureValue::Int(5))]);
+        assert_eq!(result, FeatureValue::Float(0.0));
+    }
+
+    #[test]
+    fn test_eval_is_missing_wrong_arity() {
+        let result = eval_with("is_missing(a, b)", &[
+            ("a", FeatureValue::Int(1)),
+            ("b", FeatureValue::Int(2)),
+        ]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    // ======================== String functions ========================
+
+    #[test]
+    fn test_eval_len_string() {
+        let result = eval_with("len(a)", &[("a", FeatureValue::String("hello".into()))]);
+        assert_eq!(result, FeatureValue::Float(5.0));
+    }
+
+    #[test]
+    fn test_eval_len_empty_string() {
+        let result = eval_with("len(a)", &[("a", FeatureValue::String("".into()))]);
+        assert_eq!(result, FeatureValue::Float(0.0));
+    }
+
+    #[test]
+    fn test_eval_len_missing() {
+        let result = eval_with("len(a)", &[]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_len_non_string() {
+        let result = eval_with("len(a)", &[("a", FeatureValue::Int(42))]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_lower() {
+        let result = eval_with("lower(a)", &[("a", FeatureValue::String("HELLO".into()))]);
+        assert_eq!(result, FeatureValue::String("hello".into()));
+    }
+
+    #[test]
+    fn test_eval_lower_missing() {
+        let result = eval_with("lower(a)", &[]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_upper() {
+        let result = eval_with("upper(a)", &[("a", FeatureValue::String("hello".into()))]);
+        assert_eq!(result, FeatureValue::String("HELLO".into()));
+    }
+
+    #[test]
+    fn test_eval_upper_missing() {
+        let result = eval_with("upper(a)", &[]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_contains_true() {
+        let result = eval_with("contains(a, 'US')", &[
+            ("a", FeatureValue::String("US-West".into())),
+        ]);
+        assert_eq!(result, FeatureValue::Float(1.0));
+    }
+
+    #[test]
+    fn test_eval_contains_false() {
+        let result = eval_with("contains(a, 'EU')", &[
+            ("a", FeatureValue::String("US-West".into())),
+        ]);
+        assert_eq!(result, FeatureValue::Float(0.0));
+    }
+
+    #[test]
+    fn test_eval_contains_missing() {
+        let result = eval_with("contains(a, 'US')", &[]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_starts_with_true() {
+        let result = eval_with("starts_with(a, 'US')", &[
+            ("a", FeatureValue::String("US-West".into())),
+        ]);
+        assert_eq!(result, FeatureValue::Float(1.0));
+    }
+
+    #[test]
+    fn test_eval_starts_with_false() {
+        let result = eval_with("starts_with(a, 'EU')", &[
+            ("a", FeatureValue::String("US-West".into())),
+        ]);
+        assert_eq!(result, FeatureValue::Float(0.0));
+    }
+
+    #[test]
+    fn test_eval_starts_with_missing() {
+        let result = eval_with("starts_with(a, 'x')", &[]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_concat() {
+        let result = eval_with("concat(a, b)", &[
+            ("a", FeatureValue::String("hello".into())),
+            ("b", FeatureValue::String(" world".into())),
+        ]);
+        assert_eq!(result, FeatureValue::String("hello world".into()));
+    }
+
+    #[test]
+    fn test_eval_concat_missing() {
+        let result = eval_with("concat(a, b)", &[
+            ("a", FeatureValue::String("hello".into())),
+        ]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_concat_non_string() {
+        let result = eval_with("concat(a, b)", &[
+            ("a", FeatureValue::String("hello".into())),
+            ("b", FeatureValue::Int(42)),
+        ]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    // ======================== Math functions ========================
+
+    #[test]
+    fn test_eval_sqrt() {
+        let result = eval_with("sqrt(a)", &[("a", FeatureValue::Float(9.0))]);
+        assert_eq!(result, FeatureValue::Float(3.0));
+    }
+
+    #[test]
+    fn test_eval_sqrt_negative_returns_missing() {
+        // sqrt(-1) is NaN, guard_float converts to Missing
+        let result = eval_with("sqrt(a)", &[("a", FeatureValue::Float(-1.0))]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_sqrt_missing() {
+        let result = eval_with("sqrt(a)", &[]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_log_e() {
+        let result = eval_with("log(a)", &[("a", FeatureValue::Float(std::f64::consts::E))]);
+        match result {
+            FeatureValue::Float(f) => assert!((f - 1.0).abs() < 1e-10),
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_eval_log_zero_returns_missing() {
+        let result = eval_with("log(a)", &[("a", FeatureValue::Float(0.0))]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_log_negative_returns_missing() {
+        let result = eval_with("log(a)", &[("a", FeatureValue::Float(-5.0))]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_log10() {
+        let result = eval_with("log10(a)", &[("a", FeatureValue::Float(100.0))]);
+        match result {
+            FeatureValue::Float(f) => assert!((f - 2.0).abs() < 1e-10),
+            other => panic!("Expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_eval_log10_zero_returns_missing() {
+        let result = eval_with("log10(a)", &[("a", FeatureValue::Float(0.0))]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_pow() {
+        let result = eval_with("pow(a, b)", &[
+            ("a", FeatureValue::Float(2.0)),
+            ("b", FeatureValue::Float(3.0)),
+        ]);
+        assert_eq!(result, FeatureValue::Float(8.0));
+    }
+
+    #[test]
+    fn test_eval_pow_missing() {
+        let result = eval_with("pow(a, b)", &[("a", FeatureValue::Float(2.0))]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_pow_int_args() {
+        let result = eval_with("pow(a, b)", &[
+            ("a", FeatureValue::Int(3)),
+            ("b", FeatureValue::Int(2)),
+        ]);
+        assert_eq!(result, FeatureValue::Float(9.0));
+    }
+
+    #[test]
+    fn test_eval_ceil() {
+        let result = eval_with("ceil(a)", &[("a", FeatureValue::Float(3.2))]);
+        assert_eq!(result, FeatureValue::Float(4.0));
+    }
+
+    #[test]
+    fn test_eval_ceil_negative() {
+        let result = eval_with("ceil(a)", &[("a", FeatureValue::Float(-3.2))]);
+        assert_eq!(result, FeatureValue::Float(-3.0));
+    }
+
+    #[test]
+    fn test_eval_floor() {
+        let result = eval_with("floor(a)", &[("a", FeatureValue::Float(3.7))]);
+        assert_eq!(result, FeatureValue::Float(3.0));
+    }
+
+    #[test]
+    fn test_eval_floor_negative() {
+        let result = eval_with("floor(a)", &[("a", FeatureValue::Float(-3.2))]);
+        assert_eq!(result, FeatureValue::Float(-4.0));
+    }
+
+    #[test]
+    fn test_eval_round() {
+        let result = eval_with("round(a)", &[("a", FeatureValue::Float(3.5))]);
+        assert_eq!(result, FeatureValue::Float(4.0));
+    }
+
+    #[test]
+    fn test_eval_round_down() {
+        let result = eval_with("round(a)", &[("a", FeatureValue::Float(3.2))]);
+        assert_eq!(result, FeatureValue::Float(3.0));
+    }
+
+    #[test]
+    fn test_eval_round_missing() {
+        let result = eval_with("round(a)", &[]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_clamp_within_range() {
+        let result = eval_with("clamp(a, 0, 100)", &[("a", FeatureValue::Float(50.0))]);
+        assert_eq!(result, FeatureValue::Float(50.0));
+    }
+
+    #[test]
+    fn test_eval_clamp_below_min() {
+        let result = eval_with("clamp(a, 0, 100)", &[("a", FeatureValue::Float(-5.0))]);
+        assert_eq!(result, FeatureValue::Float(0.0));
+    }
+
+    #[test]
+    fn test_eval_clamp_above_max() {
+        let result = eval_with("clamp(a, 0, 100)", &[("a", FeatureValue::Float(200.0))]);
+        assert_eq!(result, FeatureValue::Float(100.0));
+    }
+
+    #[test]
+    fn test_eval_clamp_missing() {
+        let result = eval_with("clamp(a, 0, 100)", &[]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_eval_clamp_wrong_arity() {
+        let result = eval_with("clamp(a, b)", &[
+            ("a", FeatureValue::Float(5.0)),
+            ("b", FeatureValue::Float(10.0)),
+        ]);
+        assert_eq!(result, FeatureValue::Missing);
+    }
+
+    // ======================== Parser: 3-arg functions ========================
+
+    #[test]
+    fn test_parse_if_three_args() {
+        let expr = parse_expr("if(a > 10, 1, 0)").unwrap();
+        match expr {
+            Expr::FnCall { name, args } => {
+                assert_eq!(name, "if");
+                assert_eq!(args.len(), 3);
+            }
+            other => panic!("Expected FnCall, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_clamp_three_args() {
+        let expr = parse_expr("clamp(x, 0, 100)").unwrap();
+        match expr {
+            Expr::FnCall { name, args } => {
+                assert_eq!(name, "clamp");
+                assert_eq!(args.len(), 3);
+            }
+            other => panic!("Expected FnCall, got {:?}", other),
+        }
+    }
+
+    // ======================== Composite expressions ========================
+
+    #[test]
+    fn test_eval_if_with_coalesce() {
+        // if(is_missing(avg), 0, amount / avg) when avg is missing
+        let result = eval_with(
+            "if(is_missing(avg), 0, _event.amount / avg)",
+            &[],
+        );
+        assert_eq!(result, FeatureValue::Float(0.0));
+    }
+
+    #[test]
+    fn test_eval_log_plus_one_pattern() {
+        // Common ML pattern: log(count + 1)
+        let result = eval_with("log(a + 1)", &[("a", FeatureValue::Int(0))]);
+        match result {
+            FeatureValue::Float(f) => assert!((f - 0.0).abs() < 1e-10),
+            other => panic!("Expected Float ~0.0, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_eval_nested_if_contains() {
+        let result = eval_with(
+            "if(contains(a, 'US'), 1, 0)",
+            &[("a", FeatureValue::String("US-East".into()))],
+        );
+        assert_eq!(result, FeatureValue::Float(1.0));
     }
 }
