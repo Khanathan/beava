@@ -1136,3 +1136,476 @@ async fn test_backfill_idempotent_restart() {
             "Re-run backfill should produce same deterministic result");
     }
 }
+
+// ======================== Phase 17 Plan 03: Enriched Event Propagation Tests ========================
+
+/// Test 1: Upstream derive result is visible to downstream operator.
+/// Pipeline: RawTxns (keyless) -> CurrencyNorm (keyed, derive amount_usd) -> UserStats (keyed, sum of amount_usd)
+#[test]
+fn test_enriched_derive_to_downstream_sum() {
+    let mut engine = PipelineEngine::new();
+    let mut store = StateStore::new();
+    let now = ts(60_000);
+
+    // Stage 1: RawTxns (keyless source)
+    engine.register(StreamDefinition {
+        name: "RawTxns".into(),
+        key_field: None,
+        features: vec![],
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    // Stage 2: CurrencyNorm (keyed, depends on RawTxns, derives amount_usd)
+    engine.register(StreamDefinition {
+        name: "CurrencyNorm".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("amount_usd".into(), FeatureDef::Derive {
+                expr: parse_expr("_event.amount * _event.exchange_rate").unwrap(),
+            }),
+        ],
+        depends_on: Some(vec!["RawTxns".into()]),
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    // Stage 3: UserStats (keyed, depends on CurrencyNorm, sums CurrencyNorm.amount_usd)
+    engine.register(StreamDefinition {
+        name: "UserStats".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("total_usd_1h".into(), FeatureDef::Sum {
+                field: "CurrencyNorm.amount_usd".into(),
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                optional: false,
+                where_expr: None,
+                backfill: false,
+            }),
+        ],
+        depends_on: Some(vec!["CurrencyNorm".into()]),
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    // Push event: amount=100, exchange_rate=1.2 -> amount_usd = 120.0
+    let _ = engine.push_with_cascade("RawTxns", &json!({
+        "user_id": "u123",
+        "amount": 100.0,
+        "exchange_rate": 1.2
+    }), &store, now).unwrap();
+
+    // Verify downstream UserStats sees enriched amount_usd
+    let all = engine.get_features("u123", &store, now);
+    assert_eq!(all.get("total_usd_1h"), Some(&FeatureValue::Float(120.0)),
+        "UserStats.total_usd_1h should be 120.0 (100 * 1.2), got {:?}", all.get("total_usd_1h"));
+}
+
+/// Test 2: Multi-level cascade enrichment (4 hops: A -> B -> C -> D)
+#[test]
+fn test_enriched_multi_hop_cascade() {
+    let mut engine = PipelineEngine::new();
+    let mut store = StateStore::new();
+    let now = ts(60_000);
+
+    // A: keyless source
+    engine.register(StreamDefinition {
+        name: "HopA".into(),
+        key_field: None,
+        features: vec![],
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    // B: keyed, depends on A, derives computed_b = _event.raw_value * 2
+    engine.register(StreamDefinition {
+        name: "HopB".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("computed_b".into(), FeatureDef::Derive {
+                expr: parse_expr("_event.raw_value * 2").unwrap(),
+            }),
+        ],
+        depends_on: Some(vec!["HopA".into()]),
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    // C: keyed, depends on B, sums B.computed_b and derives computed_c = B.computed_b + 10
+    engine.register(StreamDefinition {
+        name: "HopC".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("sum_b".into(), FeatureDef::Sum {
+                field: "HopB.computed_b".into(),
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                optional: false,
+                where_expr: None,
+                backfill: false,
+            }),
+            ("computed_c".into(), FeatureDef::Derive {
+                expr: parse_expr("HopB.computed_b + 10").unwrap(),
+            }),
+        ],
+        depends_on: Some(vec!["HopB".into()]),
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    // D: keyed, depends on C, sums C.computed_c
+    engine.register(StreamDefinition {
+        name: "HopD".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("sum_c".into(), FeatureDef::Sum {
+                field: "HopC.computed_c".into(),
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                optional: false,
+                where_expr: None,
+                backfill: false,
+            }),
+        ],
+        depends_on: Some(vec!["HopC".into()]),
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    // Push event: raw_value=5
+    // B.computed_b = 5*2 = 10 (derive, only available during push via enrichment)
+    // C.sum_b = 10 (aggregated from enrichment B.computed_b)
+    // C.computed_c = B.computed_b + 10 = 20 (derive using enrichment)
+    // D.sum_c = 20 (aggregated from enrichment C.computed_c)
+    let _ = engine.push_with_cascade("HopA", &json!({
+        "user_id": "u1",
+        "raw_value": 5.0
+    }), &store, now).unwrap();
+
+    let all = engine.get_features("u1", &store, now);
+    // Derives are computed on read and need _event context which isn't stored,
+    // so we verify the aggregated values that prove enrichment propagated correctly.
+    assert_eq!(all.get("sum_b"), Some(&FeatureValue::Float(10.0)),
+        "HopC.sum_b should be 10.0 (B.computed_b=10 propagated via enrichment)");
+    assert_eq!(all.get("sum_c"), Some(&FeatureValue::Float(20.0)),
+        "HopD.sum_c should be 20.0 (C.computed_c=20 propagated via enrichment)");
+}
+
+/// Test 3: Enrichment works in async mode (push_with_cascade_no_features)
+#[test]
+fn test_enriched_cascade_async_mode() {
+    let mut engine = PipelineEngine::new();
+    let mut store = StateStore::new();
+    let now = ts(60_000);
+
+    // Same 3-stream pipeline as test 1
+    engine.register(StreamDefinition {
+        name: "AsyncRaw".into(),
+        key_field: None,
+        features: vec![],
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    engine.register(StreamDefinition {
+        name: "AsyncNorm".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("amount_usd".into(), FeatureDef::Derive {
+                expr: parse_expr("_event.amount * _event.rate").unwrap(),
+            }),
+        ],
+        depends_on: Some(vec!["AsyncRaw".into()]),
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    engine.register(StreamDefinition {
+        name: "AsyncStats".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("total_usd_1h".into(), FeatureDef::Sum {
+                field: "AsyncNorm.amount_usd".into(),
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                optional: false,
+                where_expr: None,
+                backfill: false,
+            }),
+        ],
+        depends_on: Some(vec!["AsyncNorm".into()]),
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    // Async push (no features returned)
+    let result = engine.push_with_cascade_no_features("AsyncRaw", &json!({
+        "user_id": "u1", "amount": 100.0, "rate": 1.5
+    }), &store, now).unwrap();
+    assert!(result.is_empty(), "async push should return empty FeatureMap");
+
+    // Operators were still updated -- verify via sync push
+    let _ = engine.push_with_cascade("AsyncRaw", &json!({
+        "user_id": "u1", "amount": 200.0, "rate": 2.0
+    }), &store, now).unwrap();
+
+    let all = engine.get_features("u1", &store, now);
+    // First push: 100*1.5=150, second push: 200*2.0=400, total=550
+    assert_eq!(all.get("total_usd_1h"), Some(&FeatureValue::Float(550.0)),
+        "Async push should have updated operators; total should be 550.0, got {:?}", all.get("total_usd_1h"));
+}
+
+/// Test 4: Where-clause can reference enriched upstream fields
+#[test]
+fn test_enriched_where_clause() {
+    let mut engine = PipelineEngine::new();
+    let mut store = StateStore::new();
+    let now = ts(60_000);
+
+    engine.register(StreamDefinition {
+        name: "WhereRaw".into(),
+        key_field: None,
+        features: vec![],
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    engine.register(StreamDefinition {
+        name: "WhereNorm".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("amount_usd".into(), FeatureDef::Derive {
+                expr: parse_expr("_event.amount * _event.exchange_rate").unwrap(),
+            }),
+        ],
+        depends_on: Some(vec!["WhereRaw".into()]),
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    // Downstream with where clause referencing enriched field
+    engine.register(StreamDefinition {
+        name: "WhereFiltered".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("high_value_count".into(), FeatureDef::Count {
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                where_expr: Some(parse_expr("WhereNorm.amount_usd > 50").unwrap()),
+                backfill: false,
+            }),
+        ],
+        depends_on: Some(vec!["WhereNorm".into()]),
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    // Push event where amount_usd = 100*1.2 = 120 > 50 -> should increment
+    let _ = engine.push_with_cascade("WhereRaw", &json!({
+        "user_id": "u1", "amount": 100.0, "exchange_rate": 1.2
+    }), &store, now).unwrap();
+
+    let all = engine.get_features("u1", &store, now);
+    assert_eq!(all.get("high_value_count"), Some(&FeatureValue::Int(1)),
+        "high_value_count should be 1 (amount_usd 120 > 50)");
+
+    // Push event where amount_usd = 10*1.2 = 12 < 50 -> should NOT increment
+    let _ = engine.push_with_cascade("WhereRaw", &json!({
+        "user_id": "u1", "amount": 10.0, "exchange_rate": 1.2
+    }), &store, now).unwrap();
+
+    let all2 = engine.get_features("u1", &store, now);
+    assert_eq!(all2.get("high_value_count"), Some(&FeatureValue::Int(1)),
+        "high_value_count should still be 1 (amount_usd 12 < 50)");
+}
+
+/// Test 5: Qualified field resolution (sum("CurrencyNorm.amount_usd"))
+#[test]
+fn test_enriched_field_resolution_qualified() {
+    let mut engine = PipelineEngine::new();
+    let mut store = StateStore::new();
+    let now = ts(60_000);
+
+    engine.register(StreamDefinition {
+        name: "QualRaw".into(),
+        key_field: None,
+        features: vec![],
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    engine.register(StreamDefinition {
+        name: "QualNorm".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("val".into(), FeatureDef::Derive {
+                expr: parse_expr("_event.x * 3").unwrap(),
+            }),
+        ],
+        depends_on: Some(vec!["QualRaw".into()]),
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    engine.register(StreamDefinition {
+        name: "QualAgg".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("total".into(), FeatureDef::Sum {
+                field: "QualNorm.val".into(),
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                optional: false,
+                where_expr: None,
+                backfill: false,
+            }),
+        ],
+        depends_on: Some(vec!["QualNorm".into()]),
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    let _ = engine.push_with_cascade("QualRaw", &json!({
+        "user_id": "u1", "x": 10.0
+    }), &store, now).unwrap();
+
+    let all = engine.get_features("u1", &store, now);
+    assert_eq!(all.get("total"), Some(&FeatureValue::Float(30.0)),
+        "Qualified field QualNorm.val should resolve to 30.0 (10*3)");
+}
+
+/// Test 6: Unqualified field resolution (sum("val") resolves from enrichment)
+#[test]
+fn test_enriched_field_resolution_unqualified() {
+    let mut engine = PipelineEngine::new();
+    let mut store = StateStore::new();
+    let now = ts(60_000);
+
+    engine.register(StreamDefinition {
+        name: "UnqualRaw".into(),
+        key_field: None,
+        features: vec![],
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    engine.register(StreamDefinition {
+        name: "UnqualNorm".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("uval".into(), FeatureDef::Derive {
+                expr: parse_expr("_event.x * 5").unwrap(),
+            }),
+        ],
+        depends_on: Some(vec!["UnqualRaw".into()]),
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    // Use unqualified field name "uval" (not "UnqualNorm.uval")
+    engine.register(StreamDefinition {
+        name: "UnqualAgg".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("total".into(), FeatureDef::Sum {
+                field: "uval".into(),
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                optional: false,
+                where_expr: None,
+                backfill: false,
+            }),
+        ],
+        depends_on: Some(vec!["UnqualNorm".into()]),
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    let _ = engine.push_with_cascade("UnqualRaw", &json!({
+        "user_id": "u1", "x": 4.0
+    }), &store, now).unwrap();
+
+    let all = engine.get_features("u1", &store, now);
+    assert_eq!(all.get("total"), Some(&FeatureValue::Float(20.0)),
+        "Unqualified field 'uval' should resolve from enrichment to 20.0 (4*5)");
+}
+
+/// Test 7: Single stream (no downstream) behaves identically to pre-enrichment
+#[test]
+fn test_enriched_no_cascade_unchanged() {
+    let mut engine = PipelineEngine::new();
+    let mut store = StateStore::new();
+    let now = ts(60_000);
+
+    engine.register(StreamDefinition {
+        name: "Solo".into(),
+        key_field: Some("user_id".into()),
+        features: vec![
+            ("count_1h".into(), FeatureDef::Count {
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                where_expr: None,
+                backfill: false,
+            }),
+            ("sum_1h".into(), FeatureDef::Sum {
+                field: "amount".into(),
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                optional: false,
+                where_expr: None,
+                backfill: false,
+            }),
+            ("ratio".into(), FeatureDef::Derive {
+                expr: parse_expr("sum_1h / count_1h").unwrap(),
+            }),
+        ],
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+    }).unwrap();
+
+    // Use push_with_cascade on a single-stream (no downstream)
+    let features = engine.push_with_cascade("Solo", &json!({
+        "user_id": "u1", "amount": 30.0
+    }), &store, now).unwrap();
+
+    assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
+    assert_eq!(features.get("sum_1h"), Some(&FeatureValue::Float(30.0)));
+    assert_eq!(features.get("ratio"), Some(&FeatureValue::Float(30.0)));
+
+    // Push second event
+    let features2 = engine.push_with_cascade("Solo", &json!({
+        "user_id": "u1", "amount": 70.0
+    }), &store, now).unwrap();
+
+    assert_eq!(features2.get("count_1h"), Some(&FeatureValue::Int(2)));
+    assert_eq!(features2.get("sum_1h"), Some(&FeatureValue::Float(100.0)));
+    assert_eq!(features2.get("ratio"), Some(&FeatureValue::Float(50.0)));
+}
