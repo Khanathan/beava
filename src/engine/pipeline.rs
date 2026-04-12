@@ -862,15 +862,38 @@ impl PipelineEngine {
         now: SystemTime,
         read_features: bool,
     ) -> Result<FeatureMap, TallyError> {
-        // Primary push
-        let primary_features = self.push_internal(stream_name, event, None, None, store, now, read_features)?;
+        // Determine if downstream cascade exists
+        let has_downstream = self.downstream_map.contains_key(stream_name);
 
-        // Collect all reachable downstream streams via BFS
+        if !has_downstream {
+            // No cascade -- skip enrichment overhead entirely
+            return self.push_internal(stream_name, event, None, None, store, now, read_features);
+        }
+
+        // Stack-local enrichment accumulators (C-5: never enter DashMap)
+        let mut enrichment_json: AHashMap<String, serde_json::Value> = AHashMap::new();
+        let mut enrichment_fv: AHashMap<String, FeatureValue> = AHashMap::new();
+
+        // Primary push -- MUST read features when downstream exists (Pitfall 5)
+        // even if outer caller requested read_features=false (async mode)
+        let primary_features = self.push_internal(
+            stream_name, event, None, None, store, now, true,
+        )?;
+
+        // Populate enrichment from primary stream results
+        for (name, value) in &primary_features {
+            let qualified = format!("{}.{}", stream_name, name);
+            enrichment_json.insert(qualified.clone(), value.to_json_value());
+            enrichment_json.insert(name.clone(), value.to_json_value()); // unqualified (last-writer-wins)
+            enrichment_fv.insert(qualified, value.clone());
+            enrichment_fv.insert(name.clone(), value.clone()); // unqualified
+        }
+
+        // BFS to find all reachable downstream streams
         let mut visited = AHashSet::new();
         visited.insert(stream_name.to_string());
         let mut to_visit = Vec::new();
 
-        // Seed with direct downstream of origin
         if let Some(direct_downstream) = self.downstream_map.get(stream_name) {
             for ds in direct_downstream {
                 if visited.insert(ds.clone()) {
@@ -879,7 +902,6 @@ impl PipelineEngine {
             }
         }
 
-        // BFS to find all reachable downstream
         let mut i = 0;
         while i < to_visit.len() {
             let current = to_visit[i].clone();
@@ -893,7 +915,7 @@ impl PipelineEngine {
             i += 1;
         }
 
-        // Execute in topological order (iterate topo_order, skip non-reachable)
+        // Execute in topological order with enrichment
         for stream_in_order in &self.topo_order {
             if !to_visit.contains(stream_in_order) {
                 continue;
@@ -903,22 +925,62 @@ impl PipelineEngine {
                 None => continue,
             };
 
+            // Check if this downstream stream has further downstream (for read_features decision)
+            let has_further_downstream = self.downstream_map.contains_key(stream_in_order.as_str());
+            // Must read features if: caller wants them, OR further downstream needs enrichment
+            let ds_read_features = read_features || has_further_downstream;
+
             // For keyed downstream: check if key_field exists in event
             if let Some(ref key_field) = downstream_def.key_field {
                 match event.get(key_field) {
                     Some(serde_json::Value::String(k)) if !k.is_empty() => {
-                        // Key present -- push to this downstream stream
-                        let _ = self.push_internal(stream_in_order, event, None, None, store, now, read_features);
+                        let ds_features = self.push_internal(
+                            stream_in_order, event,
+                            Some(&enrichment_json),
+                            Some(&enrichment_fv),
+                            store, now, ds_read_features,
+                        )?;
+
+                        // Accumulate this stream's results for further downstream
+                        if has_further_downstream {
+                            for (name, value) in &ds_features {
+                                let qualified = format!("{}.{}", stream_in_order, name);
+                                enrichment_json.insert(qualified.clone(), value.to_json_value());
+                                enrichment_json.insert(name.clone(), value.to_json_value());
+                                enrichment_fv.insert(qualified, value.clone());
+                                enrichment_fv.insert(name.clone(), value.clone());
+                            }
+                        }
                     }
                     _ => continue, // Key missing -- skip (LEFT JOIN semantics)
                 }
             } else {
-                // Keyless downstream -- push (returns empty, but may cascade further)
-                let _ = self.push_internal(stream_in_order, event, None, None, store, now, read_features);
+                // Keyless downstream
+                let ds_features = self.push_internal(
+                    stream_in_order, event,
+                    Some(&enrichment_json),
+                    Some(&enrichment_fv),
+                    store, now, ds_read_features,
+                )?;
+
+                if has_further_downstream {
+                    for (name, value) in &ds_features {
+                        let qualified = format!("{}.{}", stream_in_order, name);
+                        enrichment_json.insert(qualified.clone(), value.to_json_value());
+                        enrichment_json.insert(name.clone(), value.to_json_value());
+                        enrichment_fv.insert(qualified, value.clone());
+                        enrichment_fv.insert(name.clone(), value.clone());
+                    }
+                }
             }
         }
 
-        Ok(primary_features)
+        // Return primary features (or empty if read_features=false for outer caller)
+        if read_features {
+            Ok(primary_features)
+        } else {
+            Ok(FeatureMap::new())
+        }
     }
 
     /// Push an event to only the specified backfill operators, using the provided
