@@ -18,11 +18,19 @@ from tally._operators import (
     Count,
     Derive,
     DistinctCount,
+    Ema,
+    ExactMax,
+    ExactMin,
+    First,
+    Lag,
     Last,
+    LastN,
     Lookup,
     Max,
     Min,
     OperatorBase,
+    Percentile,
+    Stddev,
     Sum,
 )
 
@@ -157,6 +165,18 @@ class UnaryOp(Expr):
         return f"({self.op} {self.operand.to_expr_string()})"
 
 
+class FnCall(Expr):
+    """Function call expression (e.g., ``coalesce(x, 0)``, ``lower(s)``)."""
+
+    def __init__(self, fn_name: str, args: list[Expr]) -> None:
+        self.fn_name = fn_name
+        self.args = args
+
+    def to_expr_string(self) -> str:
+        arg_strs = ", ".join(a.to_expr_string() for a in self.args)
+        return f"{self.fn_name}({arg_strs})"
+
+
 def _wrap(x: Any) -> Expr:
     """Wrap a Python value into an Expr node if it is not already one."""
     if isinstance(x, Expr):
@@ -164,6 +184,11 @@ def _wrap(x: Any) -> Expr:
     if isinstance(x, Column):
         return x._to_expr()
     return Literal(x)
+
+
+def _fn(name: str, *args: Any) -> FnCall:
+    """Convenience: build a FnCall wrapping all args."""
+    return FnCall(name, [_wrap(a) for a in args])
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +252,86 @@ class Column(Expr):
     def count(self, *, window: str, **kwargs: Any) -> OperatorBase:
         """Count events where this field is present."""
         return Count(window=window, **kwargs)
+
+    # --- Phase 16/17 operators ---
+
+    def std(self, *, window: str, **kwargs: Any) -> OperatorBase:
+        """Standard deviation in a sliding window."""
+        return Stddev(self.name, window=window, **kwargs)
+
+    def stddev(self, *, window: str, **kwargs: Any) -> OperatorBase:
+        """Standard deviation (alias for std)."""
+        return Stddev(self.name, window=window, **kwargs)
+
+    def quantile(self, q: float, *, window: str, **kwargs: Any) -> OperatorBase:
+        """Approximate percentile/quantile in a sliding window."""
+        return Percentile(self.name, quantile=q, window=window, **kwargs)
+
+    def percentile(self, q: float, *, window: str, **kwargs: Any) -> OperatorBase:
+        """Approximate percentile (alias for quantile)."""
+        return Percentile(self.name, quantile=q, window=window, **kwargs)
+
+    def shift(self, n: int = 1) -> OperatorBase:
+        """Lag/shift by N events (returns Nth-oldest value)."""
+        return Lag(self.name, n=n)
+
+    def lag(self, n: int = 1) -> OperatorBase:
+        """Lag by N events (alias for shift)."""
+        return Lag(self.name, n=n)
+
+    def ewm(self, *, half_life: float, **kwargs: Any) -> OperatorBase:
+        """Exponential moving average with half-life in seconds."""
+        return Ema(self.name, half_life=half_life, **kwargs)
+
+    def ema(self, *, half_life: float, **kwargs: Any) -> OperatorBase:
+        """Exponential moving average (alias for ewm)."""
+        return Ema(self.name, half_life=half_life, **kwargs)
+
+    def tail(self, n: int) -> OperatorBase:
+        """Last N values as a list."""
+        return LastN(self.name, n=n)
+
+    def first(self, **kwargs: Any) -> OperatorBase:
+        """First-ever value seen for this entity."""
+        return First(self.name, **kwargs)
+
+    def exact_min(self, *, window: str, **kwargs: Any) -> OperatorBase:
+        """Retractable exact minimum (BTreeMap-backed)."""
+        return ExactMin(self.name, window=window, **kwargs)
+
+    def exact_max(self, *, window: str, **kwargs: Any) -> OperatorBase:
+        """Retractable exact maximum (BTreeMap-backed)."""
+        return ExactMax(self.name, window=window, **kwargs)
+
+    # --- Expression-based column methods ---
+
+    def fillna(self, value: Any) -> Expr:
+        """Replace Missing with a default value. Returns an Expr."""
+        return _fn("coalesce", self, value)
+
+    def clip(self, lower: Any, upper: Any) -> Expr:
+        """Clamp value to [lower, upper] range. Returns an Expr."""
+        return _fn("clamp", self, lower, upper)
+
+    def lower(self) -> Expr:
+        """Lowercase string. Returns an Expr."""
+        return _fn("lower", self)
+
+    def upper(self) -> Expr:
+        """Uppercase string. Returns an Expr."""
+        return _fn("upper", self)
+
+    def str_len(self) -> Expr:
+        """String length. Returns an Expr."""
+        return _fn("len", self)
+
+    def contains(self, needle: str) -> Expr:
+        """Check if string contains substring. Returns an Expr (1.0/0.0)."""
+        return _fn("contains", self, needle)
+
+    def starts_with(self, prefix: str) -> Expr:
+        """Check if string starts with prefix. Returns an Expr (1.0/0.0)."""
+        return _fn("starts_with", self, prefix)
 
     def __repr__(self) -> str:
         return f"Column({self.table._name!r}, {self.name!r})"

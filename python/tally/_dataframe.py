@@ -322,6 +322,47 @@ class Table(Dataset):
         """Re-aggregate on a different key, producing a new Table."""
         return GroupBy(source=self, key=key)
 
+    # --- Table-level DataFrame operations ---
+
+    def select(self, columns: list[str]) -> Table:
+        """Select only the specified features (projection)."""
+        new = Table(f"{self._name}__select", key=self._key, source=self._source)
+        for name in columns:
+            if name in self._features:
+                new._features[name] = self._features[name]
+        return new
+
+    def drop(self, columns: list[str]) -> Table:
+        """Drop the specified features."""
+        new = Table(f"{self._name}__drop", key=self._key, source=self._source)
+        for name, op in self._features.items():
+            if name not in columns:
+                new._features[name] = op
+        return new
+
+    def rename(self, mapping: dict[str, str]) -> Table:
+        """Rename features. mapping = {old_name: new_name}."""
+        new = Table(f"{self._name}__rename", key=self._key, source=self._source)
+        for name, op in self._features.items():
+            new_name = mapping.get(name, name)
+            new._features[new_name] = op
+        return new
+
+    def assign(self, **kwargs: Any) -> Table:
+        """Add multiple derived features at once. Returns a new Table."""
+        new = Table(f"{self._name}__assign", key=self._key, source=self._source)
+        new._features = dict(self._features)
+        for name, value in kwargs.items():
+            from tally._expr import Expr, _wrap
+            from tally._operators import Derive, OperatorBase
+            if isinstance(value, Expr):
+                new._features[name] = Derive(value.to_expr_string())
+            elif isinstance(value, OperatorBase):
+                new._features[name] = value
+            else:
+                new._features[name] = Derive(_wrap(value).to_expr_string())
+        return new
+
     def _to_register_json(self) -> dict:
         d: dict[str, Any] = {
             "name": self._name,
