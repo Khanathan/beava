@@ -87,3 +87,79 @@ class TestSchema:
 
         assert "user_id" in TxnEvent._fields
         assert "amount" in TxnEvent._fields
+
+
+class TestSource:
+    """Tests for @tl.source decorator from _source.py."""
+
+    def test_source_compile_basic(self):
+        from tally._source import source
+
+        @source
+        class Transactions:
+            pass
+
+        result = Transactions._compile()
+        assert result == {"name": "Transactions", "key_field": None, "features": []}
+
+    def test_source_stores_event_schema(self):
+        from tally._schema import EventSet, Field
+        from tally._source import source
+
+        class TxnEvent(EventSet):
+            user_id: str = Field()
+
+        @source
+        class Transactions:
+            event = TxnEvent
+
+        assert Transactions._event_schema is TxnEvent
+
+    def test_source_has_tally_stream_name(self):
+        from tally._source import source
+
+        @source
+        class Transactions:
+            pass
+
+        assert Transactions._tally_stream_name == "Transactions"
+
+    def test_source_to_register_json_compat(self):
+        from tally._source import source
+
+        @source
+        class Transactions:
+            pass
+
+        assert Transactions._to_register_json() == Transactions._compile()
+
+    def test_source_collect_registrations(self):
+        from tally._source import source
+
+        @source
+        class Transactions:
+            pass
+
+        regs = Transactions._collect_registrations()
+        assert len(regs) == 1
+        assert regs[0] == Transactions._compile()
+
+    def test_source_with_entity_ttl(self):
+        from tally._source import source
+
+        @source(entity_ttl="5m")
+        class Transactions:
+            pass
+
+        result = Transactions._compile()
+        assert result["entity_ttl"] == "5m"
+
+    def test_source_with_history_ttl(self):
+        from tally._source import source
+
+        @source(history_ttl="72h")
+        class Transactions:
+            pass
+
+        result = Transactions._compile()
+        assert result["history_ttl"] == "72h"
