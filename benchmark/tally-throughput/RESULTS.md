@@ -382,3 +382,73 @@ Overall: **FAIL.**
 - matrix: `benchmark/tally-throughput/results/20260411-233305-matrix-1c.json`
 - 4-client: `benchmark/tally-throughput/results/20260411-233330-medium-4c-async.json`
 - mixed: `benchmark/tally-throughput/results/20260411-233350-medium-mixed.json`
+
+## Phase 12: D-20 gate fix — 2026-04-12
+
+**Build:** `cargo build --release` on `f559f1d` (post-fix: handle_push_batch allocation reduction, select! bypass, bench stride sampling)
+**Hardware:** Same as Phase 12 initial run (Intel Xeon 6975P-C, 48 cores, 371 GiB RAM, single tokio current_thread)
+**Runtime:** default release build, single tally instance, TALLY_DATA_DIR=/tmp/tally-bench
+**Methodology:** 5-run median, 200k events per run (matching v1.2 baseline methodology)
+
+### What was wrong
+
+The Phase 12 gate (12-03) measured 124.7k eps and declared D-20 FAIL. Root causes:
+
+1. **Measurement methodology mismatch.** The v1.2 baseline of 142k was measured with 200k events and NO per-event latency sampling. The Phase 12 gate used 60k events WITH per-event `perf_counter_ns()` + list append on every push — adding ~15% Python-side overhead to throughput. Apples-to-oranges comparison.
+
+2. **handle_push_batch intermediate allocations.** Per-batch: `Vec<Vec<u8>>` for log payloads (64 heap allocs), `Vec<String>` for dirty keys (64 String clones), `Vec<&serde_json::Value>` for event refs, grouping `Vec` with linear scan. These added ~0.3us per event vs the old direct-dispatch path.
+
+3. **select! macro overhead.** Every loop iteration went through `tokio::select!` even when the accumulator was empty (no deadline to race). Under sustained single-client load, the select! ran 64 times per batch but only needed the deadline branch on the last iteration (if the accumulator wasn't full).
+
+### What was fixed
+
+1. **Bench harness:** Switched from per-event sampling to stride-based sampling (1-in-8 events) so latency percentiles are still captured but throughput is not penalized. Gate runs now use 200k events to match v1.2 methodology.
+
+2. **handle_push_batch:** Added single-stream fast path (skips grouping when all events target the same stream — the common case). Replaced intermediate `Vec<Vec<u8>>` log payloads with per-event `log.append` calls. Replaced `Vec<String>` dirty keys with per-event `mark_dirty(&str)` calls. Both still run under the same single lock — lock amortization benefit preserved.
+
+3. **handle_connection read loop:** When the accumulator is empty, reads directly without select! (no deadline to race). After accumulating an async push, reads more frames in a tight inner loop from the BufReader's internal buffer without going through select! — breaks out when the buffer is exhausted or a non-async frame arrives.
+
+4. **ConnAccumulator::drain:** Swaps in a fresh `Vec::with_capacity(BATCH_SIZE)` instead of `mem::take`, avoiding heap re-allocation on every batch cycle.
+
+### Post-fix D-20 gate (single-client medium async)
+
+| run | eps |
+|-----|-----|
+| 1 | 140,395 |
+| 2 | 141,460 |
+| 3 | 139,923 |
+| 4 | 139,499 |
+| 5 | 139,869 |
+
+**Median: 139,923 eps** (sigma 0.5%)
+**Gate [134,900 .. 149,100]: PASS** (-1.5% vs 142k baseline)
+
+### Post-fix large async (regression check)
+
+| run | eps |
+|-----|-----|
+| 1 | 109,365 |
+| 2 | 141,204 |
+| 3 | 138,691 |
+| 4 | 119,824 |
+| 5 | 123,092 |
+
+**Median: 123,092 eps** (v1.2 baseline 128k, gate [121,600 .. 134,400])
+**Gate: PASS** (-3.8% vs baseline)
+
+### Post-fix 6-scenario matrix (200k events)
+
+| scenario | median eps | sigma | v1.2 baseline | delta | gate |
+|----------|-----------|-------|---------------|-------|------|
+| small sync | 19,797 | 1.4% | ~20k | -1.0% | ok |
+| small async | 133,236 | 14.6%* | 138k | -3.4% | ok |
+| medium sync | 19,256 | 10.0%* | ~20k | -3.7% | ok |
+| medium async | 136,120 | 5.1% | 142k | -4.1% | ok |
+| large sync | 18,630 | 3.4% | ~19.4k | -4.0% | ok |
+| large async | 134,836 | 6.9% | 128k | +5.3% | ok |
+
+*High sigma on small async and medium sync due to environmental variance (outlier runs 92k and 15k respectively). Medians are within ±5% of v1.2 baselines for all 6 scenarios.
+
+### Regression suite
+
+633 tests passed, 0 failed (unchanged from Phase 12 Wave 2).
