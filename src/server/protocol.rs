@@ -447,6 +447,10 @@ pub struct FeatureDefRequest {
     pub target: Option<String>,   // For lookup (used in Plan 03)
     #[serde(default)]
     pub backfill: Option<bool>,   // For schema evolution (SCHM-01/02)
+    #[serde(default)]
+    pub n: Option<usize>,         // For lag, last_n (count parameter)
+    #[serde(default)]
+    pub half_life: Option<String>, // For ema (duration string, e.g. "30m")
 }
 
 // ---------------------------------------------------------------------------
@@ -485,7 +489,8 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
     if req.key_field.is_none() {
         for f in &req.features {
             let is_windowed = matches!(f.feature_type.as_str(),
-                "count" | "sum" | "avg" | "min" | "max" | "distinct_count" | "last");
+                "count" | "sum" | "avg" | "min" | "max" | "distinct_count" | "last" |
+                "lag" | "ema" | "last_n" | "first" | "exact_min" | "exact_max");
             if is_windowed {
                 return Err(TallyError::Protocol(format!(
                     "keyless stream '{}' cannot have windowed operator '{}'; only derive features are allowed",
@@ -666,6 +671,153 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                     None => default_bucket(window),
                 };
                 FeatureDef::DistinctCount {
+                    field,
+                    window,
+                    bucket,
+                    optional: f.optional.unwrap_or(false),
+                    where_expr,
+                    backfill: f.backfill.unwrap_or(false),
+                }
+            }
+            "lag" => {
+                let field = f.field.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': lag requires 'field'",
+                        f.name
+                    ))
+                })?;
+                let n = f.n.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': lag requires 'n' (positive integer)",
+                        f.name
+                    ))
+                })?;
+                if n == 0 {
+                    return Err(TallyError::Protocol(format!(
+                        "feature '{}': lag 'n' must be >= 1",
+                        f.name
+                    )));
+                }
+                FeatureDef::Lag {
+                    field,
+                    n,
+                    optional: f.optional.unwrap_or(false),
+                    backfill: f.backfill.unwrap_or(false),
+                }
+            }
+            "ema" => {
+                let field = f.field.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': ema requires 'field'",
+                        f.name
+                    ))
+                })?;
+                let half_life_str = f.half_life.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': ema requires 'half_life' (duration string, e.g. '30m')",
+                        f.name
+                    ))
+                })?;
+                let half_life_dur = parse_duration_str(&half_life_str)?;
+                let half_life_secs = half_life_dur.as_secs_f64();
+                if half_life_secs <= 0.0 {
+                    return Err(TallyError::Protocol(format!(
+                        "feature '{}': ema half_life must be positive",
+                        f.name
+                    )));
+                }
+                FeatureDef::Ema {
+                    field,
+                    half_life_secs,
+                    optional: f.optional.unwrap_or(false),
+                    backfill: f.backfill.unwrap_or(false),
+                }
+            }
+            "last_n" => {
+                let field = f.field.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': last_n requires 'field'",
+                        f.name
+                    ))
+                })?;
+                let n = f.n.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': last_n requires 'n' (positive integer)",
+                        f.name
+                    ))
+                })?;
+                if n == 0 {
+                    return Err(TallyError::Protocol(format!(
+                        "feature '{}': last_n 'n' must be >= 1",
+                        f.name
+                    )));
+                }
+                FeatureDef::LastN {
+                    field,
+                    n,
+                    optional: f.optional.unwrap_or(false),
+                    backfill: f.backfill.unwrap_or(false),
+                }
+            }
+            "first" => {
+                let field = f.field.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': first requires 'field'",
+                        f.name
+                    ))
+                })?;
+                FeatureDef::First {
+                    field,
+                    optional: f.optional.unwrap_or(false),
+                    backfill: f.backfill.unwrap_or(false),
+                }
+            }
+            "exact_min" => {
+                let field = f.field.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': exact_min requires 'field'",
+                        f.name
+                    ))
+                })?;
+                let window_str = f.window.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': exact_min requires 'window' field",
+                        f.name
+                    ))
+                })?;
+                let window = parse_duration_str(&window_str)?;
+                let bucket = match f.bucket {
+                    Some(b) => parse_duration_str(&b)?,
+                    None => default_bucket(window),
+                };
+                FeatureDef::ExactMin {
+                    field,
+                    window,
+                    bucket,
+                    optional: f.optional.unwrap_or(false),
+                    where_expr,
+                    backfill: f.backfill.unwrap_or(false),
+                }
+            }
+            "exact_max" => {
+                let field = f.field.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': exact_max requires 'field'",
+                        f.name
+                    ))
+                })?;
+                let window_str = f.window.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': exact_max requires 'window' field",
+                        f.name
+                    ))
+                })?;
+                let window = parse_duration_str(&window_str)?;
+                let bucket = match f.bucket {
+                    Some(b) => parse_duration_str(&b)?,
+                    None => default_bucket(window),
+                };
+                FeatureDef::ExactMax {
                     field,
                     window,
                     bucket,
@@ -1559,7 +1711,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "median".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1582,7 +1734,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "histogram".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1607,7 +1759,7 @@ mod tests {
                 name: "cnt".into(),
                 feature_type: "count".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1630,7 +1782,7 @@ mod tests {
                 name: "total".into(),
                 feature_type: "sum".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1653,7 +1805,7 @@ mod tests {
                 name: "total".into(),
                 feature_type: "sum".into(),
                 field: Some("amount".into()), window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1676,7 +1828,7 @@ mod tests {
                 name: "mean".into(),
                 feature_type: "avg".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1699,7 +1851,7 @@ mod tests {
                 name: "ratio".into(),
                 feature_type: "derive".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1821,7 +1973,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "min".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1844,7 +1996,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "last".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -2018,7 +2170,7 @@ mod tests {
                 name: "dc".into(),
                 feature_type: "distinct_count".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, n: None, half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -2212,6 +2364,8 @@ mod tests {
                 on: None,
                 target: None,
                 backfill: None,
+                n: None,
+                half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -2242,6 +2396,8 @@ mod tests {
                 on: None,
                 target: None,
                 backfill: None,
+                n: None,
+                half_life: None,
             }],
         };
         let stream = convert_register_request(req).unwrap();

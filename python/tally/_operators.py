@@ -217,6 +217,154 @@ class Derive(OperatorBase):
         return {"name": name, "type": "derive", "expr": self.expr}
 
 
+class Lag(OperatorBase):
+    """Return the value from N events ago (event-count-based, no window).
+
+    Args:
+        field: Name of the event field. Required (positional).
+        n: Number of events to lag by. Required.
+        optional: If True, missing field values are skipped.
+        backfill: If True, replay from event log on registration.
+    """
+
+    def __init__(self, field: str, *, n: int, optional: bool = False, backfill: bool = False) -> None:
+        self.field = field
+        self.n = n
+        self.optional = optional
+        self.backfill = backfill
+
+    def to_json(self, name: str) -> dict:
+        d: dict = {"name": name, "type": "lag", "field": self.field, "n": self.n}
+        if self.optional:
+            d["optional"] = True
+        if self.backfill:
+            d["backfill"] = True
+        return d
+
+
+class Ema(OperatorBase):
+    """Exponential moving average with time-based decay (no window).
+
+    Args:
+        field: Name of the numeric event field. Required (positional).
+        half_life: Duration string for the EMA half-life (e.g. "30m", "1h"). Required.
+        optional: If True, missing field values are skipped.
+        backfill: If True, replay from event log on registration.
+    """
+
+    def __init__(self, field: str, *, half_life: str, optional: bool = False, backfill: bool = False) -> None:
+        self.field = field
+        self.half_life = half_life
+        self.optional = optional
+        self.backfill = backfill
+
+    def to_json(self, name: str) -> dict:
+        d: dict = {"name": name, "type": "ema", "field": self.field, "half_life": self.half_life}
+        if self.optional:
+            d["optional"] = True
+        if self.backfill:
+            d["backfill"] = True
+        return d
+
+
+class LastN(OperatorBase):
+    """Store the last N values of a field, returned as a JSON array string.
+
+    Args:
+        field: Name of the event field. Required (positional).
+        n: Number of recent values to keep. Required.
+        optional: If True, missing field values are skipped.
+        backfill: If True, replay from event log on registration.
+    """
+
+    def __init__(self, field: str, *, n: int, optional: bool = False, backfill: bool = False) -> None:
+        self.field = field
+        self.n = n
+        self.optional = optional
+        self.backfill = backfill
+
+    def to_json(self, name: str) -> dict:
+        d: dict = {"name": name, "type": "last_n", "field": self.field, "n": self.n}
+        if self.optional:
+            d["optional"] = True
+        if self.backfill:
+            d["backfill"] = True
+        return d
+
+
+class First(OperatorBase):
+    """Store the first value ever seen for an entity key (no window, never overwrites).
+
+    Args:
+        field: Name of the event field. Required (positional).
+        optional: If True, missing field on first event is skipped.
+        backfill: If True, replay from event log on registration.
+    """
+
+    def __init__(self, field: str, *, optional: bool = False, backfill: bool = False) -> None:
+        self.field = field
+        self.optional = optional
+        self.backfill = backfill
+
+    def to_json(self, name: str) -> dict:
+        d: dict = {"name": name, "type": "first", "field": self.field}
+        if self.optional:
+            d["optional"] = True
+        if self.backfill:
+            d["backfill"] = True
+        return d
+
+
+class ExactMin(OperatorBase):
+    """Exact retractable minimum in a sliding window (BTreeMap-based).
+
+    Args:
+        field: Name of the numeric event field. Required (positional).
+        window: Duration string. Required.
+        bucket: Optional bucket granularity.
+        backfill: If True, replay from event log on registration.
+    """
+
+    def __init__(self, field: str, *, window: str, bucket: str | None = None, backfill: bool = False) -> None:
+        self.field = field
+        self.window = window
+        self.bucket = bucket
+        self.backfill = backfill
+
+    def to_json(self, name: str) -> dict:
+        d: dict = {"name": name, "type": "exact_min", "field": self.field, "window": self.window}
+        if self.bucket is not None:
+            d["bucket"] = self.bucket
+        if self.backfill:
+            d["backfill"] = True
+        return d
+
+
+class ExactMax(OperatorBase):
+    """Exact retractable maximum in a sliding window (BTreeMap-based).
+
+    Args:
+        field: Name of the numeric event field. Required (positional).
+        window: Duration string. Required.
+        bucket: Optional bucket granularity.
+        backfill: If True, replay from event log on registration.
+    """
+
+    def __init__(self, field: str, *, window: str, bucket: str | None = None, backfill: bool = False) -> None:
+        self.field = field
+        self.window = window
+        self.bucket = bucket
+        self.backfill = backfill
+
+    def to_json(self, name: str) -> dict:
+        d: dict = {"name": name, "type": "exact_max", "field": self.field, "window": self.window}
+        if self.bucket is not None:
+            d["bucket"] = self.bucket
+        if self.backfill:
+            d["backfill"] = True
+        return d
+
+
 class Lookup(OperatorBase):
     """Cross-key feature reference (looks up a feature from another stream's key).
 

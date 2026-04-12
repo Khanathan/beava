@@ -97,6 +97,24 @@ async fn get_pipeline(
                     crate::engine::pipeline::FeatureDef::Derive { .. } => {
                         serde_json::json!({"name": fname, "type": "derive"})
                     }
+                    crate::engine::pipeline::FeatureDef::Lag { field, n, optional, .. } => {
+                        serde_json::json!({"name": fname, "type": "lag", "field": field, "n": n, "optional": optional})
+                    }
+                    crate::engine::pipeline::FeatureDef::Ema { field, half_life_secs, optional, .. } => {
+                        serde_json::json!({"name": fname, "type": "ema", "field": field, "half_life_secs": half_life_secs, "optional": optional})
+                    }
+                    crate::engine::pipeline::FeatureDef::LastN { field, n, optional, .. } => {
+                        serde_json::json!({"name": fname, "type": "last_n", "field": field, "n": n, "optional": optional})
+                    }
+                    crate::engine::pipeline::FeatureDef::First { field, optional, .. } => {
+                        serde_json::json!({"name": fname, "type": "first", "field": field, "optional": optional})
+                    }
+                    crate::engine::pipeline::FeatureDef::ExactMin { field, window, bucket, optional, .. } => {
+                        serde_json::json!({"name": fname, "type": "exact_min", "field": field, "window_secs": window.as_secs(), "bucket_secs": bucket.as_secs(), "optional": optional})
+                    }
+                    crate::engine::pipeline::FeatureDef::ExactMax { field, window, bucket, optional, .. } => {
+                        serde_json::json!({"name": fname, "type": "exact_max", "field": field, "window_secs": window.as_secs(), "bucket_secs": bucket.as_secs(), "optional": optional})
+                    }
                 })
                 .collect();
             (
