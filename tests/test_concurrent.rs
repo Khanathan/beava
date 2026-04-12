@@ -530,3 +530,116 @@ async fn set_mset_concurrent_with_push() {
     let score = other["score"].as_f64().unwrap();
     assert!((score - 42.0).abs() < 0.01, "score should be 42.0, got {}", score);
 }
+
+// ---------------------------------------------------------------------------
+// Test 6: Concurrent enrichment correctness (C-5 proof)
+// ---------------------------------------------------------------------------
+
+/// Register a 3-stage cascade pipeline (Source -> Converter -> Aggregator) with
+/// enrichment propagation. 8 concurrent clients each push 100 events with unique
+/// user_ids. After all complete, verify each user's downstream aggregation is
+/// exact (no cross-contamination between concurrent pushes).
+///
+/// Proves C-5: enrichment accumulator is per-push, stack-local, never shared
+/// across concurrent connections.
+///
+/// Benchmark gate (run manually):
+///   python3 benchmark/tally-throughput/bench.py --matrix --clients 8
+///   Must pass within -5% of 1.1M eps baseline (C-1 gate)
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn test_enriched_concurrent_clients() {
+    let (port, _state) = start_server().await;
+
+    // Register 3-stream cascade pipeline via single connection
+    {
+        let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+
+        // Stage 1: Source (keyless)
+        let payload = serde_json::to_vec(&json!({
+            "name": "ConcSource",
+            "features": []
+        })).unwrap();
+        let (status, _) = send_frame(&mut conn, OP_REGISTER, &payload).await;
+        assert_eq!(status, STATUS_OK, "Register ConcSource should succeed");
+
+        // Stage 2: Converter (keyed, depends on Source, derives amount_usd)
+        let payload = serde_json::to_vec(&json!({
+            "name": "ConcConverter",
+            "key_field": "user_id",
+            "depends_on": ["ConcSource"],
+            "features": [
+                {"name": "amount_usd", "type": "derive", "expr": "_event.amount * _event.rate"}
+            ]
+        })).unwrap();
+        let (status, _) = send_frame(&mut conn, OP_REGISTER, &payload).await;
+        assert_eq!(status, STATUS_OK, "Register ConcConverter should succeed");
+
+        // Stage 3: Aggregator (keyed, depends on Converter, sums amount_usd)
+        let payload = serde_json::to_vec(&json!({
+            "name": "ConcAggregator",
+            "key_field": "user_id",
+            "depends_on": ["ConcConverter"],
+            "features": [
+                {"name": "total_usd_1h", "type": "sum", "field": "ConcConverter.amount_usd", "window": "1h"}
+            ]
+        })).unwrap();
+        let (status, _) = send_frame(&mut conn, OP_REGISTER, &payload).await;
+        assert_eq!(status, STATUS_OK, "Register ConcAggregator should succeed");
+    }
+
+    let events_per_client = 100;
+    let num_clients = 8;
+    let amount = 10.0_f64;
+    let rate = 1.5_f64;
+    // Expected per user: 100 events * 10.0 * 1.5 = 1500.0
+
+    // Spawn 8 concurrent client tasks
+    let mut handles = Vec::new();
+    for client_id in 0..num_clients {
+        let port = port;
+        let user_id = format!("user_{}", client_id);
+        handles.push(tokio::spawn(async move {
+            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+            for _ in 0..events_per_client {
+                let payload = build_push_payload(
+                    "ConcSource",
+                    &json!({
+                        "user_id": user_id,
+                        "amount": amount,
+                        "rate": rate
+                    }),
+                );
+                let len = (1 + payload.len()) as u32;
+                conn.write_u32(len).await.unwrap();
+                conn.write_u8(OP_PUSH_ASYNC).await.unwrap();
+                conn.write_all(&payload).await.unwrap();
+            }
+            conn.flush().await.unwrap();
+
+            // Flush to ensure all async events are processed
+            let (status, _) = send_frame(&mut conn, OP_FLUSH, &[]).await;
+            assert_eq!(status, STATUS_OK, "FLUSH should succeed for client {}", client_id);
+        }));
+    }
+
+    // Wait for all clients to complete
+    for h in handles {
+        h.await.unwrap();
+    }
+
+    // Verify each user's downstream aggregation is exact (no cross-contamination)
+    let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+    let expected_total = (events_per_client as f64) * amount * rate; // 100 * 10.0 * 1.5 = 1500.0
+
+    for client_id in 0..num_clients {
+        let user_id = format!("user_{}", client_id);
+        let features = get_features(&mut conn, &user_id).await;
+
+        let total = features["total_usd_1h"].as_f64().unwrap_or(0.0);
+        assert!(
+            (total - expected_total).abs() < 0.01,
+            "User {} total_usd_1h should be {}, got {} (cross-contamination detected!)",
+            user_id, expected_total, total
+        );
+    }
+}
