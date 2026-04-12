@@ -5,12 +5,13 @@
 //! instead of a single global Mutex<AppState>.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
+use std::sync::atomic::Ordering;
 use tokio::net::TcpListener;
 use std::time::SystemTime;
 
@@ -242,6 +243,7 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
     let events_total = metrics.events_total;
     let push_latency = metrics.push_latency_seconds;
     let snapshot_duration = metrics.snapshot_duration_ms as f64 / 1000.0;
+    let snapshots_skipped = metrics.snapshots_skipped;
     drop(metrics);
     let memory_bytes = keys_total * 2048; // Rough estimate: ~2KB per entity with operators
 
@@ -260,8 +262,11 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
          tally_snapshot_duration_seconds {}\n\
          # HELP tally_memory_bytes Estimated memory usage\n\
          # TYPE tally_memory_bytes gauge\n\
-         tally_memory_bytes {}\n",
-        keys_total, events_total, push_latency, snapshot_duration, memory_bytes,
+         tally_memory_bytes {}\n\
+         # HELP tally_snapshots_skipped_total Snapshot cycles skipped due to in-progress write\n\
+         # TYPE tally_snapshots_skipped_total counter\n\
+         tally_snapshots_skipped_total {}\n",
+        keys_total, events_total, push_latency, snapshot_duration, memory_bytes, snapshots_skipped,
     );
     (
         StatusCode::OK,
@@ -531,7 +536,21 @@ async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Valu
     }))
 }
 
-async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse {
+/// Query parameters for `POST /snapshot`.
+#[derive(Debug, serde::Deserialize, Default)]
+struct SnapshotQuery {
+    /// If true, wait for the snapshot to complete before responding.
+    #[serde(default)]
+    wait: Option<bool>,
+    /// Maximum time (ms) to wait when `wait=true`. Returns 408 on timeout.
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+async fn trigger_snapshot(
+    State(state): State<SharedState>,
+    Query(params): Query<SnapshotQuery>,
+) -> impl IntoResponse {
     if !state.snapshot_enabled {
         return (
             StatusCode::NOT_FOUND,
@@ -539,6 +558,27 @@ async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse
         )
             .into_response();
     }
+
+    // Phase 15: cycle guard — reject if a snapshot is already in progress.
+    if state.snapshot_in_progress.compare_exchange(
+        false, true, Ordering::AcqRel, Ordering::Acquire,
+    ).is_err() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "snapshot cycle already in progress"})),
+        )
+            .into_response();
+    }
+
+    // RAII guard to clear the flag even on panic/early return.
+    struct SnapshotGuard(SharedState);
+    impl Drop for SnapshotGuard {
+        fn drop(&mut self) {
+            self.0.snapshot_in_progress.store(false, Ordering::Release);
+        }
+    }
+    let _guard = SnapshotGuard(state.clone());
+
     // Manual trigger always writes a full v6 base snapshot.
     let (snapshot_data, seq, snap_dir) = {
         let engine = state.engine.read();
@@ -601,7 +641,7 @@ async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse
     };
     // Capture start time for snapshot_duration_ms metric
     let snap_start = std::time::Instant::now();
-    let result = tokio::task::spawn_blocking(move || {
+    let write_fut = tokio::task::spawn_blocking(move || {
         let bytes = crate::state::snapshot::save_base_snapshot(&snapshot_data)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         let filename = format!("tally.snapshot.base.{:010}", seq);
@@ -623,15 +663,43 @@ async fn trigger_snapshot(State(state): State<SharedState>) -> impl IntoResponse
             let _ = dir.sync_all();
         }
         Ok::<usize, std::io::Error>(bytes.len())
-    })
-    .await;
+    });
+
+    // Phase 15: if wait=true, optionally apply a timeout.
+    let wait = params.wait.unwrap_or(false);
+    let result = if wait {
+        if let Some(timeout_ms) = params.timeout_ms {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(timeout_ms),
+                write_fut,
+            ).await {
+                Ok(inner) => inner,
+                Err(_) => {
+                    return (
+                        StatusCode::REQUEST_TIMEOUT,
+                        Json(serde_json::json!({"error": "snapshot timed out"})),
+                    )
+                        .into_response();
+                }
+            }
+        } else {
+            write_fut.await
+        }
+    } else {
+        write_fut.await
+    };
+
     match result {
         Ok(Ok(size)) => {
             let snap_elapsed = snap_start.elapsed();
             state.metrics.lock().snapshot_duration_ms = snap_elapsed.as_millis() as u64;
             (
                 StatusCode::OK,
-                Json(serde_json::json!({"status": "ok", "bytes": size, "duration_ms": snap_elapsed.as_millis() as u64})),
+                Json(serde_json::json!({
+                    "status": "ok",
+                    "bytes": size,
+                    "duration_ms": snap_elapsed.as_millis() as u64,
+                })),
             )
                 .into_response()
         }
@@ -710,4 +778,147 @@ pub async fn run_http_server_with_listener(
     axum::serve(listener, app)
         .await
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+}
+
+// ======================== Phase 15 Tests ========================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use crate::engine::pipeline::PipelineEngine;
+    use crate::state::store::StateStore;
+    use crate::server::tcp::{BackfillTracker, make_concurrent_state};
+
+    fn test_state() -> SharedState {
+        make_concurrent_state(
+            PipelineEngine::new(),
+            StateStore::new(),
+            None,
+            std::path::PathBuf::from("/tmp/tally-test-snapshot"),
+            Arc::new(BackfillTracker::default()),
+            true,
+            false,
+        )
+    }
+
+    #[test]
+    fn test_snapshot_cycle_guard_prevents_overlap() {
+        let state = test_state();
+
+        // Simulate first snapshot starting
+        assert!(state.snapshot_in_progress.compare_exchange(
+            false, true, Ordering::AcqRel, Ordering::Acquire,
+        ).is_ok());
+
+        // Second attempt should fail
+        assert!(state.snapshot_in_progress.compare_exchange(
+            false, true, Ordering::AcqRel, Ordering::Acquire,
+        ).is_err());
+
+        // After clearing, it should succeed again
+        state.snapshot_in_progress.store(false, Ordering::Release);
+        assert!(state.snapshot_in_progress.compare_exchange(
+            false, true, Ordering::AcqRel, Ordering::Acquire,
+        ).is_ok());
+    }
+
+    #[test]
+    fn test_snapshot_guard_raii_clears_flag() {
+        let state = test_state();
+
+        {
+            struct SnapGuard(SharedState);
+            impl Drop for SnapGuard {
+                fn drop(&mut self) {
+                    self.0.snapshot_in_progress.store(false, Ordering::Release);
+                }
+            }
+            state.snapshot_in_progress.store(true, Ordering::Release);
+            let _guard = SnapGuard(state.clone());
+            assert!(state.snapshot_in_progress.load(Ordering::Acquire));
+            // _guard drops here
+        }
+        // Flag should be cleared
+        assert!(!state.snapshot_in_progress.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn test_snapshots_skipped_metric_increments() {
+        let state = test_state();
+        assert_eq!(state.metrics.lock().snapshots_skipped, 0);
+        state.metrics.lock().snapshots_skipped += 1;
+        assert_eq!(state.metrics.lock().snapshots_skipped, 1);
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_trigger_returns_409_when_in_progress() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let state = test_state();
+        // Simulate in-progress snapshot
+        state.snapshot_in_progress.store(true, Ordering::Release);
+
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/snapshot")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_trigger_returns_404_when_disabled() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let state = make_concurrent_state(
+            PipelineEngine::new(),
+            StateStore::new(),
+            None,
+            std::path::PathBuf::from("/tmp/tally-test-snapshot"),
+            Arc::new(BackfillTracker::default()),
+            false, // snapshots disabled
+            false,
+        );
+
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/snapshot")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_includes_snapshots_skipped() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let state = test_state();
+        state.metrics.lock().snapshots_skipped = 42;
+
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("tally_snapshots_skipped_total 42"), "metrics body: {}", text);
+    }
 }

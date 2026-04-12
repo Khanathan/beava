@@ -21,7 +21,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use parking_lot::{Mutex as PLMutex, RwLock};
 
@@ -39,6 +39,9 @@ pub struct Metrics {
     pub events_total: u64,
     pub push_latency_seconds: f64, // Last observed PUSH latency
     pub snapshot_duration_ms: u64,
+    /// Phase 15: number of snapshot cycles skipped because a previous write was
+    /// still in progress.
+    pub snapshots_skipped: u64,
 }
 
 /// Status of a single backfill task.
@@ -108,6 +111,10 @@ pub struct ConcurrentAppState {
 
     /// Whether the event log is enabled (TALLY_EVENT_LOG env var).
     pub event_log_enabled: bool,
+
+    /// Phase 15: cycle guard — true while a snapshot write is in progress.
+    /// Prevents overlapping writes when the timer fires faster than I/O completes.
+    pub snapshot_in_progress: AtomicBool,
 }
 
 /// Shared state handle for concurrent connection handlers.
@@ -141,6 +148,7 @@ pub fn make_concurrent_state(
         latency: PLMutex::new(crate::server::latency::LatencyTracker::new()),
         snapshot_enabled,
         event_log_enabled,
+        snapshot_in_progress: AtomicBool::new(false),
     })
 }
 

@@ -228,6 +228,26 @@ async fn main() {
         loop {
             interval.tick().await;
 
+            // Phase 15: cycle guard — skip if a previous snapshot write is
+            // still in progress (from either the timer or a manual trigger).
+            if snap_state.snapshot_in_progress.compare_exchange(
+                false, true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            ).is_err() {
+                snap_state.metrics.lock().snapshots_skipped += 1;
+                eprintln!("Snapshot cycle skipped: previous write still in progress");
+                continue;
+            }
+            // RAII guard clears the flag even on panic.
+            struct SnapGuard(SharedState);
+            impl Drop for SnapGuard {
+                fn drop(&mut self) {
+                    self.0.snapshot_in_progress.store(false, std::sync::atomic::Ordering::Release);
+                }
+            }
+            let _guard = SnapGuard(snap_state.clone());
+
             // Decide base vs delta, clone the required state, and advance
             // the cycle counter — using individual locks.
             let prepared: Option<(SnapshotData, u64, bool, PathBuf, u64)> = {
