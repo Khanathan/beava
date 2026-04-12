@@ -2635,6 +2635,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tower",
  "winnow 1.0.1",
 ]
 

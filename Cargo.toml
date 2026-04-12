@@ -27,3 +27,4 @@ ordered-float = { version = "4", features = ["serde"] }
 [dev-dependencies]
 tempfile = "3"
 sha2 = "0.10"
+tower = { version = "0.5", features = ["util"] }
