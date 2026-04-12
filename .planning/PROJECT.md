@@ -68,6 +68,7 @@ Shipped v1.0 through v1.3. Branch `v1.3-concurrency` carries all work.
 - ✓ New Python SDK API: @tl.source, @tl.dataset(depends_on=[...]), EventSet/FeatureSet types, .group_by("key").agg(...), tl.union(), pipeline.validate() — v2.0
 - ✓ Local DAG validation: cycle detection, missing dep checks, type mismatch detection — v2.0
 - ✓ Enriched event propagation: upstream derives/aggregations visible to downstream via side-channel accumulator — v2.0
+- ✓ Feature projection: select()/drop() response filtering, ephemeral pipeline fields on RegisterRequest with #[serde(default)] — v2.0
 
 ### Active
 
