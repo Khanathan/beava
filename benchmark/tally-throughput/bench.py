@@ -208,6 +208,35 @@ def run_single_client_async(primary_cls, events_per_client, client_id, warmup=10
     return latencies, wall
 
 
+def run_single_client_async_batch(primary_cls, events_per_client, client_id,
+                                   warmup=1000, batch_size=1000):
+    """Async-batch mode runner (Phase 13): push_many batch frames + trailing flush.
+
+    Returns ([], wall_seconds). No per-event latency sampling — pure throughput.
+    """
+    app = st.App('localhost:6400', timeout=30.0)
+
+    # Warmup
+    warmup_events = [make_event(i + client_id * 1000000) for i in range(warmup)]
+    for i in range(0, len(warmup_events), batch_size):
+        app.push_many(primary_cls, warmup_events[i:i + batch_size])
+    app.flush()
+
+    # Pre-generate all events to exclude generation time from measurement
+    events = [make_event(i + client_id * 1000000) for i in range(events_per_client)]
+
+    # Timed run
+    t_start = time.perf_counter()
+    for i in range(0, len(events), batch_size):
+        app.push_many(primary_cls, events[i:i + batch_size])
+    app.flush()
+    wall = time.perf_counter() - t_start
+
+    eps = events_per_client / wall if wall > 0 else 0.0
+    print(f'  [client-{client_id}] async-batch: {events_per_client} events in {wall:.3f}s = {eps:.0f} eps (batch_size={batch_size})')
+    return [], wall
+
+
 def run_single_client(primary_cls, events_per_client, client_id, warmup=1000):
     """Back-compat wrapper — sync mode (used by any external callers)."""
     latencies, _ = run_single_client_sync(primary_cls, events_per_client, client_id, warmup)
@@ -268,6 +297,27 @@ def run_benchmark(args, sample_async_latency=True, quiet=False):
                     lat, _ = f.result()
                     all_latencies.extend(lat)
             t_elapsed = time.perf_counter() - t_start
+    elif args.mode == 'async-batch':
+        batch_size = getattr(args, 'batch_size', 1000)
+        if args.clients == 1:
+            all_latencies, t_elapsed = run_single_client_async_batch(
+                primary, events_per_client, 0, batch_size=batch_size,
+            )
+        else:
+            with ThreadPoolExecutor(max_workers=args.clients) as pool:
+                futures = [
+                    pool.submit(
+                        run_single_client_async_batch,
+                        primary, events_per_client, cid, 1000, batch_size,
+                    )
+                    for cid in range(args.clients)
+                ]
+                walls = []
+                for f in as_completed(futures):
+                    lat, wall = f.result()
+                    walls.append(wall)
+                    all_latencies.extend(lat)
+                t_elapsed = max(walls) if walls else 0.0
     else:  # async
         if args.clients == 1:
             all_latencies, t_elapsed = run_single_client_async(
@@ -353,11 +403,12 @@ def run_benchmark(args, sample_async_latency=True, quiet=False):
 
 class _Args:
     """Minimal shim so the matrix runner can drive run_benchmark without touching argparse."""
-    def __init__(self, mode, pipeline, events, clients):
+    def __init__(self, mode, pipeline, events, clients, batch_size=1000):
         self.mode = mode
         self.pipeline = pipeline
         self.events = events
         self.clients = clients
+        self.batch_size = batch_size
 
 
 def run_matrix(clients, events_budget):
@@ -614,10 +665,13 @@ def main():
                         help='Number of parallel SDK connections (default: 1)')
     parser.add_argument('--pipeline', choices=list(PIPELINES.keys()), default='medium',
                         help='Pipeline shape (default: medium)')
-    parser.add_argument('--mode', choices=['sync', 'async', 'mixed'], default='sync',
+    parser.add_argument('--mode', choices=['sync', 'async', 'mixed', 'async-batch'], default='sync',
                         help='Push mode: sync = per-event push_sync round-trip, '
                              'async = fire-and-forget + trailing flush, '
-                             'mixed = async saturator + sync sampler in parallel (Phase 12 D-10)')
+                             'mixed = async saturator + sync sampler in parallel (Phase 12 D-10), '
+                             'async-batch = push_many batch frames (Phase 13 D-15)')
+    parser.add_argument('--batch-size', type=int, default=1000,
+                        help='Events per push_many call in async-batch mode (default: 1000)')
     parser.add_argument('--matrix', action='store_true',
                         help='Phase 12 D-17 gate: run small/medium/large x sync/async '
                              '(6 scenarios x 5-run median, sigma<10%% rejection)')

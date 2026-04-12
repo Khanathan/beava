@@ -188,24 +188,97 @@ def encode_push_batch(stream_name: str, events, batch_id: int) -> bytes:
     Wire format: ``[u16 stream_len][stream][u32 batch_id][u32 count]``
                  ``[for each: [u32 event_len][event_bytes]]``
 
-    events is an iterable of dicts. Each event is encoded via
-    :func:`_encode_event_body` (D-03: reuse existing serialization).
+    events is an iterable of dicts. Each event is encoded inline into
+    a single shared buffer (same field-encoding logic as
+    :func:`_encode_event_body`, D-03: zero new serialization code).
+    The inline write avoids per-event ``bytearray`` + ``bytes()``
+    allocation overhead that dominates at >200k eps.
+
+    Performance notes (pure Python, M-5):
+    - Key bytes are cached across events (batch events share field names)
+    - ``extend`` used instead of ``+=`` for raw bytes to avoid temporaries
+    - ``struct.pack_into`` patches length fields in-place
     """
     buf = bytearray()
     name_bytes = stream_name.encode("utf-8")
     _check_u16_len("stream_name", name_bytes)
-    buf += _U16.pack(len(name_bytes))
-    buf += name_bytes
-    buf += struct.pack(">II", batch_id, 0)  # batch_id + placeholder count
+    buf.extend(_U16.pack(len(name_bytes)))
+    buf.extend(name_bytes)
+    buf.extend(struct.pack(">II", batch_id, 0))  # batch_id + placeholder count
     count_offset = 2 + len(name_bytes) + 4  # position of the count field
+    _U32 = struct.Struct(">I")
+    # Cache key encoding: batch events typically share the same field names
+    _key_cache: dict[str, bytes] = {}  # key_str -> [u16 len][utf8]
     count = 0
+    buf_extend = buf.extend
+    buf_append = buf.append
+    u16_pack = _U16.pack
+    i64_pack = _I64.pack
+    f64_pack = _F64.pack
+    u32_pack = _U32.pack
+    u32_pack_into = _U32.pack_into
+    _PLACEHOLDER = b'\x00\x00\x00\x00'
     for event in events:
-        event_bytes = _encode_event_body(event)
-        buf += struct.pack(">I", len(event_bytes))
-        buf += event_bytes
+        # Reserve 4 bytes for event_len, we'll patch it after encoding
+        event_len_offset = len(buf)
+        buf_extend(_PLACEHOLDER)
+        event_start = len(buf)
+        # Inline event body encoding (same logic as _encode_event_body)
+        n_fields = len(event)
+        if n_fields > _U16_MAX:
+            raise ProtocolError(
+                f"event field_count exceeds {_U16_MAX}: got {n_fields}"
+            )
+        buf_extend(u16_pack(n_fields))
+        for key, value in event.items():
+            # Cached key encoding
+            cached = _key_cache.get(key)
+            if cached is None:
+                key_bytes = key.encode("utf-8")
+                if len(key_bytes) > _U16_MAX:
+                    raise ProtocolError(
+                        f"field key {key!r} exceeds {_U16_MAX} bytes: got {len(key_bytes)}"
+                    )
+                cached = u16_pack(len(key_bytes)) + key_bytes
+                _key_cache[key] = cached
+            buf_extend(cached)
+            if value is None:
+                buf_append(TYPE_NULL)
+            elif isinstance(value, bool):
+                buf_append(TYPE_BOOL)
+                buf_append(0x01 if value else 0x00)
+            elif isinstance(value, int):
+                if value < _I64_MIN or value > _I64_MAX:
+                    raise ProtocolError(
+                        f"integer field {key!r} out of i64 range: {value}"
+                    )
+                buf_append(TYPE_I64)
+                buf_extend(i64_pack(value))
+            elif isinstance(value, float):
+                if value != value or value == float("inf") or value == float("-inf"):
+                    raise ProtocolError(
+                        f"float field {key!r} is not finite: {value}"
+                    )
+                buf_append(TYPE_F64)
+                buf_extend(f64_pack(value))
+            elif isinstance(value, str):
+                v_bytes = value.encode("utf-8")
+                if len(v_bytes) > _U16_MAX:
+                    raise ProtocolError(
+                        f"string value for key {key!r} exceeds {_U16_MAX} bytes: got {len(v_bytes)}"
+                    )
+                buf_append(TYPE_STR)
+                buf_extend(u16_pack(len(v_bytes)))
+                buf_extend(v_bytes)
+            else:
+                raise ProtocolError(
+                    f"unsupported event field type for key {key!r}: {type(value).__name__}"
+                )
+        # Patch event_len
+        u32_pack_into(buf, event_len_offset, len(buf) - event_start)
         count += 1
     # Patch the count field in-place
-    struct.pack_into(">I", buf, count_offset, count)
+    u32_pack_into(buf, count_offset, count)
     return bytes(buf)
 
 
