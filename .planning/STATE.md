@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: New API & Engine
 status: executing
-stopped_at: Completed 17-01-PLAN.md
-last_updated: "2026-04-12T22:51:33.609Z"
+stopped_at: Completed 17-02-PLAN.md
+last_updated: "2026-04-12T22:56:26.704Z"
 last_activity: 2026-04-12
 progress:
   total_phases: 16
   completed_phases: 1
   total_plans: 5
-  completed_plans: 3
-  percent: 60
+  completed_plans: 4
+  percent: 80
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-12)
 
 Milestone: v2.0 New API & Engine
 Phase: 17 (Enriched Event Propagation) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-04-12
 
@@ -59,6 +59,7 @@ All v1.0-v1.3 decisions archived in PROJECT.md Key Decisions table.
 - [Phase 16]: SourceDef/DatasetDef are plain objects returned by decorators, not modified classes
 - [Phase 16]: Kahn's algorithm for cycle detection in validate() -- O(V+E), pure Python, no server
 - [Phase 17]: Enrichment param uses Option<&AHashMap> side-channel: serde_json::Value for operators, FeatureValue for EvalContext
+- [Phase 17]: Dual enrichment maps: enrichment_json (serde_json::Value) for operators, enrichment_fv (FeatureValue) for EvalContext; no-cascade fast path skips allocation
 
 ### Critical Pitfalls (from research)
 
@@ -78,6 +79,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-12T22:51:33.607Z
-Stopped at: Completed 17-01-PLAN.md
+Last session: 2026-04-12T22:56:26.702Z
+Stopped at: Completed 17-02-PLAN.md
 Resume: `/gsd-plan-phase 16`
