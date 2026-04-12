@@ -11,6 +11,12 @@ from tally._operators import (
     Percentile as percentile,
     Derive as derive,
     Lookup as lookup,
+    Lag as lag,
+    Ema as ema,
+    LastN as last_n,
+    First as first,
+    ExactMin as exact_min,
+    ExactMax as exact_max,
 )
 from tally._stream import stream
 from tally._view import view
@@ -39,6 +45,12 @@ __all__ = [
     "percentile",
     "derive",
     "lookup",
+    "lag",
+    "ema",
+    "last_n",
+    "first",
+    "exact_min",
+    "exact_max",
     # Decorators (legacy API)
     "stream",
     "view",

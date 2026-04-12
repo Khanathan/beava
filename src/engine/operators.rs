@@ -8,6 +8,8 @@ use serde::{Serialize, Deserialize};
 use crate::types::FeatureValue;
 use crate::error::TallyError;
 use super::window::RingBuffer;
+use std::collections::{VecDeque, BTreeMap};
+use ordered_float::OrderedFloat;
 
 /// Trait implemented by all streaming operators.
 /// - `push` processes an incoming event. Called once per event per operator.
@@ -671,6 +673,489 @@ impl Operator for PercentileOp {
         }
         all_values.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         FeatureValue::Float(Self::compute_quantile(&all_values, self.quantile))
+    }
+}
+
+// ======================== LagOp ========================
+
+/// Returns the Nth-oldest value for an entity key. Event-count-based, no window.
+/// Stores the last N values in a VecDeque ring buffer.
+/// `read()` returns the front (oldest) value, which is the value from N events ago.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LagOp {
+    field: String,
+    n: usize,
+    values: VecDeque<FeatureValue>,
+    optional: bool,
+}
+
+impl LagOp {
+    pub fn new(field: impl Into<String>, n: usize, optional: bool) -> Self {
+        Self {
+            field: field.into(),
+            n,
+            values: VecDeque::with_capacity(n),
+            optional,
+        }
+    }
+}
+
+impl Operator for LagOp {
+    fn push(&mut self, event: &serde_json::Value, _now: SystemTime) -> Result<(), TallyError> {
+        match event.get(&self.field) {
+            None => {
+                if self.optional {
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "any".into(),
+                        got: "absent".into(),
+                    })
+                }
+            }
+            Some(val) => {
+                let fv = match val {
+                    serde_json::Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            FeatureValue::Int(i)
+                        } else if let Some(f) = n.as_f64() {
+                            FeatureValue::Float(f)
+                        } else {
+                            FeatureValue::Missing
+                        }
+                    }
+                    serde_json::Value::String(s) => FeatureValue::String(s.clone()),
+                    serde_json::Value::Bool(b) => FeatureValue::Int(if *b { 1 } else { 0 }),
+                    _ => FeatureValue::Missing,
+                };
+                self.values.push_back(fv);
+                if self.values.len() > self.n {
+                    self.values.pop_front();
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn read(&mut self, _now: SystemTime) -> FeatureValue {
+        // Return the oldest value (N events ago). If buffer not full yet, Missing.
+        if self.values.len() == self.n {
+            self.values.front().cloned().unwrap_or(FeatureValue::Missing)
+        } else {
+            FeatureValue::Missing
+        }
+    }
+}
+
+// ======================== EmaOp ========================
+
+/// Exponential moving average with time-based decay. O(1) state.
+/// alpha = exp(-ln(2) * elapsed_secs / half_life)
+/// current = alpha * current + (1 - alpha) * value
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmaOp {
+    field: String,
+    half_life_secs: f64,
+    current: f64,
+    last_time: Option<SystemTime>,
+    initialized: bool,
+    optional: bool,
+}
+
+impl EmaOp {
+    pub fn new(field: impl Into<String>, half_life_secs: f64, optional: bool) -> Self {
+        Self {
+            field: field.into(),
+            half_life_secs,
+            current: 0.0,
+            last_time: None,
+            initialized: false,
+            optional,
+        }
+    }
+}
+
+impl Operator for EmaOp {
+    fn push(&mut self, event: &serde_json::Value, now: SystemTime) -> Result<(), TallyError> {
+        match event.get(&self.field) {
+            None => {
+                if self.optional {
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: "absent".into(),
+                    })
+                }
+            }
+            Some(val) => {
+                if let Some(value) = val.as_f64() {
+                    if !self.initialized {
+                        self.current = value;
+                        self.initialized = true;
+                    } else if let Some(prev_time) = self.last_time {
+                        let elapsed = now.duration_since(prev_time)
+                            .unwrap_or(std::time::Duration::ZERO)
+                            .as_secs_f64();
+                        let alpha = (-std::f64::consts::LN_2 * elapsed / self.half_life_secs).exp();
+                        self.current = alpha * self.current + (1.0 - alpha) * value;
+                    } else {
+                        // initialized but no last_time (shouldn't happen, but handle gracefully)
+                        self.current = value;
+                    }
+                    self.last_time = Some(now);
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: format!("{}", val),
+                    })
+                }
+            }
+        }
+    }
+
+    fn read(&mut self, _now: SystemTime) -> FeatureValue {
+        if self.initialized {
+            FeatureValue::Float(self.current)
+        } else {
+            FeatureValue::Missing
+        }
+    }
+}
+
+// ======================== LastNOp ========================
+
+/// Stores the last N values of a field. Returns them as a JSON array string.
+/// Unlike LagOp (returns ONE value from N ago), LastNOp returns ALL N recent values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LastNOp {
+    field: String,
+    n: usize,
+    values: VecDeque<FeatureValue>,
+    optional: bool,
+}
+
+impl LastNOp {
+    pub fn new(field: impl Into<String>, n: usize, optional: bool) -> Self {
+        Self {
+            field: field.into(),
+            n,
+            values: VecDeque::with_capacity(n),
+            optional,
+        }
+    }
+}
+
+impl Operator for LastNOp {
+    fn push(&mut self, event: &serde_json::Value, _now: SystemTime) -> Result<(), TallyError> {
+        match event.get(&self.field) {
+            None => {
+                if self.optional {
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "any".into(),
+                        got: "absent".into(),
+                    })
+                }
+            }
+            Some(val) => {
+                let fv = match val {
+                    serde_json::Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            FeatureValue::Int(i)
+                        } else if let Some(f) = n.as_f64() {
+                            FeatureValue::Float(f)
+                        } else {
+                            FeatureValue::Missing
+                        }
+                    }
+                    serde_json::Value::String(s) => FeatureValue::String(s.clone()),
+                    serde_json::Value::Bool(b) => FeatureValue::Int(if *b { 1 } else { 0 }),
+                    _ => FeatureValue::Missing,
+                };
+                self.values.push_back(fv);
+                if self.values.len() > self.n {
+                    self.values.pop_front();
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn read(&mut self, _now: SystemTime) -> FeatureValue {
+        if self.values.is_empty() {
+            return FeatureValue::Missing;
+        }
+        // Return as JSON array string since FeatureValue has no List variant
+        let arr: Vec<serde_json::Value> = self.values.iter()
+            .map(|v| v.to_json_value())
+            .collect();
+        let json_str = serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string());
+        FeatureValue::String(json_str)
+    }
+}
+
+// ======================== FirstOp ========================
+
+/// Stores the first value ever seen for an entity key. Never overwrites.
+/// Like LastOp but only sets on the first event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FirstOp {
+    field: String,
+    value: FeatureValue,
+    timestamp: Option<SystemTime>,
+    optional: bool,
+}
+
+impl FirstOp {
+    pub fn new(field: impl Into<String>, optional: bool) -> Self {
+        Self {
+            field: field.into(),
+            value: FeatureValue::Missing,
+            timestamp: None,
+            optional,
+        }
+    }
+}
+
+impl Operator for FirstOp {
+    fn push(&mut self, event: &serde_json::Value, now: SystemTime) -> Result<(), TallyError> {
+        // Only store the first value; ignore all subsequent events
+        if self.timestamp.is_some() {
+            return Ok(());
+        }
+        match event.get(&self.field) {
+            None => {
+                if self.optional {
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "any".into(),
+                        got: "absent".into(),
+                    })
+                }
+            }
+            Some(val) => {
+                let fv = match val {
+                    serde_json::Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            FeatureValue::Int(i)
+                        } else if let Some(f) = n.as_f64() {
+                            FeatureValue::Float(f)
+                        } else {
+                            FeatureValue::Missing
+                        }
+                    }
+                    serde_json::Value::String(s) => FeatureValue::String(s.clone()),
+                    serde_json::Value::Bool(b) => FeatureValue::Int(if *b { 1 } else { 0 }),
+                    _ => FeatureValue::Missing,
+                };
+                self.value = fv;
+                self.timestamp = Some(now);
+                Ok(())
+            }
+        }
+    }
+
+    fn read(&mut self, _now: SystemTime) -> FeatureValue {
+        self.value.clone()
+    }
+}
+
+// ======================== ValBucket ========================
+
+/// Wrapper for Vec<f64> to use in RingBuffer (needs Default + Clone).
+/// Stores per-bucket value lists for retraction in ExactMin/ExactMax operators.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ValBucket(pub Vec<f64>);
+impl Default for ValBucket {
+    fn default() -> Self { ValBucket(Vec::new()) }
+}
+
+// ======================== ExactMinOp ========================
+
+/// Retractable min using BTreeMap<OrderedFloat<f64>, u32> for exact windowed minimum.
+/// Tracks all values in a sorted map with counts, plus per-bucket value lists
+/// in the ring buffer for retraction on bucket expiry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExactMinOp {
+    field: String,
+    sorted_values: BTreeMap<OrderedFloat<f64>, u32>,
+    bucket_values: RingBuffer<ValBucket>,
+    event_count: RingBuffer<u64>,
+    optional: bool,
+}
+
+impl ExactMinOp {
+    pub fn new(
+        field: impl Into<String>,
+        window_duration: std::time::Duration,
+        bucket_duration: std::time::Duration,
+        optional: bool,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            sorted_values: BTreeMap::new(),
+            bucket_values: RingBuffer::new(window_duration, bucket_duration),
+            event_count: RingBuffer::new(window_duration, bucket_duration),
+            optional,
+        }
+    }
+
+    /// Retract expired bucket values from the BTreeMap.
+    fn retract_bucket_values(&mut self) {
+        // Collect all values from all buckets, rebuild sorted_values from scratch.
+        // This is simpler and correct: on each read we rebuild from current bucket state.
+        self.sorted_values.clear();
+        for bucket in self.bucket_values.buckets_iter() {
+            for &val in &bucket.0 {
+                *self.sorted_values.entry(OrderedFloat(val)).or_insert(0) += 1;
+            }
+        }
+    }
+}
+
+impl Operator for ExactMinOp {
+    fn push(&mut self, event: &serde_json::Value, now: SystemTime) -> Result<(), TallyError> {
+        match event.get(&self.field) {
+            None => {
+                if self.optional {
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: "absent".into(),
+                    })
+                }
+            }
+            Some(val) => {
+                if let Some(f) = val.as_f64() {
+                    // Add to sorted map
+                    *self.sorted_values.entry(OrderedFloat(f)).or_insert(0) += 1;
+                    // Add to current bucket's value list
+                    self.bucket_values.update_current(|bucket| {
+                        bucket.0.push(f);
+                    }, now);
+                    self.event_count.add_to_current(1u64, now);
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: format!("{}", val),
+                    })
+                }
+            }
+        }
+    }
+
+    fn read(&mut self, now: SystemTime) -> FeatureValue {
+        // Advance ring buffers to expire old buckets
+        self.bucket_values.advance_to(now);
+        self.event_count.advance_to(now);
+        if self.event_count.sum_all() == 0 {
+            return FeatureValue::Missing;
+        }
+        // Rebuild sorted_values from non-expired buckets
+        self.retract_bucket_values();
+        match self.sorted_values.keys().next() {
+            Some(key) => FeatureValue::Float(key.into_inner()),
+            None => FeatureValue::Missing,
+        }
+    }
+}
+
+// ======================== ExactMaxOp ========================
+
+/// Retractable max using BTreeMap<OrderedFloat<f64>, u32> for exact windowed maximum.
+/// Same approach as ExactMinOp but returns the last (largest) key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExactMaxOp {
+    field: String,
+    sorted_values: BTreeMap<OrderedFloat<f64>, u32>,
+    bucket_values: RingBuffer<ValBucket>,
+    event_count: RingBuffer<u64>,
+    optional: bool,
+}
+
+impl ExactMaxOp {
+    pub fn new(
+        field: impl Into<String>,
+        window_duration: std::time::Duration,
+        bucket_duration: std::time::Duration,
+        optional: bool,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            sorted_values: BTreeMap::new(),
+            bucket_values: RingBuffer::new(window_duration, bucket_duration),
+            event_count: RingBuffer::new(window_duration, bucket_duration),
+            optional,
+        }
+    }
+
+    fn retract_bucket_values(&mut self) {
+        self.sorted_values.clear();
+        for bucket in self.bucket_values.buckets_iter() {
+            for &val in &bucket.0 {
+                *self.sorted_values.entry(OrderedFloat(val)).or_insert(0) += 1;
+            }
+        }
+    }
+}
+
+impl Operator for ExactMaxOp {
+    fn push(&mut self, event: &serde_json::Value, now: SystemTime) -> Result<(), TallyError> {
+        match event.get(&self.field) {
+            None => {
+                if self.optional {
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: "absent".into(),
+                    })
+                }
+            }
+            Some(val) => {
+                if let Some(f) = val.as_f64() {
+                    *self.sorted_values.entry(OrderedFloat(f)).or_insert(0) += 1;
+                    self.bucket_values.update_current(|bucket| {
+                        bucket.0.push(f);
+                    }, now);
+                    self.event_count.add_to_current(1u64, now);
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: format!("{}", val),
+                    })
+                }
+            }
+        }
+    }
+
+    fn read(&mut self, now: SystemTime) -> FeatureValue {
+        self.bucket_values.advance_to(now);
+        self.event_count.advance_to(now);
+        if self.event_count.sum_all() == 0 {
+            return FeatureValue::Missing;
+        }
+        self.retract_bucket_values();
+        match self.sorted_values.keys().next_back() {
+            Some(key) => FeatureValue::Float(key.into_inner()),
+            None => FeatureValue::Missing,
+        }
     }
 }
 
@@ -1342,5 +1827,309 @@ mod tests {
         op.push(&json!({"v": 3.0}), t2).unwrap();
         // p50 of [1, 2, 3]: index = 0.5 * 2 = 1.0 -> values[1] = 2.0
         assert_eq!(op.read(t2), FeatureValue::Float(2.0));
+    }
+    // ======================== LagOp Tests ========================
+
+    #[test]
+    fn test_lag_returns_missing_until_n_events() {
+        let mut op = LagOp::new("amount", 3, false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 10.0}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Missing); // only 1 event, need 3
+        op.push(&json!({"amount": 20.0}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Missing); // only 2 events
+        op.push(&json!({"amount": 30.0}), t).unwrap();
+        // Now buffer is full [10, 20, 30], lag(3) returns front = 10
+        assert_eq!(op.read(t), FeatureValue::Float(10.0));
+    }
+
+    #[test]
+    fn test_lag_returns_nth_oldest_value() {
+        let mut op = LagOp::new("amount", 2, false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 100.0}), t).unwrap();
+        op.push(&json!({"amount": 200.0}), t).unwrap();
+        // Buffer [100, 200], lag(2) = 100
+        assert_eq!(op.read(t), FeatureValue::Float(100.0));
+        op.push(&json!({"amount": 300.0}), t).unwrap();
+        // Buffer [200, 300], lag(2) = 200
+        assert_eq!(op.read(t), FeatureValue::Float(200.0));
+    }
+
+    #[test]
+    fn test_lag_with_string_values() {
+        let mut op = LagOp::new("country", 1, false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"country": "US"}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::String("US".into()));
+        op.push(&json!({"country": "UK"}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::String("UK".into()));
+    }
+
+    #[test]
+    fn test_lag_non_optional_missing_field_errors() {
+        let mut op = LagOp::new("amount", 1, false);
+        let t = ts(1000 * 60);
+        let result = op.push(&json!({}), t);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_lag_optional_skips_missing_field() {
+        let mut op = LagOp::new("amount", 1, true);
+        let t = ts(1000 * 60);
+        assert!(op.push(&json!({}), t).is_ok());
+        assert_eq!(op.read(t), FeatureValue::Missing); // nothing pushed
+    }
+
+    // ======================== EmaOp Tests ========================
+
+    #[test]
+    fn test_ema_first_value_is_exact() {
+        let mut op = EmaOp::new("amount", 60.0, false); // 60s half-life
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 100.0}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Float(100.0));
+    }
+
+    #[test]
+    fn test_ema_decays_over_time() {
+        let mut op = EmaOp::new("amount", 60.0, false); // 60s half-life
+        let t0 = ts(1000 * 60);
+        op.push(&json!({"amount": 100.0}), t0).unwrap();
+        // After one half-life, push 0 -- EMA should be ~50
+        let t1 = t0 + Duration::from_secs(60);
+        op.push(&json!({"amount": 0.0}), t1).unwrap();
+        if let FeatureValue::Float(v) = op.read(t1) {
+            assert!((v - 50.0).abs() < 1.0, "expected ~50, got {}", v);
+        } else {
+            panic!("expected Float");
+        }
+    }
+
+    #[test]
+    fn test_ema_same_timestamp_no_decay() {
+        let mut op = EmaOp::new("amount", 60.0, false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 100.0}), t).unwrap();
+        op.push(&json!({"amount": 0.0}), t).unwrap();
+        // alpha = exp(0) = 1, so: 1*100 + 0*0 = 100... wait no.
+        // elapsed=0, alpha=exp(0)=1, current = 1*100 + 0*0 = 100
+        assert_eq!(op.read(t), FeatureValue::Float(100.0));
+    }
+
+    #[test]
+    fn test_ema_returns_missing_before_any_push() {
+        let op = EmaOp::new("amount", 60.0, false);
+        let t = ts(1000 * 60);
+        let mut op = op;
+        assert_eq!(op.read(t), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_ema_non_numeric_field_errors() {
+        let mut op = EmaOp::new("amount", 60.0, false);
+        let t = ts(1000 * 60);
+        let result = op.push(&json!({"amount": "not_a_number"}), t);
+        assert!(result.is_err());
+    }
+
+    // ======================== LastNOp Tests ========================
+
+    #[test]
+    fn test_last_n_returns_missing_when_empty() {
+        let mut op = LastNOp::new("merchant", 3, false);
+        let t = ts(1000 * 60);
+        assert_eq!(op.read(t), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_last_n_returns_partial_list() {
+        let mut op = LastNOp::new("merchant", 3, false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"merchant": "m1"}), t).unwrap();
+        op.push(&json!({"merchant": "m2"}), t).unwrap();
+        if let FeatureValue::String(s) = op.read(t) {
+            let arr: Vec<String> = serde_json::from_str(&s).unwrap();
+            assert_eq!(arr, vec!["m1", "m2"]);
+        } else {
+            panic!("expected String (JSON array)");
+        }
+    }
+
+    #[test]
+    fn test_last_n_evicts_oldest_when_full() {
+        let mut op = LastNOp::new("merchant", 2, false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"merchant": "m1"}), t).unwrap();
+        op.push(&json!({"merchant": "m2"}), t).unwrap();
+        op.push(&json!({"merchant": "m3"}), t).unwrap();
+        if let FeatureValue::String(s) = op.read(t) {
+            let arr: Vec<String> = serde_json::from_str(&s).unwrap();
+            assert_eq!(arr, vec!["m2", "m3"]);
+        } else {
+            panic!("expected String (JSON array)");
+        }
+    }
+
+    #[test]
+    fn test_last_n_with_numeric_values() {
+        let mut op = LastNOp::new("amount", 3, false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 10}), t).unwrap();
+        op.push(&json!({"amount": 20}), t).unwrap();
+        op.push(&json!({"amount": 30}), t).unwrap();
+        if let FeatureValue::String(s) = op.read(t) {
+            let arr: Vec<i64> = serde_json::from_str(&s).unwrap();
+            assert_eq!(arr, vec![10, 20, 30]);
+        } else {
+            panic!("expected String (JSON array)");
+        }
+    }
+
+    // ======================== FirstOp Tests ========================
+
+    #[test]
+    fn test_first_stores_first_value() {
+        let mut op = FirstOp::new("country", false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"country": "US"}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::String("US".into()));
+    }
+
+    #[test]
+    fn test_first_never_overwrites() {
+        let mut op = FirstOp::new("country", false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"country": "US"}), t).unwrap();
+        op.push(&json!({"country": "UK"}), t + Duration::from_secs(60)).unwrap();
+        op.push(&json!({"country": "DE"}), t + Duration::from_secs(120)).unwrap();
+        assert_eq!(op.read(t), FeatureValue::String("US".into()));
+    }
+
+    #[test]
+    fn test_first_returns_missing_before_any_push() {
+        let mut op = FirstOp::new("country", false);
+        let t = ts(1000 * 60);
+        assert_eq!(op.read(t), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_first_non_optional_missing_field_errors() {
+        let mut op = FirstOp::new("country", false);
+        let t = ts(1000 * 60);
+        let result = op.push(&json!({}), t);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_first_optional_skips_missing_field_waits_for_real_value() {
+        let mut op = FirstOp::new("country", true);
+        let t = ts(1000 * 60);
+        assert!(op.push(&json!({}), t).is_ok()); // skip
+        assert_eq!(op.read(t), FeatureValue::Missing); // still no value
+        op.push(&json!({"country": "US"}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::String("US".into()));
+        // Subsequent events do not overwrite
+        op.push(&json!({"country": "UK"}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::String("US".into()));
+    }
+
+    // ======================== ExactMinOp Tests ========================
+
+    #[test]
+    fn test_exact_min_basic() {
+        let mut op = ExactMinOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 30.0}), t).unwrap();
+        op.push(&json!({"amount": 10.0}), t).unwrap();
+        op.push(&json!({"amount": 20.0}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Float(10.0));
+    }
+
+    #[test]
+    fn test_exact_min_retracts_expired_values() {
+        let mut op = ExactMinOp::new("amount", Duration::from_secs(3 * 60), Duration::from_secs(60), false);
+        let t0 = ts(1000 * 60);
+        op.push(&json!({"amount": 5.0}), t0).unwrap();
+        op.push(&json!({"amount": 20.0}), t0 + Duration::from_secs(60)).unwrap();
+        op.push(&json!({"amount": 15.0}), t0 + Duration::from_secs(120)).unwrap();
+        assert_eq!(op.read(t0 + Duration::from_secs(120)), FeatureValue::Float(5.0));
+        // Advance past the window so the 5.0 bucket expires
+        let t_future = t0 + Duration::from_secs(4 * 60);
+        op.push(&json!({"amount": 25.0}), t_future).unwrap();
+        // 5.0 should be expired; min should now be 15.0 or 25.0
+        let val = op.read(t_future);
+        if let FeatureValue::Float(v) = val {
+            assert!(v >= 15.0, "expected min >= 15.0 after retraction, got {}", v);
+        } else {
+            panic!("expected Float");
+        }
+    }
+
+    #[test]
+    fn test_exact_min_returns_missing_when_empty() {
+        let mut op = ExactMinOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        assert_eq!(op.read(t), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_exact_min_returns_missing_after_all_expire() {
+        let mut op = ExactMinOp::new("amount", Duration::from_secs(3 * 60), Duration::from_secs(60), false);
+        let t0 = ts(1000 * 60);
+        op.push(&json!({"amount": 10.0}), t0).unwrap();
+        assert_eq!(op.read(t0), FeatureValue::Float(10.0));
+        // Advance well past window
+        let t_future = t0 + Duration::from_secs(10 * 60);
+        assert_eq!(op.read(t_future), FeatureValue::Missing);
+    }
+
+    // ======================== ExactMaxOp Tests ========================
+
+    #[test]
+    fn test_exact_max_basic() {
+        let mut op = ExactMaxOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 10.0}), t).unwrap();
+        op.push(&json!({"amount": 30.0}), t).unwrap();
+        op.push(&json!({"amount": 20.0}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Float(30.0));
+    }
+
+    #[test]
+    fn test_exact_max_retracts_expired_values() {
+        let mut op = ExactMaxOp::new("amount", Duration::from_secs(3 * 60), Duration::from_secs(60), false);
+        let t0 = ts(1000 * 60);
+        op.push(&json!({"amount": 100.0}), t0).unwrap();
+        op.push(&json!({"amount": 20.0}), t0 + Duration::from_secs(60)).unwrap();
+        op.push(&json!({"amount": 30.0}), t0 + Duration::from_secs(120)).unwrap();
+        assert_eq!(op.read(t0 + Duration::from_secs(120)), FeatureValue::Float(100.0));
+        // Advance past the window so the 100.0 bucket expires
+        let t_future = t0 + Duration::from_secs(4 * 60);
+        op.push(&json!({"amount": 25.0}), t_future).unwrap();
+        let val = op.read(t_future);
+        if let FeatureValue::Float(v) = val {
+            assert!(v <= 30.0, "expected max <= 30.0 after retraction, got {}", v);
+        } else {
+            panic!("expected Float");
+        }
+    }
+
+    #[test]
+    fn test_exact_max_returns_missing_when_empty() {
+        let mut op = ExactMaxOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        assert_eq!(op.read(t), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_exact_max_duplicate_values() {
+        let mut op = ExactMaxOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 50.0}), t).unwrap();
+        op.push(&json!({"amount": 50.0}), t).unwrap();
+        op.push(&json!({"amount": 50.0}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Float(50.0));
     }
 }

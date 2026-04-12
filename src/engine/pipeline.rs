@@ -11,7 +11,7 @@ use petgraph::algo::toposort;
 use crate::types::{FeatureValue, FeatureMap};
 use crate::error::TallyError;
 use crate::state::store::StateStore;
-use super::operators::{CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp, StddevOp, PercentileOp};
+use super::operators::{CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp, StddevOp, PercentileOp, LagOp, EmaOp, LastNOp, FirstOp, ExactMinOp, ExactMaxOp};
 use super::hll::DistinctCountOp;
 use crate::state::snapshot::OperatorState;
 use super::expression::{Expr, EvalContext, eval};
@@ -90,6 +90,45 @@ pub enum FeatureDef {
     Derive {
         expr: Expr, // Parsed at registration time
     },
+    Lag {
+        field: String,
+        n: usize,
+        optional: bool,
+        backfill: bool,
+    },
+    Ema {
+        field: String,
+        half_life_secs: f64,
+        optional: bool,
+        backfill: bool,
+    },
+    LastN {
+        field: String,
+        n: usize,
+        optional: bool,
+        backfill: bool,
+    },
+    First {
+        field: String,
+        optional: bool,
+        backfill: bool,
+    },
+    ExactMin {
+        field: String,
+        window: Duration,
+        bucket: Duration,
+        optional: bool,
+        where_expr: Option<Expr>,
+        backfill: bool,
+    },
+    ExactMax {
+        field: String,
+        window: Duration,
+        bucket: Duration,
+        optional: bool,
+        where_expr: Option<Expr>,
+        backfill: bool,
+    },
 }
 
 /// Schema diff result from re-registering a stream.
@@ -121,6 +160,12 @@ pub fn get_backfill_flag(def: &FeatureDef) -> bool {
         FeatureDef::Stddev { backfill, .. } => *backfill,
         FeatureDef::Percentile { backfill, .. } => *backfill,
         FeatureDef::Derive { .. } => false,
+        FeatureDef::Lag { backfill, .. } => *backfill,
+        FeatureDef::Ema { backfill, .. } => *backfill,
+        FeatureDef::LastN { backfill, .. } => *backfill,
+        FeatureDef::First { backfill, .. } => *backfill,
+        FeatureDef::ExactMin { backfill, .. } => *backfill,
+        FeatureDef::ExactMax { backfill, .. } => *backfill,
     }
 }
 
@@ -262,6 +307,24 @@ fn create_operator(def: &FeatureDef) -> Option<OperatorState> {
             Some(OperatorState::Percentile(PercentileOp::new(field.clone(), *quantile, *window, *bucket, *optional)))
         }
         FeatureDef::Derive { .. } => None, // Derives have no operator state
+        FeatureDef::Lag { field, n, optional, .. } => {
+            Some(OperatorState::Lag(LagOp::new(field.clone(), *n, *optional)))
+        }
+        FeatureDef::Ema { field, half_life_secs, optional, .. } => {
+            Some(OperatorState::Ema(EmaOp::new(field.clone(), *half_life_secs, *optional)))
+        }
+        FeatureDef::LastN { field, n, optional, .. } => {
+            Some(OperatorState::LastN(LastNOp::new(field.clone(), *n, *optional)))
+        }
+        FeatureDef::First { field, optional, .. } => {
+            Some(OperatorState::First(FirstOp::new(field.clone(), *optional)))
+        }
+        FeatureDef::ExactMin { field, window, bucket, optional, .. } => {
+            Some(OperatorState::ExactMin(ExactMinOp::new(field.clone(), *window, *bucket, *optional)))
+        }
+        FeatureDef::ExactMax { field, window, bucket, optional, .. } => {
+            Some(OperatorState::ExactMax(ExactMaxOp::new(field.clone(), *window, *bucket, *optional)))
+        }
     }
 }
 
@@ -278,6 +341,12 @@ fn get_where_expr(def: &FeatureDef) -> Option<&Expr> {
         FeatureDef::Stddev { where_expr, .. } => where_expr.as_ref(),
         FeatureDef::Percentile { where_expr, .. } => where_expr.as_ref(),
         FeatureDef::Derive { .. } => None,
+        FeatureDef::Lag { .. } => None,
+        FeatureDef::Ema { .. } => None,
+        FeatureDef::LastN { .. } => None,
+        FeatureDef::First { .. } => None,
+        FeatureDef::ExactMin { where_expr, .. } => where_expr.as_ref(),
+        FeatureDef::ExactMax { where_expr, .. } => where_expr.as_ref(),
     }
 }
 
@@ -1069,6 +1138,12 @@ impl PipelineEngine {
                 FeatureDef::Stddev { window, .. } => Some(*window),
                 FeatureDef::Percentile { window, .. } => Some(*window),
                 FeatureDef::Derive { .. } => None,
+                FeatureDef::Lag { .. } => None, // No window (event-count-based)
+                FeatureDef::Ema { .. } => None, // No window (decaying)
+                FeatureDef::LastN { .. } => None, // No window (event-count-based)
+                FeatureDef::First { .. } => None, // No window
+                FeatureDef::ExactMin { window, .. } => Some(*window),
+                FeatureDef::ExactMax { window, .. } => Some(*window),
             })
             .max()
             .unwrap_or(Duration::ZERO)

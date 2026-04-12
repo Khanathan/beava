@@ -9,7 +9,7 @@
 
 use serde::{Serialize, Deserialize};
 use std::time::SystemTime;
-use crate::engine::operators::{CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp, StddevOp, PercentileOp, Operator};
+use crate::engine::operators::{CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp, StddevOp, PercentileOp, LagOp, EmaOp, LastNOp, FirstOp, ExactMinOp, ExactMaxOp, Operator};
 use crate::engine::hll::DistinctCountOp;
 use crate::state::store::StaticFeature;
 use crate::types::FeatureValue;
@@ -44,6 +44,12 @@ pub enum OperatorState {
     DistinctCount(DistinctCountOp),
     Stddev(StddevOp),
     Percentile(PercentileOp),
+    Lag(LagOp),
+    Ema(EmaOp),
+    LastN(LastNOp),
+    First(FirstOp),
+    ExactMin(ExactMinOp),
+    ExactMax(ExactMaxOp),
 }
 
 impl OperatorState {
@@ -58,6 +64,12 @@ impl OperatorState {
             Self::DistinctCount(op) => op.push(event, now),
             Self::Stddev(op) => op.push(event, now),
             Self::Percentile(op) => op.push(event, now),
+            Self::Lag(op) => op.push(event, now),
+            Self::Ema(op) => op.push(event, now),
+            Self::LastN(op) => op.push(event, now),
+            Self::First(op) => op.push(event, now),
+            Self::ExactMin(op) => op.push(event, now),
+            Self::ExactMax(op) => op.push(event, now),
         }
     }
 
@@ -72,6 +84,12 @@ impl OperatorState {
             Self::DistinctCount(op) => op.read(now),
             Self::Stddev(op) => op.read(now),
             Self::Percentile(op) => op.read(now),
+            Self::Lag(op) => op.read(now),
+            Self::Ema(op) => op.read(now),
+            Self::LastN(op) => op.read(now),
+            Self::First(op) => op.read(now),
+            Self::ExactMin(op) => op.read(now),
+            Self::ExactMax(op) => op.read(now),
         }
     }
 }
