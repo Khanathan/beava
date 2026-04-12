@@ -422,17 +422,11 @@ def register(self, *stream_classes) -> None:
 | A2 | `EventSet`/`FeatureSet` do not need runtime `__init__` (schema-only) | Architecture Patterns | MEDIUM -- if users expect to instantiate EventSet for testing, need to add `__init__` in `__init_subclass__` |
 | A3 | `UnionSource` is transparent (contributes names to `depends_on`, not its own stream) | Pitfalls | MEDIUM -- if server requires a registered stream for every depends_on entry, union needs its own keyless stream registration |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Does `UnionSource` need its own stream registration?**
-   - What we know: CONTEXT.md says "compiles to multi-parent `depends_on`". The server accepts `depends_on` with multiple stream names.
-   - What's unclear: Whether `UnionSource` should register as its own keyless stream (creating an intermediate node) or just inject its children's names into the parent's `depends_on`.
-   - Recommendation: Start with transparent approach (inject children's names). If server needs intermediate stream, add it. Test against actual server.
+1. **Does `UnionSource` need its own stream registration?** — RESOLVED: No. Transparent approach adopted. `UnionSource` injects its children's names into the parent's `depends_on` list. No intermediate stream registration needed. Plan 16-01 Task 3 implements this.
 
-2. **Should `EventSet`/`FeatureSet` support instantiation?**
-   - What we know: Primary use is schema declaration (class attributes with `Field()`). IDE autocomplete is the key goal.
-   - What's unclear: Whether users will want to instantiate `TxnEvent(user_id="u1", amount=50.0)` for testing.
-   - Recommendation: Support instantiation by generating `__init__` in `__init_subclass__`. Low cost, high convenience for tests.
+2. **Should `EventSet`/`FeatureSet` support instantiation?** — RESOLVED: Yes. `__init_subclass__` generates `__init__` from Field descriptors. Low cost, high convenience for testing. Plan 16-01 Task 1 implements this.
 
 ## Validation Architecture
 
