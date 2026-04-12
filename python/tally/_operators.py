@@ -203,6 +203,74 @@ class Last(OperatorBase):
         return d
 
 
+class Stddev(OperatorBase):
+    """Standard deviation of a numeric field in a sliding window.
+
+    Args:
+        field: Name of the event field. Required (positional).
+        window: Duration string. Required.
+        optional: If True, missing field values are skipped.
+        where: Optional filter expression.
+        bucket: Optional bucket granularity.
+        backfill: If True, replay from event log on registration.
+    """
+
+    def __init__(self, field: str, *, window: str, optional: bool = False, where: str | None = None, bucket: str | None = None, backfill: bool = False) -> None:
+        self.field = field
+        self.window = window
+        self.optional = optional
+        self.where_clause = where
+        self.bucket = bucket
+        self.backfill = backfill
+
+    def to_json(self, name: str) -> dict:
+        d: dict = {"name": name, "type": "stddev", "field": self.field, "window": self.window}
+        if self.optional:
+            d["optional"] = True
+        if self.where_clause is not None:
+            d["where"] = self.where_clause
+        if self.bucket is not None:
+            d["bucket"] = self.bucket
+        if self.backfill:
+            d["backfill"] = True
+        return d
+
+
+class Percentile(OperatorBase):
+    """Percentile of a numeric field in a sliding window.
+
+    Args:
+        field: Name of the event field. Required (positional).
+        quantile: Quantile value between 0.0 and 1.0 (e.g. 0.95 for p95). Required.
+        window: Duration string. Required.
+        optional: If True, missing field values are skipped.
+        where: Optional filter expression.
+        bucket: Optional bucket granularity.
+        backfill: If True, replay from event log on registration.
+    """
+
+    def __init__(self, field: str, quantile: float, *, window: str, optional: bool = False, where: str | None = None, bucket: str | None = None, backfill: bool = False) -> None:
+        self.field = field
+        self.quantile = quantile
+        self.window = window
+        self.optional = optional
+        self.where_clause = where
+        self.bucket = bucket
+        self.backfill = backfill
+
+    def to_json(self, name: str) -> dict:
+        d: dict = {"name": name, "type": "percentile", "field": self.field, "quantile": self.quantile, "window": self.window}
+        if self.optional:
+            d["optional"] = True
+        if self.where_clause is not None:
+            d["where"] = self.where_clause
+        if self.bucket is not None:
+            d["bucket"] = self.bucket
+        if self.backfill:
+            d["backfill"] = True
+        return d
+
+
 class Derive(OperatorBase):
     """Expression computed over other features (evaluated on read, no state).
 

@@ -447,6 +447,8 @@ pub struct FeatureDefRequest {
     pub target: Option<String>,   // For lookup (used in Plan 03)
     #[serde(default)]
     pub backfill: Option<bool>,   // For schema evolution (SCHM-01/02)
+    #[serde(default)]
+    pub quantile: Option<f64>,    // For percentile operator (e.g. 0.95, 0.99)
 }
 
 // ---------------------------------------------------------------------------
@@ -485,7 +487,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
     if req.key_field.is_none() {
         for f in &req.features {
             let is_windowed = matches!(f.feature_type.as_str(),
-                "count" | "sum" | "avg" | "min" | "max" | "distinct_count" | "last");
+                "count" | "sum" | "avg" | "min" | "max" | "distinct_count" | "last" | "stddev" | "percentile");
             if is_windowed {
                 return Err(TallyError::Protocol(format!(
                     "keyless stream '{}' cannot have windowed operator '{}'; only derive features are allowed",
@@ -667,6 +669,73 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                 };
                 FeatureDef::DistinctCount {
                     field,
+                    window,
+                    bucket,
+                    optional: f.optional.unwrap_or(false),
+                    where_expr,
+                    backfill: f.backfill.unwrap_or(false),
+                }
+            }
+            "stddev" => {
+                let field = f.field.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': stddev requires 'field'",
+                        f.name
+                    ))
+                })?;
+                let window_str = f.window.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': stddev requires 'window' field",
+                        f.name
+                    ))
+                })?;
+                let window = parse_duration_str(&window_str)?;
+                let bucket = match f.bucket {
+                    Some(b) => parse_duration_str(&b)?,
+                    None => default_bucket(window),
+                };
+                FeatureDef::Stddev {
+                    field,
+                    window,
+                    bucket,
+                    optional: f.optional.unwrap_or(false),
+                    where_expr,
+                    backfill: f.backfill.unwrap_or(false),
+                }
+            }
+            "percentile" => {
+                let field = f.field.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': percentile requires 'field'",
+                        f.name
+                    ))
+                })?;
+                let quantile = f.quantile.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': percentile requires 'quantile' field (e.g. 0.95)",
+                        f.name
+                    ))
+                })?;
+                if !(0.0..=1.0).contains(&quantile) {
+                    return Err(TallyError::Protocol(format!(
+                        "feature '{}': quantile must be between 0.0 and 1.0, got {}",
+                        f.name, quantile
+                    )));
+                }
+                let window_str = f.window.ok_or_else(|| {
+                    TallyError::Protocol(format!(
+                        "feature '{}': percentile requires 'window' field",
+                        f.name
+                    ))
+                })?;
+                let window = parse_duration_str(&window_str)?;
+                let bucket = match f.bucket {
+                    Some(b) => parse_duration_str(&b)?,
+                    None => default_bucket(window),
+                };
+                FeatureDef::Percentile {
+                    field,
+                    quantile,
                     window,
                     bucket,
                     optional: f.optional.unwrap_or(false),
@@ -1559,7 +1628,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "median".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1582,7 +1651,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "histogram".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1607,7 +1676,7 @@ mod tests {
                 name: "cnt".into(),
                 feature_type: "count".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1630,7 +1699,7 @@ mod tests {
                 name: "total".into(),
                 feature_type: "sum".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1653,7 +1722,7 @@ mod tests {
                 name: "total".into(),
                 feature_type: "sum".into(),
                 field: Some("amount".into()), window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1676,7 +1745,7 @@ mod tests {
                 name: "mean".into(),
                 feature_type: "avg".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1699,7 +1768,7 @@ mod tests {
                 name: "ratio".into(),
                 feature_type: "derive".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1821,7 +1890,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "min".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1844,7 +1913,7 @@ mod tests {
                 name: "f1".into(),
                 feature_type: "last".into(),
                 field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None,
             }],
         };
         let result = convert_register_request(req);
@@ -2018,7 +2087,7 @@ mod tests {
                 name: "dc".into(),
                 feature_type: "distinct_count".into(),
                 field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None,
+                where_clause: None, on: None, target: None, backfill: None, quantile: None,
             }],
         };
         let result = convert_register_request(req);
@@ -2211,7 +2280,7 @@ mod tests {
                 where_clause: None,
                 on: None,
                 target: None,
-                backfill: None,
+                backfill: None, quantile: None,
             }],
         };
         let result = convert_register_request(req);
@@ -2241,11 +2310,142 @@ mod tests {
                 where_clause: None,
                 on: None,
                 target: None,
-                backfill: None,
+                backfill: None, quantile: None,
             }],
         };
         let stream = convert_register_request(req).unwrap();
         assert_eq!(stream.depends_on.as_ref().unwrap(), &vec!["RawEvents".to_string()]);
         assert!(stream.filter.is_some());
+    }
+
+    // ======================== Phase 16: stddev and percentile protocol tests ========================
+
+    #[test]
+    fn test_register_stddev_via_json() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [
+                {"name": "amount_stddev_1h", "type": "stddev", "field": "amount", "window": "1h"}
+            ]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        assert_eq!(stream.features.len(), 1);
+        assert_eq!(stream.features[0].0, "amount_stddev_1h");
+        match &stream.features[0].1 {
+            crate::engine::pipeline::FeatureDef::Stddev { field, window, bucket, optional, .. } => {
+                assert_eq!(field, "amount");
+                assert_eq!(*window, std::time::Duration::from_secs(3600));
+                assert_eq!(*bucket, std::time::Duration::from_secs(120)); // default_bucket(1h) = 120s
+                assert!(!optional);
+            }
+            other => panic!("expected Stddev, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_register_stddev_with_optional_and_where() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [
+                {"name": "amount_stddev_1h", "type": "stddev", "field": "amount", "window": "1h", "optional": true, "where": "status == 'success'"}
+            ]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        match &stream.features[0].1 {
+            crate::engine::pipeline::FeatureDef::Stddev { optional, where_expr, .. } => {
+                assert!(*optional);
+                assert!(where_expr.is_some());
+            }
+            other => panic!("expected Stddev, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_register_stddev_missing_field_errors() {
+        let json = serde_json::json!({
+            "name": "Test",
+            "key_field": "id",
+            "features": [
+                {"name": "sd", "type": "stddev", "window": "1h"}
+            ]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("stddev requires 'field'"));
+    }
+
+    #[test]
+    fn test_register_percentile_via_json() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [
+                {"name": "amount_p95_1h", "type": "percentile", "field": "amount", "quantile": 0.95, "window": "1h"}
+            ]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let stream = convert_register_request(req).unwrap();
+        assert_eq!(stream.features.len(), 1);
+        assert_eq!(stream.features[0].0, "amount_p95_1h");
+        match &stream.features[0].1 {
+            crate::engine::pipeline::FeatureDef::Percentile { field, quantile, window, bucket, optional, .. } => {
+                assert_eq!(field, "amount");
+                assert!((quantile - 0.95).abs() < f64::EPSILON);
+                assert_eq!(*window, std::time::Duration::from_secs(3600));
+                assert_eq!(*bucket, std::time::Duration::from_secs(120));
+                assert!(!optional);
+            }
+            other => panic!("expected Percentile, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_register_percentile_missing_quantile_errors() {
+        let json = serde_json::json!({
+            "name": "Test",
+            "key_field": "id",
+            "features": [
+                {"name": "p99", "type": "percentile", "field": "amount", "window": "1h"}
+            ]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("percentile requires 'quantile'"));
+    }
+
+    #[test]
+    fn test_register_percentile_invalid_quantile_errors() {
+        let json = serde_json::json!({
+            "name": "Test",
+            "key_field": "id",
+            "features": [
+                {"name": "bad", "type": "percentile", "field": "amount", "quantile": 1.5, "window": "1h"}
+            ]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("quantile must be between 0.0 and 1.0"));
+    }
+
+    #[test]
+    fn test_register_percentile_missing_field_errors() {
+        let json = serde_json::json!({
+            "name": "Test",
+            "key_field": "id",
+            "features": [
+                {"name": "p50", "type": "percentile", "quantile": 0.5, "window": "1h"}
+            ]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("percentile requires 'field'"));
     }
 }

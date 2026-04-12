@@ -9,7 +9,7 @@
 
 use serde::{Serialize, Deserialize};
 use std::time::SystemTime;
-use crate::engine::operators::{CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp, Operator};
+use crate::engine::operators::{CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp, StddevOp, PercentileOp, Operator};
 use crate::engine::hll::DistinctCountOp;
 use crate::state::store::StaticFeature;
 use crate::types::FeatureValue;
@@ -42,6 +42,8 @@ pub enum OperatorState {
     Max(MaxOp),
     Last(LastOp),
     DistinctCount(DistinctCountOp),
+    Stddev(StddevOp),
+    Percentile(PercentileOp),
 }
 
 impl OperatorState {
@@ -54,6 +56,8 @@ impl OperatorState {
             Self::Max(op) => op.push(event, now),
             Self::Last(op) => op.push(event, now),
             Self::DistinctCount(op) => op.push(event, now),
+            Self::Stddev(op) => op.push(event, now),
+            Self::Percentile(op) => op.push(event, now),
         }
     }
 
@@ -66,6 +70,8 @@ impl OperatorState {
             Self::Max(op) => op.read(now),
             Self::Last(op) => op.read(now),
             Self::DistinctCount(op) => op.read(now),
+            Self::Stddev(op) => op.read(now),
+            Self::Percentile(op) => op.read(now),
         }
     }
 }

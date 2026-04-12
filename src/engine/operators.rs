@@ -454,6 +454,226 @@ impl Operator for AvgOp {
     }
 }
 
+// ======================== StddevBucket ========================
+
+/// Bucket wrapper for StddevOp. Tracks count, sum, and sum-of-squares per bucket.
+/// Standard deviation is computed on read by aggregating across all buckets.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StddevBucket {
+    pub count: u64,
+    pub sum: f64,
+    pub sum_sq: f64,
+}
+
+impl Default for StddevBucket {
+    fn default() -> Self {
+        StddevBucket { count: 0, sum: 0.0, sum_sq: 0.0 }
+    }
+}
+
+// ======================== StddevOp ========================
+
+/// Computes the population standard deviation of a numeric field within a window.
+/// Uses bucketed ring buffer with (count, sum, sum_sq) per bucket.
+/// On read: variance = (sum_sq / count) - (mean * mean), stddev = sqrt(variance).
+/// Returns 0.0 if count < 2.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StddevOp {
+    field: String,
+    buffer: RingBuffer<StddevBucket>,
+    optional: bool,
+}
+
+impl StddevOp {
+    pub fn new(
+        field: impl Into<String>,
+        window_duration: std::time::Duration,
+        bucket_duration: std::time::Duration,
+        optional: bool,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            buffer: RingBuffer::new(window_duration, bucket_duration),
+            optional,
+        }
+    }
+}
+
+impl Operator for StddevOp {
+    fn push(&mut self, event: &serde_json::Value, now: SystemTime) -> Result<(), TallyError> {
+        match event.get(&self.field) {
+            None => {
+                if self.optional {
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: "absent".into(),
+                    })
+                }
+            }
+            Some(val) => {
+                if let Some(f) = val.as_f64() {
+                    self.buffer.update_current(|bucket| {
+                        bucket.count += 1;
+                        bucket.sum += f;
+                        bucket.sum_sq += f * f;
+                    }, now);
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: format!("{}", val),
+                    })
+                }
+            }
+        }
+    }
+
+    fn read(&mut self, now: SystemTime) -> FeatureValue {
+        self.buffer.advance_to(now);
+        let mut total_count: u64 = 0;
+        let mut total_sum: f64 = 0.0;
+        let mut total_sum_sq: f64 = 0.0;
+        for bucket in self.buffer.buckets_iter() {
+            total_count += bucket.count;
+            total_sum += bucket.sum;
+            total_sum_sq += bucket.sum_sq;
+        }
+        if total_count < 2 {
+            if total_count == 0 {
+                return FeatureValue::Missing;
+            }
+            return FeatureValue::Float(0.0);
+        }
+        let mean = total_sum / total_count as f64;
+        let variance = (total_sum_sq / total_count as f64) - (mean * mean);
+        // Floating-point rounding can produce tiny negative variance
+        let stddev = if variance < 0.0 { 0.0 } else { variance.sqrt() };
+        FeatureValue::Float(stddev)
+    }
+}
+
+// ======================== PercentileBucket ========================
+
+/// Bucket wrapper for PercentileOp. Stores a sorted Vec<f64> of all values
+/// pushed into this time bucket. On read, values from all non-expired buckets
+/// are merged and the quantile is computed exactly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PercentileBucket {
+    pub values: Vec<f64>,
+}
+
+impl Default for PercentileBucket {
+    fn default() -> Self {
+        PercentileBucket { values: Vec::new() }
+    }
+}
+
+// ======================== PercentileOp ========================
+
+/// Computes an approximate percentile of a numeric field within a window.
+/// Uses sorted Vec<f64> per ring bucket (exact within bucket granularity).
+/// On read: merges all non-expired bucket values and computes the quantile
+/// using linear interpolation (same as numpy's default method).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PercentileOp {
+    field: String,
+    quantile: f64,
+    buffer: RingBuffer<PercentileBucket>,
+    optional: bool,
+}
+
+impl PercentileOp {
+    pub fn new(
+        field: impl Into<String>,
+        quantile: f64,
+        window_duration: std::time::Duration,
+        bucket_duration: std::time::Duration,
+        optional: bool,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            quantile: quantile.clamp(0.0, 1.0),
+            buffer: RingBuffer::new(window_duration, bucket_duration),
+            optional,
+        }
+    }
+
+    /// Compute the quantile from a sorted slice using linear interpolation.
+    fn compute_quantile(sorted: &[f64], q: f64) -> f64 {
+        if sorted.is_empty() {
+            return 0.0;
+        }
+        if sorted.len() == 1 {
+            return sorted[0];
+        }
+        if q <= 0.0 {
+            return sorted[0];
+        }
+        if q >= 1.0 {
+            return sorted[sorted.len() - 1];
+        }
+        let index = q * (sorted.len() - 1) as f64;
+        let lower = index.floor() as usize;
+        let upper = index.ceil() as usize;
+        if lower == upper {
+            sorted[lower]
+        } else {
+            let frac = index - lower as f64;
+            sorted[lower] * (1.0 - frac) + sorted[upper] * frac
+        }
+    }
+}
+
+impl Operator for PercentileOp {
+    fn push(&mut self, event: &serde_json::Value, now: SystemTime) -> Result<(), TallyError> {
+        match event.get(&self.field) {
+            None => {
+                if self.optional {
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: "absent".into(),
+                    })
+                }
+            }
+            Some(val) => {
+                if let Some(f) = val.as_f64() {
+                    self.buffer.update_current(|bucket| {
+                        bucket.values.push(f);
+                    }, now);
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: format!("{}", val),
+                    })
+                }
+            }
+        }
+    }
+
+    fn read(&mut self, now: SystemTime) -> FeatureValue {
+        self.buffer.advance_to(now);
+        // Collect all values from all buckets, then sort
+        let mut all_values: Vec<f64> = Vec::new();
+        for bucket in self.buffer.buckets_iter() {
+            all_values.extend_from_slice(&bucket.values);
+        }
+        if all_values.is_empty() {
+            return FeatureValue::Missing;
+        }
+        all_values.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        FeatureValue::Float(Self::compute_quantile(&all_values, self.quantile))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -927,5 +1147,200 @@ mod tests {
         let result = op.push(&json!({}), t);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), TallyError::Type { ref got, .. } if got == "absent"));
+    }
+
+    // ======================== StddevOp Tests ========================
+
+    #[test]
+    fn test_stddev_basic_push_and_read() {
+        let mut op = StddevOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 10.0}), t).unwrap();
+        op.push(&json!({"amount": 20.0}), t).unwrap();
+        op.push(&json!({"amount": 30.0}), t).unwrap();
+        let val = op.read(t);
+        // stddev of [10, 20, 30]: mean=20, variance=((100+400+900)/3 - 400) = 200/3, stddev=sqrt(200/3) ~= 8.165
+        match val {
+            FeatureValue::Float(f) => assert!((f - 8.16496580927726).abs() < 0.001, "got {}", f),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_stddev_empty_returns_missing() {
+        let mut op = StddevOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        assert_eq!(op.read(t), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_stddev_single_value_returns_zero() {
+        let mut op = StddevOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 42.0}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Float(0.0));
+    }
+
+    #[test]
+    fn test_stddev_all_same_value_returns_zero() {
+        let mut op = StddevOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        for _ in 0..10 {
+            op.push(&json!({"amount": 5.0}), t).unwrap();
+        }
+        match op.read(t) {
+            FeatureValue::Float(f) => assert!(f.abs() < 1e-10, "expected ~0, got {}", f),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_stddev_window_expiry() {
+        // 5-minute window, 1-minute buckets
+        let mut op = StddevOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let t0 = ts(1000 * 60);
+        op.push(&json!({"amount": 100.0}), t0).unwrap();
+        op.push(&json!({"amount": 200.0}), t0).unwrap();
+
+        // After full window expires, data should be gone
+        let t1 = t0 + Duration::from_secs(10 * 60);
+        assert_eq!(op.read(t1), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_stddev_multiple_buckets() {
+        // 3-minute window, 1-minute buckets
+        let mut op = StddevOp::new("amount", Duration::from_secs(3 * 60), Duration::from_secs(60), false);
+        let t0 = ts(1000 * 60);
+        op.push(&json!({"amount": 2.0}), t0).unwrap();
+        let t1 = t0 + Duration::from_secs(60);
+        op.push(&json!({"amount": 4.0}), t1).unwrap();
+        let t2 = t0 + Duration::from_secs(120);
+        op.push(&json!({"amount": 6.0}), t2).unwrap();
+        // stddev of [2, 4, 6]: mean=4, variance=((4+16+36)/3 - 16) = 8/3, stddev=sqrt(8/3) ~= 1.633
+        match op.read(t2) {
+            FeatureValue::Float(f) => assert!((f - 1.632993161855452).abs() < 0.001, "got {}", f),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_stddev_where_clause_filtering_non_optional_errors() {
+        // Non-optional: missing field should error
+        let mut op = StddevOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        let result = op.push(&json!({}), t);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_stddev_optional_missing_field_skips() {
+        let mut op = StddevOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), true);
+        let t = ts(1000 * 60);
+        op.push(&json!({}), t).unwrap(); // should not error
+        assert_eq!(op.read(t), FeatureValue::Missing); // no data pushed
+    }
+
+    // ======================== PercentileOp Tests ========================
+
+    #[test]
+    fn test_percentile_basic_push_and_read_p50() {
+        let mut op = PercentileOp::new("amount", 0.5, Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        for i in 1..=100 {
+            op.push(&json!({"amount": i as f64}), t).unwrap();
+        }
+        // p50 of [1..100] with linear interpolation: index = 0.5 * 99 = 49.5
+        // = values[49] * 0.5 + values[50] * 0.5 = 50 * 0.5 + 51 * 0.5 = 50.5
+        match op.read(t) {
+            FeatureValue::Float(f) => assert!((f - 50.5).abs() < 0.01, "got {}", f),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_percentile_p95() {
+        let mut op = PercentileOp::new("latency", 0.95, Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        for i in 1..=100 {
+            op.push(&json!({"latency": i as f64}), t).unwrap();
+        }
+        // p95 of [1..100]: index = 0.95 * 99 = 94.05
+        // = values[94] * 0.95 + values[95] * 0.05 = 95 * 0.95 + 96 * 0.05 = 90.25 + 4.8 = 95.05
+        match op.read(t) {
+            FeatureValue::Float(f) => assert!((f - 95.05).abs() < 0.01, "got {}", f),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_percentile_empty_returns_missing() {
+        let mut op = PercentileOp::new("amount", 0.5, Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        assert_eq!(op.read(t), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_percentile_single_value() {
+        let mut op = PercentileOp::new("amount", 0.99, Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        op.push(&json!({"amount": 42.0}), t).unwrap();
+        assert_eq!(op.read(t), FeatureValue::Float(42.0));
+    }
+
+    #[test]
+    fn test_percentile_all_same_value() {
+        let mut op = PercentileOp::new("amount", 0.5, Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        for _ in 0..10 {
+            op.push(&json!({"amount": 7.0}), t).unwrap();
+        }
+        assert_eq!(op.read(t), FeatureValue::Float(7.0));
+    }
+
+    #[test]
+    fn test_percentile_window_expiry() {
+        let mut op = PercentileOp::new("amount", 0.5, Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let t0 = ts(1000 * 60);
+        op.push(&json!({"amount": 100.0}), t0).unwrap();
+
+        // After full window expires
+        let t1 = t0 + Duration::from_secs(10 * 60);
+        assert_eq!(op.read(t1), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_percentile_p0_and_p100() {
+        let mut op_p0 = PercentileOp::new("v", 0.0, Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op_p100 = PercentileOp::new("v", 1.0, Duration::from_secs(3600), Duration::from_secs(60), false);
+        let t = ts(1000 * 60);
+        for i in &[5.0, 1.0, 9.0, 3.0, 7.0] {
+            op_p0.push(&json!({"v": i}), t).unwrap();
+            op_p100.push(&json!({"v": i}), t).unwrap();
+        }
+        assert_eq!(op_p0.read(t), FeatureValue::Float(1.0));
+        assert_eq!(op_p100.read(t), FeatureValue::Float(9.0));
+    }
+
+    #[test]
+    fn test_percentile_optional_missing_field_skips() {
+        let mut op = PercentileOp::new("amount", 0.5, Duration::from_secs(3600), Duration::from_secs(60), true);
+        let t = ts(1000 * 60);
+        op.push(&json!({}), t).unwrap(); // should not error
+        assert_eq!(op.read(t), FeatureValue::Missing);
+    }
+
+    #[test]
+    fn test_percentile_multiple_buckets() {
+        // 3-minute window, 1-minute buckets
+        let mut op = PercentileOp::new("v", 0.5, Duration::from_secs(3 * 60), Duration::from_secs(60), false);
+        let t0 = ts(1000 * 60);
+        op.push(&json!({"v": 1.0}), t0).unwrap();
+        let t1 = t0 + Duration::from_secs(60);
+        op.push(&json!({"v": 2.0}), t1).unwrap();
+        let t2 = t0 + Duration::from_secs(120);
+        op.push(&json!({"v": 3.0}), t2).unwrap();
+        // p50 of [1, 2, 3]: index = 0.5 * 2 = 1.0 -> values[1] = 2.0
+        assert_eq!(op.read(t2), FeatureValue::Float(2.0));
     }
 }
