@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: New API & Engine
-status: Ready to plan
-stopped_at: Phase 16 ready for planning
-last_updated: "2026-04-12"
-last_activity: 2026-04-12 — Roadmap created for v2.0 (Phases 16-19)
+status: executing
+stopped_at: Completed 16-01-PLAN.md
+last_updated: "2026-04-12T22:08:21.004Z"
+last_activity: 2026-04-12
 progress:
-  total_phases: 4
+  total_phases: 16
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_plans: 2
+  completed_plans: 1
+  percent: 50
 ---
 
 # Project State
@@ -21,15 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** Events go in, features come out -- synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
-**Current focus:** Phase 16 -- Python SDK New Types and Decorators
+**Current focus:** Phase 16 — Python SDK -- New Types and Decorators
 
 ## Current Position
 
 Milestone: v2.0 New API & Engine
-Phase: 16 of 19 (Python SDK -- New Types and Decorators)
-Plan: 0 of ? in current phase
-Status: Ready to plan
-Last activity: 2026-04-12 — Roadmap created (4 phases, 13 requirements mapped)
+Phase: 16 (Python SDK -- New Types and Decorators) — EXECUTING
+Plan: 2 of 2
+Status: Ready to execute
+Last activity: 2026-04-12
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -55,6 +55,8 @@ All v1.0-v1.3 decisions archived in PROJECT.md Key Decisions table.
 - REGISTER stays runtime operation (enables on-demand compute post-launch)
 - Enriched propagation uses side-channel AHashMap (never clone serde_json::Value per hop)
 - All new RegisterRequest fields use #[serde(default)] for backward compat
+- [Phase 16]: Used __init_subclass__ (not metaclass) for EventSet/FeatureSet schema types
+- [Phase 16]: SourceDef/DatasetDef are plain objects returned by decorators, not modified classes
 
 ### Critical Pitfalls (from research)
 
@@ -74,6 +76,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-12
-Stopped at: Roadmap created for v2.0 milestone
+Last session: 2026-04-12T22:08:21.002Z
+Stopped at: Completed 16-01-PLAN.md
 Resume: `/gsd-plan-phase 16`
