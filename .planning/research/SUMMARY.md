@@ -1,163 +1,179 @@
 # Project Research Summary
 
-**Project:** Tally v1.3 — Concurrency & Client Batching
-**Domain:** Real-time feature server — break the single-core ceiling via key-partitioned multi-threading, async push coalescing, SDK batch API, and off-main-thread snapshot I/O
-**Researched:** 2026-04-11
-**Confidence:** MEDIUM-HIGH — risks concentrate in Phase 14 (product decisions + tokio runtime coordination)
-
----
+**Project:** Tally v2.0 — New API & Engine
+**Domain:** Function-based streaming pipeline API with EventSet/FeatureSet types, Rust engine enrichment, on-demand compute architecture
+**Researched:** 2026-04-12
+**Confidence:** HIGH
 
 ## Executive Summary
 
-v1.3 is mostly **table stakes for a >100k eps server**: every adjacent system (Redis pipelines, Aerospike `batch_write`, DragonflyDB `--num_shards`, Scylla `--smp`) already ships these four capabilities. The four phases decompose cleanly along the push path but are **not equally risky** — Phase 14 (sharded runtime) is the largest architectural change since v1.0, while 12, 13, and 15 are additive/surgical around it.
+Tally v2.0 is a disciplined API redesign of an existing, functioning real-time feature server. The change replaces the `@st.stream` decorator pattern with a function-based `@tl.dataset(depends_on=[...])` pattern using explicit `EventSet` / `FeatureSet` types — informed directly by the founder's experience at Fennel and validated against Pathway, Hamilton, Bytewax, and dbt. The ecosystem has converged on three principles that v2.0 must implement: explicit dependency declaration, explicit grouping via `.group_by().agg()`, and typed input/output contracts. The critical differentiator is that Tally's types are NOT DataFrames — they honestly represent event streams and keyed feature tables without the Pandas compat trap.
 
-Research consensus on **build order is 12 → 13 → 14 → 15** (the drafted order). Phase 12 establishes `handle_push_batch` as a shared primitive that Phase 13's wire format reuses verbatim and Phase 14's cross-shard workers also reuse as their inbound dispatch handler. Phase 15 becomes trivial after 14 because each shard clones-and-writes its own snapshot segment under its own lock in parallel.
+The recommended approach is a staged, incremental rewrite. The Python SDK and Rust engine work streams can proceed in parallel since all new Python types compile to a superset of the same `RegisterRequest` JSON the engine already consumes. The Rust engine requires exactly three surgical additions totaling roughly 200 LOC: enriched event propagation (the critical unlock — ~50 LOC in `push_with_cascade_internal`), feature projection (~20 LOC response filter), and union node semantics (~30 LOC in `rebuild_dag`). Zero new Rust crates. Zero wire protocol changes. The single new Python dependency is `typing_extensions>=4.6` for `dataclass_transform` backport. Old API removal is a clean break justified by the pre-launch stage — no external users to migrate.
 
-**Critical risks concentrate in Phase 14:** cross-shard fan-out error semantics are a **product decision, not just engineering** — v1.2 surfaces fan-out errors on the originating PUSH, and v1.3 cannot preserve that without reintroducing synchronous cross-shard coordination that defeats the point. Cache-line false sharing, `std::Mutex` poisoning under panic, and snapshot cross-shard consistency are the other load-bearing concerns. These need explicit locked decisions before Phase 14 plans are written.
-
----
-
-## Build Order Decision: 12 → 13 → 14 → 15
-
-1. **12 → 13:** Phase 13's `OP_PUSH_BATCH` server handler **is** Phase 12's `handle_push_batch`. 12 first establishes the primitive; 13 becomes wire-format + Python SDK only.
-2. **13 → 14:** 12+13 are independently shippable wins that **de-risk** the 2–3 week Phase 14 refactor. Phase 14's cross-shard channel can then send `PushBatch` messages reusing the same handler from day one.
-3. **14 → 15:** Phase 15 is "trivial split of existing `spawn_blocking`" after sharding — each shard clones under its own lock in parallel. Shipping 15 first means rewriting it after 14. The 15–25% snapshot stall is real but not blocking 1M eps; 14 is.
-
-**Rejected:** 14-first (max risk, no early wins); 12→13→15→14 (redoes 15).
+The key risk cluster is centered on enriched event propagation. Naively cloning `serde_json::Value` per cascade hop can collapse throughput at 1.1M eps; the correct approach is a side-channel `AHashMap<String, FeatureValue>` that passes enriched fields without copying the event. A secondary risk is the "two APIs being replaced" confusion — v2.0 replaces BOTH `@st.stream` AND the DataFrame API (`_dataframe.py`), which means 744 tests need migrating before any code deletion. The safe sequencing is: build new API, port all tests, verify count >= 744, then remove old API.
 
 ---
 
-## Stack Additions
+## Key Findings
 
-| Crate | Version | Phase | Purpose | Notes |
-|---|---|---|---|---|
-| `parking_lot` | `0.12` (0.12.5) | 14 | Per-shard `Mutex<ShardStore>` | ~25ns uncontended vs std ~60ns. **No poisoning** — load-bearing for panic-in-operator safety. Not reentrant; Guard is !Send — fine because shard locks never cross `.await`. |
-| `crossbeam-channel` | **`>=0.5.15`** (pin) | 14 | Sync MPMC for cross-shard fan-out | **MUST be ≥0.5.15** — RUSTSEC-2025-0024 (double-free on Drop) affects 0.5.12–0.5.14. Sync channel keeps cross-shard dispatch inside shard critical section without `.await`. |
-| `crossbeam-utils` | `0.8` (0.8.21) | 14 | `CachePadded<T>` for per-shard counters | Arch-portable (64B x86_64, 128B aarch64). Non-negotiable for false-sharing defense — without it, 16-shard scaling drops to ~2× due to cache-line bounces. |
-| `core_affinity` | `0.8` (0.8.3) | 14 optional | CPU pinning, feature-gated | Behind `--features core-affinity` (default OFF). Bare-metal NUMA boxes get 5–15% win; containers often no-op. |
-| `xxhash-rust` | `0.8` (pin exactly) | 14 | `xxh3_64` for shard routing | **Fifth crate, from ARCHITECTURE research, not STACK.** ahash is NOT spec-stable across crate versions — routing must survive `cargo update`. xxh3 spec-stable + fixed seed. Include hash-version byte in manifest header. |
+### Recommended Stack
 
-**Rejected:** `dashmap`/`scc`/`sharded-slab` (worker-per-shard already owns the map); `flume` (interchangeable, crossbeam wins ecosystem); `num_cpus` (superseded by `std::thread::available_parallelism()`, stable since 1.59, honors cgroup v2); `hwloc` (abandoned 2017); `rayon` for snapshot I/O (wrong tool); `tokio::time::sleep(200us)` for coalescing (1ms wheel granularity — use deadline-armed `sleep_until`).
+The existing Rust stack is locked in and requires no new crates. All v2.0 engine changes use crates already in `Cargo.toml`: `serde_json` for enriched event mutation, `petgraph 0.8` for multi-parent union DAGs, and `parking_lot` for the existing lock hierarchy. The Python SDK adds exactly one new dependency.
 
-**Net hot-path cost change:** ~0 to -30ns per event (parking_lot savings offset shard routing cost), so Phase 14 single-client ±10% budget is achievable.
+**Core technologies:**
+- `typing_extensions>=4.6` (Python, new): `dataclass_transform` backport for PEP 681 — gives IDE autocomplete on `@tl.source`/`@tl.dataset` without Pydantic's 5.4MB Rust core
+- `serde_json::Value` side-channel (Rust, existing): enrichment accumulator as `AHashMap<String, FeatureValue>` — zero-copy approach avoids per-hop allocation cliff at 1.1M eps
+- `petgraph 0.8` (Rust, existing): multi-parent DAG for union nodes — already supports multiple `depends_on` entries natively
+- Custom `Field` descriptor (Python, new, zero deps): typed schema fields for EventSet/FeatureSet — proxy objects that compile to `RegisterRequest` JSON
 
----
+**Explicitly rejected:** Pydantic v2 (5.4MB Rust core for definition-only SDK), new Rust crates for enriched propagation (50 LOC of `serde_json` manipulation), `uuid` crate for ephemeral IDs (SDK-side naming convention suffices).
 
-## Architectural Seams by Phase
+### Expected Features
 
-### Phase 12 — Server-side async coalescing
-- **`src/server/tcp.rs` `handle_connection`** — new `ConnAccumulator` stack-allocated **connection-local** (never on AppState). Four flush triggers: size (N=64), time (T=200µs), forced-on-sync-command, forced-on-connection-close. `select! { biased; read | sleep_until(deadline) if !empty }` pattern.
-- **`src/server/tcp.rs` new `handle_push_batch`** — takes **one** lock, groups events by primary stream, iterates once per group. Looks up `key_field`, cascade targets, `fan_out_targets` **once per stream**.
-- **`src/engine/pipeline.rs` new `push_batch_no_features(stream, &[events])`**; **`src/state/event_log.rs` `append_many`**; **`src/state/store.rs` `mark_dirty_many`**.
-- **Error contract:** returns `Vec<Result<(), TallyError>>` in input order; read loop writes STATUS_ERROR frames with `(batch_id, event_index)` in drain order.
+**Must have (table stakes):**
+- `@tl.dataset(depends_on=[...])` function-based decorator — every DAG-based pipeline system makes dependencies explicit at definition site
+- `EventSet` and `FeatureSet` types — honest types without DataFrame pretense
+- Explicit `.group_by("key").agg(...)` — universal pattern; already built in `_dataframe.py`, port to new surface
+- `filter()`, `transform()`/`map()`, `join()`, `select()`/`drop()`/`rename()` — table stakes; all map to existing engine capabilities
+- `union()` — merge multiple event sources; multi-parent `depends_on` already works in the DAG
+- Enriched event propagation — the single most important engine change; without it, derived datasets cannot reference upstream computed fields
+- Feature projection (response-only) — `select()` restricts PUSH/GET responses; ~20 LOC Rust filter
+- Old API removal — clean break; `@st.stream`, `@st.view`, and `_dataframe.py` all replaced
 
-### Phase 13 — `push_many` + OP_PUSH_BATCH (0x0A)
-- **`src/server/protocol.rs`** — new decoder ~30 lines. Wire: `[u16 stream_len][stream][u32 count][ for each: [u32 event_len][event_bytes] ]`. All events in one frame target **same stream**.
-- **`python/tally/_app.py` `App.push_many`** — reuses existing `encode_push_binary_payload`, prepends envelope, sends via `send_frame_no_recv`. Drain errors via unchanged `drain_errors_nonblock`.
-- **`src/server/tcp.rs` dispatch** — decodes into pre-sized `Vec<DecodedEvent>`, calls `handle_push_batch` from Phase 12. Zero new hot-path logic.
-- **Hard cap:** 16,384 events per batch (matches Redis pipeline). Reject oversized → STATUS_ERROR + close conn.
-- **Backward compat:** `OP_PUSH_ASYNC 0x07` stays forever as single-event fast path.
+**Should have (competitive differentiators):**
+- Portable pipeline definitions — same JSON works for startup registration, runtime REGISTER, and future ephemeral pipelines
+- Ephemeral pipeline schema fields (`ephemeral: bool`, `ttl`, `max_keys`) — add to `RegisterRequest` now, implement lifecycle post-launch
+- `validate()` method for local DAG validation before server submission — prevents partial registration state
+- Stable dataset names via function names — prevents auto-naming collision bugs
 
-### Phase 14 — Key-partitioned multi-threaded engine
-- **Runtime model — `src/main.rs`:** replace `current_thread` tokio with **one dedicated `std::thread` per shard, each running its own `current_thread` tokio runtime** (Seastar/Glommio pattern). Plus **one multi-thread tokio runtime** for TCP accept + HTTP (`worker_threads=2`, `max_blocking_threads=2`). Rejected: multi-thread work-stealing (destroys locality); `LocalSet::spawn_local` (subtle).
-- **`src/shard/mod.rs` (new) `ShardStore` + `ShardWorker`:** owns `entities`, `dirty_keys`, `deleted_keys`, per-stream `event_log`, per-shard `throughput`, per-shard `latency`, per-shard `CachePadded<AtomicU64>` metrics.
-- **`src/shard/routing.rs` `key_to_shard`:** **`xxh3_64(key, seed=0) % N`** — do NOT use ahash. Shard vec is `Arc<[Shard]>`, immutable after startup (no dynamic rebalancing in v1.3).
-- **`src/shard/message.rs` `CrossShardMsg`:** `{ PushBatch, MGet { keys, reply: oneshot }, DebugQuery, RegisterStream, PrepareSnapshot }`. `crossbeam-channel` bounded(4096) per shard inbox. **Always batched** — never single-event cross-shard sends.
-- **`src/engine/pipeline.rs` `ArcSwap<Arc<PipelineEngine>>`:** engine read-only after REGISTER. Every shard reads `arcswap.load()` — near-zero cost, no locking. Rejected: broadcast-to-shards (partial application risk); shared RwLock (hot-path read cost).
-- **Coordinator — `src/server/tcp.rs`:** accepts TCP, picks home shard, hands off FD. Connection lifetime lives on one shard worker.
-- **MGET/GET scatter-gather:** hash each key to shard, send `CrossShardMsg::MGet { keys, reply }`, merge in input order. GET gains ~1–2µs, stays inside <50µs p99.
-- **Event log per-shard — `src/state/event_log.rs`:** directory becomes `events/shard-N/stream.log`. Each shard owns its own `BufWriter<File>` + fsync timer. Backfill cold path interleaves across shards.
-- **Snapshot format v7 — `src/state/snapshot.rs`:** new `tally.snapshot.manifest.{seq}` containing `{seq, num_shards, per_shard_hashes, format_version: 7, hash_version}`. Per-shard files: `tally.snapshot.base.{seq}.shard-NN`. **Manifest atomic-rename is the commit point**; missing manifest → roll back to previous (Postgres commit-file model, Dragonfly per-thread RDB). **v6 compat:** check manifest first, fall back to v6 scan, load into shard 0 and re-shard by xxh3 on the fly.
+**Defer to post-launch:**
+- On-demand compute lifecycle (TTL enforcement, memory limits, pipeline-level eviction)
+- One-shot replay queries — requires S3 replay log as primitive
+- Typed schema validation at REGISTER time
+- Computation-pruning projection (start response-only, optimize later)
+- Session windows, cross-key aggregations, watermarks/late-arrival handling
 
-### Phase 15 — Snapshot I/O off main thread
-- **`src/state/snapshot_coord.rs` (new) `SnapshotCoordinator`:** broadcasts `CoordMsg::PrepareSnapshot { seq, full }` to every shard.
-- **Per-shard flow:** each shard acquires own lock → clones dirty → releases lock → `spawn_blocking` per-shard serialize+write+fsync → `oneshot` reply. All N shards in parallel; per-shard stall ~1/N of v1.2.
-- **Manifest commit:** coordinator waits for all replies → `manifest.N.tmp` → fsync → rename → fsync parent dir → cleanup old.
-- **Backpressure:** never start a new snapshot cycle while previous is writing. Metric for skipped cycles; alert if > 0.
-- **`POST /snapshot?wait=true&timeout_ms=N` (D3):** trivial add after Phase 15. Mirrors Redis `SAVE` vs `BGSAVE`.
+**Anti-features (explicitly avoid):**
+- DataFrame simulation — every missing method is a support ticket
+- Python UDFs/lambdas in pipeline — serializing closures is fragile; expression language covers 95% of use cases
+- Fennel-style `@extractor` functions — derive expressions already serve this purpose with zero Python overhead
 
----
+### Architecture Approach
 
-## Top 8 Pitfalls (ranked from 24 cataloged in PITFALLS.md)
+The v2.0 architecture is primarily a Python SDK rewrite that compiles to a superset of the existing `RegisterRequest` JSON format. The Rust engine receives three surgical additions but its core structures survive unchanged. `EventSet` and `FeatureSet` are Python-side compile-time abstractions only; the server has no concept of them. This means the new API is 100% testable on the existing server before any Rust changes land.
 
-| # | Pitfall | Phase | Severity | Prevention |
-|---|---|---|---|---|
-| 1 | **Cross-shard fan-out deadlock** (AB-BA when two events fan out through opposite-direction stream pairs) | 14 | **CRITICAL** | Release shard lock BEFORE enqueueing cross-shard message. Fan-out is async enqueue, never nested lock. Loom test with 2 shards + 2 fan-out directions. (C-1) |
-| 2 | **Cache-line false sharing on shard vec** (16 shards yields 2× not 10×) | 14 | **CRITICAL** | Wrap per-shard metrics/atomics in `crossbeam_utils::CachePadded`. Bench 1/2/4/8/16 shards on empty pipeline — sub-linear = false sharing; verify with `perf c2c`. (C-6) |
-| 3 | **`std::Mutex` poisoning under panic-on-shard** (current code already ignores poisoning; silent corruption risk with N shards) | 14 | **CRITICAL** | Use `parking_lot::Mutex` (no poisoning, 2× faster). Audit operator `push`/`read` for panics → `TallyError`. Panic → reset shard + reload from snapshot. (C-5) |
-| 4 | **`std::MutexGuard` across `.await`** (compiles silent on current_thread, UB on multi-thread) | 12, 14 | **CRITICAL** | Keep shard critical sections strictly sync. Never `tokio::sync::Mutex` for shard state (~10× slower). Multi-thread runtime at Phase 14 boundary = free compile-time gate. (C-7) |
-| 5 | **Coalescing reorders events vs drain** (Phase 11 drain-in-push-order guarantee) | 12, 14 | **CRITICAL** | Per-connection monotonic `seq: u64`; drain sorts/streams by seq. Batch-level error surface reuses `(batch_id, event_index)` from Phase 13 success criterion 5. Bench test: bad event at known index. (C-2) |
-| 6 | **Snapshot cross-shard consistency impossible without stop-the-world** | 14 plan, 15 impl | **CRITICAL — product decision** | Accept **shard-local consistency**. Document as v1.3 locked decision, sibling to "lose ~30s on crash". Manifest + SHA-256 per shard is commit boundary. Incremental dirty sets become per-shard. (C-3) |
-| 7 | **Head-of-line blocking on a hot shard** (skewed keys) | 14 | HIGH → MODERATE | Document. `/debug/shards` exposes inbox depth + per-shard eps. **Do not add priority queues** — users fix with key design. (M-2) |
-| 8 | **Phase-11-class hot-path regression** (Phase 11 missed 148× slowdown on large×async×HLL because gate was medium-only) | 12, 13, 14, 15 | HIGH | Bench matrix MUST cover small/medium/large × sync/async × with-HLL on every gate. Zipfian multi-key for cross-shard. **Measure per-shard, not just aggregate**. Bench DURING snapshot cycle. |
+**Major components (new or modified):**
+1. `@tl.source` / `@tl.dataset` decorators (`_source.py`, `_dataset.py`) — compile Python function definitions to `RegisterRequest` JSON; replace all three legacy API layers
+2. `EventSet` / `FeatureSet` types (`_types.py`) — Python-only type annotations; validate constraints at definition time
+3. Enriched event propagation (`pipeline.rs`) — side-channel `AHashMap` accumulates upstream derive results; `EvalContext` gains third resolution source (enrichment → features → event → Missing)
+4. `StreamDefinition` additions (`pipeline.rs`) — `projection: Option<Vec<String>>`, `ephemeral: bool`; both additive with `#[serde(default)]`
+5. `EphemeralLimits` manager — max pipelines, max keys, memory budget; snapshot filtering
 
-Full catalog: 7 CRITICAL, 7 HIGH, 7 MODERATE, 3 LOW in PITFALLS.md.
+**Unchanged:** `StateStore`/`DashMap`, `OperatorState` enum, wire protocol opcodes, expression evaluator, event log, window/HLL/operators.
 
----
+### Critical Pitfalls
 
-## Locked Decisions Needing Product Review
+1. **Enriched propagation allocation cliff (C-1)** — Never clone `serde_json::Value` per cascade hop. Use side-channel `AHashMap<String, FeatureValue>`. Gate: < 5% regression from 1.1M eps baseline before merging.
 
-### LD-1. Cross-shard fan-out error swallowing
-**Change:** v1.2 surfaces fan-out errors on the originating PUSH's drain queue. In v1.3 under sharding, fan-out becomes an **async enqueue to target shard's inbox**; origin shard does **not** await. Target-shard errors log to that shard's metrics but **do not propagate** to originating client's drain.
-**Why forced:** Preserving v1.2 semantic reintroduces sync coordination that defeats Phase 14, and creates AB-BA deadlock surface (C-1).
-**Mitigation options:**
-- **(a) Fire-and-forget + per-shard per-stream error metrics + alert on rate** — recommended, matches Flink keyed-state shuffle.
-- (b) Best-effort eventual drain merge — complex, partial guarantee.
-- (c) Awaitable deadline — conflicts with Phase 12 coalescing. Defer.
+2. **Old API removal breaks 744 tests (C-2)** — Mandatory sequencing: build new API → port ALL tests → verify count >= 744 → then remove old API. Never in the same phase.
 
-**Recommendation:** Adopt (a). Document in release notes + `/debug/shards`. Lock in Phase 14 plan doc.
+3. **RegisterRequest wire format backward compat (C-3)** — ALL new fields must have `#[serde(default)]`. Add snapshot round-trip test. Bump snapshot format version.
 
-### LD-2. `num_shards` persistence and migration contract
-Persist `num_shards` in manifest + config file. Changing across restarts requires **explicit `TALLY_ALLOW_RESHARD=1`** and triggers migration on load. Silent shard-count drift (e.g., 32 → default → 16) is a correctness trap.
-**Recommendation:** Adopt. Phase 14 plan must include explicit migration test.
+4. **DataFrame API ALSO being replaced (C-4)** — v2.0 removes three APIs: `@st.stream`, `@st.view`, AND `_dataframe.py`. Test migration checklist must include `test_dataframe.py`.
 
-### LD-3. Snapshot is shard-local consistent, not globally consistent
-Sibling relaxation to "losing ~30s on crash is acceptable". Fan-out events may land in target-shard snapshot but not origin-shard snapshot within one cycle. Manifest guarantees per-shard files exist and hash-match, NOT that they reflect the same logical moment.
-**Recommendation:** Document in PROJECT.md "Key Decisions" table.
-
-### LD-4. Hash function for shard routing — xxh3, not ahash
-Pin `xxhash-rust` version; include hash-version byte in manifest header. ahash is NOT spec-stable across crate versions — a `cargo update` could re-shard everything on next restart. Spec-stability is load-bearing for snapshot-across-restart correctness.
-**Recommendation:** Use `xxh3_64` with fixed seed. Add `xxhash-rust = "0.8"` to Phase 14 `Cargo.toml` (fifth new crate beyond STACK's four).
+5. **Enriched propagation + DashMap concurrency (C-5)** — Enrichment values computed during upstream push, stored in local variable, never re-enter DashMap during downstream push. Write 8-thread concurrency stress test.
 
 ---
 
-## Open Questions for Roadmapper
+## Implications for Roadmap
 
-1. **Connection → home-shard assignment policy:** round-robin (simple, may starve) vs first-frame key hash (locality-optimal, requires peeking). Defer to Phase 14 plan; default to round-robin.
-2. **`shard_count` power-of-two:** research slightly prefers non-power-of-two with `%` (trivial cost); `num_cpus` rarely is 2^k.
-3. **Sync PUSH bypasses coalescer** — Phase 12 must wire opcode-discriminated flush-on-arrival. Test coverage: mix sync + async, assert sync p99 unchanged vs v1.2.
-4. **REGISTER vs PUSH race under ArcSwap** — allowed to be slightly async with lazy log-open; needs explicit test.
-5. **Cross-shard channel backpressure behavior** when target shard is full: `try_send → Err(Full)` surfaces via drain. Drop vs retry? Lock in Phase 14 plan.
-6. **Debug UI per-shard surfaces (D2):** FEATURES lists as "add if time permits". Research recommends including — incremental cost low after Phase 14, high-visibility differentiation vs Scylla/Dragonfly.
+Based on combined research, the natural phase structure follows the dependency graph: Python SDK types first (de-risks API design before touching Rust), critical engine unlock second, additive engine features third, cleanup last.
+
+### Phase 1: Python SDK — New Types and Decorators
+**Rationale:** 100% testable on existing server without Rust changes. De-risks the API design. If JSON format needs adjustment, discover it before touching the hot path.
+**Delivers:** `@tl.source`, `@tl.dataset`, `EventSet`, `FeatureSet`, `tl.union()`, `Field` descriptor, `dataclass_transform` IDE integration, local `validate()` method, `_tally_stream_name` protocol on new objects
+**Addresses features:** All new Python-surface API (decorator, types, operators, union, portable definitions)
+**Avoids pitfalls:** C-4 (explicit plan for `_dataframe.py`), H-1 (`_tally_stream_name` protocol), H-7 (explicit names via function names), M-2 (string `depends_on` refs), M-5 (keep `tally` package name)
+**Test plan:** Python unit tests verifying JSON compilation. Integration tests on existing unmodified server. New-API test count must meet or exceed 744 before Phase 4 can run.
+
+### Phase 2: Rust Engine — Enriched Event Propagation
+**Rationale:** The single most critical engine change. Without it, the multi-stage pipeline pattern (`map` → `group_by` → downstream `sum("amount_usd")`) does not work and the entire v2.0 value proposition breaks.
+**Delivers:** Side-channel enrichment in `push_with_cascade_internal`; `EvalContext.enrichment` third resolution source; `needs_derive_for_cascade` pre-computed in `rebuild_dag` for async optimization
+**Addresses features:** Derived datasets referencing upstream computed fields
+**Avoids pitfalls:** C-1 (side-channel, no event clone), C-5 (enrichment computed under entity lock), M-1 (EvalContext resolution order)
+**Test plan:** Multi-stage integration tests. Sync and async push mode verification. Full pipeline matrix benchmark; gate on < 5% regression from 1.1M eps baseline.
+
+### Phase 3: Rust Engine — Feature Projection and Ephemeral Flag
+**Rationale:** Small, additive, independent changes. Can run in parallel with Phase 4. Projection correctness depends on Phase 2 being stable (must confirm projection does not interfere with enrichment propagation).
+**Delivers:** `projection` on `StreamDefinition`; response-layer feature filtering; `ephemeral: bool`; snapshot filtering; new `RegisterRequest` optional fields with `#[serde(default)]`
+**Avoids pitfalls:** C-3 (all new fields defaulted, snapshot round-trip test), M-4 (projection is response-only), H-4 (keyless streams with only derives do not create entity state — verify preserved)
+**Test plan:** Projection unit tests. Empty projection and nonexistent field name edge cases. v1.3-format snapshot load test in v2.0 server. No benchmark regression from Phase 2 baseline.
+
+### Phase 4: Old API Removal
+**Rationale:** Clean break correct pre-launch. Deferred until Phase 1 tests are stable and count >= 744. Phases 3 and 4 can run in parallel after Phase 2 merges.
+**Delivers:** Deletion of `_stream.py`, `_view.py`, legacy operator aliases, `@st.stream`/`@st.view` surface, legacy `_dataframe.py` public API; clean `__init__.py`
+**Avoids pitfalls:** C-2 (port all tests first), L-2 (`test_dataframe.py` in migration checklist), L-5 (no phase where `__init__.py` exports broken symbols)
+**Test plan:** `cargo test && pytest` pass on new API only. Test count >= 744. No `@st.stream` references outside archived files.
+
+### Phase Ordering Rationale
+
+- Python SDK first: API design mistakes surface before Rust is touched; new types compile to existing JSON, 100% testable immediately
+- Enriched propagation second: highest-risk hot-path change; must be validated and benchmarked in isolation before other Rust changes layer on top
+- Projection and ephemeral flag third: both small and additive; projection correctness depends on enrichment stability; can run as parallel work streams within the phase
+- Old API removal last: sequential dependency on Phase 1 test count being >= 744; Phases 3 and 4 can run in parallel after Phase 2 merges
+
+### Research Flags
+
+Phases likely needing deeper research during planning:
+- **Phase 2 (Enriched Propagation):** The async path optimization (`needs_derive_for_cascade` pre-computation) interacts with `push_no_features` in non-obvious ways. Recommend a design doc with traced examples for the 3-level cascade before coding.
+- **Phase 3 (Ephemeral Flag):** Memory limit enforcement design (per-pipeline key count, global budget, eviction policy) is pattern-based, not yet code-grounded. Needs implementation design before `EphemeralLimits` is finalized.
+
+Phases with standard patterns (skip research-phase):
+- **Phase 1 (Python SDK):** `dataclass_transform` is well-documented (PEP 681, Fennel, attrs); compilation model already exists in `_dataframe.py`
+- **Phase 4 (Old API Removal):** Mechanical deletion with clear inventory; no design decisions
 
 ---
 
 ## Confidence Assessment
 
-| Area | Confidence |
-|---|---|
-| Stack choices, versions, security | **HIGH** (crates.io verified 2026-04-11, RUSTSEC cross-checked) |
-| Feature table-stakes / differentiator | **HIGH** (adjacent systems well-documented) |
-| Existing Tally architecture | **HIGH** (read directly from source) |
-| Phase 12 coalescing design | **HIGH** (canonical tokio idiom) |
-| Phase 13 wire format + SDK | **HIGH** (trivial extension of Phase 11 encoding) |
-| Phase 14 runtime model | **MEDIUM-HIGH** (Seastar pattern established; tokio specifics need 1-day spike) |
-| **Phase 14 cross-shard error semantics (LD-1)** | **MEDIUM — weakest point** (product decision, not engineering) |
-| Phase 14 snapshot format v7 + manifest | **HIGH** (Postgres commit-file pattern) |
-| Phase 15 post-Phase-14 | **HIGH** (trivial split of existing spawn_blocking) |
-| Build order 12→13→14→15 | **HIGH** (dependency-driven) |
+| Area | Confidence | Notes |
+|------|------------|-------|
+| Stack | HIGH | All Rust changes use existing verified crates; single Python dep confirmed against PEP 681 and 3.10 compat |
+| Features | HIGH | Fennel pattern from direct founder experience; Pathway/Hamilton/dbt from active official sources; engine gaps from direct code inspection |
+| Architecture | HIGH | Design grounded in direct reading of `pipeline.rs`, `protocol.rs`, `_dataframe.py`; changes are well-scoped additions |
+| Pitfalls | HIGH (integration); MEDIUM (ephemeral lifecycle) | Integration pitfalls cited to line numbers; ephemeral lifecycle is pattern-based, lifecycle deferred |
 
-**Overall: MEDIUM-HIGH.** Risk concentrated in LD-1 (product call) and Phase 14 runtime coordination unknowns.
+**Overall confidence:** HIGH
 
----
+### Gaps to Address
 
-## Source Files Index
-
-- **`.planning/research/STACK.md`** (HIGH) — Per-crate eval, versions, RUSTSEC, rejected alternatives, worker-thread boot code, hot-path cost budget, Cargo.toml additions. Read for Phase 14 Cargo changes or Phase 12 timer code.
-- **`.planning/research/FEATURES.md`** (HIGH) — Table stakes vs differentiators, competitor matrix (Redis/Aerospike/Scylla/Dragonfly/Flink), concrete API shapes (`push_many`, `OP_PUSH_BATCH`, `--shards N`, coalescing knobs, `/snapshot?wait=true`, debug UI), MVP per phase. Read for Phase 13 SDK or any user-facing surface.
-- **`.planning/research/ARCHITECTURE.md`** (HIGH / MEDIUM-HIGH) — v1.2 hot-path under Big Mutex, phase-by-phase integration, state decomposition table, cross-shard fan-out mechanism, snapshot v7 manifest commit protocol, MGET scatter-gather, new components table, data-flow before/after. Read for any Phase 14 plan.
-- **`.planning/research/PITFALLS.md`** (HIGH / MEDIUM) — 24 pitfalls by severity with phase attribution, prior-art traps (Scylla/Dragonfly/Redis/Aerospike), "Phase 11 class" meta-lesson on bench matrix coverage. Read for any phase risk section or bench methodology.
+- **Async derive evaluation cost:** The ~1-2us per intermediate cascade stage estimate is analytical. Validate with benchmarks in Phase 2 before declaring complete.
+- **EphemeralLimits defaults:** `max_ephemeral_pipelines`, `max_keys_per_ephemeral_pipeline`, `max_ephemeral_memory_bytes` need validation against real memory profiles. Design in Phase 3 planning.
+- **PUSH response UX for new API:** PUSH to keyless `@tl.source` returns empty FeatureMap; downstream keyed features require GET. Research recommends deferring a fix post-v2.0 — confirm this UX tradeoff before Phase 1 ships.
+- **`_dataframe.py` as internal backend:** `@tl.dataset` can reuse `_dataframe.py`'s `GroupBy`/`JoinedTable` as an internal compilation backend rather than rewriting. Confirm this design choice before starting Phase 1 — it affects scope significantly.
 
 ---
 
-*Research phase complete. Next: define v1.3 REQUIREMENTS.md, then spawn gsd-roadmapper with this summary as input.*
+## Sources
+
+### Primary (HIGH confidence)
+- Tally codebase: `python/tally/_dataframe.py`, `python/tally/_app.py`, `src/engine/pipeline.rs` (lines 239-276, 852-917), `src/server/protocol.rs` (lines 409-456) — direct code inspection
+- [PEP 681 — Data Class Transforms](https://peps.python.org/pep-0681/) — `dataclass_transform` specification
+- [Pathway documentation v0.27.1](https://pathway.com/developers) — active project, Jan 2026
+- [Apache Hamilton](https://github.com/apache/hamilton) — function-as-DAG-node pattern
+- [dbt incremental models](https://docs.getdbt.com) — official docs
+- Memory notes: `project_v2_api_redesign.md`, `project_on_demand_compute.md` — direct founder input
+- `.planning/research/horizon/HORIZON-DATAFRAME-API.md`, `HORIZON-STREAM-TABLE-DUALITY.md` — prior validated research
+
+### Secondary (MEDIUM confidence)
+- [Fennel AI dataset/pipeline docs](https://github.com/fennel-ai/client) — official but potentially stale post-Databricks acquisition
+- [Fennel AI FeatureSet](https://fennel.ai/docs/concepts/featureset) — post-acquisition update risk
+- [Bytewax](https://github.com/bytewax/bytewax) — project winding down, last OSS release Nov 2024
+
+### Tertiary (LOW confidence)
+- Ephemeral lifecycle memory limit defaults — analytical estimates, not measured; validate in Phase 3
+
+---
+*Research completed: 2026-04-12*
+*Ready for roadmap: yes*
