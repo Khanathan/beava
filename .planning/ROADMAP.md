@@ -253,7 +253,10 @@ Plans:
   3. User can declare typed input schemas with `EventSet` and output schemas with `FeatureSet` using `Field` descriptors, with IDE autocomplete working via `dataclass_transform`
   4. User can merge multiple event sources into one dataset with `tl.union(source_a, source_b)` and the resulting RegisterRequest has multi-parent `depends_on`
   5. User can call `pipeline.validate()` locally and get clear error messages for cycles, missing dependencies, and type mismatches -- without contacting the server
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 16-01-PLAN.md — Core types: _schema.py (EventSet/FeatureSet/Field), _source.py (@tl.source), _dataset.py (@tl.dataset/group_by/union)
+- [ ] 16-02-PLAN.md — Validation, exports, integration: _validate.py, __init__.py wiring, JSON compat tests
 
 ### Phase 17: Enriched Event Propagation
 **Goal**: Downstream datasets can reference upstream computed fields (derives, aggregations) during cascade execution, enabling multi-stage computed features like map -> group_by -> downstream sum("amount_usd")
@@ -311,7 +314,7 @@ Phases execute in numeric order: 16 -> 17 -> 18 -> 19
 | 13. SDK batch push + OP_PUSH_BATCH | v1.3 | 2/2 | Complete | 2026-04-12 |
 | 14. Per-stream locks + DashMap concurrency | v1.3 | 3/3 | Complete | 2026-04-12 |
 | 15. Snapshot I/O off main thread | v1.3 | 0/? | Deferred | - |
-| 16. Python SDK -- New Types and Decorators | v2.0 | 0/? | Not started | - |
+| 16. Python SDK -- New Types and Decorators | v2.0 | 0/2 | In progress | - |
 | 17. Enriched Event Propagation | v2.0 | 0/? | Not started | - |
 | 18. Feature Projection and Ephemeral Schema | v2.0 | 0/? | Not started | - |
 | 19. Test Migration and Old API Removal | v2.0 | 0/? | Not started | - |
