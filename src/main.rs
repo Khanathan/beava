@@ -35,19 +35,31 @@ async fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(2);
 
+    let event_log_enabled = std::env::var("TALLY_EVENT_LOG")
+        .map(|v| v != "false" && v != "0")
+        .unwrap_or(true);
+    let snapshot_enabled = std::env::var("TALLY_SNAPSHOT")
+        .map(|v| v != "false" && v != "0")
+        .unwrap_or(true);
+
     let tcp_addr = format!("0.0.0.0:{}", tcp_port);
     let http_addr = format!("0.0.0.0:{}", http_port);
 
-    // Initialize event log directory
-    let event_log_dir = PathBuf::from(
-        std::env::var("TALLY_DATA_DIR").unwrap_or_else(|_| ".".into()),
-    ).join("events");
-    let event_log = EventLog::new(event_log_dir)
-        .map(Some)
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to initialize event log: {}", e);
-            None
-        });
+    // Initialize event log directory (skip if disabled)
+    let event_log = if event_log_enabled {
+        let event_log_dir = PathBuf::from(
+            std::env::var("TALLY_DATA_DIR").unwrap_or_else(|_| ".".into()),
+        ).join("events");
+        EventLog::new(event_log_dir)
+            .map(Some)
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to initialize event log: {}", e);
+                None
+            })
+    } else {
+        eprintln!("Event log: disabled");
+        None
+    };
 
     // Phase 14: ConcurrentAppState with per-field locking.
     let state: SharedState = make_concurrent_state(
@@ -56,6 +68,8 @@ async fn main() {
         event_log,
         snapshot_path.clone(),
         Arc::new(BackfillTracker::default()),
+        snapshot_enabled,
+        event_log_enabled,
     );
 
     // Phase 9: how often to write a full base snapshot. Every Nth cycle is a
@@ -67,10 +81,16 @@ async fn main() {
         .unwrap_or(10);
 
     // Load snapshot on startup -- incremental recovery (OPS-04).
-    let snap_dir_startup = snapshot_path.parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf();
-    let recovery = load_incremental_snapshots(&snap_dir_startup, &snapshot_path);
+    // Skip if snapshots are disabled.
+    let recovery = if snapshot_enabled {
+        let snap_dir_startup = snapshot_path.parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf();
+        load_incremental_snapshots(&snap_dir_startup, &snapshot_path)
+    } else {
+        eprintln!("Snapshots: disabled");
+        None
+    };
     if let Some((snapshot_state, next_seq, loaded_base_seq)) = recovery {
         *state.snapshot_seq.lock() = next_seq;
         *state.last_base_seq.lock() = loaded_base_seq;
@@ -199,6 +219,8 @@ async fn main() {
     });
 
     // Periodic incremental snapshot timer (PERS-01, PERS-04, OPS-03).
+    // Skip if snapshots are disabled.
+    if snapshot_enabled {
     let snap_state = state.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
@@ -360,6 +382,7 @@ async fn main() {
             }
         }
     });
+    } // if snapshot_enabled
 
     // Periodic eviction timer (PERS-05)
     let evict_state = state.clone();
@@ -378,6 +401,8 @@ async fn main() {
     });
 
     // Periodic event log fsync timer (ELOG-04: 1-second interval, Redis everysec pattern)
+    // Skip if event log is disabled.
+    if event_log_enabled {
     let fsync_state = state.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -397,8 +422,11 @@ async fn main() {
             }
         }
     });
+    } // if event_log_enabled
 
     // Periodic event log compaction timer (ELOG-05: 60-second interval)
+    // Skip if event log is disabled.
+    if event_log_enabled {
     let compact_state = state.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
@@ -436,6 +464,12 @@ async fn main() {
             }
         }
     });
+    } // if event_log_enabled
+
+    // Log ephemeral mode if both persistence mechanisms are disabled
+    if !snapshot_enabled && !event_log_enabled {
+        eprintln!("Running in ephemeral mode (no persistence)");
+    }
 
     tokio::select! {
         _ = tcp_handle => {},

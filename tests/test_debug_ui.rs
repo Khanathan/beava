@@ -31,6 +31,8 @@ fn make_test_state() -> SharedState {
         None,
         std::path::PathBuf::from("test-debug-ui.snapshot"),
         Arc::new(BackfillTracker::default()),
+        true,
+        true,
     )
 }
 
