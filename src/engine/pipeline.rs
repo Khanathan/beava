@@ -441,7 +441,7 @@ impl PipelineEngine {
         store: &StateStore,
         now: SystemTime,
     ) -> Result<FeatureMap, TallyError> {
-        self.push_internal(stream_name, event, store, now, true)
+        self.push_internal(stream_name, event, None, None, store, now, true)
     }
 
     /// Async-mode push: identical to `push` but skips the feature read + derive
@@ -460,7 +460,7 @@ impl PipelineEngine {
         store: &StateStore,
         now: SystemTime,
     ) -> Result<FeatureMap, TallyError> {
-        self.push_internal(stream_name, event, store, now, false)
+        self.push_internal(stream_name, event, None, None, store, now, false)
     }
 
     /// Batch primary-only push with no feature read.
@@ -498,7 +498,7 @@ impl PipelineEngine {
         }
         let mut out = Vec::with_capacity(events.len());
         for event in events {
-            out.push(self.push_internal(stream_name, event, store, now, false));
+            out.push(self.push_internal(stream_name, event, None, None, store, now, false));
         }
         out
     }
@@ -507,6 +507,8 @@ impl PipelineEngine {
         &self,
         stream_name: &str,
         event: &serde_json::Value,
+        enrichment_json: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        enrichment_fv: Option<&ahash::AHashMap<String, FeatureValue>>,
         store: &StateStore,
         now: SystemTime,
         read_features: bool,
@@ -521,7 +523,7 @@ impl PipelineEngine {
             let ctx = EvalContext {
                 features: &ahash::AHashMap::new(),
                 event: Some(event),
-            enrichment: None,
+                enrichment: enrichment_fv,
             };
             let result = eval(filter_expr, &ctx);
             match result {
@@ -603,7 +605,7 @@ impl PipelineEngine {
                         let ctx = EvalContext {
                             features: &ahash::AHashMap::new(),
                             event: Some(event),
-                        enrichment: None,
+                            enrichment: enrichment_fv,
                         };
                         let result = eval(where_expr, &ctx);
                         match result {
@@ -612,7 +614,7 @@ impl PipelineEngine {
                             _ => {} // truthy -- proceed with push
                         }
                     }
-                    op.push(event, None, now)?;
+                    op.push(event, enrichment_json, now)?;
                 }
             }
         } // stream_state borrow dropped here
@@ -647,7 +649,7 @@ impl PipelineEngine {
             let ctx = EvalContext {
                 features: &features,
                 event: Some(event),
-            enrichment: None,
+                enrichment: enrichment_fv,
             };
             stream.features.iter()
                 .filter_map(|(name, def)| {
@@ -861,7 +863,7 @@ impl PipelineEngine {
         read_features: bool,
     ) -> Result<FeatureMap, TallyError> {
         // Primary push
-        let primary_features = self.push_internal(stream_name, event, store, now, read_features)?;
+        let primary_features = self.push_internal(stream_name, event, None, None, store, now, read_features)?;
 
         // Collect all reachable downstream streams via BFS
         let mut visited = AHashSet::new();
@@ -906,13 +908,13 @@ impl PipelineEngine {
                 match event.get(key_field) {
                     Some(serde_json::Value::String(k)) if !k.is_empty() => {
                         // Key present -- push to this downstream stream
-                        let _ = self.push_internal(stream_in_order, event, store, now, read_features);
+                        let _ = self.push_internal(stream_in_order, event, None, None, store, now, read_features);
                     }
                     _ => continue, // Key missing -- skip (LEFT JOIN semantics)
                 }
             } else {
                 // Keyless downstream -- push (returns empty, but may cascade further)
-                let _ = self.push_internal(stream_in_order, event, store, now, read_features);
+                let _ = self.push_internal(stream_in_order, event, None, None, store, now, read_features);
             }
         }
 
