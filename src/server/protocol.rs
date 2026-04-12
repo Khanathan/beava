@@ -14,6 +14,7 @@ pub const OP_REGISTER: u8 = 0x05;
 pub const OP_MGET: u8 = 0x06;
 pub const OP_PUSH_ASYNC: u8 = 0x07;
 pub const OP_FLUSH: u8 = 0x08;
+pub const OP_PUSH_BATCH: u8 = 0x0A;
 
 // Response status codes
 pub const STATUS_OK: u8 = 0x00;
@@ -44,6 +45,15 @@ pub enum Command {
     /// as `Push` — see that variant's docs.
     PushAsync { stream_name: String, payload: serde_json::Value, raw_payload: Vec<u8> },
     Flush,
+    /// Client-side batch of events for one stream. Decoded into per-event
+    /// (payload, raw_payload) pairs; converted to Vec<PendingAsync> at the
+    /// dispatch site in handle_connection where the seq counter lives
+    /// (Research Open Question 1 -- parser has no connection context).
+    PushBatch {
+        stream_name: String,
+        batch_id: u32,
+        events: Vec<(serde_json::Value, Vec<u8>)>,
+    },
 }
 
 /// Encode a frame: [4-byte BE length][opcode][payload].
@@ -306,6 +316,46 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
                 keys.push(read_string(&mut buf)?);
             }
             Ok(Command::Mget { keys })
+        }
+        OP_PUSH_BATCH => {
+            let stream_name = read_string(&mut buf)?;
+            if buf.len() < 8 {
+                return Err(TallyError::Protocol(
+                    "PUSH_BATCH header truncated: need 8 bytes for batch_id + count".into(),
+                ));
+            }
+            let batch_id = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+            let count = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
+            buf = &buf[8..];
+
+            if count > 16_384 {
+                return Err(TallyError::Protocol("batch too large".into()));
+            }
+
+            let mut events = Vec::with_capacity(count.min(16_384));
+            for _ in 0..count {
+                if buf.len() < 4 {
+                    return Err(TallyError::Protocol(
+                        "PUSH_BATCH event length truncated".into(),
+                    ));
+                }
+                let event_len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+                buf = &buf[4..];
+                if buf.len() < event_len {
+                    return Err(TallyError::Protocol(format!(
+                        "PUSH_BATCH event truncated: expected {} bytes, got {}",
+                        event_len,
+                        buf.len()
+                    )));
+                }
+                let event_bytes = &buf[..event_len];
+                let raw_payload = event_bytes.to_vec();
+                let mut event_buf: &[u8] = event_bytes;
+                let payload = decode_event_binary(&mut event_buf)?;
+                buf = &buf[event_len..];
+                events.push((payload, raw_payload));
+            }
+            Ok(Command::PushBatch { stream_name, batch_id, events })
         }
         _ => Err(TallyError::Protocol(format!("unknown opcode: 0x{:02x}", opcode))),
     }

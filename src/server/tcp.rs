@@ -343,6 +343,22 @@ async fn handle_connection(
                             Command::Mset { entries } => handle_mset(entries, &state).await.map(Some),
                             Command::Flush => Ok(Some(Vec::new())),
                             Command::PushAsync { .. } => unreachable!(),
+                            Command::PushBatch { stream_name, batch_id, events } => {
+                                // Accumulator already flushed above (line 331).
+                                let base_seq = accumulator.advance_seq(events.len() as u64);
+                                let now = SystemTime::now();
+                                let batch: Vec<PendingAsync> = events.into_iter().enumerate().map(|(i, (payload, raw_payload))| {
+                                    PendingAsync::new(base_seq + i as u64, stream_name.clone(), payload, raw_payload, now)
+                                }).collect();
+                                let results = handle_push_batch(&state, &batch);
+                                for (i, (ev, res)) in batch.iter().zip(results.iter()).enumerate() {
+                                    if let Err(err) = res {
+                                        pending_drain.push((ev.seq, format!("[batch:{} event:{}] {}", batch_id, i, err)));
+                                    }
+                                }
+                                // Fire-and-forget: no response frame.
+                                break;
+                            }
                             other => handle_sync_command(other, &state).map(Some),
                         };
                         if is_mset {
@@ -403,6 +419,22 @@ async fn handle_connection(
             Command::Mset { entries } => handle_mset(entries, &state).await.map(Some),
             Command::Flush => Ok(Some(Vec::new())),
             Command::PushAsync { .. } => unreachable!("handled above"),
+            Command::PushBatch { stream_name, batch_id, events } => {
+                // Accumulator already force-flushed above (H-2).
+                let base_seq = accumulator.advance_seq(events.len() as u64);
+                let now = SystemTime::now();
+                let batch: Vec<PendingAsync> = events.into_iter().enumerate().map(|(i, (payload, raw_payload))| {
+                    PendingAsync::new(base_seq + i as u64, stream_name.clone(), payload, raw_payload, now)
+                }).collect();
+                let results = handle_push_batch(&state, &batch);
+                for (i, (ev, res)) in batch.iter().zip(results.iter()).enumerate() {
+                    if let Err(err) = res {
+                        pending_drain.push((ev.seq, format!("[batch:{} event:{}] {}", batch_id, i, err)));
+                    }
+                }
+                // Fire-and-forget: no response frame. Continue loop.
+                continue;
+            }
             other => handle_sync_command(other, &state).map(Some),
         };
         // Phase 10.2: record MSET latency AFTER async completion,
@@ -805,6 +837,17 @@ impl ConnAccumulator {
         });
     }
 
+    /// Reserve `n` consecutive seq numbers for a client-side batch that
+    /// bypasses the accumulator buffer. Returns the base seq; the batch
+    /// events get seqs [base, base+1, ..., base+n-1]. The accumulator's
+    /// internal counter advances to base+n so subsequent push() calls
+    /// continue from there. (Phase 13 D-10, Pitfall 5 in RESEARCH.md)
+    pub fn advance_seq(&mut self, n: u64) -> u64 {
+        let base = self.next_seq;
+        self.next_seq += n;
+        base
+    }
+
     /// Drain all buffered frames and reset the deadline.
     /// `next_seq` is NOT reset — it is per-connection monotonic for the
     /// lifetime of the connection (D-12).
@@ -1156,8 +1199,8 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
         // arms. They can only land here if that dispatch invariant is
         // violated by a refactor; the `unreachable!` protects against
         // that regression (panic in debug, UB-free abort in release).
-        Command::PushAsync { .. } | Command::Flush => {
-            unreachable!("PushAsync/Flush handled by handle_connection dispatch")
+        Command::PushAsync { .. } | Command::Flush | Command::PushBatch { .. } => {
+            unreachable!("PushAsync/Flush/PushBatch handled by handle_connection dispatch")
         }
     }
 }
