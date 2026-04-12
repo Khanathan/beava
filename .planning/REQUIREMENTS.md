@@ -87,7 +87,7 @@ Requirements for milestone v2.0: New API & Engine. **Active.**
 
 ### Engine
 
-- [ ] **ENG-01**: Enriched event propagation — upstream derive results are visible to downstream datasets via a side-channel accumulator (not event clone), enabling multi-stage computed features
+- [x] **ENG-01**: Enriched event propagation — upstream derive results are visible to downstream datasets via a side-channel accumulator (not event clone), enabling multi-stage computed features
 - [ ] **ENG-02**: Feature projection — `select()`/`drop()` on a dataset restricts which features appear in PUSH/GET responses (response-layer filtering)
 - [ ] **ENG-03**: Ephemeral pipeline flag — `ephemeral: bool`, `ttl`, `max_keys` fields on RegisterRequest with `#[serde(default)]` (schema-only, lifecycle deferred post-launch)
 
@@ -186,7 +186,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | API-05 | Phase 16 | Complete |
 | API-06 | Phase 16 | Complete |
 | API-07 | Phase 16 | Complete |
-| ENG-01 | Phase 17 | Pending |
+| ENG-01 | Phase 17 | Complete |
 | ENG-02 | Phase 18 | Pending |
 | ENG-03 | Phase 18 | Pending |
 | MIG-01 | Phase 19 | Pending |

@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: New API & Engine
-status: verifying
-stopped_at: Completed 16-02-PLAN.md
-last_updated: "2026-04-12T22:13:45.019Z"
+status: executing
+stopped_at: Completed 17-01-PLAN.md
+last_updated: "2026-04-12T22:51:33.609Z"
 last_activity: 2026-04-12
 progress:
   total_phases: 16
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
-  percent: 100
+  total_plans: 5
+  completed_plans: 3
+  percent: 60
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** Events go in, features come out -- synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
-**Current focus:** Phase 16 — Python SDK -- New Types and Decorators
+**Current focus:** Phase 17 — Enriched Event Propagation
 
 ## Current Position
 
 Milestone: v2.0 New API & Engine
-Phase: 16 (Python SDK -- New Types and Decorators) — EXECUTING
-Plan: 2 of 2
-Status: Phase complete — ready for verification
+Phase: 17 (Enriched Event Propagation) — EXECUTING
+Plan: 2 of 3
+Status: Ready to execute
 Last activity: 2026-04-12
 
 Progress: [░░░░░░░░░░] 0%
@@ -37,7 +37,7 @@ Progress: [░░░░░░░░░░] 0%
 
 **Velocity:**
 
-- Total plans completed: 37 (v1.0) + 23 (v1.1) + 6 (v1.2) + 8 (v1.3/v1.4)
+- Total plans completed: 39 (v1.0) + 23 (v1.1) + 6 (v1.2) + 8 (v1.3/v1.4)
 - Total phases completed: 15 integers + 2 decimals through v1.3
 
 ## Accumulated Context
@@ -58,6 +58,7 @@ All v1.0-v1.3 decisions archived in PROJECT.md Key Decisions table.
 - [Phase 16]: Used __init_subclass__ (not metaclass) for EventSet/FeatureSet schema types
 - [Phase 16]: SourceDef/DatasetDef are plain objects returned by decorators, not modified classes
 - [Phase 16]: Kahn's algorithm for cycle detection in validate() -- O(V+E), pure Python, no server
+- [Phase 17]: Enrichment param uses Option<&AHashMap> side-channel: serde_json::Value for operators, FeatureValue for EvalContext
 
 ### Critical Pitfalls (from research)
 
@@ -77,6 +78,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-12T22:13:45.017Z
-Stopped at: Completed 16-02-PLAN.md
+Last session: 2026-04-12T22:51:33.607Z
+Stopped at: Completed 17-01-PLAN.md
 Resume: `/gsd-plan-phase 16`
