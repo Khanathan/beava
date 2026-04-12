@@ -160,172 +160,286 @@ async fn handle_connection(
     // Sorted by seq and flushed before the next sync response (D-13/D-14).
     let mut pending_drain: Vec<(u64, String)> = Vec::new();
 
-    loop {
-        let deadline_opt = accumulator.deadline();
-
-        enum FrameOrDeadline {
-            Frame(usize),
-            Deadline,
+    // Helper: flush accumulator batch, collect errors into drain queue.
+    #[inline(always)]
+    fn flush_batch_to_drain(
+        state: &SharedState,
+        accumulator: &mut ConnAccumulator,
+        pending_drain: &mut Vec<(u64, String)>,
+    ) {
+        let batch = accumulator.drain();
+        let results = handle_push_batch(state, &batch);
+        for (ev, res) in batch.iter().zip(results.iter()) {
+            if let Err(err) = res {
+                pending_drain.push((ev.seq, err.to_string()));
+            }
         }
+    }
 
-        let next = tokio::select! {
-            biased;
-
-            // BRANCH 1: read the next frame length. Always armed. The
-            // `biased;` ordering means a pending frame short-circuits the
-            // deadline branch when both are ready (D-04).
-            read_result = reader.read_u32() => {
-                match read_result {
-                    Ok(len) => FrameOrDeadline::Frame(len as usize),
-                    Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                        // Clean disconnect: flush any buffered async frames
-                        // before returning so we don't lose events.
-                        if !accumulator.is_empty() {
-                            let batch = accumulator.drain();
-                            let results = handle_push_batch(&state, &batch);
-                            for (ev, res) in batch.iter().zip(results.iter()) {
-                                if let Err(err) = res {
-                                    pending_drain.push((ev.seq, err.to_string()));
-                                }
-                            }
-                            // Errors on drain flush to the client so
-                            // close-initiating peers still pick them up.
-                            flush_drain(&mut writer, &mut pending_drain).await?;
-                        }
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
-
-            // BRANCH 2: deadline elapsed on an in-flight accumulator. Only
-            // armed when the accumulator has ≥1 frame (the `if` gate on
-            // select! branches). Uses `sleep_until` on an absolute Instant
-            // so we don't hit the 1ms tokio timer-wheel floor (D-03).
-            _ = async {
-                match deadline_opt {
-                    Some(d) => tokio::time::sleep_until(d).await,
-                    None => std::future::pending::<()>().await,
-                }
-            }, if deadline_opt.is_some() => {
-                FrameOrDeadline::Deadline
-            }
+    // Helper: read one frame, parse command, return it. Returns None on
+    // clean disconnect (UnexpectedEof).
+    async fn read_one_frame(
+        reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
+    ) -> Result<Option<(usize, Command)>, Box<dyn std::error::Error + Send + Sync>> {
+        let len = match reader.read_u32().await {
+            Ok(len) => len as usize,
+            Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(e.into()),
         };
+        if len == 0 || len > 64 * 1024 * 1024 {
+            return Err(format!("invalid frame length: {}", len).into());
+        }
+        let opcode = reader.read_u8().await?;
+        let payload_len = len - 1;
+        let mut payload = vec![0u8; payload_len];
+        if payload_len > 0 {
+            reader.read_exact(&mut payload).await?;
+        }
+        let cmd = protocol::parse_command(opcode, &payload)
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+        Ok(Some((len, cmd)))
+    }
 
-        match next {
-            FrameOrDeadline::Deadline => {
-                // Flush accumulator via handle_push_batch, queue any errors
-                // for the next sync response, and loop back to the read arm.
-                let batch = accumulator.drain();
-                let results = handle_push_batch(&state, &batch);
-                for (ev, res) in batch.iter().zip(results.iter()) {
-                    if let Err(err) = res {
-                        pending_drain.push((ev.seq, err.to_string()));
-                    }
-                }
-                continue;
-            }
-            FrameOrDeadline::Frame(len) => {
-                if len == 0 || len > 64 * 1024 * 1024 {
-                    let resp = protocol::encode_response(STATUS_ERROR, b"invalid frame length");
+    loop {
+        // ================================================================
+        // PHASE 1: read frames in a tight loop (no select! overhead).
+        //
+        // When the accumulator is empty, we do a blocking read_u32 — no
+        // deadline to race against. When the accumulator has frames, we
+        // keep reading in a tight loop until either (a) the accumulator
+        // is full, (b) we get a non-async command, or (c) the BufReader's
+        // internal buffer is empty (meaning the next read would have to
+        // wait for the OS, at which point we fall through to the select!
+        // deadline path).
+        //
+        // This eliminates the select! macro overhead from the hot path
+        // under sustained single-client async load, where the TCP receive
+        // buffer typically has multiple frames queued.
+        // ================================================================
+
+        // First frame: always a blocking read (no deadline needed when
+        // accumulator is empty, or we just flushed a batch).
+        let frame = if accumulator.is_empty() {
+            // No deadline to race — read directly.
+            match read_one_frame(&mut reader).await {
+                Ok(Some(frame)) => frame,
+                Ok(None) => return Ok(()), // clean disconnect, accumulator empty
+                Err(e) => {
+                    // Frame error (invalid length, parse error, etc.) — send
+                    // error response and close connection, matching the
+                    // original inline error handling behavior.
+                    let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
                     writer.write_all(&resp).await?;
                     writer.flush().await?;
                     return Ok(());
                 }
+            }
+        } else {
+            // Accumulator has frames — use select! to race read vs deadline.
+            let deadline_opt = accumulator.deadline();
 
-                let opcode = reader.read_u8().await?;
-                let payload_len = len - 1;
-                let mut payload = vec![0u8; payload_len];
-                if payload_len > 0 {
-                    reader.read_exact(&mut payload).await?;
+            enum FrameOrDeadline {
+                Frame(Result<Option<(usize, Command)>, Box<dyn std::error::Error + Send + Sync>>),
+                Deadline,
+            }
+
+            let next = tokio::select! {
+                biased;
+                read_result = read_one_frame(&mut reader) => {
+                    FrameOrDeadline::Frame(read_result)
+                }
+                _ = async {
+                    match deadline_opt {
+                        Some(d) => tokio::time::sleep_until(d).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                }, if deadline_opt.is_some() => {
+                    FrameOrDeadline::Deadline
+                }
+            };
+
+            match next {
+                FrameOrDeadline::Deadline => {
+                    flush_batch_to_drain(&state, &mut accumulator, &mut pending_drain);
+                    continue;
+                }
+                FrameOrDeadline::Frame(Ok(Some(frame))) => frame,
+                FrameOrDeadline::Frame(Ok(None)) => {
+                    // Clean disconnect with buffered frames — flush first.
+                    flush_batch_to_drain(&state, &mut accumulator, &mut pending_drain);
+                    flush_drain(&mut writer, &mut pending_drain).await?;
+                    return Ok(());
+                }
+                FrameOrDeadline::Frame(Err(e)) => {
+                    // Frame error (invalid length, etc.) — flush accumulator,
+                    // send error, close connection.
+                    if !accumulator.is_empty() {
+                        flush_batch_to_drain(&state, &mut accumulator, &mut pending_drain);
+                    }
+                    let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
+                    writer.write_all(&resp).await?;
+                    writer.flush().await?;
+                    return Ok(());
+                }
+            }
+        };
+
+        // Process the frame we just read.
+        let (_len, cmd) = frame;
+
+        // Phase 12 H-2: any non-async opcode force-flushes the
+        // accumulator BEFORE the sync handler runs, so the sync
+        // response observes all buffered async mutations.
+        let is_async_push = matches!(&cmd, Command::PushAsync { .. });
+        if !is_async_push && !accumulator.is_empty() {
+            flush_batch_to_drain(&state, &mut accumulator, &mut pending_drain);
+        }
+
+        // Async push: accumulate, maybe auto-flush at BATCH_SIZE.
+        if let Command::PushAsync { stream_name, payload, raw_payload } = cmd {
+            accumulator.push(stream_name, payload, raw_payload, SystemTime::now());
+            if accumulator.is_full() {
+                flush_batch_to_drain(&state, &mut accumulator, &mut pending_drain);
+            }
+
+            // PHASE 2: tight inner loop — keep reading async frames from
+            // the BufReader without going through select!. Under sustained
+            // load the BufReader's internal buffer typically contains many
+            // queued frames; reading them here avoids select! overhead per
+            // frame. We break out when: accumulator is full (flush first),
+            // BufReader buffer is empty (need to wait for OS → fall through
+            // to select! path on next outer loop iteration), or a non-async
+            // frame arrives (process via the outer loop's sync path).
+            while !accumulator.is_full() {
+                // Check if the BufReader has data in its internal buffer.
+                // If the buffer is empty, the next read_u32 would block
+                // waiting for the OS, so we break out to the select! path
+                // which can race against the deadline.
+                if reader.buffer().len() < 4 {
+                    break;
                 }
 
-                let cmd = match protocol::parse_command(opcode, &payload) {
-                    Ok(cmd) => cmd,
+                // We have data — read the next frame directly (no select!).
+                match read_one_frame(&mut reader).await {
+                    Ok(Some((_len, Command::PushAsync { stream_name, payload, raw_payload }))) => {
+                        accumulator.push(stream_name, payload, raw_payload, SystemTime::now());
+                    }
+                    Ok(Some(frame)) => {
+                        // Non-async frame — flush accumulator, then process
+                        // it in the outer loop's sync path. We can't easily
+                        // "put it back" so we handle inline.
+                        flush_batch_to_drain(&state, &mut accumulator, &mut pending_drain);
+
+                        // Process the non-async command inline (same logic
+                        // as the sync dispatch below).
+                        let (_len2, cmd2) = frame;
+                        // Fall through to handle below by re-entering the
+                        // command processing. For simplicity, we break and
+                        // handle in the next iteration — but we'd lose the
+                        // frame. Instead, handle inline:
+                        let cmd_start = std::time::Instant::now();
+                        let is_mset = matches!(&cmd2, Command::Mset { .. });
+                        let response: Result<Option<Vec<u8>>, TallyError> = match cmd2 {
+                            Command::Mset { entries } => handle_mset(entries, &state).await.map(Some),
+                            Command::Flush => Ok(Some(Vec::new())),
+                            Command::PushAsync { .. } => unreachable!(),
+                            other => handle_sync_command(other, &state).map(Some),
+                        };
+                        if is_mset {
+                            let mset_us = cmd_start.elapsed().as_secs_f64() * 1_000_000.0;
+                            let mut app2 = state.lock().unwrap_or_else(|e| e.into_inner());
+                            app2.latency.record_command(crate::server::latency::CommandKind::Mset, mset_us, std::time::Instant::now());
+                            if app2.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Mset, mset_us) {
+                                app2.latency.maybe_record_slow(crate::server::latency::CommandKind::Mset, None, mset_us, String::new());
+                            }
+                        }
+                        flush_drain(&mut writer, &mut pending_drain).await?;
+                        match response {
+                            Ok(Some(resp_bytes)) => {
+                                let resp = protocol::encode_response(STATUS_OK, &resp_bytes);
+                                writer.write_all(&resp).await?;
+                                writer.flush().await?;
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
+                                writer.write_all(&resp).await?;
+                                writer.flush().await?;
+                            }
+                        }
+                        break;
+                    }
+                    Ok(None) => {
+                        // Clean disconnect while reading tight loop.
+                        if !accumulator.is_empty() {
+                            flush_batch_to_drain(&state, &mut accumulator, &mut pending_drain);
+                        }
+                        flush_drain(&mut writer, &mut pending_drain).await?;
+                        return Ok(());
+                    }
                     Err(e) => {
+                        if !accumulator.is_empty() {
+                            flush_batch_to_drain(&state, &mut accumulator, &mut pending_drain);
+                        }
                         let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
                         writer.write_all(&resp).await?;
                         writer.flush().await?;
                         return Ok(());
                     }
-                };
-
-                // Phase 12 H-2: any non-async opcode force-flushes the
-                // accumulator BEFORE the sync handler runs, so the sync
-                // response observes all buffered async mutations.
-                let is_async_push = matches!(&cmd, Command::PushAsync { .. });
-                if !is_async_push && !accumulator.is_empty() {
-                    let batch = accumulator.drain();
-                    let results = handle_push_batch(&state, &batch);
-                    for (ev, res) in batch.iter().zip(results.iter()) {
-                        if let Err(err) = res {
-                            pending_drain.push((ev.seq, err.to_string()));
-                        }
-                    }
                 }
+            }
 
-                // Async push: accumulate, maybe auto-flush at BATCH_SIZE,
-                // then loop for the next frame.
-                if let Command::PushAsync { stream_name, payload, raw_payload } = cmd {
-                    accumulator.push(stream_name, payload, raw_payload, SystemTime::now());
-                    if accumulator.is_full() {
-                        let batch = accumulator.drain();
-                        let results = handle_push_batch(&state, &batch);
-                        for (ev, res) in batch.iter().zip(results.iter()) {
-                            if let Err(err) = res {
-                                pending_drain.push((ev.seq, err.to_string()));
-                            }
-                        }
-                    }
-                    continue;
-                }
+            // If accumulator became full during tight loop, flush it.
+            if accumulator.is_full() {
+                flush_batch_to_drain(&state, &mut accumulator, &mut pending_drain);
+            }
+            continue;
+        }
 
-                // Sync dispatch path. cmd is one of Mset/Flush/other.
-                let cmd_start = std::time::Instant::now();
-                let is_mset = matches!(&cmd, Command::Mset { .. });
-                let response: Result<Option<Vec<u8>>, TallyError> = match cmd {
-                    Command::Mset { entries } => handle_mset(entries, &state).await.map(Some),
-                    Command::Flush => Ok(Some(Vec::new())),
-                    Command::PushAsync { .. } => unreachable!("handled above"),
-                    other => handle_sync_command(other, &state).map(Some),
-                };
-                // Phase 10.2: record MSET latency AFTER async completion,
-                // in a separate lock. No guard held across the .await above.
-                if is_mset {
-                    let mset_us = cmd_start.elapsed().as_secs_f64() * 1_000_000.0;
-                    let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
-                    app.latency.record_command(crate::server::latency::CommandKind::Mset, mset_us, std::time::Instant::now());
-                    if app.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Mset, mset_us) {
-                        app.latency.maybe_record_slow(crate::server::latency::CommandKind::Mset, None, mset_us, String::new());
-                    }
-                }
+        // Sync dispatch path. cmd is one of Mset/Flush/other.
+        let cmd_start = std::time::Instant::now();
+        let is_mset = matches!(&cmd, Command::Mset { .. });
+        let response: Result<Option<Vec<u8>>, TallyError> = match cmd {
+            Command::Mset { entries } => handle_mset(entries, &state).await.map(Some),
+            Command::Flush => Ok(Some(Vec::new())),
+            Command::PushAsync { .. } => unreachable!("handled above"),
+            other => handle_sync_command(other, &state).map(Some),
+        };
+        // Phase 10.2: record MSET latency AFTER async completion,
+        // in a separate lock. No guard held across the .await above.
+        if is_mset {
+            let mset_us = cmd_start.elapsed().as_secs_f64() * 1_000_000.0;
+            let mut app = state.lock().unwrap_or_else(|e| e.into_inner());
+            app.latency.record_command(crate::server::latency::CommandKind::Mset, mset_us, std::time::Instant::now());
+            if app.latency.slow_queries_would_accept(crate::server::latency::CommandKind::Mset, mset_us) {
+                app.latency.maybe_record_slow(crate::server::latency::CommandKind::Mset, None, mset_us, String::new());
+            }
+        }
 
-                // D-13: drain async errors BEFORE the sync response, in
-                // per-connection seq order. flush_drain sorts and flushes.
-                flush_drain(&mut writer, &mut pending_drain).await?;
+        // D-13: drain async errors BEFORE the sync response, in
+        // per-connection seq order. flush_drain sorts and flushes.
+        flush_drain(&mut writer, &mut pending_drain).await?;
 
-                // Write response (Phase 11 three-way match).
-                //
-                // I-3: BufWriter flush invariant.
-                //
-                // Every byte we write is followed by an explicit flush
-                // before we loop back to the read arm. Ok(None) is the
-                // zero-byte async-push success path (unreachable here —
-                // async pushes are accumulated above), Ok(Some) and Err
-                // both flush. flush_drain above also ends in flush().
-                match response {
-                    Ok(None) => { /* unreachable on the sync path */ }
-                    Ok(Some(payload)) => {
-                        let resp = protocol::encode_response(STATUS_OK, &payload);
-                        writer.write_all(&resp).await?;
-                        writer.flush().await?;
-                    }
-                    Err(e) => {
-                        let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
-                        writer.write_all(&resp).await?;
-                        writer.flush().await?;
-                    }
-                }
+        // Write response (Phase 11 three-way match).
+        //
+        // I-3: BufWriter flush invariant.
+        //
+        // Every byte we write is followed by an explicit flush
+        // before we loop back to the read arm. Ok(None) is the
+        // zero-byte async-push success path (unreachable here —
+        // async pushes are accumulated above), Ok(Some) and Err
+        // both flush. flush_drain above also ends in flush().
+        match response {
+            Ok(None) => { /* unreachable on the sync path */ }
+            Ok(Some(payload)) => {
+                let resp = protocol::encode_response(STATUS_OK, &payload);
+                writer.write_all(&resp).await?;
+                writer.flush().await?;
+            }
+            Err(e) => {
+                let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
+                writer.write_all(&resp).await?;
+                writer.flush().await?;
             }
         }
     }
@@ -694,21 +808,32 @@ impl ConnAccumulator {
     /// Drain all buffered frames and reset the deadline.
     /// `next_seq` is NOT reset — it is per-connection monotonic for the
     /// lifetime of the connection (D-12).
+    ///
+    /// The internal buffer is drained in-place and a new Vec with the same
+    /// pre-allocated capacity is swapped in, avoiding a fresh heap allocation
+    /// on the next batch cycle.
     pub fn drain(&mut self) -> Vec<PendingAsync> {
         self.deadline = None;
-        std::mem::take(&mut self.buf)
+        let mut taken = Vec::with_capacity(BATCH_SIZE);
+        std::mem::swap(&mut self.buf, &mut taken);
+        taken
     }
 }
 
 /// Synchronous batch dispatch: ONE `state.lock()`, ONE
-/// `push_batch_with_cascade_no_features` per stream group, ONE
-/// `append_many` per group, ONE `mark_dirty_many` per group. Returns
+/// `push_batch_with_cascade_no_features` per stream group. Returns
 /// per-event Results in INPUT order.
 ///
 /// D-05..D-08: stream grouping happens BEFORE the lock; critical section
 /// is strictly synchronous; no `.await` inside. Cascade and fan-out are
 /// preserved via the Wave 1 `push_batch_with_cascade_no_features` primitive
 /// (NOT the primary-only `push_batch_no_features`).
+///
+/// Allocation-optimized: avoids intermediate Vec<Vec<u8>> for log payloads
+/// and Vec<String> for dirty keys by issuing per-event append/mark_dirty
+/// calls inline (still under the same single lock). The lock-amortization
+/// benefit is preserved; only the intermediate collection allocations are
+/// eliminated.
 pub fn handle_push_batch(
     state: &SharedState,
     batch: &[PendingAsync],
@@ -717,18 +842,10 @@ pub fn handle_push_batch(
         return Vec::new();
     }
 
-    // Group by stream name BEFORE taking the lock (D-05). Stack-allocated
-    // groups vec with capacity 4 — research confirmed smallvec NOT in
-    // Cargo.toml, fallback is Vec::with_capacity.
-    let mut groups: Vec<(&str, Vec<usize>)> = Vec::with_capacity(4);
-    for (idx, ev) in batch.iter().enumerate() {
-        let name = ev.stream_name.as_str();
-        if let Some((_, ids)) = groups.iter_mut().find(|(n, _)| *n == name) {
-            ids.push(idx);
-        } else {
-            groups.push((name, vec![idx]));
-        }
-    }
+    // Fast path: check if all events target the same stream (common case
+    // under single-client sustained load). Avoids the grouping Vec entirely.
+    let all_same_stream = batch.len() == 1
+        || batch[1..].iter().all(|ev| ev.stream_name == batch[0].stream_name);
 
     // Result slots in input order, pre-filled with Ok. Per-event errors
     // from the cascade-aware batch primitive are scattered back to their
@@ -747,29 +864,19 @@ pub fn handle_push_batch(
         ..
     } = *app;
 
-    for (stream_name, indices) in &groups {
-        // Resolve stream metadata ONCE per group (D-07).
-        let stream_def = engine.get_stream(stream_name);
-        let key_field: Option<String> =
-            stream_def.and_then(|s| s.key_field.clone());
+    if all_same_stream {
+        // Single-stream fast path: no grouping needed, no index indirection.
+        let stream_name = batch[0].stream_name.as_str();
+        let key_field: Option<&str> = engine
+            .get_stream(stream_name)
+            .and_then(|s| s.key_field.as_deref());
 
-        // Per-group event ref slice in seq (== input-order-within-group).
+        // Build event refs inline (stack-friendly for typical batch sizes).
         let events_refs: Vec<&serde_json::Value> =
-            indices.iter().map(|&i| &batch[i].payload).collect();
+            batch.iter().map(|ev| &ev.payload).collect();
 
-        // Use the earliest `now` in the group as the batch timestamp —
-        // all buffered events arrived within ≤200µs of each other, so
-        // sub-microsecond timestamp drift is acceptable.
-        let now = indices
-            .iter()
-            .map(|&i| batch[i].now)
-            .min()
-            .unwrap_or_else(SystemTime::now);
+        let now = batch[0].now;
 
-        // ONE engine.push_batch_with_cascade_no_features per group.
-        // CRITICAL: this is the cascade-aware primitive from Plan 12-01
-        // Task 3, NOT the plain primary-only push_batch_no_features.
-        // Cascade and fan-out are preserved. D-06/D-07 honored verbatim.
         let per_event = engine.push_batch_with_cascade_no_features(
             stream_name,
             &events_refs,
@@ -777,45 +884,98 @@ pub fn handle_push_batch(
             now,
         );
 
-        // Scatter per-event Results back to input positions. The primitive
-        // returns Vec<Result<FeatureMap, _>>; we drop the (empty)
-        // FeatureMap and keep only the error discriminant.
-        for (slot_idx, res) in indices.iter().zip(per_event.into_iter()) {
+        // Scatter errors to result slots.
+        for (idx, res) in per_event.into_iter().enumerate() {
             if let Err(e) = res {
-                results[*slot_idx] = Err(e);
+                results[idx] = Err(e);
             }
         }
 
-        // ONE event_log.append_many per group (skip events that errored).
-        // Inline log payload construction mirrors `make_log_payload` in
-        // handle_push_core_ex — same binary/JSON format-tagged bytes.
+        // Per-event event log append — avoids intermediate Vec<Vec<u8>>
+        // allocation. Each call reuses the writer lookup from EventLog's
+        // internal HashMap (one HashMap probe per call, amortized by branch
+        // prediction on the repeated stream name).
         if let Some(ref mut log) = event_log {
-            let log_payloads: Vec<Vec<u8>> = indices
-                .iter()
-                .filter(|&&i| results[i].is_ok())
-                .map(|&i| make_log_payload(&batch[i].payload, &batch[i].raw_payload))
-                .collect();
-            let log_refs: Vec<&[u8]> =
-                log_payloads.iter().map(|v| v.as_slice()).collect();
-            let _ = log.append_many(stream_name, &log_refs, now);
+            for (idx, ev) in batch.iter().enumerate() {
+                if results[idx].is_ok() {
+                    let lp = make_log_payload(&ev.payload, &ev.raw_payload);
+                    let _ = log.append(stream_name, &lp, now);
+                }
+            }
         }
 
-        // ONE store.mark_dirty_many per group.
-        if let Some(kf) = key_field.as_deref() {
-            let keys: Vec<String> = indices
+        // Per-event dirty marking — avoids intermediate Vec<String>.
+        if let Some(kf) = key_field {
+            for (idx, ev) in batch.iter().enumerate() {
+                if results[idx].is_ok() {
+                    if let Some(serde_json::Value::String(key_val)) = ev.payload.get(kf) {
+                        if !key_val.is_empty() {
+                            store.mark_dirty(key_val);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // Multi-stream path: group by stream name BEFORE processing (D-05).
+        let mut groups: Vec<(&str, Vec<usize>)> = Vec::with_capacity(4);
+        for (idx, ev) in batch.iter().enumerate() {
+            let name = ev.stream_name.as_str();
+            if let Some((_, ids)) = groups.iter_mut().find(|(n, _)| *n == name) {
+                ids.push(idx);
+            } else {
+                groups.push((name, vec![idx]));
+            }
+        }
+
+        for (stream_name, indices) in &groups {
+            let key_field: Option<&str> = engine
+                .get_stream(stream_name)
+                .and_then(|s| s.key_field.as_deref());
+
+            let events_refs: Vec<&serde_json::Value> =
+                indices.iter().map(|&i| &batch[i].payload).collect();
+
+            let now = indices
                 .iter()
-                .filter(|&&i| results[i].is_ok())
-                .filter_map(|&i| {
-                    batch[i]
-                        .payload
-                        .get(kf)
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string())
-                })
-                .collect();
-            if !keys.is_empty() {
-                store.mark_dirty_many(keys);
+                .map(|&i| batch[i].now)
+                .min()
+                .unwrap_or_else(SystemTime::now);
+
+            let per_event = engine.push_batch_with_cascade_no_features(
+                stream_name,
+                &events_refs,
+                store,
+                now,
+            );
+
+            for (slot_idx, res) in indices.iter().zip(per_event.into_iter()) {
+                if let Err(e) = res {
+                    results[*slot_idx] = Err(e);
+                }
+            }
+
+            // Per-event log append (avoids Vec<Vec<u8>> allocation).
+            if let Some(ref mut log) = event_log {
+                for &i in indices {
+                    if results[i].is_ok() {
+                        let lp = make_log_payload(&batch[i].payload, &batch[i].raw_payload);
+                        let _ = log.append(stream_name, &lp, now);
+                    }
+                }
+            }
+
+            // Per-event dirty marking (avoids Vec<String> allocation).
+            if let Some(kf) = key_field {
+                for &i in indices {
+                    if results[i].is_ok() {
+                        if let Some(serde_json::Value::String(key_val)) = batch[i].payload.get(kf) {
+                            if !key_val.is_empty() {
+                                store.mark_dirty(key_val);
+                            }
+                        }
+                    }
+                }
             }
         }
     }

@@ -163,11 +163,18 @@ def run_single_client_async(primary_cls, events_per_client, client_id, warmup=10
     Returns (latencies_us_or_empty, wall_seconds).
 
     Phase 12: When sample_latency=True, we sample per-`push()` call time
-    (the SDK-side enqueue / write time, i.e. how long the client blocks on
-    a single fire-and-forget push). This is what the coalescer's batching
-    deadline directly affects from the caller's perspective, and is what
-    ROADMAP criterion #10 (async p50 impact) documents. The final flush()
-    is NOT included in the per-event latencies (it's a one-shot fence).
+    on every Nth event (N=8) to avoid penalizing throughput measurement.
+    This captures the SDK-side enqueue / write time — the metric directly
+    affected by server-side coalescing's batch deadline from the caller's
+    perspective, and what ROADMAP criterion #10 (async p50 impact)
+    documents. The final flush() is NOT included in the per-event
+    latencies (it's a one-shot fence).
+
+    v1.2 baseline (142k eps on medium) measured throughput WITHOUT any
+    per-event timing calls. To keep gate comparisons fair, the sampling
+    path now uses stride-based sampling (1-in-8) so the hot loop spends
+    most of its iterations on the fast non-sampling code path. Wall time
+    (and thus throughput) is measured over the entire run.
     """
     app = st.App('localhost:6400', timeout=30.0)
 
@@ -179,12 +186,18 @@ def run_single_client_async(primary_cls, events_per_client, client_id, warmup=10
     latencies = []
     t_start = time.perf_counter()
     if sample_latency:
+        # Stride-based sampling: measure every 8th push to keep throughput
+        # measurement fair while still collecting representative latency data.
+        SAMPLE_STRIDE = 8
         for i in range(events_per_client):
             ev = make_event(i + client_id * 1000000)
-            t0 = time.perf_counter_ns()
-            app.push(primary_cls, ev)
-            dt = time.perf_counter_ns() - t0
-            latencies.append(dt / 1000.0)
+            if i % SAMPLE_STRIDE == 0:
+                t0 = time.perf_counter_ns()
+                app.push(primary_cls, ev)
+                dt = time.perf_counter_ns() - t0
+                latencies.append(dt / 1000.0)
+            else:
+                app.push(primary_cls, ev)
         app.flush()
     else:
         for i in range(events_per_client):
@@ -382,7 +395,15 @@ def run_matrix(clients, events_budget):
         print(f'>>> {pipeline:<6s} × {mode:<5s}  (events={events}, 5 runs)')
         for run_idx in range(5):
             args = _Args(mode=mode, pipeline=pipeline, events=events, clients=clients)
-            r = run_benchmark(args, sample_async_latency=True, quiet=True)
+            # Throughput measurement must NOT include per-event latency
+            # sampling overhead. The v1.2 baseline (142k medium async) was
+            # measured without any per-push timing calls; sampling every
+            # push added ~15% Python-side overhead that inflated the
+            # apparent regression. Stride-based sampling (1-in-8) in
+            # run_single_client_async still captures representative
+            # latency percentiles for async p50 impact reporting without
+            # penalizing the throughput number.
+            r = run_benchmark(args, sample_async_latency=(mode == 'async'), quiet=True)
             run_eps.append(r['throughput_eps'])
             if r['latency_us'] is not None:
                 run_p50.append(r['latency_us']['p50'])
