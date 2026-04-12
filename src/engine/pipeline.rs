@@ -2794,4 +2794,51 @@ mod tests {
             "Count at T+2h should be expired, got {:?}", val
         );
     }
+
+    // ======================== Phase 18 Plan 01: Projection Tests ========================
+
+    #[test]
+    fn test_projection_select_filters_to_allowed_keys() {
+        let mut map: FeatureMap = AHashMap::new();
+        map.insert("a".into(), FeatureValue::Int(1));
+        map.insert("b".into(), FeatureValue::Int(2));
+        map.insert("c".into(), FeatureValue::Int(3));
+
+        let proj = Projection::Select(AHashSet::from_iter(["a".into(), "b".into()]));
+        proj.apply(&mut map);
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("a"), Some(&FeatureValue::Int(1)));
+        assert_eq!(map.get("b"), Some(&FeatureValue::Int(2)));
+        assert!(map.get("c").is_none());
+    }
+
+    #[test]
+    fn test_projection_drop_removes_excluded_keys() {
+        let mut map: FeatureMap = AHashMap::new();
+        map.insert("a".into(), FeatureValue::Int(1));
+        map.insert("b".into(), FeatureValue::Int(2));
+        map.insert("c".into(), FeatureValue::Int(3));
+
+        let proj = Projection::Drop(AHashSet::from_iter(["c".into()]));
+        proj.apply(&mut map);
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("a"), Some(&FeatureValue::Int(1)));
+        assert_eq!(map.get("b"), Some(&FeatureValue::Int(2)));
+        assert!(map.get("c").is_none());
+    }
+
+    #[test]
+    fn test_projection_apply_on_empty_map() {
+        let mut map: FeatureMap = AHashMap::new();
+
+        let proj = Projection::Select(AHashSet::from_iter(["a".into()]));
+        proj.apply(&mut map);
+        assert!(map.is_empty());
+
+        let proj2 = Projection::Drop(AHashSet::from_iter(["a".into()]));
+        proj2.apply(&mut map);
+        assert!(map.is_empty());
+    }
 }

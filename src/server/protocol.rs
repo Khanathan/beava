@@ -2604,4 +2604,74 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("percentile requires 'field'"));
     }
+
+    // ======================== Phase 18 Plan 01: Projection & Ephemeral Tests ========================
+
+    #[test]
+    fn test_register_request_backward_compat_no_new_fields() {
+        // v1.3-format JSON: no projection, ephemeral, ttl, max_keys
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [
+                {"name": "tx_count_1h", "type": "count", "window": "1h"}
+            ]
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        assert!(req.projection.is_none());
+        assert!(req.ephemeral.is_none());
+        assert!(req.ttl.is_none());
+        assert!(req.max_keys.is_none());
+    }
+
+    #[test]
+    fn test_register_request_with_projection_select() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [
+                {"name": "tx_count_1h", "type": "count", "window": "1h"}
+            ],
+            "projection": {"select": ["tx_count_1h"]}
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let proj = req.projection.unwrap();
+        assert!(proj.select.is_some());
+        assert!(proj.drop.is_none());
+        assert_eq!(proj.select.unwrap(), vec!["tx_count_1h".to_string()]);
+    }
+
+    #[test]
+    fn test_register_request_select_drop_mutual_exclusion() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [
+                {"name": "tx_count_1h", "type": "count", "window": "1h"}
+            ],
+            "projection": {"select": ["tx_count_1h"], "drop": ["tx_sum_1h"]}
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        let result = convert_register_request(req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("select"));
+    }
+
+    #[test]
+    fn test_register_request_ephemeral_fields() {
+        let json = serde_json::json!({
+            "name": "Transactions",
+            "key_field": "user_id",
+            "features": [
+                {"name": "tx_count_1h", "type": "count", "window": "1h"}
+            ],
+            "ephemeral": true,
+            "ttl": "1h",
+            "max_keys": 10000
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.ephemeral, Some(true));
+        assert_eq!(req.ttl, Some("1h".to_string()));
+        assert_eq!(req.max_keys, Some(10000));
+    }
 }
