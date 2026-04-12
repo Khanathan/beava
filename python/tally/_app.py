@@ -23,12 +23,14 @@ from tally._protocol import (
     OP_MSET,
     OP_PUSH,
     OP_PUSH_ASYNC,
+    OP_PUSH_BATCH,
     OP_REGISTER,
     OP_SET,
     STATUS_ERROR,
     encode_get,
     encode_mget,
     encode_mset,
+    encode_push_batch,
     encode_push_binary,
     encode_register,
     encode_set,
@@ -51,6 +53,7 @@ class App:
     def __init__(self, address: str, *, timeout: float = 5.0) -> None:
         host, port = self._parse_address(address)
         self._client = TallyClient(host, port, timeout=timeout)
+        self._batch_id_counter: int = 0
 
     @staticmethod
     def _parse_address(address: str) -> tuple[str, int]:
@@ -103,6 +106,31 @@ class App:
         stream_name = stream_class._tally_stream_name
         payload = encode_push_binary(stream_name, event)
         self._client.send_frame_no_recv(OP_PUSH_ASYNC, payload)
+
+    def _next_batch_id(self) -> int:
+        """Return a monotonic batch_id (u32 wrap-around)."""
+        bid = self._batch_id_counter
+        self._batch_id_counter = (self._batch_id_counter + 1) & 0xFFFFFFFF
+        return bid
+
+    def push_many(self, stream_class: type, events) -> None:
+        """Push a batch of events in one wire frame (fire-and-forget).
+
+        Wraps all events into a single OP_PUSH_BATCH (0x0A) frame,
+        reducing per-event Python overhead from ~7us to ~0.3us.
+        Errors surface via drain_errors_nonblock on the next call,
+        attributed as (batch_id, event_index) per D-09.
+
+        Args:
+            stream_class: The ``@tally.stream``-decorated class.
+            events: Iterable of event dicts. Must contain <= 16,384 events
+                    (server hard cap H-7).
+        """
+        self._client.drain_errors_nonblock()
+        stream_name = stream_class._tally_stream_name
+        batch_id = self._next_batch_id()
+        payload = encode_push_batch(stream_name, events, batch_id)
+        self._client.send_frame_no_recv(OP_PUSH_BATCH, payload)
 
     def push_sync(self, stream_class: type, event: dict) -> FeatureResult:
         """Push an event and wait for the updated feature map (v1.1 semantics).

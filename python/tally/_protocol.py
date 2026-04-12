@@ -27,6 +27,7 @@ OP_REGISTER: int = 0x05
 OP_MGET: int = 0x06
 OP_PUSH_ASYNC: int = 0x07
 OP_FLUSH: int = 0x08
+OP_PUSH_BATCH: int = 0x0A
 
 STATUS_OK: int = 0x00
 STATUS_ERROR: int = 0x01
@@ -94,14 +95,13 @@ def _check_u16_len(field: str, value_bytes: bytes) -> None:
         )
 
 
-def encode_push_binary(stream_name: str, event: dict) -> bytes:
-    """Encode a PUSH payload in the Phase 11 binary format (PERF-02).
+def _encode_event_body(event: dict) -> bytes:
+    """Encode just the event fields (no stream_name prefix).
 
-    Wire format matches the Rust ``decode_event_binary``:
+    Wire format: ``[u16 field_count][for each: [u16 key_len][key utf-8][u8 type_tag][value_bytes]]``
 
-    - ``[u16 BE name_len][name utf-8]``
-    - ``[u16 BE field_count]``
-    - For each field: ``[u16 BE key_len][key utf-8][u8 type_tag][value bytes]``
+    This is the per-event payload inside an OP_PUSH_BATCH frame.
+    Extracted from encode_push_binary (D-03: zero new serialization code).
 
     Type tags:
 
@@ -120,10 +120,6 @@ def encode_push_binary(stream_name: str, event: dict) -> bytes:
     server-side decoder would return an integer instead of a bool.
     """
     buf = bytearray()
-    name_bytes = stream_name.encode("utf-8")
-    _check_u16_len("stream_name", name_bytes)
-    buf += _U16.pack(len(name_bytes))
-    buf += name_bytes
     if len(event) > _U16_MAX:
         raise ProtocolError(
             f"event field_count exceeds {_U16_MAX}: got {len(event)}"
@@ -163,6 +159,53 @@ def encode_push_binary(stream_name: str, event: dict) -> bytes:
             raise ProtocolError(
                 f"unsupported event field type for key {key!r}: {type(value).__name__}"
             )
+    return bytes(buf)
+
+
+def encode_push_binary(stream_name: str, event: dict) -> bytes:
+    """Encode a PUSH payload in the Phase 11 binary format (PERF-02).
+
+    Wire format matches the Rust ``decode_event_binary``:
+
+    - ``[u16 BE name_len][name utf-8]``
+    - ``[u16 BE field_count]``
+    - For each field: ``[u16 BE key_len][key utf-8][u8 type_tag][value bytes]``
+
+    Delegates to :func:`_encode_event_body` for the field encoding (D-03).
+    """
+    buf = bytearray()
+    name_bytes = stream_name.encode("utf-8")
+    _check_u16_len("stream_name", name_bytes)
+    buf += _U16.pack(len(name_bytes))
+    buf += name_bytes
+    buf += _encode_event_body(event)
+    return bytes(buf)
+
+
+def encode_push_batch(stream_name: str, events, batch_id: int) -> bytes:
+    """Encode an OP_PUSH_BATCH payload (D-02 wire format).
+
+    Wire format: ``[u16 stream_len][stream][u32 batch_id][u32 count]``
+                 ``[for each: [u32 event_len][event_bytes]]``
+
+    events is an iterable of dicts. Each event is encoded via
+    :func:`_encode_event_body` (D-03: reuse existing serialization).
+    """
+    buf = bytearray()
+    name_bytes = stream_name.encode("utf-8")
+    _check_u16_len("stream_name", name_bytes)
+    buf += _U16.pack(len(name_bytes))
+    buf += name_bytes
+    buf += struct.pack(">II", batch_id, 0)  # batch_id + placeholder count
+    count_offset = 2 + len(name_bytes) + 4  # position of the count field
+    count = 0
+    for event in events:
+        event_bytes = _encode_event_body(event)
+        buf += struct.pack(">I", len(event_bytes))
+        buf += event_bytes
+        count += 1
+    # Patch the count field in-place
+    struct.pack_into(">I", buf, count_offset, count)
     return bytes(buf)
 
 
