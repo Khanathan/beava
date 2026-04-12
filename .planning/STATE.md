@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: New API & Engine
-status: verifying
-stopped_at: Completed 17-03-PLAN.md
-last_updated: "2026-04-12T23:03:19.918Z"
+status: executing
+stopped_at: Completed 18-01-PLAN.md
+last_updated: "2026-04-12T23:30:52.253Z"
 last_activity: 2026-04-12
 progress:
   total_phases: 16
   completed_phases: 2
-  total_plans: 5
-  completed_plans: 5
-  percent: 100
+  total_plans: 7
+  completed_plans: 6
+  percent: 86
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** Events go in, features come out -- synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
-**Current focus:** Phase 17 — Enriched Event Propagation
+**Current focus:** Phase 18 — Feature Projection and Ephemeral Schema
 
 ## Current Position
 
 Milestone: v2.0 New API & Engine
-Phase: 17 (Enriched Event Propagation) — EXECUTING
-Plan: 3 of 3
-Status: Phase complete — ready for verification
+Phase: 18 (Feature Projection and Ephemeral Schema) — EXECUTING
+Plan: 2 of 2
+Status: Ready to execute
 Last activity: 2026-04-12
 
 Progress: [░░░░░░░░░░] 0%
@@ -37,7 +37,7 @@ Progress: [░░░░░░░░░░] 0%
 
 **Velocity:**
 
-- Total plans completed: 39 (v1.0) + 23 (v1.1) + 6 (v1.2) + 8 (v1.3/v1.4)
+- Total plans completed: 42 (v1.0) + 23 (v1.1) + 6 (v1.2) + 8 (v1.3/v1.4)
 - Total phases completed: 15 integers + 2 decimals through v1.3
 
 ## Accumulated Context
@@ -62,6 +62,8 @@ All v1.0-v1.3 decisions archived in PROJECT.md Key Decisions table.
 - [Phase 17]: Dual enrichment maps: enrichment_json (serde_json::Value) for operators, enrichment_fv (FeatureValue) for EvalContext; no-cascade fast path skips allocation
 - [Phase 17]: Derive values not assertable via get_features -- verify via downstream aggregated values instead
 - [Phase 17]: Concurrent enrichment test uses TCP wire protocol for real DashMap concurrency path
+- [Phase 18]: Projection applied after derives but before views -- derives can reference any feature regardless of projection
+- [Phase 18]: Ephemeral fields are schema-only -- stored on StreamDefinition but no runtime enforcement yet
 
 ### Critical Pitfalls (from research)
 
@@ -81,6 +83,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-12T23:03:19.916Z
-Stopped at: Completed 17-03-PLAN.md
+Last session: 2026-04-12T23:30:52.251Z
+Stopped at: Completed 18-01-PLAN.md
 Resume: `/gsd-plan-phase 16`

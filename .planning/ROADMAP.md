@@ -280,9 +280,9 @@ Plans:
   1. User can call `select()` or `drop()` on a dataset and only the projected features appear in PUSH and GET responses for that stream
   2. All new RegisterRequest fields (`projection`, `ephemeral`, `ttl`, `max_keys`) use `#[serde(default)]` and a v1.3-format RegisterRequest loads successfully on the v2.0 server (pitfall C-3 backward compat)
   3. Snapshot round-trip test passes: register with new fields, snapshot, restart, verify fields preserved
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
-- [ ] 18-01-PLAN.md -- Rust: Projection enum, RegisterRequest fields, push_internal/get_features filtering, backward compat + snapshot tests
+- [x] 18-01-PLAN.md -- Rust: Projection enum, RegisterRequest fields, push_internal/get_features filtering, backward compat + snapshot tests
 - [ ] 18-02-PLAN.md -- Python SDK select()/drop() on DatasetDef + end-to-end integration tests
 
 ### Phase 19: Test Migration and Old API Removal
@@ -323,5 +323,5 @@ Phases execute in numeric order: 16 -> 17 -> 18 -> 19
 | 15. Snapshot I/O off main thread | v1.3 | 0/? | Deferred | - |
 | 16. Python SDK -- New Types and Decorators | v2.0 | 2/2 | Complete    | 2026-04-12 |
 | 17. Enriched Event Propagation | v2.0 | 3/3 | Complete    | 2026-04-12 |
-| 18. Feature Projection and Ephemeral Schema | v2.0 | 0/2 | Planning    | - |
+| 18. Feature Projection and Ephemeral Schema | v2.0 | 1/2 | In Progress|  |
 | 19. Test Migration and Old API Removal | v2.0 | 0/? | Not started | - |
