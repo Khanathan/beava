@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Composable Pipeline & Event Log
 status: Roadmap refined with research findings and locked decisions LD-1..LD-4; ready for plan-phase
-stopped_at: Phase 12 complete — verification passed
-last_updated: "2026-04-12T02:15:52.035Z"
+stopped_at: Completed 13-01-PLAN.md
+last_updated: "2026-04-12T02:38:19.932Z"
 last_activity: 2026-04-11 — gsd-roadmapper refined phases 12-15 in place
 progress:
   total_phases: 7
   completed_phases: 7
-  total_plans: 43
-  completed_plans: 43
+  total_plans: 23
+  completed_plans: 23
   percent: 100
 ---
 
@@ -81,6 +81,7 @@ Prior milestone summary (v1.2 Performance — SHIPPED 2026-04-11):
 | Phase 10.1 P03 | ~25min | 2 tasks | 1 files |
 | Phase 12 P01 | ~25min | 3 tasks | 4 files |
 | Phase 12 P02 | ~25min | 2 tasks | 2 files |
+| Phase 13 P01 | ~7min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -139,6 +140,7 @@ Key v1.1 architectural decisions (from research):
 - [Phase 10.1]: app.js wholesale rewrite for interactive Debug UI — render-once dagre-d3 + d3-text-in-place edge labels, shared state.paused gate, stream-scoped entity lookup with 7 sub-states, el()/svgEl() textContent chokepoint for XSS safety
 - [Phase 12]: push_batch_with_cascade_no_features inlines fan-out filter logic at call entry (mirrors TCP handler src/server/tcp.rs:364-398) — Rule 2 deviation to make the load-bearing fan-out test pass; cascade-only delegation alone did not satisfy v1.2 parity
 - [Phase 12 Wave 2]: per-connection ConnAccumulator (stack-local, N=64, 200µs deadline via absolute tokio::time::Instant + sleep_until) wired into handle_connection as a biased tokio::select! { read | sleep_until } loop; handle_push_batch takes one state.lock() per batch and routes cascade + fan-out via the Wave 1 push_batch_with_cascade_no_features primitive; handle_push_async removed entirely (batch path is the only async path); #![deny(clippy::await_holding_lock)] at src/server/tcp.rs top is the compile-time C-7 gate; per-connection pending_drain Vec<(u64, String)> sorted by seq flushes BEFORE every sync response (D-13), guaranteeing per-connection isolation and seq-ordered error attribution
+- [Phase 13]: Command::PushBatch stores Vec<(Value, Vec<u8>)> not Vec<PendingAsync> -- parser has no connection context for seq assignment
 
 ### Roadmap Evolution
 
@@ -165,6 +167,6 @@ Key v1.1 architectural decisions (from research):
 
 ## Session Continuity
 
-Last session: 2026-04-12T02:15:52.032Z
-Stopped at: Phase 12 complete — verification passed
+Last session: 2026-04-12T02:38:19.929Z
+Stopped at: Completed 13-01-PLAN.md
 Resume: `/gsd-execute-phase 12` next wave (12-03 bench matrix gate, if planned)

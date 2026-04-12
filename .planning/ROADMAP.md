@@ -140,7 +140,7 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9 -> 10 -> 10.1 -> 10.2 -> 11 ->
 | 10.2 Latency Debugger | v1.1 | 3/3 | Complete | 2026-04-10 |
 | 11. Fire-and-Forget PUSH + Binary Wire | v1.2 | 6/6 | Complete | 2026-04-11 |
 | 12. Server-side async push coalescing | v1.3 | 1/3 | In Progress|  |
-| 13. SDK batch push + OP_PUSH_BATCH | v1.3 | 0/? | Not started | - |
+| 13. SDK batch push + OP_PUSH_BATCH | v1.3 | 1/2 | In Progress|  |
 | 14. Key-partitioned multi-threaded engine | v1.3 | 0/? | Not started | - |
 | 15. Off-thread snapshot I/O | v1.3 | 0/? | Not started | - |
 
@@ -276,9 +276,9 @@ Plans:
   7. Python SDK: `bench.py --mode async-batch` flag exercises the new API; results recorded in `RESULTS.md` across small / medium / large pipeline sizes (Phase 11-class bench matrix)
   8. Decode path benchmarked in isolation before wiring into the server (pitfall H-6)
   9. All 532 existing tests remain green; new batch tests cover encode/decode roundtrip, mixed-valid/invalid event handling, partial batch errors, oversized-frame reject
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
-- [ ] 13-01-PLAN.md — OP_PUSH_BATCH server-side decode + dispatch + tests + decode micro-bench
+- [x] 13-01-PLAN.md — OP_PUSH_BATCH server-side decode + dispatch + tests + decode micro-bench
 - [ ] 13-02-PLAN.md — Python SDK push_many + encode_push_batch + bench.py async-batch mode + matrix run
 
 ### Phase 14: Key-partitioned multi-threaded engine (v2 architectural upgrade)
