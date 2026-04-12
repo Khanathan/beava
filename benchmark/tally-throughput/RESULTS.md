@@ -452,3 +452,56 @@ The Phase 12 gate (12-03) measured 124.7k eps and declared D-20 FAIL. Root cause
 ### Regression suite
 
 633 tests passed, 0 failed (unchanged from Phase 12 Wave 2).
+
+## Phase 14: Per-stream locks + DashMap concurrency — 2026-04-12
+
+**Build:** `cargo build --release` on `v1.3-concurrency` branch (Plans 14-01 + 14-02 landed)
+**Architecture:** ConcurrentAppState with per-field locks (RwLock<PipelineEngine> + PLMutex<StateStore> + 8 independent small locks). DashMap added but StateStore retained behind PLMutex (Plan 14-01 deviation).
+**Runtime:** tokio `current_thread` (unchanged from Phase 12). Single OS thread.
+**Hardware:** Intel(R) Xeon(R) 6975P-C, 48 cores, 371 GiB RAM (tally binary uses 1 core)
+**Methodology:** 3-run median per scenario
+
+### Multi-client throughput (the key metric)
+
+| Scenario | Events | Median EPS | Phase 12 Baseline | Delta | Gate |
+|---|---|---:|---:|---|---|
+| 4c async medium | 120k | **27,703** | 28,000 | -1.1% | MARGINAL |
+| 8c async medium | 120k | **31,175** | 28,000 | +11.3% | ok |
+| 4c async-batch medium | 120k | **482,950** | 178,000 (1c batch) | +171% | PASS |
+| 4c async small | 120k | **28,155** | — | — | — |
+| 4c async large | 120k | **28,424** | — | — | — |
+
+**Key finding: multi-client async throughput did NOT improve.** The 4-client async medium result (27.7k) is virtually identical to the Phase 12 baseline (28k). This is expected: the server still uses `tokio::main(flavor = "current_thread")`, so all connections are multiplexed on a single OS thread. Per-field locking reduces lock granularity but cannot enable parallelism when there is only one thread.
+
+**Batch mode is the exception.** 4-client async-batch hit 483k eps — a 2.7x improvement over the 178k single-client Phase 13 baseline. This is not true parallelism; it is async I/O pipelining: while the server processes one client's batch, other clients overlap encoding their next batch. The server processes each batch under a single lock acquisition, and the batch framing amortizes per-event overhead.
+
+### Single-client regression check
+
+| Scenario | Events | Median EPS/Latency | Baseline | Delta | Gate |
+|---|---|---:|---|---|---|
+| 1c async medium | 200k | **135,586 eps** | 142,000 | -4.5% | PASS (>= 128k) |
+| 1c sync medium p99 | 60k | **91.22 us** | 90 us | +1.4% | PASS (<= 99us) |
+| 1c batch medium | 60k | **476,048 eps** | 178,000 | +167% | PASS |
+
+Single-client async throughput: 135.6k eps, within -10% of the 142k baseline. The ~4.5% drop is likely from DashMap per-access overhead (~5-10ns hash+shard lookup per operator) and the additional per-field lock acquire/release cycles vs the old single global mutex.
+
+Single-client batch throughput jumped from 178k to 476k eps — a 2.7x improvement. This suggests the per-field locking allows the batch processor to avoid contending with background tasks (snapshot, eviction, metrics) that previously shared the global mutex.
+
+### Why multi-client async did NOT improve
+
+The server's tokio runtime is `current_thread` (src/main.rs line 26). In this mode:
+- All TCP connections are multiplexed on one OS thread via cooperative scheduling
+- Only one task runs at a time — per-field locks never actually contend
+- The bottleneck is CPU time on the single thread, not lock granularity
+- Per-field locking is a prerequisite for multi-thread benefit, not a benefit itself
+
+To realize the concurrency benefit of per-field locks, the runtime must be switched to `#[tokio::main]` (multi-thread flavor). This was noted in Plan 14-01 as future work.
+
+### Regression suite
+
+648 tests passed, 0 failed (505 lib + 143 integration including 5 new concurrent tests from Plan 14-02).
+
+### Raw result files
+
+- `benchmark/tally-throughput/results/14-concurrency-results.json` — aggregated results
+- `benchmark/tally-throughput/results/20260412-04*` — individual run JSONs
