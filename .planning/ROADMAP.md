@@ -281,36 +281,29 @@ Plans:
 - [x] 13-01-PLAN.md — OP_PUSH_BATCH server-side decode + dispatch + tests + decode micro-bench
 - [x] 13-02-PLAN.md — Python SDK push_many + encode_push_batch + bench.py async-batch mode + matrix run
 
-### Phase 14: Key-partitioned multi-threaded engine (v2 architectural upgrade)
-**Goal:** Break the single-core ceiling. Shard the `EntityState` map across N worker threads (`num_shards` defaults to `std::thread::available_parallelism()`), each owning an exclusive `ShardStore` with **no cross-thread locks on the hot path**. Thread-per-shard shared-nothing model (Seastar/Glommio/Dragonfly pattern). Aggregate target: **≥ 1M eps** on 16+ cores.
-**Depends on:** Phase 12, Phase 13 (coalescing + batch primitive make per-worker amortization effective; cross-shard channel sends `PushBatch` messages reusing Phase 12's handler from day one)
-**Requirements:** PERF-05 (key-partitioned concurrency)
-**Stack additions (5 crates, all research-validated):**
-  - `parking_lot = "0.12"` — per-shard `Mutex<ShardStore>`; **no poisoning** (load-bearing for panic-in-operator safety per pitfall C-5); ~25ns uncontended vs std ~60ns
-  - `crossbeam-channel = ">=0.5.15"` **(pinned minimum)** — sync MPMC for cross-shard fan-out; MUST be ≥0.5.15 to avoid RUSTSEC-2025-0024 (double-free on Drop in 0.5.12–0.5.14)
-  - `crossbeam-utils = "0.8"` — `CachePadded<T>` wrap on shard vec + per-shard counters (pitfall C-6 — non-negotiable for false-sharing defense)
-  - `core_affinity = "0.8"` **feature-gated** behind `--features core-affinity` (default OFF) — bare-metal NUMA 5–15% win, containers often no-op
-  - `xxhash-rust = "0.8"` (pinned exactly) — `xxh3_64` for shard routing with fixed seed (LD-4 — ahash is NOT spec-stable across crate versions; routing must survive `cargo update`)
-**Pre-plan spike (1 day, before any implementation plan is written):** Validate the runtime coordination model — one dedicated `std::thread` per shard each running its own `current_thread` tokio runtime, PLUS one multi-thread tokio runtime for TCP accept + HTTP management. Research flagged this as MEDIUM confidence without hands-on validation. Spike deliverable: minimal Rust prototype that accepts a TCP connection on the front-door runtime, hands off the FD to a shard worker, and round-trips one PUSH through the worker's inbox. Feeds directly into plan decomposition.
+### Phase 14: Per-stream locks + DashMap concurrency (incremental concurrency)
+**Goal:** Replace the global `Mutex<AppState>` with per-stream locks + DashMap entity-level concurrency. Each stream gets its own `DashMap<EntityKey, StreamEntityState>` for concurrent reads/writes to different keys. PipelineEngine behind `parking_lot::RwLock`. Background systems (snapshot, eviction, event log) adapted for DashMap iteration. Multi-client throughput improvement, no single-client regression.
+**Depends on:** Phase 12, Phase 13
+**Requirements:** PERF-05 (per-stream + entity-level concurrency — incremental step toward full key-partitioned sharding)
+**Stack additions (2 crates):**
+  - `dashmap = "6.1"` — per-stream `DashMap<EntityKey, StreamEntityState>` for entity-level concurrency
+  - `parking_lot = "0.12"` — `RwLock` for PipelineEngine, `Mutex` for per-field state locks; no poisoning (C-5 defense)
 **Success Criteria** (what must be TRUE):
-  1. `StateStore` internals split into `Arc<[CachePadded<parking_lot::Mutex<ShardStore>>]>` — `CachePadded` wrap on the shard vec and on every per-shard hot field (pitfall C-6); **benchmarking 1/2/4/8/16 shards on empty-operator pipeline shows linear or super-linear scaling**. Sub-linear = false sharing; verified with `perf c2c` if any doubt.
-  2. Entity key → shard via `xxh3_64(key, seed=0) % num_shards` (LD-4) — deterministic across process restarts and across crate `cargo update`. Hash-version byte included in snapshot manifest header.
-  3. Runtime model: N dedicated `std::thread`s for shard workers (each a `current_thread` tokio runtime) + 1 multi-thread tokio runtime (`worker_threads=2`, `max_blocking_threads=2`) for TCP accept + HTTP management. Multi-thread runtime immediately compile-errors on any `std::MutexGuard` held across `.await` (pitfall C-7 — free correctness gate).
-  4. **`ThroughputTracker` and `LatencyTracker` are per-shard, not shared atomics** (pitfall H-1) — each shard owns plain structs mutated only by its own worker; `/metrics` + `/debug/*` endpoints do scatter-gather merges on read. Aggregate throughput on an empty pipeline scales linearly with shard count (not capped at shared-counter contention).
-  5. **Cross-shard fan-out is fire-and-forget** (LD-1) — origin shard releases its lock BEFORE enqueueing to target shard's bounded crossbeam inbox; target-shard errors log to per-shard per-stream metrics and NOT to originating client's drain queue. AB-BA deadlock impossible by construction (pitfall C-1). Loom test with 2 shards + 2 fan-out directions passes.
-  6. **Cross-shard messages are always batched** — `CrossShardMsg::PushBatch { stream, events: Vec<...> }` never single-event. Channel bounded at 4096; target-full surfaces via origin-shard metrics (not drain).
-  7. `PipelineEngine` lives behind `arc_swap::ArcSwap<Arc<PipelineEngine>>` — every shard reads its own pointer with zero synchronization cost; REGISTER publishes a new Arc atomically. REGISTER vs PUSH race test passes (lazy log-open on target shard).
-  8. Event log becomes **per-shard directory**: `events/shard-NN/stream.log`. Each shard owns its own `BufWriter<File>` + fsync timer. Backfill cold path interleaves across shards.
-  9. Snapshot format **v7 with manifest** (LD-3): `tally.snapshot.manifest.{seq}` contains `{seq, num_shards, per_shard_hashes (SHA-256), format_version: 7, hash_version}`. Per-shard files: `tally.snapshot.base.{seq}.shard-NN`. Manifest atomic-rename is the commit point. Missing manifest → roll back to previous (Postgres commit-file model).
-  10. **`num_shards` persistence + migration gate (LD-2)**: `num_shards` stored in manifest header + config file. Restart with different shard count fails fast unless `TALLY_ALLOW_RESHARD=1` is set, which triggers a one-time re-route migration on load (walks old-shard entities, re-routes via `xxh3_64 % new_N`). Explicit migration test.
-  11. v6 backward compat: on startup, check for manifest first (v7), fall back to v6 single-file scan, load into shard 0 and re-shard on the fly via `xxh3_64 % N`.
-  12. MGET/GET scatter-gather: connection handler hashes each key to shard, sends `CrossShardMsg::MGet { keys, reply: oneshot }`, merges replies in input order. GET p99 stays **< 50µs** (adds ~1–2µs channel round-trip).
-  13. Aggregate throughput on medium pipeline with **16 clients × 16 shards ≥ 1,000,000 eps** (~8× v1.2 single-core)
-  14. Single-client throughput is within **±10% of v1.2** (acceptable: some overhead from shard dispatch for workloads that don't benefit from parallelism)
-  15. **Bench gate matrix: small / medium / large × sync / async × Zipfian multi-key** (pitfall "Phase 11 class") — Zipfian multi-key is mandatory because single-key bench never touches the cross-shard path. Measure **per-shard throughput and latency separately**, not just aggregate (aggregate 1M can hide one shard at 800k and fifteen at 13k). Bench runs DURING a snapshot cycle too (Phase 15 prep).
-  16. All operator `push`/`read` paths audited for panics → converted to `TallyError` returns (no `unwrap`/`expect`/integer overflow in hot code); panic on one shard resets that shard and reloads from last snapshot — local crash, not global corruption (pitfall C-5)
-  17. All 532 existing tests remain green; new concurrency tests cover shard-routing correctness, cross-shard fan-out, snapshot recovery from a multi-shard state, TALLY_ALLOW_RESHARD migration, REGISTER-vs-PUSH race
-**Plans:** TBD. This is the largest architectural change since v1.0; expect 1-day spike → research → plan → multi-wave execution.
+  1. Global `Mutex<AppState>` eliminated — `ConcurrentAppState` uses individually-locked fields
+  2. Per-stream `DashMap<EntityKey, StreamEntityState>` for entity-level concurrency within each stream (D-03)
+  3. `PipelineEngine` behind `parking_lot::RwLock` — concurrent reads on hot path, write only on REGISTER (D-04)
+  4. Snapshot serialization iterates per-stream DashMaps correctly (D-09)
+  5. Per-stream eviction via `DashMap::retain()` — no global lock during eviction
+  6. Multi-client throughput (4 clients, async, medium) exceeds Phase 12 baseline (28k eps)
+  7. Single-client throughput within -10% of Phase 12 baseline (~142k eps)
+  8. 5+ concurrency integration tests pass under multi-threaded tokio runtime
+  9. All 505+ existing tests remain green
+  10. `#![deny(clippy::await_holding_lock)]` C-7 gate preserved
+**Plans:** 3 plans
+Plans:
+- [ ] 14-01-PLAN.md — Core refactor: ConcurrentAppState, StreamStore with DashMap, refactor all state.lock() call sites
+- [ ] 14-02-PLAN.md — Background systems: snapshot/eviction/event-log DashMap adaptation + concurrency integration tests
+- [ ] 14-03-PLAN.md — Benchmark gate: multi-client throughput, single-client regression check, results documentation
 
 ### Phase 15: Snapshot I/O off main thread
 **Goal:** Move snapshot writes off the main event-loop thread (per shard) so large-state pipelines don't stall during full-snapshot windows. After Phase 14 this becomes a trivial parallel-split: each shard clones its own dirty subset under its own lock, releases, then `spawn_blocking` writes its own shard file — all N shards in parallel.
