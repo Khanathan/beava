@@ -307,18 +307,42 @@ pub struct EvalContext<'a> {
     pub features: &'a ahash::AHashMap<String, FeatureValue>,
     /// The current event JSON (for _event.field access).
     pub event: Option<&'a serde_json::Value>,
+    /// Enrichment overlay: upstream-computed feature values for cascade propagation.
+    /// Resolution order: features -> enrichment -> event -> Missing.
+    pub enrichment: Option<&'a ahash::AHashMap<String, FeatureValue>>,
 }
 
 impl<'a> EvalContext<'a> {
     /// Resolve a field reference to its current value.
+    /// Resolution order: features -> enrichment -> event -> Missing.
     pub fn resolve_field(&self, field_ref: &FieldRef) -> FeatureValue {
         match field_ref {
             FieldRef::Local(name) => {
-                self.features.get(name).cloned().unwrap_or(FeatureValue::Missing)
+                if let Some(val) = self.features.get(name) {
+                    return val.clone();
+                }
+                if let Some(enr) = self.enrichment {
+                    if let Some(val) = enr.get(name) {
+                        return val.clone();
+                    }
+                }
+                FeatureValue::Missing
             }
             FieldRef::Qualified(stream, field) => {
                 let key = format!("{}.{}", stream, field);
-                self.features.get(&key).cloned().unwrap_or(FeatureValue::Missing)
+                if let Some(val) = self.features.get(&key) {
+                    return val.clone();
+                }
+                if let Some(enr) = self.enrichment {
+                    if let Some(val) = enr.get(&key) {
+                        return val.clone();
+                    }
+                    // Fallback: check enrichment with unqualified key
+                    if let Some(val) = enr.get(field.as_str()) {
+                        return val.clone();
+                    }
+                }
+                FeatureValue::Missing
             }
             FieldRef::Event(field) => match self.event {
                 Some(ev) => match ev.get(field) {
@@ -1101,6 +1125,7 @@ mod tests {
         let ctx = EvalContext {
             features: &features,
             event: None,
+            enrichment: None,
         };
         eval(&expr, &ctx)
     }
@@ -1311,6 +1336,7 @@ mod tests {
         let ctx = EvalContext {
             features: &features,
             event: Some(&event),
+            enrichment: None,
         };
         assert_eq!(eval(&expr, &ctx), FeatureValue::Float(50.0));
     }

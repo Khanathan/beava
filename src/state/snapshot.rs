@@ -53,23 +53,23 @@ pub enum OperatorState {
 }
 
 impl OperatorState {
-    pub fn push(&mut self, event: &serde_json::Value, now: SystemTime) -> Result<(), TallyError> {
+    pub fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError> {
         match self {
-            Self::Count(op) => op.push(event, now),
-            Self::Sum(op) => op.push(event, now),
-            Self::Avg(op) => op.push(event, now),
-            Self::Min(op) => op.push(event, now),
-            Self::Max(op) => op.push(event, now),
-            Self::Last(op) => op.push(event, now),
-            Self::DistinctCount(op) => op.push(event, now),
-            Self::Stddev(op) => op.push(event, now),
-            Self::Percentile(op) => op.push(event, now),
-            Self::Lag(op) => op.push(event, now),
-            Self::Ema(op) => op.push(event, now),
-            Self::LastN(op) => op.push(event, now),
-            Self::First(op) => op.push(event, now),
-            Self::ExactMin(op) => op.push(event, now),
-            Self::ExactMax(op) => op.push(event, now),
+            Self::Count(op) => op.push(event, enrichment, now),
+            Self::Sum(op) => op.push(event, enrichment, now),
+            Self::Avg(op) => op.push(event, enrichment, now),
+            Self::Min(op) => op.push(event, enrichment, now),
+            Self::Max(op) => op.push(event, enrichment, now),
+            Self::Last(op) => op.push(event, enrichment, now),
+            Self::DistinctCount(op) => op.push(event, enrichment, now),
+            Self::Stddev(op) => op.push(event, enrichment, now),
+            Self::Percentile(op) => op.push(event, enrichment, now),
+            Self::Lag(op) => op.push(event, enrichment, now),
+            Self::Ema(op) => op.push(event, enrichment, now),
+            Self::LastN(op) => op.push(event, enrichment, now),
+            Self::First(op) => op.push(event, enrichment, now),
+            Self::ExactMin(op) => op.push(event, enrichment, now),
+            Self::ExactMax(op) => op.push(event, enrichment, now),
         }
     }
 
@@ -315,9 +315,9 @@ mod tests {
             Duration::from_secs(60),
         ));
         let now = ts(60_000);
-        op.push(&json!({}), now).unwrap();
-        op.push(&json!({}), now).unwrap();
-        op.push(&json!({}), now).unwrap();
+        op.push(&json!({}), None, now).unwrap();
+        op.push(&json!({}), None, now).unwrap();
+        op.push(&json!({}), None, now).unwrap();
         assert_eq!(op.read(now), FeatureValue::Int(3));
     }
 
@@ -330,7 +330,7 @@ mod tests {
             false,
         ));
         let now = ts(60_000);
-        op.push(&json!({"amount": 50.0}), now).unwrap();
+        op.push(&json!({"amount": 50.0}), None, now).unwrap();
         assert_eq!(op.read(now), FeatureValue::Float(50.0));
     }
 
@@ -343,8 +343,8 @@ mod tests {
             false,
         ));
         let now = ts(60_000);
-        op.push(&json!({"amount": 10.0}), now).unwrap();
-        op.push(&json!({"amount": 20.0}), now).unwrap();
+        op.push(&json!({"amount": 10.0}), None, now).unwrap();
+        op.push(&json!({"amount": 20.0}), None, now).unwrap();
         assert_eq!(op.read(now), FeatureValue::Float(15.0));
     }
 
@@ -357,9 +357,9 @@ mod tests {
             Duration::from_secs(60),
         ));
         let now = ts(60_000);
-        op.push(&json!({}), now).unwrap();
-        op.push(&json!({}), now).unwrap();
-        op.push(&json!({}), now).unwrap();
+        op.push(&json!({}), None, now).unwrap();
+        op.push(&json!({}), None, now).unwrap();
+        op.push(&json!({}), None, now).unwrap();
 
         let bytes = postcard::to_stdvec(&op).expect("serialize");
         let mut restored: OperatorState = postcard::from_bytes(&bytes).expect("deserialize");
@@ -375,8 +375,8 @@ mod tests {
             false,
         ));
         let now = ts(60_000);
-        op.push(&json!({"amount": 42.5}), now).unwrap();
-        op.push(&json!({"amount": 7.5}), now).unwrap();
+        op.push(&json!({"amount": 42.5}), None, now).unwrap();
+        op.push(&json!({"amount": 7.5}), None, now).unwrap();
 
         let bytes = postcard::to_stdvec(&op).expect("serialize");
         let mut restored: OperatorState = postcard::from_bytes(&bytes).expect("deserialize");
@@ -392,9 +392,9 @@ mod tests {
             Duration::from_secs(3600),
             Duration::from_secs(60),
         ));
-        count_op.push(&json!({}), now).unwrap();
-        count_op.push(&json!({}), now).unwrap();
-        count_op.push(&json!({}), now).unwrap();
+        count_op.push(&json!({}), None, now).unwrap();
+        count_op.push(&json!({}), None, now).unwrap();
+        count_op.push(&json!({}), None, now).unwrap();
 
         let state = SnapshotState {
             entities: vec![(
@@ -465,9 +465,9 @@ mod tests {
             Duration::from_secs(3600),
             Duration::from_secs(60),
         ));
-        count_op.push(&json!({}), now).unwrap();
-        count_op.push(&json!({}), now).unwrap();
-        count_op.push(&json!({}), now).unwrap();
+        count_op.push(&json!({}), None, now).unwrap();
+        count_op.push(&json!({}), None, now).unwrap();
+        count_op.push(&json!({}), None, now).unwrap();
 
         let state = SnapshotState {
             entities: vec![(
@@ -566,9 +566,9 @@ mod tests {
             false,
         ));
         let now = ts(60_000);
-        op.push(&json!({"amount": 10.0}), now).unwrap();
-        op.push(&json!({"amount": 5.0}), now).unwrap();
-        op.push(&json!({"amount": 20.0}), now).unwrap();
+        op.push(&json!({"amount": 10.0}), None, now).unwrap();
+        op.push(&json!({"amount": 5.0}), None, now).unwrap();
+        op.push(&json!({"amount": 20.0}), None, now).unwrap();
         assert_eq!(op.read(now), FeatureValue::Float(5.0));
     }
 
@@ -581,9 +581,9 @@ mod tests {
             false,
         ));
         let now = ts(60_000);
-        op.push(&json!({"amount": 10.0}), now).unwrap();
-        op.push(&json!({"amount": 5.0}), now).unwrap();
-        op.push(&json!({"amount": 20.0}), now).unwrap();
+        op.push(&json!({"amount": 10.0}), None, now).unwrap();
+        op.push(&json!({"amount": 5.0}), None, now).unwrap();
+        op.push(&json!({"amount": 20.0}), None, now).unwrap();
         assert_eq!(op.read(now), FeatureValue::Float(20.0));
     }
 
@@ -594,7 +594,7 @@ mod tests {
             false,
         ));
         let now = ts(60_000);
-        op.push(&json!({"country": "US"}), now).unwrap();
+        op.push(&json!({"country": "US"}), None, now).unwrap();
         assert_eq!(op.read(now), FeatureValue::String("US".into()));
     }
 
@@ -607,8 +607,8 @@ mod tests {
             false,
         ));
         let now = ts(60_000);
-        op.push(&json!({"amount": 10.0}), now).unwrap();
-        op.push(&json!({"amount": 5.0}), now).unwrap();
+        op.push(&json!({"amount": 10.0}), None, now).unwrap();
+        op.push(&json!({"amount": 5.0}), None, now).unwrap();
 
         let bytes = postcard::to_stdvec(&op).expect("serialize");
         let mut restored: OperatorState = postcard::from_bytes(&bytes).expect("deserialize");
@@ -624,8 +624,8 @@ mod tests {
             false,
         ));
         let now = ts(60_000);
-        op.push(&json!({"amount": 10.0}), now).unwrap();
-        op.push(&json!({"amount": 20.0}), now).unwrap();
+        op.push(&json!({"amount": 10.0}), None, now).unwrap();
+        op.push(&json!({"amount": 20.0}), None, now).unwrap();
 
         let bytes = postcard::to_stdvec(&op).expect("serialize");
         let mut restored: OperatorState = postcard::from_bytes(&bytes).expect("deserialize");
@@ -639,7 +639,7 @@ mod tests {
             false,
         ));
         let now = ts(60_000);
-        op.push(&json!({"country": "UK"}), now).unwrap();
+        op.push(&json!({"country": "UK"}), None, now).unwrap();
 
         let bytes = postcard::to_stdvec(&op).expect("serialize");
         let mut restored: OperatorState = postcard::from_bytes(&bytes).expect("deserialize");
@@ -668,9 +668,9 @@ mod tests {
             false,
         ));
         let now = ts(60_000);
-        op.push(&json!({"merchant_id": "m1"}), now).unwrap();
-        op.push(&json!({"merchant_id": "m2"}), now).unwrap();
-        op.push(&json!({"merchant_id": "m3"}), now).unwrap();
+        op.push(&json!({"merchant_id": "m1"}), None, now).unwrap();
+        op.push(&json!({"merchant_id": "m2"}), None, now).unwrap();
+        op.push(&json!({"merchant_id": "m3"}), None, now).unwrap();
         match op.read(now) {
             FeatureValue::Float(v) => {
                 assert!(v >= 2.0 && v <= 4.0, "Expected ~3 distinct, got {}", v);
@@ -689,8 +689,8 @@ mod tests {
             false,
         ));
         let now = ts(60_000);
-        op.push(&json!({"merchant_id": "m1"}), now).unwrap();
-        op.push(&json!({"merchant_id": "m2"}), now).unwrap();
+        op.push(&json!({"merchant_id": "m1"}), None, now).unwrap();
+        op.push(&json!({"merchant_id": "m2"}), None, now).unwrap();
 
         let bytes = postcard::to_stdvec(&op).expect("serialize");
         let mut restored: OperatorState = postcard::from_bytes(&bytes).expect("deserialize");
@@ -708,8 +708,8 @@ mod tests {
             Duration::from_secs(3600),
             Duration::from_secs(60),
         ));
-        count_op.push(&json!({}), now).unwrap();
-        count_op.push(&json!({}), now).unwrap();
+        count_op.push(&json!({}), None, now).unwrap();
+        count_op.push(&json!({}), None, now).unwrap();
 
         let state = SnapshotState {
             entities: vec![(
@@ -774,7 +774,7 @@ mod tests {
             Duration::from_secs(60),
         ));
         for _ in 0..op_count {
-            op.push(&json!({}), when).unwrap();
+            op.push(&json!({}), None, when).unwrap();
         }
         (
             format!("entity-{}", op_count),

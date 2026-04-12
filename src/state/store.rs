@@ -741,7 +741,7 @@ mod tests {
             let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("Transactions");
             let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
-            op.push(&serde_json::json!({}), now).unwrap();
+            op.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("tx_count".to_string(), op));
         }
 
@@ -763,7 +763,7 @@ mod tests {
             let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("Transactions");
             let mut op = OperatorState::Sum(SumOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false));
-            op.push(&serde_json::json!({"amount": 100.0}), now).unwrap();
+            op.push(&serde_json::json!({"amount": 100.0}), None, now).unwrap();
             stream.operators.push(("score".to_string(), op));
         }
 
@@ -785,13 +785,13 @@ mod tests {
             let mut entity = store.get_or_create_entity("u123");
             let stream1 = entity.get_or_create_stream("Transactions");
             let mut op1 = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
-            op1.push(&serde_json::json!({}), now).unwrap();
+            op1.push(&serde_json::json!({}), None, now).unwrap();
             stream1.operators.push(("tx_count".to_string(), op1));
 
             let stream2 = entity.get_or_create_stream("Logins");
             let mut op2 = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
-            op2.push(&serde_json::json!({}), now).unwrap();
-            op2.push(&serde_json::json!({}), now).unwrap();
+            op2.push(&serde_json::json!({}), None, now).unwrap();
+            op2.push(&serde_json::json!({}), None, now).unwrap();
             stream2.operators.push(("login_count".to_string(), op2));
         }
 
@@ -838,8 +838,8 @@ mod tests {
             let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("Transactions");
             let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
-            op.push(&serde_json::json!({}), now).unwrap();
-            op.push(&serde_json::json!({}), now).unwrap();
+            op.push(&serde_json::json!({}), None, now).unwrap();
+            op.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("tx_count".to_string(), op));
             stream.last_event_at = Some(now);
         }
@@ -868,7 +868,7 @@ mod tests {
         let now = ts(60_000);
 
         let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
-        op.push(&serde_json::json!({}), now).unwrap();
+        op.push(&serde_json::json!({}), None, now).unwrap();
 
         let snapshot_entities = vec![(
             "u456".to_string(),
@@ -911,8 +911,8 @@ mod tests {
             let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("TestStream");
             let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
-            op.push(&serde_json::json!({}), now).unwrap();
-            op.push(&serde_json::json!({}), now).unwrap();
+            op.push(&serde_json::json!({}), None, now).unwrap();
+            op.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("tx_count".to_string(), op));
         }
 
@@ -993,15 +993,15 @@ mod tests {
             let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("Transactions");
             let mut op_a = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
-            op_a.push(&serde_json::json!({}), now).unwrap();
+            op_a.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("a".to_string(), op_a));
 
             let mut op_b = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
-            op_b.push(&serde_json::json!({}), now).unwrap();
+            op_b.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("b".to_string(), op_b));
 
             let mut op_c = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
-            op_c.push(&serde_json::json!({}), now).unwrap();
+            op_c.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("c".to_string(), op_c));
         }
 
@@ -1031,7 +1031,7 @@ mod tests {
             let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("OldStream");
             let mut op_a = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
-            op_a.push(&serde_json::json!({}), now).unwrap();
+            op_a.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("x".to_string(), op_a));
         }
 
@@ -1166,7 +1166,7 @@ mod tests {
                 Duration::from_secs(3600),
                 Duration::from_secs(60),
             ));
-            op.push(&serde_json::json!({}), now).unwrap();
+            op.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("tx_count".to_string(), op));
         }
 
@@ -1197,7 +1197,7 @@ mod tests {
                 Duration::from_secs(3600),
                 Duration::from_secs(60),
             ));
-            op.push(&serde_json::json!({}), now).unwrap();
+            op.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("tx_count".to_string(), op));
         }
 
@@ -1220,7 +1220,7 @@ mod tests {
                     Duration::from_secs(3600),
                     Duration::from_secs(60),
                 ));
-                op.push(&serde_json::json!({}), now).unwrap();
+                op.push(&serde_json::json!({}), None, now).unwrap();
                 stream.operators.push((name.to_string(), op));
             }
         }
@@ -1253,7 +1253,7 @@ mod tests {
                 Duration::from_secs(3600),
                 Duration::from_secs(60),
             ));
-            op.push(&serde_json::json!({}), now).unwrap();
+            op.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("x".to_string(), op));
         }
         store.mark_dirty("u1");

@@ -521,6 +521,7 @@ impl PipelineEngine {
             let ctx = EvalContext {
                 features: &ahash::AHashMap::new(),
                 event: Some(event),
+            enrichment: None,
             };
             let result = eval(filter_expr, &ctx);
             match result {
@@ -602,6 +603,7 @@ impl PipelineEngine {
                         let ctx = EvalContext {
                             features: &ahash::AHashMap::new(),
                             event: Some(event),
+                        enrichment: None,
                         };
                         let result = eval(where_expr, &ctx);
                         match result {
@@ -610,7 +612,7 @@ impl PipelineEngine {
                             _ => {} // truthy -- proceed with push
                         }
                     }
-                    op.push(event, now)?;
+                    op.push(event, None, now)?;
                 }
             }
         } // stream_state borrow dropped here
@@ -645,6 +647,7 @@ impl PipelineEngine {
             let ctx = EvalContext {
                 features: &features,
                 event: Some(event),
+            enrichment: None,
             };
             stream.features.iter()
                 .filter_map(|(name, def)| {
@@ -937,6 +940,7 @@ impl PipelineEngine {
             let ctx = EvalContext {
                 features: &ahash::AHashMap::new(),
                 event: Some(event),
+            enrichment: None,
             };
             let result = eval(filter_expr, &ctx);
             match result {
@@ -989,6 +993,7 @@ impl PipelineEngine {
                     let ctx = EvalContext {
                         features: &ahash::AHashMap::new(),
                         event: Some(event),
+                    enrichment: None,
                     };
                     let result = eval(where_expr, &ctx);
                     match result {
@@ -997,7 +1002,7 @@ impl PipelineEngine {
                         _ => {}
                     }
                 }
-                let _ = op.push(event, event_time); // Use event timestamp!
+                let _ = op.push(event, None, event_time); // Use event timestamp!
             }
         }
 
@@ -1041,6 +1046,7 @@ impl PipelineEngine {
         let ctx = EvalContext {
             features: &features,
             event: None,
+        enrichment: None,
         };
         // Collect derives first to avoid borrow issues
         let mut derived: Vec<(String, FeatureValue)> = Vec::new();
@@ -1065,6 +1071,7 @@ impl PipelineEngine {
                         let ctx = EvalContext {
                             features: &features,
                             event: None,
+                        enrichment: None,
                         };
                         view_results.push((fname.clone(), eval(expr, &ctx)));
                     }
