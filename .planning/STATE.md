@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: New API & Engine
-status: Defining requirements
-stopped_at: null
+status: Ready to plan
+stopped_at: Phase 16 ready for planning
 last_updated: "2026-04-12"
-last_activity: 2026-04-12 — Milestone v2.0 started
+last_activity: 2026-04-12 — Roadmap created for v2.0 (Phases 16-19)
 progress:
-  total_phases: 0
+  total_phases: 4
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -21,15 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** Events go in, features come out -- synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
-**Current focus:** v2.0 New API & Engine — replace @st.stream with function-based @tl.dataset pattern, fill engine gaps, remove old API, architect for on-demand compute.
+**Current focus:** Phase 16 -- Python SDK New Types and Decorators
 
 ## Current Position
 
 Milestone: v2.0 New API & Engine
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-04-12 — Milestone v2.0 started
+Phase: 16 of 19 (Python SDK -- New Types and Decorators)
+Plan: 0 of ? in current phase
+Status: Ready to plan
+Last activity: 2026-04-12 — Roadmap created (4 phases, 13 requirements mapped)
+
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
@@ -42,49 +44,36 @@ Last activity: 2026-04-12 — Milestone v2.0 started
 
 ### Decisions
 
-All v1.0–v1.2 decisions archived in PROJECT.md Key Decisions table.
+All v1.0-v1.3 decisions archived in PROJECT.md Key Decisions table.
 
-**v1.3 Locked Decisions (executed):**
-
-- **LD-1** Cross-shard fan-out errors are fire-and-forget (per-shard metrics, NOT origin drain queue).
-- **LD-2** `num_shards` persisted in manifest + config; changing requires `TALLY_ALLOW_RESHARD=1`.
-- **LD-3** Snapshots are shard-local consistent (per-shard hash-match, not same logical moment).
-- **LD-4** Shard routing uses `xxh3_64` with fixed seed (not ahash).
-
-**v2.0 API Design Decisions:**
+**v2.0 Decisions:**
 
 - Function-based `@tl.dataset(depends_on=[...])` replaces `@st.stream` decorator
-- `EventSet` (input stream) / `FeatureSet` (computed features grouped by key) are the honest types
+- `EventSet`/`FeatureSet` are honest types (not DataFrame simulation)
 - `.group_by("key").agg(...)` makes aggregation explicit
-- DataFrame simulation rejected — users expect Pandas behavior
-- Old API removed, not deprecated alongside
-- REGISTER stays a runtime operation (enables on-demand compute post-launch)
-- On-demand compute: architect for it, don't build the product layer yet
+- Old API removed, not deprecated alongside (clean break before launch)
+- REGISTER stays runtime operation (enables on-demand compute post-launch)
+- Enriched propagation uses side-channel AHashMap (never clone serde_json::Value per hop)
+- All new RegisterRequest fields use #[serde(default)] for backward compat
 
-### Roadmap Evolution
+### Critical Pitfalls (from research)
 
-- **v1.0** (Phases 1-5) shipped 2026-04-09
-- **v1.1** (Phases 6-10.2) shipped 2026-04-11
-- **v1.2** (Phase 11) shipped 2026-04-11
-- **v1.3** (Phases 12-14) partially shipped 2026-04-12 — PERF-04 (batch API) + PERF-05 (DashMap concurrency) complete; PERF-03 (async coalescing) and OPS-05 (off-thread snapshot) deferred
-- **v2.0** started 2026-04-12
+- **C-1:** Enriched propagation allocation cliff -- side-channel, no event clone. Gate: <5% regression from 1.1M eps.
+- **C-2:** Old API removal breaks 744 tests -- port ALL tests first, verify count >= 744, THEN delete.
+- **C-3:** RegisterRequest backward compat -- all new fields #[serde(default)], snapshot round-trip test.
+- **C-4:** Two APIs being replaced -- @st.stream AND _dataframe.py. Test migration covers both.
+- **C-5:** Enrichment + DashMap concurrency -- enrichment values never re-enter DashMap during downstream push.
 
 ### Pending Todos
 
-- None — fresh milestone
+None.
 
 ### Blockers/Concerns
 
-- None
-
-### Quick Tasks Completed
-
-| # | Description | Date | Commit | Directory |
-|---|-------------|------|--------|-----------|
-| 260409-f8y | Generate AI image generation prompts for Tally logo/mascot | 2026-04-09 | ed7363e | [260409-f8y-generate-a-prompt-to-generate-logo-for-t](./quick/260409-f8y-generate-a-prompt-to-generate-logo-for-t/) |
+None.
 
 ## Session Continuity
 
 Last session: 2026-04-12
-Stopped at: Milestone v2.0 initialization
-Resume: Define requirements, then `/gsd-plan-phase [N]`
+Stopped at: Roadmap created for v2.0 milestone
+Resume: `/gsd-plan-phase 16`

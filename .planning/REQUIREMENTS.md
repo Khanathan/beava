@@ -179,27 +179,27 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PERF-04 | Phase 13 | Complete |
 | PERF-05 | Phase 14 | Complete |
 | OPS-05  | — | Deferred |
-| API-01 | TBD | Pending |
-| API-02 | TBD | Pending |
-| API-03 | TBD | Pending |
-| API-04 | TBD | Pending |
-| API-05 | TBD | Pending |
-| API-06 | TBD | Pending |
-| API-07 | TBD | Pending |
-| ENG-01 | TBD | Pending |
-| ENG-02 | TBD | Pending |
-| ENG-03 | TBD | Pending |
-| MIG-01 | TBD | Pending |
-| MIG-02 | TBD | Pending |
-| MIG-03 | TBD | Pending |
+| API-01 | Phase 16 | Pending |
+| API-02 | Phase 16 | Pending |
+| API-03 | Phase 16 | Pending |
+| API-04 | Phase 16 | Pending |
+| API-05 | Phase 16 | Pending |
+| API-06 | Phase 16 | Pending |
+| API-07 | Phase 16 | Pending |
+| ENG-01 | Phase 17 | Pending |
+| ENG-02 | Phase 18 | Pending |
+| ENG-03 | Phase 18 | Pending |
+| MIG-01 | Phase 19 | Pending |
+| MIG-02 | Phase 19 | Pending |
+| MIG-03 | Phase 19 | Pending |
 
 **Coverage:**
 - v1.1 requirements: 28 total, all complete
 - v1.2 requirements: 2 total, all complete
 - v1.3 requirements: 2 complete (PERF-04, PERF-05), 2 deferred (PERF-03, OPS-05)
-- v2.0 requirements: 13 total, all pending, awaiting roadmap phase mapping
+- v2.0 requirements: 13 total, all mapped (Phase 16: 7, Phase 17: 1, Phase 18: 2, Phase 19: 3)
 - Total: 45 requirements, 32 complete, 13 pending, 0 unmapped
 
 ---
 *Requirements defined: 2026-04-09*
-*Last updated: 2026-04-12 — v2.0 requirements (API-01..07, ENG-01..03, MIG-01..03) added; v1.3 PERF-03/OPS-05 deferred*
+*Last updated: 2026-04-12 — v2.0 requirements mapped to Phases 16-19*
