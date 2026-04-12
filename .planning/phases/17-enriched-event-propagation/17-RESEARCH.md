@@ -407,21 +407,13 @@ class UserStats:
 | A3 | Two enrichment maps needed (serde_json::Value + FeatureValue) | Architecture Pattern 4 | Could unify to one type with conversion at lookup time; minor perf tradeoff |
 | A4 | Primary push must use read_features=true when downstream exists | Pitfall 5 | If skipped, async cascade would produce incorrect downstream results |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Should enrichment propagate in async/batch cascade paths?**
-   - What we know: `push_with_cascade_no_features` skips feature reads. But downstream needs upstream results for enrichment.
-   - What's unclear: Whether async mode should compute enrichment at all (it discards features).
-   - Recommendation: YES, enrichment must work in async mode. The primary push in cascade must read features when downstream exists, even in async mode. The outer caller still gets an empty FeatureMap (async contract), but the internal cascade uses enrichment.
+1. **Should enrichment propagate in async/batch cascade paths?** — RESOLVED: YES. Primary push in cascade reads features when downstream exists, even in async mode. Outer caller still gets empty FeatureMap (async contract). Plan 17-02 implements this.
 
-2. **Enrichment map key format for operators?**
-   - What we know: Operators do `event.get("amount_usd")` -- they use flat field names, not qualified.
-   - What's unclear: Should `sum("amount_usd")` match enrichment key `"amount_usd"` (unqualified) or require `"CurrencyNorm.amount_usd"` (qualified)?
-   - Recommendation: Support BOTH. Insert both `"amount_usd"` and `"CurrencyNorm.amount_usd"` into operator-level enrichment. Derive expressions use qualified syntax via FieldRef::Qualified (already works). Operators use unqualified for simplicity. Document that unqualified names use last-writer-wins for collision resolution.
+2. **Enrichment map key format for operators?** — RESOLVED: Support BOTH unqualified and qualified. Insert both `"amount_usd"` and `"CurrencyNorm.amount_usd"` into operator-level enrichment. Last-writer-wins for unqualified collisions. Plan 17-01 implements resolve_field().
 
-3. **Should CountOp and other no-field operators receive enrichment?**
-   - What we know: CountOp ignores the event entirely (`_event`). No field to resolve.
-   - Recommendation: CountOp's push signature changes for trait compliance but ignores the enrichment parameter (same as it ignores the event). Zero performance cost.
+3. **Should CountOp and other no-field operators receive enrichment?** — RESOLVED: YES for trait compliance, CountOp ignores the parameter. Zero performance cost. Plan 17-01 implements this.
 
 ## Validation Architecture
 
