@@ -1,0 +1,17 @@
+{
+  "timestamp": "20260412-060151",
+  "mode": "async",
+  "pipeline": "medium",
+  "total_events": 400000,
+  "clients": 8,
+  "events_per_client": 50000,
+  "wall_seconds": 13.107,
+  "throughput_eps": 30518.6,
+  "latency_us": {
+    "mean": 255.52,
+    "p50": 132.64,
+    "p95": 910.0,
+    "p99": 1444.19,
+    "p999": 2277.74
+  }
+}
