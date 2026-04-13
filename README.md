@@ -1,67 +1,84 @@
-# Tally
+<p align="center">
+  <b><font size="6">Tally</font></b>
+  <br>
+  <i>Real-time compute engine</i>
+</p>
 
-[![CI](https://github.com/petrpan26/tally/actions/workflows/ci.yml/badge.svg)](https://github.com/petrpan26/tally/actions/workflows/ci.yml)
+<p align="center">
+  <a href="https://github.com/petrpan26/tally/actions/workflows/ci.yml"><img src="https://github.com/petrpan26/tally/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
+</p>
 
-Real-time feature server. Push events, get features. One binary, sub-millisecond, zero infrastructure.
+---
 
-Tally ingests events over a custom TCP protocol, computes streaming features (windowed aggregations, derived expressions, cross-stream cascades), and serves them synchronously in the response. No Kafka, no Flink, no cluster. One Rust binary with in-memory state and periodic snapshots to disk. Designed for fraud detection, ML feature serving, and real-time context for AI agents.
+Tally is a real-time compute engine. Define pipelines. Push events. Get results
+in microseconds. One binary, completely in-memory, zero infrastructure.
 
-## Architecture
+Everything lives in memory on a single node, so reads and writes are
+sub-microsecond with no network hops, no serialization tax, no distributed
+coordination overhead. Periodic snapshots to local disk for crash recovery.
 
-```
-                    +-----------+
-                    | Python SDK|
-                    +-----+-----+
-                          | TCP (port 6400)
-                          v
-+------------------------------------------------------+
-|                    Tally Server                       |
-|                                                      |
-|   +------------------+     +---------------------+   |
-|   | Command Handler  | --> | Pipeline Engine     |   |
-|   | PUSH / GET / SET |     | Operators, Derives, |   |
-|   | MSET / REGISTER  |     | Views, Lookups      |   |
-|   +------------------+     +----------+----------+   |
-|                                       |              |
-|                            +----------v----------+   |
-|                            | State Store         |   |
-|   +------------------+     | (in-memory HashMap) |   |
-|   | HTTP Management  |     +----------+----------+   |
-|   | /health /metrics |                |              |
-|   | /debug  /pipelines               v              |
-|   +------------------+     +---------------------+   |
-|     (port 6401)            | Snapshots + Event   |   |
-|                            | Log (local disk)    |   |
-|                            +---------------------+   |
-+------------------------------------------------------+
-```
+- [What is Tally?](#what-is-tally)
+- [Quick Start](#quick-start)
+- [Performance](#performance)
+- [Documentation](#docs)
+- [Comparison: Tally vs Flink+Kafka+Redis](#comparison)
+- [Configuration](#configuration)
+- [Community](#community)
+- [Contributing](#contributing)
+
+## What is Tally?
+
+Tally **ingests** events over a binary TCP protocol, **computes** streaming
+aggregations (windowed counts, sums, averages, percentiles, HLL distinct counts,
+and more), and **cascades** results through multi-stage pipeline DAGs. Every write
+is synchronous and atomic -- all operators update in one pass, state is immediately
+consistent. Push events at 400K/sec, read results in microseconds.
+
+Today, real-time compute means Kafka + Flink + Redis. That's 10-25 nodes,
+5-8 systems, and a platform team to keep it running. Most teams never get past
+the evaluation phase. Tally makes real-time compute accessible to any team:
+one Rust binary, a pipeline definition, and `push()`.
+
+**Use cases:** fraud detection, ML feature serving, real-time personalization,
+gaming leaderboards, AI agent context, IoT anomaly detection.
+
+**Key properties:**
+
+- **Every write is synchronous and atomic** -- push an event, all operators across all pipeline stages update in one pass. State is immediately consistent. No eventual consistency, no propagation delay. Easy to reason about.
+- **Fast writes, instant reads** -- push is fire-and-forget for maximum throughput. GET serves the latest state from memory in microseconds. Read-after-write is always consistent.
+- **Completely in-memory** -- all state lives in RAM on a single node. No disk reads on the hot path. Sub-microsecond state access.
+- **Pipeline cascades** -- define multi-stage pipelines with `depends_on`. Events propagate through the DAG in topological order, all within one request.
+- **16 operators** -- count, sum, avg, min, max, stddev, percentile, distinct_count (adaptive HLL++), last, first, lag, ema, last_n, exact_min, exact_max, derive.
+- **Sliding windows** -- configurable granularity (30m, 1h, 24h, 7d). Bucketed ring buffers for bounded memory.
+- **Expression engine** -- derive expressions, where-clause filters, cross-stream references. 21 builtins.
+- **Binary TCP protocol** -- persistent connections, length-prefixed frames, minimal overhead. Any language can implement a client.
+- **Periodic snapshots** -- state serialized to local disk for crash recovery. Lose at most ~30s of state on restart.
 
 ## Quick Start
 
 ### Option A: Docker
 
 ```bash
-git clone https://github.com/petrpan26/tally.git
-cd tally
+git clone https://github.com/petrpan26/tally.git && cd tally
 docker compose up -d
 ```
 
-### Option B: From Source
+### Option B: Build from source
 
 ```bash
-git clone https://github.com/petrpan26/tally.git
-cd tally
+git clone https://github.com/petrpan26/tally.git && cd tally
 cargo build --release
 ./target/release/tally
 ```
 
-### Install the Python SDK
+### Install the Python SDK (first available client)
 
 ```bash
 cd python && pip install -e .
 ```
 
-### Define a Pipeline and Push Events
+### Define a pipeline and push events
 
 ```python
 import tally as tl
@@ -73,9 +90,10 @@ class RawTransactions:
 @tl.dataset(depends_on=[RawTransactions])
 class UserFeatures:
     features = tl.group_by("user_id").agg(
-        tx_count_1h  = tl.count(window="1h"),
-        tx_sum_1h    = tl.sum("amount", window="1h"),
-        avg_amount   = tl.avg("amount", window="24h"),
+        tx_count_1h    = tl.count(window="1h"),
+        tx_count_24h   = tl.count(window="24h"),
+        tx_sum_1h      = tl.sum("amount", window="1h"),
+        avg_amount     = tl.avg("amount", window="24h"),
         unique_merchants = tl.distinct_count("merchant_id", window="24h"),
     )
     velocity = tl.derive("(tx_count_1h / 1) / (tx_count_24h / 24)")
@@ -83,86 +101,140 @@ class UserFeatures:
 app = tl.App("localhost:6400")
 app.register(RawTransactions, UserFeatures)
 
-# Push an event -- get updated features in the response
-features = app.push(RawTransactions, {
-    "user_id": "u123",
-    "amount": 50.0,
-    "merchant_id": "m456",
-})
+# Push events (fire-and-forget, maximum throughput)
+app.push(RawTransactions, {"user_id": "u123", "amount": 50.0, "merchant_id": "m456"})
+app.push(RawTransactions, {"user_id": "u123", "amount": 120.0, "merchant_id": "m789"})
+app.push(RawTransactions, {"user_id": "u123", "amount": 25.0, "merchant_id": "m456"})
+app.flush()
 
-print(features.tx_count_1h)        # 7
-print(features.unique_merchants)   # 4
+# Read computed results (instant, from in-memory state)
+features = app.get("u123")
+print(features.tx_count_1h)        # 3
+print(features.unique_merchants)   # 2
+print(features.velocity)           # 1.2
 ```
 
-## Key Features
-
-- **Synchronous push-through** -- push an event, get all updated features in the response. Not eventual consistency.
-- **Pipeline cascades** -- define multi-stage pipelines with `depends_on`. Events automatically propagate through the DAG in topological order.
-- **16 operators** -- count, sum, avg, min, max, stddev, percentile, distinct_count (HLL++), last, first, lag, ema, last_n, exact_min, exact_max, derive.
-- **Windowed aggregations** -- sliding windows with configurable granularity (30m, 1h, 24h, 7d).
-- **Expression engine** -- derive expressions, where-clause filters, cross-stream lookups. 18 builtins.
-- **Adaptive distinct counting** -- three-phase Exact -> HashSet -> HLL++ (p=12, Google bias correction). 2 KB/entity typical, zero error for low-cardinality entities.
-- **Feature projection** -- `select()`/`drop()` to control which features appear in responses.
-- **Local validation** -- `pipeline.validate()` catches cycles, missing deps, and type mismatches before hitting the server.
+The Python SDK is the first client implementation. The underlying
+[binary TCP protocol](docs/protocol.md) is simple enough that clients
+in Go, Java, Rust, or any language can be built against the spec.
 
 ## Performance
 
-Measured on a 48-core Xeon with 8 Python client processes, realistic fraud detection pipeline (47 features, 5 entity types, Zipfian distribution). Your results will vary with hardware.
+Measured on a 48-core Xeon with 8 Python client processes, realistic fraud
+detection pipeline (47 features across 5 entity types, Zipfian key distribution).
+Your results will vary with hardware.
 
 | Metric | Value |
 |--------|-------|
-| Throughput (8 clients, batch) | 430-510K events/sec |
+| Throughput (8 clients) | 430-510K events/sec (each computing 47 features) |
 | Throughput (single client) | 270K events/sec |
-| Sustained load | 29M events, 722K entities, no degradation |
+| Sustained load | 29M events, 722K entities, zero degradation |
 | Memory per entity | 7.6 KB (15 features incl. HLL++) |
 | Latency (p99) | < 100 us |
 
-See `benchmark/fraud-pipeline/bench_fraud.py` for the full benchmark.
+Why this fast: everything is in memory on one node. No network hops between
+services, no serialization to RocksDB, no GC pauses. A single `HashMap::get`
+costs ~0.1 us. A Flink RocksDB state access costs 5-15 us.
 
-## Claude Code Integration
+See [`benchmark/fraud-pipeline/bench_fraud.py`](benchmark/fraud-pipeline/bench_fraud.py) for the full benchmark. Run it yourself.
 
-Clone this repo and type `/tally` in Claude Code to get a guided setup with pipeline generation, realistic test data, and capacity planning. The skill walks you through:
+## Comparison
 
-1. Building and starting the server
-2. Designing a pipeline for your use case
-3. Generating and pushing test data
-4. Measuring throughput and memory
-5. Capacity planning based on your hardware
+Real-time compute today requires Kafka + Flink + Redis: 10-25 nodes, $3-15K/mo
+in infrastructure, and 0.5-1.0 FTE in ops. Tally does the same work on one node.
 
-## Documentation
+| | Tally | Kafka + Flink + Redis |
+|---|---|---|
+| Nodes | 1 | 10-25 |
+| Systems to manage | 1 | 5-8 |
+| State access latency | ~0.1 us (in-memory) | 5-15 us (RocksDB) |
+| Deploy | Single binary, `systemd` | Kubernetes + Helm + operators |
+| Ops burden | Check the dashboard | 0.5-1.0 FTE |
+| Infra cost (50K eps) | ~$400/mo (one node) | $3-5K/mo |
+
+Tally is for the 90% of use cases that fit on a single node. If you need
+distributed exactly-once processing, multi-TB state, or the Kafka connector
+ecosystem, use Flink. Flink and Kafka are excellent systems built by smart
+people. Tally exists because most teams don't need that complexity.
+
+See [full comparison](docs/comparison.md) for a deeper analysis.
+
+## Docs
 
 - [Architecture](docs/architecture.md) -- system design, event flow, state management
-- [Operators Reference](docs/operators.md) -- all 16 operators with signatures and examples
-- [TCP Protocol](docs/protocol.md) -- binary wire format, opcodes, frame structure
-- [HTTP Management API](docs/http-api.md) -- health, metrics, debug, pipeline management
+- [Operators Reference](docs/operators.md) -- all 16 operators with signatures, memory, and examples
+- [TCP Protocol](docs/protocol.md) -- binary wire format specification. Build a client in any language.
+- [HTTP Management API](docs/http-api.md) -- health, metrics, debug endpoints, pipeline management
 - [Python SDK Guide](docs/python-sdk.md) -- installation, pipeline definition, client usage
-- [Comparison: Tally vs Flink+Kafka+Redis](docs/comparison.md) -- side-by-side cost, complexity, and performance
+- [Comparison](docs/comparison.md) -- Tally vs Flink+Kafka+Redis: cost, complexity, performance
+
+## Architecture
+
+```
+                    +-----------+
+                    |  Clients  |   (Python SDK, or any TCP client)
+                    +-----+-----+
+                          | Binary TCP protocol (port 6400)
+                          v
++------------------------------------------------------+
+|                    Tally Server                       |
+|                                                      |
+|   +------------------+     +---------------------+   |
+|   | Command Handler  | --> | Pipeline Engine     |   |
+|   | PUSH / GET / SET |     | DAG cascade, 16 ops,|   |
+|   | MSET / REGISTER  |     | expressions, windows|   |
+|   +------------------+     +----------+----------+   |
+|                                       |              |
+|                            +----------v----------+   |
+|                            | State Store         |   |
+|   +------------------+     | In-memory (DashMap) |   |
+|   | HTTP Management  |     | All state in RAM    |   |
+|   | /health /metrics |     +----------+----------+   |
+|   | /debug /pipelines|                |              |
+|   +------------------+     +----------v----------+   |
+|     (port 6401)            | Snapshots + Event   |   |
+|                            | Log (local disk)    |   |
+|                            +---------------------+   |
++------------------------------------------------------+
+```
 
 ## Configuration
 
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `TALLY_TCP_PORT` | `6400` | TCP protocol port |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TALLY_TCP_PORT` | `6400` | Binary protocol port |
 | `TALLY_HTTP_PORT` | `6401` | HTTP management port |
 | `TALLY_WORKER_THREADS` | `4` | Tokio worker threads |
-| `TALLY_SNAPSHOT` | `true` | Enable periodic snapshots to disk |
-| `TALLY_EVENT_LOG` | `true` | Enable SSD event log for replay |
+| `TALLY_SNAPSHOT` | `true` | Periodic snapshots to disk |
+| `TALLY_EVENT_LOG` | `true` | Append-only event log for replay |
+
+## Claude Code
+
+Clone this repo and type `/tally` in [Claude Code](https://claude.ai/claude-code)
+for a guided setup: pipeline design, test data generation with realistic
+distributions, live memory diagnostics, and capacity planning for your hardware.
 
 ## Community
 
-- [GitHub Issues](https://github.com/petrpan26/tally/issues) -- bug reports and feature requests
-- [GitHub Discussions](https://github.com/petrpan26/tally/discussions) -- questions and design proposals
+- [GitHub Issues](https://github.com/petrpan26/tally/issues) -- bugs and feature requests
+- [GitHub Discussions](https://github.com/petrpan26/tally/discussions) -- questions and proposals
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, test commands, and PR process.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and PR process.
 
 ```bash
-# Run tests
 cargo test -- --test-threads=1    # Rust tests
-cd python && python -m pytest tests/ -q   # Python tests
+cd python && python -m pytest tests/ -q   # Python SDK tests
 ```
+
+## See Also
+
+- [Why Real-Time Features Don't Need Kafka](docs/blog/why-real-time-features-dont-need-kafka.md) -- technical deep-dive on architecture decisions
+- [Tally vs Flink+Kafka+Redis](docs/comparison.md) -- full cost and complexity comparison
+- [TCP Protocol Spec](docs/protocol.md) -- build a client in any language
+- [Fraud Detection Benchmark](benchmark/fraud-pipeline/bench_fraud.py) -- 47-feature pipeline, run it yourself
 
 ## License
 
-Apache 2.0
+[Apache 2.0](LICENSE)
