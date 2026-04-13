@@ -210,9 +210,42 @@ See [full comparison](docs/comparison.md) for a deeper analysis.
 
 ## Claude Code
 
-Clone this repo and type `/tally` in [Claude Code](https://claude.ai/claude-code)
-for a guided setup: pipeline design, test data generation with realistic
-distributions, live memory diagnostics, and capacity planning for your hardware.
+Tally ships with a built-in [Claude Code](https://claude.ai/claude-code) skill.
+Clone this repo and type `/tally` to get a guided experience:
+
+1. **Setup** -- build from source or Docker, verify the server is running
+2. **Pipeline design** -- answer questions about your use case, get a working pipeline generated
+3. **Test data** -- realistic distributions (Zipfian IDs, lognormal amounts) sized for your laptop
+4. **Benchmark** -- push events, measure throughput, see actual memory usage per operator
+5. **Capacity planning** -- detect your hardware specs, project scaling costs, compare to Flink stack pricing
+6. **Tuning** -- identify memory hotspots, adjust window granularity, re-measure before/after
+7. **Live diagnostics** -- ask about memory, inspect entities, debug pipelines anytime
+
+The skill reads live data from the `/debug/memory` API and gives specific recommendations
+based on your actual pipeline and hardware. Not generic docs.
+
+### For AI agents
+
+If you're an AI agent (Claude Code, Cursor, Windsurf, etc.) helping a user set up Tally:
+
+```bash
+# 1. Clone and build
+git clone https://github.com/petrpan26/tally.git && cd tally
+cargo build --release
+
+# 2. Start the server
+./target/release/tally &
+
+# 3. Install Python SDK
+cd python && pip install -e . && cd ..
+
+# 4. Verify
+curl -s http://localhost:6401/health
+
+# 5. The /tally skill at .claude/skills/tally/SKILL.md handles the rest
+```
+
+The `/tally` skill file contains the full guided flow. Read it and follow the steps.
 
 ## Community
 
@@ -230,7 +263,7 @@ cd python && python -m pytest tests/ -q   # Python SDK tests
 
 ## See Also
 
-- [Why Real-Time Features Don't Need Kafka](docs/blog/why-real-time-features-dont-need-kafka.md) -- technical deep-dive on architecture decisions
+- [Streaming Shouldn't Require a Platform Team](docs/blog/why-real-time-features-dont-need-kafka.md) -- why we built Tally and the tradeoffs we chose
 - [Tally vs Flink+Kafka+Redis](docs/comparison.md) -- full cost and complexity comparison
 - [TCP Protocol Spec](docs/protocol.md) -- build a client in any language
 - [Fraud Detection Benchmark](benchmark/fraud-pipeline/bench_fraud.py) -- 47-feature pipeline, run it yourself

@@ -1,4 +1,4 @@
-# Building a Real-Time Compute Engine for the Rest of Us
+# Streaming Shouldn't Require a Platform Team
 
 When I was at Viggle, we needed real-time aggregations for our recommendation system. Standard stuff: count user actions in the last hour, track unique items per session, compute moving averages. The logic took a day to write. Setting up Kafka took three weeks.
 
@@ -123,6 +123,8 @@ docker compose up -d
 cd python && pip install -e .
 python3 benchmark/fraud-pipeline/bench_fraud.py --events 100000 --clients 4
 ```
+
+If you use [Claude Code](https://claude.ai/claude-code), the repo ships with a `/tally` skill that walks you through the whole setup interactively: pipeline design for your use case, test data with realistic distributions, live memory diagnostics, and capacity planning based on your hardware. It reads real data from the server and gives specific recommendations, not generic docs.
 
 [GitHub](https://github.com/petrpan26/tally) | [Architecture](https://github.com/petrpan26/tally/blob/main/docs/architecture.md) | [Operators](https://github.com/petrpan26/tally/blob/main/docs/operators.md) | [Comparison](https://github.com/petrpan26/tally/blob/main/docs/comparison.md)
 
