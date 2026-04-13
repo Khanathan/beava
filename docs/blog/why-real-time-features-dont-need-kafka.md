@@ -103,13 +103,11 @@ I want to be straightforward about limitations.
 
 **Not distributed.** Single process, all state in memory on one machine. If your state doesn't fit in RAM (max ~384-768 GB on current cloud instances), Tally is the wrong tool.
 
-**Not for complex event processing.** No session windows, no event-time watermarks, no temporal pattern matching. Flink's event-time model is genuinely more expressive. Tally does sliding windows with bucketed ring buffers. Simpler and faster, but less flexible.
-
 **No connector ecosystem.** Flink has connectors for hundreds of sources and sinks. Tally has a TCP protocol and an HTTP API. You push events to it and read results. That's the interface.
 
 **Not streaming SQL.** For SQL over streams, RisingWave and Materialize are better fits. Tally computes aggregations for keyed entities, not arbitrary queries.
 
-**Processing-time only.** Tally uses processing time for window boundaries. If you need event-time semantics with late-arrival handling, that's a Flink strength.
+**Not yet in v0:** Session windows, event-time watermarks, and temporal pattern matching are on the roadmap. Nothing in the architecture prevents them. v0 ships with sliding windows and processing-time semantics.
 
 Kafka and Flink are well-built systems for real problems. If you're processing millions of events per second across hundreds of terabytes of state with exactly-once guarantees, use them.
 
