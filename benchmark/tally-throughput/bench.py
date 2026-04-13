@@ -26,7 +26,8 @@ from datetime import datetime
 # Path hack so the bench can run without installing the SDK
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'python'))
 
-import tally as st  # noqa: E402
+import tally as tl  # noqa: E402
+from tally import source, dataset, group_by  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -34,75 +35,100 @@ import tally as st  # noqa: E402
 # ---------------------------------------------------------------------------
 
 def define_small():
-    """Single stream, 5 features, no cascade."""
-    @st.stream(key='user_id')
+    """Single source + 1 dataset, 5 features."""
+    @source
+    class RawTxns:
+        pass
+
+    @dataset(depends_on=[RawTxns])
     class Transactions:
-        tx_count_1h = st.count(window='1h')
-        tx_sum_1h = st.sum('amount', window='1h')
-        avg_amount_1h = st.avg('amount', window='1h')
-        max_amount_24h = st.max('amount', window='24h')
-        min_amount_24h = st.min('amount', window='24h')
-    return [Transactions], Transactions
+        features = group_by('user_id').agg(
+            tx_count_1h=tl.count(window='1h'),
+            tx_sum_1h=tl.sum('amount', window='1h'),
+            avg_amount_1h=tl.avg('amount', window='1h'),
+            max_amount_24h=tl.max('amount', window='24h'),
+            min_amount_24h=tl.min('amount', window='24h'),
+        )
+
+    return [RawTxns, Transactions], RawTxns
 
 
 def define_medium():
-    """2 streams + 1 view. Fan-out across user_id and merchant_id."""
-    @st.stream(key='user_id')
+    """1 source + 2 keyed datasets + 1 view-dataset. Fan-out across user_id and merchant_id."""
+    @source
+    class RawTxns:
+        pass
+
+    @dataset(depends_on=[RawTxns])
     class Transactions:
-        tx_count_1h = st.count(window='1h')
-        tx_sum_1h = st.sum('amount', window='1h')
-        avg_amount_1h = st.avg('amount', window='1h')
-        max_amount_24h = st.max('amount', window='24h')
-        failed_count_30m = st.count(window='30m', where="status == 'failed'")
-        failure_rate = st.derive('failed_count_30m / tx_count_1h')
+        features = group_by('user_id').agg(
+            tx_count_1h=tl.count(window='1h'),
+            tx_sum_1h=tl.sum('amount', window='1h'),
+            avg_amount_1h=tl.avg('amount', window='1h'),
+            max_amount_24h=tl.max('amount', window='24h'),
+            failed_count_30m=tl.count(window='30m', where="status == 'failed'"),
+        )
+        failure_rate = tl.derive('failed_count_30m / tx_count_1h')
 
-    @st.stream(key='merchant_id')
+    @dataset(depends_on=[RawTxns])
     class MerchantActivity:
-        merchant_tx_count = st.count(window='1h')
-        merchant_sum = st.sum('amount', window='1h')
+        features = group_by('merchant_id').agg(
+            merchant_tx_count=tl.count(window='1h'),
+            merchant_sum=tl.sum('amount', window='1h'),
+        )
 
-    @st.view(key='user_id')
+    @dataset(depends_on=[Transactions])
     class UserRisk:
-        is_high_volume = st.derive('Transactions.tx_count_1h > 10')
+        is_high_volume = tl.derive('Transactions.tx_count_1h > 10')
 
-    return [Transactions, MerchantActivity, UserRisk], Transactions
+    return [RawTxns, Transactions, MerchantActivity, UserRisk], RawTxns
 
 
 def define_large():
-    """3 streams + 2 views with cascade + fan-out + distinct_count."""
-    @st.stream(key='user_id')
+    """1 source + 3 keyed datasets + 2 view-datasets with cascade + fan-out + distinct_count."""
+    @source
+    class RawTxns:
+        pass
+
+    @dataset(depends_on=[RawTxns])
     class Transactions:
-        tx_count_1h = st.count(window='1h')
-        tx_sum_1h = st.sum('amount', window='1h')
-        avg_amount_1h = st.avg('amount', window='1h')
-        max_amount_24h = st.max('amount', window='24h')
-        min_amount_24h = st.min('amount', window='24h')
-        failed_count_30m = st.count(window='30m', where="status == 'failed'")
-        unique_merchants_24h = st.distinct_count('merchant_id', window='24h')
-        failure_rate = st.derive('failed_count_30m / tx_count_1h')
+        features = group_by('user_id').agg(
+            tx_count_1h=tl.count(window='1h'),
+            tx_sum_1h=tl.sum('amount', window='1h'),
+            avg_amount_1h=tl.avg('amount', window='1h'),
+            max_amount_24h=tl.max('amount', window='24h'),
+            min_amount_24h=tl.min('amount', window='24h'),
+            failed_count_30m=tl.count(window='30m', where="status == 'failed'"),
+            unique_merchants_24h=tl.distinct_count('merchant_id', window='24h'),
+        )
+        failure_rate = tl.derive('failed_count_30m / tx_count_1h')
 
-    @st.stream(key='merchant_id')
+    @dataset(depends_on=[RawTxns])
     class MerchantActivity:
-        merchant_tx_count_1h = st.count(window='1h')
-        merchant_sum_1h = st.sum('amount', window='1h')
-        merchant_unique_users = st.distinct_count('user_id', window='24h')
+        features = group_by('merchant_id').agg(
+            merchant_tx_count_1h=tl.count(window='1h'),
+            merchant_sum_1h=tl.sum('amount', window='1h'),
+            merchant_unique_users=tl.distinct_count('user_id', window='24h'),
+        )
 
-    @st.stream(key='device_id')
+    @dataset(depends_on=[RawTxns])
     class DeviceActivity:
-        device_tx_count_1h = st.count(window='1h')
-        device_unique_users = st.distinct_count('user_id', window='1h')
+        features = group_by('device_id').agg(
+            device_tx_count_1h=tl.count(window='1h'),
+            device_unique_users=tl.distinct_count('user_id', window='1h'),
+        )
 
-    @st.view(key='user_id')
+    @dataset(depends_on=[Transactions])
     class UserRisk:
-        is_high_volume = st.derive('Transactions.tx_count_1h > 10')
-        suspicious = st.derive('Transactions.failure_rate > 0.2')
+        is_high_volume = tl.derive('Transactions.tx_count_1h > 10')
+        suspicious = tl.derive('Transactions.failure_rate > 0.2')
 
-    @st.view(key='user_id')
+    @dataset(depends_on=[Transactions])
     class UserSummary:
-        total_tx = st.derive('Transactions.tx_count_1h')
-        total_amount = st.derive('Transactions.tx_sum_1h')
+        total_tx = tl.derive('Transactions.tx_count_1h')
+        total_amount = tl.derive('Transactions.tx_sum_1h')
 
-    return [Transactions, MerchantActivity, DeviceActivity, UserRisk, UserSummary], Transactions
+    return [RawTxns, Transactions, MerchantActivity, DeviceActivity, UserRisk, UserSummary], RawTxns
 
 
 PIPELINES = {
@@ -137,7 +163,7 @@ def run_single_client_sync(primary_cls, events_per_client, client_id, warmup=100
 
     Returns (latencies_us, wall_seconds). Latencies are measured per event.
     """
-    app = st.App('localhost:6400', timeout=30.0)
+    app = tl.App('localhost:6400', timeout=30.0)
     latencies = []
 
     # Warmup
@@ -176,7 +202,7 @@ def run_single_client_async(primary_cls, events_per_client, client_id, warmup=10
     most of its iterations on the fast non-sampling code path. Wall time
     (and thus throughput) is measured over the entire run.
     """
-    app = st.App('localhost:6400', timeout=30.0)
+    app = tl.App('localhost:6400', timeout=30.0)
 
     # Warmup in async mode; flush to exclude warmup from measured wall
     for i in range(warmup):
@@ -214,7 +240,7 @@ def run_single_client_async_batch(primary_cls, events_per_client, client_id,
 
     Returns ([], wall_seconds). No per-event latency sampling — pure throughput.
     """
-    app = st.App('localhost:6400', timeout=30.0)
+    app = tl.App('localhost:6400', timeout=30.0)
 
     # Warmup
     warmup_events = [make_event(i + client_id * 1000000) for i in range(warmup)]
@@ -267,10 +293,10 @@ def run_benchmark(args, sample_async_latency=True, quiet=False):
 
     # Register pipeline
     streams, primary = PIPELINES[args.pipeline]()
-    app = st.App('localhost:6400', timeout=30.0)
+    app = tl.App('localhost:6400', timeout=30.0)
     app.register(*streams)
     if not quiet:
-        print(f'Registered {len(streams)} streams/views. Primary: {primary.__name__}')
+        print(f'Registered {len(streams)} sources/datasets. Primary: {primary._name}')
 
     # Warmup ping (always sync so we know the server is alive before the loop)
     app.push_sync(primary, make_event(0))
@@ -543,7 +569,7 @@ def run_mixed(pipeline_name, events_budget):
     testing the D-10 constraint that sync p99 stays within ±5% of 87µs.
     """
     streams, primary = PIPELINES[pipeline_name]()
-    app_reg = st.App('localhost:6400', timeout=30.0)
+    app_reg = tl.App('localhost:6400', timeout=30.0)
     app_reg.register(*streams)
     app_reg.push_sync(primary, make_event(0))  # warmup
 
@@ -552,7 +578,7 @@ def run_mixed(pipeline_name, events_budget):
     stop_sampler = threading.Event()
 
     def saturator():
-        app = st.App('localhost:6400', timeout=30.0)
+        app = tl.App('localhost:6400', timeout=30.0)
         # Warmup
         for i in range(500):
             app.push(primary, make_event(i + 90000000))
@@ -568,7 +594,7 @@ def run_mixed(pipeline_name, events_budget):
         stop_sampler.set()
 
     def sampler():
-        app = st.App('localhost:6400', timeout=30.0)
+        app = tl.App('localhost:6400', timeout=30.0)
         # Warmup
         for i in range(100):
             app.push_sync(primary, make_event(i + 92000000))
