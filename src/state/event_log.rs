@@ -105,8 +105,7 @@ impl EventLog {
             timestamp: now,
             payload: event_bytes.to_vec(),
         };
-        let encoded = postcard::to_stdvec(&entry)
-            .map_err(std::io::Error::other)?;
+        let encoded = postcard::to_stdvec(&entry).map_err(std::io::Error::other)?;
         let len = encoded.len() as u32;
         writer.write_all(&len.to_be_bytes())?;
         writer.write_all(&encoded)?;
@@ -143,8 +142,7 @@ impl EventLog {
                 timestamp: now,
                 payload: bytes.to_vec(),
             };
-            let encoded = postcard::to_stdvec(&entry)
-                .map_err(std::io::Error::other)?;
+            let encoded = postcard::to_stdvec(&entry).map_err(std::io::Error::other)?;
             let len = encoded.len() as u32;
             writer.write_all(&len.to_be_bytes())?;
             writer.write_all(&encoded)?;
@@ -224,8 +222,7 @@ impl EventLog {
             let tmp_file = File::create(&tmp_path)?;
             let mut tmp_writer = BufWriter::new(tmp_file);
             for entry in &kept {
-                let encoded = postcard::to_stdvec(entry)
-                    .map_err(std::io::Error::other)?;
+                let encoded = postcard::to_stdvec(entry).map_err(std::io::Error::other)?;
                 let len = encoded.len() as u32;
                 tmp_writer.write_all(&len.to_be_bytes())?;
                 tmp_writer.write_all(&encoded)?;

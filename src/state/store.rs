@@ -31,15 +31,13 @@ pub struct StaticFeature {
 
 /// Per-stream state within an entity. Isolates operators and last_event_at
 /// per stream for independent TTL management (OPS-02).
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct StreamEntityState {
     /// Operators belonging to this stream only.
     pub operators: Vec<(String, OperatorState)>,
     /// Last event timestamp for this stream (per-stream TTL).
     pub last_event_at: Option<SystemTime>,
 }
-
 
 /// Per-entity state. Holds live features grouped by stream name (from streaming
 /// operators) and static features (from direct SET/MSET writes).
@@ -70,9 +68,7 @@ impl EntityState {
     /// Get or create a StreamEntityState for the given stream name.
     /// Returns a mutable reference to the stream's state.
     pub fn get_or_create_stream(&mut self, stream_name: &str) -> &mut StreamEntityState {
-        self.streams
-            .entry(stream_name.to_string())
-            .or_default()
+        self.streams.entry(stream_name.to_string()).or_default()
     }
 
     /// Returns true when this entity has no streams and no static features.
@@ -134,9 +130,7 @@ impl StateStore {
         &self,
         key: &str,
     ) -> dashmap::mapref::one::RefMut<'_, String, EntityState> {
-        self.entities
-            .entry(key.to_string())
-            .or_default()
+        self.entities.entry(key.to_string()).or_default()
     }
 
     /// Read-only access to an entity's state. Returns None if key not found.
@@ -628,9 +622,7 @@ impl StateStore {
             let entity_state = entry.value();
             // Distribute stream entries into per-stream StreamStores
             for (stream_name, stream_entity_state) in &entity_state.streams {
-                let store = stream_stores
-                    .entry(stream_name.clone())
-                    .or_default();
+                let store = stream_stores.entry(stream_name.clone()).or_default();
                 store
                     .entities
                     .insert(entity_key.clone(), stream_entity_state.clone());
@@ -679,9 +671,7 @@ impl StateStore {
                 let entity_key = entity_entry.key();
                 let stream_entity_state = entity_entry.value();
 
-                let mut entity = entities
-                    .entry(entity_key.clone())
-                    .or_default();
+                let mut entity = entities.entry(entity_key.clone()).or_default();
                 entity
                     .streams
                     .insert(stream_name.clone(), stream_entity_state.clone());
@@ -705,9 +695,7 @@ impl StateStore {
         for entry in static_store.iter() {
             let entity_key = entry.key();
             let static_features = entry.value();
-            let mut entity = entities
-                .entry(entity_key.clone())
-                .or_default();
+            let mut entity = entities.entry(entity_key.clone()).or_default();
             entity.static_features = static_features.clone();
         }
 

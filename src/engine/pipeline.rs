@@ -1622,9 +1622,7 @@ mod tests {
             "amount": 50.0
         });
 
-        let features = engine
-            .push("Transactions", &event, &store, now)
-            .unwrap();
+        let features = engine.push("Transactions", &event, &store, now).unwrap();
         assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
         assert_eq!(features.get("tx_sum_1h"), Some(&FeatureValue::Float(50.0)));
         assert_eq!(
@@ -1676,9 +1674,7 @@ mod tests {
                 "user_id": "u123",
                 "amount": amount
             });
-            engine
-                .push("Transactions", &event, &store, now)
-                .unwrap();
+            engine.push("Transactions", &event, &store, now).unwrap();
         }
 
         let features = store.get_all_features("u123", now);
@@ -1935,9 +1931,7 @@ mod tests {
             "amount": 50.0,
             "country": "US"
         });
-        let features = engine
-            .push("Transactions", &event, &store, now)
-            .unwrap();
+        let features = engine.push("Transactions", &event, &store, now).unwrap();
         assert_eq!(
             features.get("min_amount_1h"),
             Some(&FeatureValue::Float(50.0))
@@ -2217,12 +2211,7 @@ mod tests {
             )
             .unwrap();
         engine
-            .push(
-                "Logins",
-                &serde_json::json!({"user_id": "u1"}),
-                &store,
-                now,
-            )
+            .push("Logins", &serde_json::json!({"user_id": "u1"}), &store, now)
             .unwrap();
 
         // GET should include view features with correct ratio: 2 / 1 = 2.0
@@ -2939,9 +2928,7 @@ mod tests {
         engine.register(stream).unwrap();
         let now = ts(60_000);
         let event = serde_json::json!({"user_id": "u123", "amount": 50.0});
-        let features = engine
-            .push("Transactions", &event, &store, now)
-            .unwrap();
+        let features = engine.push("Transactions", &event, &store, now).unwrap();
         assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
     }
 
@@ -3430,13 +3417,7 @@ mod tests {
         // push_for_backfill targeting ONLY "tx_sum_1h"
         let event = serde_json::json!({"user_id": "u1", "amount": 42.0});
         engine
-            .push_for_backfill(
-                "Transactions",
-                &event,
-                &store,
-                now,
-                &["tx_sum_1h".into()],
-            )
+            .push_for_backfill("Transactions", &event, &store, now, &["tx_sum_1h".into()])
             .unwrap();
 
         // Verify: tx_sum_1h should have the event, tx_count_1h should NOT have been pushed
@@ -3494,13 +3475,7 @@ mod tests {
         let t = ts(60_000);
         let event = serde_json::json!({"user_id": "u1"});
         engine
-            .push_for_backfill(
-                "Transactions",
-                &event,
-                &store,
-                t,
-                &["tx_count_1h".into()],
-            )
+            .push_for_backfill("Transactions", &event, &store, t, &["tx_count_1h".into()])
             .unwrap();
 
         // Read at time T=60000 should show count=1

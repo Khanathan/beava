@@ -385,14 +385,13 @@ async fn async_main() {
                 let result = tokio::task::spawn_blocking(move || {
                     let (bytes, filename) = match snapshot_data {
                         SnapshotData::Base(base) => {
-                            let bytes = save_base_snapshot(&base)
-                                .map_err(std::io::Error::other)?;
+                            let bytes = save_base_snapshot(&base).map_err(std::io::Error::other)?;
                             let filename = format!("tally.snapshot.base.{:010}", seq);
                             Ok::<(Vec<u8>, String), std::io::Error>((bytes, filename))
                         }
                         SnapshotData::Delta(delta) => {
-                            let bytes = save_delta_snapshot(&delta)
-                                .map_err(std::io::Error::other)?;
+                            let bytes =
+                                save_delta_snapshot(&delta).map_err(std::io::Error::other)?;
                             let filename = format!("tally.snapshot.delta.{:010}", seq);
                             Ok((bytes, filename))
                         }

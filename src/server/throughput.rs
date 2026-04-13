@@ -52,10 +52,7 @@ impl ThroughputTracker {
     /// streams in one push MUST use `bump_unique` instead to avoid double
     /// counting when cascade + fan-out paths overlap (RESEARCH §Pitfall 4).
     pub fn bump(&mut self, stream_name: &str, now: Instant) {
-        let entry = self
-            .streams
-            .entry(stream_name.to_string())
-            .or_default();
+        let entry = self.streams.entry(stream_name.to_string()).or_default();
         Self::fold_event(entry, now);
     }
 

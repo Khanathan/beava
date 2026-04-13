@@ -239,7 +239,6 @@ async fn multi_stream_parallel_push() {
         ("Logins", "user_3"),
         ("Logins", "user_4"),
     ] {
-
         let stream_name = stream.to_string();
         let key_val = key.to_string();
         handles.push(tokio::spawn(async move {
@@ -327,7 +326,6 @@ async fn same_stream_different_keys_concurrent() {
     let mut handles = Vec::new();
 
     for i in 1..=4u32 {
-
         let key = format!("user_{}", i);
         handles.push(tokio::spawn(async move {
             let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
@@ -393,7 +391,6 @@ async fn concurrent_push_and_get() {
     // 2 push tasks
     let mut handles = Vec::new();
     for _ in 0..2 {
-
         handles.push(tokio::spawn(async move {
             let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
                 .await
@@ -412,7 +409,6 @@ async fn concurrent_push_and_get() {
 
     // 2 get tasks -- each reads 50 times, verifying valid results
     for _ in 0..2 {
-
         handles.push(tokio::spawn(async move {
             let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
                 .await
@@ -487,7 +483,6 @@ async fn fan_out_under_concurrency() {
 
     // Task 1: user_a + merchant_x
     {
-
         handles.push(tokio::spawn(async move {
             let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
                 .await
@@ -510,7 +505,6 @@ async fn fan_out_under_concurrency() {
 
     // Task 2: user_b + merchant_y
     {
-
         handles.push(tokio::spawn(async move {
             let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
                 .await
@@ -597,7 +591,6 @@ async fn set_mset_concurrent_with_push() {
 
     // Task 1: Push live events
     let push_handle = {
-
         tokio::spawn(async move {
             let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
                 .await
@@ -616,7 +609,6 @@ async fn set_mset_concurrent_with_push() {
 
     // Task 2: SET/MSET static features for same + different keys
     let set_handle = {
-
         tokio::spawn(async move {
             let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
                 .await
@@ -743,7 +735,6 @@ async fn test_enriched_concurrent_clients() {
     // Spawn 8 concurrent client tasks
     let mut handles = Vec::new();
     for client_id in 0..num_clients {
-
         let user_id = format!("user_{}", client_id);
         handles.push(tokio::spawn(async move {
             let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))

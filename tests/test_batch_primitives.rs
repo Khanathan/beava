@@ -326,8 +326,7 @@ mod push_batch_with_cascade_no_features {
         let now = ts(1000);
 
         // Batch path on A
-        let out_a =
-            engine_a.push_batch_with_cascade_no_features("Txns", &events, &store_a, now);
+        let out_a = engine_a.push_batch_with_cascade_no_features("Txns", &events, &store_a, now);
         assert_eq!(out_a.len(), 3);
         assert!(out_a.iter().all(|r| r.is_ok()));
 

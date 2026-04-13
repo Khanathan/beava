@@ -812,10 +812,7 @@ fn handle_push_core_ex(
             }
             touched.push(target_name.as_str());
         }
-        state
-            .throughput
-            .lock()
-            .bump_unique(touched, now_inst);
+        state.throughput.lock().bump_unique(touched, now_inst);
     }
 
     let push_elapsed = push_start.elapsed();

@@ -639,12 +639,10 @@ impl Operator for StddevOp {
 /// Bucket wrapper for PercentileOp. Stores a sorted Vec<f64> of all values
 /// pushed into this time bucket. On read, values from all non-expired buckets
 /// are merged and the quantile is computed exactly.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct PercentileBucket {
     pub values: Vec<f64>,
 }
-
 
 // ======================== PercentileOp ========================
 
@@ -1075,8 +1073,7 @@ impl Operator for FirstOp {
 
 /// Wrapper for Vec<f64> to use in RingBuffer (needs Default + Clone).
 /// Stores per-bucket value lists for retraction in ExactMin/ExactMax operators.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ValBucket(pub Vec<f64>);
 
 // ======================== ExactMinOp ========================
