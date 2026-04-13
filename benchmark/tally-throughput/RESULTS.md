@@ -28,13 +28,19 @@ Three load-bearing findings, in priority order:
 
 Pipeline:
 ```python
-@st.stream(key='user_id')
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
 class Transactions:
-    tx_count_1h = st.count(window='1h')
-    tx_sum_1h = st.sum('amount', window='1h')
-    avg_amount_1h = st.avg('amount', window='1h')
-    max_amount_24h = st.max('amount', window='24h')
-    min_amount_24h = st.min('amount', window='24h')
+    features = tl.group_by('user_id').agg(
+        tx_count_1h=tl.count(window='1h'),
+        tx_sum_1h=tl.sum('amount', window='1h'),
+        avg_amount_1h=tl.avg('amount', window='1h'),
+        max_amount_24h=tl.max('amount', window='24h'),
+        min_amount_24h=tl.min('amount', window='24h'),
+    )
 ```
 
 - 50,000 events, 1 client, wall time 2.55s
@@ -45,18 +51,32 @@ class Transactions:
 
 Pipeline:
 ```python
-@st.stream(key='user_id')
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
 class Transactions:
-    tx_count_1h, tx_sum_1h, avg_amount_1h, max_amount_24h, failed_count_30m
-    failure_rate = st.derive('failed_count_30m / tx_count_1h')
+    features = tl.group_by('user_id').agg(
+        tx_count_1h=tl.count(window='1h'),
+        tx_sum_1h=tl.sum('amount', window='1h'),
+        avg_amount_1h=tl.avg('amount', window='1h'),
+        max_amount_24h=tl.max('amount', window='24h'),
+        failed_count_30m=tl.count(window='30m', where="status == 'failed'"),
+    )
+    failure_rate = tl.derive('failed_count_30m / tx_count_1h')
 
-@st.stream(key='merchant_id')
+@tl.dataset(depends_on=[RawTransactions])
 class MerchantActivity:
-    merchant_tx_count, merchant_sum
+    features = tl.group_by('merchant_id').agg(
+        merchant_tx_count=tl.count(window='1h'),
+        merchant_sum=tl.sum('amount', window='1h'),
+    )
 
-@st.view(key='user_id')
+@tl.dataset(depends_on=[Transactions])
 class UserRisk:
-    is_high_volume = st.derive('Transactions.tx_count_1h > 10')
+    features = tl.group_by('user_id').agg()
+    is_high_volume = tl.derive('Transactions.tx_count_1h > 10')
 ```
 
 **1 client, 50,000 events:**
@@ -79,18 +99,24 @@ This is the single-threaded-core failure mode. Each of the 4 Python threads open
 
 Pipeline:
 ```python
-@st.stream(key='user_id')
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
 class Transactions:
     # 5 regular features + distinct_count('merchant_id', window='24h') + derive
     ...
-@st.stream(key='merchant_id')
+@tl.dataset(depends_on=[RawTransactions])
 class MerchantActivity:
     # 3 features including distinct_count('user_id', window='24h')
-@st.stream(key='device_id')
+    features = tl.group_by('merchant_id').agg(...)
+@tl.dataset(depends_on=[RawTransactions])
 class DeviceActivity:
     # 2 features including distinct_count('user_id', window='1h')
-@st.view(key='user_id') class UserRisk: ...
-@st.view(key='user_id') class UserSummary: ...
+    features = tl.group_by('device_id').agg(...)
+@tl.dataset(depends_on=[Transactions]) class UserRisk: ...
+@tl.dataset(depends_on=[Transactions]) class UserSummary: ...
 ```
 
 **1 client, 20,000 events:**

@@ -41,6 +41,16 @@ pub trait Operator: std::fmt::Debug + Send {
         now: SystemTime,
     ) -> Result<(), TallyError>;
     fn read(&mut self, now: SystemTime) -> FeatureValue;
+
+    /// Estimate the heap memory usage of this operator in bytes.
+    /// Includes dynamically allocated buffers (ring buffer vecs, BTreeMaps, etc.)
+    /// but not the fixed struct size (which is accounted for by the caller).
+    fn estimated_bytes(&self) -> usize;
+
+    /// Number of ring buffer buckets, or 0 for non-windowed operators.
+    fn num_buckets(&self) -> usize {
+        0
+    }
 }
 
 /// Counts events within a time window. Needs no field -- always succeeds
@@ -80,6 +90,15 @@ impl Operator for CountOp {
         } else {
             FeatureValue::Int(i64::try_from(total).unwrap_or(i64::MAX))
         }
+    }
+
+    fn estimated_bytes(&self) -> usize {
+        // 1 RingBuffer<u64>: num_buckets * 8 bytes
+        self.buffer.num_buckets() * std::mem::size_of::<u64>()
+    }
+
+    fn num_buckets(&self) -> usize {
+        self.buffer.num_buckets()
     }
 }
 
@@ -163,6 +182,16 @@ impl Operator for SumOp {
         } else {
             FeatureValue::Float(self.buffer.sum_all())
         }
+    }
+
+    fn estimated_bytes(&self) -> usize {
+        // RingBuffer<f64> + RingBuffer<u64>
+        let n = self.buffer.num_buckets();
+        n * std::mem::size_of::<f64>() + n * std::mem::size_of::<u64>()
+    }
+
+    fn num_buckets(&self) -> usize {
+        self.buffer.num_buckets()
     }
 }
 
@@ -275,6 +304,16 @@ impl Operator for MinOp {
             FeatureValue::Float(min_val)
         }
     }
+
+    fn estimated_bytes(&self) -> usize {
+        // RingBuffer<MinBucket(f64)> + RingBuffer<u64>
+        let n = self.buffer.num_buckets();
+        n * std::mem::size_of::<MinBucket>() + n * std::mem::size_of::<u64>()
+    }
+
+    fn num_buckets(&self) -> usize {
+        self.buffer.num_buckets()
+    }
 }
 
 // ======================== MaxOp ========================
@@ -365,6 +404,16 @@ impl Operator for MaxOp {
             FeatureValue::Float(max_val)
         }
     }
+
+    fn estimated_bytes(&self) -> usize {
+        // RingBuffer<MaxBucket(f64)> + RingBuffer<u64>
+        let n = self.buffer.num_buckets();
+        n * std::mem::size_of::<MaxBucket>() + n * std::mem::size_of::<u64>()
+    }
+
+    fn num_buckets(&self) -> usize {
+        self.buffer.num_buckets()
+    }
 }
 
 // ======================== LastOp ========================
@@ -442,6 +491,11 @@ impl Operator for LastOp {
         // LastOp has no window -- just return the stored value
         self.value.clone()
     }
+
+    fn estimated_bytes(&self) -> usize {
+        // Single FeatureValue + Option<SystemTime>: ~100 bytes
+        100
+    }
 }
 
 /// Computes the running average (sum/count) of a numeric field within a window.
@@ -517,6 +571,16 @@ impl Operator for AvgOp {
             let sum = self.sum_buffer.sum_all();
             FeatureValue::Float(sum / count as f64)
         }
+    }
+
+    fn estimated_bytes(&self) -> usize {
+        // RingBuffer<u64> + RingBuffer<f64>
+        let n = self.count_buffer.num_buckets();
+        n * std::mem::size_of::<u64>() + n * std::mem::size_of::<f64>()
+    }
+
+    fn num_buckets(&self) -> usize {
+        self.count_buffer.num_buckets()
     }
 }
 
@@ -631,6 +695,15 @@ impl Operator for StddevOp {
         // Floating-point rounding can produce tiny negative variance
         let stddev = if variance < 0.0 { 0.0 } else { variance.sqrt() };
         FeatureValue::Float(stddev)
+    }
+
+    fn estimated_bytes(&self) -> usize {
+        // RingBuffer<StddevBucket{count: u64, sum: f64, sum_sq: f64}> = 24 bytes per bucket
+        self.buffer.num_buckets() * std::mem::size_of::<StddevBucket>()
+    }
+
+    fn num_buckets(&self) -> usize {
+        self.buffer.num_buckets()
     }
 }
 
@@ -752,6 +825,20 @@ impl Operator for PercentileOp {
         all_values.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         FeatureValue::Float(Self::compute_quantile(&all_values, self.quantile))
     }
+
+    fn estimated_bytes(&self) -> usize {
+        // RingBuffer<PercentileBucket{values: Vec<f64>}>
+        // Each bucket has a Vec<f64> with variable length. Estimate from actual data.
+        let mut total = self.buffer.num_buckets() * std::mem::size_of::<PercentileBucket>();
+        for bucket in self.buffer.buckets_iter() {
+            total += bucket.values.capacity() * std::mem::size_of::<f64>();
+        }
+        total
+    }
+
+    fn num_buckets(&self) -> usize {
+        self.buffer.num_buckets()
+    }
 }
 
 // ======================== LagOp ========================
@@ -831,6 +918,11 @@ impl Operator for LagOp {
         } else {
             FeatureValue::Missing
         }
+    }
+
+    fn estimated_bytes(&self) -> usize {
+        // VecDeque of N FeatureValues, ~32 bytes each estimated
+        self.n * 32
     }
 }
 
@@ -917,6 +1009,11 @@ impl Operator for EmaOp {
             FeatureValue::Missing
         }
     }
+
+    fn estimated_bytes(&self) -> usize {
+        // f64 current + Option<SystemTime> + bool + f64 half_life = ~24 bytes
+        24
+    }
 }
 
 // ======================== LastNOp ========================
@@ -994,6 +1091,11 @@ impl Operator for LastNOp {
         let json_str = serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string());
         FeatureValue::String(json_str)
     }
+
+    fn estimated_bytes(&self) -> usize {
+        // VecDeque of N FeatureValues, ~32 bytes each estimated
+        self.n * 32
+    }
 }
 
 // ======================== FirstOp ========================
@@ -1066,6 +1168,11 @@ impl Operator for FirstOp {
 
     fn read(&mut self, _now: SystemTime) -> FeatureValue {
         self.value.clone()
+    }
+
+    fn estimated_bytes(&self) -> usize {
+        // Single FeatureValue + Option<SystemTime>: ~100 bytes
+        100
     }
 }
 
@@ -1176,6 +1283,23 @@ impl Operator for ExactMinOp {
             None => FeatureValue::Missing,
         }
     }
+
+    fn estimated_bytes(&self) -> usize {
+        let n = self.bucket_values.num_buckets();
+        // RingBuffer<ValBucket> + RingBuffer<u64> + BTreeMap overhead
+        let mut total = n * std::mem::size_of::<ValBucket>() + n * std::mem::size_of::<u64>();
+        // BTreeMap entries: ~64 bytes per entry (node overhead)
+        total += self.sorted_values.len() * 64;
+        // ValBucket heap data
+        for bucket in self.bucket_values.buckets_iter() {
+            total += bucket.0.capacity() * std::mem::size_of::<f64>();
+        }
+        total
+    }
+
+    fn num_buckets(&self) -> usize {
+        self.bucket_values.num_buckets()
+    }
 }
 
 // ======================== ExactMaxOp ========================
@@ -1269,6 +1393,20 @@ impl Operator for ExactMaxOp {
             Some(key) => FeatureValue::Float(key.into_inner()),
             None => FeatureValue::Missing,
         }
+    }
+
+    fn estimated_bytes(&self) -> usize {
+        let n = self.bucket_values.num_buckets();
+        let mut total = n * std::mem::size_of::<ValBucket>() + n * std::mem::size_of::<u64>();
+        total += self.sorted_values.len() * 64;
+        for bucket in self.bucket_values.buckets_iter() {
+            total += bucket.0.capacity() * std::mem::size_of::<f64>();
+        }
+        total
+    }
+
+    fn num_buckets(&self) -> usize {
+        self.bucket_values.num_buckets()
     }
 }
 

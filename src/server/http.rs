@@ -280,17 +280,27 @@ async fn debug_key(State(state): State<SharedState>, Path(key): Path<String>) ->
             .into_response();
     }
     // Collect debug info from entity (immutable borrow)
-    let (live_ops, static_feats, last_event_at) = {
+    let (live_ops, static_feats, last_event_at, total_estimated_bytes) = {
         let entity = store.get_entity(&key).unwrap();
         // Collect operators from all streams
         let mut live_ops: Vec<serde_json::Value> = Vec::new();
+        let mut total_estimated_bytes: u64 = 0;
         for (stream_name, stream_state) in &entity.streams {
             for (name, op) in &stream_state.operators {
-                live_ops.push(serde_json::json!({
+                let op_bytes = op.estimated_bytes() as u64;
+                total_estimated_bytes += op_bytes;
+                let mut entry = serde_json::json!({
                     "name": name,
                     "stream": stream_name,
+                    "operator_type": op.operator_type_name(),
+                    "estimated_bytes": op_bytes,
                     "state": format!("{:?}", op),
-                }));
+                });
+                let buckets = op.num_buckets();
+                if buckets > 0 {
+                    entry["num_buckets"] = serde_json::json!(buckets);
+                }
+                live_ops.push(entry);
             }
         }
         let static_feats: serde_json::Map<String, serde_json::Value> = entity
@@ -309,7 +319,7 @@ async fn debug_key(State(state): State<SharedState>, Path(key): Path<String>) ->
                     .unwrap_or_default()
                     .as_secs()
             });
-        (live_ops, static_feats, last_event_at)
+        (live_ops, static_feats, last_event_at, total_estimated_bytes)
     };
     // Now get computed features
     let features = store.get_all_features(&key, now);
@@ -325,6 +335,7 @@ async fn debug_key(State(state): State<SharedState>, Path(key): Path<String>) ->
             "static_features": static_feats,
             "computed_features": feature_json,
             "last_event_at": last_event_at,
+            "estimated_bytes": total_estimated_bytes,
         })),
     )
         .into_response()
@@ -516,33 +527,158 @@ async fn debug_latency(State(state): State<SharedState>) -> Json<serde_json::Val
     Json(latency.to_json(now))
 }
 
+/// Per-stream memory accumulator used by `debug_memory`.
+#[derive(Default)]
+struct StreamMemoryStats {
+    key_count: u64,
+    total_bytes: u64,
+    /// Operator type -> (count of operators across all keys, total bytes, bucket count if uniform)
+    operator_types: ahash::AHashMap<&'static str, OperatorTypeStats>,
+    /// Per-feature detail: feature_name -> (operator_type, num_buckets, total_bytes across keys)
+    features: ahash::AHashMap<String, FeatureMemoryStats>,
+}
+
+#[derive(Default, Clone)]
+struct OperatorTypeStats {
+    count: u64,
+    total_bytes: u64,
+}
+
+#[derive(Default, Clone)]
+struct FeatureMemoryStats {
+    operator_type: &'static str,
+    num_buckets: usize,
+    total_bytes: u64,
+    key_count: u64,
+}
+
 /// GET /debug/memory — Memory rollup + per-stream breakdown.
+///
+/// Returns fine-grained, per-operator-type memory estimates based on actual
+/// operator state rather than hardcoded per-key estimates.
 async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let store = &state.store;
     let engine = state.engine.read();
 
-    let mut per_stream_counts: ahash::AHashMap<String, u64> = ahash::AHashMap::new();
+    // Accumulate per-stream stats by iterating all entity state
+    let mut stream_stats: ahash::AHashMap<String, StreamMemoryStats> = ahash::AHashMap::new();
+    let mut total_static_bytes: u64 = 0;
+    let mut total_static_features: u64 = 0;
+
     let keys: Vec<String> = store.entity_keys();
     for key in &keys {
         if let Some(entity) = store.get_entity(key) {
-            for stream_name in entity.streams.keys() {
-                *per_stream_counts
+            for (stream_name, stream_state) in &entity.streams {
+                let stats = stream_stats
                     .entry(stream_name.clone())
-                    .or_insert(0usize as u64) += 1;
+                    .or_default();
+                stats.key_count += 1;
+
+                for (feature_name, op) in &stream_state.operators {
+                    let op_bytes = op.estimated_bytes() as u64;
+                    let op_type = op.operator_type_name();
+                    let buckets = op.num_buckets();
+
+                    stats.total_bytes += op_bytes;
+
+                    let type_stats = stats
+                        .operator_types
+                        .entry(op_type)
+                        .or_default();
+                    type_stats.count += 1;
+                    type_stats.total_bytes += op_bytes;
+
+                    let feat_stats = stats
+                        .features
+                        .entry(feature_name.clone())
+                        .or_default();
+                    feat_stats.operator_type = op_type;
+                    feat_stats.num_buckets = buckets;
+                    feat_stats.total_bytes += op_bytes;
+                    feat_stats.key_count += 1;
+                }
             }
+
+            // Account for static features
+            let sf_count = entity.static_features.len() as u64;
+            total_static_features += sf_count;
+            // Estimate ~128 bytes per static feature (FeatureValue + timestamp + key overhead)
+            total_static_bytes += sf_count * 128;
         }
     }
 
+    // Build per-stream JSON
     let mut per_stream: Vec<serde_json::Value> = Vec::new();
+    let mut grand_total_bytes: u64 = 0;
+
     for s in engine.list_streams() {
-        let key_count = per_stream_counts.get(&s.name).copied().unwrap_or(0);
+        let stats = stream_stats.get(&s.name);
+        let key_count = stats.map_or(0, |s| s.key_count);
+        let estimated_bytes = stats.map_or(0, |s| s.total_bytes);
+        grand_total_bytes += estimated_bytes;
+
+        // Per-operator-type breakdown
+        let operator_breakdown: Vec<serde_json::Value> = stats
+            .map(|s| {
+                let mut items: Vec<_> = s.operator_types.iter().collect();
+                items.sort_by_key(|(name, _)| *name);
+                items
+                    .iter()
+                    .map(|(name, ts)| {
+                        serde_json::json!({
+                            "type": name,
+                            "count": ts.count,
+                            "total_bytes": ts.total_bytes,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Per-feature breakdown with bucket counts
+        let feature_details: Vec<serde_json::Value> = stats
+            .map(|s| {
+                let mut items: Vec<_> = s.features.iter().collect();
+                items.sort_by(|(a, _), (b, _)| a.cmp(b));
+                items
+                    .iter()
+                    .map(|(name, fs)| {
+                        let mut obj = serde_json::json!({
+                            "name": name,
+                            "operator_type": fs.operator_type,
+                            "total_bytes": fs.total_bytes,
+                            "key_count": fs.key_count,
+                        });
+                        if fs.num_buckets > 0 {
+                            obj["num_buckets"] = serde_json::json!(fs.num_buckets);
+                            if fs.key_count > 0 {
+                                obj["avg_bytes_per_key"] =
+                                    serde_json::json!(fs.total_bytes / fs.key_count);
+                            }
+                        }
+                        obj
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let per_entity_avg = if key_count > 0 {
+            estimated_bytes / key_count
+        } else {
+            0
+        };
+
         per_stream.push(serde_json::json!({
             "name": s.name,
             "kind": "stream",
             "key_count": key_count,
-            "estimated_bytes": key_count * 2048,
+            "estimated_bytes": estimated_bytes,
+            "per_entity_avg_bytes": per_entity_avg,
+            "operator_breakdown": operator_breakdown,
+            "features": feature_details,
         }));
     }
+
     for v in engine.list_views() {
         per_stream.push(serde_json::json!({
             "name": v.name,
@@ -552,11 +688,24 @@ async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Valu
         }));
     }
 
+    grand_total_bytes += total_static_bytes;
+
     let entity_count = store.entity_count();
+    let per_entity_avg = if entity_count > 0 {
+        grand_total_bytes / entity_count as u64
+    } else {
+        0
+    };
+
     Json(serde_json::json!({
         "entity_count": entity_count,
         "stream_count": engine.stream_count(),
-        "estimated_bytes": entity_count * 2048,
+        "estimated_bytes": grand_total_bytes,
+        "per_entity_avg_bytes": per_entity_avg,
+        "static_features": {
+            "count": total_static_features,
+            "estimated_bytes": total_static_bytes,
+        },
         "per_stream": per_stream,
     }))
 }

@@ -100,6 +100,71 @@ impl OperatorState {
             Self::ExactMax(op) => op.read(now),
         }
     }
+
+    /// Estimate the heap memory usage of this operator in bytes.
+    pub fn estimated_bytes(&self) -> usize {
+        use crate::engine::operators::Operator;
+        match self {
+            Self::Count(op) => op.estimated_bytes(),
+            Self::Sum(op) => op.estimated_bytes(),
+            Self::Avg(op) => op.estimated_bytes(),
+            Self::Min(op) => op.estimated_bytes(),
+            Self::Max(op) => op.estimated_bytes(),
+            Self::Last(op) => op.estimated_bytes(),
+            Self::DistinctCount(op) => op.estimated_bytes(),
+            Self::Stddev(op) => op.estimated_bytes(),
+            Self::Percentile(op) => op.estimated_bytes(),
+            Self::Lag(op) => op.estimated_bytes(),
+            Self::Ema(op) => op.estimated_bytes(),
+            Self::LastN(op) => op.estimated_bytes(),
+            Self::First(op) => op.estimated_bytes(),
+            Self::ExactMin(op) => op.estimated_bytes(),
+            Self::ExactMax(op) => op.estimated_bytes(),
+        }
+    }
+
+    /// Number of ring buffer buckets, or 0 for non-windowed operators.
+    pub fn num_buckets(&self) -> usize {
+        use crate::engine::operators::Operator;
+        match self {
+            Self::Count(op) => op.num_buckets(),
+            Self::Sum(op) => op.num_buckets(),
+            Self::Avg(op) => op.num_buckets(),
+            Self::Min(op) => op.num_buckets(),
+            Self::Max(op) => op.num_buckets(),
+            Self::Last(op) => op.num_buckets(),
+            Self::DistinctCount(op) => op.num_buckets(),
+            Self::Stddev(op) => op.num_buckets(),
+            Self::Percentile(op) => op.num_buckets(),
+            Self::Lag(op) => op.num_buckets(),
+            Self::Ema(op) => op.num_buckets(),
+            Self::LastN(op) => op.num_buckets(),
+            Self::First(op) => op.num_buckets(),
+            Self::ExactMin(op) => op.num_buckets(),
+            Self::ExactMax(op) => op.num_buckets(),
+        }
+    }
+
+    /// Human-readable operator type name.
+    pub fn operator_type_name(&self) -> &'static str {
+        match self {
+            Self::Count(_) => "count",
+            Self::Sum(_) => "sum",
+            Self::Avg(_) => "avg",
+            Self::Min(_) => "min",
+            Self::Max(_) => "max",
+            Self::Last(_) => "last",
+            Self::DistinctCount(_) => "distinct_count",
+            Self::Stddev(_) => "stddev",
+            Self::Percentile(_) => "percentile",
+            Self::Lag(_) => "lag",
+            Self::Ema(_) => "ema",
+            Self::LastN(_) => "last_n",
+            Self::First(_) => "first",
+            Self::ExactMin(_) => "exact_min",
+            Self::ExactMax(_) => "exact_max",
+        }
+    }
 }
 
 /// Serializable pipeline definition for snapshot persistence.

@@ -1,0 +1,13 @@
+services:
+  tally:
+    build: .
+    ports:
+      - "6400:6400"
+      - "6401:6401"
+    volumes:
+      - ./data:/data
+    environment:
+      - TALLY_TCP_PORT=6400
+      - TALLY_HTTP_PORT=6401
+      - TALLY_SNAPSHOT=true
+    restart: unless-stopped

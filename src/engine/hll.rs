@@ -478,6 +478,21 @@ impl Operator for DistinctCountOp {
         }
         FeatureValue::Float(merged.count())
     }
+
+    fn estimated_bytes(&self) -> usize {
+        let n = self.buffer.num_buckets();
+        // RingBuffer<Hll> + RingBuffer<u64>
+        // Each Hll has variable size depending on phase
+        let mut total = n * std::mem::size_of::<u64>();
+        for bucket in self.buffer.buckets_iter() {
+            total += bucket.size_bytes() + std::mem::size_of::<Hll>();
+        }
+        total
+    }
+
+    fn num_buckets(&self) -> usize {
+        self.buffer.num_buckets()
+    }
 }
 
 #[cfg(test)]

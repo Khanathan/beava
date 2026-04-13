@@ -13,22 +13,29 @@ import time
 
 sys.path.insert(0, "python")
 
-import tally as st
+import tally as tl
 
-# ── Tally Stream: one event per keystroke ────────────────────
+# -- Tally v2.0 Pipeline: one event per keystroke ------------------
 
-@st.stream(key="user_id")
-class Keystrokes:
-    keys_total       = st.count(window="1h")
-    keys_1m          = st.count(window="1m")
-    correct_1m       = st.count(window="1m", where="_event.correct == 1")
-    errors_1m        = st.count(window="1m", where="_event.correct == 0")
-    accuracy         = st.derive("correct_1m / keys_1m * 100")
-    wpm              = st.derive("keys_1m / 5")  # standard: 1 word = 5 chars
-    avg_gap_ms       = st.avg("gap_ms", window="1m")
-    max_gap_ms       = st.max("gap_ms", window="1m")
+@tl.source
+class RawKeystrokes:
+    """Raw keystroke events from the typing test."""
+    pass
 
-# ── Passages ─────────────────────────────────────────────────
+@tl.dataset(depends_on=[RawKeystrokes])
+class KeystrokeFeatures:
+    features = tl.group_by("user_id").agg(
+        keys_total=tl.count(window="1h"),
+        keys_1m=tl.count(window="1m"),
+        correct_1m=tl.count(window="1m", where="_event.correct == 1"),
+        errors_1m=tl.count(window="1m", where="_event.correct == 0"),
+        avg_gap_ms=tl.avg("gap_ms", window="1m"),
+        max_gap_ms=tl.max("gap_ms", window="1m"),
+    )
+    accuracy = tl.derive("correct_1m / keys_1m * 100")
+    wpm = tl.derive("keys_1m / 5")  # standard: 1 word = 5 chars
+
+# -- Passages ------------------------------------------------------
 
 PASSAGES = [
     "the quick brown fox jumps over the lazy dog",
@@ -37,7 +44,7 @@ PASSAGES = [
     "in memory state with periodic snapshots to local disk",
 ]
 
-# ── Terminal helpers ─────────────────────────────────────────
+# -- Terminal helpers ----------------------------------------------
 
 GRAY = "\033[90m"
 GREEN = "\033[32m"
@@ -96,15 +103,15 @@ def render_stats(f, elapsed_sec):
             f"avg gap: {avg_gap_str}  "
             f"max gap: {max_gap_str}")
 
-# ── Main ─────────────────────────────────────────────────────
+# -- Main ----------------------------------------------------------
 
 def main():
     print(f"\n{BOLD}  TALLY WPM DEMO{RESET}")
     print(f"  {GRAY}Every keystroke -> Tally event -> live features{RESET}")
     print(f"  {GRAY}Ctrl+C to quit | Backspace to correct{RESET}\n")
 
-    app = st.App("localhost:6400")
-    app.register(Keystrokes)
+    app = tl.App("localhost:6400")
+    app.register(RawKeystrokes, KeystrokeFeatures)
 
     user_id = "demo_user"
     start_time = time.time()
@@ -156,7 +163,7 @@ def main():
                 elapsed = now - start_time
 
                 # Push keystroke event to Tally
-                features = app.push(Keystrokes, {
+                features = app.push_sync(RawKeystrokes, {
                     "user_id": user_id,
                     "char": ch,
                     "expected": target[pos],
