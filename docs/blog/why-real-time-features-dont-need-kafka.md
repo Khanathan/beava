@@ -1,18 +1,18 @@
-# Your Real-Time Feature Pipeline Doesn't Need Kafka
+# Your Real-Time Compute Pipeline Doesn't Need Kafka
 
-Your real-time feature pipeline doesn't need Kafka. It probably doesn't need Flink either. Here's why.
+Your real-time compute pipeline doesn't need Kafka. It probably doesn't need Flink either. Here's why.
 
 If you're building fraud detection, ML feature serving, or real-time context for AI agents, there's a good chance you're running -- or about to build -- a stack that looks like this:
 
 ```
-Kafka (3 brokers) -> Flink (JobManager + TaskManagers) -> Redis (primary + replica)
-     |                       |                                    |
-Schema Registry         ZooKeeper / K8s                       Sentinel
-     |                       |
-Connect workers         Checkpoint storage (S3/HDFS)
+Kafka (3 brokers, KRaft) -> Flink (JobManager + TaskManagers) -> Redis (primary + replica)
+     |                              |                                    |
+Schema Registry              Kubernetes / Helm                       Sentinel
+     |                              |
+Connect workers              Checkpoint storage (S3/HDFS)
 ```
 
-That's 18-25 nodes, 5-8 distinct systems, each with its own failure modes, configuration language, and upgrade process. At 50K events per second with 1M entities, you're looking at $3,000-5,000/month in cloud costs and 0.5-1.0 FTE just to keep the lights on.
+That's 10-25 nodes depending on HA requirements, 5-8 distinct systems, each with its own failure modes, configuration language, and upgrade process. At 50K events per second with 1M entities, you're looking at $3,000-5,000/month in cloud costs and 0.5-1.0 FTE just to keep the lights on.
 
 Most teams running this stack are computing fewer than 100 features at fewer than 100K events per second. They don't need horizontal scalability across dozens of nodes. They need the features to be correct, fast, and easy to change.
 
@@ -26,13 +26,13 @@ Apache Flink is a JVM application. The JVM uses garbage collection to manage mem
 
 But streaming operators are stateful. Every windowed count, every running sum, every HyperLogLog sketch lives in memory for the duration of its window. A fraud detection pipeline with 47 features across 5 entity types at 1M active entities isn't a modest heap. It's tens of gigabytes of live objects that the GC can never collect, because they're not garbage -- they're your state.
 
-At roughly 10 GB of heap, the JVM hits what I'll call the **GC cliff**. GC pauses spike from milliseconds to seconds. Tail latency becomes unpredictable. The system starts fighting itself.
+With the default G1 collector, GC pressure builds as heap grows past 32-64 GB of live objects. Pauses become longer and less predictable. ZGC helps with pause times but doesn't eliminate the fundamental problem: stateful operators need memory that the GC must scan but can never reclaim.
 
 Flink's solution: don't store state on the JVM heap. Use RocksDB as an off-heap state backend.
 
 This works. But it has consequences:
 
-1. **Serialization tax.** Every state access now requires serializing a Java object to bytes, doing a RocksDB lookup (LSM tree, potentially hitting disk), deserializing back, modifying, serializing again, and writing back. Each access costs 5-15 microseconds. A single event updating 10 features pays this 10 times.
+1. **Serialization tax.** Every state access now requires serializing a Java object to bytes, doing a RocksDB lookup (LSM tree, potentially hitting disk), deserializing back, modifying, serializing again, and writing back. Each access costs 1-15 microseconds depending on block cache hit rate (hot keys are faster, cold keys hit disk). A single event updating 10 features pays this cost repeatedly.
 
 2. **RocksDB tuning.** Now you need to configure block cache sizes, bloom filters, compaction strategies, write buffer sizes. These interact with each other in non-obvious ways.
 
@@ -50,7 +50,7 @@ This is the real cost. Not the $5,000/month in compute. The $5,000/month in engi
 
 Rust has no garbage collector. Memory is allocated and freed deterministically. There is no GC cliff.
 
-A Rust `HashMap` with 200 GB of state has the same access latency as one with 200 MB. A pointer dereference is a pointer dereference. There's no collector scanning those objects, no stop-the-world pauses, no off-heap escape hatch needed.
+A Rust `HashMap` with 50 GB of state has no GC-induced latency variance compared to one with 500 MB. There's no collector scanning those objects, no stop-the-world pauses, no off-heap escape hatch needed. You still pay for CPU cache and NUMA effects at very large sizes, but the access time is deterministic and predictable.
 
 This means:
 
@@ -65,11 +65,11 @@ Here's the insight most teams miss: **most real-time feature workloads fit on a 
 
 ## What We Built
 
-We built [Tally](https://github.com/petrpan26/tally), a real-time feature server in Rust. One binary. No dependencies.
+We built [Tally](https://github.com/petrpan26/tally), a real-time compute engine in Rust. One binary. No dependencies.
 
-Push an event over TCP, get updated features back in the same response. Not eventual consistency -- synchronous. The features are computed and returned before the TCP response frame is sent.
+Define pipelines, push events over TCP, read results from in-memory state. Every write is synchronous and atomic -- all operators update in one pass, state is immediately consistent. Writes are fire-and-forget for maximum throughput. Reads serve the latest state in microseconds.
 
-The programming model is Python, but Python never touches the hot path. Pipeline definitions are serialized to JSON and sent to the server at registration time. All computation happens in Rust.
+The first SDK is Python, but Python never touches the hot path. Pipeline definitions are serialized to JSON and sent to the server at registration time. All computation happens in Rust. The underlying binary TCP protocol is open -- clients in any language can be built against the spec.
 
 Here's a 47-feature fraud detection pipeline -- the same one we benchmark with:
 
@@ -179,7 +179,7 @@ The cost comparison at different scales:
 | 50K eps, 1M entities | 1 node, ~$400/mo | 10-12 nodes, ~$3,000-5,000/mo |
 | 200K eps, 5M entities | 1 node, ~$1,500/mo | 15-20 nodes, ~$8,000-15,000/mo |
 
-The benchmark script is in the repo: [`benchmark/fraud-pipeline/bench_fraud.py`](https://github.com/petrpan26/tally/blob/main/benchmark/fraud-pipeline/bench_fraud.py). Run it yourself.
+Tally's numbers are from benchmarks, not production deployments at these scales. Treat them as indicative. The benchmark script is in the repo: [`benchmark/fraud-pipeline/bench_fraud.py`](https://github.com/petrpan26/tally/blob/main/benchmark/fraud-pipeline/bench_fraud.py). Run it yourself.
 
 ## What Tally Is NOT
 
@@ -199,7 +199,7 @@ Kafka and Flink are excellent systems built by smart people for genuine problems
 
 But if you're one of the 90% of teams that need fast aggregations over fewer than 10 million entities at fewer than 500K events per second -- which is most fraud detection, most ML feature serving, most real-time personalization -- you probably don't need a distributed streaming stack.
 
-You need a feature server.
+You need a real-time compute engine.
 
 ## Try It
 
