@@ -248,6 +248,6 @@ Benchmark script is in the repo. Run it yourself: `benchmark/fraud-pipeline/benc
 
 Apache 2.0: https://github.com/petrpan26/tally
 
-I wrote a longer piece on the JVM GC cliff and why it creates the infrastructure complexity: [blog post](https://github.com/petrpan26/tally/blob/main/docs/blog/why-real-time-features-dont-need-kafka.md)
+I wrote a longer piece on the JVM GC cliff and why it creates the infrastructure complexity: [blog post](https://github.com/petrpan26/tally/blob/main/docs/blog/streaming-shouldnt-require-a-platform-team.md)
 
 Happy to answer questions about the architecture, the benchmarks, or where this fits relative to tools you're already running.

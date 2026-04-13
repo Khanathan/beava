@@ -20,4 +20,4 @@ Numbers (47-feature fraud pipeline, 48-core Xeon): 430-510K eps, 7.6 KB/entity, 
 
 Not distributed. SQL, session windows, and event-time semantics are on the roadmap but not in v0. If you need distributed exactly-once, use Flink. If you've been putting off real-time features because the infrastructure felt too heavy, this might be worth 5 minutes.
 
-Blog post with the full reasoning: [link](https://github.com/petrpan26/tally/blob/main/docs/blog/why-real-time-features-dont-need-kafka.md). Apache 2.0. Feedback welcome.
+Blog post with the full reasoning: [link](https://github.com/petrpan26/tally/blob/main/docs/blog/streaming-shouldnt-require-a-platform-team.md). Apache 2.0. Feedback welcome.

@@ -263,7 +263,7 @@ cd python && python -m pytest tests/ -q   # Python SDK tests
 
 ## See Also
 
-- [Streaming Shouldn't Require a Platform Team](docs/blog/why-real-time-features-dont-need-kafka.md) -- why we built Tally and the tradeoffs we chose
+- [Streaming Shouldn't Require a Platform Team](docs/blog/streaming-shouldnt-require-a-platform-team.md) -- why we built Tally and the tradeoffs we chose
 - [Tally vs Flink+Kafka+Redis](docs/comparison.md) -- full cost and complexity comparison
 - [TCP Protocol Spec](docs/protocol.md) -- build a client in any language
 - [Fraud Detection Benchmark](benchmark/fraud-pipeline/bench_fraud.py) -- 47-feature pipeline, run it yourself
