@@ -295,7 +295,13 @@ Plans:
   3. `cargo test && pytest` pass with >= 744 tests on the new API only
   4. Full benchmark matrix (small/medium/large x sync/async/batch x 1c/4c/8c) passes within -5% of 1.1M eps baseline
   5. No `@st.stream` or `@st.view` references exist outside archived files (grep verification)
-**Plans**: TBD
+**Plans**: 5 plans
+Plans:
+- [ ] 19-01-PLAN.md — Fix test_protocol.py import, migrate conftest.py, test_integration.py, test_app.py
+- [ ] 19-02-PLAN.md — Create test_source.py and test_dataset.py (replace test_stream.py + test_view.py)
+- [ ] 19-03-PLAN.md — Port test_dataframe.py behavioral tests, clean test_expr.py + test_new_api.py
+- [ ] 19-04-PLAN.md — Verify test count >= 744, delete old API files + test files, clean __init__.py + _app.py
+- [ ] 19-05-PLAN.md — Migrate bench.py to new API, run full benchmark matrix
 
 ## Progress
 
@@ -323,5 +329,5 @@ Phases execute in numeric order: 16 -> 17 -> 18 -> 19
 | 15. Snapshot I/O off main thread | v1.3 | 0/? | Deferred | - |
 | 16. Python SDK -- New Types and Decorators | v2.0 | 2/2 | Complete    | 2026-04-12 |
 | 17. Enriched Event Propagation | v2.0 | 3/3 | Complete    | 2026-04-12 |
-| 18. Feature Projection and Ephemeral Schema | v2.0 | 2/2 | Complete   | 2026-04-12 |
+| 18. Feature Projection and Ephemeral Schema | v2.0 | 2/2 | Complete    | 2026-04-12 |
 | 19. Test Migration and Old API Removal | v2.0 | 0/? | Not started | - |
