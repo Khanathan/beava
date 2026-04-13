@@ -23,10 +23,10 @@ use tokio::net::TcpStream;
 
 use tally::engine::pipeline::PipelineEngine;
 use tally::server::protocol::{
-    self, OP_FLUSH, OP_GET, OP_MSET, OP_PUSH, OP_PUSH_ASYNC, OP_REGISTER, OP_SET,
-    STATUS_ERROR, STATUS_OK, TYPE_BOOL, TYPE_F64, TYPE_I64, TYPE_NULL, TYPE_STR,
+    self, OP_FLUSH, OP_GET, OP_MSET, OP_PUSH, OP_PUSH_ASYNC, OP_REGISTER, OP_SET, STATUS_ERROR,
+    STATUS_OK, TYPE_BOOL, TYPE_F64, TYPE_I64, TYPE_NULL, TYPE_STR,
 };
-use tally::server::tcp::{BackfillTracker, SharedState, make_concurrent_state};
+use tally::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
 use tally::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
@@ -151,7 +151,12 @@ fn build_mset_payload(entries: &[(&str, serde_json::Value)]) -> Vec<u8> {
 }
 
 /// Register a stream via an existing TCP connection.
-async fn register_stream(conn: &mut TcpStream, name: &str, key_field: &str, features: Vec<serde_json::Value>) {
+async fn register_stream(
+    conn: &mut TcpStream,
+    name: &str,
+    key_field: &str,
+    features: Vec<serde_json::Value>,
+) {
     let payload = build_register_payload(name, key_field, features);
     let (status, _) = send_frame(conn, OP_REGISTER, &payload).await;
     assert_eq!(status, STATUS_OK, "REGISTER {} should succeed", name);
@@ -204,13 +209,23 @@ async fn multi_stream_parallel_push() {
 
     // Register two streams from a single connection
     {
-        let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
-        register_stream(&mut conn, "Transactions", "user_id", vec![
-            json!({"name": "tx_count_1h", "type": "count", "window": "1h"}),
-        ]).await;
-        register_stream(&mut conn, "Logins", "user_id", vec![
-            json!({"name": "login_count_1h", "type": "count", "window": "1h"}),
-        ]).await;
+        let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .unwrap();
+        register_stream(
+            &mut conn,
+            "Transactions",
+            "user_id",
+            vec![json!({"name": "tx_count_1h", "type": "count", "window": "1h"})],
+        )
+        .await;
+        register_stream(
+            &mut conn,
+            "Logins",
+            "user_id",
+            vec![json!({"name": "login_count_1h", "type": "count", "window": "1h"})],
+        )
+        .await;
     }
 
     let events_per_task = 500;
@@ -224,12 +239,22 @@ async fn multi_stream_parallel_push() {
         ("Logins", "user_3"),
         ("Logins", "user_4"),
     ] {
-        let port = port;
+
         let stream_name = stream.to_string();
         let key_val = key.to_string();
         handles.push(tokio::spawn(async move {
-            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
-            push_n_async(&mut conn, &stream_name, "user_id", &key_val, events_per_task, 1.0).await;
+            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .unwrap();
+            push_n_async(
+                &mut conn,
+                &stream_name,
+                "user_id",
+                &key_val,
+                events_per_task,
+                1.0,
+            )
+            .await;
         }));
     }
 
@@ -239,19 +264,37 @@ async fn multi_stream_parallel_push() {
     }
 
     // Verify counts via GET
-    let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+    let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
 
     let f1 = get_features(&mut conn, "user_1").await;
-    assert_eq!(f1["tx_count_1h"], events_per_task, "user_1 tx_count_1h should be {}", events_per_task);
+    assert_eq!(
+        f1["tx_count_1h"], events_per_task,
+        "user_1 tx_count_1h should be {}",
+        events_per_task
+    );
 
     let f2 = get_features(&mut conn, "user_2").await;
-    assert_eq!(f2["tx_count_1h"], events_per_task, "user_2 tx_count_1h should be {}", events_per_task);
+    assert_eq!(
+        f2["tx_count_1h"], events_per_task,
+        "user_2 tx_count_1h should be {}",
+        events_per_task
+    );
 
     let f3 = get_features(&mut conn, "user_3").await;
-    assert_eq!(f3["login_count_1h"], events_per_task, "user_3 login_count_1h should be {}", events_per_task);
+    assert_eq!(
+        f3["login_count_1h"], events_per_task,
+        "user_3 login_count_1h should be {}",
+        events_per_task
+    );
 
     let f4 = get_features(&mut conn, "user_4").await;
-    assert_eq!(f4["login_count_1h"], events_per_task, "user_4 login_count_1h should be {}", events_per_task);
+    assert_eq!(
+        f4["login_count_1h"], events_per_task,
+        "user_4 login_count_1h should be {}",
+        events_per_task
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -265,21 +308,31 @@ async fn same_stream_different_keys_concurrent() {
     let (port, _state) = start_server().await;
 
     {
-        let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
-        register_stream(&mut conn, "Payments", "user_id", vec![
-            json!({"name": "pay_count_1h", "type": "count", "window": "1h"}),
-            json!({"name": "pay_sum_1h", "type": "sum", "field": "amount", "window": "1h"}),
-        ]).await;
+        let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .unwrap();
+        register_stream(
+            &mut conn,
+            "Payments",
+            "user_id",
+            vec![
+                json!({"name": "pay_count_1h", "type": "count", "window": "1h"}),
+                json!({"name": "pay_sum_1h", "type": "sum", "field": "amount", "window": "1h"}),
+            ],
+        )
+        .await;
     }
 
     let events_per_task = 500;
     let mut handles = Vec::new();
 
     for i in 1..=4u32 {
-        let port = port;
+
         let key = format!("user_{}", i);
         handles.push(tokio::spawn(async move {
-            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .unwrap();
             push_n_async(&mut conn, "Payments", "user_id", &key, events_per_task, 1.0).await;
         }));
     }
@@ -289,18 +342,24 @@ async fn same_stream_different_keys_concurrent() {
     }
 
     // Verify each key has correct count and sum
-    let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+    let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
     for i in 1..=4u32 {
         let key = format!("user_{}", i);
         let features = get_features(&mut conn, &key).await;
         assert_eq!(
             features["pay_count_1h"], events_per_task,
-            "{} count should be {}", key, events_per_task
+            "{} count should be {}",
+            key, events_per_task
         );
         let sum = features["pay_sum_1h"].as_f64().unwrap();
         assert!(
             (sum - events_per_task as f64).abs() < 0.01,
-            "{} sum should be {}, got {}", key, events_per_task, sum
+            "{} sum should be {}, got {}",
+            key,
+            events_per_task,
+            sum
         );
     }
 }
@@ -317,10 +376,16 @@ async fn concurrent_push_and_get() {
     let (port, _state) = start_server().await;
 
     {
-        let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
-        register_stream(&mut conn, "Activity", "user_id", vec![
-            json!({"name": "act_count_1h", "type": "count", "window": "1h"}),
-        ]).await;
+        let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .unwrap();
+        register_stream(
+            &mut conn,
+            "Activity",
+            "user_id",
+            vec![json!({"name": "act_count_1h", "type": "count", "window": "1h"})],
+        )
+        .await;
     }
 
     let events_per_push_task = 500;
@@ -328,22 +393,35 @@ async fn concurrent_push_and_get() {
     // 2 push tasks
     let mut handles = Vec::new();
     for _ in 0..2 {
-        let port = port;
+
         handles.push(tokio::spawn(async move {
-            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
-            push_n_async(&mut conn, "Activity", "user_id", "user_main", events_per_push_task, 1.0).await;
+            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .unwrap();
+            push_n_async(
+                &mut conn,
+                "Activity",
+                "user_id",
+                "user_main",
+                events_per_push_task,
+                1.0,
+            )
+            .await;
         }));
     }
 
     // 2 get tasks -- each reads 50 times, verifying valid results
     for _ in 0..2 {
-        let port = port;
+
         handles.push(tokio::spawn(async move {
-            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .unwrap();
             for _ in 0..50 {
                 let features = get_features(&mut conn, "user_main").await;
                 // Count should be a non-negative integer (no corruption)
-                let count = features.get("act_count_1h")
+                let count = features
+                    .get("act_count_1h")
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0);
                 assert!(count >= 0, "count should be non-negative, got {}", count);
@@ -358,13 +436,17 @@ async fn concurrent_push_and_get() {
     }
 
     // Final verification: total count should be 2 * events_per_push_task
-    let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+    let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
     let features = get_features(&mut conn, "user_main").await;
     let final_count = features["act_count_1h"].as_i64().unwrap();
     assert_eq!(
         final_count,
         (2 * events_per_push_task) as i64,
-        "Final count should be {}, got {}", 2 * events_per_push_task, final_count
+        "Final count should be {}, got {}",
+        2 * events_per_push_task,
+        final_count
     );
 }
 
@@ -381,13 +463,23 @@ async fn fan_out_under_concurrency() {
     let (port, _state) = start_server().await;
 
     {
-        let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
-        register_stream(&mut conn, "TxFanOut", "user_id", vec![
-            json!({"name": "tx_count_1h", "type": "count", "window": "1h"}),
-        ]).await;
-        register_stream(&mut conn, "MerchFanOut", "merchant_id", vec![
-            json!({"name": "merch_count_1h", "type": "count", "window": "1h"}),
-        ]).await;
+        let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .unwrap();
+        register_stream(
+            &mut conn,
+            "TxFanOut",
+            "user_id",
+            vec![json!({"name": "tx_count_1h", "type": "count", "window": "1h"})],
+        )
+        .await;
+        register_stream(
+            &mut conn,
+            "MerchFanOut",
+            "merchant_id",
+            vec![json!({"name": "merch_count_1h", "type": "count", "window": "1h"})],
+        )
+        .await;
     }
 
     let events_per_task = 300;
@@ -395,9 +487,11 @@ async fn fan_out_under_concurrency() {
 
     // Task 1: user_a + merchant_x
     {
-        let port = port;
+
         handles.push(tokio::spawn(async move {
-            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .unwrap();
             for _ in 0..events_per_task {
                 let payload = build_push_payload(
                     "TxFanOut",
@@ -416,9 +510,11 @@ async fn fan_out_under_concurrency() {
 
     // Task 2: user_b + merchant_y
     {
-        let port = port;
+
         handles.push(tokio::spawn(async move {
-            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .unwrap();
             for _ in 0..events_per_task {
                 let payload = build_push_payload(
                     "TxFanOut",
@@ -440,20 +536,38 @@ async fn fan_out_under_concurrency() {
     }
 
     // Verify: TxFanOut counts
-    let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+    let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
 
     let fa = get_features(&mut conn, "user_a").await;
-    assert_eq!(fa["tx_count_1h"], events_per_task, "user_a tx_count should be {}", events_per_task);
+    assert_eq!(
+        fa["tx_count_1h"], events_per_task,
+        "user_a tx_count should be {}",
+        events_per_task
+    );
 
     let fb = get_features(&mut conn, "user_b").await;
-    assert_eq!(fb["tx_count_1h"], events_per_task, "user_b tx_count should be {}", events_per_task);
+    assert_eq!(
+        fb["tx_count_1h"], events_per_task,
+        "user_b tx_count should be {}",
+        events_per_task
+    );
 
     // Verify: MerchFanOut counts (fan-out target)
     let mx = get_features(&mut conn, "merchant_x").await;
-    assert_eq!(mx["merch_count_1h"], events_per_task, "merchant_x merch_count should be {}", events_per_task);
+    assert_eq!(
+        mx["merch_count_1h"], events_per_task,
+        "merchant_x merch_count should be {}",
+        events_per_task
+    );
 
     let my = get_features(&mut conn, "merchant_y").await;
-    assert_eq!(my["merch_count_1h"], events_per_task, "merchant_y merch_count should be {}", events_per_task);
+    assert_eq!(
+        my["merch_count_1h"], events_per_task,
+        "merchant_y merch_count should be {}",
+        events_per_task
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -467,34 +581,49 @@ async fn set_mset_concurrent_with_push() {
     let (port, _state) = start_server().await;
 
     {
-        let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
-        register_stream(&mut conn, "Orders", "user_id", vec![
-            json!({"name": "order_count_1h", "type": "count", "window": "1h"}),
-        ]).await;
+        let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .unwrap();
+        register_stream(
+            &mut conn,
+            "Orders",
+            "user_id",
+            vec![json!({"name": "order_count_1h", "type": "count", "window": "1h"})],
+        )
+        .await;
     }
 
     let push_count = 500;
 
     // Task 1: Push live events
     let push_handle = {
-        let port = port;
+
         tokio::spawn(async move {
-            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
-            push_n_async(&mut conn, "Orders", "user_id", "user_combo", push_count, 5.0).await;
+            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .unwrap();
+            push_n_async(
+                &mut conn,
+                "Orders",
+                "user_id",
+                "user_combo",
+                push_count,
+                5.0,
+            )
+            .await;
         })
     };
 
     // Task 2: SET/MSET static features for same + different keys
     let set_handle = {
-        let port = port;
+
         tokio::spawn(async move {
-            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .unwrap();
 
             // SET a static feature for user_combo
-            let set_payload = build_set_payload(
-                "user_combo",
-                &json!({"lifetime_value": 9999.0}),
-            );
+            let set_payload = build_set_payload("user_combo", &json!({"lifetime_value": 9999.0}));
             let (status, _) = send_frame(&mut conn, OP_SET, &set_payload).await;
             assert_eq!(status, STATUS_OK, "SET should succeed");
 
@@ -512,23 +641,37 @@ async fn set_mset_concurrent_with_push() {
     set_handle.await.unwrap();
 
     // Verify: user_combo has both live and static features
-    let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+    let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
 
     let features = get_features(&mut conn, "user_combo").await;
     assert_eq!(
         features["order_count_1h"], push_count,
-        "Live count should be {}", push_count
+        "Live count should be {}",
+        push_count
     );
     // Static features should also be present
     let lv = features["lifetime_value"].as_f64().unwrap();
-    assert!((lv - 9999.0).abs() < 0.01, "lifetime_value should be 9999.0, got {}", lv);
-    assert_eq!(features["segment"], "premium", "segment should be 'premium'");
+    assert!(
+        (lv - 9999.0).abs() < 0.01,
+        "lifetime_value should be 9999.0, got {}",
+        lv
+    );
+    assert_eq!(
+        features["segment"], "premium",
+        "segment should be 'premium'"
+    );
 
     // Verify: user_other has only static features from MSET
     let other = get_features(&mut conn, "user_other").await;
     assert_eq!(other["segment"], "basic");
     let score = other["score"].as_f64().unwrap();
-    assert!((score - 42.0).abs() < 0.01, "score should be 42.0, got {}", score);
+    assert!(
+        (score - 42.0).abs() < 0.01,
+        "score should be 42.0, got {}",
+        score
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -552,13 +695,16 @@ async fn test_enriched_concurrent_clients() {
 
     // Register 3-stream cascade pipeline via single connection
     {
-        let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+        let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .await
+            .unwrap();
 
         // Stage 1: Source (keyless)
         let payload = serde_json::to_vec(&json!({
             "name": "ConcSource",
             "features": []
-        })).unwrap();
+        }))
+        .unwrap();
         let (status, _) = send_frame(&mut conn, OP_REGISTER, &payload).await;
         assert_eq!(status, STATUS_OK, "Register ConcSource should succeed");
 
@@ -570,7 +716,8 @@ async fn test_enriched_concurrent_clients() {
             "features": [
                 {"name": "amount_usd", "type": "derive", "expr": "_event.amount * _event.rate"}
             ]
-        })).unwrap();
+        }))
+        .unwrap();
         let (status, _) = send_frame(&mut conn, OP_REGISTER, &payload).await;
         assert_eq!(status, STATUS_OK, "Register ConcConverter should succeed");
 
@@ -596,10 +743,12 @@ async fn test_enriched_concurrent_clients() {
     // Spawn 8 concurrent client tasks
     let mut handles = Vec::new();
     for client_id in 0..num_clients {
-        let port = port;
+
         let user_id = format!("user_{}", client_id);
         handles.push(tokio::spawn(async move {
-            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+            let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .unwrap();
             for _ in 0..events_per_client {
                 let payload = build_push_payload(
                     "ConcSource",
@@ -618,7 +767,11 @@ async fn test_enriched_concurrent_clients() {
 
             // Flush to ensure all async events are processed
             let (status, _) = send_frame(&mut conn, OP_FLUSH, &[]).await;
-            assert_eq!(status, STATUS_OK, "FLUSH should succeed for client {}", client_id);
+            assert_eq!(
+                status, STATUS_OK,
+                "FLUSH should succeed for client {}",
+                client_id
+            );
         }));
     }
 
@@ -628,7 +781,9 @@ async fn test_enriched_concurrent_clients() {
     }
 
     // Verify each user's downstream aggregation is exact (no cross-contamination)
-    let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
+    let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
     let expected_total = (events_per_client as f64) * amount * rate; // 100 * 10.0 * 1.5 = 1500.0
 
     for client_id in 0..num_clients {
@@ -639,7 +794,9 @@ async fn test_enriched_concurrent_clients() {
         assert!(
             (total - expected_total).abs() < 0.01,
             "User {} total_usd_1h should be {}, got {} (cross-contamination detected!)",
-            user_id, expected_total, total
+            user_id,
+            expected_total,
+            total
         );
     }
 }

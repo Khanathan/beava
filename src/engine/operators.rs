@@ -3,13 +3,13 @@
 //! Each operator wraps one or more `RingBuffer`s and implements the `Operator`
 //! trait: `push()` to ingest an event, `read()` to get the current aggregate.
 
-use std::time::SystemTime;
-use serde::{Serialize, Deserialize};
-use crate::types::FeatureValue;
-use crate::error::TallyError;
 use super::window::RingBuffer;
-use std::collections::{VecDeque, BTreeMap};
+use crate::error::TallyError;
+use crate::types::FeatureValue;
 use ordered_float::OrderedFloat;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, VecDeque};
+use std::time::SystemTime;
 
 /// Resolve a field value from enrichment overlay first, then raw event.
 /// Used by all field-reading operators (sum, avg, min, max, last, etc.).
@@ -34,7 +34,12 @@ pub fn resolve_field<'a>(
 /// expire stale buckets before aggregating. This is safe in Tally's
 /// single-threaded Redis-like design (no concurrent reads).
 pub trait Operator: std::fmt::Debug + Send {
-    fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError>;
+    fn push(
+        &mut self,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
+    ) -> Result<(), TallyError>;
     fn read(&mut self, now: SystemTime) -> FeatureValue;
 }
 
@@ -54,7 +59,12 @@ impl CountOp {
 }
 
 impl Operator for CountOp {
-    fn push(&mut self, _event: &serde_json::Value, _enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError> {
+    fn push(
+        &mut self,
+        _event: &serde_json::Value,
+        _enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
         // count needs no field -- always succeeds regardless of event shape (CONTEXT.md)
         self.buffer.add_to_current(1u64, now);
         Ok(())
@@ -106,7 +116,12 @@ impl SumOp {
 }
 
 impl Operator for SumOp {
-    fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError> {
+    fn push(
+        &mut self,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
@@ -157,14 +172,18 @@ impl Operator for SumOp {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct MinBucket(pub f64);
 impl Default for MinBucket {
-    fn default() -> Self { MinBucket(f64::INFINITY) }
+    fn default() -> Self {
+        MinBucket(f64::INFINITY)
+    }
 }
 
 /// Bucket wrapper for MaxOp. Default is -INFINITY so any real value replaces it.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct MaxBucket(pub f64);
 impl Default for MaxBucket {
-    fn default() -> Self { MaxBucket(f64::NEG_INFINITY) }
+    fn default() -> Self {
+        MaxBucket(f64::NEG_INFINITY)
+    }
 }
 
 // ======================== MinOp ========================
@@ -197,7 +216,12 @@ impl MinOp {
 }
 
 impl Operator for MinOp {
-    fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError> {
+    fn push(
+        &mut self,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
@@ -212,11 +236,14 @@ impl Operator for MinOp {
             }
             Some(val) => {
                 if let Some(f) = val.as_f64() {
-                    self.buffer.update_current(|bucket| {
-                        if f < bucket.0 {
-                            bucket.0 = f;
-                        }
-                    }, now);
+                    self.buffer.update_current(
+                        |bucket| {
+                            if f < bucket.0 {
+                                bucket.0 = f;
+                            }
+                        },
+                        now,
+                    );
                     self.event_count.add_to_current(1u64, now);
                     Ok(())
                 } else {
@@ -236,7 +263,9 @@ impl Operator for MinOp {
         if self.event_count.sum_all() == 0 {
             return FeatureValue::Missing;
         }
-        let min_val = self.buffer.buckets_iter()
+        let min_val = self
+            .buffer
+            .buckets_iter()
             .filter(|b| b.0 != f64::INFINITY)
             .map(|b| b.0)
             .fold(f64::INFINITY, f64::min);
@@ -277,7 +306,12 @@ impl MaxOp {
 }
 
 impl Operator for MaxOp {
-    fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError> {
+    fn push(
+        &mut self,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
@@ -292,11 +326,14 @@ impl Operator for MaxOp {
             }
             Some(val) => {
                 if let Some(f) = val.as_f64() {
-                    self.buffer.update_current(|bucket| {
-                        if f > bucket.0 {
-                            bucket.0 = f;
-                        }
-                    }, now);
+                    self.buffer.update_current(
+                        |bucket| {
+                            if f > bucket.0 {
+                                bucket.0 = f;
+                            }
+                        },
+                        now,
+                    );
                     self.event_count.add_to_current(1u64, now);
                     Ok(())
                 } else {
@@ -316,7 +353,9 @@ impl Operator for MaxOp {
         if self.event_count.sum_all() == 0 {
             return FeatureValue::Missing;
         }
-        let max_val = self.buffer.buckets_iter()
+        let max_val = self
+            .buffer
+            .buckets_iter()
             .filter(|b| b.0 != f64::NEG_INFINITY)
             .map(|b| b.0)
             .fold(f64::NEG_INFINITY, f64::max);
@@ -352,7 +391,12 @@ impl LastOp {
 }
 
 impl Operator for LastOp {
-    fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError> {
+    fn push(
+        &mut self,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
@@ -428,7 +472,12 @@ impl AvgOp {
 }
 
 impl Operator for AvgOp {
-    fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError> {
+    fn push(
+        &mut self,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
@@ -484,7 +533,11 @@ pub struct StddevBucket {
 
 impl Default for StddevBucket {
     fn default() -> Self {
-        StddevBucket { count: 0, sum: 0.0, sum_sq: 0.0 }
+        StddevBucket {
+            count: 0,
+            sum: 0.0,
+            sum_sq: 0.0,
+        }
     }
 }
 
@@ -517,7 +570,12 @@ impl StddevOp {
 }
 
 impl Operator for StddevOp {
-    fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError> {
+    fn push(
+        &mut self,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
@@ -532,11 +590,14 @@ impl Operator for StddevOp {
             }
             Some(val) => {
                 if let Some(f) = val.as_f64() {
-                    self.buffer.update_current(|bucket| {
-                        bucket.count += 1;
-                        bucket.sum += f;
-                        bucket.sum_sq += f * f;
-                    }, now);
+                    self.buffer.update_current(
+                        |bucket| {
+                            bucket.count += 1;
+                            bucket.sum += f;
+                            bucket.sum_sq += f * f;
+                        },
+                        now,
+                    );
                     Ok(())
                 } else {
                     Err(TallyError::Type {
@@ -579,15 +640,11 @@ impl Operator for StddevOp {
 /// pushed into this time bucket. On read, values from all non-expired buckets
 /// are merged and the quantile is computed exactly.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub struct PercentileBucket {
     pub values: Vec<f64>,
 }
 
-impl Default for PercentileBucket {
-    fn default() -> Self {
-        PercentileBucket { values: Vec::new() }
-    }
-}
 
 // ======================== PercentileOp ========================
 
@@ -646,7 +703,12 @@ impl PercentileOp {
 }
 
 impl Operator for PercentileOp {
-    fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError> {
+    fn push(
+        &mut self,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
@@ -661,9 +723,12 @@ impl Operator for PercentileOp {
             }
             Some(val) => {
                 if let Some(f) = val.as_f64() {
-                    self.buffer.update_current(|bucket| {
-                        bucket.values.push(f);
-                    }, now);
+                    self.buffer.update_current(
+                        |bucket| {
+                            bucket.values.push(f);
+                        },
+                        now,
+                    );
                     Ok(())
                 } else {
                     Err(TallyError::Type {
@@ -716,7 +781,12 @@ impl LagOp {
 }
 
 impl Operator for LagOp {
-    fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, _now: SystemTime) -> Result<(), TallyError> {
+    fn push(
+        &mut self,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        _now: SystemTime,
+    ) -> Result<(), TallyError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
@@ -756,7 +826,10 @@ impl Operator for LagOp {
     fn read(&mut self, _now: SystemTime) -> FeatureValue {
         // Return the oldest value (N events ago). If buffer not full yet, Missing.
         if self.values.len() == self.n {
-            self.values.front().cloned().unwrap_or(FeatureValue::Missing)
+            self.values
+                .front()
+                .cloned()
+                .unwrap_or(FeatureValue::Missing)
         } else {
             FeatureValue::Missing
         }
@@ -792,7 +865,12 @@ impl EmaOp {
 }
 
 impl Operator for EmaOp {
-    fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError> {
+    fn push(
+        &mut self,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
@@ -811,7 +889,8 @@ impl Operator for EmaOp {
                         self.current = value;
                         self.initialized = true;
                     } else if let Some(prev_time) = self.last_time {
-                        let elapsed = now.duration_since(prev_time)
+                        let elapsed = now
+                            .duration_since(prev_time)
                             .unwrap_or(std::time::Duration::ZERO)
                             .as_secs_f64();
                         let alpha = (-std::f64::consts::LN_2 * elapsed / self.half_life_secs).exp();
@@ -866,7 +945,12 @@ impl LastNOp {
 }
 
 impl Operator for LastNOp {
-    fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, _now: SystemTime) -> Result<(), TallyError> {
+    fn push(
+        &mut self,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        _now: SystemTime,
+    ) -> Result<(), TallyError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
@@ -908,9 +992,7 @@ impl Operator for LastNOp {
             return FeatureValue::Missing;
         }
         // Return as JSON array string since FeatureValue has no List variant
-        let arr: Vec<serde_json::Value> = self.values.iter()
-            .map(|v| v.to_json_value())
-            .collect();
+        let arr: Vec<serde_json::Value> = self.values.iter().map(|v| v.to_json_value()).collect();
         let json_str = serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string());
         FeatureValue::String(json_str)
     }
@@ -940,7 +1022,12 @@ impl FirstOp {
 }
 
 impl Operator for FirstOp {
-    fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError> {
+    fn push(
+        &mut self,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
         // Only store the first value; ignore all subsequent events
         if self.timestamp.is_some() {
             return Ok(());
@@ -989,10 +1076,8 @@ impl Operator for FirstOp {
 /// Wrapper for Vec<f64> to use in RingBuffer (needs Default + Clone).
 /// Stores per-bucket value lists for retraction in ExactMin/ExactMax operators.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub struct ValBucket(pub Vec<f64>);
-impl Default for ValBucket {
-    fn default() -> Self { ValBucket(Vec::new()) }
-}
 
 // ======================== ExactMinOp ========================
 
@@ -1038,7 +1123,12 @@ impl ExactMinOp {
 }
 
 impl Operator for ExactMinOp {
-    fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError> {
+    fn push(
+        &mut self,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
@@ -1056,9 +1146,12 @@ impl Operator for ExactMinOp {
                     // Add to sorted map
                     *self.sorted_values.entry(OrderedFloat(f)).or_insert(0) += 1;
                     // Add to current bucket's value list
-                    self.bucket_values.update_current(|bucket| {
-                        bucket.0.push(f);
-                    }, now);
+                    self.bucket_values.update_current(
+                        |bucket| {
+                            bucket.0.push(f);
+                        },
+                        now,
+                    );
                     self.event_count.add_to_current(1u64, now);
                     Ok(())
                 } else {
@@ -1128,7 +1221,12 @@ impl ExactMaxOp {
 }
 
 impl Operator for ExactMaxOp {
-    fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError> {
+    fn push(
+        &mut self,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
@@ -1144,9 +1242,12 @@ impl Operator for ExactMaxOp {
             Some(val) => {
                 if let Some(f) = val.as_f64() {
                     *self.sorted_values.entry(OrderedFloat(f)).or_insert(0) += 1;
-                    self.bucket_values.update_current(|bucket| {
-                        bucket.0.push(f);
-                    }, now);
+                    self.bucket_values.update_current(
+                        |bucket| {
+                            bucket.0.push(f);
+                        },
+                        now,
+                    );
                     self.event_count.add_to_current(1u64, now);
                     Ok(())
                 } else {
@@ -1177,8 +1278,8 @@ impl Operator for ExactMaxOp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use serde_json::json;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn ts(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
@@ -1216,8 +1317,10 @@ mod tests {
         let mut op = CountOp::new(Duration::from_secs(30 * 60), Duration::from_secs(60));
         let t0 = ts(1000 * 60);
         op.push(&json!({}), None, t0).unwrap();
-        op.push(&json!({}), None, t0 + Duration::from_secs(60)).unwrap();
-        op.push(&json!({}), None, t0 + Duration::from_secs(120)).unwrap();
+        op.push(&json!({}), None, t0 + Duration::from_secs(60))
+            .unwrap();
+        op.push(&json!({}), None, t0 + Duration::from_secs(120))
+            .unwrap();
         // All 3 events within window, should sum to 3
         assert_eq!(op.read(t0 + Duration::from_secs(120)), FeatureValue::Int(3));
     }
@@ -1239,7 +1342,8 @@ mod tests {
         let mut op = CountOp::new(Duration::from_secs(30 * 60), Duration::from_secs(60));
         let t = ts(1000 * 60);
         // Count should succeed regardless of event shape
-        op.push(&json!({"amount": 50.0, "status": "ok"}), None, t).unwrap();
+        op.push(&json!({"amount": 50.0, "status": "ok"}), None, t)
+            .unwrap();
         assert_eq!(op.read(t), FeatureValue::Int(1));
     }
 
@@ -1272,7 +1376,12 @@ mod tests {
 
     #[test]
     fn test_sum_push_two_events_read_returns_sum() {
-        let mut op = SumOp::new("amount", Duration::from_secs(60 * 60), Duration::from_secs(60), false);
+        let mut op = SumOp::new(
+            "amount",
+            Duration::from_secs(60 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 50.0}), None, t).unwrap();
         op.push(&json!({"amount": 30.0}), None, t).unwrap();
@@ -1281,7 +1390,12 @@ mod tests {
 
     #[test]
     fn test_sum_type_error_on_string_field() {
-        let mut op = SumOp::new("amount", Duration::from_secs(60 * 60), Duration::from_secs(60), false);
+        let mut op = SumOp::new(
+            "amount",
+            Duration::from_secs(60 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         let result = op.push(&json!({"amount": "not_a_number"}), None, t);
         assert!(result.is_err());
@@ -1291,7 +1405,12 @@ mod tests {
 
     #[test]
     fn test_sum_non_optional_missing_field_returns_type_error() {
-        let mut op = SumOp::new("amount", Duration::from_secs(60 * 60), Duration::from_secs(60), false);
+        let mut op = SumOp::new(
+            "amount",
+            Duration::from_secs(60 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         let result = op.push(&json!({}), None, t);
         assert!(result.is_err());
@@ -1301,7 +1420,12 @@ mod tests {
 
     #[test]
     fn test_sum_optional_missing_field_returns_ok() {
-        let mut op = SumOp::new("amount", Duration::from_secs(60 * 60), Duration::from_secs(60), true);
+        let mut op = SumOp::new(
+            "amount",
+            Duration::from_secs(60 * 60),
+            Duration::from_secs(60),
+            true,
+        );
         let t = ts(1000 * 60);
         // Push event without the field -- should succeed silently
         assert!(op.push(&json!({}), None, t).is_ok());
@@ -1311,7 +1435,12 @@ mod tests {
 
     #[test]
     fn test_sum_optional_missing_field_does_not_affect_existing_sum() {
-        let mut op = SumOp::new("amount", Duration::from_secs(60 * 60), Duration::from_secs(60), true);
+        let mut op = SumOp::new(
+            "amount",
+            Duration::from_secs(60 * 60),
+            Duration::from_secs(60),
+            true,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 50.0}), None, t).unwrap();
         // Push event without field -- should not affect the sum
@@ -1321,7 +1450,12 @@ mod tests {
 
     #[test]
     fn test_sum_with_int_values_coerces_to_f64() {
-        let mut op = SumOp::new("amount", Duration::from_secs(60 * 60), Duration::from_secs(60), false);
+        let mut op = SumOp::new(
+            "amount",
+            Duration::from_secs(60 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 50}), None, t).unwrap(); // Int, not Float
         assert_eq!(op.read(t), FeatureValue::Float(50.0));
@@ -1329,14 +1463,24 @@ mod tests {
 
     #[test]
     fn test_sum_read_with_zero_events_returns_missing() {
-        let mut op = SumOp::new("amount", Duration::from_secs(60 * 60), Duration::from_secs(60), false);
+        let mut op = SumOp::new(
+            "amount",
+            Duration::from_secs(60 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         assert_eq!(op.read(t), FeatureValue::Missing);
     }
 
     #[test]
     fn test_sum_expires_correctly_when_time_advances_past_window() {
-        let mut op = SumOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let mut op = SumOp::new(
+            "amount",
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t0 = ts(1000 * 60);
         op.push(&json!({"amount": 100.0}), None, t0).unwrap();
         assert_eq!(op.read(t0), FeatureValue::Float(100.0));
@@ -1350,7 +1494,12 @@ mod tests {
 
     #[test]
     fn test_avg_push_three_events_returns_average() {
-        let mut op = AvgOp::new("amount", Duration::from_secs(60 * 60), Duration::from_secs(60), false);
+        let mut op = AvgOp::new(
+            "amount",
+            Duration::from_secs(60 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 10.0}), None, t).unwrap();
         op.push(&json!({"amount": 20.0}), None, t).unwrap();
@@ -1360,7 +1509,12 @@ mod tests {
 
     #[test]
     fn test_avg_read_with_zero_events_returns_missing() {
-        let mut op = AvgOp::new("amount", Duration::from_secs(60 * 60), Duration::from_secs(60), false);
+        let mut op = AvgOp::new(
+            "amount",
+            Duration::from_secs(60 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         // No push -- should return Missing, not NaN or 0
         assert_eq!(op.read(t), FeatureValue::Missing);
@@ -1368,16 +1522,28 @@ mod tests {
 
     #[test]
     fn test_avg_type_error_on_non_numeric_field() {
-        let mut op = AvgOp::new("amount", Duration::from_secs(60 * 60), Duration::from_secs(60), false);
+        let mut op = AvgOp::new(
+            "amount",
+            Duration::from_secs(60 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         let result = op.push(&json!({"amount": "hello"}), None, t);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TallyError::Type { ref field, .. } if field == "amount"));
+        assert!(
+            matches!(result.unwrap_err(), TallyError::Type { ref field, .. } if field == "amount")
+        );
     }
 
     #[test]
     fn test_avg_non_optional_missing_field_returns_type_error() {
-        let mut op = AvgOp::new("amount", Duration::from_secs(60 * 60), Duration::from_secs(60), false);
+        let mut op = AvgOp::new(
+            "amount",
+            Duration::from_secs(60 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         let result = op.push(&json!({}), None, t);
         assert!(result.is_err());
@@ -1385,7 +1551,12 @@ mod tests {
 
     #[test]
     fn test_avg_optional_missing_field_does_not_affect_average() {
-        let mut op = AvgOp::new("amount", Duration::from_secs(60 * 60), Duration::from_secs(60), true);
+        let mut op = AvgOp::new(
+            "amount",
+            Duration::from_secs(60 * 60),
+            Duration::from_secs(60),
+            true,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 10.0}), None, t).unwrap();
         op.push(&json!({"amount": 20.0}), None, t).unwrap();
@@ -1397,7 +1568,12 @@ mod tests {
 
     #[test]
     fn test_avg_optional_only_missing_fields_returns_missing() {
-        let mut op = AvgOp::new("amount", Duration::from_secs(60 * 60), Duration::from_secs(60), true);
+        let mut op = AvgOp::new(
+            "amount",
+            Duration::from_secs(60 * 60),
+            Duration::from_secs(60),
+            true,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({}), None, t).unwrap();
         op.push(&json!({}), None, t).unwrap();
@@ -1407,7 +1583,12 @@ mod tests {
 
     #[test]
     fn test_avg_expires_correctly_when_time_advances_past_window() {
-        let mut op = AvgOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let mut op = AvgOp::new(
+            "amount",
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t0 = ts(1000 * 60);
         op.push(&json!({"amount": 100.0}), None, t0).unwrap();
         assert_eq!(op.read(t0), FeatureValue::Float(100.0));
@@ -1419,7 +1600,12 @@ mod tests {
 
     #[test]
     fn test_avg_with_int_values() {
-        let mut op = AvgOp::new("amount", Duration::from_secs(60 * 60), Duration::from_secs(60), false);
+        let mut op = AvgOp::new(
+            "amount",
+            Duration::from_secs(60 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 10}), None, t).unwrap();
         op.push(&json!({"amount": 20}), None, t).unwrap();
@@ -1430,7 +1616,12 @@ mod tests {
 
     #[test]
     fn test_sum_with_negative_values() {
-        let mut op = SumOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = SumOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": -10.0}), None, t).unwrap();
         op.push(&json!({"amount": -20.0}), None, t).unwrap();
@@ -1439,7 +1630,12 @@ mod tests {
 
     #[test]
     fn test_sum_with_mixed_positive_and_negative() {
-        let mut op = SumOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = SumOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 100.0}), None, t).unwrap();
         op.push(&json!({"amount": -30.0}), None, t).unwrap();
@@ -1449,7 +1645,12 @@ mod tests {
 
     #[test]
     fn test_avg_with_negative_values() {
-        let mut op = AvgOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = AvgOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": -10.0}), None, t).unwrap();
         op.push(&json!({"amount": -30.0}), None, t).unwrap();
@@ -1458,7 +1659,12 @@ mod tests {
 
     #[test]
     fn test_avg_with_mixed_positive_and_negative() {
-        let mut op = AvgOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = AvgOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 10.0}), None, t).unwrap();
         op.push(&json!({"amount": -30.0}), None, t).unwrap();
@@ -1469,7 +1675,12 @@ mod tests {
 
     #[test]
     fn test_min_three_events_returns_minimum() {
-        let mut op = MinOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = MinOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 10.0}), None, t).unwrap();
         op.push(&json!({"amount": 5.0}), None, t).unwrap();
@@ -1479,14 +1690,24 @@ mod tests {
 
     #[test]
     fn test_min_zero_events_returns_missing() {
-        let mut op = MinOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = MinOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         assert_eq!(op.read(t), FeatureValue::Missing);
     }
 
     #[test]
     fn test_min_expires_old_buckets() {
-        let mut op = MinOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let mut op = MinOp::new(
+            "amount",
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t0 = ts(1000 * 60);
         op.push(&json!({"amount": 42.0}), None, t0).unwrap();
         assert_eq!(op.read(t0), FeatureValue::Float(42.0));
@@ -1497,7 +1718,12 @@ mod tests {
 
     #[test]
     fn test_min_optional_skips_missing_field() {
-        let mut op = MinOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), true);
+        let mut op = MinOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            true,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 10.0}), None, t).unwrap();
         // Push event without field -- should succeed silently
@@ -1507,7 +1733,12 @@ mod tests {
 
     #[test]
     fn test_min_non_optional_missing_field_errors() {
-        let mut op = MinOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = MinOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         let result = op.push(&json!({}), None, t);
         assert!(result.is_err());
@@ -1516,18 +1747,30 @@ mod tests {
 
     #[test]
     fn test_min_type_error_on_string_field() {
-        let mut op = MinOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = MinOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         let result = op.push(&json!({"amount": "not_a_number"}), None, t);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TallyError::Type { ref field, .. } if field == "amount"));
+        assert!(
+            matches!(result.unwrap_err(), TallyError::Type { ref field, .. } if field == "amount")
+        );
     }
 
     // ======================== MaxOp Tests ========================
 
     #[test]
     fn test_max_three_events_returns_maximum() {
-        let mut op = MaxOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = MaxOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 10.0}), None, t).unwrap();
         op.push(&json!({"amount": 5.0}), None, t).unwrap();
@@ -1537,14 +1780,24 @@ mod tests {
 
     #[test]
     fn test_max_zero_events_returns_missing() {
-        let mut op = MaxOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = MaxOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         assert_eq!(op.read(t), FeatureValue::Missing);
     }
 
     #[test]
     fn test_max_expires_old_buckets() {
-        let mut op = MaxOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let mut op = MaxOp::new(
+            "amount",
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t0 = ts(1000 * 60);
         op.push(&json!({"amount": 42.0}), None, t0).unwrap();
         assert_eq!(op.read(t0), FeatureValue::Float(42.0));
@@ -1554,7 +1807,12 @@ mod tests {
 
     #[test]
     fn test_max_optional_skips_missing_field() {
-        let mut op = MaxOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), true);
+        let mut op = MaxOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            true,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 10.0}), None, t).unwrap();
         assert!(op.push(&json!({}), None, t).is_ok());
@@ -1563,7 +1821,12 @@ mod tests {
 
     #[test]
     fn test_max_non_optional_missing_field_errors() {
-        let mut op = MaxOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = MaxOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         let result = op.push(&json!({}), None, t);
         assert!(result.is_err());
@@ -1572,11 +1835,18 @@ mod tests {
 
     #[test]
     fn test_max_type_error_on_string_field() {
-        let mut op = MaxOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = MaxOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         let result = op.push(&json!({"amount": "not_a_number"}), None, t);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TallyError::Type { ref field, .. } if field == "amount"));
+        assert!(
+            matches!(result.unwrap_err(), TallyError::Type { ref field, .. } if field == "amount")
+        );
     }
 
     // ======================== LastOp Tests ========================
@@ -1653,7 +1923,12 @@ mod tests {
 
     #[test]
     fn test_stddev_basic_push_and_read() {
-        let mut op = StddevOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = StddevOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 10.0}), None, t).unwrap();
         op.push(&json!({"amount": 20.0}), None, t).unwrap();
@@ -1668,14 +1943,24 @@ mod tests {
 
     #[test]
     fn test_stddev_empty_returns_missing() {
-        let mut op = StddevOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = StddevOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         assert_eq!(op.read(t), FeatureValue::Missing);
     }
 
     #[test]
     fn test_stddev_single_value_returns_zero() {
-        let mut op = StddevOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = StddevOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 42.0}), None, t).unwrap();
         assert_eq!(op.read(t), FeatureValue::Float(0.0));
@@ -1683,7 +1968,12 @@ mod tests {
 
     #[test]
     fn test_stddev_all_same_value_returns_zero() {
-        let mut op = StddevOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = StddevOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         for _ in 0..10 {
             op.push(&json!({"amount": 5.0}), None, t).unwrap();
@@ -1697,7 +1987,12 @@ mod tests {
     #[test]
     fn test_stddev_window_expiry() {
         // 5-minute window, 1-minute buckets
-        let mut op = StddevOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let mut op = StddevOp::new(
+            "amount",
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t0 = ts(1000 * 60);
         op.push(&json!({"amount": 100.0}), None, t0).unwrap();
         op.push(&json!({"amount": 200.0}), None, t0).unwrap();
@@ -1710,7 +2005,12 @@ mod tests {
     #[test]
     fn test_stddev_multiple_buckets() {
         // 3-minute window, 1-minute buckets
-        let mut op = StddevOp::new("amount", Duration::from_secs(3 * 60), Duration::from_secs(60), false);
+        let mut op = StddevOp::new(
+            "amount",
+            Duration::from_secs(3 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t0 = ts(1000 * 60);
         op.push(&json!({"amount": 2.0}), None, t0).unwrap();
         let t1 = t0 + Duration::from_secs(60);
@@ -1727,7 +2027,12 @@ mod tests {
     #[test]
     fn test_stddev_where_clause_filtering_non_optional_errors() {
         // Non-optional: missing field should error
-        let mut op = StddevOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = StddevOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         let result = op.push(&json!({}), None, t);
         assert!(result.is_err());
@@ -1735,7 +2040,12 @@ mod tests {
 
     #[test]
     fn test_stddev_optional_missing_field_skips() {
-        let mut op = StddevOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), true);
+        let mut op = StddevOp::new(
+            "amount",
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            true,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({}), None, t).unwrap(); // should not error
         assert_eq!(op.read(t), FeatureValue::Missing); // no data pushed
@@ -1745,7 +2055,13 @@ mod tests {
 
     #[test]
     fn test_percentile_basic_push_and_read_p50() {
-        let mut op = PercentileOp::new("amount", 0.5, Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = PercentileOp::new(
+            "amount",
+            0.5,
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         for i in 1..=100 {
             op.push(&json!({"amount": i as f64}), None, t).unwrap();
@@ -1760,7 +2076,13 @@ mod tests {
 
     #[test]
     fn test_percentile_p95() {
-        let mut op = PercentileOp::new("latency", 0.95, Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = PercentileOp::new(
+            "latency",
+            0.95,
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         for i in 1..=100 {
             op.push(&json!({"latency": i as f64}), None, t).unwrap();
@@ -1775,14 +2097,26 @@ mod tests {
 
     #[test]
     fn test_percentile_empty_returns_missing() {
-        let mut op = PercentileOp::new("amount", 0.5, Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = PercentileOp::new(
+            "amount",
+            0.5,
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         assert_eq!(op.read(t), FeatureValue::Missing);
     }
 
     #[test]
     fn test_percentile_single_value() {
-        let mut op = PercentileOp::new("amount", 0.99, Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = PercentileOp::new(
+            "amount",
+            0.99,
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 42.0}), None, t).unwrap();
         assert_eq!(op.read(t), FeatureValue::Float(42.0));
@@ -1790,7 +2124,13 @@ mod tests {
 
     #[test]
     fn test_percentile_all_same_value() {
-        let mut op = PercentileOp::new("amount", 0.5, Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op = PercentileOp::new(
+            "amount",
+            0.5,
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         for _ in 0..10 {
             op.push(&json!({"amount": 7.0}), None, t).unwrap();
@@ -1800,7 +2140,13 @@ mod tests {
 
     #[test]
     fn test_percentile_window_expiry() {
-        let mut op = PercentileOp::new("amount", 0.5, Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let mut op = PercentileOp::new(
+            "amount",
+            0.5,
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t0 = ts(1000 * 60);
         op.push(&json!({"amount": 100.0}), None, t0).unwrap();
 
@@ -1811,8 +2157,20 @@ mod tests {
 
     #[test]
     fn test_percentile_p0_and_p100() {
-        let mut op_p0 = PercentileOp::new("v", 0.0, Duration::from_secs(3600), Duration::from_secs(60), false);
-        let mut op_p100 = PercentileOp::new("v", 1.0, Duration::from_secs(3600), Duration::from_secs(60), false);
+        let mut op_p0 = PercentileOp::new(
+            "v",
+            0.0,
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
+        let mut op_p100 = PercentileOp::new(
+            "v",
+            1.0,
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         for i in &[5.0, 1.0, 9.0, 3.0, 7.0] {
             op_p0.push(&json!({"v": i}), None, t).unwrap();
@@ -1824,7 +2182,13 @@ mod tests {
 
     #[test]
     fn test_percentile_optional_missing_field_skips() {
-        let mut op = PercentileOp::new("amount", 0.5, Duration::from_secs(3600), Duration::from_secs(60), true);
+        let mut op = PercentileOp::new(
+            "amount",
+            0.5,
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            true,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({}), None, t).unwrap(); // should not error
         assert_eq!(op.read(t), FeatureValue::Missing);
@@ -1833,7 +2197,13 @@ mod tests {
     #[test]
     fn test_percentile_multiple_buckets() {
         // 3-minute window, 1-minute buckets
-        let mut op = PercentileOp::new("v", 0.5, Duration::from_secs(3 * 60), Duration::from_secs(60), false);
+        let mut op = PercentileOp::new(
+            "v",
+            0.5,
+            Duration::from_secs(3 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t0 = ts(1000 * 60);
         op.push(&json!({"v": 1.0}), None, t0).unwrap();
         let t1 = t0 + Duration::from_secs(60);
@@ -2017,8 +2387,14 @@ mod tests {
         let mut op = FirstOp::new("country", false);
         let t = ts(1000 * 60);
         op.push(&json!({"country": "US"}), None, t).unwrap();
-        op.push(&json!({"country": "UK"}), None, t + Duration::from_secs(60)).unwrap();
-        op.push(&json!({"country": "DE"}), None, t + Duration::from_secs(120)).unwrap();
+        op.push(&json!({"country": "UK"}), None, t + Duration::from_secs(60))
+            .unwrap();
+        op.push(
+            &json!({"country": "DE"}),
+            None,
+            t + Duration::from_secs(120),
+        )
+        .unwrap();
         assert_eq!(op.read(t), FeatureValue::String("US".into()));
     }
 
@@ -2054,7 +2430,12 @@ mod tests {
 
     #[test]
     fn test_exact_min_basic() {
-        let mut op = ExactMinOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let mut op = ExactMinOp::new(
+            "amount",
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 30.0}), None, t).unwrap();
         op.push(&json!({"amount": 10.0}), None, t).unwrap();
@@ -2064,19 +2445,37 @@ mod tests {
 
     #[test]
     fn test_exact_min_retracts_expired_values() {
-        let mut op = ExactMinOp::new("amount", Duration::from_secs(3 * 60), Duration::from_secs(60), false);
+        let mut op = ExactMinOp::new(
+            "amount",
+            Duration::from_secs(3 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t0 = ts(1000 * 60);
         op.push(&json!({"amount": 5.0}), None, t0).unwrap();
-        op.push(&json!({"amount": 20.0}), None, t0 + Duration::from_secs(60)).unwrap();
-        op.push(&json!({"amount": 15.0}), None, t0 + Duration::from_secs(120)).unwrap();
-        assert_eq!(op.read(t0 + Duration::from_secs(120)), FeatureValue::Float(5.0));
+        op.push(&json!({"amount": 20.0}), None, t0 + Duration::from_secs(60))
+            .unwrap();
+        op.push(
+            &json!({"amount": 15.0}),
+            None,
+            t0 + Duration::from_secs(120),
+        )
+        .unwrap();
+        assert_eq!(
+            op.read(t0 + Duration::from_secs(120)),
+            FeatureValue::Float(5.0)
+        );
         // Advance past the window so the 5.0 bucket expires
         let t_future = t0 + Duration::from_secs(4 * 60);
         op.push(&json!({"amount": 25.0}), None, t_future).unwrap();
         // 5.0 should be expired; min should now be 15.0 or 25.0
         let val = op.read(t_future);
         if let FeatureValue::Float(v) = val {
-            assert!(v >= 15.0, "expected min >= 15.0 after retraction, got {}", v);
+            assert!(
+                v >= 15.0,
+                "expected min >= 15.0 after retraction, got {}",
+                v
+            );
         } else {
             panic!("expected Float");
         }
@@ -2084,14 +2483,24 @@ mod tests {
 
     #[test]
     fn test_exact_min_returns_missing_when_empty() {
-        let mut op = ExactMinOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let mut op = ExactMinOp::new(
+            "amount",
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         assert_eq!(op.read(t), FeatureValue::Missing);
     }
 
     #[test]
     fn test_exact_min_returns_missing_after_all_expire() {
-        let mut op = ExactMinOp::new("amount", Duration::from_secs(3 * 60), Duration::from_secs(60), false);
+        let mut op = ExactMinOp::new(
+            "amount",
+            Duration::from_secs(3 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t0 = ts(1000 * 60);
         op.push(&json!({"amount": 10.0}), None, t0).unwrap();
         assert_eq!(op.read(t0), FeatureValue::Float(10.0));
@@ -2104,7 +2513,12 @@ mod tests {
 
     #[test]
     fn test_exact_max_basic() {
-        let mut op = ExactMaxOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let mut op = ExactMaxOp::new(
+            "amount",
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 10.0}), None, t).unwrap();
         op.push(&json!({"amount": 30.0}), None, t).unwrap();
@@ -2114,18 +2528,36 @@ mod tests {
 
     #[test]
     fn test_exact_max_retracts_expired_values() {
-        let mut op = ExactMaxOp::new("amount", Duration::from_secs(3 * 60), Duration::from_secs(60), false);
+        let mut op = ExactMaxOp::new(
+            "amount",
+            Duration::from_secs(3 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t0 = ts(1000 * 60);
         op.push(&json!({"amount": 100.0}), None, t0).unwrap();
-        op.push(&json!({"amount": 20.0}), None, t0 + Duration::from_secs(60)).unwrap();
-        op.push(&json!({"amount": 30.0}), None, t0 + Duration::from_secs(120)).unwrap();
-        assert_eq!(op.read(t0 + Duration::from_secs(120)), FeatureValue::Float(100.0));
+        op.push(&json!({"amount": 20.0}), None, t0 + Duration::from_secs(60))
+            .unwrap();
+        op.push(
+            &json!({"amount": 30.0}),
+            None,
+            t0 + Duration::from_secs(120),
+        )
+        .unwrap();
+        assert_eq!(
+            op.read(t0 + Duration::from_secs(120)),
+            FeatureValue::Float(100.0)
+        );
         // Advance past the window so the 100.0 bucket expires
         let t_future = t0 + Duration::from_secs(4 * 60);
         op.push(&json!({"amount": 25.0}), None, t_future).unwrap();
         let val = op.read(t_future);
         if let FeatureValue::Float(v) = val {
-            assert!(v <= 30.0, "expected max <= 30.0 after retraction, got {}", v);
+            assert!(
+                v <= 30.0,
+                "expected max <= 30.0 after retraction, got {}",
+                v
+            );
         } else {
             panic!("expected Float");
         }
@@ -2133,14 +2565,24 @@ mod tests {
 
     #[test]
     fn test_exact_max_returns_missing_when_empty() {
-        let mut op = ExactMaxOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let mut op = ExactMaxOp::new(
+            "amount",
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         assert_eq!(op.read(t), FeatureValue::Missing);
     }
 
     #[test]
     fn test_exact_max_duplicate_values() {
-        let mut op = ExactMaxOp::new("amount", Duration::from_secs(5 * 60), Duration::from_secs(60), false);
+        let mut op = ExactMaxOp::new(
+            "amount",
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(60),
+            false,
+        );
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 50.0}), None, t).unwrap();
         op.push(&json!({"amount": 50.0}), None, t).unwrap();

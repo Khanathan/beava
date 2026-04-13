@@ -55,7 +55,7 @@ impl ThroughputTracker {
         let entry = self
             .streams
             .entry(stream_name.to_string())
-            .or_insert_with(StreamThroughput::default);
+            .or_default();
         Self::fold_event(entry, now);
     }
 

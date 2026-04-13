@@ -12,8 +12,8 @@ use axum::{
     Json, Router,
 };
 use std::sync::atomic::Ordering;
-use tokio::net::TcpListener;
 use std::time::SystemTime;
+use tokio::net::TcpListener;
 
 use super::tcp::SharedState;
 use crate::server::protocol::{convert_register_request, RegisterRequest};
@@ -198,11 +198,7 @@ async fn create_pipeline(
     match result {
         Ok(()) => {
             engine.store_raw_register_json(&def_name, body);
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({"status": "ok"})),
-            )
-                .into_response()
+            (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
         }
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -223,11 +219,7 @@ async fn delete_pipeline(
         if let Some(ref mut log) = *event_log {
             let _ = log.deregister_stream(&name);
         }
-        (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "ok"})),
-        )
-            .into_response()
+        (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
     } else {
         (
             StatusCode::NOT_FOUND,
@@ -275,10 +267,7 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
     )
 }
 
-async fn debug_key(
-    State(state): State<SharedState>,
-    Path(key): Path<String>,
-) -> impl IntoResponse {
+async fn debug_key(State(state): State<SharedState>, Path(key): Path<String>) -> impl IntoResponse {
     let store = &state.store;
     let now = SystemTime::now();
     // First check if entity exists
@@ -310,7 +299,9 @@ async fn debug_key(
             .map(|(k, v)| (k.clone(), v.value.to_json_value()))
             .collect();
         // Use the most recent last_event_at across all streams
-        let last_event_at = entity.streams.values()
+        let last_event_at = entity
+            .streams
+            .values()
             .filter_map(|s| s.last_event_at)
             .max()
             .map(|t: SystemTime| {
@@ -372,19 +363,41 @@ async fn debug_topology(State(state): State<SharedState>) -> Json<serde_json::Va
                 arr.iter()
                     .map(|feat| {
                         let mut out = serde_json::Map::new();
-                        if let Some(n) = feat.get("name") { out.insert("name".into(), n.clone()); }
+                        if let Some(n) = feat.get("name") {
+                            out.insert("name".into(), n.clone());
+                        }
                         // Rename `type` -> `op` in the output for frontend readability.
-                        if let Some(t) = feat.get("type") { out.insert("op".into(), t.clone()); }
-                        if let Some(w) = feat.get("window") { out.insert("window".into(), w.clone()); }
-                        if let Some(b) = feat.get("bucket") { out.insert("bucket".into(), b.clone()); }
-                        if let Some(fld) = feat.get("field") { out.insert("field".into(), fld.clone()); }
-                        if let Some(wh) = feat.get("where") { out.insert("where".into(), wh.clone()); }
-                        if let Some(e) = feat.get("expr") { out.insert("expr".into(), e.clone()); }
-                        if let Some(o) = feat.get("optional") { out.insert("optional".into(), o.clone()); }
-                        if let Some(bf) = feat.get("backfill") { out.insert("backfill".into(), bf.clone()); }
+                        if let Some(t) = feat.get("type") {
+                            out.insert("op".into(), t.clone());
+                        }
+                        if let Some(w) = feat.get("window") {
+                            out.insert("window".into(), w.clone());
+                        }
+                        if let Some(b) = feat.get("bucket") {
+                            out.insert("bucket".into(), b.clone());
+                        }
+                        if let Some(fld) = feat.get("field") {
+                            out.insert("field".into(), fld.clone());
+                        }
+                        if let Some(wh) = feat.get("where") {
+                            out.insert("where".into(), wh.clone());
+                        }
+                        if let Some(e) = feat.get("expr") {
+                            out.insert("expr".into(), e.clone());
+                        }
+                        if let Some(o) = feat.get("optional") {
+                            out.insert("optional".into(), o.clone());
+                        }
+                        if let Some(bf) = feat.get("backfill") {
+                            out.insert("backfill".into(), bf.clone());
+                        }
                         // Lookup-only fields (present when type == "lookup")
-                        if let Some(on) = feat.get("on") { out.insert("on".into(), on.clone()); }
-                        if let Some(tg) = feat.get("target") { out.insert("target".into(), tg.clone()); }
+                        if let Some(on) = feat.get("on") {
+                            out.insert("on".into(), on.clone());
+                        }
+                        if let Some(tg) = feat.get("target") {
+                            out.insert("target".into(), tg.clone());
+                        }
                         serde_json::Value::Object(out)
                     })
                     .collect()
@@ -423,11 +436,21 @@ async fn debug_topology(State(state): State<SharedState>) -> Json<serde_json::Va
                 arr.iter()
                     .map(|feat| {
                         let mut out = serde_json::Map::new();
-                        if let Some(n) = feat.get("name") { out.insert("name".into(), n.clone()); }
-                        if let Some(t) = feat.get("type") { out.insert("op".into(), t.clone()); }
-                        if let Some(e) = feat.get("expr") { out.insert("expr".into(), e.clone()); }
-                        if let Some(on) = feat.get("on") { out.insert("on".into(), on.clone()); }
-                        if let Some(tg) = feat.get("target") { out.insert("target".into(), tg.clone()); }
+                        if let Some(n) = feat.get("name") {
+                            out.insert("name".into(), n.clone());
+                        }
+                        if let Some(t) = feat.get("type") {
+                            out.insert("op".into(), t.clone());
+                        }
+                        if let Some(e) = feat.get("expr") {
+                            out.insert("expr".into(), e.clone());
+                        }
+                        if let Some(on) = feat.get("on") {
+                            out.insert("on".into(), on.clone());
+                        }
+                        if let Some(tg) = feat.get("target") {
+                            out.insert("target".into(), tg.clone());
+                        }
                         serde_json::Value::Object(out)
                     })
                     .collect()
@@ -503,7 +526,9 @@ async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Valu
     for key in &keys {
         if let Some(entity) = store.get_entity(key) {
             for stream_name in entity.streams.keys() {
-                *per_stream_counts.entry(stream_name.clone()).or_insert(0usize as u64) += 1;
+                *per_stream_counts
+                    .entry(stream_name.clone())
+                    .or_insert(0usize as u64) += 1;
             }
         }
     }
@@ -560,9 +585,11 @@ async fn trigger_snapshot(
     }
 
     // Phase 15: cycle guard — reject if a snapshot is already in progress.
-    if state.snapshot_in_progress.compare_exchange(
-        false, true, Ordering::AcqRel, Ordering::Acquire,
-    ).is_err() {
+    if state
+        .snapshot_in_progress
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
         return (
             StatusCode::CONFLICT,
             Json(serde_json::json!({"error": "snapshot cycle already in progress"})),
@@ -624,7 +651,9 @@ async fn trigger_snapshot(
             *last_base = seq;
         }
 
-        let snap_dir = state.snapshot_path.parent()
+        let snap_dir = state
+            .snapshot_path
+            .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .to_path_buf();
 
@@ -643,7 +672,7 @@ async fn trigger_snapshot(
     let snap_start = std::time::Instant::now();
     let write_fut = tokio::task::spawn_blocking(move || {
         let bytes = crate::state::snapshot::save_base_snapshot(&snapshot_data)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         let filename = format!("tally.snapshot.base.{:010}", seq);
         let file_path = snap_dir.join(&filename);
         let tmp_path = snap_dir.join(format!("{}.tmp", filename));
@@ -669,10 +698,9 @@ async fn trigger_snapshot(
     let wait = params.wait.unwrap_or(false);
     let result = if wait {
         if let Some(timeout_ms) = params.timeout_ms {
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(timeout_ms),
-                write_fut,
-            ).await {
+            match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), write_fut)
+                .await
+            {
                 Ok(inner) => inner,
                 Err(_) => {
                     return (
@@ -717,23 +745,33 @@ async fn trigger_snapshot(
 }
 
 async fn debug_backfill(State(state): State<SharedState>) -> Json<serde_json::Value> {
-    let tasks = state.backfill_tracker.tasks.lock()
+    let tasks = state
+        .backfill_tracker
+        .tasks
+        .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let task_list: Vec<serde_json::Value> = tasks.iter().map(|t| {
-        let processed = t.processed_events.load(std::sync::atomic::Ordering::Relaxed);
-        let completed = t.completed_at.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .map(|_| true)
-            .unwrap_or(false);
-        serde_json::json!({
-            "stream": t.stream,
-            "features": t.features,
-            "total_events": t.total_events,
-            "processed_events": processed,
-            "completed": completed,
-            "status": if completed { "completed" } else { "running" },
+    let task_list: Vec<serde_json::Value> = tasks
+        .iter()
+        .map(|t| {
+            let processed = t
+                .processed_events
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let completed = t
+                .completed_at
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .map(|_| true)
+                .unwrap_or(false);
+            serde_json::json!({
+                "stream": t.stream,
+                "features": t.features,
+                "total_events": t.total_events,
+                "processed_events": processed,
+                "completed": completed,
+                "status": if completed { "completed" } else { "running" },
+            })
         })
-    }).collect();
+        .collect();
     Json(serde_json::json!({
         "backfill_tasks": task_list,
     }))
@@ -766,7 +804,7 @@ pub async fn run_http_server(addr: &str, state: SharedState) -> Result<(), std::
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app)
         .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        .map_err(std::io::Error::other)
 }
 
 /// Start the HTTP management server from a pre-bound listener (for tests).
@@ -777,7 +815,7 @@ pub async fn run_http_server_with_listener(
     let app = build_router(state);
     axum::serve(listener, app)
         .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        .map_err(std::io::Error::other)
 }
 
 // ======================== Phase 15 Tests ========================
@@ -785,10 +823,10 @@ pub async fn run_http_server_with_listener(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::engine::pipeline::PipelineEngine;
+    use crate::server::tcp::{make_concurrent_state, BackfillTracker};
     use crate::state::store::StateStore;
-    use crate::server::tcp::{BackfillTracker, make_concurrent_state};
+    use std::sync::Arc;
 
     fn test_state() -> SharedState {
         make_concurrent_state(
@@ -807,20 +845,23 @@ mod tests {
         let state = test_state();
 
         // Simulate first snapshot starting
-        assert!(state.snapshot_in_progress.compare_exchange(
-            false, true, Ordering::AcqRel, Ordering::Acquire,
-        ).is_ok());
+        assert!(state
+            .snapshot_in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire,)
+            .is_ok());
 
         // Second attempt should fail
-        assert!(state.snapshot_in_progress.compare_exchange(
-            false, true, Ordering::AcqRel, Ordering::Acquire,
-        ).is_err());
+        assert!(state
+            .snapshot_in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire,)
+            .is_err());
 
         // After clearing, it should succeed again
         state.snapshot_in_progress.store(false, Ordering::Release);
-        assert!(state.snapshot_in_progress.compare_exchange(
-            false, true, Ordering::AcqRel, Ordering::Acquire,
-        ).is_ok());
+        assert!(state
+            .snapshot_in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire,)
+            .is_ok());
     }
 
     #[test]
@@ -917,8 +958,14 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
-        assert!(text.contains("tally_snapshots_skipped_total 42"), "metrics body: {}", text);
+        assert!(
+            text.contains("tally_snapshots_skipped_total 42"),
+            "metrics body: {}",
+            text
+        );
     }
 }

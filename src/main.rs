@@ -1,18 +1,23 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use tally::engine::pipeline::PipelineEngine;
 use tally::server::http::run_http_server;
-use tally::server::protocol::{RegisterRequest, convert_register_request, convert_view_register_request};
-use tally::server::tcp::{BackfillStatus, BackfillTracker, make_concurrent_state, run_backfill, run_tcp_server, SharedState};
+use tally::server::protocol::{
+    convert_register_request, convert_view_register_request, RegisterRequest,
+};
+use tally::server::tcp::{
+    make_concurrent_state, run_backfill, run_tcp_server, BackfillStatus, BackfillTracker,
+    SharedState,
+};
 use tally::state::event_log::EventLog;
 use tally::state::eviction::evict_expired_keys;
 use tally::state::snapshot::{
-    BaseSnapshotState, DeltaSnapshotState, SerializablePipeline, SnapshotFile, SnapshotHeader,
-    SnapshotState, SnapshotType, load_legacy_v5, load_snapshot_file, save_base_snapshot,
-    save_delta_snapshot,
+    load_legacy_v5, load_snapshot_file, save_base_snapshot, save_delta_snapshot, BaseSnapshotState,
+    DeltaSnapshotState, SerializablePipeline, SnapshotFile, SnapshotHeader, SnapshotState,
+    SnapshotType,
 };
 use tally::state::store::StateStore;
 
@@ -60,15 +65,13 @@ async fn async_main() {
 
     // Initialize event log directory (skip if disabled)
     let event_log = if event_log_enabled {
-        let event_log_dir = PathBuf::from(
-            std::env::var("TALLY_DATA_DIR").unwrap_or_else(|_| ".".into()),
-        ).join("events");
-        EventLog::new(event_log_dir)
-            .map(Some)
-            .unwrap_or_else(|e| {
-                eprintln!("Failed to initialize event log: {}", e);
-                None
-            })
+        let event_log_dir =
+            PathBuf::from(std::env::var("TALLY_DATA_DIR").unwrap_or_else(|_| ".".into()))
+                .join("events");
+        EventLog::new(event_log_dir).map(Some).unwrap_or_else(|e| {
+            eprintln!("Failed to initialize event log: {}", e);
+            None
+        })
     } else {
         eprintln!("Event log: disabled");
         None
@@ -96,7 +99,8 @@ async fn async_main() {
     // Load snapshot on startup -- incremental recovery (OPS-04).
     // Skip if snapshots are disabled.
     let recovery = if snapshot_enabled {
-        let snap_dir_startup = snapshot_path.parent()
+        let snap_dir_startup = snapshot_path
+            .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .to_path_buf();
         load_incremental_snapshots(&snap_dir_startup, &snapshot_path)
@@ -122,8 +126,7 @@ async fn async_main() {
                 let parsed: Result<serde_json::Value, _> =
                     serde_json::from_str(&pipeline.raw_register_json);
                 if let Ok(json_val) = parsed {
-                    let req: Result<RegisterRequest, _> =
-                        serde_json::from_value(json_val.clone());
+                    let req: Result<RegisterRequest, _> = serde_json::from_value(json_val.clone());
                     if let Ok(req) = req {
                         let def_name = req.name.clone();
                         let is_view = req.definition_type.as_deref() == Some("view");
@@ -138,8 +141,8 @@ async fn async_main() {
                             engine.store_raw_register_json(&def_name, json_val);
                             // Register stream with event log for persistence
                             if !is_view {
-                                let history_ttl = engine.get_stream(&def_name)
-                                    .and_then(|s| s.history_ttl);
+                                let history_ttl =
+                                    engine.get_stream(&def_name).and_then(|s| s.history_ttl);
                                 let mut event_log = state.event_log.lock();
                                 if let Some(ref mut log) = *event_log {
                                     let _ = log.register_stream(&def_name, history_ttl);
@@ -172,7 +175,9 @@ async fn async_main() {
             let engine = state.engine.read();
             let bc = state.backfill_complete.lock();
             for stream in engine.list_streams() {
-                let missing: Vec<String> = stream.features.iter()
+                let missing: Vec<String> = stream
+                    .features
+                    .iter()
                     .filter(|(_, def)| tally::engine::pipeline::get_backfill_flag(def))
                     .filter(|(name, _)| !bc.contains(&(stream.name.clone(), name.clone())))
                     .map(|(name, _)| name.clone())
@@ -189,7 +194,8 @@ async fn async_main() {
         for (stream_name, features) in incomplete_backfills {
             let entries = {
                 let event_log = state.event_log.lock();
-                event_log.as_ref()
+                event_log
+                    .as_ref()
                     .map(|log| log.read_entries(&stream_name).unwrap_or_default())
                     .unwrap_or_default()
             };
@@ -202,10 +208,16 @@ async fn async_main() {
                     started_at: SystemTime::now(),
                     completed_at: std::sync::Mutex::new(None),
                 });
-                state.backfill_tracker.tasks.lock()
+                state
+                    .backfill_tracker
+                    .tasks
+                    .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push(Arc::clone(&status));
-                eprintln!("Resuming incomplete backfill for {} features: {:?}", stream_name, features);
+                eprintln!(
+                    "Resuming incomplete backfill for {} features: {:?}",
+                    stream_name, features
+                );
                 tokio::spawn(run_backfill(
                     state.clone(),
                     stream_name,
@@ -234,187 +246,202 @@ async fn async_main() {
     // Periodic incremental snapshot timer (PERS-01, PERS-04, OPS-03).
     // Skip if snapshots are disabled.
     if snapshot_enabled {
-    let snap_state = state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(30));
-        interval.tick().await; // First tick completes immediately -- skip it
-        loop {
-            interval.tick().await;
+        let snap_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            interval.tick().await; // First tick completes immediately -- skip it
+            loop {
+                interval.tick().await;
 
-            // Phase 15: cycle guard — skip if a previous snapshot write is
-            // still in progress (from either the timer or a manual trigger).
-            if snap_state.snapshot_in_progress.compare_exchange(
-                false, true,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            ).is_err() {
-                snap_state.metrics.lock().snapshots_skipped += 1;
-                eprintln!("Snapshot cycle skipped: previous write still in progress");
-                continue;
-            }
-            // RAII guard clears the flag even on panic.
-            struct SnapGuard(SharedState);
-            impl Drop for SnapGuard {
-                fn drop(&mut self) {
-                    self.0.snapshot_in_progress.store(false, std::sync::atomic::Ordering::Release);
+                // Phase 15: cycle guard — skip if a previous snapshot write is
+                // still in progress (from either the timer or a manual trigger).
+                if snap_state
+                    .snapshot_in_progress
+                    .compare_exchange(
+                        false,
+                        true,
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                    )
+                    .is_err()
+                {
+                    snap_state.metrics.lock().snapshots_skipped += 1;
+                    eprintln!("Snapshot cycle skipped: previous write still in progress");
+                    continue;
                 }
-            }
-            let _guard = SnapGuard(snap_state.clone());
+                // RAII guard clears the flag even on panic.
+                struct SnapGuard(SharedState);
+                impl Drop for SnapGuard {
+                    fn drop(&mut self) {
+                        self.0
+                            .snapshot_in_progress
+                            .store(false, std::sync::atomic::Ordering::Release);
+                    }
+                }
+                let _guard = SnapGuard(snap_state.clone());
 
-            // Decide base vs delta, clone the required state, and advance
-            // the cycle counter — using individual locks.
-            let prepared: Option<(SnapshotData, u64, bool, PathBuf, u64)> = {
-                let engine = snap_state.engine.read();
-                let store = &snap_state.store;
-                let cycle = *snap_state.snapshot_cycle.lock();
-                let seq = *snap_state.snapshot_seq.lock();
-                let is_full = cycle % full_snapshot_interval == 0;
-                let valid_features = engine.valid_features_map();
-                let snap_dir = snap_state.snapshot_path.parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-                    .to_path_buf();
+                // Decide base vs delta, clone the required state, and advance
+                // the cycle counter — using individual locks.
+                let prepared: Option<(SnapshotData, u64, bool, PathBuf, u64)> = {
+                    let engine = snap_state.engine.read();
+                    let store = &snap_state.store;
+                    let cycle = *snap_state.snapshot_cycle.lock();
+                    let seq = *snap_state.snapshot_seq.lock();
+                    let is_full = cycle.is_multiple_of(full_snapshot_interval);
+                    let valid_features = engine.valid_features_map();
+                    let snap_dir = snap_state
+                        .snapshot_path
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new("."))
+                        .to_path_buf();
 
-                let last_base_seq_for_delta = *snap_state.last_base_seq.lock();
-                if is_full {
-                    // Full base snapshot -- clone everything.
-                    let entities = store.clone_for_snapshot_with_gc(&valid_features);
-                    let mut pipelines: Vec<SerializablePipeline> = engine
-                        .list_streams()
-                        .filter_map(|stream| {
-                            engine
-                                .get_raw_register_json(&stream.name)
-                                .map(|json| SerializablePipeline {
-                                    name: stream.name.clone(),
-                                    key_field: stream.key_field.clone().unwrap_or_default(),
+                    let last_base_seq_for_delta = *snap_state.last_base_seq.lock();
+                    if is_full {
+                        // Full base snapshot -- clone everything.
+                        let entities = store.clone_for_snapshot_with_gc(&valid_features);
+                        let mut pipelines: Vec<SerializablePipeline> = engine
+                            .list_streams()
+                            .filter_map(|stream| {
+                                engine.get_raw_register_json(&stream.name).map(|json| {
+                                    SerializablePipeline {
+                                        name: stream.name.clone(),
+                                        key_field: stream.key_field.clone().unwrap_or_default(),
+                                        raw_register_json: serde_json::to_string(json)
+                                            .unwrap_or_default(),
+                                    }
+                                })
+                            })
+                            .collect();
+                        for view in engine.list_views() {
+                            if let Some(json) = engine.get_raw_register_json(&view.name) {
+                                pipelines.push(SerializablePipeline {
+                                    name: view.name.clone(),
+                                    key_field: view.key_field.clone(),
                                     raw_register_json: serde_json::to_string(json)
                                         .unwrap_or_default(),
-                                })
-                        })
-                        .collect();
-                    for view in engine.list_views() {
-                        if let Some(json) = engine.get_raw_register_json(&view.name) {
-                            pipelines.push(SerializablePipeline {
-                                name: view.name.clone(),
-                                key_field: view.key_field.clone(),
-                                raw_register_json: serde_json::to_string(json)
-                                    .unwrap_or_default(),
-                            });
+                                });
+                            }
                         }
-                    }
-                    let backfill_complete: Vec<(String, String)> =
-                        snap_state.backfill_complete.lock().iter().cloned().collect();
-                    // Clear tracking
-                    store.clear_dirty();
-                    let _ = store.take_deleted();
+                        let backfill_complete: Vec<(String, String)> = snap_state
+                            .backfill_complete
+                            .lock()
+                            .iter()
+                            .cloned()
+                            .collect();
+                        // Clear tracking
+                        store.clear_dirty();
+                        let _ = store.take_deleted();
 
-                    let base = BaseSnapshotState {
-                        header: SnapshotHeader {
-                            snapshot_type: SnapshotType::Base,
-                            sequence: seq,
-                        },
-                        entities,
-                        pipelines,
-                        backfill_complete,
-                    };
-                    *snap_state.snapshot_cycle.lock() = cycle + 1;
-                    *snap_state.snapshot_seq.lock() = seq + 1;
-                    let prev_base = *snap_state.last_base_seq.lock();
-                    *snap_state.previous_base_seq.lock() = prev_base;
-                    *snap_state.last_base_seq.lock() = seq;
-                    Some((SnapshotData::Base(base), seq, true, snap_dir, prev_base))
-                } else {
-                    // Delta -- clone only dirty entities.
-                    let changed = store.clone_dirty_for_snapshot_with_gc(&valid_features);
-                    let deleted = store.take_deleted();
-                    store.clear_dirty();
-
-                    if changed.is_empty() && deleted.is_empty() {
-                        *snap_state.snapshot_cycle.lock() = cycle + 1;
-                        None
-                    } else {
-                        let delta = DeltaSnapshotState {
+                        let base = BaseSnapshotState {
                             header: SnapshotHeader {
-                                snapshot_type: SnapshotType::Delta {
-                                    base_seq: last_base_seq_for_delta,
-                                },
+                                snapshot_type: SnapshotType::Base,
                                 sequence: seq,
                             },
-                            changed_entities: changed,
-                            deleted_keys: deleted,
+                            entities,
+                            pipelines,
+                            backfill_complete,
                         };
                         *snap_state.snapshot_cycle.lock() = cycle + 1;
                         *snap_state.snapshot_seq.lock() = seq + 1;
-                        Some((SnapshotData::Delta(delta), seq, false, snap_dir, 0))
-                    }
-                }
-            };
-
-            let (snapshot_data, seq, is_full, snap_dir, prev_base_seq_for_cleanup) = match prepared {
-                Some(p) => p,
-                None => continue, // No changes this cycle
-            };
-
-            // Serialize on blocking thread pool
-            let snap_start = std::time::Instant::now();
-            let result = tokio::task::spawn_blocking(move || {
-                let (bytes, filename) = match snapshot_data {
-                    SnapshotData::Base(base) => {
-                        let bytes = save_base_snapshot(&base)
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                        let filename = format!("tally.snapshot.base.{:010}", seq);
-                        Ok::<(Vec<u8>, String), std::io::Error>((bytes, filename))
-                    }
-                    SnapshotData::Delta(delta) => {
-                        let bytes = save_delta_snapshot(&delta)
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                        let filename = format!("tally.snapshot.delta.{:010}", seq);
-                        Ok((bytes, filename))
-                    }
-                }?;
-                let file_path = snap_dir.join(&filename);
-                let tmp_path = snap_dir.join(format!("{}.tmp", filename));
-                {
-                    use std::fs::OpenOptions;
-                    use std::io::Write;
-                    let mut f = OpenOptions::new()
-                        .create(true)
-                        .write(true)
-                        .truncate(true)
-                        .open(&tmp_path)?;
-                    f.write_all(&bytes)?;
-                    f.sync_all()?;
-                }
-                std::fs::rename(&tmp_path, &file_path)?;
-                if let Ok(dir) = std::fs::File::open(&snap_dir) {
-                    let _ = dir.sync_all();
-                }
-                if is_full {
-                    let cutoff = if prev_base_seq_for_cleanup == 0 {
-                        seq
+                        let prev_base = *snap_state.last_base_seq.lock();
+                        *snap_state.previous_base_seq.lock() = prev_base;
+                        *snap_state.last_base_seq.lock() = seq;
+                        Some((SnapshotData::Base(base), seq, true, snap_dir, prev_base))
                     } else {
-                        prev_base_seq_for_cleanup
+                        // Delta -- clone only dirty entities.
+                        let changed = store.clone_dirty_for_snapshot_with_gc(&valid_features);
+                        let deleted = store.take_deleted();
+                        store.clear_dirty();
+
+                        if changed.is_empty() && deleted.is_empty() {
+                            *snap_state.snapshot_cycle.lock() = cycle + 1;
+                            None
+                        } else {
+                            let delta = DeltaSnapshotState {
+                                header: SnapshotHeader {
+                                    snapshot_type: SnapshotType::Delta {
+                                        base_seq: last_base_seq_for_delta,
+                                    },
+                                    sequence: seq,
+                                },
+                                changed_entities: changed,
+                                deleted_keys: deleted,
+                            };
+                            *snap_state.snapshot_cycle.lock() = cycle + 1;
+                            *snap_state.snapshot_seq.lock() = seq + 1;
+                            Some((SnapshotData::Delta(delta), seq, false, snap_dir, 0))
+                        }
+                    }
+                };
+
+                let (snapshot_data, seq, is_full, snap_dir, prev_base_seq_for_cleanup) =
+                    match prepared {
+                        Some(p) => p,
+                        None => continue, // No changes this cycle
                     };
-                    cleanup_old_snapshots(&snap_dir, cutoff);
+
+                // Serialize on blocking thread pool
+                let snap_start = std::time::Instant::now();
+                let result = tokio::task::spawn_blocking(move || {
+                    let (bytes, filename) = match snapshot_data {
+                        SnapshotData::Base(base) => {
+                            let bytes = save_base_snapshot(&base)
+                                .map_err(std::io::Error::other)?;
+                            let filename = format!("tally.snapshot.base.{:010}", seq);
+                            Ok::<(Vec<u8>, String), std::io::Error>((bytes, filename))
+                        }
+                        SnapshotData::Delta(delta) => {
+                            let bytes = save_delta_snapshot(&delta)
+                                .map_err(std::io::Error::other)?;
+                            let filename = format!("tally.snapshot.delta.{:010}", seq);
+                            Ok((bytes, filename))
+                        }
+                    }?;
+                    let file_path = snap_dir.join(&filename);
+                    let tmp_path = snap_dir.join(format!("{}.tmp", filename));
+                    {
+                        use std::fs::OpenOptions;
+                        use std::io::Write;
+                        let mut f = OpenOptions::new()
+                            .create(true)
+                            .write(true)
+                            .truncate(true)
+                            .open(&tmp_path)?;
+                        f.write_all(&bytes)?;
+                        f.sync_all()?;
+                    }
+                    std::fs::rename(&tmp_path, &file_path)?;
+                    if let Ok(dir) = std::fs::File::open(&snap_dir) {
+                        let _ = dir.sync_all();
+                    }
+                    if is_full {
+                        let cutoff = if prev_base_seq_for_cleanup == 0 {
+                            seq
+                        } else {
+                            prev_base_seq_for_cleanup
+                        };
+                        cleanup_old_snapshots(&snap_dir, cutoff);
+                    }
+                    Ok::<usize, std::io::Error>(bytes.len())
+                })
+                .await;
+                match result {
+                    Ok(Ok(size)) => {
+                        let snap_elapsed = snap_start.elapsed();
+                        snap_state.metrics.lock().snapshot_duration_ms =
+                            snap_elapsed.as_millis() as u64;
+                        eprintln!(
+                            "Snapshot saved ({} bytes, {}ms, {})",
+                            size,
+                            snap_elapsed.as_millis(),
+                            if is_full { "base" } else { "delta" },
+                        );
+                    }
+                    Ok(Err(e)) => eprintln!("Snapshot write failed: {}", e),
+                    Err(e) => eprintln!("Snapshot task panicked: {}", e),
                 }
-                Ok::<usize, std::io::Error>(bytes.len())
-            })
-            .await;
-            match result {
-                Ok(Ok(size)) => {
-                    let snap_elapsed = snap_start.elapsed();
-                    snap_state.metrics.lock().snapshot_duration_ms = snap_elapsed.as_millis() as u64;
-                    eprintln!(
-                        "Snapshot saved ({} bytes, {}ms, {})",
-                        size,
-                        snap_elapsed.as_millis(),
-                        if is_full { "base" } else { "delta" },
-                    );
-                }
-                Ok(Err(e)) => eprintln!("Snapshot write failed: {}", e),
-                Err(e) => eprintln!("Snapshot task panicked: {}", e),
             }
-        }
-    });
+        });
     } // if snapshot_enabled
 
     // Periodic eviction timer (PERS-05)
@@ -426,7 +453,7 @@ async fn async_main() {
             interval.tick().await;
             let now = std::time::SystemTime::now();
             let engine = evict_state.engine.read();
-            let evicted = evict_expired_keys(&evict_state.store, &*engine, now, ttl_multiplier);
+            let evicted = evict_expired_keys(&evict_state.store, &engine, now, ttl_multiplier);
             if evicted > 0 {
                 eprintln!("Evicted {} expired keys", evicted);
             }
@@ -436,67 +463,70 @@ async fn async_main() {
     // Periodic event log fsync timer (ELOG-04: 1-second interval, Redis everysec pattern)
     // Skip if event log is disabled.
     if event_log_enabled {
-    let fsync_state = state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
-        interval.tick().await; // Skip first immediate tick
-        loop {
-            interval.tick().await;
-            let result = {
-                let mut event_log = fsync_state.event_log.lock();
-                if let Some(ref mut log) = *event_log {
-                    log.fsync_all()
-                } else {
-                    Ok(())
+        let fsync_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            interval.tick().await; // Skip first immediate tick
+            loop {
+                interval.tick().await;
+                let result = {
+                    let mut event_log = fsync_state.event_log.lock();
+                    if let Some(ref mut log) = *event_log {
+                        log.fsync_all()
+                    } else {
+                        Ok(())
+                    }
+                };
+                if let Err(e) = result {
+                    eprintln!("Event log fsync failed: {}", e);
                 }
-            };
-            if let Err(e) = result {
-                eprintln!("Event log fsync failed: {}", e);
             }
-        }
-    });
+        });
     } // if event_log_enabled
 
     // Periodic event log compaction timer (ELOG-05: 60-second interval)
     // Skip if event log is disabled.
     if event_log_enabled {
-    let compact_state = state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
-        interval.tick().await; // Skip first immediate tick
-        loop {
-            interval.tick().await;
-            let now = SystemTime::now();
-            // Get list of streams to compact
-            let streams_to_compact: Vec<String> = {
-                let event_log = compact_state.event_log.lock();
-                if let Some(ref log) = *event_log {
-                    log.registered_streams().map(String::from).collect()
-                } else {
-                    vec![]
-                }
-            };
-            // Compact each stream (re-acquires lock per stream for cooperative yielding)
-            for stream_name in &streams_to_compact {
-                {
-                    let mut event_log = compact_state.event_log.lock();
-                    if let Some(ref mut log) = *event_log {
-                        match log.compact_stream(stream_name, now) {
-                            Ok(removed) if removed > 0 => {
-                                eprintln!("Compacted {}: removed {} expired entries", stream_name, removed);
+        let compact_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            interval.tick().await; // Skip first immediate tick
+            loop {
+                interval.tick().await;
+                let now = SystemTime::now();
+                // Get list of streams to compact
+                let streams_to_compact: Vec<String> = {
+                    let event_log = compact_state.event_log.lock();
+                    if let Some(ref log) = *event_log {
+                        log.registered_streams().map(String::from).collect()
+                    } else {
+                        vec![]
+                    }
+                };
+                // Compact each stream (re-acquires lock per stream for cooperative yielding)
+                for stream_name in &streams_to_compact {
+                    {
+                        let mut event_log = compact_state.event_log.lock();
+                        if let Some(ref mut log) = *event_log {
+                            match log.compact_stream(stream_name, now) {
+                                Ok(removed) if removed > 0 => {
+                                    eprintln!(
+                                        "Compacted {}: removed {} expired entries",
+                                        stream_name, removed
+                                    );
+                                }
+                                Err(e) => {
+                                    eprintln!("Compaction failed for {}: {}", stream_name, e);
+                                }
+                                _ => {}
                             }
-                            Err(e) => {
-                                eprintln!("Compaction failed for {}: {}", stream_name, e);
-                            }
-                            _ => {}
                         }
                     }
+                    // Yield between streams for cooperative scheduling
+                    tokio::task::yield_now().await;
                 }
-                // Yield between streams for cooperative scheduling
-                tokio::task::yield_now().await;
             }
-        }
-    });
+        });
     } // if event_log_enabled
 
     // Log ephemeral mode if both persistence mechanisms are disabled

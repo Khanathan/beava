@@ -24,8 +24,8 @@ use tally::server::protocol::{
     STATUS_ERROR, STATUS_OK, TYPE_F64, TYPE_I64, TYPE_STR,
 };
 use tally::server::tcp::{
-    handle_push_batch, BackfillTracker, ConnAccumulator, PendingAsync,
-    SharedState, BATCH_DEADLINE_US, BATCH_SIZE, make_concurrent_state,
+    handle_push_batch, make_concurrent_state, BackfillTracker, ConnAccumulator, PendingAsync,
+    SharedState, BATCH_DEADLINE_US, BATCH_SIZE,
 };
 use tally::state::store::StateStore;
 
@@ -83,10 +83,13 @@ fn register(state: &SharedState, defs: Vec<StreamDefinition>) {
 fn get_count(state: &SharedState, stream: &str, key: &str) -> Option<i64> {
     let now = ts(1000);
     let engine = state.engine.read();
-    let store = &state.store;
+    let _store = &state.store;
     let features = engine.get_features(key, &state.store, now);
     let qualified = format!("{}.count_1h", stream);
-    if let Some(fv) = features.get(&qualified).or_else(|| features.get("count_1h")) {
+    if let Some(fv) = features
+        .get(&qualified)
+        .or_else(|| features.get("count_1h"))
+    {
         match fv {
             tally::types::FeatureValue::Int(n) => Some(*n),
             tally::types::FeatureValue::Float(f) => Some(*f as i64),
@@ -151,11 +154,7 @@ fn build_push_batch_payload(
 }
 
 /// Build a raw batch payload with an arbitrary count header (for oversized/giant tests).
-fn build_push_batch_payload_raw_count(
-    stream_name: &str,
-    batch_id: u32,
-    count: u32,
-) -> Vec<u8> {
+fn build_push_batch_payload_raw_count(stream_name: &str, batch_id: u32, count: u32) -> Vec<u8> {
     let mut buf = proto::write_string(stream_name);
     buf.extend_from_slice(&batch_id.to_be_bytes());
     buf.extend_from_slice(&count.to_be_bytes());
@@ -192,14 +191,15 @@ fn advance_seq_reserves_and_advances() {
 
 #[test]
 fn decode_roundtrip_single_event() {
-    let events = vec![vec![
-        ("user_id", json!("u1")),
-        ("amount", json!(42_i64)),
-    ]];
+    let events = vec![vec![("user_id", json!("u1")), ("amount", json!(42_i64))]];
     let payload = build_push_batch_payload("Transactions", 1, &events);
     let cmd = parse_command(OP_PUSH_BATCH, &payload).unwrap();
     match cmd {
-        proto::Command::PushBatch { stream_name, batch_id, events: evts } => {
+        proto::Command::PushBatch {
+            stream_name,
+            batch_id,
+            events: evts,
+        } => {
             assert_eq!(stream_name, "Transactions");
             assert_eq!(batch_id, 1);
             assert_eq!(evts.len(), 1);
@@ -221,7 +221,11 @@ fn decode_roundtrip_multi_event() {
     let payload = build_push_batch_payload("Tx", 42, &events);
     let cmd = parse_command(OP_PUSH_BATCH, &payload).unwrap();
     match cmd {
-        proto::Command::PushBatch { stream_name, batch_id, events: evts } => {
+        proto::Command::PushBatch {
+            stream_name,
+            batch_id,
+            events: evts,
+        } => {
             assert_eq!(stream_name, "Tx");
             assert_eq!(batch_id, 42);
             assert_eq!(evts.len(), 3);
@@ -334,9 +338,8 @@ mod e2e {
         let (addr, state) = spawn_server().await;
         let mut client = TcpStream::connect(addr).await.unwrap();
 
-        let events: Vec<Vec<(&str, serde_json::Value)>> = (0..5)
-            .map(|_| vec![("user_id", json!("u1"))])
-            .collect();
+        let events: Vec<Vec<(&str, serde_json::Value)>> =
+            (0..5).map(|_| vec![("user_id", json!("u1"))]).collect();
         let payload = build_push_batch_payload("A", 1, &events);
         send_frame(&mut client, OP_PUSH_BATCH, &payload).await;
 
@@ -380,8 +383,8 @@ mod e2e {
         // and events without it would error.
         let events = vec![
             vec![("user_id", json!("u1"))],       // good
-            vec![("no_key_here", json!("oops"))],  // bad: missing user_id
-            vec![("user_id", json!("u1"))],        // good
+            vec![("no_key_here", json!("oops"))], // bad: missing user_id
+            vec![("user_id", json!("u1"))],       // good
         ];
         let payload = build_push_batch_payload("A", 99, &events);
         send_frame(&mut client, OP_PUSH_BATCH, &payload).await;
@@ -452,9 +455,8 @@ mod e2e {
         let mut client = TcpStream::connect(addr).await.unwrap();
 
         // Batch of 3 events (consumes seqs 0,1,2).
-        let events: Vec<Vec<(&str, serde_json::Value)>> = (0..3)
-            .map(|_| vec![("user_id", json!("u1"))])
-            .collect();
+        let events: Vec<Vec<(&str, serde_json::Value)>> =
+            (0..3).map(|_| vec![("user_id", json!("u1"))]).collect();
         let payload = build_push_batch_payload("A", 1, &events);
         send_frame(&mut client, OP_PUSH_BATCH, &payload).await;
 

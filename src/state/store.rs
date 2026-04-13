@@ -13,12 +13,14 @@
 //! AHashMap<String, StreamEntityState>. Each stream has its own operators
 //! and last_event_at for independent TTL management (OPS-02).
 
-use std::time::SystemTime;
+use crate::state::snapshot::{
+    OperatorState, SerializableEntityState, SerializableStreamEntityState,
+};
+use crate::types::{EntityKey, FeatureMap, FeatureValue};
 use ahash::{AHashMap, AHashSet};
 use dashmap::DashMap;
-use serde::{Serialize, Deserialize};
-use crate::types::{EntityKey, FeatureValue, FeatureMap};
-use crate::state::snapshot::{OperatorState, SerializableEntityState, SerializableStreamEntityState};
+use serde::{Deserialize, Serialize};
+use std::time::SystemTime;
 
 /// A directly-written feature value (from SET/MSET commands).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +32,7 @@ pub struct StaticFeature {
 /// Per-stream state within an entity. Isolates operators and last_event_at
 /// per stream for independent TTL management (OPS-02).
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct StreamEntityState {
     /// Operators belonging to this stream only.
     pub operators: Vec<(String, OperatorState)>,
@@ -37,14 +40,6 @@ pub struct StreamEntityState {
     pub last_event_at: Option<SystemTime>,
 }
 
-impl Default for StreamEntityState {
-    fn default() -> Self {
-        Self {
-            operators: Vec::new(),
-            last_event_at: None,
-        }
-    }
-}
 
 /// Per-entity state. Holds live features grouped by stream name (from streaming
 /// operators) and static features (from direct SET/MSET writes).
@@ -77,7 +72,7 @@ impl EntityState {
     pub fn get_or_create_stream(&mut self, stream_name: &str) -> &mut StreamEntityState {
         self.streams
             .entry(stream_name.to_string())
-            .or_insert_with(StreamEntityState::default)
+            .or_default()
     }
 
     /// Returns true when this entity has no streams and no static features.
@@ -135,21 +130,30 @@ impl StateStore {
     /// Returns a DashMap RefMut guard that derefs to `&mut EntityState`.
     /// The guard must be dropped before accessing a different key in the
     /// same DashMap to avoid potential deadlock on the same shard.
-    pub fn get_or_create_entity(&self, key: &str) -> dashmap::mapref::one::RefMut<'_, String, EntityState> {
+    pub fn get_or_create_entity(
+        &self,
+        key: &str,
+    ) -> dashmap::mapref::one::RefMut<'_, String, EntityState> {
         self.entities
             .entry(key.to_string())
-            .or_insert_with(EntityState::new)
+            .or_default()
     }
 
     /// Read-only access to an entity's state. Returns None if key not found.
     /// Returns a DashMap Ref guard that derefs to `&EntityState`.
-    pub fn get_entity(&self, key: &str) -> Option<dashmap::mapref::one::Ref<'_, String, EntityState>> {
+    pub fn get_entity(
+        &self,
+        key: &str,
+    ) -> Option<dashmap::mapref::one::Ref<'_, String, EntityState>> {
         self.entities.get(key)
     }
 
     /// Mutable access to an entity's state. Returns None if key not found.
     /// Returns a DashMap RefMut guard that derefs to `&mut EntityState`.
-    pub fn get_entity_mut(&self, key: &str) -> Option<dashmap::mapref::one::RefMut<'_, String, EntityState>> {
+    pub fn get_entity_mut(
+        &self,
+        key: &str,
+    ) -> Option<dashmap::mapref::one::RefMut<'_, String, EntityState>> {
         self.entities.get_mut(key)
     }
 
@@ -197,7 +201,12 @@ impl StateStore {
     /// Read a single feature value for an entity. Used by cross-key lookups.
     /// Returns Missing if entity or feature not found.
     /// DashMap get_mut provides interior mutability for operator read().
-    pub fn get_feature_value(&self, key: &str, feature_name: &str, now: SystemTime) -> FeatureValue {
+    pub fn get_feature_value(
+        &self,
+        key: &str,
+        feature_name: &str,
+        now: SystemTime,
+    ) -> FeatureValue {
         let mut entity = match self.entities.get_mut(key) {
             Some(e) => e,
             None => return FeatureValue::Missing,
@@ -243,7 +252,9 @@ impl StateStore {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.dirty_keys.lock().extend(keys.into_iter().map(Into::into));
+        self.dirty_keys
+            .lock()
+            .extend(keys.into_iter().map(Into::into));
     }
 
     /// Mark an entity key as deleted since the last snapshot clear. A deleted
@@ -285,33 +296,46 @@ impl StateStore {
         valid_features: &AHashMap<String, Vec<String>>,
     ) -> Vec<(String, SerializableEntityState)> {
         let dirty = self.dirty_keys.lock();
-        self.entities.iter()
+        self.entities
+            .iter()
             .filter(|entry| dirty.contains(entry.key().as_str()))
             .map(|entry| {
                 let key = entry.key();
                 let entity = entry.value();
-                let streams: Vec<(String, SerializableStreamEntityState)> = entity.streams.iter()
+                let streams: Vec<(String, SerializableStreamEntityState)> = entity
+                    .streams
+                    .iter()
                     .map(|(stream_name, stream_state)| {
                         let operators = if let Some(valid) = valid_features.get(stream_name) {
-                            stream_state.operators.iter()
+                            stream_state
+                                .operators
+                                .iter()
                                 .filter(|(name, _)| valid.contains(name))
                                 .cloned()
                                 .collect()
                         } else {
                             stream_state.operators.clone()
                         };
-                        (stream_name.clone(), SerializableStreamEntityState {
-                            operators,
-                            last_event_at: stream_state.last_event_at,
-                        })
+                        (
+                            stream_name.clone(),
+                            SerializableStreamEntityState {
+                                operators,
+                                last_event_at: stream_state.last_event_at,
+                            },
+                        )
                     })
                     .collect();
-                (key.clone(), SerializableEntityState {
-                    streams,
-                    static_features: entity.static_features.iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                })
+                (
+                    key.clone(),
+                    SerializableEntityState {
+                        streams,
+                        static_features: entity
+                            .static_features
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
+                    },
+                )
             })
             .collect()
     }
@@ -319,7 +343,10 @@ impl StateStore {
     /// Collect all entity keys into a Vec. DashMap iteration returns
     /// guards, so we collect to owned Strings to avoid lifetime issues.
     pub fn entity_keys(&self) -> Vec<String> {
-        self.entities.iter().map(|entry| entry.key().clone()).collect()
+        self.entities
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect()
     }
 
     /// Clone full state for snapshot serialization with garbage collection of
@@ -331,57 +358,85 @@ impl StateStore {
         &self,
         valid_features: &AHashMap<String, Vec<String>>,
     ) -> Vec<(String, SerializableEntityState)> {
-        self.entities.iter().map(|entry| {
-            let key = entry.key();
-            let entity = entry.value();
-            let streams: Vec<(String, SerializableStreamEntityState)> = entity.streams.iter()
-                .map(|(stream_name, stream_state)| {
-                    let operators = if let Some(valid) = valid_features.get(stream_name) {
-                        // Filter to only operators whose name is in the valid set
-                        stream_state.operators.iter()
-                            .filter(|(name, _)| valid.contains(name))
-                            .cloned()
-                            .collect()
-                    } else {
-                        // Stream not in valid_features -- include all (defensive)
-                        stream_state.operators.clone()
-                    };
-                    (stream_name.clone(), SerializableStreamEntityState {
-                        operators,
-                        last_event_at: stream_state.last_event_at,
+        self.entities
+            .iter()
+            .map(|entry| {
+                let key = entry.key();
+                let entity = entry.value();
+                let streams: Vec<(String, SerializableStreamEntityState)> = entity
+                    .streams
+                    .iter()
+                    .map(|(stream_name, stream_state)| {
+                        let operators = if let Some(valid) = valid_features.get(stream_name) {
+                            // Filter to only operators whose name is in the valid set
+                            stream_state
+                                .operators
+                                .iter()
+                                .filter(|(name, _)| valid.contains(name))
+                                .cloned()
+                                .collect()
+                        } else {
+                            // Stream not in valid_features -- include all (defensive)
+                            stream_state.operators.clone()
+                        };
+                        (
+                            stream_name.clone(),
+                            SerializableStreamEntityState {
+                                operators,
+                                last_event_at: stream_state.last_event_at,
+                            },
+                        )
                     })
-                })
-                .collect();
-            (key.clone(), SerializableEntityState {
-                streams,
-                static_features: entity.static_features.iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
+                    .collect();
+                (
+                    key.clone(),
+                    SerializableEntityState {
+                        streams,
+                        static_features: entity
+                            .static_features
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
+                    },
+                )
             })
-        }).collect()
+            .collect()
     }
 
     /// Clone full state for snapshot serialization (v4 format).
     /// DashMap is not directly serializable by postcard -- convert to Vec<(K, V)>.
     pub fn clone_for_snapshot(&self) -> Vec<(String, SerializableEntityState)> {
-        self.entities.iter().map(|entry| {
-            let key = entry.key();
-            let entity = entry.value();
-            let streams: Vec<(String, SerializableStreamEntityState)> = entity.streams.iter()
-                .map(|(stream_name, stream_state)| {
-                    (stream_name.clone(), SerializableStreamEntityState {
-                        operators: stream_state.operators.clone(),
-                        last_event_at: stream_state.last_event_at,
+        self.entities
+            .iter()
+            .map(|entry| {
+                let key = entry.key();
+                let entity = entry.value();
+                let streams: Vec<(String, SerializableStreamEntityState)> = entity
+                    .streams
+                    .iter()
+                    .map(|(stream_name, stream_state)| {
+                        (
+                            stream_name.clone(),
+                            SerializableStreamEntityState {
+                                operators: stream_state.operators.clone(),
+                                last_event_at: stream_state.last_event_at,
+                            },
+                        )
                     })
-                })
-                .collect();
-            (key.clone(), SerializableEntityState {
-                streams,
-                static_features: entity.static_features.iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
+                    .collect();
+                (
+                    key.clone(),
+                    SerializableEntityState {
+                        streams,
+                        static_features: entity
+                            .static_features
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
+                    },
+                )
             })
-        }).collect()
+            .collect()
     }
 
     /// Restore state from a snapshot (v4 format). Clears existing state first.
@@ -390,10 +445,13 @@ impl StateStore {
         for (key, state) in entities {
             let mut streams = AHashMap::new();
             for (stream_name, stream_state) in state.streams {
-                streams.insert(stream_name, StreamEntityState {
-                    operators: stream_state.operators,
-                    last_event_at: stream_state.last_event_at,
-                });
+                streams.insert(
+                    stream_name,
+                    StreamEntityState {
+                        operators: stream_state.operators,
+                        last_event_at: stream_state.last_event_at,
+                    },
+                );
             }
             let entity = EntityState {
                 streams,
@@ -423,10 +481,13 @@ impl StateStore {
         for (key, state) in changed_entities {
             let mut streams = AHashMap::new();
             for (stream_name, stream_state) in state.streams {
-                streams.insert(stream_name, StreamEntityState {
-                    operators: stream_state.operators,
-                    last_event_at: stream_state.last_event_at,
-                });
+                streams.insert(
+                    stream_name,
+                    StreamEntityState {
+                        operators: stream_state.operators,
+                        last_event_at: stream_state.last_event_at,
+                    },
+                );
             }
             let entity = EntityState {
                 streams,
@@ -446,13 +507,17 @@ impl StateStore {
         let before = self.entities.len();
         self.entities.retain(|_key, entity| {
             // Find the most recent last_event_at across all streams
-            let most_recent = entity.streams.values()
+            let most_recent = entity
+                .streams
+                .values()
                 .filter_map(|s| s.last_event_at)
                 .max();
             match most_recent {
                 None => true, // No streams with events -- don't evict
                 Some(last) => {
-                    now.duration_since(last).unwrap_or(std::time::Duration::ZERO) <= ttl
+                    now.duration_since(last)
+                        .unwrap_or(std::time::Duration::ZERO)
+                        <= ttl
                 }
             }
         });
@@ -481,15 +546,20 @@ impl StateStore {
     /// Streams not present in `valid_features` are removed entirely (defensive).
     pub fn gc_invalid_operators(&self, valid_features: &AHashMap<String, Vec<String>>) {
         for mut entry in self.entities.iter_mut() {
-            entry.value_mut().streams.retain(|stream_name, stream_state| {
-                if let Some(valid) = valid_features.get(stream_name) {
-                    stream_state.operators.retain(|(name, _)| valid.contains(name));
-                    !stream_state.operators.is_empty()
-                } else {
-                    // Stream not registered anymore -- drop it wholesale.
-                    false
-                }
-            });
+            entry
+                .value_mut()
+                .streams
+                .retain(|stream_name, stream_state| {
+                    if let Some(valid) = valid_features.get(stream_name) {
+                        stream_state
+                            .operators
+                            .retain(|(name, _)| valid.contains(name));
+                        !stream_state.operators.is_empty()
+                    } else {
+                        // Stream not registered anymore -- drop it wholesale.
+                        false
+                    }
+                });
         }
     }
 }
@@ -560,19 +630,15 @@ impl StateStore {
             for (stream_name, stream_entity_state) in &entity_state.streams {
                 let store = stream_stores
                     .entry(stream_name.clone())
-                    .or_insert_with(StreamStore::new);
-                store.entities.insert(
-                    entity_key.clone(),
-                    stream_entity_state.clone(),
-                );
+                    .or_default();
+                store
+                    .entities
+                    .insert(entity_key.clone(), stream_entity_state.clone());
             }
 
             // Collect static features
             if !entity_state.static_features.is_empty() {
-                static_store.insert(
-                    entity_key.clone(),
-                    entity_state.static_features.clone(),
-                );
+                static_store.insert(entity_key.clone(), entity_state.static_features.clone());
             }
         }
 
@@ -615,7 +681,7 @@ impl StateStore {
 
                 let mut entity = entities
                     .entry(entity_key.clone())
-                    .or_insert_with(EntityState::new);
+                    .or_default();
                 entity
                     .streams
                     .insert(stream_name.clone(), stream_entity_state.clone());
@@ -641,7 +707,7 @@ impl StateStore {
             let static_features = entry.value();
             let mut entity = entities
                 .entry(entity_key.clone())
-                .or_insert_with(EntityState::new);
+                .or_default();
             entity.static_features = static_features.clone();
         }
 
@@ -656,9 +722,9 @@ impl StateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, UNIX_EPOCH};
     use crate::engine::operators::{CountOp, SumOp};
     use crate::state::snapshot::OperatorState;
+    use std::time::{Duration, UNIX_EPOCH};
 
     fn ts(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
@@ -704,7 +770,10 @@ mod tests {
     #[test]
     fn test_stream_entity_state_holds_operators_with_independent_last_event_at() {
         let mut entity = EntityState::new();
-        let op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+        let op = OperatorState::Count(CountOp::new(
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+        ));
         let stream = entity.get_or_create_stream("Transactions");
         stream.operators.push(("tx_count_1h".to_string(), op));
         stream.last_event_at = Some(ts(1000));
@@ -713,16 +782,33 @@ mod tests {
         stream2.last_event_at = Some(ts(2000));
 
         // Each stream has independent last_event_at
-        assert_eq!(entity.streams.get("Transactions").unwrap().last_event_at, Some(ts(1000)));
-        assert_eq!(entity.streams.get("Logins").unwrap().last_event_at, Some(ts(2000)));
-        assert_eq!(entity.streams.get("Transactions").unwrap().operators.len(), 1);
-        assert_eq!(entity.streams.get("Transactions").unwrap().operators[0].0, "tx_count_1h");
+        assert_eq!(
+            entity.streams.get("Transactions").unwrap().last_event_at,
+            Some(ts(1000))
+        );
+        assert_eq!(
+            entity.streams.get("Logins").unwrap().last_event_at,
+            Some(ts(2000))
+        );
+        assert_eq!(
+            entity.streams.get("Transactions").unwrap().operators.len(),
+            1
+        );
+        assert_eq!(
+            entity.streams.get("Transactions").unwrap().operators[0].0,
+            "tx_count_1h"
+        );
     }
 
     #[test]
     fn test_entity_state_stores_static_features() {
         let store = StateStore::new();
-        store.set_static("u123", "lifetime_value", FeatureValue::Float(4500.0), ts(1000));
+        store.set_static(
+            "u123",
+            "lifetime_value",
+            FeatureValue::Float(4500.0),
+            ts(1000),
+        );
         let entity = store.get_entity("u123").unwrap();
         assert_eq!(entity.static_features.len(), 1);
         assert_eq!(
@@ -740,17 +826,28 @@ mod tests {
         {
             let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("Transactions");
-            let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            let mut op = OperatorState::Count(CountOp::new(
+                Duration::from_secs(3600),
+                Duration::from_secs(60),
+            ));
             op.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("tx_count".to_string(), op));
         }
 
         // Add a static feature
-        store.set_static("u123", "segment", FeatureValue::String("high_value".into()), ts(1000));
+        store.set_static(
+            "u123",
+            "segment",
+            FeatureValue::String("high_value".into()),
+            ts(1000),
+        );
 
         let features = store.get_all_features("u123", now);
         assert_eq!(features.get("tx_count"), Some(&FeatureValue::Int(1)));
-        assert_eq!(features.get("segment"), Some(&FeatureValue::String("high_value".into())));
+        assert_eq!(
+            features.get("segment"),
+            Some(&FeatureValue::String("high_value".into()))
+        );
     }
 
     #[test]
@@ -762,8 +859,14 @@ mod tests {
         {
             let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("Transactions");
-            let mut op = OperatorState::Sum(SumOp::new("amount", Duration::from_secs(3600), Duration::from_secs(60), false));
-            op.push(&serde_json::json!({"amount": 100.0}), None, now).unwrap();
+            let mut op = OperatorState::Sum(SumOp::new(
+                "amount",
+                Duration::from_secs(3600),
+                Duration::from_secs(60),
+                false,
+            ));
+            op.push(&serde_json::json!({"amount": 100.0}), None, now)
+                .unwrap();
             stream.operators.push(("score".to_string(), op));
         }
 
@@ -784,12 +887,18 @@ mod tests {
         {
             let mut entity = store.get_or_create_entity("u123");
             let stream1 = entity.get_or_create_stream("Transactions");
-            let mut op1 = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            let mut op1 = OperatorState::Count(CountOp::new(
+                Duration::from_secs(3600),
+                Duration::from_secs(60),
+            ));
             op1.push(&serde_json::json!({}), None, now).unwrap();
             stream1.operators.push(("tx_count".to_string(), op1));
 
             let stream2 = entity.get_or_create_stream("Logins");
-            let mut op2 = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            let mut op2 = OperatorState::Count(CountOp::new(
+                Duration::from_secs(3600),
+                Duration::from_secs(60),
+            ));
             op2.push(&serde_json::json!({}), None, now).unwrap();
             op2.push(&serde_json::json!({}), None, now).unwrap();
             stream2.operators.push(("login_count".to_string(), op2));
@@ -819,10 +928,13 @@ mod tests {
         assert!(!entity2.is_empty());
 
         let mut entity3 = EntityState::new();
-        entity3.static_features.insert("key".to_string(), StaticFeature {
-            value: FeatureValue::Int(1),
-            updated_at: ts(1000),
-        });
+        entity3.static_features.insert(
+            "key".to_string(),
+            StaticFeature {
+                value: FeatureValue::Int(1),
+                updated_at: ts(1000),
+            },
+        );
         assert!(!entity3.is_empty());
     }
 
@@ -837,13 +949,21 @@ mod tests {
         {
             let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("Transactions");
-            let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            let mut op = OperatorState::Count(CountOp::new(
+                Duration::from_secs(3600),
+                Duration::from_secs(60),
+            ));
             op.push(&serde_json::json!({}), None, now).unwrap();
             op.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("tx_count".to_string(), op));
             stream.last_event_at = Some(now);
         }
-        store.set_static("u123", "segment", FeatureValue::String("premium".into()), now);
+        store.set_static(
+            "u123",
+            "segment",
+            FeatureValue::String("premium".into()),
+            now,
+        );
 
         let snapshot = store.clone_for_snapshot();
         assert_eq!(snapshot.len(), 1);
@@ -867,7 +987,10 @@ mod tests {
         let store = StateStore::new();
         let now = ts(60_000);
 
-        let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+        let mut op = OperatorState::Count(CountOp::new(
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+        ));
         op.push(&serde_json::json!({}), None, now).unwrap();
 
         let snapshot_entities = vec![(
@@ -910,7 +1033,10 @@ mod tests {
         {
             let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("TestStream");
-            let mut op = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            let mut op = OperatorState::Count(CountOp::new(
+                Duration::from_secs(3600),
+                Duration::from_secs(60),
+            ));
             op.push(&serde_json::json!({}), None, now).unwrap();
             op.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("tx_count".to_string(), op));
@@ -924,7 +1050,12 @@ mod tests {
     fn test_get_feature_value_returns_static_feature() {
         let store = StateStore::new();
         let now = ts(60_000);
-        store.set_static("u123", "segment", FeatureValue::String("premium".into()), now);
+        store.set_static(
+            "u123",
+            "segment",
+            FeatureValue::String("premium".into()),
+            now,
+        );
 
         let val = store.get_feature_value("u123", "segment", now);
         assert_eq!(val, FeatureValue::String("premium".into()));
@@ -992,22 +1123,34 @@ mod tests {
         {
             let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("Transactions");
-            let mut op_a = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            let mut op_a = OperatorState::Count(CountOp::new(
+                Duration::from_secs(3600),
+                Duration::from_secs(60),
+            ));
             op_a.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("a".to_string(), op_a));
 
-            let mut op_b = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            let mut op_b = OperatorState::Count(CountOp::new(
+                Duration::from_secs(3600),
+                Duration::from_secs(60),
+            ));
             op_b.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("b".to_string(), op_b));
 
-            let mut op_c = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            let mut op_c = OperatorState::Count(CountOp::new(
+                Duration::from_secs(3600),
+                Duration::from_secs(60),
+            ));
             op_c.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("c".to_string(), op_c));
         }
 
         // Valid features: only a and c (b was removed from definition)
         let mut valid_features = ahash::AHashMap::new();
-        valid_features.insert("Transactions".to_string(), vec!["a".to_string(), "c".to_string()]);
+        valid_features.insert(
+            "Transactions".to_string(),
+            vec!["a".to_string(), "c".to_string()],
+        );
 
         let snapshot = store.clone_for_snapshot_with_gc(&valid_features);
         assert_eq!(snapshot.len(), 1);
@@ -1030,7 +1173,10 @@ mod tests {
         {
             let mut entity = store.get_or_create_entity("u123");
             let stream = entity.get_or_create_stream("OldStream");
-            let mut op_a = OperatorState::Count(CountOp::new(Duration::from_secs(3600), Duration::from_secs(60)));
+            let mut op_a = OperatorState::Count(CountOp::new(
+                Duration::from_secs(3600),
+                Duration::from_secs(60),
+            ));
             op_a.push(&serde_json::json!({}), None, now).unwrap();
             stream.operators.push(("x".to_string(), op_a));
         }
@@ -1127,7 +1273,11 @@ mod tests {
         assert_eq!(store.dirty_count(), 1);
 
         store.mark_deleted("u789");
-        assert_eq!(store.dirty_count(), 0, "Deleted key must be removed from dirty set");
+        assert_eq!(
+            store.dirty_count(),
+            0,
+            "Deleted key must be removed from dirty set"
+        );
 
         let deleted = store.take_deleted();
         assert_eq!(deleted, vec!["u789".to_string()]);
@@ -1228,7 +1378,10 @@ mod tests {
 
         // Valid features: only a and c (b was removed from definition)
         let mut valid_features = ahash::AHashMap::new();
-        valid_features.insert("Transactions".to_string(), vec!["a".to_string(), "c".to_string()]);
+        valid_features.insert(
+            "Transactions".to_string(),
+            vec!["a".to_string(), "c".to_string()],
+        );
 
         let snapshot = store.clone_dirty_for_snapshot_with_gc(&valid_features);
         assert_eq!(snapshot.len(), 1);

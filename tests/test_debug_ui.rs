@@ -16,7 +16,7 @@ use tokio::net::TcpStream;
 use tally::engine::pipeline::{
     FeatureDef, PipelineEngine, StreamDefinition, ViewDefinition, ViewFeatureDef,
 };
-use tally::server::tcp::{BackfillTracker, SharedState, make_concurrent_state};
+use tally::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
 use tally::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
@@ -155,7 +155,9 @@ fn register_test_pipeline(state: &SharedState) {
         pipeline_ttl: None,
         max_keys: None,
     };
-    engine.register(transactions).expect("register Transactions");
+    engine
+        .register(transactions)
+        .expect("register Transactions");
 
     let logins = StreamDefinition {
         name: "Logins".into(),
@@ -234,13 +236,16 @@ fn push_event(state: &SharedState, stream: &str, event: &serde_json::Value) {
     let now_inst = Instant::now();
     {
         let engine = state.engine.read();
-        let store = &state.store;
+        let _store = &state.store;
         let _ = engine.push(stream, event, &state.store, now_ts);
     }
     // Bump the throughput tracker so the /debug/throughput endpoint observes
     // the push. We pass a single-element slice of the stream name.
     let name = stream.to_string();
-    state.throughput.lock().bump_unique([name.as_str()], now_inst);
+    state
+        .throughput
+        .lock()
+        .bump_unique([name.as_str()], now_inst);
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +301,10 @@ async fn topology_endpoint_emits_nodes_and_edges() {
     let json = body_json(&body);
     assert!(json.get("nodes").is_some(), "missing `nodes` field");
     assert!(json.get("edges").is_some(), "missing `edges` field");
-    assert!(json.get("topo_order").is_some(), "missing `topo_order` field");
+    assert!(
+        json.get("topo_order").is_some(),
+        "missing `topo_order` field"
+    );
 
     let nodes = json["nodes"].as_array().expect("nodes must be array");
     assert!(
@@ -441,11 +449,16 @@ async fn topology_nodes_include_operators_field() {
 
     let op0 = &operators[0];
     assert_eq!(op0["name"], "tx_count_1h");
-    assert_eq!(op0["op"], "count", "type -> op rename per CONTEXT backend contract");
+    assert_eq!(
+        op0["op"], "count",
+        "type -> op rename per CONTEXT backend contract"
+    );
     assert_eq!(op0["window"], "1h");
 
     // features field MUST remain -- Phase 10 backward compat.
-    let features = tx_node["features"].as_array().expect("features still present");
+    let features = tx_node["features"]
+        .as_array()
+        .expect("features still present");
     assert_eq!(features.len(), 1);
     assert_eq!(features[0], "tx_count_1h");
 }
@@ -837,11 +850,7 @@ async fn entity_lookup_filter_uses_flat_feature_names() {
         "Transactions",
         &serde_json::json!({"user_id": "u_cr01", "amount": 9.0}),
     );
-    push_event(
-        &state,
-        "Logins",
-        &serde_json::json!({"user_id": "u_cr01"}),
-    );
+    push_event(&state, "Logins", &serde_json::json!({"user_id": "u_cr01"}));
 
     // --- (1) /debug/key/{key} must emit FLAT feature names.
     let (status, _headers, body) = http_get(port, "/debug/key/u_cr01").await;
@@ -1012,11 +1021,7 @@ async fn memory_endpoint_emits_per_stream_breakdown() {
         "Transactions",
         &serde_json::json!({"user_id": "uB", "amount": 2.0}),
     );
-    push_event(
-        &state,
-        "Logins",
-        &serde_json::json!({"user_id": "uA"}),
-    );
+    push_event(&state, "Logins", &serde_json::json!({"user_id": "uA"}));
 
     let (status, _headers, body) = http_get(port, "/debug/memory").await;
     assert_eq!(status, 200);
@@ -1026,8 +1031,11 @@ async fn memory_endpoint_emits_per_stream_breakdown() {
         .and_then(|v| v.as_array())
         .expect("per_stream array missing");
 
-    let find_named =
-        |name: &str| per_stream.iter().find(|e| e.get("name").and_then(|v| v.as_str()) == Some(name));
+    let find_named = |name: &str| {
+        per_stream
+            .iter()
+            .find(|e| e.get("name").and_then(|v| v.as_str()) == Some(name))
+    };
 
     let tx = find_named("Transactions").expect("Transactions entry missing");
     assert_eq!(
@@ -1233,10 +1241,7 @@ async fn split_view_shell_has_dag_canvas_and_drill_in_panel() {
         body.contains("id=\"topology-svg\""),
         "missing #topology-svg element"
     );
-    assert!(
-        body.contains("role=\"img\""),
-        "missing role=\"img\" on SVG"
-    );
+    assert!(body.contains("role=\"img\""), "missing role=\"img\" on SVG");
     assert!(
         body.contains("aria-label=\"Pipeline topology graph\""),
         "missing SVG aria-label"
@@ -1249,10 +1254,7 @@ async fn split_view_shell_has_dag_canvas_and_drill_in_panel() {
     );
 
     // Header hooks preserved from Phase 10 (Plan 03 app.js binds to these)
-    assert!(
-        body.contains("id=\"pause-btn\""),
-        "missing pause button id"
-    );
+    assert!(body.contains("id=\"pause-btn\""), "missing pause button id");
     assert!(
         body.contains("id=\"poll-status\""),
         "missing poll-status aria-live span"
@@ -1292,20 +1294,16 @@ async fn split_view_shell_has_dag_canvas_and_drill_in_panel() {
     let dagre_pos = body
         .find("/static/vendor/dagre-d3.min.js")
         .expect("dagre-d3 script");
-    let htmx_pos = body.find("/static/vendor/htmx.min.js").expect("htmx script");
+    let htmx_pos = body
+        .find("/static/vendor/htmx.min.js")
+        .expect("htmx script");
     let app_pos = body.find("/static/app.js").expect("app.js script");
     assert!(
         d3_pos < dagre_pos,
         "d3 must load before dagre-d3 (dagre-d3 depends on d3)"
     );
-    assert!(
-        dagre_pos < app_pos,
-        "dagre-d3 must load before app.js"
-    );
-    assert!(
-        htmx_pos < app_pos,
-        "htmx must load before app.js"
-    );
+    assert!(dagre_pos < app_pos, "dagre-d3 must load before app.js");
+    assert!(htmx_pos < app_pos, "htmx must load before app.js");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1313,10 +1311,7 @@ async fn static_htmx_is_vendored_and_hashed() {
     let (port, _state) = start_debug_ui_server().await;
     let (status, headers, body) = http_get(port, "/static/vendor/htmx.min.js").await;
     assert_eq!(status, 200, "expected 200 for vendored htmx.min.js");
-    let ct = headers
-        .get("content-type")
-        .cloned()
-        .unwrap_or_default();
+    let ct = headers.get("content-type").cloned().unwrap_or_default();
     assert!(
         ct.contains("javascript"),
         "expected javascript content-type, got {}",
@@ -1337,10 +1332,7 @@ async fn static_dagre_is_vendored_and_hashed() {
     let (port, _state) = start_debug_ui_server().await;
     let (status, headers, body) = http_get(port, "/static/vendor/dagre-d3.min.js").await;
     assert_eq!(status, 200, "expected 200 for vendored dagre-d3.min.js");
-    let ct = headers
-        .get("content-type")
-        .cloned()
-        .unwrap_or_default();
+    let ct = headers.get("content-type").cloned().unwrap_or_default();
     assert!(
         ct.contains("javascript"),
         "expected javascript content-type, got {}",
@@ -1360,10 +1352,7 @@ async fn static_d3_is_vendored_and_hashed() {
     let (port, _state) = start_debug_ui_server().await;
     let (status, headers, body) = http_get(port, "/static/vendor/d3.min.js").await;
     assert_eq!(status, 200, "expected 200 for vendored d3.min.js");
-    let ct = headers
-        .get("content-type")
-        .cloned()
-        .unwrap_or_default();
+    let ct = headers.get("content-type").cloned().unwrap_or_default();
     assert!(
         ct.contains("javascript"),
         "expected javascript content-type, got {}",
@@ -1460,7 +1449,10 @@ async fn debug_latency_returns_valid_json_with_all_sections() {
     }
 
     // Command names are correct
-    let commands: Vec<&str> = per_command.iter().map(|e| e["command"].as_str().unwrap()).collect();
+    let commands: Vec<&str> = per_command
+        .iter()
+        .map(|e| e["command"].as_str().unwrap())
+        .collect();
     assert_eq!(commands, vec!["PUSH", "GET", "SET", "MSET"]);
 
     // per_stream is an array (empty with no pushes)

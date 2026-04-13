@@ -1,9 +1,9 @@
 //! Binary protocol: frame encoding/decoding, string protocol, command parsing,
 //! response serialization. All functions are synchronous (pure byte manipulation).
 
-use serde::Deserialize;
+use crate::engine::pipeline::{FeatureDef, StreamDefinition, ViewDefinition, ViewFeatureDef};
 use crate::error::TallyError;
-use crate::engine::pipeline::{StreamDefinition, FeatureDef, ViewDefinition, ViewFeatureDef};
+use serde::Deserialize;
 
 // Command opcodes
 pub const OP_PUSH: u8 = 0x01;
@@ -23,9 +23,9 @@ pub const STATUS_ERROR: u8 = 0x01;
 // Binary event payload type tags (PERF-02)
 pub const TYPE_NULL: u8 = 0x00;
 pub const TYPE_BOOL: u8 = 0x01;
-pub const TYPE_I64:  u8 = 0x02;
-pub const TYPE_F64:  u8 = 0x03;
-pub const TYPE_STR:  u8 = 0x04;
+pub const TYPE_I64: u8 = 0x02;
+pub const TYPE_F64: u8 = 0x03;
+pub const TYPE_STR: u8 = 0x04;
 
 /// Parsed command from a protocol frame.
 #[derive(Debug)]
@@ -35,15 +35,34 @@ pub enum Command {
     /// synthesized by tests, populated by `parse_command`). The raw bytes
     /// are forwarded to the event log as-is to avoid a re-serialize on the
     /// hot path (Plan 11-06).
-    Push { stream_name: String, payload: serde_json::Value, raw_payload: Vec<u8> },
-    Get { key: String },
-    Set { key: String, payload: serde_json::Value },
-    Mset { entries: Vec<(String, serde_json::Value)> },
-    Register { payload: serde_json::Value },
-    Mget { keys: Vec<String> },
+    Push {
+        stream_name: String,
+        payload: serde_json::Value,
+        raw_payload: Vec<u8>,
+    },
+    Get {
+        key: String,
+    },
+    Set {
+        key: String,
+        payload: serde_json::Value,
+    },
+    Mset {
+        entries: Vec<(String, serde_json::Value)>,
+    },
+    Register {
+        payload: serde_json::Value,
+    },
+    Mget {
+        keys: Vec<String>,
+    },
     /// Fire-and-forget async push. Carries raw_payload for the same reason
     /// as `Push` — see that variant's docs.
-    PushAsync { stream_name: String, payload: serde_json::Value, raw_payload: Vec<u8> },
+    PushAsync {
+        stream_name: String,
+        payload: serde_json::Value,
+        raw_payload: Vec<u8>,
+    },
     Flush,
     /// Client-side batch of events for one stream. Decoded into per-event
     /// (payload, raw_payload) pairs; converted to Vec<PendingAsync> at the
@@ -71,7 +90,9 @@ pub fn encode_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
 /// Returns (opcode, payload slice). The 4-byte length covers opcode + payload.
 pub fn parse_frame(data: &[u8]) -> Result<(u8, &[u8]), TallyError> {
     if data.len() < 5 {
-        return Err(TallyError::Protocol("frame too short: need at least 5 bytes".into()));
+        return Err(TallyError::Protocol(
+            "frame too short: need at least 5 bytes".into(),
+        ));
     }
     let length = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
     if length == 0 {
@@ -105,7 +126,9 @@ pub fn encode_response(status: u8, payload: &[u8]) -> Vec<u8> {
 /// Returns TallyError::Protocol on truncation or invalid UTF-8.
 pub fn read_string(buf: &mut &[u8]) -> Result<String, TallyError> {
     if buf.len() < 2 {
-        return Err(TallyError::Protocol("string header truncated: need 2 bytes for length".into()));
+        return Err(TallyError::Protocol(
+            "string header truncated: need 2 bytes for length".into(),
+        ));
     }
     let len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
     *buf = &buf[2..];
@@ -166,7 +189,9 @@ pub fn read_json_payload(buf: &mut &[u8]) -> Result<serde_json::Value, TallyErro
 /// and non-finite floats return `TallyError::Protocol`.
 pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, TallyError> {
     if buf.len() < 2 {
-        return Err(TallyError::Protocol("field_count header truncated: need 2 bytes".into()));
+        return Err(TallyError::Protocol(
+            "field_count header truncated: need 2 bytes".into(),
+        ));
     }
     let field_count = u16::from_be_bytes([buf[0], buf[1]]) as usize;
     *buf = &buf[2..];
@@ -197,7 +222,9 @@ pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, TallyEr
             }
             TYPE_I64 => {
                 if buf.len() < 8 {
-                    return Err(TallyError::Protocol("i64 value truncated: need 8 bytes".into()));
+                    return Err(TallyError::Protocol(
+                        "i64 value truncated: need 8 bytes".into(),
+                    ));
                 }
                 let i = i64::from_be_bytes(buf[..8].try_into().unwrap());
                 *buf = &buf[8..];
@@ -205,15 +232,21 @@ pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, TallyEr
             }
             TYPE_F64 => {
                 if buf.len() < 8 {
-                    return Err(TallyError::Protocol("f64 value truncated: need 8 bytes".into()));
+                    return Err(TallyError::Protocol(
+                        "f64 value truncated: need 8 bytes".into(),
+                    ));
                 }
                 let n = f64::from_be_bytes(buf[..8].try_into().unwrap());
                 *buf = &buf[8..];
                 if n.is_nan() || n.is_infinite() {
-                    return Err(TallyError::Protocol(format!("f64 value is not finite: {}", n)));
+                    return Err(TallyError::Protocol(format!(
+                        "f64 value is not finite: {}",
+                        n
+                    )));
                 }
-                let num = serde_json::Number::from_f64(n)
-                    .ok_or_else(|| TallyError::Protocol("f64 could not be represented as JSON number".into()))?;
+                let num = serde_json::Number::from_f64(n).ok_or_else(|| {
+                    TallyError::Protocol("f64 could not be represented as JSON number".into())
+                })?;
                 serde_json::Value::Number(num)
             }
             TYPE_STR => {
@@ -221,7 +254,10 @@ pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, TallyEr
                 serde_json::Value::String(s)
             }
             _ => {
-                return Err(TallyError::Protocol(format!("unknown type tag 0x{:02x}", tag)));
+                return Err(TallyError::Protocol(format!(
+                    "unknown type tag 0x{:02x}",
+                    tag
+                )));
             }
         };
         // I-1: duplicate field keys are silently last-wins. This matches
@@ -252,13 +288,21 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
             // JSON re-serialize on the hot path).
             let raw_payload = buf.to_vec();
             let payload_value = decode_event_binary(&mut buf)?;
-            Ok(Command::Push { stream_name, payload: payload_value, raw_payload })
+            Ok(Command::Push {
+                stream_name,
+                payload: payload_value,
+                raw_payload,
+            })
         }
         OP_PUSH_ASYNC => {
             let stream_name = read_string(&mut buf)?;
             let raw_payload = buf.to_vec();
             let payload_value = decode_event_binary(&mut buf)?;
-            Ok(Command::PushAsync { stream_name, payload: payload_value, raw_payload })
+            Ok(Command::PushAsync {
+                stream_name,
+                payload: payload_value,
+                raw_payload,
+            })
         }
         OP_FLUSH => Ok(Command::Flush),
         OP_GET => {
@@ -268,11 +312,16 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
         OP_SET => {
             let key = read_string(&mut buf)?;
             let payload_value = read_json_payload(&mut buf)?;
-            Ok(Command::Set { key, payload: payload_value })
+            Ok(Command::Set {
+                key,
+                payload: payload_value,
+            })
         }
         OP_MSET => {
             if buf.len() < 4 {
-                return Err(TallyError::Protocol("MSET payload too short: need 4 bytes for count".into()));
+                return Err(TallyError::Protocol(
+                    "MSET payload too short: need 4 bytes for count".into(),
+                ));
             }
             let count = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
             buf = &buf[4..];
@@ -303,11 +352,15 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
         }
         OP_REGISTER => {
             let payload_value = read_json_payload(&mut buf)?;
-            Ok(Command::Register { payload: payload_value })
+            Ok(Command::Register {
+                payload: payload_value,
+            })
         }
         OP_MGET => {
             if buf.len() < 4 {
-                return Err(TallyError::Protocol("MGET payload too short: need 4 bytes for count".into()));
+                return Err(TallyError::Protocol(
+                    "MGET payload too short: need 4 bytes for count".into(),
+                ));
             }
             let count = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
             buf = &buf[4..];
@@ -355,9 +408,16 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
                 buf = &buf[event_len..];
                 events.push((payload, raw_payload));
             }
-            Ok(Command::PushBatch { stream_name, batch_id, events })
+            Ok(Command::PushBatch {
+                stream_name,
+                batch_id,
+                events,
+            })
         }
-        _ => Err(TallyError::Protocol(format!("unknown opcode: 0x{:02x}", opcode))),
+        _ => Err(TallyError::Protocol(format!(
+            "unknown opcode: 0x{:02x}",
+            opcode
+        ))),
     }
 }
 
@@ -411,22 +471,22 @@ pub struct RegisterRequest {
     #[serde(default)]
     pub key_field: Option<String>,
     #[serde(default, rename = "type")]
-    pub definition_type: Option<String>,  // "stream" (default) or "view"
+    pub definition_type: Option<String>, // "stream" (default) or "view"
     pub features: Vec<FeatureDefRequest>,
     #[serde(default)]
     pub depends_on: Option<Vec<String>>,
     #[serde(default)]
     pub filter: Option<String>,
     #[serde(default)]
-    pub entity_ttl: Option<String>,    // e.g., "5m", "1h"
+    pub entity_ttl: Option<String>, // e.g., "5m", "1h"
     #[serde(default)]
-    pub history_ttl: Option<String>,   // e.g., "72h", "7d"
+    pub history_ttl: Option<String>, // e.g., "72h", "7d"
     #[serde(default)]
     pub projection: Option<ProjectionRequest>,
     #[serde(default)]
     pub ephemeral: Option<bool>,
     #[serde(default)]
-    pub ttl: Option<String>,           // pipeline-level TTL, e.g., "1h"
+    pub ttl: Option<String>, // pipeline-level TTL, e.g., "1h"
     #[serde(default)]
     pub max_keys: Option<u64>,
 }
@@ -460,15 +520,15 @@ pub struct FeatureDefRequest {
     #[serde(default, rename = "where")]
     pub where_clause: Option<String>,
     #[serde(default)]
-    pub on: Option<String>,       // For lookup (used in Plan 03)
+    pub on: Option<String>, // For lookup (used in Plan 03)
     #[serde(default)]
-    pub target: Option<String>,   // For lookup (used in Plan 03)
+    pub target: Option<String>, // For lookup (used in Plan 03)
     #[serde(default)]
-    pub backfill: Option<bool>,   // For schema evolution (SCHM-01/02)
+    pub backfill: Option<bool>, // For schema evolution (SCHM-01/02)
     #[serde(default)]
-    pub quantile: Option<f64>,    // For percentile operator (e.g. 0.95, 0.99)
+    pub quantile: Option<f64>, // For percentile operator (e.g. 0.95, 0.99)
     #[serde(default)]
-    pub n: Option<usize>,         // For lag, last_n (count parameter)
+    pub n: Option<usize>, // For lag, last_n (count parameter)
     #[serde(default)]
     pub half_life: Option<String>, // For ema (duration string, e.g. "30m")
 }
@@ -493,24 +553,35 @@ fn default_bucket(window: std::time::Duration) -> std::time::Duration {
 /// Validates name/key_field non-empty, parses duration strings, parses derive expressions.
 pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition, TallyError> {
     if req.name.is_empty() {
-        return Err(TallyError::Protocol(
-            "stream name must not be empty".into(),
-        ));
+        return Err(TallyError::Protocol("stream name must not be empty".into()));
     }
     // Validate key_field: if present, must not be empty
     if let Some(ref kf) = req.key_field {
         if kf.is_empty() {
-            return Err(TallyError::Protocol(
-                "key_field must not be empty".into(),
-            ));
+            return Err(TallyError::Protocol("key_field must not be empty".into()));
         }
     }
     // Keyless streams cannot have windowed operators (T-07-01 mitigation)
     if req.key_field.is_none() {
         for f in &req.features {
-            let is_windowed = matches!(f.feature_type.as_str(),
-                "count" | "sum" | "avg" | "min" | "max" | "distinct_count" | "last" | "stddev" | "percentile" |
-                "lag" | "ema" | "last_n" | "first" | "exact_min" | "exact_max");
+            let is_windowed = matches!(
+                f.feature_type.as_str(),
+                "count"
+                    | "sum"
+                    | "avg"
+                    | "min"
+                    | "max"
+                    | "distinct_count"
+                    | "last"
+                    | "stddev"
+                    | "percentile"
+                    | "lag"
+                    | "ema"
+                    | "last_n"
+                    | "first"
+                    | "exact_min"
+                    | "exact_max"
+            );
             if is_windowed {
                 return Err(TallyError::Protocol(format!(
                     "keyless stream '{}' cannot have windowed operator '{}'; only derive features are allowed",
@@ -549,14 +620,16 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                     Some(b) => parse_duration_str(&b)?,
                     None => default_bucket(window),
                 };
-                FeatureDef::Count { window, bucket, where_expr, backfill: f.backfill.unwrap_or(false) }
+                FeatureDef::Count {
+                    window,
+                    bucket,
+                    where_expr,
+                    backfill: f.backfill.unwrap_or(false),
+                }
             }
             "sum" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!(
-                        "feature '{}': sum requires 'field'",
-                        f.name
-                    ))
+                    TallyError::Protocol(format!("feature '{}': sum requires 'field'", f.name))
                 })?;
                 let window_str = f.window.ok_or_else(|| {
                     TallyError::Protocol(format!(
@@ -580,10 +653,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "avg" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!(
-                        "feature '{}': avg requires 'field'",
-                        f.name
-                    ))
+                    TallyError::Protocol(format!("feature '{}': avg requires 'field'", f.name))
                 })?;
                 let window_str = f.window.ok_or_else(|| {
                     TallyError::Protocol(format!(
@@ -607,10 +677,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "min" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!(
-                        "feature '{}': min requires 'field'",
-                        f.name
-                    ))
+                    TallyError::Protocol(format!("feature '{}': min requires 'field'", f.name))
                 })?;
                 let window_str = f.window.ok_or_else(|| {
                     TallyError::Protocol(format!(
@@ -634,10 +701,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "max" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!(
-                        "feature '{}': max requires 'field'",
-                        f.name
-                    ))
+                    TallyError::Protocol(format!("feature '{}': max requires 'field'", f.name))
                 })?;
                 let window_str = f.window.ok_or_else(|| {
                     TallyError::Protocol(format!(
@@ -661,10 +725,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "last" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!(
-                        "feature '{}': last requires 'field'",
-                        f.name
-                    ))
+                    TallyError::Protocol(format!("feature '{}': last requires 'field'", f.name))
                 })?;
                 FeatureDef::Last {
                     field,
@@ -701,10 +762,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "stddev" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!(
-                        "feature '{}': stddev requires 'field'",
-                        f.name
-                    ))
+                    TallyError::Protocol(format!("feature '{}': stddev requires 'field'", f.name))
                 })?;
                 let window_str = f.window.ok_or_else(|| {
                     TallyError::Protocol(format!(
@@ -768,10 +826,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "lag" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!(
-                        "feature '{}': lag requires 'field'",
-                        f.name
-                    ))
+                    TallyError::Protocol(format!("feature '{}': lag requires 'field'", f.name))
                 })?;
                 let n = f.n.ok_or_else(|| {
                     TallyError::Protocol(format!(
@@ -794,10 +849,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "ema" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!(
-                        "feature '{}': ema requires 'field'",
-                        f.name
-                    ))
+                    TallyError::Protocol(format!("feature '{}': ema requires 'field'", f.name))
                 })?;
                 let half_life_str = f.half_life.ok_or_else(|| {
                     TallyError::Protocol(format!(
@@ -822,10 +874,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "last_n" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!(
-                        "feature '{}': last_n requires 'field'",
-                        f.name
-                    ))
+                    TallyError::Protocol(format!("feature '{}': last_n requires 'field'", f.name))
                 })?;
                 let n = f.n.ok_or_else(|| {
                     TallyError::Protocol(format!(
@@ -848,10 +897,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "first" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!(
-                        "feature '{}': first requires 'field'",
-                        f.name
-                    ))
+                    TallyError::Protocol(format!("feature '{}': first requires 'field'", f.name))
                 })?;
                 FeatureDef::First {
                     field,
@@ -921,10 +967,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                     ))
                 })?;
                 let expr = crate::engine::expression::parse_expr(&expr_str).map_err(|e| {
-                    TallyError::Protocol(format!(
-                        "feature '{}': invalid expression: {}",
-                        f.name, e
-                    ))
+                    TallyError::Protocol(format!("feature '{}': invalid expression: {}", f.name, e))
                 })?;
                 FeatureDef::Derive { expr }
             }
@@ -938,47 +981,39 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
         features.push((f.name, def));
     }
 
-    let filter = req.filter
+    let filter = req
+        .filter
         .map(|f| crate::engine::expression::parse_expr(&f))
         .transpose()
         .map_err(|e| TallyError::Protocol(format!("invalid filter expression: {}", e)))?;
 
-    let entity_ttl = req.entity_ttl
-        .map(|s| parse_duration_str(&s))
-        .transpose()?;
-    let history_ttl = req.history_ttl
+    let entity_ttl = req.entity_ttl.map(|s| parse_duration_str(&s)).transpose()?;
+    let history_ttl = req
+        .history_ttl
         .map(|s| parse_duration_str(&s))
         .transpose()?;
 
     // Parse projection: validate select/drop mutual exclusion
     let projection = match req.projection {
-        Some(pr) => {
-            match (pr.select, pr.drop) {
-                (Some(sel), None) => {
-                    Some(crate::engine::pipeline::Projection::Select(
-                        sel.into_iter().collect(),
-                    ))
-                }
-                (None, Some(drp)) => {
-                    Some(crate::engine::pipeline::Projection::Drop(
-                        drp.into_iter().collect(),
-                    ))
-                }
-                (Some(_), Some(_)) => {
-                    return Err(TallyError::Protocol(
-                        "projection: select and drop are mutually exclusive".into(),
-                    ));
-                }
-                (None, None) => None,
+        Some(pr) => match (pr.select, pr.drop) {
+            (Some(sel), None) => Some(crate::engine::pipeline::Projection::Select(
+                sel.into_iter().collect(),
+            )),
+            (None, Some(drp)) => Some(crate::engine::pipeline::Projection::Drop(
+                drp.into_iter().collect(),
+            )),
+            (Some(_), Some(_)) => {
+                return Err(TallyError::Protocol(
+                    "projection: select and drop are mutually exclusive".into(),
+                ));
             }
-        }
+            (None, None) => None,
+        },
         None => None,
     };
 
     // Parse pipeline-level TTL
-    let pipeline_ttl = req.ttl
-        .map(|s| parse_duration_str(&s))
-        .transpose()?;
+    let pipeline_ttl = req.ttl.map(|s| parse_duration_str(&s)).transpose()?;
 
     Ok(StreamDefinition {
         name: req.name,
@@ -1001,9 +1036,9 @@ pub fn convert_view_register_request(req: RegisterRequest) -> Result<ViewDefinit
     if req.name.is_empty() {
         return Err(TallyError::Protocol("view name must not be empty".into()));
     }
-    let key_field = req.key_field.ok_or_else(|| {
-        TallyError::Protocol("view key_field must not be empty".into())
-    })?;
+    let key_field = req
+        .key_field
+        .ok_or_else(|| TallyError::Protocol("view key_field must not be empty".into()))?;
     if key_field.is_empty() {
         return Err(TallyError::Protocol("key_field must not be empty".into()));
     }
@@ -1019,10 +1054,7 @@ pub fn convert_view_register_request(req: RegisterRequest) -> Result<ViewDefinit
                     ))
                 })?;
                 let expr = crate::engine::expression::parse_expr(&expr_str).map_err(|e| {
-                    TallyError::Protocol(format!(
-                        "feature '{}': invalid expression: {}",
-                        f.name, e
-                    ))
+                    TallyError::Protocol(format!("feature '{}': invalid expression: {}", f.name, e))
                 })?;
                 ViewFeatureDef::Derive { expr }
             }
@@ -1232,7 +1264,11 @@ mod tests {
         );
         let cmd = parse_command(OP_PUSH, &payload).unwrap();
         match cmd {
-            Command::Push { stream_name, payload, raw_payload } => {
+            Command::Push {
+                stream_name,
+                payload,
+                raw_payload,
+            } => {
                 assert_eq!(stream_name, "Transactions");
                 assert_eq!(payload["user_id"], "u123");
                 assert_eq!(payload["amount"], 50.0);
@@ -1247,7 +1283,11 @@ mod tests {
         let payload = build_binary_push_payload("tx", &[("user_id", serde_json::json!("u1"))]);
         let cmd = parse_command(OP_PUSH, &payload).unwrap();
         match cmd {
-            Command::Push { stream_name, payload, raw_payload } => {
+            Command::Push {
+                stream_name,
+                payload,
+                raw_payload,
+            } => {
                 assert_eq!(stream_name, "tx");
                 assert_eq!(payload["user_id"], "u1");
                 assert!(!raw_payload.is_empty());
@@ -1261,7 +1301,11 @@ mod tests {
         let payload = build_binary_push_payload("tx", &[("user_id", serde_json::json!("u1"))]);
         let cmd = parse_command(OP_PUSH_ASYNC, &payload).unwrap();
         match cmd {
-            Command::PushAsync { stream_name, payload, raw_payload } => {
+            Command::PushAsync {
+                stream_name,
+                payload,
+                raw_payload,
+            } => {
                 assert_eq!(stream_name, "tx");
                 assert_eq!(payload["user_id"], "u1");
                 assert!(!raw_payload.is_empty());
@@ -1283,7 +1327,10 @@ mod tests {
         let mut payload = write_string("tx");
         payload.extend_from_slice(b"{\"user_id\":\"u1\"}");
         let result = parse_command(OP_PUSH, &payload);
-        assert!(result.is_err(), "v1.1 JSON payload must be rejected by the binary decoder");
+        assert!(
+            result.is_err(),
+            "v1.1 JSON payload must be rejected by the binary decoder"
+        );
     }
 
     #[test]
@@ -1348,6 +1395,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_decode_event_binary_f64() {
         let data = build_event_only(&[("f", serde_json::json!(3.14))]);
         let mut buf: &[u8] = &data;
@@ -1421,7 +1469,11 @@ mod tests {
         let r = decode_event_binary(&mut buf);
         assert!(r.is_err());
         let msg = format!("{:?}", r.unwrap_err());
-        assert!(msg.contains("not finite"), "expected 'not finite' in {}", msg);
+        assert!(
+            msg.contains("not finite"),
+            "expected 'not finite' in {}",
+            msg
+        );
     }
 
     #[test]
@@ -1657,7 +1709,13 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::Sum { field, window, bucket, optional, .. } => {
+            crate::engine::pipeline::FeatureDef::Sum {
+                field,
+                window,
+                bucket,
+                optional,
+                ..
+            } => {
                 assert_eq!(field, "amount");
                 assert_eq!(*window, std::time::Duration::from_secs(3600));
                 assert_eq!(*bucket, std::time::Duration::from_secs(120));
@@ -1683,7 +1741,13 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::Avg { field, window, bucket, optional, .. } => {
+            crate::engine::pipeline::FeatureDef::Avg {
+                field,
+                window,
+                bucket,
+                optional,
+                ..
+            } => {
                 assert_eq!(field, "amount");
                 assert_eq!(*window, std::time::Duration::from_secs(3600));
                 assert_eq!(*bucket, std::time::Duration::from_secs(120));
@@ -1803,7 +1867,11 @@ mod tests {
         let result = read_string(&mut buf);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("invalid UTF-8 in string"), "got: {}", err_msg);
+        assert!(
+            err_msg.contains("invalid UTF-8 in string"),
+            "got: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -1813,7 +1881,11 @@ mod tests {
         let result = read_string(&mut buf);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("invalid UTF-8 in string"), "got: {}", err_msg);
+        assert!(
+            err_msg.contains("invalid UTF-8 in string"),
+            "got: {}",
+            err_msg
+        );
     }
 
     // --- G-05: unknown feature type ---
@@ -1835,14 +1907,28 @@ mod tests {
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "median".into(),
-                field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
+                field: None,
+                window: None,
+                bucket: None,
+                expr: None,
+                optional: None,
+                where_clause: None,
+                on: None,
+                target: None,
+                backfill: None,
+                quantile: None,
+                n: None,
+                half_life: None,
             }],
         };
         let result = convert_register_request(req);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("unknown feature type: median"), "got: {}", err_msg);
+        assert!(
+            err_msg.contains("unknown feature type: median"),
+            "got: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -1862,14 +1948,28 @@ mod tests {
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "histogram".into(),
-                field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
+                field: None,
+                window: None,
+                bucket: None,
+                expr: None,
+                optional: None,
+                where_clause: None,
+                on: None,
+                target: None,
+                backfill: None,
+                quantile: None,
+                n: None,
+                half_life: None,
             }],
         };
         let result = convert_register_request(req);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("unknown feature type: histogram"), "got: {}", err_msg);
+        assert!(
+            err_msg.contains("unknown feature type: histogram"),
+            "got: {}",
+            err_msg
+        );
     }
 
     // --- G-06: missing required fields per feature type ---
@@ -1891,14 +1991,28 @@ mod tests {
             features: vec![FeatureDefRequest {
                 name: "cnt".into(),
                 feature_type: "count".into(),
-                field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
+                field: None,
+                window: None,
+                bucket: None,
+                expr: None,
+                optional: None,
+                where_clause: None,
+                on: None,
+                target: None,
+                backfill: None,
+                quantile: None,
+                n: None,
+                half_life: None,
             }],
         };
         let result = convert_register_request(req);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("count requires 'window'"), "got: {}", err_msg);
+        assert!(
+            err_msg.contains("count requires 'window'"),
+            "got: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -1918,8 +2032,18 @@ mod tests {
             features: vec![FeatureDefRequest {
                 name: "total".into(),
                 feature_type: "sum".into(),
-                field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
+                field: None,
+                window: Some("1h".into()),
+                bucket: None,
+                expr: None,
+                optional: None,
+                where_clause: None,
+                on: None,
+                target: None,
+                backfill: None,
+                quantile: None,
+                n: None,
+                half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1945,14 +2069,28 @@ mod tests {
             features: vec![FeatureDefRequest {
                 name: "total".into(),
                 feature_type: "sum".into(),
-                field: Some("amount".into()), window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
+                field: Some("amount".into()),
+                window: None,
+                bucket: None,
+                expr: None,
+                optional: None,
+                where_clause: None,
+                on: None,
+                target: None,
+                backfill: None,
+                quantile: None,
+                n: None,
+                half_life: None,
             }],
         };
         let result = convert_register_request(req);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("sum requires 'window'"), "got: {}", err_msg);
+        assert!(
+            err_msg.contains("sum requires 'window'"),
+            "got: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -1972,8 +2110,18 @@ mod tests {
             features: vec![FeatureDefRequest {
                 name: "mean".into(),
                 feature_type: "avg".into(),
-                field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
+                field: None,
+                window: Some("1h".into()),
+                bucket: None,
+                expr: None,
+                optional: None,
+                where_clause: None,
+                on: None,
+                target: None,
+                backfill: None,
+                quantile: None,
+                n: None,
+                half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -1999,14 +2147,28 @@ mod tests {
             features: vec![FeatureDefRequest {
                 name: "ratio".into(),
                 feature_type: "derive".into(),
-                field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
+                field: None,
+                window: None,
+                bucket: None,
+                expr: None,
+                optional: None,
+                where_clause: None,
+                on: None,
+                target: None,
+                backfill: None,
+                quantile: None,
+                n: None,
+                half_life: None,
             }],
         };
         let result = convert_register_request(req);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("derive requires 'expr'"), "got: {}", err_msg);
+        assert!(
+            err_msg.contains("derive requires 'expr'"),
+            "got: {}",
+            err_msg
+        );
     }
 
     // ======================== Phase 5: min/max/last/where protocol tests ========================
@@ -2026,7 +2188,14 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::Min { field, window, bucket, optional, where_expr, .. } => {
+            crate::engine::pipeline::FeatureDef::Min {
+                field,
+                window,
+                bucket,
+                optional,
+                where_expr,
+                ..
+            } => {
                 assert_eq!(field, "amount");
                 assert_eq!(*window, std::time::Duration::from_secs(3600));
                 assert_eq!(*bucket, std::time::Duration::from_secs(120));
@@ -2053,7 +2222,13 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::Max { field, window, optional, where_expr, .. } => {
+            crate::engine::pipeline::FeatureDef::Max {
+                field,
+                window,
+                optional,
+                where_expr,
+                ..
+            } => {
                 assert_eq!(field, "amount");
                 assert_eq!(*window, std::time::Duration::from_secs(86400));
                 assert!(*optional);
@@ -2077,7 +2252,9 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::Last { field, optional, .. } => {
+            crate::engine::pipeline::FeatureDef::Last {
+                field, optional, ..
+            } => {
                 assert_eq!(field, "country");
                 assert!(!optional);
             }
@@ -2100,7 +2277,9 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::Count { window, where_expr, .. } => {
+            crate::engine::pipeline::FeatureDef::Count {
+                window, where_expr, ..
+            } => {
                 assert_eq!(*window, std::time::Duration::from_secs(3600));
                 assert!(where_expr.is_some());
             }
@@ -2125,8 +2304,18 @@ mod tests {
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "min".into(),
-                field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
+                field: None,
+                window: Some("1h".into()),
+                bucket: None,
+                expr: None,
+                optional: None,
+                where_clause: None,
+                on: None,
+                target: None,
+                backfill: None,
+                quantile: None,
+                n: None,
+                half_life: None,
             }],
         };
         let result = convert_register_request(req);
@@ -2152,14 +2341,28 @@ mod tests {
             features: vec![FeatureDefRequest {
                 name: "f1".into(),
                 feature_type: "last".into(),
-                field: None, window: None, bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
+                field: None,
+                window: None,
+                bucket: None,
+                expr: None,
+                optional: None,
+                where_clause: None,
+                on: None,
+                target: None,
+                backfill: None,
+                quantile: None,
+                n: None,
+                half_life: None,
             }],
         };
         let result = convert_register_request(req);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("last requires 'field'"), "got: {}", err_msg);
+        assert!(
+            err_msg.contains("last requires 'field'"),
+            "got: {}",
+            err_msg
+        );
     }
 
     // ======================== Phase 6 Plan 02: MGET protocol tests ========================
@@ -2203,7 +2406,11 @@ mod tests {
         let result = parse_command(OP_MGET, &payload);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("MGET payload too short"), "got: {}", err_msg);
+        assert!(
+            err_msg.contains("MGET payload too short"),
+            "got: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -2264,7 +2471,10 @@ mod tests {
         });
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
-        assert_eq!(stream.history_ttl, Some(std::time::Duration::from_secs(259200)));
+        assert_eq!(
+            stream.history_ttl,
+            Some(std::time::Duration::from_secs(259200))
+        );
     }
 
     #[test]
@@ -2278,8 +2488,14 @@ mod tests {
         });
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
-        assert_eq!(stream.entity_ttl, Some(std::time::Duration::from_secs(3600)));
-        assert_eq!(stream.history_ttl, Some(std::time::Duration::from_secs(604800)));
+        assert_eq!(
+            stream.entity_ttl,
+            Some(std::time::Duration::from_secs(3600))
+        );
+        assert_eq!(
+            stream.history_ttl,
+            Some(std::time::Duration::from_secs(604800))
+        );
     }
 
     // --- G-08: read_json_payload ---
@@ -2301,7 +2517,14 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::DistinctCount { field, window, bucket, optional, where_expr, .. } => {
+            crate::engine::pipeline::FeatureDef::DistinctCount {
+                field,
+                window,
+                bucket,
+                optional,
+                where_expr,
+                ..
+            } => {
                 assert_eq!(field, "merchant_id");
                 assert_eq!(*window, std::time::Duration::from_secs(86400));
                 assert!(!optional);
@@ -2330,14 +2553,28 @@ mod tests {
             features: vec![FeatureDefRequest {
                 name: "dc".into(),
                 feature_type: "distinct_count".into(),
-                field: None, window: Some("1h".into()), bucket: None, expr: None, optional: None,
-                where_clause: None, on: None, target: None, backfill: None, quantile: None, n: None, half_life: None,
+                field: None,
+                window: Some("1h".into()),
+                bucket: None,
+                expr: None,
+                optional: None,
+                where_clause: None,
+                on: None,
+                target: None,
+                backfill: None,
+                quantile: None,
+                n: None,
+                half_life: None,
             }],
         };
         let result = convert_register_request(req);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("distinct_count requires 'field'"), "got: {}", err_msg);
+        assert!(
+            err_msg.contains("distinct_count requires 'field'"),
+            "got: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -2382,7 +2619,11 @@ mod tests {
         let view = convert_view_register_request(req).unwrap();
         assert_eq!(view.features.len(), 1);
         match &view.features[0].1 {
-            crate::engine::pipeline::ViewFeatureDef::Lookup { target_stream, target_feature, on_field } => {
+            crate::engine::pipeline::ViewFeatureDef::Lookup {
+                target_stream,
+                target_feature,
+                on_field,
+            } => {
                 assert_eq!(target_stream, "MerchantActivity");
                 assert_eq!(target_feature, "chargeback_count_24h");
                 assert_eq!(on_field, "merchant_id");
@@ -2407,7 +2648,11 @@ mod tests {
         let result = convert_view_register_request(req);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("only supports 'derive' and 'lookup'"), "got: {}", err_msg);
+        assert!(
+            err_msg.contains("only supports 'derive' and 'lookup'"),
+            "got: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -2458,7 +2703,10 @@ mod tests {
             "features": []
         });
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
-        assert!(req.key_field.is_none(), "key_field should be None when omitted");
+        assert!(
+            req.key_field.is_none(),
+            "key_field should be None when omitted"
+        );
     }
 
     #[test]
@@ -2532,7 +2780,8 @@ mod tests {
                 where_clause: None,
                 on: None,
                 target: None,
-                backfill: None, quantile: None,
+                backfill: None,
+                quantile: None,
                 n: None,
                 half_life: None,
             }],
@@ -2540,7 +2789,11 @@ mod tests {
         let result = convert_register_request(req);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("keyless"), "error should mention 'keyless', got: {}", err_msg);
+        assert!(
+            err_msg.contains("keyless"),
+            "error should mention 'keyless', got: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -2568,13 +2821,17 @@ mod tests {
                 where_clause: None,
                 on: None,
                 target: None,
-                backfill: None, quantile: None,
+                backfill: None,
+                quantile: None,
                 n: None,
                 half_life: None,
             }],
         };
         let stream = convert_register_request(req).unwrap();
-        assert_eq!(stream.depends_on.as_ref().unwrap(), &vec!["RawEvents".to_string()]);
+        assert_eq!(
+            stream.depends_on.as_ref().unwrap(),
+            &vec!["RawEvents".to_string()]
+        );
         assert!(stream.filter.is_some());
     }
 
@@ -2594,7 +2851,13 @@ mod tests {
         assert_eq!(stream.features.len(), 1);
         assert_eq!(stream.features[0].0, "amount_stddev_1h");
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::Stddev { field, window, bucket, optional, .. } => {
+            crate::engine::pipeline::FeatureDef::Stddev {
+                field,
+                window,
+                bucket,
+                optional,
+                ..
+            } => {
                 assert_eq!(field, "amount");
                 assert_eq!(*window, std::time::Duration::from_secs(3600));
                 assert_eq!(*bucket, std::time::Duration::from_secs(120)); // default_bucket(1h) = 120s
@@ -2616,7 +2879,11 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let stream = convert_register_request(req).unwrap();
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::Stddev { optional, where_expr, .. } => {
+            crate::engine::pipeline::FeatureDef::Stddev {
+                optional,
+                where_expr,
+                ..
+            } => {
                 assert!(*optional);
                 assert!(where_expr.is_some());
             }
@@ -2636,7 +2903,10 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let result = convert_register_request(req);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("stddev requires 'field'"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("stddev requires 'field'"));
     }
 
     #[test]
@@ -2653,7 +2923,14 @@ mod tests {
         assert_eq!(stream.features.len(), 1);
         assert_eq!(stream.features[0].0, "amount_p95_1h");
         match &stream.features[0].1 {
-            crate::engine::pipeline::FeatureDef::Percentile { field, quantile, window, bucket, optional, .. } => {
+            crate::engine::pipeline::FeatureDef::Percentile {
+                field,
+                quantile,
+                window,
+                bucket,
+                optional,
+                ..
+            } => {
                 assert_eq!(field, "amount");
                 assert!((quantile - 0.95).abs() < f64::EPSILON);
                 assert_eq!(*window, std::time::Duration::from_secs(3600));
@@ -2676,7 +2953,10 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let result = convert_register_request(req);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("percentile requires 'quantile'"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("percentile requires 'quantile'"));
     }
 
     #[test]
@@ -2691,7 +2971,10 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let result = convert_register_request(req);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("quantile must be between 0.0 and 1.0"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("quantile must be between 0.0 and 1.0"));
     }
 
     #[test]
@@ -2706,7 +2989,10 @@ mod tests {
         let req: RegisterRequest = serde_json::from_value(json).unwrap();
         let result = convert_register_request(req);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("percentile requires 'field'"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("percentile requires 'field'"));
     }
 
     // ======================== Phase 18 Plan 01: Projection & Ephemeral Tests ========================

@@ -115,9 +115,13 @@ fn parse_fn_call(input: &mut &str) -> PResult<Expr> {
     space0.parse_next(input)?;
     literal("(").parse_next(input)?;
     space0.parse_next(input)?;
-    let args: Vec<Expr> = opt(separated(1.., parse_full_expr, (space0, literal(","), space0)))
-        .parse_next(input)?
-        .unwrap_or_default();
+    let args: Vec<Expr> = opt(separated(
+        1..,
+        parse_full_expr,
+        (space0, literal(","), space0),
+    ))
+    .parse_next(input)?
+    .unwrap_or_default();
     space0.parse_next(input)?;
     literal(")").parse_next(input)?;
     Ok(Expr::FnCall { name, args })
@@ -201,48 +205,102 @@ type PrefixFoldFn = fn(&mut &str, Expr) -> Result<Expr, ContextError>;
 
 // --- Infix fold functions (fn pointers as required by winnow Prefix/Infix) ---
 fn fold_or(_: &mut &str, a: Expr, b: Expr) -> Result<Expr, ContextError> {
-    Ok(Expr::BinaryOp { op: BinOp::Or, left: Box::new(a), right: Box::new(b) })
+    Ok(Expr::BinaryOp {
+        op: BinOp::Or,
+        left: Box::new(a),
+        right: Box::new(b),
+    })
 }
 fn fold_and(_: &mut &str, a: Expr, b: Expr) -> Result<Expr, ContextError> {
-    Ok(Expr::BinaryOp { op: BinOp::And, left: Box::new(a), right: Box::new(b) })
+    Ok(Expr::BinaryOp {
+        op: BinOp::And,
+        left: Box::new(a),
+        right: Box::new(b),
+    })
 }
 fn fold_gt(_: &mut &str, a: Expr, b: Expr) -> Result<Expr, ContextError> {
-    Ok(Expr::BinaryOp { op: BinOp::Gt, left: Box::new(a), right: Box::new(b) })
+    Ok(Expr::BinaryOp {
+        op: BinOp::Gt,
+        left: Box::new(a),
+        right: Box::new(b),
+    })
 }
 fn fold_lt(_: &mut &str, a: Expr, b: Expr) -> Result<Expr, ContextError> {
-    Ok(Expr::BinaryOp { op: BinOp::Lt, left: Box::new(a), right: Box::new(b) })
+    Ok(Expr::BinaryOp {
+        op: BinOp::Lt,
+        left: Box::new(a),
+        right: Box::new(b),
+    })
 }
 fn fold_gte(_: &mut &str, a: Expr, b: Expr) -> Result<Expr, ContextError> {
-    Ok(Expr::BinaryOp { op: BinOp::Gte, left: Box::new(a), right: Box::new(b) })
+    Ok(Expr::BinaryOp {
+        op: BinOp::Gte,
+        left: Box::new(a),
+        right: Box::new(b),
+    })
 }
 fn fold_lte(_: &mut &str, a: Expr, b: Expr) -> Result<Expr, ContextError> {
-    Ok(Expr::BinaryOp { op: BinOp::Lte, left: Box::new(a), right: Box::new(b) })
+    Ok(Expr::BinaryOp {
+        op: BinOp::Lte,
+        left: Box::new(a),
+        right: Box::new(b),
+    })
 }
 fn fold_eq(_: &mut &str, a: Expr, b: Expr) -> Result<Expr, ContextError> {
-    Ok(Expr::BinaryOp { op: BinOp::Eq, left: Box::new(a), right: Box::new(b) })
+    Ok(Expr::BinaryOp {
+        op: BinOp::Eq,
+        left: Box::new(a),
+        right: Box::new(b),
+    })
 }
 fn fold_neq(_: &mut &str, a: Expr, b: Expr) -> Result<Expr, ContextError> {
-    Ok(Expr::BinaryOp { op: BinOp::Neq, left: Box::new(a), right: Box::new(b) })
+    Ok(Expr::BinaryOp {
+        op: BinOp::Neq,
+        left: Box::new(a),
+        right: Box::new(b),
+    })
 }
 fn fold_add(_: &mut &str, a: Expr, b: Expr) -> Result<Expr, ContextError> {
-    Ok(Expr::BinaryOp { op: BinOp::Add, left: Box::new(a), right: Box::new(b) })
+    Ok(Expr::BinaryOp {
+        op: BinOp::Add,
+        left: Box::new(a),
+        right: Box::new(b),
+    })
 }
 fn fold_sub(_: &mut &str, a: Expr, b: Expr) -> Result<Expr, ContextError> {
-    Ok(Expr::BinaryOp { op: BinOp::Sub, left: Box::new(a), right: Box::new(b) })
+    Ok(Expr::BinaryOp {
+        op: BinOp::Sub,
+        left: Box::new(a),
+        right: Box::new(b),
+    })
 }
 fn fold_mul(_: &mut &str, a: Expr, b: Expr) -> Result<Expr, ContextError> {
-    Ok(Expr::BinaryOp { op: BinOp::Mul, left: Box::new(a), right: Box::new(b) })
+    Ok(Expr::BinaryOp {
+        op: BinOp::Mul,
+        left: Box::new(a),
+        right: Box::new(b),
+    })
 }
 fn fold_div(_: &mut &str, a: Expr, b: Expr) -> Result<Expr, ContextError> {
-    Ok(Expr::BinaryOp { op: BinOp::Div, left: Box::new(a), right: Box::new(b) })
+    Ok(Expr::BinaryOp {
+        op: BinOp::Div,
+        left: Box::new(a),
+        right: Box::new(b),
+    })
 }
 
 // --- Prefix fold functions ---
 fn fold_not(_: &mut &str, a: Expr) -> Result<Expr, ContextError> {
-    Ok(Expr::UnaryOp { op: UnOp::Not, operand: Box::new(a) })
+    Ok(Expr::UnaryOp {
+        op: UnOp::Not,
+        operand: Box::new(a),
+    })
 }
 fn fold_neg(_: &mut &str, a: Expr) -> Result<Expr, ContextError> {
-    Ok(Expr::UnaryOp { op: UnOp::Neg, operand: Box::new(a) })
+    Ok(Expr::UnaryOp {
+        op: UnOp::Neg,
+        operand: Box::new(a),
+    })
 }
 
 /// Parse infix operators with binding power.
@@ -866,10 +924,7 @@ mod tests {
     #[test]
     fn test_parse_field_event() {
         let expr = parse_expr("_event.amount").unwrap();
-        assert_eq!(
-            expr,
-            Expr::FieldAccess(FieldRef::Event("amount".into()))
-        );
+        assert_eq!(expr, Expr::FieldAccess(FieldRef::Event("amount".into())));
     }
 
     #[test]
@@ -1004,20 +1059,14 @@ mod tests {
     fn test_parse_keyword_prefix_field_and_count() {
         // "and_count" should be a field name, NOT keyword "and" + "_count"
         let expr = parse_expr("and_count").unwrap();
-        assert_eq!(
-            expr,
-            Expr::FieldAccess(FieldRef::Local("and_count".into()))
-        );
+        assert_eq!(expr, Expr::FieldAccess(FieldRef::Local("and_count".into())));
     }
 
     #[test]
     fn test_parse_keyword_prefix_field_not_fraud() {
         // "not_fraud" should be a field name, NOT keyword "not" + "_fraud"
         let expr = parse_expr("not_fraud").unwrap();
-        assert_eq!(
-            expr,
-            Expr::FieldAccess(FieldRef::Local("not_fraud".into()))
-        );
+        assert_eq!(expr, Expr::FieldAccess(FieldRef::Local("not_fraud".into())));
     }
 
     #[test]
@@ -1156,46 +1205,52 @@ mod tests {
 
     #[test]
     fn test_eval_add_int_int() {
-        let result = eval_with("a + b", &[
-            ("a", FeatureValue::Int(3)),
-            ("b", FeatureValue::Int(4)),
-        ]);
+        let result = eval_with(
+            "a + b",
+            &[("a", FeatureValue::Int(3)), ("b", FeatureValue::Int(4))],
+        );
         assert_eq!(result, FeatureValue::Int(7));
     }
 
     #[test]
     fn test_eval_add_int_float() {
-        let result = eval_with("a + b", &[
-            ("a", FeatureValue::Int(3)),
-            ("b", FeatureValue::Float(4.5)),
-        ]);
+        let result = eval_with(
+            "a + b",
+            &[("a", FeatureValue::Int(3)), ("b", FeatureValue::Float(4.5))],
+        );
         assert_eq!(result, FeatureValue::Float(7.5));
     }
 
     #[test]
     fn test_eval_sub_float() {
-        let result = eval_with("a - b", &[
-            ("a", FeatureValue::Float(10.0)),
-            ("b", FeatureValue::Float(3.0)),
-        ]);
+        let result = eval_with(
+            "a - b",
+            &[
+                ("a", FeatureValue::Float(10.0)),
+                ("b", FeatureValue::Float(3.0)),
+            ],
+        );
         assert_eq!(result, FeatureValue::Float(7.0));
     }
 
     #[test]
     fn test_eval_mul_int_int() {
-        let result = eval_with("a * b", &[
-            ("a", FeatureValue::Int(2)),
-            ("b", FeatureValue::Int(3)),
-        ]);
+        let result = eval_with(
+            "a * b",
+            &[("a", FeatureValue::Int(2)), ("b", FeatureValue::Int(3))],
+        );
         assert_eq!(result, FeatureValue::Int(6));
     }
 
     #[test]
     fn test_eval_div_float() {
-        let result = eval_with("a / b", &[
-            ("a", FeatureValue::Float(10.0)),
-            ("b", FeatureValue::Float(3.0)),
-        ]);
+        let result = eval_with(
+            "a / b",
+            &[
+                ("a", FeatureValue::Float(10.0)),
+                ("b", FeatureValue::Float(3.0)),
+            ],
+        );
         match result {
             FeatureValue::Float(f) => assert!((f - 10.0 / 3.0).abs() < 1e-10),
             other => panic!("Expected Float, got {:?}", other),
@@ -1204,28 +1259,31 @@ mod tests {
 
     #[test]
     fn test_eval_div_by_zero_float_returns_missing() {
-        let result = eval_with("a / b", &[
-            ("a", FeatureValue::Float(10.0)),
-            ("b", FeatureValue::Float(0.0)),
-        ]);
+        let result = eval_with(
+            "a / b",
+            &[
+                ("a", FeatureValue::Float(10.0)),
+                ("b", FeatureValue::Float(0.0)),
+            ],
+        );
         assert_eq!(result, FeatureValue::Missing);
     }
 
     #[test]
     fn test_eval_div_by_zero_int_returns_missing() {
-        let result = eval_with("a / b", &[
-            ("a", FeatureValue::Int(10)),
-            ("b", FeatureValue::Int(0)),
-        ]);
+        let result = eval_with(
+            "a / b",
+            &[("a", FeatureValue::Int(10)), ("b", FeatureValue::Int(0))],
+        );
         assert_eq!(result, FeatureValue::Missing);
     }
 
     #[test]
     fn test_eval_missing_propagation_in_arithmetic() {
-        let result = eval_with("a + b", &[
-            ("a", FeatureValue::Missing),
-            ("b", FeatureValue::Int(5)),
-        ]);
+        let result = eval_with(
+            "a + b",
+            &[("a", FeatureValue::Missing), ("b", FeatureValue::Int(5))],
+        );
         assert_eq!(result, FeatureValue::Missing);
     }
 
@@ -1261,28 +1319,28 @@ mod tests {
 
     #[test]
     fn test_eval_and_true_true() {
-        let result = eval_with("a and b", &[
-            ("a", FeatureValue::Int(1)),
-            ("b", FeatureValue::Int(1)),
-        ]);
+        let result = eval_with(
+            "a and b",
+            &[("a", FeatureValue::Int(1)), ("b", FeatureValue::Int(1))],
+        );
         assert_eq!(result, FeatureValue::Int(1));
     }
 
     #[test]
     fn test_eval_and_true_false() {
-        let result = eval_with("a and b", &[
-            ("a", FeatureValue::Int(1)),
-            ("b", FeatureValue::Int(0)),
-        ]);
+        let result = eval_with(
+            "a and b",
+            &[("a", FeatureValue::Int(1)), ("b", FeatureValue::Int(0))],
+        );
         assert_eq!(result, FeatureValue::Int(0));
     }
 
     #[test]
     fn test_eval_and_with_missing() {
-        let result = eval_with("a and b", &[
-            ("a", FeatureValue::Missing),
-            ("b", FeatureValue::Int(1)),
-        ]);
+        let result = eval_with(
+            "a and b",
+            &[("a", FeatureValue::Missing), ("b", FeatureValue::Int(1))],
+        );
         assert_eq!(result, FeatureValue::Missing);
     }
 
@@ -1312,19 +1370,25 @@ mod tests {
 
     #[test]
     fn test_eval_min_two_args() {
-        let result = eval_with("min(a, b)", &[
-            ("a", FeatureValue::Float(3.0)),
-            ("b", FeatureValue::Float(7.0)),
-        ]);
+        let result = eval_with(
+            "min(a, b)",
+            &[
+                ("a", FeatureValue::Float(3.0)),
+                ("b", FeatureValue::Float(7.0)),
+            ],
+        );
         assert_eq!(result, FeatureValue::Float(3.0));
     }
 
     #[test]
     fn test_eval_max_two_args() {
-        let result = eval_with("max(a, b)", &[
-            ("a", FeatureValue::Float(3.0)),
-            ("b", FeatureValue::Float(7.0)),
-        ]);
+        let result = eval_with(
+            "max(a, b)",
+            &[
+                ("a", FeatureValue::Float(3.0)),
+                ("b", FeatureValue::Float(7.0)),
+            ],
+        );
         assert_eq!(result, FeatureValue::Float(7.0));
     }
 
@@ -1343,28 +1407,32 @@ mod tests {
 
     #[test]
     fn test_eval_qualified_field() {
-        let result = eval_with("Stream.field", &[
-            ("Stream.field", FeatureValue::Int(42)),
-        ]);
+        let result = eval_with("Stream.field", &[("Stream.field", FeatureValue::Int(42))]);
         assert_eq!(result, FeatureValue::Int(42));
     }
 
     #[test]
     fn test_eval_string_plus_int_returns_missing() {
-        let result = eval_with("a + b", &[
-            ("a", FeatureValue::String("hello".into())),
-            ("b", FeatureValue::Int(5)),
-        ]);
+        let result = eval_with(
+            "a + b",
+            &[
+                ("a", FeatureValue::String("hello".into())),
+                ("b", FeatureValue::Int(5)),
+            ],
+        );
         assert_eq!(result, FeatureValue::Missing);
     }
 
     #[test]
     fn test_eval_nan_returns_missing() {
         // f64::MAX + f64::MAX overflows to infinity
-        let result = eval_with("a + b", &[
-            ("a", FeatureValue::Float(f64::MAX)),
-            ("b", FeatureValue::Float(f64::MAX)),
-        ]);
+        let result = eval_with(
+            "a + b",
+            &[
+                ("a", FeatureValue::Float(f64::MAX)),
+                ("b", FeatureValue::Float(f64::MAX)),
+            ],
+        );
         assert_eq!(result, FeatureValue::Missing);
     }
 
@@ -1384,7 +1452,9 @@ mod tests {
     fn test_eval_now_returns_float() {
         let result = eval_with("now()", &[]);
         match result {
-            FeatureValue::Float(f) => assert!(f > 1_000_000_000.0, "now() should return Unix timestamp"),
+            FeatureValue::Float(f) => {
+                assert!(f > 1_000_000_000.0, "now() should return Unix timestamp")
+            }
             other => panic!("Expected Float from now(), got {:?}", other),
         }
     }
@@ -1393,118 +1463,130 @@ mod tests {
 
     #[test]
     fn test_eval_or_true_true() {
-        let result = eval_with("a or b", &[
-            ("a", FeatureValue::Int(1)),
-            ("b", FeatureValue::Int(1)),
-        ]);
+        let result = eval_with(
+            "a or b",
+            &[("a", FeatureValue::Int(1)), ("b", FeatureValue::Int(1))],
+        );
         assert_eq!(result, FeatureValue::Int(1));
     }
 
     #[test]
     fn test_eval_or_true_false() {
-        let result = eval_with("a or b", &[
-            ("a", FeatureValue::Int(1)),
-            ("b", FeatureValue::Int(0)),
-        ]);
+        let result = eval_with(
+            "a or b",
+            &[("a", FeatureValue::Int(1)), ("b", FeatureValue::Int(0))],
+        );
         assert_eq!(result, FeatureValue::Int(1));
     }
 
     #[test]
     fn test_eval_or_false_false() {
-        let result = eval_with("a or b", &[
-            ("a", FeatureValue::Int(0)),
-            ("b", FeatureValue::Int(0)),
-        ]);
+        let result = eval_with(
+            "a or b",
+            &[("a", FeatureValue::Int(0)), ("b", FeatureValue::Int(0))],
+        );
         assert_eq!(result, FeatureValue::Int(0));
     }
 
     #[test]
     fn test_eval_or_with_missing_propagates() {
-        let result = eval_with("a or b", &[
-            ("a", FeatureValue::Missing),
-            ("b", FeatureValue::Int(1)),
-        ]);
+        let result = eval_with(
+            "a or b",
+            &[("a", FeatureValue::Missing), ("b", FeatureValue::Int(1))],
+        );
         assert_eq!(result, FeatureValue::Missing);
     }
 
     #[test]
     fn test_eval_lt_true() {
-        let result = eval_with("a < b", &[
-            ("a", FeatureValue::Int(3)),
-            ("b", FeatureValue::Int(5)),
-        ]);
+        let result = eval_with(
+            "a < b",
+            &[("a", FeatureValue::Int(3)), ("b", FeatureValue::Int(5))],
+        );
         assert_eq!(result, FeatureValue::Int(1));
     }
 
     #[test]
     fn test_eval_lt_false_equal() {
-        let result = eval_with("a < b", &[
-            ("a", FeatureValue::Int(5)),
-            ("b", FeatureValue::Int(5)),
-        ]);
+        let result = eval_with(
+            "a < b",
+            &[("a", FeatureValue::Int(5)), ("b", FeatureValue::Int(5))],
+        );
         assert_eq!(result, FeatureValue::Int(0));
     }
 
     #[test]
     fn test_eval_lt_false_greater() {
-        let result = eval_with("a < b", &[
-            ("a", FeatureValue::Float(7.0)),
-            ("b", FeatureValue::Float(3.0)),
-        ]);
+        let result = eval_with(
+            "a < b",
+            &[
+                ("a", FeatureValue::Float(7.0)),
+                ("b", FeatureValue::Float(3.0)),
+            ],
+        );
         assert_eq!(result, FeatureValue::Int(0));
     }
 
     #[test]
     fn test_eval_lte_true_less() {
-        let result = eval_with("a <= b", &[
-            ("a", FeatureValue::Int(3)),
-            ("b", FeatureValue::Int(5)),
-        ]);
+        let result = eval_with(
+            "a <= b",
+            &[("a", FeatureValue::Int(3)), ("b", FeatureValue::Int(5))],
+        );
         assert_eq!(result, FeatureValue::Int(1));
     }
 
     #[test]
     fn test_eval_lte_true_equal() {
-        let result = eval_with("a <= b", &[
-            ("a", FeatureValue::Float(5.0)),
-            ("b", FeatureValue::Float(5.0)),
-        ]);
+        let result = eval_with(
+            "a <= b",
+            &[
+                ("a", FeatureValue::Float(5.0)),
+                ("b", FeatureValue::Float(5.0)),
+            ],
+        );
         assert_eq!(result, FeatureValue::Int(1));
     }
 
     #[test]
     fn test_eval_lte_false() {
-        let result = eval_with("a <= b", &[
-            ("a", FeatureValue::Int(10)),
-            ("b", FeatureValue::Int(5)),
-        ]);
+        let result = eval_with(
+            "a <= b",
+            &[("a", FeatureValue::Int(10)), ("b", FeatureValue::Int(5))],
+        );
         assert_eq!(result, FeatureValue::Int(0));
     }
 
     #[test]
     fn test_eval_neq_true() {
-        let result = eval_with("a != b", &[
-            ("a", FeatureValue::Int(3)),
-            ("b", FeatureValue::Int(5)),
-        ]);
+        let result = eval_with(
+            "a != b",
+            &[("a", FeatureValue::Int(3)), ("b", FeatureValue::Int(5))],
+        );
         assert_eq!(result, FeatureValue::Int(1));
     }
 
     #[test]
     fn test_eval_neq_false() {
-        let result = eval_with("a != b", &[
-            ("a", FeatureValue::Float(5.0)),
-            ("b", FeatureValue::Float(5.0)),
-        ]);
+        let result = eval_with(
+            "a != b",
+            &[
+                ("a", FeatureValue::Float(5.0)),
+                ("b", FeatureValue::Float(5.0)),
+            ],
+        );
         assert_eq!(result, FeatureValue::Int(0));
     }
 
     #[test]
     fn test_eval_neq_strings() {
-        let result = eval_with("a != b", &[
-            ("a", FeatureValue::String("hello".into())),
-            ("b", FeatureValue::String("world".into())),
-        ]);
+        let result = eval_with(
+            "a != b",
+            &[
+                ("a", FeatureValue::String("hello".into())),
+                ("b", FeatureValue::String("world".into())),
+            ],
+        );
         assert_eq!(result, FeatureValue::Int(1));
     }
 
@@ -1512,9 +1594,7 @@ mod tests {
 
     #[test]
     fn test_eval_unknown_function_returns_missing() {
-        let result = eval_with("unknown_fn(a)", &[
-            ("a", FeatureValue::Float(5.0)),
-        ]);
+        let result = eval_with("unknown_fn(a)", &[("a", FeatureValue::Float(5.0))]);
         assert_eq!(result, FeatureValue::Missing);
     }
 
@@ -1526,19 +1606,20 @@ mod tests {
 
     #[test]
     fn test_eval_min_wrong_arity_one_arg() {
-        let result = eval_with("min(a)", &[
-            ("a", FeatureValue::Float(5.0)),
-        ]);
+        let result = eval_with("min(a)", &[("a", FeatureValue::Float(5.0))]);
         assert_eq!(result, FeatureValue::Missing);
     }
 
     #[test]
     fn test_eval_max_wrong_arity_three_args() {
-        let result = eval_with("max(a, b, c)", &[
-            ("a", FeatureValue::Float(1.0)),
-            ("b", FeatureValue::Float(2.0)),
-            ("c", FeatureValue::Float(3.0)),
-        ]);
+        let result = eval_with(
+            "max(a, b, c)",
+            &[
+                ("a", FeatureValue::Float(1.0)),
+                ("b", FeatureValue::Float(2.0)),
+                ("c", FeatureValue::Float(3.0)),
+            ],
+        );
         assert_eq!(result, FeatureValue::Missing);
     }
 
@@ -1558,10 +1639,7 @@ mod tests {
 
     #[test]
     fn test_eval_if_returns_string() {
-        let result = eval_with(
-            "if(a > 10, 'high', 'low')",
-            &[("a", FeatureValue::Int(15))],
-        );
+        let result = eval_with("if(a > 10, 'high', 'low')", &[("a", FeatureValue::Int(15))]);
         assert_eq!(result, FeatureValue::String("high".into()));
     }
 
@@ -1573,10 +1651,10 @@ mod tests {
 
     #[test]
     fn test_eval_if_wrong_arity() {
-        let result = eval_with("if(a, b)", &[
-            ("a", FeatureValue::Int(1)),
-            ("b", FeatureValue::Int(2)),
-        ]);
+        let result = eval_with(
+            "if(a, b)",
+            &[("a", FeatureValue::Int(1)), ("b", FeatureValue::Int(2))],
+        );
         assert_eq!(result, FeatureValue::Missing);
     }
 
@@ -1591,10 +1669,7 @@ mod tests {
 
     #[test]
     fn test_eval_if_string_condition_falsy() {
-        let result = eval_with(
-            "if(a, 1, 0)",
-            &[("a", FeatureValue::String("".into()))],
-        );
+        let result = eval_with("if(a, 1, 0)", &[("a", FeatureValue::String("".into()))]);
         assert_eq!(result, FeatureValue::Float(0.0));
     }
 
@@ -1644,10 +1719,10 @@ mod tests {
 
     #[test]
     fn test_eval_is_missing_wrong_arity() {
-        let result = eval_with("is_missing(a, b)", &[
-            ("a", FeatureValue::Int(1)),
-            ("b", FeatureValue::Int(2)),
-        ]);
+        let result = eval_with(
+            "is_missing(a, b)",
+            &[("a", FeatureValue::Int(1)), ("b", FeatureValue::Int(2))],
+        );
         assert_eq!(result, FeatureValue::Missing);
     }
 
@@ -1703,17 +1778,19 @@ mod tests {
 
     #[test]
     fn test_eval_contains_true() {
-        let result = eval_with("contains(a, 'US')", &[
-            ("a", FeatureValue::String("US-West".into())),
-        ]);
+        let result = eval_with(
+            "contains(a, 'US')",
+            &[("a", FeatureValue::String("US-West".into()))],
+        );
         assert_eq!(result, FeatureValue::Float(1.0));
     }
 
     #[test]
     fn test_eval_contains_false() {
-        let result = eval_with("contains(a, 'EU')", &[
-            ("a", FeatureValue::String("US-West".into())),
-        ]);
+        let result = eval_with(
+            "contains(a, 'EU')",
+            &[("a", FeatureValue::String("US-West".into()))],
+        );
         assert_eq!(result, FeatureValue::Float(0.0));
     }
 
@@ -1725,17 +1802,19 @@ mod tests {
 
     #[test]
     fn test_eval_starts_with_true() {
-        let result = eval_with("starts_with(a, 'US')", &[
-            ("a", FeatureValue::String("US-West".into())),
-        ]);
+        let result = eval_with(
+            "starts_with(a, 'US')",
+            &[("a", FeatureValue::String("US-West".into()))],
+        );
         assert_eq!(result, FeatureValue::Float(1.0));
     }
 
     #[test]
     fn test_eval_starts_with_false() {
-        let result = eval_with("starts_with(a, 'EU')", &[
-            ("a", FeatureValue::String("US-West".into())),
-        ]);
+        let result = eval_with(
+            "starts_with(a, 'EU')",
+            &[("a", FeatureValue::String("US-West".into()))],
+        );
         assert_eq!(result, FeatureValue::Float(0.0));
     }
 
@@ -1747,27 +1826,34 @@ mod tests {
 
     #[test]
     fn test_eval_concat() {
-        let result = eval_with("concat(a, b)", &[
-            ("a", FeatureValue::String("hello".into())),
-            ("b", FeatureValue::String(" world".into())),
-        ]);
+        let result = eval_with(
+            "concat(a, b)",
+            &[
+                ("a", FeatureValue::String("hello".into())),
+                ("b", FeatureValue::String(" world".into())),
+            ],
+        );
         assert_eq!(result, FeatureValue::String("hello world".into()));
     }
 
     #[test]
     fn test_eval_concat_missing() {
-        let result = eval_with("concat(a, b)", &[
-            ("a", FeatureValue::String("hello".into())),
-        ]);
+        let result = eval_with(
+            "concat(a, b)",
+            &[("a", FeatureValue::String("hello".into()))],
+        );
         assert_eq!(result, FeatureValue::Missing);
     }
 
     #[test]
     fn test_eval_concat_non_string() {
-        let result = eval_with("concat(a, b)", &[
-            ("a", FeatureValue::String("hello".into())),
-            ("b", FeatureValue::Int(42)),
-        ]);
+        let result = eval_with(
+            "concat(a, b)",
+            &[
+                ("a", FeatureValue::String("hello".into())),
+                ("b", FeatureValue::Int(42)),
+            ],
+        );
         assert_eq!(result, FeatureValue::Missing);
     }
 
@@ -1830,10 +1916,13 @@ mod tests {
 
     #[test]
     fn test_eval_pow() {
-        let result = eval_with("pow(a, b)", &[
-            ("a", FeatureValue::Float(2.0)),
-            ("b", FeatureValue::Float(3.0)),
-        ]);
+        let result = eval_with(
+            "pow(a, b)",
+            &[
+                ("a", FeatureValue::Float(2.0)),
+                ("b", FeatureValue::Float(3.0)),
+            ],
+        );
         assert_eq!(result, FeatureValue::Float(8.0));
     }
 
@@ -1845,10 +1934,10 @@ mod tests {
 
     #[test]
     fn test_eval_pow_int_args() {
-        let result = eval_with("pow(a, b)", &[
-            ("a", FeatureValue::Int(3)),
-            ("b", FeatureValue::Int(2)),
-        ]);
+        let result = eval_with(
+            "pow(a, b)",
+            &[("a", FeatureValue::Int(3)), ("b", FeatureValue::Int(2))],
+        );
         assert_eq!(result, FeatureValue::Float(9.0));
     }
 
@@ -1920,10 +2009,13 @@ mod tests {
 
     #[test]
     fn test_eval_clamp_wrong_arity() {
-        let result = eval_with("clamp(a, b)", &[
-            ("a", FeatureValue::Float(5.0)),
-            ("b", FeatureValue::Float(10.0)),
-        ]);
+        let result = eval_with(
+            "clamp(a, b)",
+            &[
+                ("a", FeatureValue::Float(5.0)),
+                ("b", FeatureValue::Float(10.0)),
+            ],
+        );
         assert_eq!(result, FeatureValue::Missing);
     }
 
@@ -1958,10 +2050,7 @@ mod tests {
     #[test]
     fn test_eval_if_with_coalesce() {
         // if(is_missing(avg), 0, amount / avg) when avg is missing
-        let result = eval_with(
-            "if(is_missing(avg), 0, _event.amount / avg)",
-            &[],
-        );
+        let result = eval_with("if(is_missing(avg), 0, _event.amount / avg)", &[]);
         assert_eq!(result, FeatureValue::Float(0.0));
     }
 

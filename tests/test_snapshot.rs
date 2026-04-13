@@ -6,9 +6,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tally::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use tally::state::eviction::evict_expired_keys;
-use tally::state::snapshot::{
-    save_snapshot, load_snapshot, SerializablePipeline, SnapshotState,
-};
+use tally::state::snapshot::{load_snapshot, save_snapshot, SerializablePipeline, SnapshotState};
 use tally::state::store::StateStore;
 use tally::types::FeatureValue;
 
@@ -58,7 +56,7 @@ fn make_tx_stream() -> StreamDefinition {
 #[test]
 fn test_snapshot_roundtrip_preserves_features() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     engine.register(make_tx_stream()).unwrap();
 
     let now = ts(60_000);
@@ -89,7 +87,7 @@ fn test_snapshot_roundtrip_preserves_features() {
     let restored = load_snapshot(&bytes).expect("load_snapshot should succeed");
 
     // Restore into a new store
-    let mut new_store = StateStore::new();
+    let new_store = StateStore::new();
     new_store.restore_from_snapshot(restored.entities);
 
     // Verify features match
@@ -139,7 +137,7 @@ fn test_snapshot_corrupt_data_returns_none() {
 
 #[test]
 fn test_eviction_removes_old_entity() {
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let mut engine = PipelineEngine::new();
     engine
         .register(StreamDefinition {
@@ -200,7 +198,7 @@ fn test_eviction_removes_old_entity() {
 
 #[test]
 fn test_eviction_preserves_entity_with_no_events() {
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let mut engine = PipelineEngine::new();
     engine
         .register(StreamDefinition {
@@ -260,7 +258,10 @@ fn test_snapshot_atomic_write() {
 
     // Assert final file exists and tmp file does not
     assert!(final_path.exists(), "final snapshot file should exist");
-    assert!(!tmp_path.exists(), ".tmp file should not exist after rename");
+    assert!(
+        !tmp_path.exists(),
+        ".tmp file should not exist after rename"
+    );
 
     // Assert load_snapshot works on the final file
     let loaded_bytes = std::fs::read(&final_path).expect("read final");

@@ -189,10 +189,10 @@ pub async fn handle_connection_public(
 /// - The read loop is now a `tokio::select! { biased; read | deadline }`.
 /// - `OP_PUSH_ASYNC` frames accumulate into a stack-local `ConnAccumulator`.
 /// - The accumulator is flushed via `handle_push_batch` when:
-///     (a) it hits `BATCH_SIZE` events,
-///     (b) its deadline elapses (200µs armed on first buffered event),
-///     (c) any non-async opcode arrives (sync force-flush, pitfall H-2),
-///     (d) the client disconnects.
+///   (a) it hits `BATCH_SIZE` events,
+///   (b) its deadline elapses (200µs armed on first buffered event),
+///   (c) any non-async opcode arrives (sync force-flush, pitfall H-2),
+///   (d) the client disconnects.
 /// - Per-event errors from the batch path are surfaced on the NEXT sync
 ///   call (or on clean disconnect), in per-connection `seq` order (C-2).
 /// - The `BufWriter` I-3 invariant is preserved: every byte written is
@@ -347,7 +347,12 @@ async fn handle_connection(
         }
 
         // Async push: accumulate, maybe auto-flush at BATCH_SIZE.
-        if let Command::PushAsync { stream_name, payload, raw_payload } = cmd {
+        if let Command::PushAsync {
+            stream_name,
+            payload,
+            raw_payload,
+        } = cmd
+        {
             accumulator.push(stream_name, payload, raw_payload, SystemTime::now());
             if accumulator.is_full() {
                 flush_batch_to_drain(&state, &mut accumulator, &mut pending_drain);
@@ -372,7 +377,14 @@ async fn handle_connection(
 
                 // We have data — read the next frame directly (no select!).
                 match read_one_frame(&mut reader).await {
-                    Ok(Some((_len, Command::PushAsync { stream_name, payload, raw_payload }))) => {
+                    Ok(Some((
+                        _len,
+                        Command::PushAsync {
+                            stream_name,
+                            payload,
+                            raw_payload,
+                        },
+                    ))) => {
                         accumulator.push(stream_name, payload, raw_payload, SystemTime::now());
                     }
                     Ok(Some(frame)) => {
@@ -391,20 +403,39 @@ async fn handle_connection(
                         let cmd_start = std::time::Instant::now();
                         let is_mset = matches!(&cmd2, Command::Mset { .. });
                         let response: Result<Option<Vec<u8>>, TallyError> = match cmd2 {
-                            Command::Mset { entries } => handle_mset(entries, &state).await.map(Some),
+                            Command::Mset { entries } => {
+                                handle_mset(entries, &state).await.map(Some)
+                            }
                             Command::Flush => Ok(Some(Vec::new())),
                             Command::PushAsync { .. } => unreachable!(),
-                            Command::PushBatch { stream_name, batch_id, events } => {
+                            Command::PushBatch {
+                                stream_name,
+                                batch_id,
+                                events,
+                            } => {
                                 // Accumulator already flushed above (line 331).
                                 let base_seq = accumulator.advance_seq(events.len() as u64);
                                 let now = SystemTime::now();
-                                let batch: Vec<PendingAsync> = events.into_iter().enumerate().map(|(i, (payload, raw_payload))| {
-                                    PendingAsync::new(base_seq + i as u64, stream_name.clone(), payload, raw_payload, now)
-                                }).collect();
+                                let batch: Vec<PendingAsync> = events
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(i, (payload, raw_payload))| {
+                                        PendingAsync::new(
+                                            base_seq + i as u64,
+                                            stream_name.clone(),
+                                            payload,
+                                            raw_payload,
+                                            now,
+                                        )
+                                    })
+                                    .collect();
                                 let results = handle_push_batch(&state, &batch);
                                 for (i, (ev, res)) in batch.iter().zip(results.iter()).enumerate() {
                                     if let Err(err) = res {
-                                        pending_drain.push((ev.seq, format!("[batch:{} event:{}] {}", batch_id, i, err)));
+                                        pending_drain.push((
+                                            ev.seq,
+                                            format!("[batch:{} event:{}] {}", batch_id, i, err),
+                                        ));
                                     }
                                 }
                                 // Fire-and-forget: no response frame.
@@ -415,9 +446,21 @@ async fn handle_connection(
                         if is_mset {
                             let mset_us = cmd_start.elapsed().as_secs_f64() * 1_000_000.0;
                             let mut latency = state.latency.lock();
-                            latency.record_command(crate::server::latency::CommandKind::Mset, mset_us, std::time::Instant::now());
-                            if latency.slow_queries_would_accept(crate::server::latency::CommandKind::Mset, mset_us) {
-                                latency.maybe_record_slow(crate::server::latency::CommandKind::Mset, None, mset_us, String::new());
+                            latency.record_command(
+                                crate::server::latency::CommandKind::Mset,
+                                mset_us,
+                                std::time::Instant::now(),
+                            );
+                            if latency.slow_queries_would_accept(
+                                crate::server::latency::CommandKind::Mset,
+                                mset_us,
+                            ) {
+                                latency.maybe_record_slow(
+                                    crate::server::latency::CommandKind::Mset,
+                                    None,
+                                    mset_us,
+                                    String::new(),
+                                );
                             }
                         }
                         flush_drain(&mut writer, &mut pending_drain).await?;
@@ -429,7 +472,10 @@ async fn handle_connection(
                             }
                             Ok(None) => {}
                             Err(e) => {
-                                let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
+                                let resp = protocol::encode_response(
+                                    STATUS_ERROR,
+                                    e.to_string().as_bytes(),
+                                );
                                 writer.write_all(&resp).await?;
                                 writer.flush().await?;
                             }
@@ -448,7 +494,8 @@ async fn handle_connection(
                         if !accumulator.is_empty() {
                             flush_batch_to_drain(&state, &mut accumulator, &mut pending_drain);
                         }
-                        let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
+                        let resp =
+                            protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
                         writer.write_all(&resp).await?;
                         writer.flush().await?;
                         return Ok(());
@@ -470,17 +517,32 @@ async fn handle_connection(
             Command::Mset { entries } => handle_mset(entries, &state).await.map(Some),
             Command::Flush => Ok(Some(Vec::new())),
             Command::PushAsync { .. } => unreachable!("handled above"),
-            Command::PushBatch { stream_name, batch_id, events } => {
+            Command::PushBatch {
+                stream_name,
+                batch_id,
+                events,
+            } => {
                 // Accumulator already force-flushed above (H-2).
                 let base_seq = accumulator.advance_seq(events.len() as u64);
                 let now = SystemTime::now();
-                let batch: Vec<PendingAsync> = events.into_iter().enumerate().map(|(i, (payload, raw_payload))| {
-                    PendingAsync::new(base_seq + i as u64, stream_name.clone(), payload, raw_payload, now)
-                }).collect();
+                let batch: Vec<PendingAsync> = events
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (payload, raw_payload))| {
+                        PendingAsync::new(
+                            base_seq + i as u64,
+                            stream_name.clone(),
+                            payload,
+                            raw_payload,
+                            now,
+                        )
+                    })
+                    .collect();
                 let results = handle_push_batch(&state, &batch);
                 for (i, (ev, res)) in batch.iter().zip(results.iter()).enumerate() {
                     if let Err(err) = res {
-                        pending_drain.push((ev.seq, format!("[batch:{} event:{}] {}", batch_id, i, err)));
+                        pending_drain
+                            .push((ev.seq, format!("[batch:{} event:{}] {}", batch_id, i, err)));
                     }
                 }
                 // Fire-and-forget: no response frame. Continue loop.
@@ -493,9 +555,19 @@ async fn handle_connection(
         if is_mset {
             let mset_us = cmd_start.elapsed().as_secs_f64() * 1_000_000.0;
             let mut latency = state.latency.lock();
-            latency.record_command(crate::server::latency::CommandKind::Mset, mset_us, std::time::Instant::now());
-            if latency.slow_queries_would_accept(crate::server::latency::CommandKind::Mset, mset_us) {
-                latency.maybe_record_slow(crate::server::latency::CommandKind::Mset, None, mset_us, String::new());
+            latency.record_command(
+                crate::server::latency::CommandKind::Mset,
+                mset_us,
+                std::time::Instant::now(),
+            );
+            if latency.slow_queries_would_accept(crate::server::latency::CommandKind::Mset, mset_us)
+            {
+                latency.maybe_record_slow(
+                    crate::server::latency::CommandKind::Mset,
+                    None,
+                    mset_us,
+                    String::new(),
+                );
             }
         }
 
@@ -634,7 +706,9 @@ fn handle_push_core_ex(
 
     // Fan-out: push to other streams whose key_field exists in the event.
     let cascade_targets = engine.get_cascade_targets(stream_name);
-    let primary_key_field = engine.get_stream(stream_name).and_then(|s| s.key_field.as_deref());
+    let primary_key_field = engine
+        .get_stream(stream_name)
+        .and_then(|s| s.key_field.as_deref());
     let targets = engine.fan_out_targets();
     // Collect fan-out stream names for event log (need to know which streams were touched)
     let mut fan_out_logged: Vec<&str> = Vec::new();
@@ -690,7 +764,9 @@ fn handle_push_core_ex(
             for ds_name in &cascade_targets {
                 let should_log = match engine.get_stream(ds_name) {
                     Some(d) => match &d.key_field {
-                        Some(kf) => matches!(payload.get(kf.as_str()), Some(serde_json::Value::String(s)) if !s.is_empty()),
+                        Some(kf) => {
+                            matches!(payload.get(kf.as_str()), Some(serde_json::Value::String(s)) if !s.is_empty())
+                        }
                         None => true,
                     },
                     None => false,
@@ -736,7 +812,10 @@ fn handle_push_core_ex(
             }
             touched.push(target_name.as_str());
         }
-        state.throughput.lock().bump_unique(touched.into_iter(), now_inst);
+        state
+            .throughput
+            .lock()
+            .bump_unique(touched, now_inst);
     }
 
     let push_elapsed = push_start.elapsed();
@@ -752,13 +831,16 @@ fn handle_push_core_ex(
         let mut latency = state.latency.lock();
         latency.record_push(stream_name, push_us, std::time::Instant::now());
         if latency.slow_queries_would_accept(crate::server::latency::CommandKind::Push, push_us) {
-            let key_preview = engine.get_stream(stream_name)
+            let key_preview = engine
+                .get_stream(stream_name)
                 .and_then(|s| s.key_field.clone())
-                .and_then(|kf| payload.get(&kf).and_then(|v| v.as_str()).map(|s| {
-                    let mut kp = s.to_string();
-                    kp.truncate(32);
-                    kp
-                }))
+                .and_then(|kf| {
+                    payload.get(&kf).and_then(|v| v.as_str()).map(|s| {
+                        let mut kp = s.to_string();
+                        kp.truncate(32);
+                        kp
+                    })
+                })
                 .unwrap_or_default();
             latency.maybe_record_slow(
                 crate::server::latency::CommandKind::Push,
@@ -808,7 +890,13 @@ impl PendingAsync {
         raw_payload: Vec<u8>,
         now: SystemTime,
     ) -> Self {
-        Self { seq, stream_name, payload, raw_payload, now }
+        Self {
+            seq,
+            stream_name,
+            payload,
+            raw_payload,
+            now,
+        }
     }
 }
 
@@ -873,8 +961,7 @@ impl ConnAccumulator {
         self.next_seq += 1;
         if self.buf.is_empty() {
             self.deadline = Some(
-                tokio::time::Instant::now()
-                    + std::time::Duration::from_micros(BATCH_DEADLINE_US),
+                tokio::time::Instant::now() + std::time::Duration::from_micros(BATCH_DEADLINE_US),
             );
         }
         self.buf.push(PendingAsync {
@@ -937,13 +1024,14 @@ pub fn handle_push_batch(
     // Fast path: check if all events target the same stream (common case
     // under single-client sustained load). Avoids the grouping Vec entirely.
     let all_same_stream = batch.len() == 1
-        || batch[1..].iter().all(|ev| ev.stream_name == batch[0].stream_name);
+        || batch[1..]
+            .iter()
+            .all(|ev| ev.stream_name == batch[0].stream_name);
 
     // Result slots in input order, pre-filled with Ok. Per-event errors
     // from the cascade-aware batch primitive are scattered back to their
     // input positions below.
-    let mut results: Vec<Result<(), TallyError>> =
-        (0..batch.len()).map(|_| Ok(())).collect();
+    let mut results: Vec<Result<(), TallyError>> = (0..batch.len()).map(|_| Ok(())).collect();
 
     // Phase 14 fix: engine read lock only. Store is accessed via DashMap
     // (no lock needed). Event log lock is deferred to AFTER all entity state
@@ -959,17 +1047,12 @@ pub fn handle_push_batch(
             .and_then(|s| s.key_field.as_deref());
 
         // Build event refs inline (stack-friendly for typical batch sizes).
-        let events_refs: Vec<&serde_json::Value> =
-            batch.iter().map(|ev| &ev.payload).collect();
+        let events_refs: Vec<&serde_json::Value> = batch.iter().map(|ev| &ev.payload).collect();
 
         let now = batch[0].now;
 
-        let per_event = engine.push_batch_with_cascade_no_features(
-            stream_name,
-            &events_refs,
-            store,
-            now,
-        );
+        let per_event =
+            engine.push_batch_with_cascade_no_features(stream_name, &events_refs, store, now);
 
         // Scatter errors to result slots.
         for (idx, res) in per_event.into_iter().enumerate() {
@@ -1029,12 +1112,8 @@ pub fn handle_push_batch(
                 .min()
                 .unwrap_or_else(SystemTime::now);
 
-            let per_event = engine.push_batch_with_cascade_no_features(
-                stream_name,
-                &events_refs,
-                store,
-                now,
-            );
+            let per_event =
+                engine.push_batch_with_cascade_no_features(stream_name, &events_refs, store, now);
 
             for (slot_idx, res) in indices.iter().zip(per_event.into_iter()) {
                 if let Err(e) = res {
@@ -1099,7 +1178,8 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             // contract. Clients relying on that contract must migrate to
             // push() + get() or accept an empty map.
             // Plan 11-06: raw_payload goes to the event log directly.
-            let _features = handle_push_core_ex(state, &stream_name, &payload, &raw_payload, now, false)?;
+            let _features =
+                handle_push_core_ex(state, &stream_name, &payload, &raw_payload, now, false)?;
             Ok(feature_map_to_json(&crate::types::FeatureMap::new()))
         }
         Command::Get { key } => {
@@ -1111,11 +1191,20 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             // Phase 10.2: record GET latency
             let get_us = get_start.elapsed().as_secs_f64() * 1_000_000.0;
             let mut latency = state.latency.lock();
-            latency.record_command(crate::server::latency::CommandKind::Get, get_us, std::time::Instant::now());
+            latency.record_command(
+                crate::server::latency::CommandKind::Get,
+                get_us,
+                std::time::Instant::now(),
+            );
             if latency.slow_queries_would_accept(crate::server::latency::CommandKind::Get, get_us) {
                 let mut kp = key.clone();
                 kp.truncate(32);
-                latency.maybe_record_slow(crate::server::latency::CommandKind::Get, None, get_us, kp);
+                latency.maybe_record_slow(
+                    crate::server::latency::CommandKind::Get,
+                    None,
+                    get_us,
+                    kp,
+                );
             }
             Ok(result)
         }
@@ -1139,11 +1228,20 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             // Phase 10.2: record SET latency
             let set_us = set_start.elapsed().as_secs_f64() * 1_000_000.0;
             let mut latency = state.latency.lock();
-            latency.record_command(crate::server::latency::CommandKind::Set, set_us, std::time::Instant::now());
+            latency.record_command(
+                crate::server::latency::CommandKind::Set,
+                set_us,
+                std::time::Instant::now(),
+            );
             if latency.slow_queries_would_accept(crate::server::latency::CommandKind::Set, set_us) {
                 let mut kp = key.clone();
                 kp.truncate(32);
-                latency.maybe_record_slow(crate::server::latency::CommandKind::Set, None, set_us, kp);
+                latency.maybe_record_slow(
+                    crate::server::latency::CommandKind::Set,
+                    None,
+                    set_us,
+                    kp,
+                );
             }
             Ok(vec![])
         }
@@ -1164,8 +1262,7 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                 let stream_def = protocol::convert_register_request(req)?;
                 let diff = engine.register(stream_def)?;
                 // Register stream with event log for persistence
-                let history_ttl = engine.get_stream(&def_name)
-                    .and_then(|s| s.history_ttl);
+                let history_ttl = engine.get_stream(&def_name).and_then(|s| s.history_ttl);
                 {
                     let mut event_log = state.event_log.lock();
                     if let Some(ref mut log) = *event_log {
@@ -1186,7 +1283,8 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                     // Read event log entries for this stream
                     let entries = {
                         let event_log = state.event_log.lock();
-                        event_log.as_ref()
+                        event_log
+                            .as_ref()
                             .map(|log| log.read_entries(&def_name).unwrap_or_default())
                             .unwrap_or_default()
                     };
@@ -1201,7 +1299,10 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                             started_at: SystemTime::now(),
                             completed_at: std::sync::Mutex::new(None),
                         });
-                        state.backfill_tracker.tasks.lock()
+                        state
+                            .backfill_tracker
+                            .tasks
+                            .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .push(Arc::clone(&status));
 
@@ -1285,7 +1386,9 @@ pub async fn run_backfill(
         for key in &keys {
             if let Some(mut entity) = state.store.get_entity_mut(key) {
                 if let Some(stream_state) = entity.streams.get_mut(&stream_name) {
-                    stream_state.operators.retain(|(name, _)| !feature_names.contains(name));
+                    stream_state
+                        .operators
+                        .retain(|(name, _)| !feature_names.contains(name));
                 }
             }
         }
@@ -1334,13 +1437,16 @@ pub async fn run_backfill(
                 }
             }
         } // Engine read lock released before yield
-        // Update progress
+          // Update progress
         let processed = std::cmp::min((chunk_idx + 1) * 64, total);
         status.processed_events.store(processed, Ordering::Relaxed);
         tokio::task::yield_now().await; // Cooperative yield (SCHM-04)
     }
     // Mark complete in tracker
-    *status.completed_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(SystemTime::now());
+    *status
+        .completed_at
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(SystemTime::now());
     // Persist completion markers so restart detects this backfill as done
     {
         let mut backfill_complete = state.backfill_complete.lock();
@@ -1481,7 +1587,7 @@ mod tests {
         let cmd = Command::Push {
             stream_name: "Transactions".into(),
             payload: serde_json::json!({"user_id": "u123", "amount": 50.0}),
-        raw_payload: Vec::new(),
+            raw_payload: Vec::new(),
         };
         let result = handle_sync_command(cmd, &state);
         assert!(result.is_ok());
@@ -1504,7 +1610,7 @@ mod tests {
         let cmd = Command::Push {
             stream_name: "NonExistent".into(),
             payload: serde_json::json!({"user_id": "u123"}),
-        raw_payload: Vec::new(),
+            raw_payload: Vec::new(),
         };
         let result = handle_sync_command(cmd, &state);
         assert!(result.is_err());
@@ -1523,14 +1629,12 @@ mod tests {
         let push_cmd = Command::Push {
             stream_name: "Transactions".into(),
             payload: serde_json::json!({"user_id": "u123", "amount": 50.0}),
-        raw_payload: Vec::new(),
+            raw_payload: Vec::new(),
         };
         handle_sync_command(push_cmd, &state).unwrap();
 
         // GET should return features
-        let get_cmd = Command::Get {
-            key: "u123".into(),
-        };
+        let get_cmd = Command::Get { key: "u123".into() };
         let result = handle_sync_command(get_cmd, &state);
         assert!(result.is_ok());
 
@@ -1607,7 +1711,10 @@ mod tests {
         assert!(!response_bytes.is_empty());
         let diff_json: serde_json::Value = serde_json::from_slice(&response_bytes).unwrap();
         assert_eq!(diff_json["status"], "ok");
-        assert!(diff_json["added"].as_array().unwrap().contains(&serde_json::json!("login_count_1h")));
+        assert!(diff_json["added"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("login_count_1h")));
         assert!(diff_json["removed"].as_array().unwrap().is_empty());
 
         let engine = state.engine.read();
@@ -1632,14 +1739,8 @@ mod tests {
     async fn test_mset_processes_entries() {
         let state = make_shared_state();
         let entries = vec![
-            (
-                "u123".to_string(),
-                serde_json::json!({"score": 0.95}),
-            ),
-            (
-                "u456".to_string(),
-                serde_json::json!({"score": 0.5}),
-            ),
+            ("u123".to_string(), serde_json::json!({"score": 0.95})),
+            ("u456".to_string(), serde_json::json!({"score": 0.5})),
         ];
         let result = handle_mset(entries, &state).await;
         assert!(result.is_ok());
@@ -1670,6 +1771,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_json_to_feature_value_float() {
         let v = json_to_feature_value(serde_json::json!(3.14));
         assert_eq!(v, FeatureValue::Float(3.14));
@@ -1717,8 +1819,14 @@ mod tests {
         assert!(result.is_ok());
 
         // k1 and k3 should be written (object payloads)
-        assert!(state.store.get_entity("k1").is_some(), "k1 should be written");
-        assert!(state.store.get_entity("k3").is_some(), "k3 should be written");
+        assert!(
+            state.store.get_entity("k1").is_some(),
+            "k1 should be written"
+        );
+        assert!(
+            state.store.get_entity("k3").is_some(),
+            "k3 should be written"
+        );
         // k2 should NOT be written (non-object payload was skipped)
         assert!(
             state.store.get_entity("k2").is_none(),
@@ -1742,9 +1850,7 @@ mod tests {
         assert!(result.is_err()); // Panic was caught
 
         // State is still usable — no poisoning.
-        let cmd = Command::Get {
-            key: "test".into(),
-        };
+        let cmd = Command::Get { key: "test".into() };
         let result = handle_sync_command(cmd, &state);
         assert!(result.is_ok());
     }
@@ -1756,17 +1862,15 @@ mod tests {
         let stream = StreamDefinition {
             name: "MerchantActivity".into(),
             key_field: Some("merchant_id".into()),
-            features: vec![
-                (
-                    "merchant_tx_count_1h".into(),
-                    FeatureDef::Count {
-                        window: Duration::from_secs(3600),
-                        bucket: Duration::from_secs(60),
-                        where_expr: None,
-                        backfill: false,
-                    },
-                ),
-            ],
+            features: vec![(
+                "merchant_tx_count_1h".into(),
+                FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                },
+            )],
             depends_on: None,
             filter: None,
             entity_ttl: None,
@@ -1793,14 +1897,16 @@ mod tests {
                 "merchant_id": "m456",
                 "amount": 50.0
             }),
-        
+
             raw_payload: Vec::new(),
-};
+        };
         let result = handle_sync_command(cmd, &state);
         assert!(result.is_ok());
 
         // Verify merchant entity was created via fan-out
-        let merchant_features = state.store.get_all_features("m456", std::time::SystemTime::now());
+        let merchant_features = state
+            .store
+            .get_all_features("m456", std::time::SystemTime::now());
         assert_eq!(
             merchant_features.get("merchant_tx_count_1h"),
             Some(&FeatureValue::Int(1)),
@@ -1824,9 +1930,9 @@ mod tests {
                 "merchant_id": "m456",
                 "amount": 50.0
             }),
-        
+
             raw_payload: Vec::new(),
-};
+        };
         let result = handle_sync_command(cmd, &state).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&result).unwrap();
 
@@ -1834,7 +1940,9 @@ mod tests {
         assert_eq!(json, serde_json::json!({}));
 
         // But the fan-out still happened: MerchantActivity state was updated.
-        let merchant_features = state.store.get_all_features("m456", std::time::SystemTime::now());
+        let merchant_features = state
+            .store
+            .get_all_features("m456", std::time::SystemTime::now());
         assert_eq!(
             merchant_features.get("merchant_tx_count_1h"),
             Some(&FeatureValue::Int(1)),
@@ -1856,14 +1964,19 @@ mod tests {
                 "merchant_id": "m456",
                 "amount": 50.0
             }),
-        
+
             raw_payload: Vec::new(),
-};
+        };
         handle_sync_command(cmd, &state).unwrap();
 
         // user count should be 1 (pushed once, not twice)
-        let user_features = state.store.get_all_features("u123", std::time::SystemTime::now());
-        assert_eq!(user_features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
+        let user_features = state
+            .store
+            .get_all_features("u123", std::time::SystemTime::now());
+        assert_eq!(
+            user_features.get("tx_count_1h"),
+            Some(&FeatureValue::Int(1))
+        );
     }
 
     #[test]
@@ -1879,13 +1992,16 @@ mod tests {
                 "user_id": "u123",
                 "amount": 50.0
             }),
-        
+
             raw_payload: Vec::new(),
-};
+        };
         handle_sync_command(cmd, &state).unwrap();
 
         // Merchant entity should NOT exist
-        assert!(state.store.get_entity("m456").is_none(), "no fan-out without key field");
+        assert!(
+            state.store.get_entity("m456").is_none(),
+            "no fan-out without key field"
+        );
     }
 
     #[test]
@@ -1902,13 +2018,17 @@ mod tests {
                 "merchant_id": "",
                 "amount": 50.0
             }),
-        
+
             raw_payload: Vec::new(),
-};
+        };
         handle_sync_command(cmd, &state).unwrap();
 
         // Should not create entity for empty key
-        assert_eq!(state.store.entity_count(), 1, "only u123 entity, not empty merchant");
+        assert_eq!(
+            state.store.entity_count(),
+            1,
+            "only u123 entity, not empty merchant"
+        );
     }
 
     #[test]
@@ -1925,9 +2045,9 @@ mod tests {
                 "merchant_id": "m456",
                 "amount": 50.0
             }),
-        
+
             raw_payload: Vec::new(),
-};
+        };
         handle_sync_command(cmd, &state).unwrap();
 
         // GET for user should return Transactions features
@@ -1954,7 +2074,7 @@ mod tests {
         let push_cmd = Command::Push {
             stream_name: "Transactions".into(),
             payload: serde_json::json!({"user_id": "u123", "amount": 50.0}),
-        raw_payload: Vec::new(),
+            raw_payload: Vec::new(),
         };
         handle_sync_command(push_cmd, &state).unwrap();
 
@@ -1991,7 +2111,7 @@ mod tests {
         let push_cmd = Command::Push {
             stream_name: "Transactions".into(),
             payload: serde_json::json!({"user_id": "u123", "amount": 50.0}),
-        raw_payload: Vec::new(),
+            raw_payload: Vec::new(),
         };
         handle_sync_command(push_cmd, &state).unwrap();
 
@@ -2007,7 +2127,11 @@ mod tests {
         // Should NOT have qualified names
         let obj = json["u123"].as_object().unwrap();
         for key in obj.keys() {
-            assert!(!key.contains('.'), "MGET response should not contain qualified name: {}", key);
+            assert!(
+                !key.contains('.'),
+                "MGET response should not contain qualified name: {}",
+                key
+            );
         }
     }
 
@@ -2041,9 +2165,9 @@ mod tests {
                     "merchant_id": "m1",
                     "amount": 10.0
                 }),
-            
+
                 raw_payload: Vec::new(),
-};
+            };
             handle_sync_command(cmd, &state).unwrap();
         }
 
@@ -2058,6 +2182,9 @@ mod tests {
         let get_cmd = Command::Get { key: "m1".into() };
         let result = handle_sync_command(get_cmd, &state).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&result).unwrap();
-        assert_eq!(json["merchant_tx_count_1h"], 3, "fan-out should have 3 merchant events");
+        assert_eq!(
+            json["merchant_tx_count_1h"], 3,
+            "fan-out should have 3 merchant events"
+        );
     }
 }

@@ -15,11 +15,11 @@
 
 #![allow(dead_code, unused_imports)]
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::json;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 
-use tally::engine::pipeline::{PipelineEngine, StreamDefinition, FeatureDef};
+use tally::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use tally::state::event_log::EventLog;
 use tally::state::store::StateStore;
 use tally::types::FeatureValue;
@@ -32,14 +32,15 @@ fn make_count_stream(name: &str, key: &str) -> StreamDefinition {
     StreamDefinition {
         name: name.into(),
         key_field: Some(key.into()),
-        features: vec![
-            ("count_1h".into(), FeatureDef::Count {
+        features: vec![(
+            "count_1h".into(),
+            FeatureDef::Count {
                 window: Duration::from_secs(3600),
                 bucket: Duration::from_secs(60),
                 where_expr: None,
                 backfill: false,
-            }),
-        ],
+            },
+        )],
         depends_on: None,
         filter: None,
         entity_ttl: None,
@@ -55,14 +56,15 @@ fn make_cascade_child(name: &str, key: &str, parent: &str) -> StreamDefinition {
     StreamDefinition {
         name: name.into(),
         key_field: Some(key.into()),
-        features: vec![
-            ("count_1h".into(), FeatureDef::Count {
+        features: vec![(
+            "count_1h".into(),
+            FeatureDef::Count {
                 window: Duration::from_secs(3600),
                 bucket: Duration::from_secs(60),
                 where_expr: None,
                 backfill: false,
-            }),
-        ],
+            },
+        )],
         depends_on: Some(vec![parent.to_string()]),
         filter: None,
         entity_ttl: None,
@@ -157,7 +159,7 @@ mod mark_dirty_many {
 
     #[test]
     fn empty_iterator_leaves_dirty_count_unchanged() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         assert_eq!(store.dirty_count(), 0);
         let empty: Vec<&str> = vec![];
         store.mark_dirty_many(empty);
@@ -166,14 +168,14 @@ mod mark_dirty_many {
 
     #[test]
     fn five_keys_with_duplicate_dedups_to_four() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         store.mark_dirty_many(vec!["k1", "k2", "k3", "k4", "k1"]);
         assert_eq!(store.dirty_count(), 4);
     }
 
     #[test]
     fn mirrors_mark_dirty_does_not_touch_deleted_keys() {
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         store.mark_deleted("ghost");
         store.mark_dirty_many(vec!["ghost", "alive"]);
         // "alive" is now dirty; "ghost" is also added to dirty_keys (mirroring
@@ -195,8 +197,10 @@ mod push_batch_no_features {
     #[test]
     fn empty_batch_returns_empty_vec() {
         let mut engine = PipelineEngine::new();
-        engine.register(make_count_stream("Txns", "user_id")).unwrap();
-        let mut store = StateStore::new();
+        engine
+            .register(make_count_stream("Txns", "user_id"))
+            .unwrap();
+        let store = StateStore::new();
 
         let events: Vec<&serde_json::Value> = vec![];
         let out = engine.push_batch_no_features("Txns", &events, &store, ts(1000));
@@ -207,8 +211,10 @@ mod push_batch_no_features {
     #[test]
     fn three_events_return_three_results_in_order() {
         let mut engine = PipelineEngine::new();
-        engine.register(make_count_stream("Txns", "user_id")).unwrap();
-        let mut store = StateStore::new();
+        engine
+            .register(make_count_stream("Txns", "user_id"))
+            .unwrap();
+        let store = StateStore::new();
 
         let e0 = json!({"user_id": "u1"});
         let e1 = json!({"user_id": "u2"});
@@ -224,8 +230,10 @@ mod push_batch_no_features {
     #[test]
     fn partial_failure_does_not_halt_and_preserves_side_effects() {
         let mut engine = PipelineEngine::new();
-        engine.register(make_count_stream("Txns", "user_id")).unwrap();
-        let mut store = StateStore::new();
+        engine
+            .register(make_count_stream("Txns", "user_id"))
+            .unwrap();
+        let store = StateStore::new();
 
         let e0 = json!({"user_id": "u1"});
         let e1 = json!({"user_id": ""}); // empty key -> Protocol error
@@ -236,7 +244,10 @@ mod push_batch_no_features {
         assert_eq!(out.len(), 3);
         assert!(out[0].is_ok(), "event 0 should apply");
         assert!(out[1].is_err(), "event 1 (empty key) should error");
-        assert!(out[2].is_ok(), "event 2 should apply despite event 1's error");
+        assert!(
+            out[2].is_ok(),
+            "event 2 should apply despite event 1's error"
+        );
 
         let f1 = store.get_all_features("u1", ts(1000));
         assert_eq!(f1.get("count_1h"), Some(&FeatureValue::Int(1)));
@@ -247,7 +258,7 @@ mod push_batch_no_features {
     #[test]
     fn unknown_stream_errors_all_events() {
         let engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let e = json!({"user_id": "u1"});
         let events = vec![&e, &e, &e];
 
@@ -267,15 +278,19 @@ mod push_batch_with_cascade_no_features {
 
     fn build_cascade_engine() -> PipelineEngine {
         let mut engine = PipelineEngine::new();
-        engine.register(make_count_stream("Txns", "user_id")).unwrap();
-        engine.register(make_cascade_child("UserRisk", "user_id", "Txns")).unwrap();
+        engine
+            .register(make_count_stream("Txns", "user_id"))
+            .unwrap();
+        engine
+            .register(make_cascade_child("UserRisk", "user_id", "Txns"))
+            .unwrap();
         engine
     }
 
     #[test]
     fn empty_batch_returns_empty_vec() {
         let engine = build_cascade_engine();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let events: Vec<&serde_json::Value> = vec![];
         let out = engine.push_batch_with_cascade_no_features("Txns", &events, &store, ts(1000));
         assert!(out.is_empty());
@@ -285,7 +300,7 @@ mod push_batch_with_cascade_no_features {
     #[test]
     fn unknown_stream_errors_all() {
         let engine = build_cascade_engine();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let e = json!({"user_id": "u1"});
         let events = vec![&e, &e];
         let out = engine.push_batch_with_cascade_no_features("ghost", &events, &store, ts(1000));
@@ -301,8 +316,8 @@ mod push_batch_with_cascade_no_features {
         // must match exactly — that's the D-06 / D-07 guarantee.
         let engine_a = build_cascade_engine();
         let engine_b = build_cascade_engine();
-        let mut store_a = StateStore::new();
-        let mut store_b = StateStore::new();
+        let store_a = StateStore::new();
+        let store_b = StateStore::new();
 
         let e0 = json!({"user_id": "u1"});
         let e1 = json!({"user_id": "u2"});
@@ -311,23 +326,26 @@ mod push_batch_with_cascade_no_features {
         let now = ts(1000);
 
         // Batch path on A
-        let out_a = engine_a.push_batch_with_cascade_no_features("Txns", &events, &mut store_a, now);
+        let out_a =
+            engine_a.push_batch_with_cascade_no_features("Txns", &events, &store_a, now);
         assert_eq!(out_a.len(), 3);
         assert!(out_a.iter().all(|r| r.is_ok()));
 
         // Single-event path on B
         for ev in &events {
-            engine_b.push_with_cascade_no_features("Txns", ev, &mut store_b, now).unwrap();
+            engine_b
+                .push_with_cascade_no_features("Txns", ev, &store_b, now)
+                .unwrap();
         }
 
         // u1 should have count == 2 on both engines (after cascade to UserRisk)
-        let a_u1 = engine_a.get_features("u1", &mut store_a, now);
-        let b_u1 = engine_b.get_features("u1", &mut store_b, now);
+        let a_u1 = engine_a.get_features("u1", &store_a, now);
+        let b_u1 = engine_b.get_features("u1", &store_b, now);
         assert_eq!(a_u1.get("count_1h"), b_u1.get("count_1h"));
         assert_eq!(a_u1.get("count_1h"), Some(&FeatureValue::Int(2)));
 
-        let a_u2 = engine_a.get_features("u2", &mut store_a, now);
-        let b_u2 = engine_b.get_features("u2", &mut store_b, now);
+        let a_u2 = engine_a.get_features("u2", &store_a, now);
+        let b_u2 = engine_b.get_features("u2", &store_b, now);
         assert_eq!(a_u2.get("count_1h"), b_u2.get("count_1h"));
         assert_eq!(a_u2.get("count_1h"), Some(&FeatureValue::Int(1)));
 
@@ -340,9 +358,13 @@ mod push_batch_with_cascade_no_features {
         // contains both user_id AND merchant_id should apply to
         // MerchantActivity exactly once per event (not zero, not 16).
         let mut engine = PipelineEngine::new();
-        engine.register(make_count_stream("Txns", "user_id")).unwrap();
-        engine.register(make_count_stream("MerchantActivity", "merchant_id")).unwrap();
-        let mut store = StateStore::new();
+        engine
+            .register(make_count_stream("Txns", "user_id"))
+            .unwrap();
+        engine
+            .register(make_count_stream("MerchantActivity", "merchant_id"))
+            .unwrap();
+        let store = StateStore::new();
 
         let e0 = json!({"user_id": "u1", "merchant_id": "m1"});
         let e1 = json!({"user_id": "u2", "merchant_id": "m1"});
@@ -362,14 +384,19 @@ mod push_batch_with_cascade_no_features {
         // And each user should have exactly 1 count on Txns.
         for user in &["u1", "u2", "u3", "u4"] {
             let f = engine.get_features(user, &store, now);
-            assert_eq!(f.get("count_1h"), Some(&FeatureValue::Int(1)), "user {} count", user);
+            assert_eq!(
+                f.get("count_1h"),
+                Some(&FeatureValue::Int(1)),
+                "user {} count",
+                user
+            );
         }
     }
 
     #[test]
     fn error_order_preserved_on_partial_failure() {
         let engine = build_cascade_engine();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let e0 = json!({"user_id": "u1"});
         let e1 = json!({"user_id": ""}); // bad
         let e2 = json!({"user_id": "u2"});
@@ -392,7 +419,7 @@ mod push_batch_with_cascade_no_features {
     #[test]
     fn unknown_stream_returns_errors_in_order_without_side_effects() {
         let engine = build_cascade_engine();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let e = json!({"user_id": "u1"});
         let events = vec![&e, &e, &e];
 

@@ -5,12 +5,12 @@
 //! fsync is done periodically via a background timer, never on the hot path.
 //! Compaction rewrites log files excluding entries older than history_ttl.
 
+use ahash::AHashMap;
+use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read as IoRead, Write};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
-use ahash::AHashMap;
-use serde::{Serialize, Deserialize};
 
 /// Default history TTL: 72 hours (3 days) per CONTEXT.md locked decision.
 pub const DEFAULT_HISTORY_TTL: Duration = Duration::from_secs(259200);
@@ -68,17 +68,19 @@ impl EventLog {
 
     /// Register a stream for event logging.
     /// Creates/opens the log file in append mode. Idempotent (re-registration is a no-op).
-    pub fn register_stream(&mut self, stream_name: &str, history_ttl: Option<Duration>) -> std::io::Result<()> {
+    pub fn register_stream(
+        &mut self,
+        stream_name: &str,
+        history_ttl: Option<Duration>,
+    ) -> std::io::Result<()> {
         let sanitized = sanitize_stream_name(stream_name);
         if self.writers.contains_key(stream_name) {
             return Ok(()); // idempotent re-registration
         }
         let path = self.log_dir.join(format!("{}.log", sanitized));
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
-        self.writers.insert(stream_name.to_string(), BufWriter::new(file));
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        self.writers
+            .insert(stream_name.to_string(), BufWriter::new(file));
         self.history_ttls.insert(
             stream_name.to_string(),
             history_ttl.unwrap_or(DEFAULT_HISTORY_TTL),
@@ -89,7 +91,12 @@ impl EventLog {
     /// Append a raw event to the stream's log file.
     /// Returns Ok(false) if the stream is not registered (no error).
     /// Uses length-prefixed postcard serialization: [u32 BE len][postcard bytes].
-    pub fn append(&mut self, stream_name: &str, event_bytes: &[u8], now: SystemTime) -> std::io::Result<bool> {
+    pub fn append(
+        &mut self,
+        stream_name: &str,
+        event_bytes: &[u8],
+        now: SystemTime,
+    ) -> std::io::Result<bool> {
         let writer = match self.writers.get_mut(stream_name) {
             Some(w) => w,
             None => return Ok(false),
@@ -99,7 +106,7 @@ impl EventLog {
             payload: event_bytes.to_vec(),
         };
         let encoded = postcard::to_stdvec(&entry)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         let len = encoded.len() as u32;
         writer.write_all(&len.to_be_bytes())?;
         writer.write_all(&encoded)?;
@@ -137,7 +144,7 @@ impl EventLog {
                 payload: bytes.to_vec(),
             };
             let encoded = postcard::to_stdvec(&entry)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                .map_err(std::io::Error::other)?;
             let len = encoded.len() as u32;
             writer.write_all(&len.to_be_bytes())?;
             writer.write_all(&encoded)?;
@@ -195,12 +202,13 @@ impl EventLog {
 
         // Read all entries
         let entries = self.read_entries(stream_name)?;
-        let cutoff = now.checked_sub(history_ttl).unwrap_or(SystemTime::UNIX_EPOCH);
+        let cutoff = now
+            .checked_sub(history_ttl)
+            .unwrap_or(SystemTime::UNIX_EPOCH);
 
         // Partition into kept and removed
-        let (kept, removed): (Vec<_>, Vec<_>) = entries
-            .into_iter()
-            .partition(|e| e.timestamp >= cutoff);
+        let (kept, removed): (Vec<_>, Vec<_>) =
+            entries.into_iter().partition(|e| e.timestamp >= cutoff);
         let removed_count = removed.len();
 
         if removed_count == 0 {
@@ -217,7 +225,7 @@ impl EventLog {
             let mut tmp_writer = BufWriter::new(tmp_file);
             for entry in &kept {
                 let encoded = postcard::to_stdvec(entry)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    .map_err(std::io::Error::other)?;
                 let len = encoded.len() as u32;
                 tmp_writer.write_all(&len.to_be_bytes())?;
                 tmp_writer.write_all(&encoded)?;
@@ -236,7 +244,8 @@ impl EventLog {
             .create(true)
             .append(true)
             .open(&log_path)?;
-        self.writers.insert(stream_name.to_string(), BufWriter::new(file));
+        self.writers
+            .insert(stream_name.to_string(), BufWriter::new(file));
 
         Ok(removed_count)
     }
@@ -264,7 +273,7 @@ impl EventLog {
 /// Sanitize a stream name for filesystem safety (T-06-04 mitigation).
 /// Replaces `/`, `\`, NUL bytes with `_`. Replaces `..` with `__`.
 fn sanitize_stream_name(name: &str) -> String {
-    let mut s = name.replace('/', "_").replace('\\', "_").replace('\0', "_");
+    let mut s = name.replace(['/', '\\', '\0'], "_");
     // Replace ".." to prevent path traversal
     while s.contains("..") {
         s = s.replace("..", "__");
@@ -380,14 +389,15 @@ mod tests {
         log.register_stream("S", None).unwrap();
 
         for i in 0..10 {
-            log.append("S", format!("event_{}", i).as_bytes(), ts(1000 + i)).unwrap();
+            log.append("S", format!("event_{}", i).as_bytes(), ts(1000 + i))
+                .unwrap();
         }
         log.fsync_all().unwrap();
 
         let entries = log.read_entries("S").unwrap();
         assert_eq!(entries.len(), 10);
-        for i in 0..10 {
-            assert_eq!(entries[i].payload, format!("event_{}", i).as_bytes());
+        for (i, entry) in entries.iter().enumerate().take(10) {
+            assert_eq!(entry.payload, format!("event_{}", i).as_bytes());
         }
     }
 
@@ -415,7 +425,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         // Use 10-second TTL for testing
-        log.register_stream("S", Some(Duration::from_secs(10))).unwrap();
+        log.register_stream("S", Some(Duration::from_secs(10)))
+            .unwrap();
 
         // Add entries: some old, some recent
         log.append("S", b"old1", ts(100)).unwrap();
@@ -438,7 +449,8 @@ mod tests {
     fn test_compact_keyless_stream_removes_expired() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
-        log.register_stream("KeylessStream", Some(Duration::from_secs(5))).unwrap();
+        log.register_stream("KeylessStream", Some(Duration::from_secs(5)))
+            .unwrap();
 
         log.append("KeylessStream", b"old", ts(100)).unwrap();
         log.append("KeylessStream", b"new", ts(108)).unwrap();
@@ -457,7 +469,8 @@ mod tests {
     fn test_compact_stream_preserves_recent_entries() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
-        log.register_stream("S", Some(Duration::from_secs(100))).unwrap();
+        log.register_stream("S", Some(Duration::from_secs(100)))
+            .unwrap();
 
         log.append("S", b"e1", ts(50)).unwrap();
         log.append("S", b"e2", ts(60)).unwrap();
@@ -475,7 +488,8 @@ mod tests {
     fn test_compact_stream_no_expired_produces_identical_output() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
-        log.register_stream("S", Some(Duration::from_secs(1000))).unwrap();
+        log.register_stream("S", Some(Duration::from_secs(1000)))
+            .unwrap();
 
         log.append("S", b"event1", ts(500)).unwrap();
         log.append("S", b"event2", ts(600)).unwrap();
@@ -497,7 +511,8 @@ mod tests {
     fn test_compact_uses_tmp_file_and_renames() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
-        log.register_stream("S", Some(Duration::from_secs(10))).unwrap();
+        log.register_stream("S", Some(Duration::from_secs(10)))
+            .unwrap();
 
         log.append("S", b"old", ts(100)).unwrap();
         log.append("S", b"new", ts(115)).unwrap();
@@ -507,7 +522,10 @@ mod tests {
 
         // tmp file should NOT exist after compaction (renamed away)
         let tmp_file = tmp.path().join("S.log.tmp");
-        assert!(!tmp_file.exists(), "tmp file should be renamed away after compaction");
+        assert!(
+            !tmp_file.exists(),
+            "tmp file should be renamed away after compaction"
+        );
 
         // Original file should still exist with surviving entries
         let log_file = tmp.path().join("S.log");
@@ -550,11 +568,13 @@ mod tests {
     fn test_register_stream_idempotent() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
-        log.register_stream("S", Some(Duration::from_secs(100))).unwrap();
+        log.register_stream("S", Some(Duration::from_secs(100)))
+            .unwrap();
         log.append("S", b"data", ts(1000)).unwrap();
 
         // Re-register should be a no-op
-        log.register_stream("S", Some(Duration::from_secs(200))).unwrap();
+        log.register_stream("S", Some(Duration::from_secs(200)))
+            .unwrap();
 
         // TTL should not have changed (first registration wins)
         assert_eq!(log.get_history_ttl("S"), Some(Duration::from_secs(100)));

@@ -21,7 +21,7 @@ use tally::server::protocol::{
     self, OP_FLUSH, OP_GET, OP_MSET, OP_PUSH, OP_PUSH_ASYNC, OP_REGISTER, OP_SET, STATUS_ERROR,
     STATUS_OK, TYPE_BOOL, TYPE_F64, TYPE_I64, TYPE_NULL, TYPE_STR,
 };
-use tally::server::tcp::{BackfillTracker, SharedState, make_concurrent_state};
+use tally::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
 use tally::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
@@ -248,7 +248,10 @@ async fn test_register_and_push() {
     let (get_status, get_resp) = send_frame(&mut stream, OP_GET, &get_payload).await;
     assert_eq!(get_status, STATUS_OK);
     let get_json: serde_json::Value = serde_json::from_slice(&get_resp).unwrap();
-    assert_eq!(get_json["tx_count_1h"], 1, "Count should be 1 after first push");
+    assert_eq!(
+        get_json["tx_count_1h"], 1,
+        "Count should be 1 after first push"
+    );
 }
 
 /// SRV-03: PUSH to unregistered stream returns error.
@@ -259,10 +262,7 @@ async fn test_push_unregistered_stream() {
         .await
         .unwrap();
 
-    let push_payload = build_push_payload(
-        "NonExistent",
-        &serde_json::json!({"user_id": "u1"}),
-    );
+    let push_payload = build_push_payload("NonExistent", &serde_json::json!({"user_id": "u1"}));
     let (status, resp) = send_frame(&mut stream, OP_PUSH, &push_payload).await;
     assert_eq!(status, STATUS_ERROR);
     let msg = String::from_utf8_lossy(&resp);
@@ -324,7 +324,10 @@ async fn test_set_static_features() {
         .unwrap();
 
     // SET
-    let set_payload = build_set_payload("u1", &serde_json::json!({"segment": "premium", "score": 0.95}));
+    let set_payload = build_set_payload(
+        "u1",
+        &serde_json::json!({"segment": "premium", "score": 0.95}),
+    );
     let (status, _) = send_frame(&mut stream, OP_SET, &set_payload).await;
     assert_eq!(status, STATUS_OK);
 
@@ -447,10 +450,7 @@ async fn test_health_endpoint() {
 
     // Verify body contains {"status":"ok"}
     // Body is after the empty line in HTTP response
-    let body = response_str
-        .split("\r\n\r\n")
-        .nth(1)
-        .unwrap_or("");
+    let body = response_str.split("\r\n\r\n").nth(1).unwrap_or("");
     // Body may be chunked-encoded; extract JSON
     assert!(
         body.contains(r#""status":"ok"#) || body.contains(r#""status": "ok"#),
@@ -510,7 +510,10 @@ async fn test_malformed_frame() {
     // Should receive an error response
     let resp_len = stream.read_u32().await.unwrap() as usize;
     let status = stream.read_u8().await.unwrap();
-    assert_eq!(status, STATUS_ERROR, "Zero-length frame should return error");
+    assert_eq!(
+        status, STATUS_ERROR,
+        "Zero-length frame should return error"
+    );
 
     if resp_len > 1 {
         let mut payload = vec![0u8; resp_len - 1];
@@ -628,7 +631,9 @@ async fn test_register_duplicate_overwrites() {
     let reg2 = build_register_payload(
         "Transactions",
         "user_id",
-        vec![serde_json::json!({"name": "tx_sum", "type": "sum", "field": "amount", "window": "1h"})],
+        vec![
+            serde_json::json!({"name": "tx_sum", "type": "sum", "field": "amount", "window": "1h"}),
+        ],
     );
     let (status, _) = send_frame(&mut stream, OP_REGISTER, &reg2).await;
     assert_eq!(status, STATUS_OK);
@@ -670,16 +675,13 @@ fn extract_http_body(response: &str) -> String {
     let body_start = response.find("\r\n\r\n").unwrap_or(response.len()) + 4;
     let raw_body = &response[body_start..];
     // If Transfer-Encoding: chunked, parse chunk format
-    if response.contains("transfer-encoding: chunked") || response.contains("Transfer-Encoding: chunked") {
+    if response.contains("transfer-encoding: chunked")
+        || response.contains("Transfer-Encoding: chunked")
+    {
         // Chunked format: [hex-length]\r\n[data]\r\n ... 0\r\n\r\n
         let mut result = String::new();
         let mut remaining = raw_body;
-        loop {
-            // Find the chunk size line
-            let size_end = match remaining.find("\r\n") {
-                Some(pos) => pos,
-                None => break,
-            };
+        while let Some(size_end) = remaining.find("\r\n") {
             let size_str = remaining[..size_end].trim();
             let chunk_size = match usize::from_str_radix(size_str, 16) {
                 Ok(s) => s,
@@ -960,14 +962,8 @@ async fn test_debug_memory() {
     let (status, body) = http_get(http_port, "/debug/memory").await;
     assert_eq!(status, 200);
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert!(
-        json["entity_count"].is_number(),
-        "Should have entity_count"
-    );
-    assert!(
-        json["stream_count"].is_number(),
-        "Should have stream_count"
-    );
+    assert!(json["entity_count"].is_number(), "Should have entity_count");
+    assert!(json["stream_count"].is_number(), "Should have stream_count");
     assert!(
         json["estimated_bytes"].is_number(),
         "Should have estimated_bytes"

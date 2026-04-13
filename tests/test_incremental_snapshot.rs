@@ -17,9 +17,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tally::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use tally::state::eviction::evict_expired_keys;
 use tally::state::snapshot::{
-    load_snapshot_file, load_legacy_v5, save_base_snapshot, save_delta_snapshot,
-    BaseSnapshotState, DeltaSnapshotState, SerializablePipeline, SnapshotFile,
-    SnapshotHeader, SnapshotState, SnapshotType, SNAPSHOT_FORMAT_VERSION, LEGACY_V5_FORMAT,
+    load_legacy_v5, load_snapshot_file, save_base_snapshot, save_delta_snapshot, BaseSnapshotState,
+    DeltaSnapshotState, SerializablePipeline, SnapshotFile, SnapshotHeader, SnapshotState,
+    SnapshotType, LEGACY_V5_FORMAT, SNAPSHOT_FORMAT_VERSION,
 };
 use tally::state::store::StateStore;
 use tally::types::FeatureValue;
@@ -77,7 +77,7 @@ fn push(store: &StateStore, engine: &PipelineEngine, key: &str, amount: f64, now
 fn test_incremental_snapshot_delta_contains_only_dirty_entities() {
     let mut engine = PipelineEngine::new();
     engine.register(tx_stream()).unwrap();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(60_000);
 
     // Push to u1 and u3 (will be dirty). u2 exists from a prior push but its
@@ -94,10 +94,18 @@ fn test_incremental_snapshot_delta_contains_only_dirty_entities() {
 
     // Delta must contain exactly u1 and u3, NOT u2.
     let keys: Vec<String> = changed.iter().map(|(k, _)| k.clone()).collect();
-    assert_eq!(keys.len(), 2, "expected exactly 2 dirty entities, got {:?}", keys);
+    assert_eq!(
+        keys.len(),
+        2,
+        "expected exactly 2 dirty entities, got {:?}",
+        keys
+    );
     assert!(keys.contains(&"u1".to_string()));
     assert!(keys.contains(&"u3".to_string()));
-    assert!(!keys.contains(&"u2".to_string()), "u2 should not be in delta");
+    assert!(
+        !keys.contains(&"u2".to_string()),
+        "u2 should not be in delta"
+    );
 }
 
 // ======================== OPS-04: Base + delta recovery ========================
@@ -109,7 +117,7 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
 
     let mut engine = PipelineEngine::new();
     engine.register(tx_stream()).unwrap();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(60_000);
 
     // Cycle 0: push u1, u2 -> write base snapshot (seq=0)
@@ -118,7 +126,10 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
 
     let entities = store.clone_for_snapshot_with_gc(&engine.valid_features_map());
     let base = BaseSnapshotState {
-        header: SnapshotHeader { snapshot_type: SnapshotType::Base, sequence: 0 },
+        header: SnapshotHeader {
+            snapshot_type: SnapshotType::Base,
+            sequence: 0,
+        },
         entities,
         pipelines: vec![SerializablePipeline {
             name: "Transactions".into(),
@@ -162,11 +173,10 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
     std::fs::write(snap_dir.join("tally.snapshot.delta.0000000002"), &bytes).unwrap();
 
     // Now recover from disk: load base + apply deltas in order.
-    let (merged, next_seq) =
-        recover_from_dir(&snap_dir).expect("recovery should succeed");
+    let (merged, next_seq) = recover_from_dir(&snap_dir).expect("recovery should succeed");
 
     // Restore into a fresh store and verify features.
-    let mut recovered = StateStore::new();
+    let recovered = StateStore::new();
     recovered.restore_from_snapshot(merged.entities);
 
     let u1 = recovered.get_all_features("u1", now);
@@ -196,7 +206,7 @@ fn test_incremental_snapshot_deleted_keys_removed_on_recovery() {
 
     let mut engine = PipelineEngine::new();
     engine.register(tx_stream()).unwrap();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(60_000);
 
     // Base contains u1, u2, u3.
@@ -205,7 +215,10 @@ fn test_incremental_snapshot_deleted_keys_removed_on_recovery() {
     push(&store, &engine, "u3", 30.0, now);
     let entities = store.clone_for_snapshot_with_gc(&engine.valid_features_map());
     let base = BaseSnapshotState {
-        header: SnapshotHeader { snapshot_type: SnapshotType::Base, sequence: 0 },
+        header: SnapshotHeader {
+            snapshot_type: SnapshotType::Base,
+            sequence: 0,
+        },
         entities,
         pipelines: vec![],
         backfill_complete: vec![],
@@ -229,7 +242,7 @@ fn test_incremental_snapshot_deleted_keys_removed_on_recovery() {
     let (merged, next_seq) = recover_from_dir(&snap_dir).unwrap();
     assert_eq!(next_seq, 2);
 
-    let mut recovered = StateStore::new();
+    let recovered = StateStore::new();
     recovered.restore_from_snapshot(merged.entities);
 
     assert!(recovered.get_entity("u1").is_some());
@@ -247,7 +260,7 @@ fn test_legacy_v5_migration_loads_as_initial_base() {
     // Build a v5 byte stream by hand: [version=5][postcard(SnapshotState)]
     let mut engine = PipelineEngine::new();
     engine.register(tx_stream()).unwrap();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(60_000);
     for amount in [10.0, 20.0, 30.0] {
         let event = serde_json::json!({"user_id": "u_legacy", "amount": amount});
@@ -297,29 +310,31 @@ fn test_full_snapshot_cycle_picks_base_at_zero_and_every_n() {
 #[test]
 fn test_eviction_marks_deleted_and_delta_includes_it() {
     let mut engine = PipelineEngine::new();
-    engine.register(StreamDefinition {
-        name: "stream_short".into(),
-        key_field: Some("user_id".into()),
-        features: vec![(
-            "count".into(),
-            FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                where_expr: None,
-                backfill: false,
-            },
-        )],
-        depends_on: None,
-        filter: None,
-        entity_ttl: Some(Duration::from_secs(300)),
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "stream_short".into(),
+            key_field: Some("user_id".into()),
+            features: vec![(
+                "count".into(),
+                FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                },
+            )],
+            depends_on: None,
+            filter: None,
+            entity_ttl: Some(Duration::from_secs(300)),
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     // Entity with an event long ago
     {
         let mut entity = store.get_or_create_entity("doomed");
@@ -389,7 +404,7 @@ fn recover_from_dir(snap_dir: &std::path::Path) -> Option<(SnapshotState, u64)> 
         _ => return None,
     };
 
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     store.restore_from_snapshot(base.entities.clone());
 
     let mut applicable: Vec<(u64, std::path::PathBuf)> = deltas

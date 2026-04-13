@@ -23,35 +23,35 @@ pub const NUM_BINS: usize = 30;
 /// Bin 0: [0, edge[1]), Bin 29: [edge[29], +inf).
 pub const BIN_EDGES: [f64; NUM_BINS + 1] = [
     1.0,                // 10^(0/30 * 4) = 10^0.000
-    1.3335214321633242,  // 10^(1/30 * 4) = 10^0.133
-    1.7782794100389228,  // 10^(2/30 * 4) = 10^0.267
-    2.371373705661655,   // 10^(3/30 * 4) = 10^0.400
-    3.1622776601683795,  // 10^(4/30 * 4) = 10^0.533
-    4.216965034285822,   // 10^(5/30 * 4) = 10^0.667
-    5.623413251903491,   // 10^(6/30 * 4) = 10^0.800
-    7.498942093324559,   // 10^(7/30 * 4) = 10^0.933
+    1.3335214321633242, // 10^(1/30 * 4) = 10^0.133
+    1.7782794100389228, // 10^(2/30 * 4) = 10^0.267
+    2.371373705661655,  // 10^(3/30 * 4) = 10^0.400
+    3.1622776601683795, // 10^(4/30 * 4) = 10^0.533
+    4.216965034285822,  // 10^(5/30 * 4) = 10^0.667
+    5.623413251903491,  // 10^(6/30 * 4) = 10^0.800
+    7.498942093324559,  // 10^(7/30 * 4) = 10^0.933
     10.0,               // 10^(8/30 * 4) = 10^1.067
-    13.335214321633243,  // 10^(9/30 * 4) = 10^1.200
-    17.78279410038923,   // 10^(10/30 * 4) = 10^1.333
-    23.71373705661655,   // 10^(11/30 * 4) = 10^1.467
-    31.622776601683796,  // 10^(12/30 * 4) = 10^1.600
-    42.16965034285822,   // 10^(13/30 * 4) = 10^1.733
-    56.23413251903491,   // 10^(14/30 * 4) = 10^1.867
-    74.98942093324559,   // 10^(15/30 * 4) = 10^2.000
+    13.335214321633243, // 10^(9/30 * 4) = 10^1.200
+    17.78279410038923,  // 10^(10/30 * 4) = 10^1.333
+    23.71373705661655,  // 10^(11/30 * 4) = 10^1.467
+    31.622776601683796, // 10^(12/30 * 4) = 10^1.600
+    42.16965034285822,  // 10^(13/30 * 4) = 10^1.733
+    56.23413251903491,  // 10^(14/30 * 4) = 10^1.867
+    74.98942093324559,  // 10^(15/30 * 4) = 10^2.000
     100.0,              // 10^(16/30 * 4) = 10^2.133
-    133.35214321633242,  // 10^(17/30 * 4) = 10^2.267
-    177.82794100389228,  // 10^(18/30 * 4) = 10^2.400
-    237.13737056616552,  // 10^(19/30 * 4) = 10^2.533
-    316.22776601683796,  // 10^(20/30 * 4) = 10^2.667
-    421.6965034285822,   // 10^(21/30 * 4) = 10^2.800
-    562.3413251903491,   // 10^(22/30 * 4) = 10^2.933
-    749.8942093324559,   // 10^(23/30 * 4) = 10^3.067
+    133.35214321633242, // 10^(17/30 * 4) = 10^2.267
+    177.82794100389228, // 10^(18/30 * 4) = 10^2.400
+    237.13737056616552, // 10^(19/30 * 4) = 10^2.533
+    316.22776601683796, // 10^(20/30 * 4) = 10^2.667
+    421.6965034285822,  // 10^(21/30 * 4) = 10^2.800
+    562.3413251903491,  // 10^(22/30 * 4) = 10^2.933
+    749.894_209_332_456,  // 10^(23/30 * 4) = 10^3.067
     1000.0,             // 10^(24/30 * 4) = 10^3.200
-    1333.5214321633243,  // 10^(25/30 * 4) = 10^3.333
-    1778.2794100389228,  // 10^(26/30 * 4) = 10^3.467
-    2371.3737056616554,  // 10^(27/30 * 4) = 10^3.600
-    3162.2776601683795,  // 10^(28/30 * 4) = 10^3.733
-    4216.965034285822,   // 10^(29/30 * 4) = 10^3.867
+    1333.5214321633243, // 10^(25/30 * 4) = 10^3.333
+    1778.2794100389228, // 10^(26/30 * 4) = 10^3.467
+    2371.3737056616554, // 10^(27/30 * 4) = 10^3.600
+    3162.2776601683795, // 10^(28/30 * 4) = 10^3.733
+    4216.965034285822,  // 10^(29/30 * 4) = 10^3.867
     10000.0,            // 10^(30/30 * 4) = 10^4.000
 ];
 
@@ -107,7 +107,8 @@ impl Histogram {
         };
         // Binary search for the bin: find the last edge <= micros
         let bin = match BIN_EDGES.binary_search_by(|edge| {
-            edge.partial_cmp(&micros).unwrap_or(std::cmp::Ordering::Less)
+            edge.partial_cmp(&micros)
+                .unwrap_or(std::cmp::Ordering::Less)
         }) {
             Ok(i) => i.min(NUM_BINS - 1),
             Err(i) => i.saturating_sub(1).min(NUM_BINS - 1),
@@ -264,7 +265,11 @@ impl SlowQueryHeap {
     /// Return all records sorted descending by latency.
     pub fn sorted_desc(&self) -> Vec<&SlowQueryRecord> {
         let mut entries: Vec<&SlowQueryRecord> = self.heap.iter().map(|r| &r.0).collect();
-        entries.sort_by(|a, b| b.latency_us.partial_cmp(&a.latency_us).unwrap_or(std::cmp::Ordering::Equal));
+        entries.sort_by(|a, b| {
+            b.latency_us
+                .partial_cmp(&a.latency_us)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         entries
     }
 }
@@ -279,6 +284,12 @@ pub struct LatencyTracker {
     slow_queries: [SlowQueryHeap; 4],
     /// Creation instant for RollingHistogram time base
     _created_at: Instant,
+}
+
+impl Default for LatencyTracker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LatencyTracker {
@@ -346,7 +357,12 @@ impl LatencyTracker {
 
     /// Build the JSON response for `/debug/latency`.
     pub fn to_json(&self, now: Instant) -> serde_json::Value {
-        let commands = [CommandKind::Push, CommandKind::Get, CommandKind::Set, CommandKind::Mset];
+        let commands = [
+            CommandKind::Push,
+            CommandKind::Get,
+            CommandKind::Set,
+            CommandKind::Mset,
+        ];
 
         // Per-command histograms
         let per_command: Vec<serde_json::Value> = commands
@@ -463,7 +479,11 @@ mod tests {
         h.record(50.0); // bin 13 (42.17 - 56.23)
         let p50 = h.percentile(50.0);
         // With 1 sample, p50 should be within the bin containing 50us
-        assert!(p50 >= 42.0 && p50 <= 57.0, "p50={} should be near 50us", p50);
+        assert!(
+            (42.0..=57.0).contains(&p50),
+            "p50={} should be near 50us",
+            p50
+        );
     }
 
     #[test]
@@ -477,12 +497,12 @@ mod tests {
         let p99 = h.percentile(99.0);
         // All samples in same bin, so p50 and p99 should be within that bin
         assert!(
-            p50 >= 42.0 && p50 <= 57.0,
+            (42.0..=57.0).contains(&p50),
             "p50={} should be in bin 13",
             p50
         );
         assert!(
-            p99 >= 42.0 && p99 <= 57.0,
+            (42.0..=57.0).contains(&p99),
             "p99={} should be in bin 13",
             p99
         );
@@ -505,14 +525,14 @@ mod tests {
         // p50 of 300 samples: 150th sample. First 100 are ~10us, next 100 are ~100us.
         // 150th is in the 100us group.
         assert!(
-            p50 >= 50.0 && p50 <= 200.0,
+            (50.0..=200.0).contains(&p50),
             "p50={} should be near 100us region",
             p50
         );
         let p99 = h.percentile(99.0);
         // 297th sample is in the 1000us group
         assert!(
-            p99 >= 500.0 && p99 <= 2000.0,
+            (500.0..=2000.0).contains(&p99),
             "p99={} should be near 1000us region",
             p99
         );
@@ -567,7 +587,10 @@ mod tests {
         // Advance past 2x swap interval (300s) without recording
         let idle = start + Duration::from_secs(301);
         let snap = rh.snapshot(idle);
-        assert_eq!(snap.total, 0, "should return empty histogram when idle > 2x swap");
+        assert_eq!(
+            snap.total, 0,
+            "should return empty histogram when idle > 2x swap"
+        );
     }
 
     #[test]
@@ -661,7 +684,10 @@ mod tests {
         assert_eq!(per_stream.len(), 2);
         let logins = per_stream.iter().find(|s| s["stream"] == "Logins").unwrap();
         assert_eq!(logins["count"], 1);
-        let txns = per_stream.iter().find(|s| s["stream"] == "Transactions").unwrap();
+        let txns = per_stream
+            .iter()
+            .find(|s| s["stream"] == "Transactions")
+            .unwrap();
         assert_eq!(txns["count"], 2);
     }
 
@@ -686,7 +712,12 @@ mod tests {
         let mut tracker = LatencyTracker::new();
         let now = Instant::now();
         tracker.record_push("TestStream", 50.0, now);
-        tracker.maybe_record_slow(CommandKind::Push, Some("TestStream"), 50.0, "user_123".into());
+        tracker.maybe_record_slow(
+            CommandKind::Push,
+            Some("TestStream"),
+            50.0,
+            "user_123".into(),
+        );
 
         let json = tracker.to_json(now);
 

@@ -4,17 +4,20 @@
 //! synchronous push-through flow: event -> extract key -> update operators
 //! -> evaluate derives -> return feature map.
 
-use std::time::{Duration, SystemTime};
-use ahash::{AHashMap, AHashSet};
-use petgraph::graph::{DiGraph, NodeIndex};
-use petgraph::algo::toposort;
-use crate::types::{FeatureValue, FeatureMap};
-use crate::error::TallyError;
-use crate::state::store::StateStore;
-use super::operators::{CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp, StddevOp, PercentileOp, LagOp, EmaOp, LastNOp, FirstOp, ExactMinOp, ExactMaxOp};
+use super::expression::{eval, EvalContext, Expr};
 use super::hll::DistinctCountOp;
+use super::operators::{
+    AvgOp, CountOp, EmaOp, ExactMaxOp, ExactMinOp, FirstOp, LagOp, LastNOp, LastOp, MaxOp, MinOp,
+    PercentileOp, StddevOp, SumOp,
+};
+use crate::error::TallyError;
 use crate::state::snapshot::OperatorState;
-use super::expression::{Expr, EvalContext, eval};
+use crate::state::store::StateStore;
+use crate::types::{FeatureMap, FeatureValue};
+use ahash::{AHashMap, AHashSet};
+use petgraph::algo::toposort;
+use petgraph::graph::{DiGraph, NodeIndex};
+use std::time::{Duration, SystemTime};
 
 /// Definition of a single feature within a stream.
 #[derive(Debug, Clone)]
@@ -175,12 +178,10 @@ fn diff_features(
     old: &[(String, FeatureDef)],
     new: &[(String, FeatureDef)],
 ) -> Result<SchemaDiff, TallyError> {
-    let old_map: AHashMap<&str, &FeatureDef> = old.iter()
-        .map(|(name, def)| (name.as_str(), def))
-        .collect();
-    let new_map: AHashMap<&str, &FeatureDef> = new.iter()
-        .map(|(name, def)| (name.as_str(), def))
-        .collect();
+    let old_map: AHashMap<&str, &FeatureDef> =
+        old.iter().map(|(name, def)| (name.as_str(), def)).collect();
+    let new_map: AHashMap<&str, &FeatureDef> =
+        new.iter().map(|(name, def)| (name.as_str(), def)).collect();
 
     let mut added = Vec::new();
     let mut removed = Vec::new();
@@ -214,14 +215,25 @@ fn diff_features(
         }
     }
 
-    Ok(SchemaDiff { added, removed, unchanged, backfilling })
+    Ok(SchemaDiff {
+        added,
+        removed,
+        unchanged,
+        backfilling,
+    })
 }
 
 /// A view feature: either a derived expression or a cross-key lookup.
 #[derive(Debug, Clone)]
 pub enum ViewFeatureDef {
-    Derive { expr: Expr },
-    Lookup { target_stream: String, target_feature: String, on_field: String },
+    Derive {
+        expr: Expr,
+    },
+    Lookup {
+        target_stream: String,
+        target_feature: String,
+        on_field: String,
+    },
 }
 
 /// A cross-stream view. Views have no key_field for push -- they compute
@@ -315,49 +327,143 @@ fn create_operator(def: &FeatureDef) -> Option<OperatorState> {
         FeatureDef::Count { window, bucket, .. } => {
             Some(OperatorState::Count(CountOp::new(*window, *bucket)))
         }
-        FeatureDef::Sum { field, window, bucket, optional, .. } => {
-            Some(OperatorState::Sum(SumOp::new(field.clone(), *window, *bucket, *optional)))
-        }
-        FeatureDef::Avg { field, window, bucket, optional, .. } => {
-            Some(OperatorState::Avg(AvgOp::new(field.clone(), *window, *bucket, *optional)))
-        }
-        FeatureDef::Min { field, window, bucket, optional, .. } => {
-            Some(OperatorState::Min(MinOp::new(field.clone(), *window, *bucket, *optional)))
-        }
-        FeatureDef::Max { field, window, bucket, optional, .. } => {
-            Some(OperatorState::Max(MaxOp::new(field.clone(), *window, *bucket, *optional)))
-        }
-        FeatureDef::Last { field, optional, .. } => {
-            Some(OperatorState::Last(LastOp::new(field.clone(), *optional)))
-        }
-        FeatureDef::DistinctCount { field, window, bucket, optional, .. } => {
-            Some(OperatorState::DistinctCount(DistinctCountOp::new(field.clone(), *window, *bucket, *optional)))
-        }
-        FeatureDef::Stddev { field, window, bucket, optional, .. } => {
-            Some(OperatorState::Stddev(StddevOp::new(field.clone(), *window, *bucket, *optional)))
-        }
-        FeatureDef::Percentile { field, quantile, window, bucket, optional, .. } => {
-            Some(OperatorState::Percentile(PercentileOp::new(field.clone(), *quantile, *window, *bucket, *optional)))
-        }
+        FeatureDef::Sum {
+            field,
+            window,
+            bucket,
+            optional,
+            ..
+        } => Some(OperatorState::Sum(SumOp::new(
+            field.clone(),
+            *window,
+            *bucket,
+            *optional,
+        ))),
+        FeatureDef::Avg {
+            field,
+            window,
+            bucket,
+            optional,
+            ..
+        } => Some(OperatorState::Avg(AvgOp::new(
+            field.clone(),
+            *window,
+            *bucket,
+            *optional,
+        ))),
+        FeatureDef::Min {
+            field,
+            window,
+            bucket,
+            optional,
+            ..
+        } => Some(OperatorState::Min(MinOp::new(
+            field.clone(),
+            *window,
+            *bucket,
+            *optional,
+        ))),
+        FeatureDef::Max {
+            field,
+            window,
+            bucket,
+            optional,
+            ..
+        } => Some(OperatorState::Max(MaxOp::new(
+            field.clone(),
+            *window,
+            *bucket,
+            *optional,
+        ))),
+        FeatureDef::Last {
+            field, optional, ..
+        } => Some(OperatorState::Last(LastOp::new(field.clone(), *optional))),
+        FeatureDef::DistinctCount {
+            field,
+            window,
+            bucket,
+            optional,
+            ..
+        } => Some(OperatorState::DistinctCount(DistinctCountOp::new(
+            field.clone(),
+            *window,
+            *bucket,
+            *optional,
+        ))),
+        FeatureDef::Stddev {
+            field,
+            window,
+            bucket,
+            optional,
+            ..
+        } => Some(OperatorState::Stddev(StddevOp::new(
+            field.clone(),
+            *window,
+            *bucket,
+            *optional,
+        ))),
+        FeatureDef::Percentile {
+            field,
+            quantile,
+            window,
+            bucket,
+            optional,
+            ..
+        } => Some(OperatorState::Percentile(PercentileOp::new(
+            field.clone(),
+            *quantile,
+            *window,
+            *bucket,
+            *optional,
+        ))),
         FeatureDef::Derive { .. } => None, // Derives have no operator state
-        FeatureDef::Lag { field, n, optional, .. } => {
-            Some(OperatorState::Lag(LagOp::new(field.clone(), *n, *optional)))
-        }
-        FeatureDef::Ema { field, half_life_secs, optional, .. } => {
-            Some(OperatorState::Ema(EmaOp::new(field.clone(), *half_life_secs, *optional)))
-        }
-        FeatureDef::LastN { field, n, optional, .. } => {
-            Some(OperatorState::LastN(LastNOp::new(field.clone(), *n, *optional)))
-        }
-        FeatureDef::First { field, optional, .. } => {
-            Some(OperatorState::First(FirstOp::new(field.clone(), *optional)))
-        }
-        FeatureDef::ExactMin { field, window, bucket, optional, .. } => {
-            Some(OperatorState::ExactMin(ExactMinOp::new(field.clone(), *window, *bucket, *optional)))
-        }
-        FeatureDef::ExactMax { field, window, bucket, optional, .. } => {
-            Some(OperatorState::ExactMax(ExactMaxOp::new(field.clone(), *window, *bucket, *optional)))
-        }
+        FeatureDef::Lag {
+            field, n, optional, ..
+        } => Some(OperatorState::Lag(LagOp::new(field.clone(), *n, *optional))),
+        FeatureDef::Ema {
+            field,
+            half_life_secs,
+            optional,
+            ..
+        } => Some(OperatorState::Ema(EmaOp::new(
+            field.clone(),
+            *half_life_secs,
+            *optional,
+        ))),
+        FeatureDef::LastN {
+            field, n, optional, ..
+        } => Some(OperatorState::LastN(LastNOp::new(
+            field.clone(),
+            *n,
+            *optional,
+        ))),
+        FeatureDef::First {
+            field, optional, ..
+        } => Some(OperatorState::First(FirstOp::new(field.clone(), *optional))),
+        FeatureDef::ExactMin {
+            field,
+            window,
+            bucket,
+            optional,
+            ..
+        } => Some(OperatorState::ExactMin(ExactMinOp::new(
+            field.clone(),
+            *window,
+            *bucket,
+            *optional,
+        ))),
+        FeatureDef::ExactMax {
+            field,
+            window,
+            bucket,
+            optional,
+            ..
+        } => Some(OperatorState::ExactMax(ExactMaxOp::new(
+            field.clone(),
+            *window,
+            *bucket,
+            *optional,
+        ))),
     }
 }
 
@@ -380,6 +486,12 @@ fn get_where_expr(def: &FeatureDef) -> Option<&Expr> {
         FeatureDef::First { .. } => None,
         FeatureDef::ExactMin { where_expr, .. } => where_expr.as_ref(),
         FeatureDef::ExactMax { where_expr, .. } => where_expr.as_ref(),
+    }
+}
+
+impl Default for PipelineEngine {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -408,10 +520,17 @@ impl PipelineEngine {
         // Keyless streams cannot have windowed operators (T-07-01 mitigation)
         if stream.key_field.is_none() {
             for (name, def) in &stream.features {
-                let is_windowed = matches!(def,
-                    FeatureDef::Count { .. } | FeatureDef::Sum { .. } | FeatureDef::Avg { .. } |
-                    FeatureDef::Min { .. } | FeatureDef::Max { .. } | FeatureDef::DistinctCount { .. } |
-                    FeatureDef::Last { .. } | FeatureDef::Stddev { .. } | FeatureDef::Percentile { .. }
+                let is_windowed = matches!(
+                    def,
+                    FeatureDef::Count { .. }
+                        | FeatureDef::Sum { .. }
+                        | FeatureDef::Avg { .. }
+                        | FeatureDef::Min { .. }
+                        | FeatureDef::Max { .. }
+                        | FeatureDef::DistinctCount { .. }
+                        | FeatureDef::Last { .. }
+                        | FeatureDef::Stddev { .. }
+                        | FeatureDef::Percentile { .. }
                 );
                 if is_windowed {
                     return Err(TallyError::Protocol(format!(
@@ -436,7 +555,9 @@ impl PipelineEngine {
         } else {
             // First registration: all features are "added"
             let added: Vec<String> = stream.features.iter().map(|(n, _)| n.clone()).collect();
-            let backfilling: Vec<String> = stream.features.iter()
+            let backfilling: Vec<String> = stream
+                .features
+                .iter()
                 .filter(|(_, def)| get_backfill_flag(def))
                 .map(|(n, _)| n.clone())
                 .collect();
@@ -526,7 +647,12 @@ impl PipelineEngine {
         if self.get_stream(stream_name).is_none() {
             return events
                 .iter()
-                .map(|_| Err(TallyError::Protocol(format!("unknown stream: {}", stream_name))))
+                .map(|_| {
+                    Err(TallyError::Protocol(format!(
+                        "unknown stream: {}",
+                        stream_name
+                    )))
+                })
                 .collect();
         }
         let mut out = Vec::with_capacity(events.len());
@@ -536,6 +662,7 @@ impl PipelineEngine {
         out
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_internal(
         &self,
         stream_name: &str,
@@ -547,9 +674,10 @@ impl PipelineEngine {
         read_features: bool,
     ) -> Result<FeatureMap, TallyError> {
         // 1. Look up stream definition
-        let stream = self.streams.get(stream_name).ok_or_else(|| {
-            TallyError::Protocol(format!("unknown stream: {}", stream_name))
-        })?;
+        let stream = self
+            .streams
+            .get(stream_name)
+            .ok_or_else(|| TallyError::Protocol(format!("unknown stream: {}", stream_name)))?;
 
         // Apply stream-level filter before any processing
         if let Some(ref filter_expr) = stream.filter {
@@ -563,7 +691,7 @@ impl PipelineEngine {
                 FeatureValue::Int(0) | FeatureValue::Missing => {
                     return Ok(FeatureMap::new());
                 }
-                FeatureValue::Float(f) if f == 0.0 => {
+                FeatureValue::Float(0.0) => {
                     return Ok(FeatureMap::new());
                 }
                 _ => {} // truthy -- proceed
@@ -580,9 +708,10 @@ impl PipelineEngine {
         let key = match event.get(key_field) {
             Some(serde_json::Value::String(s)) => {
                 if s.is_empty() {
-                    return Err(TallyError::Protocol(
-                        format!("empty key field '{}'", key_field),
-                    ));
+                    return Err(TallyError::Protocol(format!(
+                        "empty key field '{}'",
+                        key_field
+                    )));
                 }
                 s.clone()
             }
@@ -613,7 +742,9 @@ impl PipelineEngine {
         entity.get_or_create_stream(stream_name);
 
         // Initialize or reconcile operators for THIS stream only.
-        let op_features: Vec<&(String, FeatureDef)> = stream.features.iter()
+        let op_features: Vec<&(String, FeatureDef)> = stream
+            .features
+            .iter()
             .filter(|(_, def)| !matches!(def, FeatureDef::Derive { .. }))
             .collect();
 
@@ -632,7 +763,11 @@ impl PipelineEngine {
             // Push event to this stream's operators, respecting where-clause filters.
             for (fname, def) in &op_features {
                 // Find the operator by name in stream_state
-                if let Some((_, op)) = stream_state.operators.iter_mut().find(|(n, _)| *n == **fname) {
+                if let Some((_, op)) = stream_state
+                    .operators
+                    .iter_mut()
+                    .find(|(n, _)| *n == **fname)
+                {
                     // Check where clause
                     if let Some(where_expr) = get_where_expr(def) {
                         let ctx = EvalContext {
@@ -643,7 +778,7 @@ impl PipelineEngine {
                         let result = eval(where_expr, &ctx);
                         match result {
                             FeatureValue::Int(0) | FeatureValue::Missing => continue,
-                            FeatureValue::Float(f) if f == 0.0 => continue,
+                            FeatureValue::Float(0.0) => continue,
                             _ => {} // truthy -- proceed with push
                         }
                     }
@@ -684,7 +819,9 @@ impl PipelineEngine {
                 event: Some(event),
                 enrichment: enrichment_fv,
             };
-            stream.features.iter()
+            stream
+                .features
+                .iter()
                 .filter_map(|(name, def)| {
                     if let FeatureDef::Derive { expr } = def {
                         Some((name.clone(), eval(expr, &ctx)))
@@ -740,7 +877,8 @@ impl PipelineEngine {
         let order = toposort(&dag, None).map_err(|cycle| {
             let node = &dag[cycle.node_id()];
             TallyError::Protocol(format!(
-                "circular dependency detected involving stream '{}'", node
+                "circular dependency detected involving stream '{}'",
+                node
             ))
         })?;
 
@@ -751,7 +889,8 @@ impl PipelineEngine {
         for stream in self.streams.values() {
             if let Some(ref deps) = stream.depends_on {
                 for dep in deps {
-                    downstream_map.entry(dep.clone())
+                    downstream_map
+                        .entry(dep.clone())
                         .or_default()
                         .push(stream.name.clone());
                 }
@@ -835,7 +974,12 @@ impl PipelineEngine {
         if self.get_stream(stream_name).is_none() {
             return events
                 .iter()
-                .map(|_| Err(TallyError::Protocol(format!("unknown stream: {}", stream_name))))
+                .map(|_| {
+                    Err(TallyError::Protocol(format!(
+                        "unknown stream: {}",
+                        stream_name
+                    )))
+                })
                 .collect();
         }
 
@@ -879,7 +1023,9 @@ impl PipelineEngine {
             //    event — matching v1.2 semantics for async pushes.
             if res.is_ok() {
                 for (target_name, target_key_field) in &fan_out {
-                    if let Some(serde_json::Value::String(key_val)) = event.get(target_key_field.as_str()) {
+                    if let Some(serde_json::Value::String(key_val)) =
+                        event.get(target_key_field.as_str())
+                    {
                         if !key_val.is_empty() {
                             let _ = self.push_no_features(target_name, event, store, now);
                         }
@@ -914,9 +1060,8 @@ impl PipelineEngine {
 
         // Primary push -- MUST read features when downstream exists (Pitfall 5)
         // even if outer caller requested read_features=false (async mode)
-        let primary_features = self.push_internal(
-            stream_name, event, None, None, store, now, true,
-        )?;
+        let primary_features =
+            self.push_internal(stream_name, event, None, None, store, now, true)?;
 
         // Populate enrichment from primary stream results
         for (name, value) in &primary_features {
@@ -973,10 +1118,13 @@ impl PipelineEngine {
                 match event.get(key_field) {
                     Some(serde_json::Value::String(k)) if !k.is_empty() => {
                         let ds_features = self.push_internal(
-                            stream_in_order, event,
+                            stream_in_order,
+                            event,
                             Some(&enrichment_json),
                             Some(&enrichment_fv),
-                            store, now, ds_read_features,
+                            store,
+                            now,
+                            ds_read_features,
                         )?;
 
                         // Accumulate this stream's results for further downstream
@@ -995,10 +1143,13 @@ impl PipelineEngine {
             } else {
                 // Keyless downstream
                 let ds_features = self.push_internal(
-                    stream_in_order, event,
+                    stream_in_order,
+                    event,
                     Some(&enrichment_json),
                     Some(&enrichment_fv),
-                    store, now, ds_read_features,
+                    store,
+                    now,
+                    ds_read_features,
                 )?;
 
                 if has_further_downstream {
@@ -1033,21 +1184,22 @@ impl PipelineEngine {
         event_time: SystemTime,
         backfill_features: &[String],
     ) -> Result<(), TallyError> {
-        let stream = self.streams.get(stream_name).ok_or_else(|| {
-            TallyError::Protocol(format!("unknown stream: {}", stream_name))
-        })?;
+        let stream = self
+            .streams
+            .get(stream_name)
+            .ok_or_else(|| TallyError::Protocol(format!("unknown stream: {}", stream_name)))?;
 
         // Apply stream-level filter (same as push)
         if let Some(ref filter_expr) = stream.filter {
             let ctx = EvalContext {
                 features: &ahash::AHashMap::new(),
                 event: Some(event),
-            enrichment: None,
+                enrichment: None,
             };
             let result = eval(filter_expr, &ctx);
             match result {
                 FeatureValue::Int(0) | FeatureValue::Missing => return Ok(()),
-                FeatureValue::Float(f) if f == 0.0 => return Ok(()),
+                FeatureValue::Float(0.0) => return Ok(()),
                 _ => {}
             }
         }
@@ -1068,10 +1220,11 @@ impl PipelineEngine {
         entity.get_or_create_stream(stream_name);
 
         // Only push to backfill operators
-        let op_features: Vec<&(String, FeatureDef)> = stream.features.iter()
+        let op_features: Vec<&(String, FeatureDef)> = stream
+            .features
+            .iter()
             .filter(|(name, def)| {
-                !matches!(def, FeatureDef::Derive { .. })
-                && backfill_features.contains(name)
+                !matches!(def, FeatureDef::Derive { .. }) && backfill_features.contains(name)
             })
             .collect();
 
@@ -1089,18 +1242,22 @@ impl PipelineEngine {
 
         // Push with event_time (not wall clock)
         for (fname, def) in &op_features {
-            if let Some((_, op)) = stream_state.operators.iter_mut().find(|(n, _)| *n == **fname) {
+            if let Some((_, op)) = stream_state
+                .operators
+                .iter_mut()
+                .find(|(n, _)| *n == **fname)
+            {
                 // Check where clause
                 if let Some(where_expr) = get_where_expr(def) {
                     let ctx = EvalContext {
                         features: &ahash::AHashMap::new(),
                         event: Some(event),
-                    enrichment: None,
+                        enrichment: None,
                     };
                     let result = eval(where_expr, &ctx);
                     match result {
                         FeatureValue::Int(0) | FeatureValue::Missing => continue,
-                        FeatureValue::Float(f) if f == 0.0 => continue,
+                        FeatureValue::Float(0.0) => continue,
                         _ => {}
                     }
                 }
@@ -1121,12 +1278,7 @@ impl PipelineEngine {
     /// advance time and expire stale buckets), then evaluates derive expressions
     /// for any registered streams, then evaluates view features (cross-stream
     /// derives and cross-key lookups).
-    pub fn get_features(
-        &self,
-        key: &str,
-        store: &StateStore,
-        now: SystemTime,
-    ) -> FeatureMap {
+    pub fn get_features(&self, key: &str, store: &StateStore, now: SystemTime) -> FeatureMap {
         let mut features = store.get_all_features(key, now);
 
         // Build qualified feature names: "StreamName.feature_name" -> value
@@ -1148,7 +1300,7 @@ impl PipelineEngine {
         let ctx = EvalContext {
             features: &features,
             event: None,
-        enrichment: None,
+            enrichment: None,
         };
         // Collect derives first to avoid borrow issues
         let mut derived: Vec<(String, FeatureValue)> = Vec::new();
@@ -1181,11 +1333,15 @@ impl PipelineEngine {
                         let ctx = EvalContext {
                             features: &features,
                             event: None,
-                        enrichment: None,
+                            enrichment: None,
                         };
                         view_results.push((fname.clone(), eval(expr, &ctx)));
                     }
-                    ViewFeatureDef::Lookup { target_stream: _target_stream, target_feature, on_field } => {
+                    ViewFeatureDef::Lookup {
+                        target_stream: _target_stream,
+                        target_feature,
+                        on_field,
+                    } => {
                         // Resolve the foreign key from the entity's existing features.
                         // Search stream definitions for a Last operator that tracks the
                         // on_field, then use its feature name to look up the value.
@@ -1242,7 +1398,8 @@ impl PipelineEngine {
     /// Return the maximum window duration across all registered streams.
     /// Returns Duration::ZERO if no streams are registered.
     pub fn max_window_duration(&self) -> Duration {
-        self.streams.values()
+        self.streams
+            .values()
             .flat_map(|s| s.features.iter())
             .filter_map(|(_, def)| match def {
                 FeatureDef::Count { window, .. } => Some(*window),
@@ -1324,19 +1481,25 @@ impl PipelineEngine {
     /// features in each registered stream. Used by clone_for_snapshot_with_gc to
     /// determine which operators are still valid.
     pub fn valid_features_map(&self) -> AHashMap<String, Vec<String>> {
-        self.streams.iter().map(|(name, def)| {
-            let feature_names: Vec<String> = def.features.iter()
-                .filter(|(_, fd)| !matches!(fd, FeatureDef::Derive { .. }))
-                .map(|(n, _)| n.clone())
-                .collect();
-            (name.clone(), feature_names)
-        }).collect()
+        self.streams
+            .iter()
+            .map(|(name, def)| {
+                let feature_names: Vec<String> = def
+                    .features
+                    .iter()
+                    .filter(|(_, fd)| !matches!(fd, FeatureDef::Derive { .. }))
+                    .map(|(n, _)| n.clone())
+                    .collect();
+                (name.clone(), feature_names)
+            })
+            .collect()
     }
 
     /// Return list of (stream_name, key_field) for all registered keyed streams.
     /// Used by PUSH handler for fan-out. Keyless streams are excluded (T-07-03).
     pub fn fan_out_targets(&self) -> Vec<(String, String)> {
-        self.streams.values()
+        self.streams
+            .values()
             .filter_map(|s| s.key_field.as_ref().map(|kf| (s.name.clone(), kf.clone())))
             .collect()
     }
@@ -1376,28 +1539,37 @@ mod tests {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
             features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    where_expr: None,
-                    backfill: false,
-                }),
-                ("tx_sum_1h".into(), FeatureDef::Sum {
-                    field: "amount".into(),
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    optional: false,
-                    where_expr: None,
-                    backfill: false,
-                }),
-                ("avg_amount_1h".into(), FeatureDef::Avg {
-                    field: "amount".into(),
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    optional: false,
-                    where_expr: None,
-                    backfill: false,
-                }),
+                (
+                    "tx_count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "tx_sum_1h".into(),
+                    FeatureDef::Sum {
+                        field: "amount".into(),
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        optional: false,
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "avg_amount_1h".into(),
+                    FeatureDef::Avg {
+                        field: "amount".into(),
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        optional: false,
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
             ],
             depends_on: None,
             filter: None,
@@ -1441,7 +1613,7 @@ mod tests {
     #[test]
     fn test_push_updates_all_operators() {
         let mut engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         engine.register(make_tx_stream()).unwrap();
 
         let now = ts(60_000);
@@ -1450,47 +1622,52 @@ mod tests {
             "amount": 50.0
         });
 
-        let features = engine.push("Transactions", &event, &mut store, now).unwrap();
+        let features = engine
+            .push("Transactions", &event, &store, now)
+            .unwrap();
         assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
         assert_eq!(features.get("tx_sum_1h"), Some(&FeatureValue::Float(50.0)));
-        assert_eq!(features.get("avg_amount_1h"), Some(&FeatureValue::Float(50.0)));
+        assert_eq!(
+            features.get("avg_amount_1h"),
+            Some(&FeatureValue::Float(50.0))
+        );
     }
 
     #[test]
     fn test_push_missing_key_field_returns_error() {
         let mut engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         engine.register(make_tx_stream()).unwrap();
 
         let event = serde_json::json!({"amount": 50.0});
-        let result = engine.push("Transactions", &event, &mut store, ts(60_000));
+        let result = engine.push("Transactions", &event, &store, ts(60_000));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_push_empty_key_rejected() {
         let mut engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         engine.register(make_tx_stream()).unwrap();
 
         let event = serde_json::json!({"user_id": "", "amount": 50.0});
-        let result = engine.push("Transactions", &event, &mut store, ts(60_000));
+        let result = engine.push("Transactions", &event, &store, ts(60_000));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_push_unknown_stream_returns_error() {
         let engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let event = serde_json::json!({"user_id": "u123"});
-        let result = engine.push("NonExistent", &event, &mut store, ts(60_000));
+        let result = engine.push("NonExistent", &event, &store, ts(60_000));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_push_3_events_verify_aggregates() {
         let mut engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         engine.register(make_tx_stream()).unwrap();
 
         let now = ts(60_000);
@@ -1499,13 +1676,18 @@ mod tests {
                 "user_id": "u123",
                 "amount": amount
             });
-            engine.push("Transactions", &event, &mut store, now).unwrap();
+            engine
+                .push("Transactions", &event, &store, now)
+                .unwrap();
         }
 
         let features = store.get_all_features("u123", now);
         assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(3)));
         assert_eq!(features.get("tx_sum_1h"), Some(&FeatureValue::Float(60.0)));
-        assert_eq!(features.get("avg_amount_1h"), Some(&FeatureValue::Float(20.0)));
+        assert_eq!(
+            features.get("avg_amount_1h"),
+            Some(&FeatureValue::Float(20.0))
+        );
     }
 
     // ======================== max_window_duration Tests ========================
@@ -1513,54 +1695,65 @@ mod tests {
     #[test]
     fn test_max_window_duration() {
         let mut engine = PipelineEngine::new();
-        engine.register(StreamDefinition {
-            name: "stream1".into(),
-            key_field: Some("id".into()),
-            features: vec![
-                ("c1".into(), FeatureDef::Count {
-                    window: Duration::from_secs(1800), // 30m
-                    bucket: Duration::from_secs(60),
-                    where_expr: None,
-                    backfill: false,
-                }),
-                ("s1".into(), FeatureDef::Sum {
-                    field: "amount".into(),
-                    window: Duration::from_secs(3600), // 1h -- largest
-                    bucket: Duration::from_secs(60),
-                    optional: false,
-                    where_expr: None,
-                    backfill: false,
-                }),
-            ],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
-        engine.register(StreamDefinition {
-            name: "stream2".into(),
-            key_field: Some("id".into()),
-            features: vec![
-                ("c2".into(), FeatureDef::Count {
-                    window: Duration::from_secs(900), // 15m
-                    bucket: Duration::from_secs(60),
-                    where_expr: None,
-                    backfill: false,
-                }),
-            ],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "stream1".into(),
+                key_field: Some("id".into()),
+                features: vec![
+                    (
+                        "c1".into(),
+                        FeatureDef::Count {
+                            window: Duration::from_secs(1800), // 30m
+                            bucket: Duration::from_secs(60),
+                            where_expr: None,
+                            backfill: false,
+                        },
+                    ),
+                    (
+                        "s1".into(),
+                        FeatureDef::Sum {
+                            field: "amount".into(),
+                            window: Duration::from_secs(3600), // 1h -- largest
+                            bucket: Duration::from_secs(60),
+                            optional: false,
+                            where_expr: None,
+                            backfill: false,
+                        },
+                    ),
+                ],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "stream2".into(),
+                key_field: Some("id".into()),
+                features: vec![(
+                    "c2".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(900), // 15m
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                )],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(3600));
     }
 
@@ -1573,23 +1766,26 @@ mod tests {
     #[test]
     fn test_max_window_duration_derive_only_returns_zero() {
         let mut engine = PipelineEngine::new();
-        engine.register(StreamDefinition {
-            name: "derived".into(),
-            key_field: Some("id".into()),
-            features: vec![
-                ("ratio".into(), FeatureDef::Derive {
-                    expr: crate::engine::expression::parse_expr("1 + 1").unwrap(),
-                }),
-            ],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "derived".into(),
+                key_field: Some("id".into()),
+                features: vec![(
+                    "ratio".into(),
+                    FeatureDef::Derive {
+                        expr: crate::engine::expression::parse_expr("1 + 1").unwrap(),
+                    },
+                )],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
         assert_eq!(engine.max_window_duration(), Duration::ZERO);
     }
 
@@ -1687,32 +1883,41 @@ mod tests {
     #[test]
     fn test_push_with_min_max_last_operators() {
         let mut engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let stream = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
             features: vec![
-                ("min_amount_1h".into(), FeatureDef::Min {
-                    field: "amount".into(),
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    optional: false,
-                    where_expr: None,
-                    backfill: false,
-                }),
-                ("max_amount_1h".into(), FeatureDef::Max {
-                    field: "amount".into(),
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    optional: false,
-                    where_expr: None,
-                    backfill: false,
-                }),
-                ("last_country".into(), FeatureDef::Last {
-                    field: "country".into(),
-                    optional: false,
-                    backfill: false,
-                }),
+                (
+                    "min_amount_1h".into(),
+                    FeatureDef::Min {
+                        field: "amount".into(),
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        optional: false,
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "max_amount_1h".into(),
+                    FeatureDef::Max {
+                        field: "amount".into(),
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        optional: false,
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "last_country".into(),
+                    FeatureDef::Last {
+                        field: "country".into(),
+                        optional: false,
+                        backfill: false,
+                    },
+                ),
             ],
             depends_on: None,
             filter: None,
@@ -1730,10 +1935,21 @@ mod tests {
             "amount": 50.0,
             "country": "US"
         });
-        let features = engine.push("Transactions", &event, &mut store, now).unwrap();
-        assert_eq!(features.get("min_amount_1h"), Some(&FeatureValue::Float(50.0)));
-        assert_eq!(features.get("max_amount_1h"), Some(&FeatureValue::Float(50.0)));
-        assert_eq!(features.get("last_country"), Some(&FeatureValue::String("US".into())));
+        let features = engine
+            .push("Transactions", &event, &store, now)
+            .unwrap();
+        assert_eq!(
+            features.get("min_amount_1h"),
+            Some(&FeatureValue::Float(50.0))
+        );
+        assert_eq!(
+            features.get("max_amount_1h"),
+            Some(&FeatureValue::Float(50.0))
+        );
+        assert_eq!(
+            features.get("last_country"),
+            Some(&FeatureValue::String("US".into()))
+        );
     }
 
     // ======================== Phase 5: where-clause filtering Tests ========================
@@ -1741,25 +1957,32 @@ mod tests {
     #[test]
     fn test_push_with_where_expr_filters_events() {
         let mut engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         // Create a stream with a where-clause filtered count
-        let where_expr = crate::engine::expression::parse_expr("_event.status == 'failed'").unwrap();
+        let where_expr =
+            crate::engine::expression::parse_expr("_event.status == 'failed'").unwrap();
         let stream = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
             features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    where_expr: None,
-                    backfill: false,
-                }),
-                ("failed_tx_1h".into(), FeatureDef::Count {
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    where_expr: Some(where_expr),
-                    backfill: false,
-                }),
+                (
+                    "tx_count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "failed_tx_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: Some(where_expr),
+                        backfill: false,
+                    },
+                ),
             ],
             depends_on: None,
             filter: None,
@@ -1774,15 +1997,36 @@ mod tests {
         let now = ts(60_000);
 
         // Push 3 events: 2 success, 1 failed
-        engine.push("Transactions", &serde_json::json!({
-            "user_id": "u123", "status": "success"
-        }), &mut store, now).unwrap();
-        engine.push("Transactions", &serde_json::json!({
-            "user_id": "u123", "status": "failed"
-        }), &mut store, now).unwrap();
-        let features = engine.push("Transactions", &serde_json::json!({
-            "user_id": "u123", "status": "success"
-        }), &mut store, now).unwrap();
+        engine
+            .push(
+                "Transactions",
+                &serde_json::json!({
+                    "user_id": "u123", "status": "success"
+                }),
+                &store,
+                now,
+            )
+            .unwrap();
+        engine
+            .push(
+                "Transactions",
+                &serde_json::json!({
+                    "user_id": "u123", "status": "failed"
+                }),
+                &store,
+                now,
+            )
+            .unwrap();
+        let features = engine
+            .push(
+                "Transactions",
+                &serde_json::json!({
+                    "user_id": "u123", "status": "success"
+                }),
+                &store,
+                now,
+            )
+            .unwrap();
 
         assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(3)));
         assert_eq!(features.get("failed_tx_1h"), Some(&FeatureValue::Int(1)));
@@ -1812,28 +2056,31 @@ mod tests {
     #[test]
     fn test_max_window_duration_includes_distinct_count() {
         let mut engine = PipelineEngine::new();
-        engine.register(StreamDefinition {
-            name: "stream1".into(),
-            key_field: Some("id".into()),
-            features: vec![
-                ("dc_24h".into(), FeatureDef::DistinctCount {
-                    field: "merchant_id".into(),
-                    window: Duration::from_secs(86400),
-                    bucket: Duration::from_secs(300),
-                    optional: false,
-                    where_expr: None,
-                    backfill: false,
-                }),
-            ],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "stream1".into(),
+                key_field: Some("id".into()),
+                features: vec![(
+                    "dc_24h".into(),
+                    FeatureDef::DistinctCount {
+                        field: "merchant_id".into(),
+                        window: Duration::from_secs(86400),
+                        bucket: Duration::from_secs(300),
+                        optional: false,
+                        where_expr: None,
+                        backfill: false,
+                    },
+                )],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(86400));
     }
 
@@ -1845,11 +2092,13 @@ mod tests {
         let view = ViewDefinition {
             name: "UserRisk".into(),
             key_field: "user_id".into(),
-            features: vec![
-                ("ratio".into(), ViewFeatureDef::Derive {
-                    expr: crate::engine::expression::parse_expr("Transactions.tx_count_1h / 1").unwrap(),
-                }),
-            ],
+            features: vec![(
+                "ratio".into(),
+                ViewFeatureDef::Derive {
+                    expr: crate::engine::expression::parse_expr("Transactions.tx_count_1h / 1")
+                        .unwrap(),
+                },
+            )],
         };
         engine.register_view(view).unwrap();
         assert!(engine.get_view("UserRisk").is_some());
@@ -1883,223 +2132,296 @@ mod tests {
     #[test]
     fn test_view_derive_resolves_qualified_fields_from_two_streams() {
         let mut engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         // Register two streams
-        engine.register(StreamDefinition {
-            name: "Transactions".into(),
-            key_field: Some("user_id".into()),
-            features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    where_expr: None,
-                    backfill: false,
-                }),
-            ],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
-        engine.register(StreamDefinition {
-            name: "Logins".into(),
-            key_field: Some("user_id".into()),
-            features: vec![
-                ("login_count_1h".into(), FeatureDef::Count {
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    where_expr: None,
-                    backfill: false,
-                }),
-            ],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "Transactions".into(),
+                key_field: Some("user_id".into()),
+                features: vec![(
+                    "tx_count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                )],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "Logins".into(),
+                key_field: Some("user_id".into()),
+                features: vec![(
+                    "login_count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                )],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
 
         // Register a view that derives from both streams
         let view = ViewDefinition {
             name: "UserRisk".into(),
             key_field: "user_id".into(),
-            features: vec![
-                ("tx_to_login_ratio".into(), ViewFeatureDef::Derive {
-                    expr: crate::engine::expression::parse_expr("Transactions.tx_count_1h / Logins.login_count_1h").unwrap(),
-                }),
-            ],
+            features: vec![(
+                "tx_to_login_ratio".into(),
+                ViewFeatureDef::Derive {
+                    expr: crate::engine::expression::parse_expr(
+                        "Transactions.tx_count_1h / Logins.login_count_1h",
+                    )
+                    .unwrap(),
+                },
+            )],
         };
         engine.register_view(view).unwrap();
 
         // Push events to both streams for the same user
-        engine.push("Transactions", &serde_json::json!({"user_id": "u1"}), &mut store, now).unwrap();
-        engine.push("Transactions", &serde_json::json!({"user_id": "u1"}), &mut store, now).unwrap();
-        engine.push("Logins", &serde_json::json!({"user_id": "u1"}), &mut store, now).unwrap();
+        engine
+            .push(
+                "Transactions",
+                &serde_json::json!({"user_id": "u1"}),
+                &store,
+                now,
+            )
+            .unwrap();
+        engine
+            .push(
+                "Transactions",
+                &serde_json::json!({"user_id": "u1"}),
+                &store,
+                now,
+            )
+            .unwrap();
+        engine
+            .push(
+                "Logins",
+                &serde_json::json!({"user_id": "u1"}),
+                &store,
+                now,
+            )
+            .unwrap();
 
         // GET should include view features with correct ratio: 2 / 1 = 2.0
-        let features = engine.get_features("u1", &mut store, now);
+        let features = engine.get_features("u1", &store, now);
         assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(2)));
         assert_eq!(features.get("login_count_1h"), Some(&FeatureValue::Int(1)));
-        assert_eq!(features.get("tx_to_login_ratio"), Some(&FeatureValue::Float(2.0)));
+        assert_eq!(
+            features.get("tx_to_login_ratio"),
+            Some(&FeatureValue::Float(2.0))
+        );
     }
 
     #[test]
     fn test_view_lookup_resolves_cross_key_feature() {
         let mut engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         // Register MerchantActivity stream (keyed by merchant_id)
-        engine.register(StreamDefinition {
-            name: "MerchantActivity".into(),
-            key_field: Some("merchant_id".into()),
-            features: vec![
-                ("chargeback_count_24h".into(), FeatureDef::Count {
-                    window: Duration::from_secs(86400),
-                    bucket: Duration::from_secs(300),
-                    where_expr: None,
-                    backfill: false,
-                }),
-            ],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "MerchantActivity".into(),
+                key_field: Some("merchant_id".into()),
+                features: vec![(
+                    "chargeback_count_24h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(86400),
+                        bucket: Duration::from_secs(300),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                )],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
 
         // Register Transactions stream with last_merchant_id to store the foreign key
-        engine.register(StreamDefinition {
-            name: "Transactions".into(),
-            key_field: Some("user_id".into()),
-            features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    where_expr: None,
-                    backfill: false,
-                }),
-                ("last_merchant_id".into(), FeatureDef::Last {
-                    field: "merchant_id".into(),
-                    optional: true,
-                    backfill: false,
-                }),
-            ],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "Transactions".into(),
+                key_field: Some("user_id".into()),
+                features: vec![
+                    (
+                        "tx_count_1h".into(),
+                        FeatureDef::Count {
+                            window: Duration::from_secs(3600),
+                            bucket: Duration::from_secs(60),
+                            where_expr: None,
+                            backfill: false,
+                        },
+                    ),
+                    (
+                        "last_merchant_id".into(),
+                        FeatureDef::Last {
+                            field: "merchant_id".into(),
+                            optional: true,
+                            backfill: false,
+                        },
+                    ),
+                ],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
 
         // Register a view with lookup
         let view = ViewDefinition {
             name: "FraudSignals".into(),
             key_field: "user_id".into(),
-            features: vec![
-                ("merchant_chargebacks".into(), ViewFeatureDef::Lookup {
+            features: vec![(
+                "merchant_chargebacks".into(),
+                ViewFeatureDef::Lookup {
                     target_stream: "MerchantActivity".into(),
                     target_feature: "chargeback_count_24h".into(),
                     on_field: "merchant_id".into(),
-                }),
-            ],
+                },
+            )],
         };
         engine.register_view(view).unwrap();
 
         // Push events: merchant gets 3 chargebacks
         for _ in 0..3 {
-            engine.push("MerchantActivity", &serde_json::json!({"merchant_id": "m456"}), &mut store, now).unwrap();
+            engine
+                .push(
+                    "MerchantActivity",
+                    &serde_json::json!({"merchant_id": "m456"}),
+                    &store,
+                    now,
+                )
+                .unwrap();
         }
 
         // Push a user transaction with merchant_id (stores last_merchant_id)
-        engine.push("Transactions", &serde_json::json!({"user_id": "u123", "merchant_id": "m456", "amount": 50.0}), &mut store, now).unwrap();
+        engine
+            .push(
+                "Transactions",
+                &serde_json::json!({"user_id": "u123", "merchant_id": "m456", "amount": 50.0}),
+                &store,
+                now,
+            )
+            .unwrap();
 
         // GET for user should include lookup result
-        let features = engine.get_features("u123", &mut store, now);
-        assert_eq!(features.get("merchant_chargebacks"), Some(&FeatureValue::Int(3)));
+        let features = engine.get_features("u123", &store, now);
+        assert_eq!(
+            features.get("merchant_chargebacks"),
+            Some(&FeatureValue::Int(3))
+        );
     }
 
     #[test]
     fn test_view_lookup_returns_missing_when_target_entity_not_found() {
         let mut engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
-        engine.register(StreamDefinition {
-            name: "Transactions".into(),
-            key_field: Some("user_id".into()),
-            features: vec![
-                ("last_merchant_id".into(), FeatureDef::Last {
-                    field: "merchant_id".into(),
-                    optional: true,
-                    backfill: false,
-                }),
-            ],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "Transactions".into(),
+                key_field: Some("user_id".into()),
+                features: vec![(
+                    "last_merchant_id".into(),
+                    FeatureDef::Last {
+                        field: "merchant_id".into(),
+                        optional: true,
+                        backfill: false,
+                    },
+                )],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
 
-        engine.register(StreamDefinition {
-            name: "MerchantActivity".into(),
-            key_field: Some("merchant_id".into()),
-            features: vec![
-                ("chargeback_count_24h".into(), FeatureDef::Count {
-                    window: Duration::from_secs(86400),
-                    bucket: Duration::from_secs(300),
-                    where_expr: None,
-                    backfill: false,
-                }),
-            ],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "MerchantActivity".into(),
+                key_field: Some("merchant_id".into()),
+                features: vec![(
+                    "chargeback_count_24h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(86400),
+                        bucket: Duration::from_secs(300),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                )],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
 
         let view = ViewDefinition {
             name: "FraudSignals".into(),
             key_field: "user_id".into(),
-            features: vec![
-                ("merchant_chargebacks".into(), ViewFeatureDef::Lookup {
+            features: vec![(
+                "merchant_chargebacks".into(),
+                ViewFeatureDef::Lookup {
                     target_stream: "MerchantActivity".into(),
                     target_feature: "chargeback_count_24h".into(),
                     on_field: "merchant_id".into(),
-                }),
-            ],
+                },
+            )],
         };
         engine.register_view(view).unwrap();
 
         // Push user transaction but do NOT push any MerchantActivity events
-        engine.push("Transactions", &serde_json::json!({"user_id": "u123", "merchant_id": "m_nonexistent", "amount": 50.0}), &mut store, now).unwrap();
+        engine.push("Transactions", &serde_json::json!({"user_id": "u123", "merchant_id": "m_nonexistent", "amount": 50.0}), &store, now).unwrap();
 
-        let features = engine.get_features("u123", &mut store, now);
+        let features = engine.get_features("u123", &store, now);
         // Lookup target entity doesn't exist -> Missing
-        assert_eq!(features.get("merchant_chargebacks"), Some(&FeatureValue::Missing));
+        assert_eq!(
+            features.get("merchant_chargebacks"),
+            Some(&FeatureValue::Missing)
+        );
     }
 
     // ======================== Phase 6 Plan 02: entity_ttl / history_ttl Tests ========================
@@ -2144,38 +2466,45 @@ mod tests {
     #[test]
     fn test_get_stream_entity_ttl_returns_some() {
         let mut engine = PipelineEngine::new();
-        engine.register(StreamDefinition {
-            name: "Transactions".into(),
-            key_field: Some("user_id".into()),
-            features: vec![],
-            depends_on: None,
-            filter: None,
-            entity_ttl: Some(Duration::from_secs(300)),
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
-        assert_eq!(engine.get_stream_entity_ttl("Transactions"), Some(Duration::from_secs(300)));
+        engine
+            .register(StreamDefinition {
+                name: "Transactions".into(),
+                key_field: Some("user_id".into()),
+                features: vec![],
+                depends_on: None,
+                filter: None,
+                entity_ttl: Some(Duration::from_secs(300)),
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
+        assert_eq!(
+            engine.get_stream_entity_ttl("Transactions"),
+            Some(Duration::from_secs(300))
+        );
     }
 
     #[test]
     fn test_get_stream_entity_ttl_returns_none_for_unset() {
         let mut engine = PipelineEngine::new();
-        engine.register(StreamDefinition {
-            name: "Transactions".into(),
-            key_field: Some("user_id".into()),
-            features: vec![],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "Transactions".into(),
+                key_field: Some("user_id".into()),
+                features: vec![],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
         assert_eq!(engine.get_stream_entity_ttl("Transactions"), None);
     }
 
@@ -2188,36 +2517,44 @@ mod tests {
     #[test]
     fn test_max_window_duration_includes_min_max() {
         let mut engine = PipelineEngine::new();
-        engine.register(StreamDefinition {
-            name: "stream1".into(),
-            key_field: Some("id".into()),
-            features: vec![
-                ("min_1h".into(), FeatureDef::Min {
-                    field: "amount".into(),
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    optional: false,
-                    where_expr: None,
-                    backfill: false,
-                }),
-                ("max_24h".into(), FeatureDef::Max {
-                    field: "amount".into(),
-                    window: Duration::from_secs(86400),
-                    bucket: Duration::from_secs(300),
-                    optional: false,
-                    where_expr: None,
-                    backfill: false,
-                }),
-            ],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "stream1".into(),
+                key_field: Some("id".into()),
+                features: vec![
+                    (
+                        "min_1h".into(),
+                        FeatureDef::Min {
+                            field: "amount".into(),
+                            window: Duration::from_secs(3600),
+                            bucket: Duration::from_secs(60),
+                            optional: false,
+                            where_expr: None,
+                            backfill: false,
+                        },
+                    ),
+                    (
+                        "max_24h".into(),
+                        FeatureDef::Max {
+                            field: "amount".into(),
+                            window: Duration::from_secs(86400),
+                            bucket: Duration::from_secs(300),
+                            optional: false,
+                            where_expr: None,
+                            backfill: false,
+                        },
+                    ),
+                ],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(86400));
     }
 
@@ -2250,14 +2587,15 @@ mod tests {
         let stream = StreamDefinition {
             name: "RawEvents".into(),
             key_field: None,
-            features: vec![
-                ("bad_count".into(), FeatureDef::Count {
+            features: vec![(
+                "bad_count".into(),
+                FeatureDef::Count {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
                     backfill: false,
-                }),
-            ],
+                },
+            )],
             depends_on: None,
             filter: None,
             entity_ttl: None,
@@ -2270,9 +2608,16 @@ mod tests {
         let result = engine.register(stream);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("keyless"), "error should mention 'keyless', got: {}", err_msg);
-        assert!(err_msg.contains("windowed") || err_msg.contains("operator"),
-            "error should mention windowed/operator, got: {}", err_msg);
+        assert!(
+            err_msg.contains("keyless"),
+            "error should mention 'keyless', got: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("windowed") || err_msg.contains("operator"),
+            "error should mention windowed/operator, got: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -2281,11 +2626,12 @@ mod tests {
         let stream = StreamDefinition {
             name: "RawEvents".into(),
             key_field: None,
-            features: vec![
-                ("doubled".into(), FeatureDef::Derive {
+            features: vec![(
+                "doubled".into(),
+                FeatureDef::Derive {
                     expr: crate::engine::expression::parse_expr("_event.amount * 2.0").unwrap(),
-                }),
-            ],
+                },
+            )],
             depends_on: None,
             filter: None,
             entity_ttl: None,
@@ -2302,7 +2648,7 @@ mod tests {
     #[test]
     fn test_keyless_push_returns_empty() {
         let mut engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let stream = StreamDefinition {
             name: "RawEvents".into(),
             key_field: None,
@@ -2319,8 +2665,13 @@ mod tests {
         engine.register(stream).unwrap();
 
         let event = serde_json::json!({"user_id": "u123", "amount": 50.0});
-        let features = engine.push("RawEvents", &event, &mut store, ts(60_000)).unwrap();
-        assert!(features.is_empty(), "keyless stream push should return empty FeatureMap");
+        let features = engine
+            .push("RawEvents", &event, &store, ts(60_000))
+            .unwrap();
+        assert!(
+            features.is_empty(),
+            "keyless stream push should return empty FeatureMap"
+        );
     }
 
     #[test]
@@ -2329,14 +2680,15 @@ mod tests {
         let stream = StreamDefinition {
             name: "Enriched".into(),
             key_field: Some("user_id".into()),
-            features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
+            features: vec![(
+                "tx_count_1h".into(),
+                FeatureDef::Count {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
                     backfill: false,
-                }),
-            ],
+                },
+            )],
             depends_on: Some(vec!["RawEvents".into()]),
             filter: None,
             entity_ttl: None,
@@ -2349,7 +2701,10 @@ mod tests {
         engine.register(stream).unwrap();
         assert_eq!(engine.stream_count(), 1);
         let s = engine.get_stream("Enriched").unwrap();
-        assert_eq!(s.depends_on.as_ref().unwrap(), &vec!["RawEvents".to_string()]);
+        assert_eq!(
+            s.depends_on.as_ref().unwrap(),
+            &vec!["RawEvents".to_string()]
+        );
     }
 
     #[test]
@@ -2359,16 +2714,19 @@ mod tests {
         let stream = StreamDefinition {
             name: "FailedOnly".into(),
             key_field: Some("user_id".into()),
-            features: vec![
-                ("cnt".into(), FeatureDef::Count {
+            features: vec![(
+                "cnt".into(),
+                FeatureDef::Count {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
                     backfill: false,
-                }),
-            ],
+                },
+            )],
             depends_on: None,
-            filter: Some(crate::engine::expression::parse_expr("_event.status == 'failed'").unwrap()),
+            filter: Some(
+                crate::engine::expression::parse_expr("_event.status == 'failed'").unwrap(),
+            ),
             entity_ttl: None,
             history_ttl: None,
             projection: None,
@@ -2383,20 +2741,23 @@ mod tests {
     #[test]
     fn test_filter_blocks_non_matching_events() {
         let mut engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let stream = StreamDefinition {
             name: "FailedTx".into(),
             key_field: Some("user_id".into()),
-            features: vec![
-                ("cnt".into(), FeatureDef::Count {
+            features: vec![(
+                "cnt".into(),
+                FeatureDef::Count {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
                     backfill: false,
-                }),
-            ],
+                },
+            )],
             depends_on: None,
-            filter: Some(crate::engine::expression::parse_expr("_event.status == 'failed'").unwrap()),
+            filter: Some(
+                crate::engine::expression::parse_expr("_event.status == 'failed'").unwrap(),
+            ),
             entity_ttl: None,
             history_ttl: None,
             projection: None,
@@ -2408,15 +2769,32 @@ mod tests {
         let now = ts(60_000);
 
         // Push event with status: "success" -- should be filtered out
-        let features = engine.push("FailedTx", &serde_json::json!({
-            "user_id": "u123", "status": "success"
-        }), &mut store, now).unwrap();
-        assert!(features.is_empty(), "non-matching event should return empty features");
+        let features = engine
+            .push(
+                "FailedTx",
+                &serde_json::json!({
+                    "user_id": "u123", "status": "success"
+                }),
+                &store,
+                now,
+            )
+            .unwrap();
+        assert!(
+            features.is_empty(),
+            "non-matching event should return empty features"
+        );
 
         // Push event with status: "failed" -- should proceed
-        let features = engine.push("FailedTx", &serde_json::json!({
-            "user_id": "u123", "status": "failed"
-        }), &mut store, now).unwrap();
+        let features = engine
+            .push(
+                "FailedTx",
+                &serde_json::json!({
+                    "user_id": "u123", "status": "failed"
+                }),
+                &store,
+                now,
+            )
+            .unwrap();
         assert_eq!(features.get("cnt"), Some(&FeatureValue::Int(1)));
     }
 
@@ -2424,36 +2802,44 @@ mod tests {
     fn test_fan_out_targets_excludes_keyless() {
         let mut engine = PipelineEngine::new();
         // Register a keyed stream
-        engine.register(StreamDefinition {
-            name: "Transactions".into(),
-            key_field: Some("user_id".into()),
-            features: vec![],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "Transactions".into(),
+                key_field: Some("user_id".into()),
+                features: vec![],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
         // Register a keyless stream
-        engine.register(StreamDefinition {
-            name: "RawEvents".into(),
-            key_field: None,
-            features: vec![],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "RawEvents".into(),
+                key_field: None,
+                features: vec![],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
 
         let targets = engine.fan_out_targets();
-        assert_eq!(targets.len(), 1, "fan_out_targets should only include keyed streams");
+        assert_eq!(
+            targets.len(),
+            1,
+            "fan_out_targets should only include keyed streams"
+        );
         assert_eq!(targets[0].0, "Transactions");
         assert_eq!(targets[0].1, "user_id");
     }
@@ -2474,22 +2860,43 @@ mod tests {
         let mut engine = PipelineEngine::new();
         // Register in reverse order: C, B, A -- topo order should still be A, B, C
         let c = StreamDefinition {
-            name: "C".into(), key_field: Some("uid".into()),
-            features: vec![], entity_ttl: None, history_ttl: None,
-            depends_on: Some(vec!["B".into()]), filter: None,
-            projection: None, ephemeral: None, pipeline_ttl: None, max_keys: None,
+            name: "C".into(),
+            key_field: Some("uid".into()),
+            features: vec![],
+            entity_ttl: None,
+            history_ttl: None,
+            depends_on: Some(vec!["B".into()]),
+            filter: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         let b = StreamDefinition {
-            name: "B".into(), key_field: Some("uid".into()),
-            features: vec![], entity_ttl: None, history_ttl: None,
-            depends_on: Some(vec!["A".into()]), filter: None,
-            projection: None, ephemeral: None, pipeline_ttl: None, max_keys: None,
+            name: "B".into(),
+            key_field: Some("uid".into()),
+            features: vec![],
+            entity_ttl: None,
+            history_ttl: None,
+            depends_on: Some(vec!["A".into()]),
+            filter: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         let a = StreamDefinition {
-            name: "A".into(), key_field: None,
-            features: vec![], entity_ttl: None, history_ttl: None,
-            depends_on: None, filter: None,
-            projection: None, ephemeral: None, pipeline_ttl: None, max_keys: None,
+            name: "A".into(),
+            key_field: None,
+            features: vec![],
+            entity_ttl: None,
+            history_ttl: None,
+            depends_on: None,
+            filter: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
         };
         engine.register(c).unwrap();
         engine.register(b).unwrap();
@@ -2507,18 +2914,19 @@ mod tests {
     fn test_backward_compat_keyed_stream() {
         // Existing pattern with key_field: Some(...) should work exactly as before
         let mut engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let stream = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
-            features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
+            features: vec![(
+                "tx_count_1h".into(),
+                FeatureDef::Count {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
                     backfill: false,
-                }),
-            ],
+                },
+            )],
             depends_on: None,
             filter: None,
             entity_ttl: None,
@@ -2531,7 +2939,9 @@ mod tests {
         engine.register(stream).unwrap();
         let now = ts(60_000);
         let event = serde_json::json!({"user_id": "u123", "amount": 50.0});
-        let features = engine.push("Transactions", &event, &mut store, now).unwrap();
+        let features = engine
+            .push("Transactions", &event, &store, now)
+            .unwrap();
         assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
     }
 
@@ -2543,14 +2953,15 @@ mod tests {
         let stream1 = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
-            features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
+            features: vec![(
+                "tx_count_1h".into(),
+                FeatureDef::Count {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
                     backfill: false,
-                }),
-            ],
+                },
+            )],
             depends_on: None,
             filter: None,
             entity_ttl: None,
@@ -2569,20 +2980,26 @@ mod tests {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
             features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    where_expr: None,
-                    backfill: false,
-                }),
-                ("tx_sum_1h".into(), FeatureDef::Sum {
-                    field: "amount".into(),
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    optional: false,
-                    where_expr: None,
-                    backfill: false,
-                }),
+                (
+                    "tx_count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "tx_sum_1h".into(),
+                    FeatureDef::Sum {
+                        field: "amount".into(),
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        optional: false,
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
             ],
             depends_on: None,
             filter: None,
@@ -2606,20 +3023,26 @@ mod tests {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
             features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    where_expr: None,
-                    backfill: false,
-                }),
-                ("tx_sum_1h".into(), FeatureDef::Sum {
-                    field: "amount".into(),
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    optional: false,
-                    where_expr: None,
-                    backfill: false,
-                }),
+                (
+                    "tx_count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "tx_sum_1h".into(),
+                    FeatureDef::Sum {
+                        field: "amount".into(),
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        optional: false,
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
             ],
             depends_on: None,
             filter: None,
@@ -2636,14 +3059,15 @@ mod tests {
         let stream2 = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
-            features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
+            features: vec![(
+                "tx_count_1h".into(),
+                FeatureDef::Count {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
                     backfill: false,
-                }),
-            ],
+                },
+            )],
             depends_on: None,
             filter: None,
             entity_ttl: None,
@@ -2665,14 +3089,15 @@ mod tests {
         let stream1 = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
-            features: vec![
-                ("f1".into(), FeatureDef::Count {
+            features: vec![(
+                "f1".into(),
+                FeatureDef::Count {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
                     backfill: false,
-                }),
-            ],
+                },
+            )],
             depends_on: None,
             filter: None,
             entity_ttl: None,
@@ -2688,16 +3113,17 @@ mod tests {
         let stream2 = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
-            features: vec![
-                ("f1".into(), FeatureDef::Sum {
+            features: vec![(
+                "f1".into(),
+                FeatureDef::Sum {
                     field: "amount".into(),
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     optional: false,
                     where_expr: None,
                     backfill: false,
-                }),
-            ],
+                },
+            )],
             depends_on: None,
             filter: None,
             entity_ttl: None,
@@ -2710,7 +3136,11 @@ mod tests {
         let result = engine.register(stream2);
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("type changed"), "Error should contain 'type changed': {}", err);
+        assert!(
+            err.contains("type changed"),
+            "Error should contain 'type changed': {}",
+            err
+        );
     }
 
     #[test]
@@ -2720,20 +3150,26 @@ mod tests {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
             features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    where_expr: None,
-                    backfill: false,
-                }),
-                ("tx_sum_1h".into(), FeatureDef::Sum {
-                    field: "amount".into(),
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    optional: false,
-                    where_expr: None,
-                    backfill: false,
-                }),
+                (
+                    "tx_count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "tx_sum_1h".into(),
+                    FeatureDef::Sum {
+                        field: "amount".into(),
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        optional: false,
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
             ],
             depends_on: None,
             filter: None,
@@ -2778,21 +3214,22 @@ mod tests {
     #[test]
     fn test_reregister_preserves_state() {
         let mut engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         // Register stream with count feature
         let stream1 = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
-            features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
+            features: vec![(
+                "tx_count_1h".into(),
+                FeatureDef::Count {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
                     backfill: false,
-                }),
-            ],
+                },
+            )],
             depends_on: None,
             filter: None,
             entity_ttl: None,
@@ -2806,9 +3243,16 @@ mod tests {
 
         // Push 5 events
         for _ in 0..5 {
-            engine.push("Transactions", &serde_json::json!({
-                "user_id": "u123", "amount": 10.0
-            }), &mut store, now).unwrap();
+            engine
+                .push(
+                    "Transactions",
+                    &serde_json::json!({
+                        "user_id": "u123", "amount": 10.0
+                    }),
+                    &store,
+                    now,
+                )
+                .unwrap();
         }
 
         // Re-register with an added feature
@@ -2816,20 +3260,26 @@ mod tests {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
             features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    where_expr: None,
-                    backfill: false,
-                }),
-                ("avg_amount_1h".into(), FeatureDef::Avg {
-                    field: "amount".into(),
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    optional: false,
-                    where_expr: None,
-                    backfill: false,
-                }),
+                (
+                    "tx_count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "avg_amount_1h".into(),
+                    FeatureDef::Avg {
+                        field: "amount".into(),
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        optional: false,
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
             ],
             depends_on: None,
             filter: None,
@@ -2843,62 +3293,83 @@ mod tests {
         engine.register(stream2).unwrap();
 
         // Push 1 more event
-        let features = engine.push("Transactions", &serde_json::json!({
-            "user_id": "u123", "amount": 10.0
-        }), &mut store, now).unwrap();
+        let features = engine
+            .push(
+                "Transactions",
+                &serde_json::json!({
+                    "user_id": "u123", "amount": 10.0
+                }),
+                &store,
+                now,
+            )
+            .unwrap();
 
         // Original feature count should be 6 (not reset)
         assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(6)));
         // New feature should have count=1
-        assert_eq!(features.get("avg_amount_1h"), Some(&FeatureValue::Float(10.0)));
+        assert_eq!(
+            features.get("avg_amount_1h"),
+            Some(&FeatureValue::Float(10.0))
+        );
     }
 
     #[test]
     fn test_valid_features_map() {
         let mut engine = PipelineEngine::new();
-        engine.register(StreamDefinition {
-            name: "Transactions".into(),
-            key_field: Some("user_id".into()),
-            features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    where_expr: None,
-                    backfill: false,
-                }),
-                ("ratio".into(), FeatureDef::Derive {
-                    expr: crate::engine::expression::parse_expr("1 + 1").unwrap(),
-                }),
-            ],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
-        engine.register(StreamDefinition {
-            name: "Logins".into(),
-            key_field: Some("user_id".into()),
-            features: vec![
-                ("login_count_1h".into(), FeatureDef::Count {
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    where_expr: None,
-                    backfill: false,
-                }),
-            ],
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }).unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "Transactions".into(),
+                key_field: Some("user_id".into()),
+                features: vec![
+                    (
+                        "tx_count_1h".into(),
+                        FeatureDef::Count {
+                            window: Duration::from_secs(3600),
+                            bucket: Duration::from_secs(60),
+                            where_expr: None,
+                            backfill: false,
+                        },
+                    ),
+                    (
+                        "ratio".into(),
+                        FeatureDef::Derive {
+                            expr: crate::engine::expression::parse_expr("1 + 1").unwrap(),
+                        },
+                    ),
+                ],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
+        engine
+            .register(StreamDefinition {
+                name: "Logins".into(),
+                key_field: Some("user_id".into()),
+                features: vec![(
+                    "login_count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                )],
+                depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+            .unwrap();
 
         let vfm = engine.valid_features_map();
         assert_eq!(vfm.len(), 2);
@@ -2917,27 +3388,33 @@ mod tests {
     #[test]
     fn test_push_for_backfill_targets_only_specified_features() {
         let mut engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         let stream = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
             features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    where_expr: None,
-                    backfill: false,
-                }),
-                ("tx_sum_1h".into(), FeatureDef::Sum {
-                    field: "amount".into(),
-                    window: Duration::from_secs(3600),
-                    bucket: Duration::from_secs(60),
-                    optional: false,
-                    where_expr: None,
-                    backfill: true,
-                }),
+                (
+                    "tx_count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "tx_sum_1h".into(),
+                    FeatureDef::Sum {
+                        field: "amount".into(),
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        optional: false,
+                        where_expr: None,
+                        backfill: true,
+                    },
+                ),
             ],
             depends_on: None,
             filter: None,
@@ -2952,35 +3429,56 @@ mod tests {
 
         // push_for_backfill targeting ONLY "tx_sum_1h"
         let event = serde_json::json!({"user_id": "u1", "amount": 42.0});
-        engine.push_for_backfill("Transactions", &event, &mut store, now, &["tx_sum_1h".into()]).unwrap();
+        engine
+            .push_for_backfill(
+                "Transactions",
+                &event,
+                &store,
+                now,
+                &["tx_sum_1h".into()],
+            )
+            .unwrap();
 
         // Verify: tx_sum_1h should have the event, tx_count_1h should NOT have been pushed
         let entity = store.get_entity("u1").unwrap();
         let stream_state = entity.streams.get("Transactions").unwrap();
         // tx_sum_1h should exist and have a value
-        let sum_op = stream_state.operators.iter().find(|(n, _)| n == "tx_sum_1h");
-        assert!(sum_op.is_some(), "tx_sum_1h operator should exist after backfill push");
+        let sum_op = stream_state
+            .operators
+            .iter()
+            .find(|(n, _)| n == "tx_sum_1h");
+        assert!(
+            sum_op.is_some(),
+            "tx_sum_1h operator should exist after backfill push"
+        );
         // tx_count_1h should NOT exist (not in backfill_features list)
-        let count_op = stream_state.operators.iter().find(|(n, _)| n == "tx_count_1h");
-        assert!(count_op.is_none(), "tx_count_1h operator should NOT exist -- not in backfill list");
+        let count_op = stream_state
+            .operators
+            .iter()
+            .find(|(n, _)| n == "tx_count_1h");
+        assert!(
+            count_op.is_none(),
+            "tx_count_1h operator should NOT exist -- not in backfill list"
+        );
     }
 
     #[test]
     fn test_push_for_backfill_uses_event_timestamp() {
         let mut engine = PipelineEngine::new();
-        let mut store = StateStore::new();
+        let store = StateStore::new();
 
         let stream = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
-            features: vec![
-                ("tx_count_1h".into(), FeatureDef::Count {
+            features: vec![(
+                "tx_count_1h".into(),
+                FeatureDef::Count {
                     window: Duration::from_secs(3600),
                     bucket: Duration::from_secs(60),
                     where_expr: None,
                     backfill: true,
-                }),
-            ],
+                },
+            )],
             depends_on: None,
             filter: None,
             entity_ttl: None,
@@ -2995,7 +3493,15 @@ mod tests {
         // Push at time T=60000
         let t = ts(60_000);
         let event = serde_json::json!({"user_id": "u1"});
-        engine.push_for_backfill("Transactions", &event, &mut store, t, &["tx_count_1h".into()]).unwrap();
+        engine
+            .push_for_backfill(
+                "Transactions",
+                &event,
+                &store,
+                t,
+                &["tx_count_1h".into()],
+            )
+            .unwrap();
 
         // Read at time T=60000 should show count=1
         let features = store.get_all_features("u1", t);
@@ -3008,7 +3514,8 @@ mod tests {
         let val = features_future.get("tx_count_1h");
         assert!(
             val == Some(&FeatureValue::Missing) || val == Some(&FeatureValue::Int(0)),
-            "Count at T+2h should be expired, got {:?}", val
+            "Count at T+2h should be expired, got {:?}",
+            val
         );
     }
 

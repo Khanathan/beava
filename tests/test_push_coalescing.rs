@@ -20,8 +20,8 @@ use serde_json::json;
 
 use tally::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use tally::server::tcp::{
-    handle_push_batch, BackfillTracker, ConnAccumulator, PendingAsync,
-    SharedState, BATCH_DEADLINE_US, BATCH_SIZE, make_concurrent_state,
+    handle_push_batch, make_concurrent_state, BackfillTracker, ConnAccumulator, PendingAsync,
+    SharedState, BATCH_DEADLINE_US, BATCH_SIZE,
 };
 use tally::state::store::StateStore;
 
@@ -108,10 +108,13 @@ fn pending(seq: u64, stream: &str, payload: serde_json::Value, now: SystemTime) 
 fn get_count(state: &SharedState, stream: &str, key: &str) -> Option<i64> {
     let now = ts(1000);
     let engine = state.engine.read();
-    let store = &state.store;
+    let _store = &state.store;
     let features = engine.get_features(key, &state.store, now);
     let qualified = format!("{}.count_1h", stream);
-    if let Some(fv) = features.get(&qualified).or_else(|| features.get("count_1h")) {
+    if let Some(fv) = features
+        .get(&qualified)
+        .or_else(|| features.get("count_1h"))
+    {
         match fv {
             tally::types::FeatureValue::Int(n) => Some(*n),
             tally::types::FeatureValue::Float(f) => Some(*f as i64),
@@ -322,10 +325,30 @@ fn fan_out_target_count_exact_under_coalescer() {
         ],
     );
     let batch = vec![
-        pending(0, "Transactions", json!({"user_id": "u1", "merchant_id": "m1"}), ts(1000)),
-        pending(1, "Transactions", json!({"user_id": "u2", "merchant_id": "m1"}), ts(1000)),
-        pending(2, "Transactions", json!({"user_id": "u3", "merchant_id": "m1"}), ts(1000)),
-        pending(3, "Transactions", json!({"user_id": "u4", "merchant_id": "m1"}), ts(1000)),
+        pending(
+            0,
+            "Transactions",
+            json!({"user_id": "u1", "merchant_id": "m1"}),
+            ts(1000),
+        ),
+        pending(
+            1,
+            "Transactions",
+            json!({"user_id": "u2", "merchant_id": "m1"}),
+            ts(1000),
+        ),
+        pending(
+            2,
+            "Transactions",
+            json!({"user_id": "u3", "merchant_id": "m1"}),
+            ts(1000),
+        ),
+        pending(
+            3,
+            "Transactions",
+            json!({"user_id": "u4", "merchant_id": "m1"}),
+            ts(1000),
+        ),
     ];
     let results = handle_push_batch(&state, &batch);
     assert!(results.iter().all(|r| r.is_ok()));
@@ -441,7 +464,7 @@ fn partial_failure_scatters_err_to_correct_seq() {
 mod e2e {
     use super::*;
     use tally::server::protocol::{
-        self as proto, OP_GET, OP_PUSH_ASYNC, TYPE_I64, TYPE_STR, STATUS_OK, STATUS_ERROR,
+        self as proto, OP_GET, OP_PUSH_ASYNC, STATUS_ERROR, STATUS_OK, TYPE_I64, TYPE_STR,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};

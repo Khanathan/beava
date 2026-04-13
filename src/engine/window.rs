@@ -5,10 +5,10 @@
 //! fixed-duration buckets arranged in a ring, lazily expiring old buckets
 //! on access rather than using background timers.
 
-use std::ops::AddAssign;
+use serde::{Deserialize, Serialize};
 use std::iter::Sum;
+use std::ops::AddAssign;
 use std::time::{Duration, SystemTime};
-use serde::{Serialize, Deserialize};
 
 /// A fixed-capacity ring buffer with time-based bucket selection.
 /// Used by all windowed operators (count, sum, avg, min, max).
@@ -154,10 +154,7 @@ mod tests {
 
     #[test]
     fn test_new_30m_window_1m_bucket_creates_30_buckets() {
-        let rb = RingBuffer::<u64>::new(
-            Duration::from_secs(30 * 60),
-            Duration::from_secs(60),
-        );
+        let rb = RingBuffer::<u64>::new(Duration::from_secs(30 * 60), Duration::from_secs(60));
         assert_eq!(rb.num_buckets(), 30);
     }
 
@@ -173,19 +170,13 @@ mod tests {
     #[test]
     fn test_non_divisible_window_rounds_up() {
         // 31 minutes / 10 minute buckets = ceil(3.1) = 4 buckets
-        let rb = RingBuffer::<u64>::new(
-            Duration::from_secs(31 * 60),
-            Duration::from_secs(10 * 60),
-        );
+        let rb = RingBuffer::<u64>::new(Duration::from_secs(31 * 60), Duration::from_secs(10 * 60));
         assert_eq!(rb.num_buckets(), 4);
     }
 
     #[test]
     fn test_add_to_current_increments_head_bucket() {
-        let mut rb = RingBuffer::<u64>::new(
-            Duration::from_secs(30 * 60),
-            Duration::from_secs(60),
-        );
+        let mut rb = RingBuffer::<u64>::new(Duration::from_secs(30 * 60), Duration::from_secs(60));
         let now = ts(1000 * 60); // Use an even minute boundary
         rb.add_to_current(1, now);
         rb.add_to_current(1, now);
@@ -195,10 +186,7 @@ mod tests {
 
     #[test]
     fn test_advance_within_same_bucket_returns_same_head() {
-        let mut rb = RingBuffer::<u64>::new(
-            Duration::from_secs(30 * 60),
-            Duration::from_secs(60),
-        );
+        let mut rb = RingBuffer::<u64>::new(Duration::from_secs(30 * 60), Duration::from_secs(60));
         let now = ts(1000 * 60);
         let head1 = rb.advance_to(now);
         // 30 seconds later, still in same bucket
@@ -208,10 +196,7 @@ mod tests {
 
     #[test]
     fn test_advance_by_one_bucket_zeros_next_and_moves_head() {
-        let mut rb = RingBuffer::<u64>::new(
-            Duration::from_secs(5 * 60),
-            Duration::from_secs(60),
-        );
+        let mut rb = RingBuffer::<u64>::new(Duration::from_secs(5 * 60), Duration::from_secs(60));
         let t0 = ts(1000 * 60);
         rb.add_to_current(10, t0);
         assert_eq!(rb.sum_all(), 10);
@@ -229,10 +214,7 @@ mod tests {
 
     #[test]
     fn test_advance_by_three_buckets_zeros_three() {
-        let mut rb = RingBuffer::<u64>::new(
-            Duration::from_secs(5 * 60),
-            Duration::from_secs(60),
-        );
+        let mut rb = RingBuffer::<u64>::new(Duration::from_secs(5 * 60), Duration::from_secs(60));
         let t0 = ts(1000 * 60);
         rb.add_to_current(5, t0);
 
@@ -246,10 +228,7 @@ mod tests {
 
     #[test]
     fn test_advance_beyond_full_window_zeros_all_buckets() {
-        let mut rb = RingBuffer::<u64>::new(
-            Duration::from_secs(5 * 60),
-            Duration::from_secs(60),
-        );
+        let mut rb = RingBuffer::<u64>::new(Duration::from_secs(5 * 60), Duration::from_secs(60));
         let t0 = ts(1000 * 60);
         rb.add_to_current(100, t0);
         assert_eq!(rb.sum_all(), 100);
@@ -264,10 +243,7 @@ mod tests {
 
     #[test]
     fn test_sum_all_returns_sum_of_all_buckets() {
-        let mut rb = RingBuffer::<u64>::new(
-            Duration::from_secs(5 * 60),
-            Duration::from_secs(60),
-        );
+        let mut rb = RingBuffer::<u64>::new(Duration::from_secs(5 * 60), Duration::from_secs(60));
         let t0 = ts(1000 * 60);
         rb.add_to_current(10, t0);
         rb.add_to_current(20, t0 + Duration::from_secs(60));
@@ -277,10 +253,7 @@ mod tests {
 
     #[test]
     fn test_first_event_initializes_current_bucket_start() {
-        let mut rb = RingBuffer::<u64>::new(
-            Duration::from_secs(5 * 60),
-            Duration::from_secs(60),
-        );
+        let mut rb = RingBuffer::<u64>::new(Duration::from_secs(5 * 60), Duration::from_secs(60));
         assert!(rb.current_bucket_start.is_none());
 
         let now = ts(1000 * 60 + 30); // Mid-bucket
@@ -290,10 +263,7 @@ mod tests {
 
     #[test]
     fn test_out_of_order_timestamp_uses_duration_zero() {
-        let mut rb = RingBuffer::<u64>::new(
-            Duration::from_secs(5 * 60),
-            Duration::from_secs(60),
-        );
+        let mut rb = RingBuffer::<u64>::new(Duration::from_secs(5 * 60), Duration::from_secs(60));
         let t0 = ts(1000 * 60);
         rb.add_to_current(10, t0);
 
@@ -307,10 +277,7 @@ mod tests {
 
     #[test]
     fn test_count_nonzero_returns_number_of_nondefault_buckets() {
-        let mut rb = RingBuffer::<u64>::new(
-            Duration::from_secs(5 * 60),
-            Duration::from_secs(60),
-        );
+        let mut rb = RingBuffer::<u64>::new(Duration::from_secs(5 * 60), Duration::from_secs(60));
         let t0 = ts(1000 * 60);
         rb.add_to_current(1, t0);
         rb.add_to_current(1, t0 + Duration::from_secs(60));
@@ -321,10 +288,7 @@ mod tests {
 
     #[test]
     fn test_f64_ring_buffer_sum() {
-        let mut rb = RingBuffer::<f64>::new(
-            Duration::from_secs(5 * 60),
-            Duration::from_secs(60),
-        );
+        let mut rb = RingBuffer::<f64>::new(Duration::from_secs(5 * 60), Duration::from_secs(60));
         let t0 = ts(1000 * 60);
         rb.add_to_current(1.5, t0);
         rb.add_to_current(2.5, t0 + Duration::from_secs(60));
@@ -334,10 +298,7 @@ mod tests {
     #[test]
     fn test_bucket_wraps_around_ring() {
         // 3-bucket ring buffer, push through more than 3 buckets
-        let mut rb = RingBuffer::<u64>::new(
-            Duration::from_secs(3 * 60),
-            Duration::from_secs(60),
-        );
+        let mut rb = RingBuffer::<u64>::new(Duration::from_secs(3 * 60), Duration::from_secs(60));
         let t0 = ts(1000 * 60);
         rb.add_to_current(1, t0);
         rb.add_to_current(2, t0 + Duration::from_secs(60));
@@ -355,17 +316,21 @@ mod tests {
 
     #[test]
     fn test_update_current_replaces_value_via_closure() {
-        let mut rb = RingBuffer::<f64>::new(
-            Duration::from_secs(5 * 60),
-            Duration::from_secs(60),
-        );
+        let mut rb = RingBuffer::<f64>::new(Duration::from_secs(5 * 60), Duration::from_secs(60));
         let t0 = ts(1000 * 60);
         // Set initial value via update_current
         rb.update_current(|b| *b = 10.0, t0);
-        assert_eq!(rb.buckets_iter().next().map(|v| *v), Some(10.0));
+        assert_eq!(rb.buckets_iter().next().copied(), Some(10.0));
 
         // Update: only replace if smaller
-        rb.update_current(|b| if 5.0 < *b { *b = 5.0 }, t0);
+        rb.update_current(
+            |b| {
+                if 5.0 < *b {
+                    *b = 5.0
+                }
+            },
+            t0,
+        );
         // Bucket should now be 5.0 (replaced because 5 < 10)
         let vals: Vec<f64> = rb.buckets_iter().cloned().collect();
         assert_eq!(vals[rb.head], 5.0);
@@ -373,10 +338,7 @@ mod tests {
 
     #[test]
     fn test_update_current_advances_time() {
-        let mut rb = RingBuffer::<f64>::new(
-            Duration::from_secs(5 * 60),
-            Duration::from_secs(60),
-        );
+        let mut rb = RingBuffer::<f64>::new(Duration::from_secs(5 * 60), Duration::from_secs(60));
         let t0 = ts(1000 * 60);
         rb.update_current(|b| *b = 10.0, t0);
         let head_before = rb.head;
@@ -392,20 +354,14 @@ mod tests {
 
     #[test]
     fn test_buckets_iter_returns_all_buckets() {
-        let rb = RingBuffer::<u64>::new(
-            Duration::from_secs(5 * 60),
-            Duration::from_secs(60),
-        );
+        let rb = RingBuffer::<u64>::new(Duration::from_secs(5 * 60), Duration::from_secs(60));
         let count = rb.buckets_iter().count();
         assert_eq!(count, 5);
     }
 
     #[test]
     fn test_buckets_iter_reflects_added_values() {
-        let mut rb = RingBuffer::<u64>::new(
-            Duration::from_secs(3 * 60),
-            Duration::from_secs(60),
-        );
+        let mut rb = RingBuffer::<u64>::new(Duration::from_secs(3 * 60), Duration::from_secs(60));
         let t0 = ts(1000 * 60);
         rb.add_to_current(42, t0);
         let sum: u64 = rb.buckets_iter().sum();

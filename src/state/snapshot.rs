@@ -7,13 +7,16 @@
 //! v1.1: Snapshot format v4 with per-stream grouped state via
 //! SerializableStreamEntityState. v3 snapshots are gracefully rejected.
 
-use serde::{Serialize, Deserialize};
-use std::time::SystemTime;
-use crate::engine::operators::{CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp, StddevOp, PercentileOp, LagOp, EmaOp, LastNOp, FirstOp, ExactMinOp, ExactMaxOp, Operator};
 use crate::engine::hll::DistinctCountOp;
+use crate::engine::operators::{
+    AvgOp, CountOp, EmaOp, ExactMaxOp, ExactMinOp, FirstOp, LagOp, LastNOp, LastOp, MaxOp, MinOp,
+    Operator, PercentileOp, StddevOp, SumOp,
+};
+use crate::error::TallyError;
 use crate::state::store::StaticFeature;
 use crate::types::FeatureValue;
-use crate::error::TallyError;
+use serde::{Deserialize, Serialize};
+use std::time::SystemTime;
 
 /// Snapshot format version byte. Prepended to serialized data.
 /// If the version doesn't match on load, return None (clean startup from empty state).
@@ -53,7 +56,12 @@ pub enum OperatorState {
 }
 
 impl OperatorState {
-    pub fn push(&mut self, event: &serde_json::Value, enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>, now: SystemTime) -> Result<(), TallyError> {
+    pub fn push(
+        &mut self,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
         match self {
             Self::Count(op) => op.push(event, enrichment, now),
             Self::Sum(op) => op.push(event, enrichment, now),
@@ -299,8 +307,8 @@ pub fn load_legacy_v5(bytes: &[u8]) -> Option<SnapshotState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, UNIX_EPOCH};
     use serde_json::json;
+    use std::time::{Duration, UNIX_EPOCH};
 
     fn ts(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
@@ -455,7 +463,10 @@ mod tests {
         assert_eq!(bytes[0], SNAPSHOT_FORMAT_VERSION);
         assert_eq!(bytes[0], 0x06);
         // v6 adds a type tag byte after the version byte.
-        assert_eq!(bytes[1], 0x00, "legacy save_snapshot must emit base type tag");
+        assert_eq!(
+            bytes[1], 0x00,
+            "legacy save_snapshot must emit base type tag"
+        );
     }
 
     #[test]
@@ -521,7 +532,10 @@ mod tests {
         let mut bytes = save_snapshot(&state).expect("save_snapshot should succeed");
         // Set version to 3 (old format)
         bytes[0] = 0x03;
-        assert!(load_snapshot(&bytes).is_none(), "v3 snapshot should be gracefully rejected");
+        assert!(
+            load_snapshot(&bytes).is_none(),
+            "v3 snapshot should be gracefully rejected"
+        );
     }
 
     #[test]
@@ -589,10 +603,7 @@ mod tests {
 
     #[test]
     fn test_operator_state_last_push_read() {
-        let mut op = OperatorState::Last(crate::engine::operators::LastOp::new(
-            "country",
-            false,
-        ));
+        let mut op = OperatorState::Last(crate::engine::operators::LastOp::new("country", false));
         let now = ts(60_000);
         op.push(&json!({"country": "US"}), None, now).unwrap();
         assert_eq!(op.read(now), FeatureValue::String("US".into()));
@@ -634,10 +645,7 @@ mod tests {
 
     #[test]
     fn test_operator_state_last_roundtrip_postcard() {
-        let mut op = OperatorState::Last(crate::engine::operators::LastOp::new(
-            "country",
-            false,
-        ));
+        let mut op = OperatorState::Last(crate::engine::operators::LastOp::new("country", false));
         let now = ts(60_000);
         op.push(&json!({"country": "UK"}), None, now).unwrap();
 
@@ -673,7 +681,7 @@ mod tests {
         op.push(&json!({"merchant_id": "m3"}), None, now).unwrap();
         match op.read(now) {
             FeatureValue::Float(v) => {
-                assert!(v >= 2.0 && v <= 4.0, "Expected ~3 distinct, got {}", v);
+                assert!((2.0..=4.0).contains(&v), "Expected ~3 distinct, got {}", v);
             }
             other => panic!("Expected Float, got {:?}", other),
         }
@@ -715,15 +723,13 @@ mod tests {
             entities: vec![(
                 "u123".to_string(),
                 SerializableEntityState {
-                    streams: vec![
-                        (
-                            "Transactions".to_string(),
-                            SerializableStreamEntityState {
-                                operators: vec![("tx_count".to_string(), count_op)],
-                                last_event_at: Some(now),
-                            },
-                        ),
-                    ],
+                    streams: vec![(
+                        "Transactions".to_string(),
+                        SerializableStreamEntityState {
+                            operators: vec![("tx_count".to_string(), count_op)],
+                            last_event_at: Some(now),
+                        },
+                    )],
                     static_features: vec![(
                         "segment".to_string(),
                         StaticFeature {
@@ -762,13 +768,22 @@ mod tests {
         let bytes = save_snapshot(&state).expect("save");
         let restored = load_snapshot(&bytes).expect("load");
         assert_eq!(restored.backfill_complete.len(), 2);
-        assert!(restored.backfill_complete.contains(&("Transactions".to_string(), "sum_1h".to_string())));
-        assert!(restored.backfill_complete.contains(&("Logins".to_string(), "count_1h".to_string())));
+        assert!(restored
+            .backfill_complete
+            .contains(&("Transactions".to_string(), "sum_1h".to_string())));
+        assert!(restored
+            .backfill_complete
+            .contains(&("Logins".to_string(), "count_1h".to_string())));
     }
 
     // ======================== Phase 9: v6 Base/Delta Format Tests ========================
 
-    fn sample_entity(op_count: u64, stream: &str, feature: &str, when: SystemTime) -> (String, SerializableEntityState) {
+    fn sample_entity(
+        op_count: u64,
+        stream: &str,
+        feature: &str,
+        when: SystemTime,
+    ) -> (String, SerializableEntityState) {
         let mut op = OperatorState::Count(CountOp::new(
             Duration::from_secs(3600),
             Duration::from_secs(60),
@@ -882,7 +897,9 @@ mod tests {
                 assert_eq!(restored.changed_entities.len(), 1);
                 assert_eq!(restored.changed_entities[0].0, key);
                 assert_eq!(restored.deleted_keys, vec!["evicted_user".to_string()]);
-                let mut op = restored.changed_entities[0].1.streams[0].1.operators[0].1.clone();
+                let mut op = restored.changed_entities[0].1.streams[0].1.operators[0]
+                    .1
+                    .clone();
                 assert_eq!(op.read(now), FeatureValue::Int(5));
             }
             SnapshotFile::Base(_) => panic!("expected Delta, got Base"),
@@ -963,7 +980,14 @@ mod tests {
 
     #[test]
     fn test_load_snapshot_file_rejects_corrupt_postcard() {
-        let bytes = vec![SNAPSHOT_FORMAT_VERSION, TYPE_TAG_DELTA, 0xFF, 0xFF, 0xFF, 0xFF];
+        let bytes = vec![
+            SNAPSHOT_FORMAT_VERSION,
+            TYPE_TAG_DELTA,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+        ];
         assert!(load_snapshot_file(&bytes).is_none());
     }
 
@@ -972,7 +996,7 @@ mod tests {
     #[test]
     fn test_apply_delta_inserts_changed_entities() {
         use crate::state::store::StateStore;
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         let (key, entity) = sample_entity(3, "Transactions", "tx_count_1h", now);
@@ -990,7 +1014,7 @@ mod tests {
     #[test]
     fn test_apply_delta_overwrites_existing_entities() {
         use crate::state::store::StateStore;
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         // Existing entity with count = 1
@@ -1017,7 +1041,7 @@ mod tests {
     #[test]
     fn test_apply_delta_removes_deleted_keys() {
         use crate::state::store::StateStore;
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         let (key, entity) = sample_entity(3, "Transactions", "tx_count_1h", now);
@@ -1032,7 +1056,7 @@ mod tests {
     #[test]
     fn test_apply_delta_on_empty_store_works() {
         use crate::state::store::StateStore;
-        let mut store = StateStore::new();
+        let store = StateStore::new();
 
         // Applying a delta that deletes a key not in the store is a no-op.
         store.apply_delta(vec![], vec!["ghost".to_string()]);
@@ -1042,7 +1066,7 @@ mod tests {
     #[test]
     fn test_apply_delta_change_and_delete_in_single_call() {
         use crate::state::store::StateStore;
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         let now = ts(60_000);
 
         // Seed with two entities
@@ -1124,7 +1148,7 @@ mod tests {
         let delta1_bytes = save_delta_snapshot(&delta1).unwrap();
         let delta2_bytes = save_delta_snapshot(&delta2).unwrap();
 
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         // Apply base
         match load_snapshot_file(&base_bytes).unwrap() {
             SnapshotFile::Base(b) => store.restore_from_snapshot(b.entities),
@@ -1186,7 +1210,7 @@ mod tests {
             deleted_keys: vec!["u2".to_string()],
         };
 
-        let mut store = StateStore::new();
+        let store = StateStore::new();
         store.restore_from_snapshot(base.entities);
         store.apply_delta(delta.changed_entities, delta.deleted_keys);
 
@@ -1300,7 +1324,10 @@ mod tests {
         match load_snapshot_file(&bytes).unwrap() {
             SnapshotFile::Delta(d) => {
                 assert_eq!(d.header.sequence, 1001);
-                assert_eq!(d.header.snapshot_type, SnapshotType::Delta { base_seq: 1000 });
+                assert_eq!(
+                    d.header.snapshot_type,
+                    SnapshotType::Delta { base_seq: 1000 }
+                );
             }
             _ => panic!(),
         }

@@ -3,13 +3,13 @@
 //! Exercises the full path: create PipelineEngine, register stream,
 //! create StateStore, push events, verify returned features.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use ahash::AHashSet;
 use serde_json::json;
-use tally::engine::pipeline::{PipelineEngine, StreamDefinition, FeatureDef, Projection};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tally::engine::expression::parse_expr;
+use tally::engine::pipeline::{FeatureDef, PipelineEngine, Projection, StreamDefinition};
 use tally::state::store::StateStore;
 use tally::types::FeatureValue;
-use ahash::AHashSet;
 
 fn ts(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)
@@ -20,31 +20,43 @@ fn make_tx_stream_with_derive() -> StreamDefinition {
         name: "Transactions".into(),
         key_field: Some("user_id".into()),
         features: vec![
-            ("tx_count_1h".into(), FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                where_expr: None,
-                backfill: false,
-            }),
-            ("tx_sum_1h".into(), FeatureDef::Sum {
-                field: "amount".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: false,
-            }),
-            ("avg_amount_1h".into(), FeatureDef::Avg {
-                field: "amount".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: false,
-            }),
-            ("avg_via_derive".into(), FeatureDef::Derive {
-                expr: parse_expr("tx_sum_1h / tx_count_1h").unwrap(),
-            }),
+            (
+                "tx_count_1h".into(),
+                FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                },
+            ),
+            (
+                "tx_sum_1h".into(),
+                FeatureDef::Sum {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: false,
+                },
+            ),
+            (
+                "avg_amount_1h".into(),
+                FeatureDef::Avg {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: false,
+                },
+            ),
+            (
+                "avg_via_derive".into(),
+                FeatureDef::Derive {
+                    expr: parse_expr("tx_sum_1h / tx_count_1h").unwrap(),
+                },
+            ),
         ],
         depends_on: None,
         filter: None,
@@ -60,7 +72,7 @@ fn make_tx_stream_with_derive() -> StreamDefinition {
 #[test]
 fn test_push_single_event_returns_all_features() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     engine.register(make_tx_stream_with_derive()).unwrap();
 
     let now = ts(60_000);
@@ -69,36 +81,83 @@ fn test_push_single_event_returns_all_features() {
 
     assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
     assert_eq!(features.get("tx_sum_1h"), Some(&FeatureValue::Float(50.0)));
-    assert_eq!(features.get("avg_amount_1h"), Some(&FeatureValue::Float(50.0)));
-    assert_eq!(features.get("avg_via_derive"), Some(&FeatureValue::Float(50.0)));
+    assert_eq!(
+        features.get("avg_amount_1h"),
+        Some(&FeatureValue::Float(50.0))
+    );
+    assert_eq!(
+        features.get("avg_via_derive"),
+        Some(&FeatureValue::Float(50.0))
+    );
 }
 
 #[test]
 fn test_push_multiple_events_aggregates_correctly() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     engine.register(make_tx_stream_with_derive()).unwrap();
 
     let now = ts(60_000);
-    engine.push("Transactions", &json!({"user_id": "u123", "amount": 10.0}), &store, now).unwrap();
-    engine.push("Transactions", &json!({"user_id": "u123", "amount": 20.0}), &store, now).unwrap();
-    let features = engine.push("Transactions", &json!({"user_id": "u123", "amount": 30.0}), &store, now).unwrap();
+    engine
+        .push(
+            "Transactions",
+            &json!({"user_id": "u123", "amount": 10.0}),
+            &store,
+            now,
+        )
+        .unwrap();
+    engine
+        .push(
+            "Transactions",
+            &json!({"user_id": "u123", "amount": 20.0}),
+            &store,
+            now,
+        )
+        .unwrap();
+    let features = engine
+        .push(
+            "Transactions",
+            &json!({"user_id": "u123", "amount": 30.0}),
+            &store,
+            now,
+        )
+        .unwrap();
 
     assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(3)));
     assert_eq!(features.get("tx_sum_1h"), Some(&FeatureValue::Float(60.0)));
-    assert_eq!(features.get("avg_amount_1h"), Some(&FeatureValue::Float(20.0)));
-    assert_eq!(features.get("avg_via_derive"), Some(&FeatureValue::Float(20.0)));
+    assert_eq!(
+        features.get("avg_amount_1h"),
+        Some(&FeatureValue::Float(20.0))
+    );
+    assert_eq!(
+        features.get("avg_via_derive"),
+        Some(&FeatureValue::Float(20.0))
+    );
 }
 
 #[test]
 fn test_different_keys_have_separate_state() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     engine.register(make_tx_stream_with_derive()).unwrap();
 
     let now = ts(60_000);
-    engine.push("Transactions", &json!({"user_id": "u123", "amount": 100.0}), &store, now).unwrap();
-    engine.push("Transactions", &json!({"user_id": "u456", "amount": 200.0}), &store, now).unwrap();
+    engine
+        .push(
+            "Transactions",
+            &json!({"user_id": "u123", "amount": 100.0}),
+            &store,
+            now,
+        )
+        .unwrap();
+    engine
+        .push(
+            "Transactions",
+            &json!({"user_id": "u456", "amount": 200.0}),
+            &store,
+            now,
+        )
+        .unwrap();
 
     let f1 = store.get_all_features("u123", now);
     let f2 = store.get_all_features("u456", now);
@@ -113,16 +172,22 @@ fn test_derive_division_by_zero_returns_missing() {
         name: "Test".into(),
         key_field: Some("id".into()),
         features: vec![
-            ("count_1h".into(), FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                where_expr: None,
-                backfill: false,
-            }),
+            (
+                "count_1h".into(),
+                FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                },
+            ),
             // Derive references a feature that doesn't exist -> Missing
-            ("ratio".into(), FeatureDef::Derive {
-                expr: parse_expr("count_1h / nonexistent_feature").unwrap(),
-            }),
+            (
+                "ratio".into(),
+                FeatureDef::Derive {
+                    expr: parse_expr("count_1h / nonexistent_feature").unwrap(),
+                },
+            ),
         ],
         depends_on: None,
         filter: None,
@@ -135,11 +200,13 @@ fn test_derive_division_by_zero_returns_missing() {
     };
 
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     engine.register(stream).unwrap();
 
     let now = ts(60_000);
-    let features = engine.push("Test", &json!({"id": "k1"}), &store, now).unwrap();
+    let features = engine
+        .push("Test", &json!({"id": "k1"}), &store, now)
+        .unwrap();
 
     // nonexistent_feature -> Missing, division with Missing -> Missing
     assert_eq!(features.get("ratio"), Some(&FeatureValue::Missing));
@@ -148,7 +215,7 @@ fn test_derive_division_by_zero_returns_missing() {
 #[test]
 fn test_get_features_unknown_key_returns_empty() {
     let engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let features = engine.get_features("nonexistent", &store, ts(1000));
     assert!(features.is_empty());
 }
@@ -156,18 +223,28 @@ fn test_get_features_unknown_key_returns_empty() {
 #[test]
 fn test_static_feature_alongside_live_features() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     engine.register(make_tx_stream_with_derive()).unwrap();
 
     let now = ts(60_000);
-    engine.push("Transactions", &json!({"user_id": "u123", "amount": 50.0}), &store, now).unwrap();
+    engine
+        .push(
+            "Transactions",
+            &json!({"user_id": "u123", "amount": 50.0}),
+            &store,
+            now,
+        )
+        .unwrap();
 
     // Write a static feature
     store.set_static("u123", "lifetime_value", FeatureValue::Float(4500.0), now);
 
     let features = engine.get_features("u123", &store, now);
     assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
-    assert_eq!(features.get("lifetime_value"), Some(&FeatureValue::Float(4500.0)));
+    assert_eq!(
+        features.get("lifetime_value"),
+        Some(&FeatureValue::Float(4500.0))
+    );
 }
 
 #[test]
@@ -175,14 +252,15 @@ fn test_window_expiration_end_to_end() {
     let stream = StreamDefinition {
         name: "Short".into(),
         key_field: Some("id".into()),
-        features: vec![
-            ("count_5m".into(), FeatureDef::Count {
-                window: Duration::from_secs(300),  // 5 minute window
+        features: vec![(
+            "count_5m".into(),
+            FeatureDef::Count {
+                window: Duration::from_secs(300), // 5 minute window
                 bucket: Duration::from_secs(60),
                 where_expr: None,
                 backfill: false,
-            }),
-        ],
+            },
+        )],
         depends_on: None,
         filter: None,
         entity_ttl: None,
@@ -194,11 +272,13 @@ fn test_window_expiration_end_to_end() {
     };
 
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     engine.register(stream).unwrap();
 
     let t0 = ts(60_000);
-    engine.push("Short", &json!({"id": "k1"}), &store, t0).unwrap();
+    engine
+        .push("Short", &json!({"id": "k1"}), &store, t0)
+        .unwrap();
 
     // Verify count is 1 at t0
     let f = store.get_all_features("k1", t0);
@@ -213,7 +293,7 @@ fn test_window_expiration_end_to_end() {
 #[test]
 fn test_push_type_error_on_non_numeric_sum_field() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     engine.register(make_tx_stream_with_derive()).unwrap();
 
     let now = ts(60_000);
@@ -228,17 +308,23 @@ fn test_derive_with_event_field_access() {
         name: "Test".into(),
         key_field: Some("id".into()),
         features: vec![
-            ("avg_1h".into(), FeatureDef::Avg {
-                field: "amount".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: false,
-            }),
-            ("amount_vs_avg".into(), FeatureDef::Derive {
-                expr: parse_expr("_event.amount / avg_1h").unwrap(),
-            }),
+            (
+                "avg_1h".into(),
+                FeatureDef::Avg {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: false,
+                },
+            ),
+            (
+                "amount_vs_avg".into(),
+                FeatureDef::Derive {
+                    expr: parse_expr("_event.amount / avg_1h").unwrap(),
+                },
+            ),
         ],
         depends_on: None,
         filter: None,
@@ -251,14 +337,18 @@ fn test_derive_with_event_field_access() {
     };
 
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     engine.register(stream).unwrap();
 
     let now = ts(60_000);
     // Push first event: avg=10
-    engine.push("Test", &json!({"id": "k1", "amount": 10.0}), &store, now).unwrap();
+    engine
+        .push("Test", &json!({"id": "k1", "amount": 10.0}), &store, now)
+        .unwrap();
     // Push second event: avg=15, event.amount=20, ratio=20/15=1.333...
-    let features = engine.push("Test", &json!({"id": "k1", "amount": 20.0}), &store, now).unwrap();
+    let features = engine
+        .push("Test", &json!({"id": "k1", "amount": 20.0}), &store, now)
+        .unwrap();
 
     let ratio = features.get("amount_vs_avg").unwrap();
     if let FeatureValue::Float(v) = ratio {
@@ -271,23 +361,43 @@ fn test_derive_with_event_field_access() {
 #[test]
 fn test_get_features_returns_live_and_derived() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     engine.register(make_tx_stream_with_derive()).unwrap();
 
     let now = ts(60_000);
     // Push two events so derive (avg_via_derive = sum/count) is meaningful
-    engine.push("Transactions", &json!({"user_id": "u1", "amount": 30.0}), &store, now).unwrap();
-    engine.push("Transactions", &json!({"user_id": "u1", "amount": 70.0}), &store, now).unwrap();
+    engine
+        .push(
+            "Transactions",
+            &json!({"user_id": "u1", "amount": 30.0}),
+            &store,
+            now,
+        )
+        .unwrap();
+    engine
+        .push(
+            "Transactions",
+            &json!({"user_id": "u1", "amount": 70.0}),
+            &store,
+            now,
+        )
+        .unwrap();
 
     let features = engine.get_features("u1", &store, now);
 
     // Live features
     assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(2)));
     assert_eq!(features.get("tx_sum_1h"), Some(&FeatureValue::Float(100.0)));
-    assert_eq!(features.get("avg_amount_1h"), Some(&FeatureValue::Float(50.0)));
+    assert_eq!(
+        features.get("avg_amount_1h"),
+        Some(&FeatureValue::Float(50.0))
+    );
 
     // Derived feature: tx_sum_1h / tx_count_1h = 100 / 2 = 50
-    assert_eq!(features.get("avg_via_derive"), Some(&FeatureValue::Float(50.0)));
+    assert_eq!(
+        features.get("avg_via_derive"),
+        Some(&FeatureValue::Float(50.0))
+    );
 }
 
 // ======================== Phase 7 Plan 03: DAG Cascade Tests ========================
@@ -312,14 +422,15 @@ fn make_keyed_dependent_stream(name: &str, key: &str, deps: Vec<&str>) -> Stream
     StreamDefinition {
         name: name.into(),
         key_field: Some(key.into()),
-        features: vec![
-            ("count_1h".into(), FeatureDef::Count {
+        features: vec![(
+            "count_1h".into(),
+            FeatureDef::Count {
                 window: Duration::from_secs(3600),
                 bucket: Duration::from_secs(60),
                 where_expr: None,
                 backfill: false,
-            }),
-        ],
+            },
+        )],
         entity_ttl: None,
         history_ttl: None,
         projection: None,
@@ -334,16 +445,29 @@ fn make_keyed_dependent_stream(name: &str, key: &str, deps: Vec<&str>) -> Stream
 #[test]
 fn test_cascade_push_keyless_to_keyed() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(1000);
 
     engine.register(make_keyless_stream("RawEvents")).unwrap();
-    engine.register(make_keyed_dependent_stream("UserTx", "user_id", vec!["RawEvents"])).unwrap();
+    engine
+        .register(make_keyed_dependent_stream(
+            "UserTx",
+            "user_id",
+            vec!["RawEvents"],
+        ))
+        .unwrap();
 
     // Push to keyless stream -- should cascade to UserTx
-    let features = engine.push_with_cascade("RawEvents", &json!({
-        "user_id": "u1", "amount": 50.0
-    }), &store, now).unwrap();
+    let features = engine
+        .push_with_cascade(
+            "RawEvents",
+            &json!({
+                "user_id": "u1", "amount": 50.0
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     // Primary push to keyless returns empty
     assert!(features.is_empty());
@@ -356,19 +480,32 @@ fn test_cascade_push_keyless_to_keyed() {
 #[test]
 fn test_multi_level_cascade() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(1000);
 
     engine.register(make_keyless_stream("Raw")).unwrap();
-    engine.register(make_keyed_dependent_stream("Level1", "user_id", vec!["Raw"])).unwrap();
+    engine
+        .register(make_keyed_dependent_stream(
+            "Level1",
+            "user_id",
+            vec!["Raw"],
+        ))
+        .unwrap();
 
     // Level2 depends on Level1 (keyed-to-keyed)
     let level2 = make_keyed_dependent_stream("Level2", "user_id", vec!["Level1"]);
     engine.register(level2).unwrap();
 
-    let features = engine.push_with_cascade("Raw", &json!({
-        "user_id": "u1", "amount": 10.0
-    }), &store, now).unwrap();
+    let features = engine
+        .push_with_cascade(
+            "Raw",
+            &json!({
+                "user_id": "u1", "amount": 10.0
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     assert!(features.is_empty()); // keyless returns empty
 
@@ -380,17 +517,36 @@ fn test_multi_level_cascade() {
 #[test]
 fn test_cascade_skips_missing_key_field() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(1000);
 
     engine.register(make_keyless_stream("Raw")).unwrap();
-    engine.register(make_keyed_dependent_stream("UserTx", "user_id", vec!["Raw"])).unwrap();
-    engine.register(make_keyed_dependent_stream("MerchantTx", "merchant_id", vec!["Raw"])).unwrap();
+    engine
+        .register(make_keyed_dependent_stream(
+            "UserTx",
+            "user_id",
+            vec!["Raw"],
+        ))
+        .unwrap();
+    engine
+        .register(make_keyed_dependent_stream(
+            "MerchantTx",
+            "merchant_id",
+            vec!["Raw"],
+        ))
+        .unwrap();
 
     // Push event WITHOUT merchant_id -- MerchantTx should be skipped
-    let _ = engine.push_with_cascade("Raw", &json!({
-        "user_id": "u1", "amount": 50.0
-    }), &store, now).unwrap();
+    let _ = engine
+        .push_with_cascade(
+            "Raw",
+            &json!({
+                "user_id": "u1", "amount": 50.0
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     // UserTx has state, MerchantTx does not
     let user_features = engine.get_features("u1", &store, now);
@@ -411,7 +567,11 @@ fn test_cycle_detection_rejects_registration() {
     let result = engine.register(b); // B depends_on A -- cycle!
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
-    assert!(err_msg.contains("circular dependency"), "error should mention circular dependency: {}", err_msg);
+    assert!(
+        err_msg.contains("circular dependency"),
+        "error should mention circular dependency: {}",
+        err_msg
+    );
 }
 
 #[test]
@@ -421,13 +581,17 @@ fn test_self_dependency_rejected() {
     let result = engine.register(s);
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
-    assert!(err_msg.contains("circular dependency"), "error should mention circular dependency: {}", err_msg);
+    assert!(
+        err_msg.contains("circular dependency"),
+        "error should mention circular dependency: {}",
+        err_msg
+    );
 }
 
 #[test]
 fn test_cascade_with_filter_on_downstream() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(1000);
 
     engine.register(make_keyless_stream("Raw")).unwrap();
@@ -438,15 +602,29 @@ fn test_cascade_with_filter_on_downstream() {
     engine.register(filtered).unwrap();
 
     // Push success event -- should NOT cascade to Failed
-    let _ = engine.push_with_cascade("Raw", &json!({
-        "user_id": "u1", "status": "success"
-    }), &store, now).unwrap();
+    let _ = engine
+        .push_with_cascade(
+            "Raw",
+            &json!({
+                "user_id": "u1", "status": "success"
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
     assert_eq!(store.entity_count(), 0); // no entity created
 
     // Push failed event -- SHOULD cascade to Failed
-    let _ = engine.push_with_cascade("Raw", &json!({
-        "user_id": "u1", "status": "failed"
-    }), &store, now).unwrap();
+    let _ = engine
+        .push_with_cascade(
+            "Raw",
+            &json!({
+                "user_id": "u1", "status": "failed"
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
     let all = engine.get_features("u1", &store, now);
     assert_eq!(all.get("count_1h"), Some(&FeatureValue::Int(1)));
 }
@@ -455,48 +633,65 @@ fn test_cascade_with_filter_on_downstream() {
 fn test_keyed_to_keyed_cascade() {
     // Keyed stream A (key=user_id) -> Keyed stream B (key=user_id)
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(1000);
 
     let a = StreamDefinition {
         name: "A".into(),
         key_field: Some("user_id".into()),
-        features: vec![("a_count".into(), FeatureDef::Count {
-            window: Duration::from_secs(3600),
-            bucket: Duration::from_secs(60),
-            where_expr: None,
-            backfill: false,
-        })],
-        entity_ttl: None, history_ttl: None,
+        features: vec![(
+            "a_count".into(),
+            FeatureDef::Count {
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                where_expr: None,
+                backfill: false,
+            },
+        )],
+        entity_ttl: None,
+        history_ttl: None,
         projection: None,
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
-        depends_on: None, filter: None,
+        depends_on: None,
+        filter: None,
     };
     let b = StreamDefinition {
         name: "B".into(),
         key_field: Some("user_id".into()),
-        features: vec![("b_count".into(), FeatureDef::Count {
-            window: Duration::from_secs(3600),
-            bucket: Duration::from_secs(60),
-            where_expr: None,
-            backfill: false,
-        })],
-        entity_ttl: None, history_ttl: None,
+        features: vec![(
+            "b_count".into(),
+            FeatureDef::Count {
+                window: Duration::from_secs(3600),
+                bucket: Duration::from_secs(60),
+                where_expr: None,
+                backfill: false,
+            },
+        )],
+        entity_ttl: None,
+        history_ttl: None,
         projection: None,
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
-        depends_on: Some(vec!["A".into()]), filter: None,
+        depends_on: Some(vec!["A".into()]),
+        filter: None,
     };
     engine.register(a).unwrap();
     engine.register(b).unwrap();
 
     // Push to A -- should cascade to B
-    let features = engine.push_with_cascade("A", &json!({
-        "user_id": "u1"
-    }), &store, now).unwrap();
+    let features = engine
+        .push_with_cascade(
+            "A",
+            &json!({
+                "user_id": "u1"
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     // Features from primary push (stream A)
     assert_eq!(features.get("a_count"), Some(&FeatureValue::Int(1)));
@@ -510,24 +705,40 @@ fn test_keyed_to_keyed_cascade() {
 fn test_multiple_depends_on_sources() {
     // Stream C depends on both A and B
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(1000);
 
     engine.register(make_keyless_stream("A")).unwrap();
     engine.register(make_keyless_stream("B")).unwrap();
-    engine.register(make_keyed_dependent_stream("C", "user_id", vec!["A", "B"])).unwrap();
+    engine
+        .register(make_keyed_dependent_stream("C", "user_id", vec!["A", "B"]))
+        .unwrap();
 
     // Push to A -- should cascade to C
-    let _ = engine.push_with_cascade("A", &json!({
-        "user_id": "u1"
-    }), &store, now).unwrap();
+    let _ = engine
+        .push_with_cascade(
+            "A",
+            &json!({
+                "user_id": "u1"
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
     let all = engine.get_features("u1", &store, now);
     assert_eq!(all.get("count_1h"), Some(&FeatureValue::Int(1)));
 
     // Push to B -- should also cascade to C
-    let _ = engine.push_with_cascade("B", &json!({
-        "user_id": "u1"
-    }), &store, now).unwrap();
+    let _ = engine
+        .push_with_cascade(
+            "B",
+            &json!({
+                "user_id": "u1"
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
     let all = engine.get_features("u1", &store, now);
     assert_eq!(all.get("count_1h"), Some(&FeatureValue::Int(2)));
 }
@@ -535,6 +746,7 @@ fn test_multiple_depends_on_sources() {
 // ======================== FeatureValue Serialization Round-Trip ========================
 
 #[test]
+#[allow(clippy::approx_constant)]
 fn test_feature_value_json_round_trip() {
     let values = vec![
         FeatureValue::Float(3.14),
@@ -556,12 +768,14 @@ fn test_feature_value_json_round_trip() {
 // ======================== Phase 8 Plan 02: Backfill Integration Tests ========================
 
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use tally::server::tcp::{BackfillStatus, BackfillTracker, run_backfill, SharedState, make_concurrent_state};
+use std::sync::Arc;
+use tally::server::protocol::{convert_register_request, RegisterRequest};
+use tally::server::tcp::{
+    make_concurrent_state, run_backfill, BackfillStatus, BackfillTracker, SharedState,
+};
 use tally::state::event_log::EventLog;
-use tally::state::snapshot::{SnapshotState, SerializablePipeline, save_snapshot, load_snapshot};
-use tally::server::protocol::{RegisterRequest, convert_register_request};
+use tally::state::snapshot::{load_snapshot, save_snapshot, SerializablePipeline, SnapshotState};
 
 /// Helper: create a SharedState with event log enabled in a temp dir.
 fn make_state_with_event_log(log_dir: &std::path::Path) -> SharedState {
@@ -586,9 +800,7 @@ fn push_events(
 ) {
     for (event, &t) in events.iter().zip(times.iter()) {
         let engine = state.engine.read();
-        let store = &state.store;
         let _ = engine.push(stream_name, event, &state.store, t);
-        drop(store);
         drop(engine);
         let mut event_log = state.event_log.lock();
         if let Some(ref mut log) = *event_log {
@@ -608,14 +820,18 @@ async fn wait_for_backfill_complete(state: &SharedState, stream_name: &str) {
     for _ in 0..200 {
         tokio::task::yield_now().await;
         let tasks = state.backfill_tracker.tasks.lock().unwrap();
-        let all_done = tasks.iter()
+        let all_done = tasks
+            .iter()
             .filter(|t| t.stream == stream_name)
             .all(|t| t.completed_at.lock().unwrap().is_some());
         if all_done && !tasks.is_empty() {
             return;
         }
     }
-    panic!("Backfill for {} did not complete within 200 yield cycles", stream_name);
+    panic!(
+        "Backfill for {} did not complete within 200 yield cycles",
+        stream_name
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -627,15 +843,19 @@ async fn test_backfill_replay_deterministic() {
     let stream1 = StreamDefinition {
         name: "Transactions".into(),
         key_field: Some("user_id".into()),
-        features: vec![
-            ("count_1h".into(), FeatureDef::Count {
+        features: vec![(
+            "count_1h".into(),
+            FeatureDef::Count {
                 window: Duration::from_secs(3600),
                 bucket: Duration::from_secs(60),
                 where_expr: None,
                 backfill: false,
-            }),
-        ],
-        depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+            },
+        )],
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
         projection: None,
         ephemeral: None,
         pipeline_ttl: None,
@@ -651,16 +871,18 @@ async fn test_backfill_replay_deterministic() {
 
     // Push 10 events for user "u1"
     let base_time = ts(60_000);
-    let events: Vec<serde_json::Value> = (0..10).map(|i| {
-        json!({"user_id": "u1", "amount": (i + 1) as f64 * 10.0})
-    }).collect();
-    let times: Vec<SystemTime> = (0..10).map(|i| base_time + Duration::from_secs(i)).collect();
+    let events: Vec<serde_json::Value> = (0..10)
+        .map(|i| json!({"user_id": "u1", "amount": (i + 1) as f64 * 10.0}))
+        .collect();
+    let times: Vec<SystemTime> = (0..10)
+        .map(|i| base_time + Duration::from_secs(i))
+        .collect();
     push_events(&state, "Transactions", &events, &times);
 
     // Verify count_1h reads 10
     {
         let engine = state.engine.read();
-        let store = &state.store;
+        let _store = &state.store;
         let features = engine.get_features("u1", &state.store, base_time + Duration::from_secs(9));
         assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(10)));
     }
@@ -670,22 +892,31 @@ async fn test_backfill_replay_deterministic() {
         name: "Transactions".into(),
         key_field: Some("user_id".into()),
         features: vec![
-            ("count_1h".into(), FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                where_expr: None,
-                backfill: false,
-            }),
-            ("sum_1h".into(), FeatureDef::Sum {
-                field: "amount".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: true,
-            }),
+            (
+                "count_1h".into(),
+                FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                },
+            ),
+            (
+                "sum_1h".into(),
+                FeatureDef::Sum {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: true,
+                },
+            ),
         ],
-        depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
         projection: None,
         ephemeral: None,
         pipeline_ttl: None,
@@ -706,7 +937,8 @@ async fn test_backfill_replay_deterministic() {
         }
         let entries = {
             let event_log = state.event_log.lock();
-            event_log.as_ref()
+            event_log
+                .as_ref()
                 .map(|log| log.read_entries("Transactions").unwrap_or_default())
                 .unwrap_or_default()
         };
@@ -720,7 +952,12 @@ async fn test_backfill_replay_deterministic() {
             started_at: SystemTime::now(),
             completed_at: std::sync::Mutex::new(None),
         });
-        state.backfill_tracker.tasks.lock().unwrap().push(Arc::clone(&status));
+        state
+            .backfill_tracker
+            .tasks
+            .lock()
+            .unwrap()
+            .push(Arc::clone(&status));
         let state_clone = state.clone();
         tokio::spawn(run_backfill(
             state_clone,
@@ -737,7 +974,7 @@ async fn test_backfill_replay_deterministic() {
     // Verify sum_1h equals sum of all 10 event amounts: 10+20+30+...+100 = 550
     {
         let engine = state.engine.read();
-        let store = &state.store;
+        let _store = &state.store;
         let features = engine.get_features("u1", &state.store, base_time + Duration::from_secs(9));
         assert_eq!(features.get("sum_1h"), Some(&FeatureValue::Float(550.0)));
         // count_1h should still be 10
@@ -754,15 +991,19 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
     let stream1 = StreamDefinition {
         name: "Txns".into(),
         key_field: Some("user_id".into()),
-        features: vec![
-            ("count_1h".into(), FeatureDef::Count {
+        features: vec![(
+            "count_1h".into(),
+            FeatureDef::Count {
                 window: Duration::from_secs(3600),
                 bucket: Duration::from_secs(60),
                 where_expr: None,
                 backfill: false,
-            }),
-        ],
-        depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+            },
+        )],
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
         projection: None,
         ephemeral: None,
         pipeline_ttl: None,
@@ -793,20 +1034,29 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
         name: "Txns".into(),
         key_field: Some("user_id".into()),
         features: vec![
-            ("count_1h".into(), FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                where_expr: None,
-                backfill: false,
-            }),
-            ("count_30m".into(), FeatureDef::Count {
-                window: Duration::from_secs(1800),
-                bucket: Duration::from_secs(60),
-                where_expr: None,
-                backfill: true,
-            }),
+            (
+                "count_1h".into(),
+                FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                },
+            ),
+            (
+                "count_30m".into(),
+                FeatureDef::Count {
+                    window: Duration::from_secs(1800),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: true,
+                },
+            ),
         ],
-        depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
         projection: None,
         ephemeral: None,
         pipeline_ttl: None,
@@ -826,7 +1076,8 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
         }
         let entries = {
             let event_log = state.event_log.lock();
-            event_log.as_ref()
+            event_log
+                .as_ref()
                 .map(|log| log.read_entries("Txns").unwrap_or_default())
                 .unwrap_or_default()
         };
@@ -840,7 +1091,12 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
             started_at: SystemTime::now(),
             completed_at: std::sync::Mutex::new(None),
         });
-        state.backfill_tracker.tasks.lock().unwrap().push(Arc::clone(&status));
+        state
+            .backfill_tracker
+            .tasks
+            .lock()
+            .unwrap()
+            .push(Arc::clone(&status));
         tokio::spawn(run_backfill(
             state.clone(),
             "Txns".into(),
@@ -855,18 +1111,22 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
     // Read count_30m at time T+7200 -- should be 5 (only the second batch within 30m window)
     {
         let engine = state.engine.read();
-        let store = &state.store;
+        let _store = &state.store;
         let features = engine.get_features("u1", &state.store, t2);
         let count_30m = features.get("count_30m");
-        assert_eq!(count_30m, Some(&FeatureValue::Int(5)),
-            "count_30m should be 5 (only events within 30m window at T+7200), got {:?}", count_30m);
+        assert_eq!(
+            count_30m,
+            Some(&FeatureValue::Int(5)),
+            "count_30m should be 5 (only events within 30m window at T+7200), got {:?}",
+            count_30m
+        );
     }
 }
 
 #[test]
 fn test_schema_evolution_add_remove() {
     let mut engine = PipelineEngine::new();
-    let mut store = tally::state::store::StateStore::new();
+    let store = tally::state::store::StateStore::new();
     let now = ts(60_000);
 
     // Register stream with [count_1h, sum_1h]
@@ -874,22 +1134,31 @@ fn test_schema_evolution_add_remove() {
         name: "Txns".into(),
         key_field: Some("user_id".into()),
         features: vec![
-            ("count_1h".into(), FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                where_expr: None,
-                backfill: false,
-            }),
-            ("sum_1h".into(), FeatureDef::Sum {
-                field: "amount".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: false,
-            }),
+            (
+                "count_1h".into(),
+                FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                },
+            ),
+            (
+                "sum_1h".into(),
+                FeatureDef::Sum {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: false,
+                },
+            ),
         ],
-        depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
         projection: None,
         ephemeral: None,
         pipeline_ttl: None,
@@ -899,7 +1168,14 @@ fn test_schema_evolution_add_remove() {
 
     // Push 5 events
     for i in 0..5 {
-        engine.push("Txns", &json!({"user_id": "u1", "amount": (i + 1) as f64 * 10.0}), &store, now).unwrap();
+        engine
+            .push(
+                "Txns",
+                &json!({"user_id": "u1", "amount": (i + 1) as f64 * 10.0}),
+                &store,
+                now,
+            )
+            .unwrap();
     }
 
     // Verify
@@ -912,22 +1188,31 @@ fn test_schema_evolution_add_remove() {
         name: "Txns".into(),
         key_field: Some("user_id".into()),
         features: vec![
-            ("count_1h".into(), FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                where_expr: None,
-                backfill: false,
-            }),
-            ("avg_1h".into(), FeatureDef::Avg {
-                field: "amount".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: false,
-            }),
+            (
+                "count_1h".into(),
+                FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                },
+            ),
+            (
+                "avg_1h".into(),
+                FeatureDef::Avg {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: false,
+                },
+            ),
         ],
-        depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
         projection: None,
         ephemeral: None,
         pipeline_ttl: None,
@@ -940,7 +1225,14 @@ fn test_schema_evolution_add_remove() {
 
     // Push 3 more events
     for i in 0..3 {
-        engine.push("Txns", &json!({"user_id": "u1", "amount": (i + 1) as f64 * 5.0}), &store, now).unwrap();
+        engine
+            .push(
+                "Txns",
+                &json!({"user_id": "u1", "amount": (i + 1) as f64 * 5.0}),
+                &store,
+                now,
+            )
+            .unwrap();
     }
 
     // Verify count_1h=8 (preserved, continued counting)
@@ -959,15 +1251,19 @@ async fn test_backfill_idempotent_restart() {
     let stream1 = StreamDefinition {
         name: "Txns".into(),
         key_field: Some("user_id".into()),
-        features: vec![
-            ("count_1h".into(), FeatureDef::Count {
+        features: vec![(
+            "count_1h".into(),
+            FeatureDef::Count {
                 window: Duration::from_secs(3600),
                 bucket: Duration::from_secs(60),
                 where_expr: None,
                 backfill: false,
-            }),
-        ],
-        depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+            },
+        )],
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
         projection: None,
         ephemeral: None,
         pipeline_ttl: None,
@@ -983,10 +1279,12 @@ async fn test_backfill_idempotent_restart() {
 
     // Push 10 events
     let base_time = ts(60_000);
-    let events: Vec<serde_json::Value> = (0..10).map(|i| {
-        json!({"user_id": "u1", "amount": (i + 1) as f64 * 10.0})
-    }).collect();
-    let times: Vec<SystemTime> = (0..10).map(|i| base_time + Duration::from_secs(i)).collect();
+    let events: Vec<serde_json::Value> = (0..10)
+        .map(|i| json!({"user_id": "u1", "amount": (i + 1) as f64 * 10.0}))
+        .collect();
+    let times: Vec<SystemTime> = (0..10)
+        .map(|i| base_time + Duration::from_secs(i))
+        .collect();
     push_events(&state, "Txns", &events, &times);
 
     // Re-register with sum_1h(backfill=true)
@@ -1003,22 +1301,31 @@ async fn test_backfill_idempotent_restart() {
         name: "Txns".into(),
         key_field: Some("user_id".into()),
         features: vec![
-            ("count_1h".into(), FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                where_expr: None,
-                backfill: false,
-            }),
-            ("sum_1h".into(), FeatureDef::Sum {
-                field: "amount".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: true,
-            }),
+            (
+                "count_1h".into(),
+                FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: None,
+                    backfill: false,
+                },
+            ),
+            (
+                "sum_1h".into(),
+                FeatureDef::Sum {
+                    field: "amount".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: true,
+                },
+            ),
         ],
-        depends_on: None, filter: None, entity_ttl: None, history_ttl: None,
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
         projection: None,
         ephemeral: None,
         pipeline_ttl: None,
@@ -1040,7 +1347,8 @@ async fn test_backfill_idempotent_restart() {
         }
         let entries = {
             let event_log = state.event_log.lock();
-            event_log.as_ref()
+            event_log
+                .as_ref()
                 .map(|log| log.read_entries("Txns").unwrap_or_default())
                 .unwrap_or_default()
         };
@@ -1053,9 +1361,18 @@ async fn test_backfill_idempotent_restart() {
             started_at: SystemTime::now(),
             completed_at: std::sync::Mutex::new(None),
         });
-        state.backfill_tracker.tasks.lock().unwrap().push(Arc::clone(&status));
+        state
+            .backfill_tracker
+            .tasks
+            .lock()
+            .unwrap()
+            .push(Arc::clone(&status));
         tokio::spawn(run_backfill(
-            state.clone(), "Txns".into(), vec!["sum_1h".into()], entries, status,
+            state.clone(),
+            "Txns".into(),
+            vec!["sum_1h".into()],
+            entries,
+            status,
         ));
     }
 
@@ -1064,8 +1381,10 @@ async fn test_backfill_idempotent_restart() {
     // Step 6: Verify backfill_complete contains ("Txns", "sum_1h")
     {
         let bc = state.backfill_complete.lock();
-        assert!(bc.contains(&("Txns".to_string(), "sum_1h".to_string())),
-            "backfill_complete should contain (Txns, sum_1h)");
+        assert!(
+            bc.contains(&("Txns".to_string(), "sum_1h".to_string())),
+            "backfill_complete should contain (Txns, sum_1h)"
+        );
     }
 
     // Step 7: Save snapshot with backfill_complete included
@@ -1079,8 +1398,13 @@ async fn test_backfill_idempotent_restart() {
             key_field: "user_id".to_string(),
             raw_register_json: serde_json::to_string(&raw_register_json).unwrap(),
         }];
-        let backfill_complete: Vec<(String, String)> = state.backfill_complete.lock().iter().cloned().collect();
-        let snap = SnapshotState { entities, pipelines, backfill_complete };
+        let backfill_complete: Vec<(String, String)> =
+            state.backfill_complete.lock().iter().cloned().collect();
+        let snap = SnapshotState {
+            entities,
+            pipelines,
+            backfill_complete,
+        };
         save_snapshot(&snap).unwrap()
     };
 
@@ -1096,7 +1420,8 @@ async fn test_backfill_idempotent_restart() {
         // Re-register pipeline from snapshot
         let mut engine2 = PipelineEngine::new();
         for pipeline in &restored.pipelines {
-            let parsed: serde_json::Value = serde_json::from_str(&pipeline.raw_register_json).unwrap();
+            let parsed: serde_json::Value =
+                serde_json::from_str(&pipeline.raw_register_json).unwrap();
             let req: RegisterRequest = serde_json::from_value(parsed).unwrap();
             let stream_def = convert_register_request(req).unwrap();
             engine2.register(stream_def).unwrap();
@@ -1105,9 +1430,13 @@ async fn test_backfill_idempotent_restart() {
         // Check incomplete backfills
         let mut incomplete: Vec<(String, Vec<String>)> = Vec::new();
         for stream in engine2.list_streams() {
-            let missing: Vec<String> = stream.features.iter()
+            let missing: Vec<String> = stream
+                .features
+                .iter()
                 .filter(|(_, def)| tally::engine::pipeline::get_backfill_flag(def))
-                .filter(|(name, _)| !restored_complete.contains(&(stream.name.clone(), name.clone())))
+                .filter(|(name, _)| {
+                    !restored_complete.contains(&(stream.name.clone(), name.clone()))
+                })
                 .map(|(name, _)| name.clone())
                 .collect();
             if !missing.is_empty() {
@@ -1115,8 +1444,11 @@ async fn test_backfill_idempotent_restart() {
             }
         }
         // sum_1h should NOT be in incomplete (it's completed)
-        assert!(incomplete.is_empty(),
-            "No incomplete backfills expected after successful run, got {:?}", incomplete);
+        assert!(
+            incomplete.is_empty(),
+            "No incomplete backfills expected after successful run, got {:?}",
+            incomplete
+        );
     }
 
     // Step 13-17: Simulate crash (clear backfill_complete)
@@ -1127,7 +1459,8 @@ async fn test_backfill_idempotent_restart() {
 
         let mut engine3 = PipelineEngine::new();
         for pipeline in &restored.pipelines {
-            let parsed: serde_json::Value = serde_json::from_str(&pipeline.raw_register_json).unwrap();
+            let parsed: serde_json::Value =
+                serde_json::from_str(&pipeline.raw_register_json).unwrap();
             let req: RegisterRequest = serde_json::from_value(parsed).unwrap();
             let stream_def = convert_register_request(req).unwrap();
             engine3.register(stream_def).unwrap();
@@ -1136,17 +1469,23 @@ async fn test_backfill_idempotent_restart() {
         // Detect incomplete backfills (should find sum_1h since backfill_complete is empty)
         let mut incomplete: Vec<(String, Vec<String>)> = Vec::new();
         for stream in engine3.list_streams() {
-            let missing: Vec<String> = stream.features.iter()
+            let missing: Vec<String> = stream
+                .features
+                .iter()
                 .filter(|(_, def)| tally::engine::pipeline::get_backfill_flag(def))
-                .filter(|(name, _)| !restored_complete.contains(&(stream.name.clone(), name.clone())))
+                .filter(|(name, _)| {
+                    !restored_complete.contains(&(stream.name.clone(), name.clone()))
+                })
                 .map(|(name, _)| name.clone())
                 .collect();
             if !missing.is_empty() {
                 incomplete.push((stream.name.clone(), missing));
             }
         }
-        assert!(!incomplete.is_empty(),
-            "Should detect incomplete backfill for sum_1h after simulated crash");
+        assert!(
+            !incomplete.is_empty(),
+            "Should detect incomplete backfill for sum_1h after simulated crash"
+        );
         let (stream_name, features) = &incomplete[0];
         assert_eq!(stream_name, "Txns");
         assert!(features.contains(&"sum_1h".to_string()));
@@ -1157,7 +1496,8 @@ async fn test_backfill_idempotent_restart() {
             state2.store.restore_from_snapshot(restored.entities);
             let mut engine2w = state2.engine.write();
             for pipeline in &restored.pipelines {
-                let parsed: serde_json::Value = serde_json::from_str(&pipeline.raw_register_json).unwrap();
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&pipeline.raw_register_json).unwrap();
                 let req: RegisterRequest = serde_json::from_value(parsed).unwrap();
                 let stream_def = convert_register_request(req).unwrap();
                 engine2w.register(stream_def).unwrap();
@@ -1172,7 +1512,8 @@ async fn test_backfill_idempotent_restart() {
         // Read entries and spawn backfill
         let entries = {
             let event_log = state2.event_log.lock();
-            event_log.as_ref()
+            event_log
+                .as_ref()
                 .map(|log| log.read_entries("Txns").unwrap_or_default())
                 .unwrap_or_default()
         };
@@ -1186,9 +1527,18 @@ async fn test_backfill_idempotent_restart() {
             started_at: SystemTime::now(),
             completed_at: std::sync::Mutex::new(None),
         });
-        state2.backfill_tracker.tasks.lock().unwrap().push(Arc::clone(&status));
+        state2
+            .backfill_tracker
+            .tasks
+            .lock()
+            .unwrap()
+            .push(Arc::clone(&status));
         tokio::spawn(run_backfill(
-            state2.clone(), "Txns".into(), vec!["sum_1h".into()], entries, status,
+            state2.clone(),
+            "Txns".into(),
+            vec!["sum_1h".into()],
+            entries,
+            status,
         ));
 
         wait_for_backfill_complete(&state2, "Txns").await;
@@ -1197,8 +1547,11 @@ async fn test_backfill_idempotent_restart() {
         let engine2r = state2.engine.read();
         let store2 = &state2.store;
         let features = engine2r.get_features("u1", store2, base_time + Duration::from_secs(9));
-        assert_eq!(features.get("sum_1h"), Some(&FeatureValue::Float(550.0)),
-            "Re-run backfill should produce same deterministic result");
+        assert_eq!(
+            features.get("sum_1h"),
+            Some(&FeatureValue::Float(550.0)),
+            "Re-run backfill should produce same deterministic result"
+        );
     }
 }
 
@@ -1209,546 +1562,712 @@ async fn test_backfill_idempotent_restart() {
 #[test]
 fn test_enriched_derive_to_downstream_sum() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(60_000);
 
     // Stage 1: RawTxns (keyless source)
-    engine.register(StreamDefinition {
-        name: "RawTxns".into(),
-        key_field: None,
-        features: vec![],
-        depends_on: None,
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "RawTxns".into(),
+            key_field: None,
+            features: vec![],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
     // Stage 2: CurrencyNorm (keyed, depends on RawTxns, derives amount_usd)
-    engine.register(StreamDefinition {
-        name: "CurrencyNorm".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("amount_usd".into(), FeatureDef::Derive {
-                expr: parse_expr("_event.amount * _event.exchange_rate").unwrap(),
-            }),
-        ],
-        depends_on: Some(vec!["RawTxns".into()]),
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "CurrencyNorm".into(),
+            key_field: Some("user_id".into()),
+            features: vec![(
+                "amount_usd".into(),
+                FeatureDef::Derive {
+                    expr: parse_expr("_event.amount * _event.exchange_rate").unwrap(),
+                },
+            )],
+            depends_on: Some(vec!["RawTxns".into()]),
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
     // Stage 3: UserStats (keyed, depends on CurrencyNorm, sums CurrencyNorm.amount_usd)
-    engine.register(StreamDefinition {
-        name: "UserStats".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("total_usd_1h".into(), FeatureDef::Sum {
-                field: "CurrencyNorm.amount_usd".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: false,
-            }),
-        ],
-        depends_on: Some(vec!["CurrencyNorm".into()]),
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "UserStats".into(),
+            key_field: Some("user_id".into()),
+            features: vec![(
+                "total_usd_1h".into(),
+                FeatureDef::Sum {
+                    field: "CurrencyNorm.amount_usd".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: false,
+                },
+            )],
+            depends_on: Some(vec!["CurrencyNorm".into()]),
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
     // Push event: amount=100, exchange_rate=1.2 -> amount_usd = 120.0
-    let _ = engine.push_with_cascade("RawTxns", &json!({
-        "user_id": "u123",
-        "amount": 100.0,
-        "exchange_rate": 1.2
-    }), &store, now).unwrap();
+    let _ = engine
+        .push_with_cascade(
+            "RawTxns",
+            &json!({
+                "user_id": "u123",
+                "amount": 100.0,
+                "exchange_rate": 1.2
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     // Verify downstream UserStats sees enriched amount_usd
     let all = engine.get_features("u123", &store, now);
-    assert_eq!(all.get("total_usd_1h"), Some(&FeatureValue::Float(120.0)),
-        "UserStats.total_usd_1h should be 120.0 (100 * 1.2), got {:?}", all.get("total_usd_1h"));
+    assert_eq!(
+        all.get("total_usd_1h"),
+        Some(&FeatureValue::Float(120.0)),
+        "UserStats.total_usd_1h should be 120.0 (100 * 1.2), got {:?}",
+        all.get("total_usd_1h")
+    );
 }
 
 /// Test 2: Multi-level cascade enrichment (4 hops: A -> B -> C -> D)
 #[test]
 fn test_enriched_multi_hop_cascade() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(60_000);
 
     // A: keyless source
-    engine.register(StreamDefinition {
-        name: "HopA".into(),
-        key_field: None,
-        features: vec![],
-        depends_on: None,
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "HopA".into(),
+            key_field: None,
+            features: vec![],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
     // B: keyed, depends on A, derives computed_b = _event.raw_value * 2
-    engine.register(StreamDefinition {
-        name: "HopB".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("computed_b".into(), FeatureDef::Derive {
-                expr: parse_expr("_event.raw_value * 2").unwrap(),
-            }),
-        ],
-        depends_on: Some(vec!["HopA".into()]),
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "HopB".into(),
+            key_field: Some("user_id".into()),
+            features: vec![(
+                "computed_b".into(),
+                FeatureDef::Derive {
+                    expr: parse_expr("_event.raw_value * 2").unwrap(),
+                },
+            )],
+            depends_on: Some(vec!["HopA".into()]),
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
     // C: keyed, depends on B, sums B.computed_b and derives computed_c = B.computed_b + 10
-    engine.register(StreamDefinition {
-        name: "HopC".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("sum_b".into(), FeatureDef::Sum {
-                field: "HopB.computed_b".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: false,
-            }),
-            ("computed_c".into(), FeatureDef::Derive {
-                expr: parse_expr("HopB.computed_b + 10").unwrap(),
-            }),
-        ],
-        depends_on: Some(vec!["HopB".into()]),
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "HopC".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                (
+                    "sum_b".into(),
+                    FeatureDef::Sum {
+                        field: "HopB.computed_b".into(),
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        optional: false,
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "computed_c".into(),
+                    FeatureDef::Derive {
+                        expr: parse_expr("HopB.computed_b + 10").unwrap(),
+                    },
+                ),
+            ],
+            depends_on: Some(vec!["HopB".into()]),
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
     // D: keyed, depends on C, sums C.computed_c
-    engine.register(StreamDefinition {
-        name: "HopD".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("sum_c".into(), FeatureDef::Sum {
-                field: "HopC.computed_c".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: false,
-            }),
-        ],
-        depends_on: Some(vec!["HopC".into()]),
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "HopD".into(),
+            key_field: Some("user_id".into()),
+            features: vec![(
+                "sum_c".into(),
+                FeatureDef::Sum {
+                    field: "HopC.computed_c".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: false,
+                },
+            )],
+            depends_on: Some(vec!["HopC".into()]),
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
     // Push event: raw_value=5
     // B.computed_b = 5*2 = 10 (derive, only available during push via enrichment)
     // C.sum_b = 10 (aggregated from enrichment B.computed_b)
     // C.computed_c = B.computed_b + 10 = 20 (derive using enrichment)
     // D.sum_c = 20 (aggregated from enrichment C.computed_c)
-    let _ = engine.push_with_cascade("HopA", &json!({
-        "user_id": "u1",
-        "raw_value": 5.0
-    }), &store, now).unwrap();
+    let _ = engine
+        .push_with_cascade(
+            "HopA",
+            &json!({
+                "user_id": "u1",
+                "raw_value": 5.0
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     let all = engine.get_features("u1", &store, now);
     // Derives are computed on read and need _event context which isn't stored,
     // so we verify the aggregated values that prove enrichment propagated correctly.
-    assert_eq!(all.get("sum_b"), Some(&FeatureValue::Float(10.0)),
-        "HopC.sum_b should be 10.0 (B.computed_b=10 propagated via enrichment)");
-    assert_eq!(all.get("sum_c"), Some(&FeatureValue::Float(20.0)),
-        "HopD.sum_c should be 20.0 (C.computed_c=20 propagated via enrichment)");
+    assert_eq!(
+        all.get("sum_b"),
+        Some(&FeatureValue::Float(10.0)),
+        "HopC.sum_b should be 10.0 (B.computed_b=10 propagated via enrichment)"
+    );
+    assert_eq!(
+        all.get("sum_c"),
+        Some(&FeatureValue::Float(20.0)),
+        "HopD.sum_c should be 20.0 (C.computed_c=20 propagated via enrichment)"
+    );
 }
 
 /// Test 3: Enrichment works in async mode (push_with_cascade_no_features)
 #[test]
 fn test_enriched_cascade_async_mode() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(60_000);
 
     // Same 3-stream pipeline as test 1
-    engine.register(StreamDefinition {
-        name: "AsyncRaw".into(),
-        key_field: None,
-        features: vec![],
-        depends_on: None,
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "AsyncRaw".into(),
+            key_field: None,
+            features: vec![],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
-    engine.register(StreamDefinition {
-        name: "AsyncNorm".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("amount_usd".into(), FeatureDef::Derive {
-                expr: parse_expr("_event.amount * _event.rate").unwrap(),
-            }),
-        ],
-        depends_on: Some(vec!["AsyncRaw".into()]),
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "AsyncNorm".into(),
+            key_field: Some("user_id".into()),
+            features: vec![(
+                "amount_usd".into(),
+                FeatureDef::Derive {
+                    expr: parse_expr("_event.amount * _event.rate").unwrap(),
+                },
+            )],
+            depends_on: Some(vec!["AsyncRaw".into()]),
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
-    engine.register(StreamDefinition {
-        name: "AsyncStats".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("total_usd_1h".into(), FeatureDef::Sum {
-                field: "AsyncNorm.amount_usd".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: false,
-            }),
-        ],
-        depends_on: Some(vec!["AsyncNorm".into()]),
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "AsyncStats".into(),
+            key_field: Some("user_id".into()),
+            features: vec![(
+                "total_usd_1h".into(),
+                FeatureDef::Sum {
+                    field: "AsyncNorm.amount_usd".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: false,
+                },
+            )],
+            depends_on: Some(vec!["AsyncNorm".into()]),
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
     // Async push (no features returned)
-    let result = engine.push_with_cascade_no_features("AsyncRaw", &json!({
-        "user_id": "u1", "amount": 100.0, "rate": 1.5
-    }), &store, now).unwrap();
-    assert!(result.is_empty(), "async push should return empty FeatureMap");
+    let result = engine
+        .push_with_cascade_no_features(
+            "AsyncRaw",
+            &json!({
+                "user_id": "u1", "amount": 100.0, "rate": 1.5
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
+    assert!(
+        result.is_empty(),
+        "async push should return empty FeatureMap"
+    );
 
     // Operators were still updated -- verify via sync push
-    let _ = engine.push_with_cascade("AsyncRaw", &json!({
-        "user_id": "u1", "amount": 200.0, "rate": 2.0
-    }), &store, now).unwrap();
+    let _ = engine
+        .push_with_cascade(
+            "AsyncRaw",
+            &json!({
+                "user_id": "u1", "amount": 200.0, "rate": 2.0
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     let all = engine.get_features("u1", &store, now);
     // First push: 100*1.5=150, second push: 200*2.0=400, total=550
-    assert_eq!(all.get("total_usd_1h"), Some(&FeatureValue::Float(550.0)),
-        "Async push should have updated operators; total should be 550.0, got {:?}", all.get("total_usd_1h"));
+    assert_eq!(
+        all.get("total_usd_1h"),
+        Some(&FeatureValue::Float(550.0)),
+        "Async push should have updated operators; total should be 550.0, got {:?}",
+        all.get("total_usd_1h")
+    );
 }
 
 /// Test 4: Where-clause can reference enriched upstream fields
 #[test]
 fn test_enriched_where_clause() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(60_000);
 
-    engine.register(StreamDefinition {
-        name: "WhereRaw".into(),
-        key_field: None,
-        features: vec![],
-        depends_on: None,
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "WhereRaw".into(),
+            key_field: None,
+            features: vec![],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
-    engine.register(StreamDefinition {
-        name: "WhereNorm".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("amount_usd".into(), FeatureDef::Derive {
-                expr: parse_expr("_event.amount * _event.exchange_rate").unwrap(),
-            }),
-        ],
-        depends_on: Some(vec!["WhereRaw".into()]),
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "WhereNorm".into(),
+            key_field: Some("user_id".into()),
+            features: vec![(
+                "amount_usd".into(),
+                FeatureDef::Derive {
+                    expr: parse_expr("_event.amount * _event.exchange_rate").unwrap(),
+                },
+            )],
+            depends_on: Some(vec!["WhereRaw".into()]),
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
     // Downstream with where clause referencing enriched field
-    engine.register(StreamDefinition {
-        name: "WhereFiltered".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("high_value_count".into(), FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                where_expr: Some(parse_expr("WhereNorm.amount_usd > 50").unwrap()),
-                backfill: false,
-            }),
-        ],
-        depends_on: Some(vec!["WhereNorm".into()]),
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "WhereFiltered".into(),
+            key_field: Some("user_id".into()),
+            features: vec![(
+                "high_value_count".into(),
+                FeatureDef::Count {
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    where_expr: Some(parse_expr("WhereNorm.amount_usd > 50").unwrap()),
+                    backfill: false,
+                },
+            )],
+            depends_on: Some(vec!["WhereNorm".into()]),
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
     // Push event where amount_usd = 100*1.2 = 120 > 50 -> should increment
-    let _ = engine.push_with_cascade("WhereRaw", &json!({
-        "user_id": "u1", "amount": 100.0, "exchange_rate": 1.2
-    }), &store, now).unwrap();
+    let _ = engine
+        .push_with_cascade(
+            "WhereRaw",
+            &json!({
+                "user_id": "u1", "amount": 100.0, "exchange_rate": 1.2
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     let all = engine.get_features("u1", &store, now);
-    assert_eq!(all.get("high_value_count"), Some(&FeatureValue::Int(1)),
-        "high_value_count should be 1 (amount_usd 120 > 50)");
+    assert_eq!(
+        all.get("high_value_count"),
+        Some(&FeatureValue::Int(1)),
+        "high_value_count should be 1 (amount_usd 120 > 50)"
+    );
 
     // Push event where amount_usd = 10*1.2 = 12 < 50 -> should NOT increment
-    let _ = engine.push_with_cascade("WhereRaw", &json!({
-        "user_id": "u1", "amount": 10.0, "exchange_rate": 1.2
-    }), &store, now).unwrap();
+    let _ = engine
+        .push_with_cascade(
+            "WhereRaw",
+            &json!({
+                "user_id": "u1", "amount": 10.0, "exchange_rate": 1.2
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     let all2 = engine.get_features("u1", &store, now);
-    assert_eq!(all2.get("high_value_count"), Some(&FeatureValue::Int(1)),
-        "high_value_count should still be 1 (amount_usd 12 < 50)");
+    assert_eq!(
+        all2.get("high_value_count"),
+        Some(&FeatureValue::Int(1)),
+        "high_value_count should still be 1 (amount_usd 12 < 50)"
+    );
 }
 
 /// Test 5: Qualified field resolution (sum("CurrencyNorm.amount_usd"))
 #[test]
 fn test_enriched_field_resolution_qualified() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(60_000);
 
-    engine.register(StreamDefinition {
-        name: "QualRaw".into(),
-        key_field: None,
-        features: vec![],
-        depends_on: None,
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "QualRaw".into(),
+            key_field: None,
+            features: vec![],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
-    engine.register(StreamDefinition {
-        name: "QualNorm".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("val".into(), FeatureDef::Derive {
-                expr: parse_expr("_event.x * 3").unwrap(),
+    engine
+        .register(StreamDefinition {
+            name: "QualNorm".into(),
+            key_field: Some("user_id".into()),
+            features: vec![(
+                "val".into(),
+                FeatureDef::Derive {
+                    expr: parse_expr("_event.x * 3").unwrap(),
+                },
+            )],
+            depends_on: Some(vec!["QualRaw".into()]),
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
+
+    engine
+        .register(StreamDefinition {
+            name: "QualAgg".into(),
+            key_field: Some("user_id".into()),
+            features: vec![(
+                "total".into(),
+                FeatureDef::Sum {
+                    field: "QualNorm.val".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: false,
+                },
+            )],
+            depends_on: Some(vec!["QualNorm".into()]),
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
+
+    let _ = engine
+        .push_with_cascade(
+            "QualRaw",
+            &json!({
+                "user_id": "u1", "x": 10.0
             }),
-        ],
-        depends_on: Some(vec!["QualRaw".into()]),
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
-
-    engine.register(StreamDefinition {
-        name: "QualAgg".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("total".into(), FeatureDef::Sum {
-                field: "QualNorm.val".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: false,
-            }),
-        ],
-        depends_on: Some(vec!["QualNorm".into()]),
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
-
-    let _ = engine.push_with_cascade("QualRaw", &json!({
-        "user_id": "u1", "x": 10.0
-    }), &store, now).unwrap();
+            &store,
+            now,
+        )
+        .unwrap();
 
     let all = engine.get_features("u1", &store, now);
-    assert_eq!(all.get("total"), Some(&FeatureValue::Float(30.0)),
-        "Qualified field QualNorm.val should resolve to 30.0 (10*3)");
+    assert_eq!(
+        all.get("total"),
+        Some(&FeatureValue::Float(30.0)),
+        "Qualified field QualNorm.val should resolve to 30.0 (10*3)"
+    );
 }
 
 /// Test 6: Unqualified field resolution (sum("val") resolves from enrichment)
 #[test]
 fn test_enriched_field_resolution_unqualified() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(60_000);
 
-    engine.register(StreamDefinition {
-        name: "UnqualRaw".into(),
-        key_field: None,
-        features: vec![],
-        depends_on: None,
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "UnqualRaw".into(),
+            key_field: None,
+            features: vec![],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
-    engine.register(StreamDefinition {
-        name: "UnqualNorm".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("uval".into(), FeatureDef::Derive {
-                expr: parse_expr("_event.x * 5").unwrap(),
-            }),
-        ],
-        depends_on: Some(vec!["UnqualRaw".into()]),
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "UnqualNorm".into(),
+            key_field: Some("user_id".into()),
+            features: vec![(
+                "uval".into(),
+                FeatureDef::Derive {
+                    expr: parse_expr("_event.x * 5").unwrap(),
+                },
+            )],
+            depends_on: Some(vec!["UnqualRaw".into()]),
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
     // Use unqualified field name "uval" (not "UnqualNorm.uval")
-    engine.register(StreamDefinition {
-        name: "UnqualAgg".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("total".into(), FeatureDef::Sum {
-                field: "uval".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: false,
-            }),
-        ],
-        depends_on: Some(vec!["UnqualNorm".into()]),
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "UnqualAgg".into(),
+            key_field: Some("user_id".into()),
+            features: vec![(
+                "total".into(),
+                FeatureDef::Sum {
+                    field: "uval".into(),
+                    window: Duration::from_secs(3600),
+                    bucket: Duration::from_secs(60),
+                    optional: false,
+                    where_expr: None,
+                    backfill: false,
+                },
+            )],
+            depends_on: Some(vec!["UnqualNorm".into()]),
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
-    let _ = engine.push_with_cascade("UnqualRaw", &json!({
-        "user_id": "u1", "x": 4.0
-    }), &store, now).unwrap();
+    let _ = engine
+        .push_with_cascade(
+            "UnqualRaw",
+            &json!({
+                "user_id": "u1", "x": 4.0
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     let all = engine.get_features("u1", &store, now);
-    assert_eq!(all.get("total"), Some(&FeatureValue::Float(20.0)),
-        "Unqualified field 'uval' should resolve from enrichment to 20.0 (4*5)");
+    assert_eq!(
+        all.get("total"),
+        Some(&FeatureValue::Float(20.0)),
+        "Unqualified field 'uval' should resolve from enrichment to 20.0 (4*5)"
+    );
 }
 
 /// Test 7: Single stream (no downstream) behaves identically to pre-enrichment
 #[test]
 fn test_enriched_no_cascade_unchanged() {
     let mut engine = PipelineEngine::new();
-    let mut store = StateStore::new();
+    let store = StateStore::new();
     let now = ts(60_000);
 
-    engine.register(StreamDefinition {
-        name: "Solo".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("count_1h".into(), FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                where_expr: None,
-                backfill: false,
-            }),
-            ("sum_1h".into(), FeatureDef::Sum {
-                field: "amount".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: false,
-            }),
-            ("ratio".into(), FeatureDef::Derive {
-                expr: parse_expr("sum_1h / count_1h").unwrap(),
-            }),
-        ],
-        depends_on: None,
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: None,
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "Solo".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                (
+                    "count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "sum_1h".into(),
+                    FeatureDef::Sum {
+                        field: "amount".into(),
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        optional: false,
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "ratio".into(),
+                    FeatureDef::Derive {
+                        expr: parse_expr("sum_1h / count_1h").unwrap(),
+                    },
+                ),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
     // Use push_with_cascade on a single-stream (no downstream)
-    let features = engine.push_with_cascade("Solo", &json!({
-        "user_id": "u1", "amount": 30.0
-    }), &store, now).unwrap();
+    let features = engine
+        .push_with_cascade(
+            "Solo",
+            &json!({
+                "user_id": "u1", "amount": 30.0
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
     assert_eq!(features.get("sum_1h"), Some(&FeatureValue::Float(30.0)));
     assert_eq!(features.get("ratio"), Some(&FeatureValue::Float(30.0)));
 
     // Push second event
-    let features2 = engine.push_with_cascade("Solo", &json!({
-        "user_id": "u1", "amount": 70.0
-    }), &store, now).unwrap();
+    let features2 = engine
+        .push_with_cascade(
+            "Solo",
+            &json!({
+                "user_id": "u1", "amount": 70.0
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     assert_eq!(features2.get("count_1h"), Some(&FeatureValue::Int(2)));
     assert_eq!(features2.get("sum_1h"), Some(&FeatureValue::Float(100.0)));
@@ -1763,50 +2282,72 @@ fn test_projection_select_push() {
     let store = StateStore::new();
     let now = ts(60_000);
 
-    engine.register(StreamDefinition {
-        name: "Txns".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("count_1h".into(), FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                where_expr: None,
-                backfill: false,
-            }),
-            ("sum_1h".into(), FeatureDef::Sum {
-                field: "amount".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: false,
-            }),
-            ("internal_count_24h".into(), FeatureDef::Count {
-                window: Duration::from_secs(86400),
-                bucket: Duration::from_secs(600),
-                where_expr: None,
-                backfill: false,
-            }),
-        ],
-        depends_on: None,
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: Some(Projection::Select(
-            AHashSet::from_iter(["count_1h".into(), "sum_1h".into()])
-        )),
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "Txns".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                (
+                    "count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "sum_1h".into(),
+                    FeatureDef::Sum {
+                        field: "amount".into(),
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        optional: false,
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "internal_count_24h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(86400),
+                        bucket: Duration::from_secs(600),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: Some(Projection::Select(AHashSet::from_iter([
+                "count_1h".into(),
+                "sum_1h".into(),
+            ]))),
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
-    let features = engine.push("Txns", &json!({
-        "user_id": "u1", "amount": 42.0
-    }), &store, now).unwrap();
+    let features = engine
+        .push(
+            "Txns",
+            &json!({
+                "user_id": "u1", "amount": 42.0
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
     assert_eq!(features.get("sum_1h"), Some(&FeatureValue::Float(42.0)));
-    assert!(features.get("internal_count_24h").is_none(), "internal feature should be filtered by Select projection");
+    assert!(
+        features.get("internal_count_24h").is_none(),
+        "internal feature should be filtered by Select projection"
+    );
 }
 
 #[test]
@@ -1815,50 +2356,71 @@ fn test_projection_drop_push() {
     let store = StateStore::new();
     let now = ts(60_000);
 
-    engine.register(StreamDefinition {
-        name: "Txns".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("count_1h".into(), FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                where_expr: None,
-                backfill: false,
-            }),
-            ("sum_1h".into(), FeatureDef::Sum {
-                field: "amount".into(),
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                optional: false,
-                where_expr: None,
-                backfill: false,
-            }),
-            ("internal_count_24h".into(), FeatureDef::Count {
-                window: Duration::from_secs(86400),
-                bucket: Duration::from_secs(600),
-                where_expr: None,
-                backfill: false,
-            }),
-        ],
-        depends_on: None,
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: Some(Projection::Drop(
-            AHashSet::from_iter(["internal_count_24h".into()])
-        )),
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "Txns".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                (
+                    "count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "sum_1h".into(),
+                    FeatureDef::Sum {
+                        field: "amount".into(),
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        optional: false,
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "internal_count_24h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(86400),
+                        bucket: Duration::from_secs(600),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: Some(Projection::Drop(AHashSet::from_iter([
+                "internal_count_24h".into(),
+            ]))),
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
-    let features = engine.push("Txns", &json!({
-        "user_id": "u1", "amount": 42.0
-    }), &store, now).unwrap();
+    let features = engine
+        .push(
+            "Txns",
+            &json!({
+                "user_id": "u1", "amount": 42.0
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
     assert_eq!(features.get("sum_1h"), Some(&FeatureValue::Float(42.0)));
-    assert!(features.get("internal_count_24h").is_none(), "internal feature should be filtered by Drop projection");
+    assert!(
+        features.get("internal_count_24h").is_none(),
+        "internal feature should be filtered by Drop projection"
+    );
 }
 
 #[test]
@@ -1867,40 +2429,51 @@ fn test_projection_select_get() {
     let store = StateStore::new();
     let now = ts(60_000);
 
-    engine.register(StreamDefinition {
-        name: "Txns".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("count_1h".into(), FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                where_expr: None,
-                backfill: false,
-            }),
-            ("internal_count_24h".into(), FeatureDef::Count {
-                window: Duration::from_secs(86400),
-                bucket: Duration::from_secs(600),
-                where_expr: None,
-                backfill: false,
-            }),
-        ],
-        depends_on: None,
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: Some(Projection::Select(
-            AHashSet::from_iter(["count_1h".into()])
-        )),
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "Txns".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                (
+                    "count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "internal_count_24h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(86400),
+                        bucket: Duration::from_secs(600),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: Some(Projection::Select(AHashSet::from_iter(["count_1h".into()]))),
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
-    engine.push("Txns", &json!({"user_id": "u1"}), &store, now).unwrap();
+    engine
+        .push("Txns", &json!({"user_id": "u1"}), &store, now)
+        .unwrap();
 
     let features = engine.get_features("u1", &store, now);
     assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
-    assert!(features.get("internal_count_24h").is_none(), "GET should also apply Select projection");
+    assert!(
+        features.get("internal_count_24h").is_none(),
+        "GET should also apply Select projection"
+    );
 }
 
 #[test]
@@ -1909,40 +2482,53 @@ fn test_projection_drop_get() {
     let store = StateStore::new();
     let now = ts(60_000);
 
-    engine.register(StreamDefinition {
-        name: "Txns".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("count_1h".into(), FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                where_expr: None,
-                backfill: false,
-            }),
-            ("internal_count_24h".into(), FeatureDef::Count {
-                window: Duration::from_secs(86400),
-                bucket: Duration::from_secs(600),
-                where_expr: None,
-                backfill: false,
-            }),
-        ],
-        depends_on: None,
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: Some(Projection::Drop(
-            AHashSet::from_iter(["internal_count_24h".into()])
-        )),
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "Txns".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                (
+                    "count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "internal_count_24h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(86400),
+                        bucket: Duration::from_secs(600),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: Some(Projection::Drop(AHashSet::from_iter([
+                "internal_count_24h".into(),
+            ]))),
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
-    engine.push("Txns", &json!({"user_id": "u1"}), &store, now).unwrap();
+    engine
+        .push("Txns", &json!({"user_id": "u1"}), &store, now)
+        .unwrap();
 
     let features = engine.get_features("u1", &store, now);
     assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
-    assert!(features.get("internal_count_24h").is_none(), "GET should also apply Drop projection");
+    assert!(
+        features.get("internal_count_24h").is_none(),
+        "GET should also apply Drop projection"
+    );
 }
 
 #[test]
@@ -1953,49 +2539,70 @@ fn test_projection_derive_still_evaluates() {
     let store = StateStore::new();
     let now = ts(60_000);
 
-    engine.register(StreamDefinition {
-        name: "Txns".into(),
-        key_field: Some("user_id".into()),
-        features: vec![
-            ("count_1h".into(), FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
-                where_expr: None,
-                backfill: false,
-            }),
-            ("internal_count_24h".into(), FeatureDef::Count {
-                window: Duration::from_secs(86400),
-                bucket: Duration::from_secs(600),
-                where_expr: None,
-                backfill: false,
-            }),
-            ("ratio".into(), FeatureDef::Derive {
-                expr: parse_expr("count_1h / internal_count_24h").unwrap(),
-            }),
-        ],
-        depends_on: None,
-        filter: None,
-        entity_ttl: None,
-        history_ttl: None,
-        projection: Some(Projection::Select(
-            AHashSet::from_iter(["count_1h".into(), "ratio".into()])
-        )),
-        ephemeral: None,
-        pipeline_ttl: None,
-        max_keys: None,
-    }).unwrap();
+    engine
+        .register(StreamDefinition {
+            name: "Txns".into(),
+            key_field: Some("user_id".into()),
+            features: vec![
+                (
+                    "count_1h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(3600),
+                        bucket: Duration::from_secs(60),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "internal_count_24h".into(),
+                    FeatureDef::Count {
+                        window: Duration::from_secs(86400),
+                        bucket: Duration::from_secs(600),
+                        where_expr: None,
+                        backfill: false,
+                    },
+                ),
+                (
+                    "ratio".into(),
+                    FeatureDef::Derive {
+                        expr: parse_expr("count_1h / internal_count_24h").unwrap(),
+                    },
+                ),
+            ],
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: Some(Projection::Select(AHashSet::from_iter([
+                "count_1h".into(),
+                "ratio".into(),
+            ]))),
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        })
+        .unwrap();
 
-    let features = engine.push("Txns", &json!({
-        "user_id": "u1"
-    }), &store, now).unwrap();
+    let features = engine
+        .push(
+            "Txns",
+            &json!({
+                "user_id": "u1"
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     // count_1h should be present (selected)
     assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
     // ratio should be present and correctly computed (1/1 = 1.0)
     assert_eq!(features.get("ratio"), Some(&FeatureValue::Float(1.0)));
     // internal_count_24h should be ABSENT (not in select list)
-    assert!(features.get("internal_count_24h").is_none(),
-        "internal_count_24h should be filtered out even though derive references it");
+    assert!(
+        features.get("internal_count_24h").is_none(),
+        "internal_count_24h should be filtered out even though derive references it"
+    );
 }
 
 #[test]
@@ -2020,9 +2627,16 @@ fn test_v1_3_register_backward_compat() {
     let mut engine = PipelineEngine::new();
     let store = StateStore::new();
     engine.register(stream).unwrap();
-    let features = engine.push("Transactions", &json!({
-        "user_id": "u1"
-    }), &store, ts(60_000)).unwrap();
+    let features = engine
+        .push(
+            "Transactions",
+            &json!({
+                "user_id": "u1"
+            }),
+            &store,
+            ts(60_000),
+        )
+        .unwrap();
     assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
 }
 
@@ -2049,9 +2663,16 @@ fn test_ephemeral_fields_roundtrip() {
     let mut engine = PipelineEngine::new();
     let store = StateStore::new();
     engine.register(stream).unwrap();
-    let features = engine.push("EphemeralStream", &json!({
-        "user_id": "u1"
-    }), &store, ts(60_000)).unwrap();
+    let features = engine
+        .push(
+            "EphemeralStream",
+            &json!({
+                "user_id": "u1"
+            }),
+            &store,
+            ts(60_000),
+        )
+        .unwrap();
     assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
 }
 
@@ -2081,13 +2702,23 @@ fn test_snapshot_roundtrip_new_fields() {
     engine.store_raw_register_json("Txns", raw_json.clone());
 
     // Push an event
-    let features = engine.push("Txns", &json!({
-        "user_id": "u1"
-    }), &store, now).unwrap();
+    let features = engine
+        .push(
+            "Txns",
+            &json!({
+                "user_id": "u1"
+            }),
+            &store,
+            now,
+        )
+        .unwrap();
 
     // Verify projection works before snapshot
     assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
-    assert!(features.get("internal_count_24h").is_none(), "should be filtered before snapshot");
+    assert!(
+        features.get("internal_count_24h").is_none(),
+        "should be filtered before snapshot"
+    );
 
     // Create snapshot
     let entities = store.clone_for_snapshot();
@@ -2111,12 +2742,20 @@ fn test_snapshot_roundtrip_new_fields() {
 
     // Re-register from restored pipeline JSON
     for pipeline in &restored.pipelines {
-        let json_val: serde_json::Value = serde_json::from_str(&pipeline.raw_register_json).unwrap();
+        let json_val: serde_json::Value =
+            serde_json::from_str(&pipeline.raw_register_json).unwrap();
         let req: RegisterRequest = serde_json::from_value(json_val.clone()).unwrap();
         let stream = convert_register_request(req).unwrap();
         // Verify new fields survived round-trip
-        assert!(stream.projection.is_some(), "projection should survive snapshot round-trip");
-        assert_eq!(stream.ephemeral, Some(true), "ephemeral should survive snapshot round-trip");
+        assert!(
+            stream.projection.is_some(),
+            "projection should survive snapshot round-trip"
+        );
+        assert_eq!(
+            stream.ephemeral,
+            Some(true),
+            "ephemeral should survive snapshot round-trip"
+        );
         assert_eq!(stream.pipeline_ttl, Some(Duration::from_secs(7200)));
         assert_eq!(stream.max_keys, Some(500));
         new_engine.register(stream).unwrap();
@@ -2125,7 +2764,12 @@ fn test_snapshot_roundtrip_new_fields() {
 
     // Verify projection still works after restore
     let restored_features = new_engine.get_features("u1", &new_store, now);
-    assert_eq!(restored_features.get("count_1h"), Some(&FeatureValue::Int(1)));
-    assert!(restored_features.get("internal_count_24h").is_none(),
-        "projection should still filter after snapshot round-trip");
+    assert_eq!(
+        restored_features.get("count_1h"),
+        Some(&FeatureValue::Int(1))
+    );
+    assert!(
+        restored_features.get("internal_count_24h").is_none(),
+        "projection should still filter after snapshot round-trip"
+    );
 }

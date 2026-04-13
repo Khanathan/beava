@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
-use serde::{Serialize, Deserialize};
 
 /// Type alias for entity keys (e.g., "user_id:u123").
 pub type EntityKey = String;
@@ -110,6 +110,7 @@ mod tests {
     // --- G-09: as_f64 and is_missing exhaustive variant tests ---
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_as_f64_float() {
         assert_eq!(FeatureValue::Float(3.14).as_f64(), Some(3.14));
     }
