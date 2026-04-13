@@ -5,8 +5,8 @@ TCP to the Rust server, server processes and responds, Python decodes the
 response. If any byte in the wire format is wrong, these tests fail.
 
 Covers all SDK-* requirements:
-  SDK-01: @stream decorator defines streams with operators
-  SDK-02: @view decorator (not tested here -- unit tests cover it)
+  SDK-01: @source/@dataset defines pipelines with operators
+  SDK-02: @dataset with derive-only (replaces @view)
   SDK-03: Operator descriptors serialize to correct JSON
   SDK-04: Protocol encoding matches Rust wire format
   SDK-05: app.push() returns FeatureResult with correct computed values
@@ -18,19 +18,29 @@ Requires: ``tally_server`` and ``app`` fixtures from conftest.py.
 
 from __future__ import annotations
 
-import tally as st
+import tally as tl
+from tally import source, dataset, group_by
+
+import pytest
 
 
 # ---------------------------------------------------------------------------
-# Stream definition used by multiple tests
+# Pipeline definition used by multiple tests
 # ---------------------------------------------------------------------------
 
-@st.stream(key="user_id")
+@source
+class RawTransactions:
+    pass
+
+
+@dataset(depends_on=[RawTransactions])
 class Transactions:
-    tx_count_1h = st.count(window="1h")
-    tx_sum_1h = st.sum("amount", window="1h")
-    avg_amount_1h = st.avg("amount", window="1h")
-    rate = st.derive("tx_count_1h / tx_sum_1h")
+    features = group_by("user_id").agg(
+        tx_count_1h=tl.count(window="1h"),
+        tx_sum_1h=tl.sum("amount", window="1h"),
+        avg_amount_1h=tl.avg("amount", window="1h"),
+    )
+    rate = tl.derive("tx_count_1h / tx_sum_1h")
 
 
 # ---------------------------------------------------------------------------
@@ -39,10 +49,15 @@ class Transactions:
 
 
 def test_register_and_push(app):
-    """Register a stream and push one event; verify feature values."""
-    app.register(Transactions)
+    """Register a pipeline and push one event; verify feature values via GET.
 
-    features = app.push_sync(Transactions, {"user_id": "u1", "amount": 100.0})
+    With the new @source/@dataset API, push targets the keyless source so the
+    push response is empty. Features are verified via GET on the entity key.
+    """
+    app.register(RawTransactions, Transactions)
+
+    app.push_sync(RawTransactions, {"user_id": "u1", "amount": 100.0})
+    features = app.get("u1")
     assert features.tx_count_1h == 1
     assert features.tx_sum_1h == 100.0
     assert features.avg_amount_1h == 100.0
@@ -55,9 +70,10 @@ def test_register_and_push(app):
 
 def test_push_accumulates(app):
     """Multiple pushes accumulate feature values for the same key."""
-    app.push_sync(Transactions, {"user_id": "u2", "amount": 50.0})
-    features = app.push_sync(Transactions, {"user_id": "u2", "amount": 30.0})
+    app.push_sync(RawTransactions, {"user_id": "u2", "amount": 50.0})
+    app.push_sync(RawTransactions, {"user_id": "u2", "amount": 30.0})
 
+    features = app.get("u2")
     assert features.tx_count_1h == 2
     assert features.tx_sum_1h == 80.0
     assert features.avg_amount_1h == 40.0
@@ -174,15 +190,23 @@ def test_wire_conformance(app):
 # ---------------------------------------------------------------------------
 
 
-@st.stream(key="device_id")
+@source
+class RawDeviceEvents:
+    pass
+
+
+@dataset(depends_on=[RawDeviceEvents])
 class DeviceEvents:
-    event_count_1h = st.count(window="1h")
+    features = group_by("device_id").agg(
+        event_count_1h=tl.count(window="1h"),
+    )
 
 
 def test_register_multiple_streams(app):
-    """Register and push to a second stream on the same server."""
-    app.register(DeviceEvents)
-    features = app.push_sync(DeviceEvents, {"device_id": "d1"})
+    """Register and push to a second pipeline on the same server."""
+    app.register(RawDeviceEvents, DeviceEvents)
+    app.push_sync(RawDeviceEvents, {"device_id": "d1"})
+    features = app.get("d1")
     assert features.event_count_1h == 1
 
 
@@ -192,9 +216,10 @@ def test_register_multiple_streams(app):
 
 
 def test_push_returns_derive(app):
-    """Push response includes derive features computed by the server."""
+    """Push cascades through pipeline; derive features computed by the server."""
     # Push to a fresh key so we know exact state
-    features = app.push_sync(Transactions, {"user_id": "u_derive", "amount": 200.0})
+    app.push_sync(RawTransactions, {"user_id": "u_derive", "amount": 200.0})
+    features = app.get("u_derive")
     # rate = tx_count_1h / tx_sum_1h = 1 / 200 = 0.005
     assert features.tx_count_1h == 1
     assert features.tx_sum_1h == 200.0
@@ -222,23 +247,22 @@ def test_feature_result_dict_access(app):
 # Composable Pipeline Tests (Phase 7)
 # ===========================================================================
 
-import pytest
-
 
 def test_cascade_keyless_to_keyed(tally_server):
     """Push to keyless stream cascades to downstream keyed stream."""
     host, tcp_port, _ = tally_server
-    import tally as st
 
-    @st.stream()
+    @source
     class RawEvents_cascade1:
         pass
 
-    @st.stream(key="user_id", depends_on=[RawEvents_cascade1])
+    @dataset(depends_on=[RawEvents_cascade1])
     class UserTx_cascade1:
-        tx_count = st.count(window="1h")
+        features = group_by("user_id").agg(
+            tx_count=tl.count(window="1h"),
+        )
 
-    app = st.App(f"{host}:{tcp_port}")
+    app = tl.App(f"{host}:{tcp_port}")
     app.register(RawEvents_cascade1, UserTx_cascade1)
 
     # Push to keyless stream (use push_sync for the empty feature-map return)
@@ -255,44 +279,47 @@ def test_cascade_keyless_to_keyed(tally_server):
 def test_cascade_returns_error_on_cycle(tally_server):
     """Circular dependency is rejected at registration."""
     host, tcp_port, _ = tally_server
-    import tally as st
+    from tally._protocol import encode_register, OP_REGISTER
 
-    @st.stream(key="uid", depends_on=[])
-    class CycleA:
-        pass
+    # Build cycle manually via raw JSON registrations to bypass
+    # client-side DAG walk (which would recurse infinitely).
+    # The server should detect the cycle and reject it.
+    regs = [
+        {"name": "CycleA_src_v2", "key_field": None, "features": []},
+        {"name": "CycleA_v2", "key_field": "uid", "features": [], "depends_on": ["CycleB_v2"]},
+        {"name": "CycleB_v2", "key_field": "uid", "features": [], "depends_on": ["CycleA_v2"]},
+    ]
 
-    @st.stream(key="uid", depends_on=[CycleA])
-    class CycleB:
-        pass
-
-    # Manually set CycleA's depends_on to CycleB (creating cycle)
-    CycleA._tally_depends_on = [CycleB]
-
-    app = st.App(f"{host}:{tcp_port}")
-    # Registration should fail with cycle error
-    with pytest.raises(st.ProtocolError):
-        app.register(CycleA, CycleB)
+    app = tl.App(f"{host}:{tcp_port}")
+    # Registration should fail with cycle error on the last register
+    with pytest.raises(tl.ProtocolError):
+        for reg in regs:
+            payload = encode_register(reg)
+            app._send(OP_REGISTER, payload)
     app.close()
 
 
 def test_cascade_missing_key_skips_downstream(tally_server):
     """Push event missing downstream key_field skips that stream (LEFT JOIN)."""
     host, tcp_port, _ = tally_server
-    import tally as st
 
-    @st.stream()
+    @source
     class RawEvents_skip:
         pass
 
-    @st.stream(key="user_id", depends_on=[RawEvents_skip])
+    @dataset(depends_on=[RawEvents_skip])
     class UserTx_skip:
-        tx_count = st.count(window="1h")
+        features = group_by("user_id").agg(
+            tx_count=tl.count(window="1h"),
+        )
 
-    @st.stream(key="merchant_id", depends_on=[RawEvents_skip])
+    @dataset(depends_on=[RawEvents_skip])
     class MerchantTx_skip:
-        m_count = st.count(window="1h")
+        features = group_by("merchant_id").agg(
+            m_count=tl.count(window="1h"),
+        )
 
-    app = st.App(f"{host}:{tcp_port}")
+    app = tl.App(f"{host}:{tcp_port}")
     app.register(RawEvents_skip, UserTx_skip, MerchantTx_skip)
 
     # Push event with user_id but NO merchant_id
@@ -312,21 +339,21 @@ def test_cascade_missing_key_skips_downstream(tally_server):
 def test_cascade_with_filter(tally_server):
     """Stream-level filter controls which events cascade."""
     host, tcp_port, _ = tally_server
-    import tally as st
 
-    @st.stream()
+    @source
     class RawEvents_filter:
         pass
 
-    @st.stream(
-        key="user_id",
+    @dataset(
         depends_on=[RawEvents_filter],
         filter="_event.status == 'failed'"
     )
     class FailedTx_filter:
-        fail_count = st.count(window="1h")
+        features = group_by("user_id").agg(
+            fail_count=tl.count(window="1h"),
+        )
 
-    app = st.App(f"{host}:{tcp_port}")
+    app = tl.App(f"{host}:{tcp_port}")
     app.register(RawEvents_filter, FailedTx_filter)
 
     # Push success event -- should NOT count
@@ -343,21 +370,24 @@ def test_cascade_with_filter(tally_server):
 def test_cascade_multi_level(tally_server):
     """Multi-level cascade (3 deep) processes all levels."""
     host, tcp_port, _ = tally_server
-    import tally as st
 
-    @st.stream()
+    @source
     class Raw_multi:
         pass
 
-    @st.stream(key="user_id", depends_on=[Raw_multi])
+    @dataset(depends_on=[Raw_multi])
     class Level1_multi:
-        l1_count = st.count(window="1h")
+        features = group_by("user_id").agg(
+            l1_count=tl.count(window="1h"),
+        )
 
-    @st.stream(key="user_id", depends_on=[Level1_multi])
+    @dataset(depends_on=[Level1_multi])
     class Level2_multi:
-        l2_count = st.count(window="1h")
+        features = group_by("user_id").agg(
+            l2_count=tl.count(window="1h"),
+        )
 
-    app = st.App(f"{host}:{tcp_port}")
+    app = tl.App(f"{host}:{tcp_port}")
     app.register(Raw_multi, Level1_multi, Level2_multi)
 
     app.push(Raw_multi, {"user_id": "multi_u1"})

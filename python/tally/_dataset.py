@@ -120,6 +120,7 @@ class DatasetDef:
         event_schema: type | None = None,
         entity_ttl: str | None = None,
         history_ttl: str | None = None,
+        filter: str | None = None,
     ) -> None:
         self._name = name
         self._depends_on = depends_on
@@ -128,6 +129,7 @@ class DatasetDef:
         self._event_schema = event_schema
         self._entity_ttl = entity_ttl
         self._history_ttl = history_ttl
+        self._filter = filter
         self._projection: dict | None = None
 
     def select(self, feature_names: list[str]) -> DatasetDef:
@@ -140,6 +142,7 @@ class DatasetDef:
             event_schema=self._event_schema,
             entity_ttl=self._entity_ttl,
             history_ttl=self._history_ttl,
+            filter=self._filter,
         )
         new._projection = {"select": list(feature_names)}
         return new
@@ -154,6 +157,7 @@ class DatasetDef:
             event_schema=self._event_schema,
             entity_ttl=self._entity_ttl,
             history_ttl=self._history_ttl,
+            filter=self._filter,
         )
         new._projection = {"drop": list(feature_names)}
         return new
@@ -203,6 +207,9 @@ class DatasetDef:
         if self._history_ttl is not None:
             d["history_ttl"] = self._history_ttl
 
+        if self._filter is not None:
+            d["filter"] = self._filter
+
         if self._projection is not None:
             d["projection"] = self._projection
 
@@ -248,6 +255,7 @@ def dataset(
     depends_on: list,
     entity_ttl: str | None = None,
     history_ttl: str | None = None,
+    filter: str | None = None,
 ):
     """Decorator that creates a DatasetDef from a class.
 
@@ -295,6 +303,7 @@ def dataset(
             event_schema=event_schema,
             entity_ttl=entity_ttl,
             history_ttl=history_ttl,
+            filter=filter,
         )
 
     return decorator
