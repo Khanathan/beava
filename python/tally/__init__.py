@@ -18,14 +18,8 @@ from tally._operators import (
     ExactMin as exact_min,
     ExactMax as exact_max,
 )
-from tally._stream import stream
-from tally._view import view
 from tally._app import App
 from tally._protocol import OP_PUSH, OP_GET, OP_SET, OP_MSET, OP_MGET, OP_REGISTER
-
-# DataFrame-style API
-from tally._expr import Column, Expr, EventProxy
-from tally._dataframe import Stream as DataStream, Table, GroupBy, JoinedTable, Dataset
 
 # New API (v2.0)
 from tally._schema import EventSet, FeatureSet, Field
@@ -57,9 +51,6 @@ __all__ = [
     "first",
     "exact_min",
     "exact_max",
-    # Decorators (legacy API)
-    "stream",
-    "view",
     # App
     "App",
     # Protocol constants
@@ -69,15 +60,6 @@ __all__ = [
     "OP_MSET",
     "OP_MGET",
     "OP_REGISTER",
-    # DataFrame-style API
-    "Column",
-    "Expr",
-    "EventProxy",
-    "DataStream",
-    "Table",
-    "GroupBy",
-    "JoinedTable",
-    "Dataset",
     # New API (v2.0)
     "EventSet",
     "FeatureSet",
