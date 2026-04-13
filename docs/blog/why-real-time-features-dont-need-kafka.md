@@ -101,7 +101,7 @@ At 7.6 KB per entity, 10M entities fit in 76 GB. That's one instance.
 
 I want to be straightforward about limitations.
 
-**Not distributed.** Single process, all state in memory on one machine. If your state doesn't fit in RAM (max ~384-768 GB on current cloud instances), Tally is the wrong tool.
+**Single node today.** All state lives in memory on one machine. Modern cloud instances go up to 2-4 TB of RAM (x2idn.metal, u-series), which holds hundreds of millions of entities, and is still cheaper than a Flink cluster at the same scale. Failover via standby replicas is on the roadmap. Distributed sharding across nodes is a future option but not required for most workloads.
 
 **No connector ecosystem.** Flink has connectors for hundreds of sources and sinks. Tally has a TCP protocol and an HTTP API. You push events to it and read results. That's the interface.
 
