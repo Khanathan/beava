@@ -1,3 +1,4 @@
+# DEPRECATED: Replaced by test_source.py and test_dataset.py. Will be deleted in Plan 04.
 """Tests for the @stream decorator and StreamMeta metaclass.
 
 Verifies:
