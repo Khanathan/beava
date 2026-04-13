@@ -544,77 +544,9 @@ class TestExports:
         from tally._validate import ValidationError
         assert tl.ValidationError is ValidationError
 
-    def test_old_api_still_works(self):
+    def test_app_importable(self):
         import tally as tl
-        assert hasattr(tl, "stream")
-        assert hasattr(tl, "view")
         assert hasattr(tl, "App")
-
-
-class TestJsonCompat:
-    """Tests that new API JSON output matches old API format."""
-
-    def test_keyed_stream_json_matches(self):
-        """Old @st.stream(key=...) and new @tl.dataset produce same JSON shape."""
-        import tally as tl
-        from tally._stream import stream as st_stream
-        from tally._source import source
-        from tally._dataset import dataset, group_by
-        from tally._operators import Count, Sum
-
-        # Old API
-        @st_stream(key="user_id")
-        class OldTxns:
-            tx_count = Count(window="1h")
-            tx_sum = Sum("amount", window="1h")
-
-        old_json = OldTxns._to_register_json()
-
-        # New API
-        @source
-        class RawTxns:
-            pass
-
-        @dataset(depends_on=[RawTxns])
-        class NewTxns:
-            features = group_by("user_id").agg(
-                tx_count=Count(window="1h"),
-                tx_sum=Sum("amount", window="1h"),
-            )
-
-        new_json = NewTxns._to_register_json()
-
-        # Key field must match
-        assert old_json["key_field"] == new_json["key_field"] == "user_id"
-
-        # Features must match (same dicts, order may differ)
-        old_features = sorted(old_json["features"], key=lambda f: f["name"])
-        new_features = sorted(new_json["features"], key=lambda f: f["name"])
-        assert old_features == new_features
-
-    def test_keyless_source_json_matches(self):
-        """Old keyless @st.stream() and new @tl.source produce same JSON shape."""
-        from tally._stream import stream as st_stream
-        from tally._source import source
-
-        @st_stream()
-        class OldRaw:
-            pass
-
-        old_json = OldRaw._to_register_json()
-
-        @source
-        class NewRaw:
-            pass
-
-        new_json = NewRaw._to_register_json()
-
-        # Both keyless
-        assert old_json["key_field"] is None
-        assert new_json["key_field"] is None
-        # Both empty features
-        assert old_json["features"] == []
-        assert new_json["features"] == []
 
 
 class TestIntegration:
