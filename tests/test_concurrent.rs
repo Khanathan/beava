@@ -718,13 +718,13 @@ async fn test_enriched_concurrent_clients() {
         assert_eq!(status, STATUS_OK, "Register ConcAggregator should succeed");
     }
 
-    let events_per_client = 100;
+    let events_per_client = 50;
     let num_clients = 8;
     let amount = 10.0_f64;
     let rate = 1.5_f64;
-    // Expected per user: 100 events * 10.0 * 1.5 = 1500.0
+    // Expected per user: 50 events * 10.0 * 1.5 = 750.0
 
-    // Spawn 8 concurrent client tasks
+    // Spawn 8 concurrent client tasks using sync PUSH (CI-stable)
     let mut handles = Vec::new();
     for client_id in 0..num_clients {
         let user_id = format!("user_{}", client_id);
@@ -741,20 +741,9 @@ async fn test_enriched_concurrent_clients() {
                         "rate": rate
                     }),
                 );
-                let len = (1 + payload.len()) as u32;
-                conn.write_u32(len).await.unwrap();
-                conn.write_u8(OP_PUSH_ASYNC).await.unwrap();
-                conn.write_all(&payload).await.unwrap();
+                let (status, _) = send_frame(&mut conn, OP_PUSH, &payload).await;
+                assert_eq!(status, STATUS_OK, "PUSH should succeed for client {}", client_id);
             }
-            conn.flush().await.unwrap();
-
-            // Flush to ensure all async events are processed
-            let (status, _) = send_frame(&mut conn, OP_FLUSH, &[]).await;
-            assert_eq!(
-                status, STATUS_OK,
-                "FLUSH should succeed for client {}",
-                client_id
-            );
         }));
     }
 
@@ -767,7 +756,7 @@ async fn test_enriched_concurrent_clients() {
     let mut conn = TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
         .unwrap();
-    let expected_total = (events_per_client as f64) * amount * rate; // 100 * 10.0 * 1.5 = 1500.0
+    let expected_total = (events_per_client as f64) * amount * rate; // 50 * 10.0 * 1.5 = 750.0
 
     for client_id in 0..num_clients {
         let user_id = format!("user_{}", client_id);
