@@ -301,7 +301,7 @@ Plans:
 - [x] 19-02-PLAN.md — Create test_source.py and test_dataset.py (replace test_stream.py + test_view.py)
 - [x] 19-03-PLAN.md — Port test_dataframe.py behavioral tests, clean test_expr.py + test_new_api.py
 - [x] 19-04-PLAN.md — Verify test count >= 744, delete old API files + test files, clean __init__.py + _app.py
-- [ ] 19-05-PLAN.md — Migrate bench.py to new API, run full benchmark matrix
+- [x] 19-05-PLAN.md — Migrate bench.py to new API, run full benchmark matrix
 
 ## Progress
 
@@ -330,4 +330,4 @@ Phases execute in numeric order: 16 -> 17 -> 18 -> 19
 | 16. Python SDK -- New Types and Decorators | v2.0 | 2/2 | Complete    | 2026-04-12 |
 | 17. Enriched Event Propagation | v2.0 | 3/3 | Complete    | 2026-04-12 |
 | 18. Feature Projection and Ephemeral Schema | v2.0 | 2/2 | Complete    | 2026-04-12 |
-| 19. Test Migration and Old API Removal | v2.0 | 4/5 | In Progress|  |
+| 19. Test Migration and Old API Removal | v2.0 | 5/5 | Complete   | 2026-04-13 |

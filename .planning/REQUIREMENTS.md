@@ -95,7 +95,7 @@ Requirements for milestone v2.0: New API & Engine. **Active.**
 
 - [x] **MIG-01**: All existing tests (>= 744) are ported to the new `@tl.source`/`@tl.dataset` API before old API removal
 - [x] **MIG-02**: Old `@st.stream`, `@st.view`, and `_dataframe.py` public API are removed from the SDK
-- [ ] **MIG-03**: No performance regression — full benchmark matrix passes within -5% of 1.1M eps baseline after all changes
+- [x] **MIG-03**: No performance regression — full benchmark matrix passes within -5% of 1.1M eps baseline after all changes
 
 ## v2.1+ Requirements
 
@@ -191,7 +191,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ENG-03 | Phase 18 | Complete |
 | MIG-01 | Phase 19 | Complete |
 | MIG-02 | Phase 19 | Complete |
-| MIG-03 | Phase 19 | Pending |
+| MIG-03 | Phase 19 | Complete |
 
 **Coverage:**
 - v1.1 requirements: 28 total, all complete
