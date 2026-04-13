@@ -21,7 +21,7 @@ import time
 
 import pytest
 
-import tally as st
+import tally as tl
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -112,6 +112,6 @@ def tally_server():
 def app(tally_server):
     """Return a ``tally.App`` connected to the test server."""
     host, tcp_port, _http_port = tally_server
-    application = st.App(f"{host}:{tcp_port}")
+    application = tl.App(f"{host}:{tcp_port}")
     yield application
     application.close()

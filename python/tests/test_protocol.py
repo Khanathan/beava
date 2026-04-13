@@ -29,7 +29,6 @@ from tally._protocol import (
     TYPE_STR,
     encode_frame,
     encode_string,
-    encode_push,
     encode_push_binary,
     encode_get,
     encode_mget,
@@ -113,31 +112,6 @@ class TestEncodeString:
         s_bytes = s.encode("utf-8")
         result = encode_string(s)
         assert result == struct.pack(">H", len(s_bytes)) + s_bytes
-
-
-# ---------------------------------------------------------------------------
-# encode_push
-# ---------------------------------------------------------------------------
-
-
-class TestEncodePush:
-    def test_basic_push(self):
-        payload = encode_push("Transactions", {"user_id": "u123", "amount": 50.0})
-        # Starts with encode_string("Transactions") = \x00\x0cTransactions
-        assert payload[:14] == b"\x00\x0cTransactions"
-        # Remainder is JSON
-        json_part = payload[14:]
-        parsed = json.loads(json_part)
-        assert parsed["user_id"] == "u123"
-        assert parsed["amount"] == 50.0
-
-    def test_full_frame(self):
-        payload = encode_push("S", {"k": 1})
-        frame = encode_frame(OP_PUSH, payload)
-        # frame starts with 4-byte length
-        length = struct.unpack(">I", frame[:4])[0]
-        assert length == 1 + len(payload)
-        assert frame[4] == OP_PUSH
 
 
 # ---------------------------------------------------------------------------
