@@ -18,6 +18,6 @@ The core tradeoff: you give up horizontal scalability and distributed fault tole
 
 Numbers (47-feature fraud pipeline, 48-core Xeon): 430-510K eps, 7.6 KB/entity, sub-100us p99. Benchmark script in the repo, run it yourself.
 
-Not distributed. Not streaming SQL (use RisingWave or Materialize for that). Session windows and event-time semantics are on the roadmap but not in v0. It's for the smaller use case that doesn't need a platform team.
+Not distributed. SQL, session windows, and event-time semantics are on the roadmap but not in v0. It's for the smaller use case that doesn't need a platform team.
 
 Wrote up the technical reasoning here: [blog post](https://github.com/petrpan26/tally/blob/main/docs/blog/why-real-time-features-dont-need-kafka.md). Apache 2.0. Would appreciate feedback on the design.
