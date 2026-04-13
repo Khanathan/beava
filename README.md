@@ -16,7 +16,7 @@ in microseconds. One binary, completely in-memory, zero infrastructure.
 
 Everything lives in memory on a single node, so reads and writes are
 sub-microsecond with no network hops, no serialization tax, no distributed
-coordination overhead. Periodic snapshots to local disk for crash recovery.
+coordination overhead. Durable via append-only event log (WAL) + periodic snapshots.
 
 - [What is Tally?](#what-is-tally)
 - [Quick Start](#quick-start)
@@ -53,7 +53,7 @@ gaming leaderboards, AI agent context, IoT anomaly detection.
 - **Sliding windows** -- configurable granularity (30m, 1h, 24h, 7d). Bucketed ring buffers for bounded memory.
 - **Expression engine** -- derive expressions, where-clause filters, cross-stream references. 21 builtins.
 - **Binary TCP protocol** -- persistent connections, length-prefixed frames, minimal overhead. Any language can implement a client.
-- **Periodic snapshots** -- state serialized to local disk for crash recovery. Lose at most ~30s of state on restart.
+- **Durable** -- append-only event log (WAL) + periodic snapshots. On crash, state recovers from snapshot + WAL replay. At most ~1s of data loss in the worst case.
 
 ## Quick Start
 

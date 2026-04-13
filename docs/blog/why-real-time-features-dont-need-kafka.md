@@ -24,10 +24,10 @@ If you accept that constraint, a lot of complexity disappears:
 
 - No distributed coordination. No consensus protocols. No split-brain recovery.
 - No serialization to disk on the hot path. State is a HashMap. Reads are ~0.1 us.
-- No checkpoint orchestration. Periodic snapshots to disk, like Redis.
+- No checkpoint orchestration. Periodic snapshots + append-only event log for durability.
 - No separate serving layer. Reads come from the same in-memory state that writes update.
 
-The tradeoff is real: you're bounded by the RAM on one machine, and if the process crashes you lose up to ~30 seconds of state (recovered from the last snapshot). For most startup use cases, that's fine. For a bank processing wire transfers, it's not. Know your requirements.
+The tradeoff is real: you're bounded by the RAM on one machine. But durability is solid. Every event is written to an append-only log (fsync'd every ~1 second). On crash, state recovers from the last snapshot + WAL replay. You lose at most ~1 second of events in the worst case. That's comparable to Redis with AOF.
 
 ## What I built
 
