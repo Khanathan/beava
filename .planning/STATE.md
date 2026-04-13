@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: New API & Engine
-status: verifying
-stopped_at: Completed 18-02-PLAN.md
-last_updated: "2026-04-12T23:44:46.271Z"
-last_activity: 2026-04-12
+status: executing
+stopped_at: Completed 19-01-PLAN.md
+last_updated: "2026-04-13T00:12:11.863Z"
+last_activity: 2026-04-13
 progress:
   total_phases: 16
   completed_phases: 3
-  total_plans: 7
-  completed_plans: 7
-  percent: 100
+  total_plans: 12
+  completed_plans: 8
+  percent: 67
 ---
 
 # Project State
@@ -21,15 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** Events go in, features come out -- synchronously, in one request-response cycle, with sub-millisecond latency and zero external dependencies.
-**Current focus:** Phase 18 — Feature Projection and Ephemeral Schema
+**Current focus:** Phase 19 — Test Migration and Old API Removal
 
 ## Current Position
 
 Milestone: v2.0 New API & Engine
-Phase: 18 (Feature Projection and Ephemeral Schema) — EXECUTING
-Plan: 2 of 2
-Status: Phase complete — ready for verification
-Last activity: 2026-04-12
+Phase: 19 (Test Migration and Old API Removal) — EXECUTING
+Plan: 2 of 5
+Status: Ready to execute
+Last activity: 2026-04-13
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -37,7 +37,7 @@ Progress: [░░░░░░░░░░] 0%
 
 **Velocity:**
 
-- Total plans completed: 42 (v1.0) + 23 (v1.1) + 6 (v1.2) + 8 (v1.3/v1.4)
+- Total plans completed: 44 (v1.0) + 23 (v1.1) + 6 (v1.2) + 8 (v1.3/v1.4)
 - Total phases completed: 15 integers + 2 decimals through v1.3
 
 ## Accumulated Context
@@ -65,6 +65,8 @@ All v1.0-v1.3 decisions archived in PROJECT.md Key Decisions table.
 - [Phase 18]: Projection applied after derives but before views -- derives can reference any feature regardless of projection
 - [Phase 18]: Ephemeral fields are schema-only -- stored on StreamDefinition but no runtime enforcement yet
 - [Phase 18]: select()/drop() immutable builder pattern on DatasetDef; function-scoped server for projection E2E isolation
+- [Phase 19]: Push to keyless @source returns empty features; tests verify downstream via GET
+- [Phase 19]: Added filter parameter to @dataset decorator (was missing, blocking test migration)
 
 ### Critical Pitfalls (from research)
 
@@ -84,6 +86,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-12T23:44:46.268Z
-Stopped at: Completed 18-02-PLAN.md
+Last session: 2026-04-13T00:12:11.861Z
+Stopped at: Completed 19-01-PLAN.md
 Resume: `/gsd-plan-phase 16`
