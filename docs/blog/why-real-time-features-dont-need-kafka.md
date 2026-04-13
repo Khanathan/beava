@@ -1,43 +1,43 @@
 # Building a Real-Time Compute Engine for the Rest of Us
 
-At three different companies (Faire, Viggle, Fennel), I kept building the same thing: a pipeline that takes payment events, computes windowed aggregations per user and merchant, and serves them to a fraud model. Counts, sums, averages, distinct counts over sliding windows. The logic was always simple. The infrastructure never was.
+When I was at Viggle, we needed real-time aggregations for our recommendation system. Standard stuff: count user actions in the last hour, track unique items per session, compute moving averages. The logic took a day to write. Setting up Kafka took three weeks.
 
-The standard approach is Kafka for ingestion, Flink for computation, Redis for serving. It works. It's also 10-20 nodes, 5-8 systems, and someone on the team spends half their time keeping it running. For what's fundamentally a HashMap with some math on top.
+Not because Kafka is bad. Kafka is a great system. But we had to provision brokers, configure topics and partitions, set up schema registry, write Flink jobs, tune checkpointing, set up a Redis serving layer, and build monitoring for all of it. We were a small team. We didn't have a platform engineer. Every hour spent on infrastructure was an hour not spent on product.
 
-I kept thinking: for a team that needs 50-100 features over a few million entities at under 500K events per second, there should be a simpler way. So I built one.
+And Kafka is hard to master. The tuning takes years of experience to get right. Stateful management in Flink is genuinely difficult. When something goes wrong at 3 AM, you need someone who deeply understands consumer groups, rebalancing, checkpoint intervals, and RocksDB compaction. At a 20-person startup, that person is usually you, and you'd rather be building features.
 
-## The tradeoff I chose
+I saw the same pattern at Faire and Fennel. Teams that needed maybe 50-100 real-time aggregations over a few million entities. The computation was simple. The infrastructure to support it was not.
 
-The core observation is that most real-time compute workloads fit in memory on a single machine. 10 million entities at 8 KB each is 80 GB. That's one cloud instance.
+## The question I kept asking
 
-If you accept that constraint -- single node, all state in RAM -- a lot of complexity goes away:
+Most of the platforms in this space are built on a premise: you already have Kafka, you already have a streaming infrastructure team, and you need a tool that plugs into that ecosystem. For a lot of companies, especially larger ones, that's true.
 
-- No distributed coordination, no consensus protocols, no split-brain recovery
-- No serialization to disk on the hot path (state lives in a HashMap, access is ~0.1 us)
-- No checkpoint orchestration across nodes
-- No separate serving layer (reads come from the same in-memory state)
+But for a 10-50 person startup? You don't have Kafka. You don't have a streaming team. You just need some numbers to update when events come in. The data durability guarantees that Kafka provides are less of a concern than the operational burden of running it. You'd trade some durability for something you can spin up in 5 minutes and never think about again.
 
-The tradeoff is real. You give up horizontal scalability, distributed fault tolerance, and multi-TB state. If you need those things, Flink is the right answer. It's a well-engineered system and I have a lot of respect for it.
+So the question was: what if you just kept everything in memory on one machine? How far does that get you?
 
-But in my experience, most teams doing fraud detection, ML feature serving, or real-time personalization don't actually need those things. They need their aggregations to be correct, fast, and easy to change.
+## Pretty far, it turns out
 
-## Why Rust
+10 million entities at 8 KB each is 80 GB. That's one cloud instance. Modern instances go up to 2-4 TB of RAM. For most fraud detection, ML feature serving, or real-time personalization workloads, the state fits comfortably on a single node.
 
-I built this in Rust because of one specific property: deterministic memory management.
+If you accept that constraint, a lot of complexity disappears:
 
-The JVM uses garbage collection. For most applications that's fine. But streaming operators are stateful -- windowed counts, running sums, HyperLogLog sketches all live in memory for the duration of their window. They're not garbage. The GC has to scan them but can never reclaim them. With the G1 collector, this creates pressure at larger heap sizes (32-64 GB of live state). ZGC helps with pause times but doesn't eliminate the fundamental tension.
+- No distributed coordination. No consensus protocols. No split-brain recovery.
+- No serialization to disk on the hot path. State is a HashMap. Reads are ~0.1 us.
+- No checkpoint orchestration. Periodic snapshots to disk, like Redis.
+- No separate serving layer. Reads come from the same in-memory state that writes update.
 
-This is why Flink uses RocksDB for state -- it moves the problem off-heap. It's a good solution, but it introduces serialization costs on every state access (1-15 us depending on cache hits vs disk), plus tuning complexity for block cache, compaction, bloom filters, and checkpoint intervals.
-
-Rust has no GC. A `HashMap` with 50 GB of state has no GC-induced latency variance compared to one with 500 MB. You still pay for CPU cache and NUMA effects, but access time is deterministic and predictable. State lives in a HashMap. A lookup costs ~0.1 us. No serialization, no LSM tree, no compaction.
-
-This isn't a criticism of the JVM. It's an observation that for this specific problem shape -- millions of keyed entities with bounded-memory operators -- native memory management lets you skip a layer of infrastructure.
+The tradeoff is real: you're bounded by the RAM on one machine, and if the process crashes you lose up to ~30 seconds of state (recovered from the last snapshot). For most startup use cases, that's fine. For a bank processing wire transfers, it's not. Know your requirements.
 
 ## What I built
 
-[Tally](https://github.com/petrpan26/tally) is a single Rust binary. You define pipelines, push events over a binary TCP protocol, and read results from in-memory state. Every write is synchronous and atomic -- all operators across all pipeline stages update in one pass. Reads serve the latest state in microseconds.
+[Tally](https://github.com/petrpan26/tally) is a single Rust binary. Define pipelines, push events over TCP, read results from memory. That's it.
 
-Here's a fraud detection pipeline with 47 features across 5 entity types:
+I chose Rust for deterministic memory management. No garbage collector means no GC pauses at any state size, no off-heap workarounds, and no serialization overhead on reads. State lives in a HashMap. Scaling up means getting a bigger instance and restarting. There's nothing to tune.
+
+Every write is synchronous and atomic. All operators across all pipeline stages update in one pass. Reads serve the latest state in microseconds. The consistency model is simple: read-after-write always reflects the latest state.
+
+Here's what a fraud detection pipeline looks like:
 
 ```python
 import tally as tl
@@ -75,11 +75,11 @@ class MerchantActivity:
     )
 ```
 
-(Showing a subset. The full 47-feature pipeline is in the benchmark: [`bench_fraud.py`](https://github.com/petrpan26/tally/blob/main/benchmark/fraud-pipeline/bench_fraud.py))
+That's a subset. The full benchmark pipeline has 47 features across 5 entity types: [`bench_fraud.py`](https://github.com/petrpan26/tally/blob/main/benchmark/fraud-pipeline/bench_fraud.py).
 
-Register the pipeline, push events, read results. One event can fan out to multiple entity types (a transaction updates both user and merchant state). Pipeline stages cascade through a DAG in topological order, all within one write.
+Push events, read results. One event fans out to multiple entity types (a transaction updates both user and merchant state). Pipeline stages cascade through a DAG in topological order. 16 operators: counts, sums, averages, percentiles, HLL distinct counts, exponential moving averages, and more.
 
-The first SDK is Python, but Python never touches the hot path -- pipeline definitions are serialized to JSON at registration time, all computation happens in Rust. The binary TCP protocol is documented and open, so clients in Go, Java, or any language can be built against the spec.
+The first SDK is Python, but Python never touches the hot path. Pipeline definitions are serialized at registration time. All computation happens in Rust. The binary TCP protocol is documented and open, so clients in any language can be built against the spec.
 
 ## Numbers
 
@@ -93,23 +93,25 @@ Measured on a 48-core Xeon with the full 47-feature pipeline. Zipfian distributi
 | Memory per entity | 7.6 KB (15 features incl. HLL++) |
 | p99 latency | < 100 us |
 
-These are benchmark numbers, not production numbers at scale. Take them as indicative. The benchmark script is in the repo -- run it on your hardware.
+These are benchmark numbers, not production numbers at scale. The benchmark script is in the repo. Run it on your hardware.
 
-At 7.6 KB per entity, 10M entities fit in 76 GB. That's one instance.
+At 7.6 KB per entity, 10M entities fit in 76 GB. 100M entities fit in 760 GB. One machine.
 
-## What Tally is not
+## What's in v0 and what's next
 
-I want to be straightforward about limitations.
+**v0 ships with:** 16 operators, sliding windows, pipeline DAGs, a Python SDK, binary TCP protocol, periodic snapshots, append-only event log.
 
-**Single node today.** All state lives in memory on one machine. Modern cloud instances go up to 2-4 TB of RAM (x2idn.metal, u-series), which holds hundreds of millions of entities, and is still cheaper than a Flink cluster at the same scale. Failover with standby replicas is available in the managed service and will be open-sourced soon. Distributed sharding across nodes is a future option but not required for most workloads.
+**On the roadmap:** SQL access layer, session windows, event-time watermarks, connectors, additional SDK languages. Nothing in the architecture prevents these. They're just not built yet.
 
-**No connector ecosystem.** Flink has connectors for hundreds of sources and sinks. Tally has a TCP protocol and an HTTP API. You push events to it and read results. That's the interface.
+**Single node today.** Failover with standby replicas is available in the managed service and will be open-sourced soon. Distributed sharding is a future option, but with instances going up to 2-4 TB of RAM, most workloads won't need it.
 
-**Not yet in v0:** SQL access layer, session windows, event-time watermarks, and temporal pattern matching are on the roadmap. Nothing in the architecture prevents them. v0 ships with a Python SDK, sliding windows, and processing-time semantics.
+## Who this is for
 
-Kafka and Flink are well-built systems for real problems. If you're processing millions of events per second across hundreds of terabytes of state with exactly-once guarantees, use them.
+Tally is for teams that want real-time compute without the infrastructure commitment. If you can spin up a Docker container and write a few lines of Python, you can have real-time aggregations running in 5 minutes.
 
-Tally is for teams that need real-time compute but don't need the distributed infrastructure. In my experience, that's most of them.
+It's not for everyone. If you need distributed exactly-once processing, multi-TB state across many nodes, or the Kafka connector ecosystem, use Flink. It's a good system and it solves real problems.
+
+But if you've been putting off real-time features because the infrastructure felt too heavy, this might be worth 5 minutes of your time.
 
 ## Try it
 
