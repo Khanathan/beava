@@ -69,6 +69,7 @@ Shipped v1.0 through v1.3. Branch `v1.3-concurrency` carries all work.
 - ✓ Local DAG validation: cycle detection, missing dep checks, type mismatch detection — v2.0
 - ✓ Enriched event propagation: upstream derives/aggregations visible to downstream via side-channel accumulator — v2.0
 - ✓ Feature projection: select()/drop() response filtering, ephemeral pipeline fields on RegisterRequest with #[serde(default)] — v2.0
+- ✓ Test migration: all tests ported to new @tl.source/@tl.dataset API (1101 tests), old @st.stream/@st.view API deleted — v2.0
 
 ### Active
 
