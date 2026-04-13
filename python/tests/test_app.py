@@ -23,7 +23,8 @@ from tally._protocol import (
 )
 from tally._types import FeatureResult, ProtocolError
 
-import tally as st
+import tally as tl
+from tally import source, dataset, group_by
 
 
 # ---------------------------------------------------------------------------
@@ -93,20 +94,28 @@ def _start_mock_server(handler, *, accept_count: int = 1) -> tuple[int, threadin
 
 
 # ---------------------------------------------------------------------------
-# Sample stream/view classes for testing
+# Sample pipeline definitions for testing (new API)
 # ---------------------------------------------------------------------------
 
 
-@st.stream(key="user_id")
+@source
+class RawTransactions:
+    pass
+
+
+@dataset(depends_on=[RawTransactions])
 class Transactions:
-    tx_count_1h = st.count(window="1h")
-    tx_sum_1h = st.sum("amount", window="1h")
-    rate = st.derive("tx_sum_1h / tx_count_1h")
+    features = group_by("user_id").agg(
+        tx_count_1h=tl.count(window="1h"),
+        tx_sum_1h=tl.sum("amount", window="1h"),
+    )
+    rate = tl.derive("tx_sum_1h / tx_count_1h")
 
 
-@st.view(key="user_id")
+@dataset(depends_on=[Transactions])
 class UserRisk:
-    score = st.derive("Transactions.tx_count_1h > 10")
+    features = group_by("user_id").agg()
+    score = tl.derive("Transactions.tx_count_1h > 10")
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +147,7 @@ class TestAddressParsing:
 
 class TestRegister:
     def test_register_sends_register_frame(self):
+        """Registering a source sends one REGISTER frame with the source definition."""
         received = {}
 
         def handler(conn):
@@ -148,32 +158,68 @@ class TestRegister:
 
         port, done = _start_mock_server(handler)
         with App(f"127.0.0.1:{port}") as app:
-            app.register(Transactions)
+            app.register(RawTransactions)
 
         done.wait(timeout=2.0)
         assert received["opcode"] == OP_REGISTER
         reg_json = json.loads(received["payload"])
-        assert reg_json["name"] == "Transactions"
-        assert reg_json["key_field"] == "user_id"
-        assert len(reg_json["features"]) == 3
+        assert reg_json["name"] == "RawTransactions"
+        assert reg_json["key_field"] is None
+        assert len(reg_json["features"]) == 0
+
+    def test_register_dataset_sends_all_deps(self):
+        """Registering a dataset with depends_on sends source + dataset frames."""
+        frames = []
+
+        def handler(conn):
+            # Transactions._collect_registrations() yields 2 regs:
+            # RawTransactions (source) then Transactions (dataset)
+            for _ in range(2):
+                opcode, payload = _recv_frame(conn)
+                frames.append((opcode, payload))
+                conn.sendall(_make_response_frame(STATUS_OK, b""))
+
+        port, done = _start_mock_server(handler)
+        with App(f"127.0.0.1:{port}") as app:
+            app.register(Transactions)
+
+        done.wait(timeout=2.0)
+        assert len(frames) == 2
+        # First: source
+        reg0 = json.loads(frames[0][1])
+        assert reg0["name"] == "RawTransactions"
+        # Second: dataset
+        reg1 = json.loads(frames[1][1])
+        assert reg1["name"] == "Transactions"
+        assert reg1["key_field"] == "user_id"
+        assert len(reg1["features"]) == 3
 
     def test_register_multiple_classes(self):
+        """Registering source + dataset + view sends correct number of frames."""
         call_count = 0
 
         def handler(conn):
             nonlocal call_count
-            # Handle two REGISTER commands on the same connection.
-            for _ in range(2):
+            # RawTransactions (source): 1 frame
+            # Transactions (dataset with dep on RawTransactions): 2 frames (deduped source + dataset)
+            # UserRisk (dataset with dep on Transactions): 3 frames (deduped source + Transactions + UserRisk)
+            # But register() iterates over each arg, and _collect_registrations dedupes...
+            # Actually: register(RawTransactions, Transactions, UserRisk)
+            # - RawTransactions._collect_registrations() -> [RawTransactions]
+            # - Transactions._collect_registrations() -> [RawTransactions, Transactions]
+            # - UserRisk._collect_registrations() -> [Transactions (walks to RawTransactions, Transactions), UserRisk]
+            # Total frames sent: 1 + 2 + 3 = 6
+            for _ in range(6):
                 _recv_frame(conn)
                 conn.sendall(_make_response_frame(STATUS_OK, b""))
                 call_count += 1
 
         port, done = _start_mock_server(handler)
         with App(f"127.0.0.1:{port}") as app:
-            app.register(Transactions, UserRisk)
+            app.register(RawTransactions, Transactions, UserRisk)
 
         done.wait(timeout=2.0)
-        assert call_count == 2
+        assert call_count == 6
 
     def test_register_error_raises_protocol_error(self):
         error_msg = "unknown feature type"
@@ -187,7 +233,7 @@ class TestRegister:
         port, done = _start_mock_server(handler)
         with App(f"127.0.0.1:{port}") as app:
             with pytest.raises(ProtocolError, match=error_msg):
-                app.register(Transactions)
+                app.register(RawTransactions)
 
         done.wait(timeout=2.0)
 
@@ -202,12 +248,12 @@ class TestPush:
         """Phase 11: fire-and-forget push() returns None."""
         def handler(conn):
             opcode, _ = _recv_frame(conn)
-            # No response written — push() does not read
+            # No response written -- push() does not read
             assert opcode == 0x07  # OP_PUSH_ASYNC
 
         port, done = _start_mock_server(handler)
         with App(f"127.0.0.1:{port}") as app:
-            result = app.push(Transactions, {"user_id": "u1", "amount": 50.0})
+            result = app.push(RawTransactions, {"user_id": "u1", "amount": 50.0})
         done.wait(timeout=2.0)
         assert result is None
 
@@ -226,7 +272,7 @@ class TestPush:
 
         port, done = _start_mock_server(handler)
         with App(f"127.0.0.1:{port}") as app:
-            result = app.push_sync(Transactions, {"user_id": "u1", "amount": 50.0})
+            result = app.push_sync(RawTransactions, {"user_id": "u1", "amount": 50.0})
 
         done.wait(timeout=2.0)
         assert received["opcode"] == OP_PUSH
@@ -248,14 +294,14 @@ class TestPush:
 
         port, done = _start_mock_server(handler)
         with App(f"127.0.0.1:{port}") as app:
-            app.push_sync(Transactions, {"user_id": "u1"})
+            app.push_sync(RawTransactions, {"user_id": "u1"})
 
         done.wait(timeout=2.0)
         # PUSH payload starts with [u16 stream_name_len][stream_name bytes]
         payload = received["payload"]
         name_len = struct.unpack(">H", payload[:2])[0]
         stream_name = payload[2 : 2 + name_len].decode("utf-8")
-        assert stream_name == "Transactions"
+        assert stream_name == "RawTransactions"
 
     def test_flush_sends_op_flush_and_waits_for_ack(self):
         """Phase 11: flush() sends OP_FLUSH and blocks until STATUS_OK."""
@@ -295,7 +341,7 @@ class TestPush:
         app = App(f"127.0.0.1:{port}")
         try:
             # Fire-and-forget push triggers the handler which queues the error
-            app.push(Transactions, {"user_id": "u1"})
+            app.push(RawTransactions, {"user_id": "u1"})
             # Wait briefly for the server's error frame to arrive
             import time as _t
             _t.sleep(0.1)
@@ -501,14 +547,14 @@ class TestMget:
 
 class TestInitExports:
     def test_app_exported_from_tally(self):
-        assert hasattr(st, "App")
-        assert st.App is App
+        assert hasattr(tl, "App")
+        assert tl.App is App
 
     def test_all_public_api_available(self):
         expected = [
             "FeatureResult", "TallyError", "ConnectionError", "ProtocolError",
             "count", "sum", "avg", "min", "max", "distinct_count", "last",
-            "derive", "lookup", "stream", "view", "App",
+            "derive", "lookup", "source", "dataset", "group_by", "App",
         ]
         for name in expected:
-            assert hasattr(st, name), f"tally.{name} not found"
+            assert hasattr(tl, name), f"tally.{name} not found"
