@@ -1,0 +1,106 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, test, release build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          restore-keys: |
+            rust-${{ runner.os }}-
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Lint with clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        id: rust_tests
+        run: |
+          cargo test 2>&1 | tee /tmp/rust-test-output.txt
+          echo "output<<EOF" >> "$GITHUB_OUTPUT"
+          tail -5 /tmp/rust-test-output.txt >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release build
+        run: cargo build --release
+
+      - name: Add Rust summary
+        if: always()
+        run: |
+          echo "## Rust Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -5 /tmp/rust-test-output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No test output captured" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  python:
+    name: Python SDK tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          restore-keys: |
+            rust-${{ runner.os }}-
+
+      - name: Build Tally binary (needed by integration tests)
+        run: cargo build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          pip install pytest
+          pip install -e python/
+
+      - name: Run Python tests (verbose)
+        id: python_tests
+        run: |
+          cd python && python -m pytest tests/ -v 2>&1 | tee /tmp/python-test-output.txt
+
+      - name: Add Python summary
+        if: always()
+        run: |
+          echo "## Python Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # Extract the summary line (last few lines of pytest output)
+          tail -10 /tmp/python-test-output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "No test output captured" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

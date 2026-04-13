@@ -23,8 +23,21 @@ enum SnapshotData {
     Delta(DeltaSnapshotState),
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
-async fn main() {
+fn main() {
+    let worker_threads: usize = std::env::var("TALLY_WORKER_THREADS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4);
+
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.worker_threads(worker_threads);
+    builder.enable_all();
+    let runtime = builder.build().expect("failed to build tokio runtime");
+    eprintln!("Worker threads: {}", worker_threads);
+    runtime.block_on(async_main());
+}
+
+async fn async_main() {
     let tcp_port = std::env::var("TALLY_TCP_PORT").unwrap_or_else(|_| "6400".into());
     let http_port = std::env::var("TALLY_HTTP_PORT").unwrap_or_else(|_| "6401".into());
     let snapshot_path = PathBuf::from(

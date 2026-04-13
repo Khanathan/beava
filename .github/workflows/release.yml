@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build release binary and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-release-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          restore-keys: |
+            rust-release-${{ runner.os }}-
+
+      - name: Run tests before release
+        run: cargo test
+        env:
+          RUSTFLAGS: "-D warnings"
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Prepare release artifact
+        run: |
+          mkdir -p release
+          cp target/release/tally release/tally-linux-x86_64
+          chmod +x release/tally-linux-x86_64
+          sha256sum release/tally-linux-x86_64 > release/tally-linux-x86_64.sha256
+
+      - name: Extract changelog from tag
+        id: changelog
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          echo "tag=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+          # Try to get the annotated tag message; fall back to commit log
+          TAG_MSG=$(git tag -l --format='%(contents)' "$TAG_NAME" 2>/dev/null || true)
+          if [ -z "$TAG_MSG" ] || [ "$TAG_MSG" = "" ]; then
+            # Fall back to commits since previous tag
+            PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+            if [ -n "$PREV_TAG" ]; then
+              TAG_MSG=$(git log --pretty=format:"- %s" "$PREV_TAG".."$TAG_NAME" 2>/dev/null || echo "Release $TAG_NAME")
+            else
+              TAG_MSG="Release $TAG_NAME"
+            fi
+          fi
+
+          # Write to file to avoid multiline output issues
+          echo "$TAG_MSG" > /tmp/changelog.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.changelog.outputs.tag }}
+          name: Tally ${{ steps.changelog.outputs.tag }}
+          body_path: /tmp/changelog.txt
+          files: |
+            release/tally-linux-x86_64
+            release/tally-linux-x86_64.sha256
+          draft: false
+          prerelease: ${{ contains(steps.changelog.outputs.tag, '-rc') || contains(steps.changelog.outputs.tag, '-beta') || contains(steps.changelog.outputs.tag, '-alpha') }}
