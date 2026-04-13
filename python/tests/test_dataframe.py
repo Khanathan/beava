@@ -1,3 +1,4 @@
+# DEPRECATED: Behavioral tests ported to test_dataset_behaviors.py. Will be deleted in Plan 04.
 """Tests for the DataFrame-style API (Stream, Table, GroupBy, JoinedTable).
 
 Verifies:
