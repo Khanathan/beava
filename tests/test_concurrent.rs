@@ -742,7 +742,11 @@ async fn test_enriched_concurrent_clients() {
                     }),
                 );
                 let (status, _) = send_frame(&mut conn, OP_PUSH, &payload).await;
-                assert_eq!(status, STATUS_OK, "PUSH should succeed for client {}", client_id);
+                assert_eq!(
+                    status, STATUS_OK,
+                    "PUSH should succeed for client {}",
+                    client_id
+                );
             }
         }));
     }
