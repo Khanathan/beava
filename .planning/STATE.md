@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: New API & Engine
 status: executing
-stopped_at: Completed 19-02-PLAN.md
-last_updated: "2026-04-13T00:17:53.850Z"
+stopped_at: Completed 19-03-PLAN.md
+last_updated: "2026-04-13T00:23:44.318Z"
 last_activity: 2026-04-13
 progress:
   total_phases: 16
   completed_phases: 14
   total_plans: 48
-  completed_plans: 46
-  percent: 96
+  completed_plans: 47
+  percent: 98
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-12)
 
 Milestone: v2.0 New API & Engine
 Phase: 19 (Test Migration and Old API Removal) — EXECUTING
-Plan: 3 of 5
+Plan: 4 of 5
 Status: Ready to execute
 Last activity: 2026-04-13
 
@@ -68,6 +68,7 @@ All v1.0-v1.3 decisions archived in PROJECT.md Key Decisions table.
 - [Phase 19]: Push to keyless @source returns empty features; tests verify downstream via GET
 - [Phase 19]: Added filter parameter to @dataset decorator (was missing, blocking test migration)
 - [Phase 19]: 57 new tests (15 source + 42 dataset) replace test_stream.py + test_view.py with expanded v2.0 API coverage
+- [Phase 19]: 28 behavioral tests ported from test_dataframe.py; test_expr.py/test_new_api.py cleaned of old API refs
 
 ### Critical Pitfalls (from research)
 
@@ -87,6 +88,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-13T00:17:53.847Z
-Stopped at: Completed 19-02-PLAN.md
+Last session: 2026-04-13T00:23:44.315Z
+Stopped at: Completed 19-03-PLAN.md
 Resume: `/gsd-plan-phase 16`
