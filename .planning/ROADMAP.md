@@ -49,7 +49,12 @@ Open questions (from design doc §Open design questions): engine crate split dep
 ### Phase 27: Server-side replica endpoints (scope-aware)
 **Goal**: Land `OP_SNAPSHOT_FETCH{scope}`, `OP_LOG_FETCH{from, scope}`, and full `OP_SUBSCRIBE{scope}` on the server side. Per-connection subscription cursor + scope; admin-token auth; scope-filter hot path uses per-stream log files (Phase 6) for cheap stream filtering.
 **Depends on**: Phase 25 (reserved SUBSCRIBE opcode), Phase 6 (per-stream log files)
-**Plans**: 0/? — not planned yet
+**Plans:** 3 plans
+
+Plans:
+- [ ] 27-01-PLAN.md — OP_SNAPSHOT_FETCH (0x12) + Scope struct + wire codec + scope validator + streaming filter-iterator on SnapshotReader
+- [ ] 27-02-PLAN.md — OP_LOG_FETCH (0x13) + per-stream log filter-iterator + Python asyncio end-to-end clone-then-catchup test
+- [ ] 27-03-PLAN.md — OP_SUBSCRIBE (0x11) + SubscriberRegistry (DashMap) + ingest-path notify hook + 10k backpressure drop + metrics + signals
 
 ### Phase 28: Client engine embedding
 **Goal**: Extract `tally-core` crate (or feature-flag the engine crate); client-side `StateStore` + `PipelineEngine::apply_event` with no listeners; stub `tally` CLI with `clone`/`sync` subcommands.
