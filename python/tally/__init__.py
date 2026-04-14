@@ -30,6 +30,9 @@ from tally._protocol import (
     OP_MSET,
     OP_MGET,
     OP_REGISTER,
+    OP_GET_MULTI,
+    OP_SCAN_RESERVED,
+    OP_SUBSCRIBE_RESERVED,
 )
 
 # v0 public surface
@@ -80,6 +83,9 @@ __all__ = [
     "OP_MSET",
     "OP_MGET",
     "OP_REGISTER",
+    "OP_GET_MULTI",
+    "OP_SCAN_RESERVED",
+    "OP_SUBSCRIBE_RESERVED",
     # v0 declarative API
     "stream",
     "table",
