@@ -561,6 +561,41 @@ BASELINE_PATH = os.path.join(
 )
 
 
+def _probe_warnings_endpoint(host):
+    """Plan 25-03: probe GET /debug/warnings once per matrix run and record
+    its response latency. Non-gated characterisation; the matrix regression
+    gate is against BASELINE.json throughput cells only.
+
+    `host` is `hostname:tcp_port` (default 6400). The HTTP admin port is
+    assumed to be `tcp_port + 1` per main.rs (default 6401).
+    """
+    try:
+        import socket as _sock
+        import urllib.request as _urlreq
+        hostname, tcp_port = host.split(':')
+        http_port = int(tcp_port) + 1
+        url = f'http://{hostname}:{http_port}/debug/warnings'
+        # Two runs: first warms any page-cache / route-table state, second
+        # is what we record. Matches the matrix cell pattern.
+        latencies_us = []
+        for _ in range(3):
+            t0 = time.perf_counter_ns()
+            try:
+                with _urlreq.urlopen(url, timeout=2.0) as r:
+                    _ = r.read()
+            except Exception:
+                return {'error': 'endpoint unreachable', 'url': url}
+            latencies_us.append((time.perf_counter_ns() - t0) / 1000.0)
+        return {
+            'url': url,
+            'samples_us': [round(x, 2) for x in latencies_us],
+            'median_us': round(sorted(latencies_us)[len(latencies_us) // 2], 2),
+            'note': 'observational — not part of the regression gate',
+        }
+    except Exception as e:
+        return {'error': repr(e)}
+
+
 def run_matrix(events_per_run, runs_per_cell, out_path, label, host):
     # 9 regression cells + 2 Phase-23 characterization cells + 4 Phase-24
     # characterization cells (all @ 1c).
@@ -677,6 +712,10 @@ def run_matrix(events_per_run, runs_per_cell, out_path, label, host):
                     results[key]['eps_median'] / base_small_1c * 100.0, 2
                 )
 
+    # Plan 25-03: observational probe of /debug/warnings latency.
+    # Not gated — purely for characterisation in the matrix output.
+    warnings_probe = _probe_warnings_endpoint(host)
+
     out = {
         'label': label,
         'baseline_ref': 'BASELINE.json' if baseline else None,
@@ -686,6 +725,7 @@ def run_matrix(events_per_run, runs_per_cell, out_path, label, host):
         'wall_seconds': round(time.time() - t0, 1),
         'cells': results,
         'gate_passed': gate_passed,
+        'warnings_endpoint_probe': warnings_probe,
     }
     with open(out_path, 'w') as fh:
         json.dump(out, fh, indent=2)
@@ -705,7 +745,7 @@ def main():
     ap.add_argument('--runs', type=int, default=3)
     ap.add_argument('--host', default='localhost:6400')
     ap.add_argument('--matrix', action='store_true')
-    ap.add_argument('--out', default=None)
+    ap.add_argument('--out', '--output', dest='out', default=None)
     ap.add_argument('--label', default='v0-post-wiring')
     args = ap.parse_args()
 

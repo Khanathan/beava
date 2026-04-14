@@ -1,0 +1,300 @@
+{
+  "label": "v0-post-25-03",
+  "baseline_ref": "BASELINE.json",
+  "timestamp": "2026-04-14T22:24:08.438232+00:00",
+  "events_per_run": 30000,
+  "runs_per_cell": 7,
+  "wall_seconds": 106.4,
+  "cells": {
+    "small_1c": {
+      "pipeline": "small",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 113921.2,
+      "eps_all": [
+        109053.3,
+        112175.4,
+        113777.5,
+        113921.2,
+        114199.1,
+        114786.7,
+        115192.1
+      ],
+      "p50_median": 5.99,
+      "p99_median": 9.94,
+      "delta_pct_vs_baseline": -1.01,
+      "pass": true
+    },
+    "small_4c": {
+      "pipeline": "small",
+      "clients": 4,
+      "runs": 7,
+      "eps_median": 28064.8,
+      "eps_all": [
+        27387.9,
+        27424.9,
+        27776.2,
+        28064.8,
+        28541.6,
+        28693.2,
+        28796.8
+      ],
+      "p50_median": 76.63,
+      "p99_median": 661.98,
+      "delta_pct_vs_baseline": 0.02,
+      "pass": true
+    },
+    "small_8c": {
+      "pipeline": "small",
+      "clients": 8,
+      "runs": 7,
+      "eps_median": 30557.5,
+      "eps_all": [
+        28954.9,
+        30103.8,
+        30254.7,
+        30557.5,
+        30737.6,
+        31098.6,
+        31714.7
+      ],
+      "p50_median": 117.97,
+      "p99_median": 1418.98,
+      "delta_pct_vs_baseline": 0.63,
+      "pass": true
+    },
+    "medium_1c": {
+      "pipeline": "medium",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 113670.8,
+      "eps_all": [
+        110271.8,
+        112304.4,
+        113656.3,
+        113670.8,
+        113757.5,
+        114367.8,
+        115448.7
+      ],
+      "p50_median": 6.06,
+      "p99_median": 10.42,
+      "delta_pct_vs_baseline": -1.56,
+      "pass": true
+    },
+    "medium_4c": {
+      "pipeline": "medium",
+      "clients": 4,
+      "runs": 7,
+      "eps_median": 27950.6,
+      "eps_all": [
+        27736.3,
+        27880.7,
+        27883.2,
+        27950.6,
+        28054.6,
+        28617.0,
+        29930.6
+      ],
+      "p50_median": 82.38,
+      "p99_median": 669.36,
+      "delta_pct_vs_baseline": -0.86,
+      "pass": true
+    },
+    "medium_8c": {
+      "pipeline": "medium",
+      "clients": 8,
+      "runs": 7,
+      "eps_median": 30625.8,
+      "eps_all": [
+        29539.7,
+        29979.6,
+        30388.3,
+        30625.8,
+        30633.0,
+        30773.5,
+        31271.5
+      ],
+      "p50_median": 116.74,
+      "p99_median": 1497.53,
+      "delta_pct_vs_baseline": 1.33,
+      "pass": true
+    },
+    "large_1c": {
+      "pipeline": "large",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 111938.8,
+      "eps_all": [
+        106821.0,
+        110369.5,
+        111736.8,
+        111938.8,
+        112227.6,
+        113798.8,
+        113968.5
+      ],
+      "p50_median": 6.07,
+      "p99_median": 11.25,
+      "delta_pct_vs_baseline": -3.83,
+      "pass": true
+    },
+    "large_4c": {
+      "pipeline": "large",
+      "clients": 4,
+      "runs": 7,
+      "eps_median": 28499.5,
+      "eps_all": [
+        27747.1,
+        27911.9,
+        28021.8,
+        28499.5,
+        28554.4,
+        29285.8,
+        29292.9
+      ],
+      "p50_median": 73.64,
+      "p99_median": 654.64,
+      "delta_pct_vs_baseline": 1.43,
+      "pass": true
+    },
+    "large_8c": {
+      "pipeline": "large",
+      "clients": 8,
+      "runs": 7,
+      "eps_median": 29975.3,
+      "eps_all": [
+        29352.8,
+        29813.9,
+        29940.5,
+        29975.3,
+        30633.5,
+        30820.7,
+        30884.2
+      ],
+      "p50_median": 120.4,
+      "p99_median": 1458.4,
+      "delta_pct_vs_baseline": -2.28,
+      "pass": true
+    },
+    "join_small_1c": {
+      "pipeline": "join",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 110793.4,
+      "eps_all": [
+        110354.4,
+        110624.4,
+        110689.7,
+        110793.4,
+        111591.3,
+        112369.7,
+        113453.2
+      ],
+      "p99_median": 9.76,
+      "note": "characterization only, no gate",
+      "pct_of_small_1c": 97.25
+    },
+    "enrich_small_1c": {
+      "pipeline": "enrich",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 113963.7,
+      "eps_all": [
+        111576.6,
+        111614.4,
+        113447.8,
+        113963.7,
+        114708.7,
+        114710.2,
+        114761.6
+      ],
+      "p99_median": 8.73,
+      "note": "characterization only, no gate",
+      "pct_of_small_1c": 100.04
+    },
+    "late_events_small_1c": {
+      "pipeline": "late_events",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 120237.1,
+      "eps_all": [
+        117280.2,
+        117448.2,
+        119029.4,
+        120237.1,
+        122316.2,
+        122669.4,
+        122958.8
+      ],
+      "p99_median": 9.64,
+      "note": "characterization only, no gate",
+      "pct_of_small_1c": 105.54
+    },
+    "tombstone_cascade_small_1c": {
+      "pipeline": "tombstone_cascade",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 22921.7,
+      "eps_all": [
+        22216.5,
+        22437.2,
+        22646.9,
+        22921.7,
+        23045.2,
+        23437.9,
+        23660.5
+      ],
+      "p99_median": 79.76,
+      "note": "characterization only, no gate",
+      "pct_of_small_1c": 20.12
+    },
+    "tt_join_real_small_1c": {
+      "pipeline": "tt_join_real",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 22533.3,
+      "eps_all": [
+        22166.8,
+        22355.6,
+        22470.8,
+        22533.3,
+        22639.4,
+        22847.6,
+        23019.7
+      ],
+      "p99_median": 80.62,
+      "note": "characterization only, no gate",
+      "pct_of_small_1c": 19.78
+    },
+    "enrich_with_wm_small_1c": {
+      "pipeline": "enrich_with_wm",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 131846.6,
+      "eps_all": [
+        98023.0,
+        113325.8,
+        119646.7,
+        131846.6,
+        137047.0,
+        140640.4,
+        142139.2
+      ],
+      "p99_median": 10.0,
+      "note": "characterization only, no gate",
+      "pct_of_small_1c": 115.73
+    }
+  },
+  "gate_passed": true,
+  "warnings_endpoint_probe": {
+    "url": "http://localhost:6401/debug/warnings",
+    "samples_us": [
+      1648.55,
+      439.41,
+      323.69
+    ],
+    "median_us": 439.41,
+    "note": "observational \u2014 not part of the regression gate"
+  }
+}
