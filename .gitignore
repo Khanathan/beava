@@ -43,3 +43,6 @@ Thumbs.db
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/tally/
+
+# MCP server config (personal, points to local gbrain instance)
+.mcp.json
