@@ -523,6 +523,35 @@ async fn debug_key(State(state): State<SharedState>, Path(key): Path<String>) ->
         .iter()
         .map(|(k, v): (&String, &crate::types::FeatureValue)| (k.clone(), v.to_json_value()))
         .collect();
+    // Phase 24-04: per-stream watermarks visible on /debug/key/:key.
+    // The watermark map is stream-level state (not per-entity) but it's
+    // the most useful place to surface it for ad-hoc debugging, alongside
+    // the other per-key snapshots.
+    let watermarks_json: serde_json::Map<String, serde_json::Value> = {
+        let engine = state.engine.read();
+        let tracker = engine.watermarks.read();
+        let mut out = serde_json::Map::new();
+        for (stream, max) in tracker.iter_streams() {
+            if let Some(wm) = tracker.watermark(stream) {
+                let ms = wm
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let max_ms = max
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                out.insert(
+                    stream.clone(),
+                    serde_json::json!({
+                        "watermark_ms":    ms,
+                        "observed_max_ms": max_ms,
+                    }),
+                );
+            }
+        }
+        out
+    };
     (
         StatusCode::OK,
         Json(serde_json::json!({
@@ -532,6 +561,51 @@ async fn debug_key(State(state): State<SharedState>, Path(key): Path<String>) ->
             "computed_features": feature_json,
             "last_event_at": last_event_at,
             "estimated_bytes": total_estimated_bytes,
+            "watermarks": watermarks_json,
+        })),
+    )
+        .into_response()
+}
+
+/// Phase 24-04: `GET /debug/streams/{name}` — surface the full
+/// per-stream watermark state. 404 when the stream has not been
+/// observed (either unregistered or no events yet).
+async fn debug_stream(
+    State(state): State<SharedState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let engine = state.engine.read();
+    let tracker = engine.watermarks.read();
+    let observed_max = match tracker.observed_max(&name) {
+        Some(m) => m,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": format!("stream '{}' has no watermark state", name),
+                })),
+            )
+                .into_response();
+        }
+    };
+    let wm = tracker.watermark(&name).unwrap_or(observed_max);
+    let last_event = tracker.last_event_time(&name).unwrap_or(observed_max);
+    let late_drops = engine.late_drops.read().get(&name);
+
+    let to_ms = |t: std::time::SystemTime| -> u64 {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    };
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "name":                 name,
+            "watermark_ms":         to_ms(wm),
+            "observed_max_ms":      to_ms(observed_max),
+            "last_event_time_ms":   to_ms(last_event),
+            "lateness_seconds":     crate::engine::event_time::WATERMARK_LATENESS.as_secs(),
+            "late_events_dropped":  late_drops,
         })),
     )
         .into_response()
@@ -1151,6 +1225,7 @@ pub fn build_router(state: SharedState) -> Router {
             get(get_pipeline).delete(delete_pipeline),
         )
         .route("/debug/key/{key}", get(debug_key))
+        .route("/debug/streams/{name}", get(debug_stream))
         .route("/debug/memory", get(debug_memory))
         .route("/debug/backfill", get(debug_backfill))
         .route("/debug/topology", get(debug_topology))

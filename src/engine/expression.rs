@@ -368,6 +368,11 @@ pub struct EvalContext<'a> {
     /// Enrichment overlay: upstream-computed feature values for cascade propagation.
     /// Resolution order: features -> enrichment -> event -> Missing.
     pub enrichment: Option<&'a ahash::AHashMap<String, FeatureValue>>,
+    /// Phase 24-04: the current event's event-time. When present,
+    /// the `event_time()` builtin returns this value as unix
+    /// milliseconds. `None` in read-side / standalone-query contexts
+    /// where there is no event — `event_time()` then returns Missing.
+    pub event_time: Option<std::time::SystemTime>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -621,6 +626,27 @@ fn eval_fn_call(name: &str, args: &[Expr], ctx: &EvalContext) -> FeatureValue {
                 .unwrap()
                 .as_secs_f64();
             FeatureValue::Float(secs)
+        }
+        // Phase 24-04: current event's event-time. Returns unix
+        // milliseconds (Int64) so boolean expressions like
+        // `event_time() > now() * 1000` compose naturally with the
+        // wall-clock `now()` (seconds-f64) after unit alignment. In
+        // read-side / standalone-query contexts where there is no
+        // event (ctx.event_time is None) this returns Missing, and
+        // the existing Missing-propagation rules in eval_binary
+        // surface the absence at derive-read time.
+        "event_time" => {
+            use std::time::UNIX_EPOCH;
+            match ctx.event_time {
+                Some(et) => {
+                    let ms = et
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0);
+                    FeatureValue::Int(ms)
+                }
+                None => FeatureValue::Missing,
+            }
         }
 
         // ----- Conditional expressions -----
@@ -1175,6 +1201,7 @@ mod tests {
             features: &features,
             event: None,
             enrichment: None,
+            event_time: None,
         };
         eval(&expr, &ctx)
     }
@@ -1401,6 +1428,7 @@ mod tests {
             features: &features,
             event: Some(&event),
             enrichment: None,
+            event_time: None,
         };
         assert_eq!(eval(&expr, &ctx), FeatureValue::Float(50.0));
     }
@@ -1456,6 +1484,51 @@ mod tests {
                 assert!(f > 1_000_000_000.0, "now() should return Unix timestamp")
             }
             other => panic!("Expected Float from now(), got {:?}", other),
+        }
+    }
+
+    // Phase 24-04: `event_time()` builtin.
+    #[test]
+    fn test_eval_event_time_with_context_returns_int_ms() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let expr = parse_expr("event_time()").unwrap();
+        let features = ahash::AHashMap::new();
+        let ctx = EvalContext {
+            features: &features,
+            event: None,
+            enrichment: None,
+            event_time: Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+        };
+        assert_eq!(
+            eval(&expr, &ctx),
+            FeatureValue::Int(1_700_000_000_000i64),
+            "event_time() should return unix ms from the evaluator context"
+        );
+    }
+
+    #[test]
+    fn test_eval_event_time_without_context_returns_missing() {
+        let result = eval_with("event_time()", &[]);
+        assert!(matches!(result, FeatureValue::Missing));
+    }
+
+    #[test]
+    fn test_eval_event_time_usable_in_derive_expression() {
+        use std::time::{Duration, UNIX_EPOCH};
+        // event_time() / 1000 compares with Int(1_700_000_000)
+        let expr = parse_expr("event_time() / 1000").unwrap();
+        let features = ahash::AHashMap::new();
+        let ctx = EvalContext {
+            features: &features,
+            event: None,
+            enrichment: None,
+            event_time: Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+        };
+        match eval(&expr, &ctx) {
+            FeatureValue::Float(f) => {
+                assert!((f - 1_700_000_000.0).abs() < 1.0);
+            }
+            other => panic!("expected Float from event_time() / 1000, got {:?}", other),
         }
     }
 

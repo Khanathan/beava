@@ -846,6 +846,7 @@ impl PipelineEngine {
                 features: &ahash::AHashMap::new(),
                 event: Some(event),
                 enrichment: enrichment_fv,
+                event_time: Some(now),
             };
             let result = eval(filter_expr, &ctx);
             match result {
@@ -942,6 +943,7 @@ impl PipelineEngine {
                             features: &ahash::AHashMap::new(),
                             event: Some(event),
                             enrichment: enrichment_fv,
+                            event_time: Some(now),
                         };
                         let result = eval(where_expr, &ctx);
                         match result {
@@ -986,6 +988,7 @@ impl PipelineEngine {
                 features: &features,
                 event: Some(event),
                 enrichment: enrichment_fv,
+                event_time: Some(now),
             };
             stream
                 .features
@@ -1887,6 +1890,7 @@ impl PipelineEngine {
                 features: &ahash::AHashMap::new(),
                 event: Some(event),
                 enrichment: None,
+                event_time: Some(event_time),
             };
             let result = eval(filter_expr, &ctx);
             match result {
@@ -1945,6 +1949,7 @@ impl PipelineEngine {
                         features: &ahash::AHashMap::new(),
                         event: Some(event),
                         enrichment: None,
+                        event_time: Some(event_time),
                     };
                     let result = eval(where_expr, &ctx);
                     match result {
@@ -1996,6 +2001,9 @@ impl PipelineEngine {
             features: &features,
             event: None,
             enrichment: None,
+            // Read-path: no current event. `event_time()` in a derive
+            // here returns Missing per the builtin's doc-comment.
+            event_time: None,
         };
         // Collect derives first to avoid borrow issues
         let mut derived: Vec<(String, FeatureValue)> = Vec::new();
@@ -2029,6 +2037,7 @@ impl PipelineEngine {
                             features: &features,
                             event: None,
                             enrichment: None,
+                            event_time: None,
                         };
                         view_results.push((fname.clone(), eval(expr, &ctx)));
                     }
