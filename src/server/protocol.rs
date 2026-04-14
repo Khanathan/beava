@@ -15,6 +15,17 @@ pub const OP_MGET: u8 = 0x06;
 pub const OP_PUSH_ASYNC: u8 = 0x07;
 pub const OP_FLUSH: u8 = 0x08;
 pub const OP_PUSH_BATCH: u8 = 0x0A;
+/// Phase 24-02: Upsert a row in a Table source.
+///
+/// Payload: `[u16 table_name_len][table_name utf-8][u16 key_len][key utf-8][JSON fields object]`
+///
+/// 0x09 was left as a gap after OP_FLUSH; keeping the new Table opcodes
+/// contiguous after OP_PUSH_BATCH (0x0A) is cleaner than back-filling.
+pub const OP_PUSH_TABLE: u8 = 0x0B;
+/// Phase 24-02: Tombstone a row in a Table source.
+///
+/// Payload: `[u16 table_name_len][table_name utf-8][u16 key_len][key utf-8]`
+pub const OP_DELETE_TABLE: u8 = 0x0C;
 
 // Response status codes
 pub const STATUS_OK: u8 = 0x00;
@@ -72,6 +83,18 @@ pub enum Command {
         stream_name: String,
         batch_id: u32,
         events: Vec<(serde_json::Value, Vec<u8>)>,
+    },
+    /// Phase 24-02: Upsert a row in a Table source. `fields` is the JSON
+    /// object decoded from the payload tail.
+    PushTable {
+        table_name: String,
+        key: String,
+        fields: serde_json::Value,
+    },
+    /// Phase 24-02: Tombstone a row in a Table source.
+    DeleteTable {
+        table_name: String,
+        key: String,
     },
 }
 
@@ -413,6 +436,26 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
                 batch_id,
                 events,
             })
+        }
+        OP_PUSH_TABLE => {
+            let table_name = read_string(&mut buf)?;
+            let key = read_string(&mut buf)?;
+            let fields = read_json_payload(&mut buf)?;
+            if !fields.is_object() {
+                return Err(TallyError::Protocol(
+                    "OP_PUSH_TABLE fields payload must be a JSON object".into(),
+                ));
+            }
+            Ok(Command::PushTable {
+                table_name,
+                key,
+                fields,
+            })
+        }
+        OP_DELETE_TABLE => {
+            let table_name = read_string(&mut buf)?;
+            let key = read_string(&mut buf)?;
+            Ok(Command::DeleteTable { table_name, key })
         }
         _ => Err(TallyError::Protocol(format!(
             "unknown opcode: 0x{:02x}",
@@ -1536,6 +1579,56 @@ mod tests {
                 assert_eq!(payload["score"], 0.95);
             }
             _ => panic!("expected Set command"),
+        }
+    }
+
+    // ----- Phase 24-02: OP_PUSH_TABLE / OP_DELETE_TABLE parse_command tests -----
+
+    #[test]
+    fn op_push_table_roundtrip_via_parse_command() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&write_string("UserProfile"));
+        payload.extend_from_slice(&write_string("u123"));
+        payload.extend_from_slice(br#"{"country":"US","score":42}"#);
+        let cmd = parse_command(OP_PUSH_TABLE, &payload).unwrap();
+        match cmd {
+            Command::PushTable {
+                table_name,
+                key,
+                fields,
+            } => {
+                assert_eq!(table_name, "UserProfile");
+                assert_eq!(key, "u123");
+                assert_eq!(fields["country"], "US");
+                assert_eq!(fields["score"], 42);
+            }
+            _ => panic!("expected PushTable command"),
+        }
+    }
+
+    #[test]
+    fn op_push_table_rejects_non_object_fields() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&write_string("T"));
+        payload.extend_from_slice(&write_string("k"));
+        payload.extend_from_slice(b"[1,2,3]");
+        let err = parse_command(OP_PUSH_TABLE, &payload).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("JSON object"), "msg was {}", msg);
+    }
+
+    #[test]
+    fn op_delete_table_roundtrip_via_parse_command() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&write_string("UserProfile"));
+        payload.extend_from_slice(&write_string("u123"));
+        let cmd = parse_command(OP_DELETE_TABLE, &payload).unwrap();
+        match cmd {
+            Command::DeleteTable { table_name, key } => {
+                assert_eq!(table_name, "UserProfile");
+                assert_eq!(key, "u123");
+            }
+            _ => panic!("expected DeleteTable command"),
         }
     }
 

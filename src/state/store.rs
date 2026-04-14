@@ -401,6 +401,52 @@ impl StateStore {
         features
     }
 
+    /// Phase 24-02: Collect a merged feature view for GET — identical to
+    /// `get_all_features` but ALSO flattens Live `table_rows` into the result
+    /// as `format!("{table_name}.{field_name}")`. Tombstoned rows are filtered
+    /// entirely (information-disclosure mitigation T-24-02-03).
+    ///
+    /// Overlay order (last writer wins on collision):
+    ///   1. Stream live operator features (per-stream operators)
+    ///   2. Flattened Live Table rows as `TableName.field`
+    ///   3. `static_features`
+    ///
+    /// Collisions between (2) and (3) should not occur in v0 because Table
+    /// rows emit prefixed names (`TableName.col`) while `static_features`
+    /// use raw names; the overlay rule above is documented so callers can
+    /// reason about any future collision.
+    pub fn collect_merged_features(&self, key: &str, now: SystemTime) -> FeatureMap {
+        let mut entity = match self.entities.get_mut(key) {
+            Some(e) => e,
+            None => return FeatureMap::default(),
+        };
+
+        let mut features = FeatureMap::new();
+
+        // 1. Live stream operator features.
+        for (_stream_name, stream_state) in entity.streams.iter_mut() {
+            for (name, op) in stream_state.operators.iter_mut() {
+                features.insert(name.clone(), op.read(now));
+            }
+        }
+
+        // 2. Flattened Live table rows. Tombstoned rows are skipped.
+        for (table_name, row) in entity.table_rows.iter() {
+            if matches!(row.state, TableRowState::Live) {
+                for (field_name, value) in row.fields.iter() {
+                    features.insert(format!("{}.{}", table_name, field_name), value.clone());
+                }
+            }
+        }
+
+        // 3. Static features (overlay).
+        for (name, sf) in &entity.static_features {
+            features.insert(name.clone(), sf.value.clone());
+        }
+
+        features
+    }
+
     /// Read a single feature value for an entity. Used by cross-key lookups.
     /// Returns Missing if entity or feature not found.
     /// DashMap get_mut provides interior mutability for operator read().

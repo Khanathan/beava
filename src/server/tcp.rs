@@ -1659,6 +1659,14 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             }
             Ok(serde_json::to_vec(&serde_json::Value::Object(result)).unwrap())
         }
+        Command::PushTable {
+            table_name,
+            key,
+            fields,
+        } => handle_push_table(state, &table_name, &key, fields, now),
+        Command::DeleteTable { table_name, key } => {
+            handle_delete_table(state, &table_name, &key, now)
+        }
         Command::Mset { .. } => unreachable!("MSET handled separately"),
         // I-2: PushAsync and Flush are intercepted in `handle_connection`
         // BEFORE this function is called — see the three-way match on
@@ -1670,6 +1678,91 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             unreachable!("PushAsync/Flush/PushBatch handled by handle_connection dispatch")
         }
     }
+}
+
+/// Phase 24-02: Dispatch for OP_PUSH_TABLE.
+///
+/// Flow:
+/// 1. Validate the table is registered as `kind=table`; reject unknown name.
+/// 2. Convert JSON fields → AHashMap<String, FeatureValue>.
+/// 3. Call `StateStore::upsert_table_row`.
+/// 4. Fire the Phase 23 TT-cascade hook with tombstoned=false. Plan 03
+///    reworks the cascade internals to read from `table_rows` directly;
+///    plan 02 just keeps the hook live.
+///
+/// `now` is wall-clock here. Phase 24-04 will surgically replace this with
+/// `_event_time` parsing once watermarks land.
+fn handle_push_table(
+    state: &SharedState,
+    table_name: &str,
+    key: &str,
+    fields_json: serde_json::Value,
+    now: SystemTime,
+) -> Result<Vec<u8>, TallyError> {
+    {
+        let engine = state.engine.read();
+        if !engine.has_registered_table(table_name) {
+            return Err(TallyError::Protocol(format!(
+                "unknown table: {}",
+                table_name
+            )));
+        }
+    }
+
+    let map = match fields_json {
+        serde_json::Value::Object(m) => m,
+        _ => {
+            return Err(TallyError::Protocol(
+                "OP_PUSH_TABLE fields payload must be a JSON object".into(),
+            ))
+        }
+    };
+    let mut fields: ahash::AHashMap<String, FeatureValue> = ahash::AHashMap::new();
+    for (k, v) in map {
+        fields.insert(k, json_to_feature_value(v));
+    }
+
+    // Phase 24-04: replace with `_event_time` parsing for watermark alignment.
+    state.store.upsert_table_row(key, table_name, fields, now);
+    state.store.mark_dirty(key);
+
+    // Keep Phase 23 TT cascade hook alive. Plan 03 will rework the cascade
+    // internals to consume `table_rows` rather than `static_features`.
+    {
+        let engine = state.engine.read();
+        let _ = engine.cascade_table_upsert(table_name, key, false, &state.store, now);
+    }
+
+    Ok(Vec::new())
+}
+
+/// Phase 24-02: Dispatch for OP_DELETE_TABLE. Symmetric with `handle_push_table`.
+fn handle_delete_table(
+    state: &SharedState,
+    table_name: &str,
+    key: &str,
+    now: SystemTime,
+) -> Result<Vec<u8>, TallyError> {
+    {
+        let engine = state.engine.read();
+        if !engine.has_registered_table(table_name) {
+            return Err(TallyError::Protocol(format!(
+                "unknown table: {}",
+                table_name
+            )));
+        }
+    }
+
+    // Phase 24-04: replace with `_event_time` parsing.
+    state.store.tombstone_table_row(key, table_name, now);
+    state.store.mark_dirty(key);
+
+    {
+        let engine = state.engine.read();
+        let _ = engine.cascade_table_upsert(table_name, key, true, &state.store, now);
+    }
+
+    Ok(Vec::new())
 }
 
 /// Cooperative backfill: reads event log entries, pushes to new operators in 64-event chunks.

@@ -1980,7 +1980,10 @@ impl PipelineEngine {
     /// for any registered streams, then evaluates view features (cross-stream
     /// derives and cross-key lookups).
     pub fn get_features(&self, key: &str, store: &StateStore, now: SystemTime) -> FeatureMap {
-        let mut features = store.get_all_features(key, now);
+        // Phase 24-02: merged view = live stream ops + flattened Live
+        // table_rows (as `TableName.field`) + static_features overlay.
+        // Tombstoned table rows filtered out in `collect_merged_features`.
+        let mut features = store.collect_merged_features(key, now);
 
         // Build qualified feature names: "StreamName.feature_name" -> value
         // so view derive expressions can reference features from specific streams.
@@ -2150,6 +2153,21 @@ impl PipelineEngine {
     /// Store the raw register JSON for a stream (called during REGISTER command processing).
     pub fn store_raw_register_json(&mut self, name: &str, json: serde_json::Value) {
         self.raw_register_jsons.insert(name.to_string(), json);
+    }
+
+    /// Phase 24-02: Return true iff a stream with the given name was
+    /// registered as a v0 Table source. Detection relies on the stored raw
+    /// REGISTER JSON carrying `"kind": "table"` — the v0 source descriptor
+    /// always sets this field. For v2.0-style registrations (no `kind`)
+    /// this returns false, which matches the intent: v2.0 had no Table-row
+    /// concept so `OP_PUSH_TABLE` is rejected against such streams.
+    pub fn has_registered_table(&self, name: &str) -> bool {
+        self.raw_register_jsons
+            .get(name)
+            .and_then(|j| j.get("kind"))
+            .and_then(|k| k.as_str())
+            .map(|s| s == "table")
+            .unwrap_or(false)
     }
 
     /// Get the raw register JSON for a stream. Returns None if not found.
