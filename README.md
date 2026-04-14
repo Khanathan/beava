@@ -83,20 +83,27 @@ cd python && pip install -e .
 ```python
 import tally as tl
 
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    amount: float
+    merchant_id: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserFeatures:
-    features = tl.group_by("user_id").agg(
-        tx_count_1h    = tl.count(window="1h"),
-        tx_count_24h   = tl.count(window="24h"),
-        tx_sum_1h      = tl.sum("amount", window="1h"),
-        avg_amount     = tl.avg("amount", window="24h"),
-        unique_merchants = tl.distinct_count("merchant_id", window="24h"),
+@tl.table(key="user_id")
+def UserFeatures(txs: RawTransactions) -> tl.Table:
+    return (
+        txs.group_by("user_id")
+        .agg(
+            tx_count_1h      = tl.count(window="1h"),
+            tx_count_24h     = tl.count(window="24h"),
+            tx_sum_1h        = tl.sum("amount", window="1h"),
+            avg_amount       = tl.avg("amount", window="24h"),
+            unique_merchants = tl.count_distinct("merchant_id", window="24h"),
+        )
+        .with_columns(
+            velocity=(tl.col("tx_count_1h") / 1) / (tl.col("tx_count_24h") / 24),
+        )
     )
-    velocity = tl.derive("(tx_count_1h / 1) / (tx_count_24h / 24)")
 
 app = tl.App("localhost:6400")
 app.register(RawTransactions, UserFeatures)

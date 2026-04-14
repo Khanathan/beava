@@ -82,19 +82,26 @@ So I built [Tally](https://github.com/petrpan26/tally). Single Rust binary, all 
 ```python
 import tally as tl
 
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    amount: float
+    merchant_id: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
-        tx_count_1h=tl.count(window="1h"),
-        tx_count_24h=tl.count(window="24h"),
-        tx_avg_24h=tl.avg("amount", window="24h"),
-        unique_merchants_24h=tl.distinct_count("merchant_id", window="24h"),
+@tl.table(key="user_id")
+def UserTransactions(txs: RawTransactions) -> tl.Table:
+    return (
+        txs.group_by("user_id")
+        .agg(
+            tx_count_1h=tl.count(window="1h"),
+            tx_count_24h=tl.count(window="24h"),
+            tx_avg_24h=tl.avg("amount", window="24h"),
+            unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
+        )
+        .with_columns(
+            velocity_spike=(tl.col("tx_count_1h") / 1) / (tl.col("tx_count_24h") / 24),
+        )
     )
-    velocity_spike = tl.derive("(tx_count_1h / 1) / (tx_count_24h / 24)")
 
 app = tl.App("localhost:6400")
 app.register(RawTransactions, UserTransactions)
