@@ -32,6 +32,18 @@ OP_PUSH_BATCH: int = 0x0A
 # OP_PUSH_BATCH per server-side rationale).
 OP_PUSH_TABLE: int = 0x0B
 OP_DELETE_TABLE: int = 0x0C
+# Phase 25-01: Multi-table feature-vector read (one TCP round-trip).
+# Wire: [u16 count][count × u16-string table_name][u16-string key].
+OP_GET_MULTI: int = 0x0D
+# Phase 25-01: Reserved opcodes (0x10-0x1F range). Server parses and
+# returns STATUS_ERROR with "not implemented in v0" without closing
+# the connection. Exposed here so tests / diagnostics can probe them.
+OP_SCAN_RESERVED: int = 0x10
+OP_SUBSCRIBE_RESERVED: int = 0x11
+
+# Phase 25-01: Maximum table_names count accepted by GET_MULTI (mirrors the
+# Rust parse_command cardinality guard in src/server/protocol.rs).
+GET_MULTI_MAX_TABLES: int = 256
 
 STATUS_OK: int = 0x00
 STATUS_ERROR: int = 0x01
@@ -342,6 +354,72 @@ def encode_push_table(table_name: str, key: str, fields: dict) -> bytes:
         + encode_string(key)
         + json.dumps(fields).encode("utf-8")
     )
+
+
+def encode_get_multi(table_names: list[str], key: str) -> bytes:
+    """Encode an OP_GET_MULTI payload (Phase 25-01).
+
+    Wire format: ``[u16 count][count × u16-string table_name][u16-string key]``.
+
+    Raises :class:`ProtocolError` if ``table_names`` is empty, exceeds the
+    server-side 256 cardinality guard, or carries a single name longer
+    than ``u16::MAX`` bytes.
+    """
+    if not table_names:
+        raise ProtocolError("GET_MULTI requires at least one table_name")
+    if len(table_names) > 256:
+        raise ProtocolError(
+            f"GET_MULTI table_names count exceeds 256: got {len(table_names)}"
+        )
+    parts = bytearray()
+    parts.extend(_U16.pack(len(table_names)))
+    for name in table_names:
+        name_bytes = name.encode("utf-8")
+        _check_u16_len(f"table_name {name!r}", name_bytes)
+        parts.extend(_U16.pack(len(name_bytes)))
+        parts.extend(name_bytes)
+    key_bytes = key.encode("utf-8")
+    _check_u16_len("key", key_bytes)
+    parts.extend(_U16.pack(len(key_bytes)))
+    parts.extend(key_bytes)
+    return bytes(parts)
+
+
+def encode_get_multi(table_names: list[str], key: str) -> bytes:
+    """Encode an OP_GET_MULTI payload (Phase 25-01).
+
+    Wire format: ``[u16 BE count][count × u16-string table_name][u16-string key]``.
+
+    Mirrors ``parse_command`` arm for ``OP_GET_MULTI`` in
+    ``src/server/protocol.rs`` byte-for-byte. The ``key`` is the raw wire
+    string; composite keys must be JSON-encoded by the caller (App.get_multi
+    handles that before this function is invoked).
+
+    Raises ``ProtocolError`` on an empty list, a list longer than
+    ``GET_MULTI_MAX_TABLES`` (256), or any individual table_name whose
+    UTF-8 encoding exceeds u16::MAX. These client-side guards let the
+    SDK fail fast before the wire roundtrip and match the server's
+    cardinality guard messages.
+    """
+    n = len(table_names)
+    if n == 0:
+        raise ProtocolError("GET_MULTI requires at least one table_name")
+    if n > GET_MULTI_MAX_TABLES:
+        raise ProtocolError(
+            f"GET_MULTI table_names count exceeds {GET_MULTI_MAX_TABLES}: got {n}"
+        )
+    buf = bytearray()
+    buf.extend(_U16.pack(n))
+    for name in table_names:
+        name_bytes = name.encode("utf-8")
+        _check_u16_len(f"table_name {name!r}", name_bytes)
+        buf.extend(_U16.pack(len(name_bytes)))
+        buf.extend(name_bytes)
+    key_bytes = key.encode("utf-8")
+    _check_u16_len("key", key_bytes)
+    buf.extend(_U16.pack(len(key_bytes)))
+    buf.extend(key_bytes)
+    return bytes(buf)
 
 
 def encode_delete_table(table_name: str, key: str) -> bytes:

@@ -20,6 +20,7 @@ from tally._protocol import (
     OP_DELETE_TABLE,
     OP_FLUSH,
     OP_GET,
+    OP_GET_MULTI,
     OP_MGET,
     OP_MSET,
     OP_PUSH,
@@ -31,6 +32,7 @@ from tally._protocol import (
     STATUS_ERROR,
     encode_delete_table,
     encode_get,
+    encode_get_multi,
     encode_mget,
     encode_mset,
     encode_push_batch,
@@ -287,6 +289,80 @@ class App:
         resp = self._send(OP_GET, payload)
         data = json.loads(resp) if resp else {}
         return FeatureResult(data)
+
+    def get_multi(self, tables: list, key) -> dict:
+        """Assemble a multi-table feature vector for ``key`` in one round-trip.
+
+        Phase 25-01. Sends a single ``OP_GET_MULTI`` frame containing the
+        names of every Table in ``tables`` and the target ``key``, then
+        returns a dict mapping each input Table descriptor → either a
+        :class:`FeatureResult` (for live rows) or ``None`` (never-seen,
+        tombstoned, or registered-but-empty — all indistinguishable at
+        the wire per the v0 null-collapse contract).
+
+        Args:
+            tables: Non-empty list of Table descriptors (``_tally_kind ==
+                "table"``). Passing a Stream descriptor or an arbitrary
+                object raises :class:`TypeError` BEFORE any wire I/O.
+                Passing an empty list raises :class:`ValueError`.
+            key: Entity key as a ``str``. Composite keys are supported by
+                passing a ``dict`` whose values are joined with the
+                ``\\x1f`` (US) separator mandated by v0-restructure-spec
+                §6.2 — matches the encoding used by the server for keyed
+                sources.
+
+        Returns:
+            ``dict[type, FeatureResult | None]`` keyed by the ORIGINAL Table
+            classes (not their registered names) so downstream code can
+            do ``result[MyTable].field`` without re-keying on strings.
+
+        Raises:
+            TypeError: if any ``tables`` element is not a Table descriptor.
+            ValueError: if ``tables`` is empty.
+            ProtocolError: if the server rejects the request (e.g. one of
+                the table names is unregistered — no partial response).
+        """
+        if not isinstance(tables, (list, tuple)):
+            raise TypeError(
+                f"get_multi(tables, key): tables must be a list, got "
+                f"{type(tables).__name__}"
+            )
+        if len(tables) == 0:
+            raise ValueError("get_multi requires at least one table")
+
+        names: list[str] = []
+        for t in tables:
+            kind = getattr(t, "_tally_kind", None)
+            if kind != "table":
+                raise TypeError(
+                    f"get_multi expects Table descriptors (_tally_kind == 'table'); "
+                    f"got {t!r} with _tally_kind={kind!r}"
+                )
+            # Resolve the registered name via the same accessor push/delete use.
+            names.append(t._tally_stream_name)
+
+        # Composite key: dict → \x1f-join of its values (v0-restructure-spec §6.2).
+        if isinstance(key, dict):
+            key_str = "\x1f".join(str(v) for v in key.values())
+        else:
+            key_str = str(key)
+
+        self._client.drain_errors_nonblock()
+        payload = encode_get_multi(names, key_str)
+        resp = self._send(OP_GET_MULTI, payload)
+        data = json.loads(resp) if resp else {}
+
+        result: dict = {}
+        for t, name in zip(tables, names):
+            row = data.get(name)
+            if row is None:
+                result[t] = None
+            else:
+                # Row is a flat dict of field → value. Wrap as FeatureResult so
+                # downstream callers can use attribute access identically to
+                # app.get(key).
+                result[t] = FeatureResult(row)
+        return result
 
     def mget(self, keys: list[str]) -> dict[str, FeatureResult]:
         """Fetch features for multiple keys in a single round trip.
