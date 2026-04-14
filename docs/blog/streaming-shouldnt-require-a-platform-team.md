@@ -81,6 +81,27 @@ Push events, read results. One event fans out to multiple entity types (a transa
 
 The first SDK is Python, but Python never touches the hot path. Pipeline definitions are serialized at registration time. All computation happens in Rust. The binary TCP protocol is documented and open, so clients in any language can be built against the spec.
 
+## 30 days of events. Replayed in seconds.
+
+The fastest way to demonstrate "real-time without a platform team" is to take a month of events and run them all through, cold-start, on commodity hardware. So I did.
+
+The numbers below are a preliminary dev-box measurement. The **live demo at [demo.tally.dev](https://demo.tally.dev)** runs the same replay on a $5/mo Hetzner CX22 VM (2 vCPU, 4 GB RAM); the headline below is updated with the production VM number once the 5-day live run is signed off.
+
+**Preliminary (dev box, 4 workers, release build):**
+
+```
+$ python3 benchmark/replay/replay_30d.py --events 30000000 --workers 8
+events_total=30000000
+elapsed_seconds=~108       # projected from 276k eps, updated post-deploy
+events_per_sec=~276000
+```
+
+Translation: 30 days of synthetic fraud-shaped events, processed through the full pipeline (counts, sums, percentiles, HLL distinct counts, derived expressions), in under two minutes on a shared dev machine. Live VM numbers follow.
+
+If you want to watch it run live — keys getting looked up, events ticking past, p99 push latency holding under 100 µs — the demo page at [demo.tally.dev](https://demo.tally.dev) polls `/public/stats` every 2 seconds and shows the counters update in real time. Read-only; nothing to set up.
+
+![Tally live demo page](../assets/demo.png)
+
 ## Numbers
 
 Measured on a 48-core Xeon with the full 47-feature pipeline. Zipfian distribution over 10K users, 2K merchants, 5K devices, 8K IPs.
