@@ -48,6 +48,50 @@ class Table(StatelessOpsMixin):
             upstreams=[self],
         )
 
+    def group_by(self, *keys: str) -> Any:
+        """Table aggregation is NOT supported in v0 — rejected at registration.
+
+        Tables are current-state-only in v0. To aggregate related data,
+        model it as a Stream source. Table aggregation ships in v0.1
+        (requires retraction propagation — see the v0 restructure spec).
+        """
+        raise RuntimeError(
+            f"Cannot aggregate over Table {self._name!r}. "
+            f"Tables are current-state-only in v0; Table aggregation ships "
+            f"in v0.1. To aggregate related data, model it as a Stream source."
+        )
+
+    def join(
+        self,
+        other: Any,
+        *,
+        on: "str | list[str]",
+        type: str = "inner",
+        within: str | None = None,
+    ) -> "Table":
+        """Join this Table with another Table (same full-key required in v0).
+
+        Table↔Table joins do not support ``within=`` (no event-time window).
+        For Stream↔Table enrichment, call ``.join`` from the Stream side.
+        Execution lands in Phase 23.
+        """
+        if within is not None:
+            raise TypeError(
+                "Table↔Table join does not accept within=...; "
+                "within is only valid for Stream↔Stream windowed joins"
+            )
+        # Dispatch based on other's type.
+        from tally._join import table_join
+        # Import Table lazily here to avoid a self-import; isinstance check
+        # on the local Table class works fine.
+        if not isinstance(other, Table):
+            raise TypeError(
+                f"Table {self._name!r} can only join another Table; "
+                f"for Stream↔Table enrichment call .join from the Stream side. "
+                f"Got {other.__class__.__name__}"
+            )
+        return table_join(self, other, on=on, type_=type)
+
 
 class TableSource(Table):
     """An external table source (CDC-style ingest).

@@ -39,6 +39,26 @@ from tally._stream import stream, Stream, StreamSource, StreamDerivation
 from tally._table import table, Table, TableSource, TableDerivation
 from tally._validate_v0 import validate, ValidationError
 
+# Plan 21-03: aggregation operator descriptors.
+from tally._agg_ops import (
+    count,
+    sum,
+    avg,
+    min,
+    max,
+    variance,
+    stddev,
+    percentile,
+    count_distinct,
+    top_k,
+    first,
+    last,
+    first_n,
+    last_n,
+    ema,
+    lag,
+)
+
 # OperatorBase is still referenced by Plan 21-03 aggregation-spec descriptors.
 from tally._operators import OperatorBase
 
@@ -71,6 +91,23 @@ __all__ = [
     "TableDerivation",
     "validate",
     "ValidationError",
+    # Aggregation operators (Plan 21-03)
+    "count",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "variance",
+    "stddev",
+    "percentile",
+    "count_distinct",
+    "top_k",
+    "first",
+    "last",
+    "first_n",
+    "last_n",
+    "ema",
+    "lag",
     # Internal (used by Plan 21-03)
     "OperatorBase",
 ]

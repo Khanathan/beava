@@ -17,7 +17,10 @@ from __future__ import annotations
 import inspect
 import typing
 from types import FunctionType
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover
+    from tally._aggregation import GroupBy
 
 from tally._describe import format_describe
 from tally._schema_v0 import extract_schema
@@ -48,6 +51,30 @@ class Stream(StatelessOpsMixin):
             upstream=self,
             upstreams=[self],
         )
+
+    def group_by(self, *keys: str) -> "GroupBy":
+        """Begin a Stream→Table aggregation. Terminal call: ``.agg(**features)``.
+
+        See :mod:`tally._aggregation`. Execution lands in Phase 22; the SDK
+        infers and exposes the output Table's schema at registration time.
+        """
+        from tally._aggregation import GroupBy
+        return GroupBy(self, keys)
+
+    def join(
+        self,
+        other: Any,
+        *,
+        on: "str | list[str]",
+        within: str | None = None,
+        type: str = "inner",
+    ) -> "Stream":
+        """Join this Stream against a Stream (windowed) or Table (enrichment).
+
+        See :mod:`tally._join`. Execution lands in Phase 23.
+        """
+        from tally._join import stream_join
+        return stream_join(self, other, on=on, within=within, type_=type)
 
 
 class StreamSource(Stream):

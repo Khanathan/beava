@@ -69,29 +69,16 @@ class TestNewSurface:
 _REMOVED_PUBLIC_SYMBOLS = [
     "source",
     "dataset",
-    "group_by",
-    "union",
     "EventSet",
     "FeatureSet",
     # validate / ValidationError re-added in Plan 21-02 (local DAG validation).
-    # Lowercase-alias operator constructors (return in Plan 21-03 as
-    # aggregation-spec descriptors, deliberately not re-exported here).
-    "count",
-    "sum",
-    "avg",
-    "min",
-    "max",
-    "distinct_count",
-    "last",
-    "stddev",
-    "percentile",
-    "derive",
-    "lookup",
-    "lag",
-    "ema",
-    "last_n",
-    "first",
-    "exact_min",
+    # Aggregation descriptors (count/sum/avg/min/max/…/lag) re-added in
+    # Plan 21-03 as AggOp subclasses; `union` re-added as tl.union stub.
+    # v2.0 names that stayed gone after Plan 21-03:
+    "distinct_count",  # renamed to count_distinct
+    "derive",          # replaced by tl.col expressions + with_columns
+    "lookup",          # removed (spec §3)
+    "exact_min",       # merged into tl.min (non-retractable primary)
     "exact_max",
 ]
 
