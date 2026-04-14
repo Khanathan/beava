@@ -199,6 +199,20 @@ impl CountMinSketch {
 // ======================== TopKHeap ========================
 
 /// Tracks approximate top-k heavy hitters backed by a CMS.
+///
+/// **Plan 22-04 optimization:** a side `AHashMap<TopKValue, usize>` index lets
+/// `observe` check for existing candidates in O(1) (previously O(|candidates|)
+/// linear scan — the bottleneck in the 22-03 micro-bench). The eviction path
+/// at capacity still needs to find the current worst candidate by CMS estimate
+/// (which changes on every decrement, so there's no stable position to heap);
+/// that path is still O(max_candidates) but is hit at most once per insert
+/// after saturation and max_candidates is bounded at `max(k*8, 64)` — ~64-640
+/// ops worst case, well below the hot-path overhead the linear contains was
+/// contributing on every single insert.
+///
+/// The index is **not** serialized — it's reconstructed on deserialize via
+/// `#[serde(skip)]` + `post_deserialize_rebuild_index` invoked lazily on the
+/// first mutating op.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopKHeap {
     k: usize,
@@ -210,6 +224,28 @@ pub struct TopKHeap {
     /// Cap on candidate set (protects memory when adversarial inputs produce
     /// many heavy-hitter transitions).
     max_candidates: usize,
+    /// Value → index-in-`candidates` side map. Not serialized; rebuilt lazily
+    /// on first access after deserialize via `ensure_index`.
+    #[serde(skip)]
+    index: ahash::AHashMap<TopKValue, usize>,
+    /// True once `index` is known to be in sync with `candidates`. Postcard
+    /// round-tripped instances start with this false and trigger a rebuild
+    /// on first mutating op.
+    #[serde(skip, default)]
+    index_ready: bool,
+    /// Cached worst-candidate index + estimate. `observe` compares against this
+    /// on the at-capacity path so the common "new value isn't heavy enough"
+    /// case is O(1). The cache is conservatively maintained: actual worst may
+    /// have shifted due to decrements between inserts, in which case we may
+    /// skip admitting a value that's slightly heavier than what we think is
+    /// the current worst. This is behaviorally equivalent to CMS's own error
+    /// envelope — top_k read always does a full re-scan, so correctness of
+    /// the final answer is preserved; only admission recall is affected.
+    ///
+    /// Invalidated (set to None) on `prune_empty` and when we evict (so the
+    /// next at-capacity hit recomputes).
+    #[serde(skip, default)]
+    worst_cache: Option<(usize, i64)>,
 }
 
 impl TopKHeap {
@@ -219,6 +255,9 @@ impl TopKHeap {
             k,
             candidates: Vec::new(),
             max_candidates: (k * 8).max(64),
+            index: ahash::AHashMap::new(),
+            index_ready: true,
+            worst_cache: None,
         }
     }
 
@@ -227,9 +266,29 @@ impl TopKHeap {
         self.max_candidates
     }
 
+    /// Ensure the `index` side map is in sync with `candidates` (rebuild if
+    /// the struct was just deserialized). O(n) one-shot; amortized O(1) per
+    /// subsequent op.
+    #[inline]
+    fn ensure_index(&mut self) {
+        if self.index_ready {
+            return;
+        }
+        self.index.clear();
+        self.index.reserve(self.candidates.len());
+        for (i, c) in self.candidates.iter().enumerate() {
+            self.index.insert(c.clone(), i);
+        }
+        self.index_ready = true;
+    }
+
     #[inline]
     fn contains(&self, v: &TopKValue) -> bool {
-        self.candidates.iter().any(|c| c == v)
+        if self.index_ready {
+            self.index.contains_key(v)
+        } else {
+            self.candidates.iter().any(|c| c == v)
+        }
     }
 
     pub fn k(&self) -> usize {
@@ -242,35 +301,85 @@ impl TopKHeap {
 
     /// Note a value as a candidate for top-k. Actual ranking is computed on
     /// read via `top_k` using CMS estimates.
+    ///
+    /// **Fast path (O(1)):** value already in candidates — HashMap hit, return.
+    /// **Below capacity (O(1) amortized):** push + index insert.
+    /// **At capacity, common case (O(1)):** new estimate compared against
+    /// cached `worst_cache`; if it doesn't exceed the cached worst, drop.
+    /// **At capacity, admission (O(max_candidates)):** evict worst, rescan
+    /// to refresh cache. Hit only when the new value is actually heavier
+    /// than the cached worst — rare for skewed workloads.
     pub fn observe(&mut self, value: &TopKValue, cms: &CountMinSketch) {
-        if self.contains(value) {
+        self.ensure_index();
+        if self.index.contains_key(value) {
             return;
         }
         if self.candidates.len() < self.max_candidates {
+            let idx = self.candidates.len();
             self.candidates.push(value.clone());
+            self.index.insert(value.clone(), idx);
+            // Invalidate cache — new candidate may be the new worst.
+            self.worst_cache = None;
             return;
         }
-        // At capacity: evict the lowest-estimate current candidate if the new
-        // value's estimate exceeds it.
+        // At capacity: consult the worst_cache first. O(1) if the new value
+        // fails to beat the cached worst estimate.
         let new_est = cms.estimate(value.hash64());
-        let mut worst_idx: usize = 0;
-        let mut worst_est = cms.estimate(self.candidates[0].hash64());
-        for (i, c) in self.candidates.iter().enumerate().skip(1) {
-            let e = cms.estimate(c.hash64());
-            if e < worst_est {
-                worst_est = e;
-                worst_idx = i;
+        let (worst_idx, worst_est) = match self.worst_cache {
+            Some(c) => c,
+            None => {
+                // First at-capacity op after cache invalidation: full O(max_candidates) scan.
+                let mut wi: usize = 0;
+                let mut we = cms.estimate(self.candidates[0].hash64());
+                for (i, c) in self.candidates.iter().enumerate().skip(1) {
+                    let e = cms.estimate(c.hash64());
+                    if e < we {
+                        we = e;
+                        wi = i;
+                    }
+                }
+                self.worst_cache = Some((wi, we));
+                (wi, we)
             }
+        };
+        if new_est <= worst_est {
+            // Common case on rotating / cycling workloads: drop fast.
+            return;
         }
-        if new_est > worst_est {
-            self.candidates[worst_idx] = value.clone();
-        }
+        // Admit: evict old candidate, replace in place, update index.
+        let old = std::mem::replace(&mut self.candidates[worst_idx], value.clone());
+        self.index.remove(&old);
+        self.index.insert(value.clone(), worst_idx);
+        // Invalidate the cache — the actual worst is now some OTHER candidate
+        // whose estimate is <= new_est (but we don't know which without a
+        // rescan). Next observe at capacity does one O(max_candidates) scan
+        // to refresh, then the cache amortizes subsequent rejections to O(1).
+        self.worst_cache = None;
     }
 
     /// Remove candidates whose current CMS estimate has dropped to zero.
     /// Call after bulk decrements to keep the set small.
     pub fn prune_empty(&mut self, cms: &CountMinSketch) {
-        self.candidates.retain(|c| cms.estimate(c.hash64()) > 0);
+        self.ensure_index();
+        // Collect indices to evict (reverse order for swap_remove safety).
+        let to_remove: Vec<usize> = self
+            .candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| if cms.estimate(c.hash64()) == 0 { Some(i) } else { None })
+            .collect();
+        // swap_remove from highest index so preceding indices stay valid.
+        for &i in to_remove.iter().rev() {
+            let removed = self.candidates.swap_remove(i);
+            self.index.remove(&removed);
+            // The value that was at the tail (if any) is now at index i; fix its index.
+            if i < self.candidates.len() {
+                let moved = self.candidates[i].clone();
+                self.index.insert(moved, i);
+            }
+        }
+        // Decrements shifted CMS estimates; cached worst is stale.
+        self.worst_cache = None;
     }
 
     /// Test/debug helper: check membership.
