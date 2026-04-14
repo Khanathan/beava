@@ -28,8 +28,8 @@ Key decisions (locked via design conversation 2026-04-14, captured in `.planning
 
 - [x] **Phase 21: Type system & SDK skeleton** — `@tl.stream`/`@tl.table` decorators, DAG walking from function params, schema inference via class attributes + type hints, operator catalog stubs, DataFrame-parity surface (completed 2026-04-14)
 - [x] **Phase 22: Stream aggregation engine** — `group_by().agg()` on Stream inputs, ring-buffer windowing, all aggregation operators (count/sum/avg/min/max/variance/stddev, hybrid UDDSketch percentile, hybrid HLL count_distinct, hybrid CMS+heap top_k, first/last/first_n/last_n/ema/lag) (completed 2026-04-14)
-- [ ] **Phase 23: Joins** — Stream↔Stream windowed (inner + left, `within=...`), Stream↔Table enrichment at event-time, Table↔Table full-key match
-- [ ] **Phase 24: Watermarks & event-time** — fixed 5s lateness, γ propagation (alignment at join/agg boundaries only), per-stream watermark, `_event_time` JSON field + wall-clock fallback, `tally_late_events_dropped_total` counter
+- [x] **Phase 23: Joins** — Stream↔Stream windowed (inner + left, `within=...`), Stream↔Table enrichment at event-time, Table↔Table full-key match (marker-based; per-Table row storage redesign folded into Phase 24) (completed 2026-04-14)
+- [ ] **Phase 24: Table storage redesign + Watermarks & event-time** — Table row primitive (`EntityState.table_rows` with Live/Tombstoned, v6→v7 snapshot, OP_PUSH_TABLE/OP_DELETE_TABLE opcodes, Python SDK `push(table,key,fields)`/`delete`); migrate Phase 23 TT-cascade off marker shim and un-ignore 7 deferred tests; per-stream watermarks (max(event_time)−5s, fixed) with γ propagation at join/agg boundaries, `_event_time` JSON field + wall-clock fallback, `tally_late_events_dropped_total{stream}` counter, event-time bucket routing, `event_time()` expression builtin — **1 / 5 plans complete** (24-01 storage primitive shipped 2026-04-14)
 - [ ] **Phase 25: Query surface, TTL, warnings** — GET_MULTI opcode, `/debug/warnings` unified health endpoint, `/debug/config-recommendations`, `tally suggest-config` CLI, TTL defaults (Table 30d, Stream 90d, tombstone 7d) + override pattern + suggestion engine
 - [ ] **Phase 26: Test migration, benchmarks, docs, demo rebuild** — port existing 744+ tests to new API, benchmark regression gate (within −5% of v2.0 baseline 1.1M eps), rewrite `docs/blog/streaming-shouldnt-require-a-platform-team.md`, rebuild Phase 20 traction demo against new API, sign-off
 
@@ -89,20 +89,30 @@ Key decisions (locked via design conversation 2026-04-14, captured in `.planning
   - [x] 23-02-PLAN.md — Stream↔Stream symmetric interval join (inner+left) with per-key event-time buffers and within-bounded eviction — shipped 2026-04-14
   - [ ] 23-03-PLAN.md — Table↔Table same-key join + tombstone propagation + cross-shape integration tests + 11-cell benchmark matrix regression gate
 
-### Phase 24: Watermarks & event-time
-**Goal**: Event-time flows through the engine with a fixed 5-second lateness tolerance; late events are dropped with an exposed counter; watermark aligns at join/agg boundaries.
-**Depends on**: Phase 22 (for aggregation boundary alignment), Phase 23 (for join boundary alignment)
+### Phase 24: Table storage redesign + Watermarks & event-time
+**Goal**: (a) Ship the proper per-Table row storage model (`EntityState.table_rows` with Live/Tombstoned, 7d grace, snapshot v6→v7) that Phase 23 deferred, migrate the TT-cascade off marker shims, un-ignore the 7 deferred TT tests; and (b) event-time flows through the engine with a fixed 5-second lateness tolerance, late events dropped with an exposed counter, watermark aligned at join/agg boundaries via γ propagation.
+**Depends on**: Phase 22 (for aggregation boundary alignment), Phase 23 (for join boundary alignment + storage carry-forward)
 **Requirements**: TBD
 **Success Criteria**:
-  1. Events carry an `_event_time` JSON field; absent → falls back to wall-clock arrival time
-  2. Each Stream source tracks its watermark = max(event_time seen) − 5s; exposed in `/debug/key/:stream`
-  3. Events with event_time < watermark are dropped; `tally_late_events_dropped_total{stream}` counter increments
-  4. Stateless ops (filter/map/select/drop/rename/with_columns/cast/fillna) pass watermark through without modification
-  5. Joins take `min(wm_left, wm_right)` as output watermark; ensures neither side emits prematurely
-  6. Aggregations attach watermark to their output Table; late-arriving-but-in-window events update the correct bucket
-  7. `now()` builtin returns wall-clock; `event_time()` builtin returns current event's event-time; semantics documented in SDK
-  8. Tests cover: out-of-order events within 5s land in correct bucket; events > 5s late are dropped; watermark alignment across multi-input operators
-**Plans:** TBD
+  1. `EntityState.table_rows: AHashMap<String, TableRow>` exists with `TableRowState::Live | Tombstoned { since }`; `upsert_table_row` / `tombstone_table_row` / `get_table_row` / `gc_tombstones(now)` on StateStore; 7d tombstone grace
+  2. Snapshot codec v7 round-trips Table rows including Tombstoned variant; v6 snapshots load with empty `table_rows` (backward-compat)
+  3. `OP_PUSH_TABLE` (0x0B) and `OP_DELETE_TABLE` (0x0C) opcodes wired in TCP + Python SDK (`app.push(table,key,fields)`, `app.delete(table,key)`); `app.get(key)` returns merged view of live table_rows + static_features + stream ops
+  4. Phase 23's TT-cascade reworked to consume `table_rows[A]` / `table_rows[B]` (not static_features markers); all 7 previously-ignored tests in `tests/test_join_table_table.rs` pass (total 12/12)
+  5. Events carry an `_event_time` JSON field; absent → falls back to wall-clock arrival time
+  6. Each Stream source tracks its watermark = max(event_time seen) − 5s; exposed in `/debug/key/:stream` and `/debug/streams/:name`
+  7. Events with event_time < watermark are dropped; `tally_late_events_dropped_total{stream}` counter increments
+  8. Stateless ops (filter/map/select/drop/rename/with_columns/cast/fillna) pass watermark through unchanged
+  9. Joins take `min(wm_left, wm_right)` as output watermark; aggregations attach watermark to output Table
+  10. Window buckets routed by event_time — out-of-order within 5s lands in correct historical bucket; past 5s dropped
+  11. `now()` returns wall-clock; `event_time()` builtin returns current event's event-time; callable in derive + filter expressions
+  12. Multi-shape integration DAG (source Stream + source Table + Enrich + Agg + TT-join) behaves correctly under in-order, out-of-order, late-drop, and tombstone-cascade scenarios
+  13. 9-cell benchmark matrix passes within ±5% of v0 BASELINE.json; 4 new characterization cells recorded
+**Plans:** 5 plans
+  - [ ] 24-01-PLAN.md — Table storage primitive (TableRow + TableRowState, StateStore methods, snapshot v6→v7 migration)
+  - [ ] 24-02-PLAN.md — OP_PUSH_TABLE / OP_DELETE_TABLE opcodes + Python SDK push/delete + merged GET view
+  - [ ] 24-03-PLAN.md — Migrate Phase 23 TT-cascade to table_rows; un-ignore 7 deferred TT tests; drop marker shim
+  - [ ] 24-04-PLAN.md — Per-stream watermarks + γ propagation + event-time bucket routing + event_time() builtin + /debug/streams
+  - [ ] 24-05-PLAN.md — Multi-shape integration tests + 9-cell benchmark gate + 4 Phase-24 characterization cells + phase SUMMARY
 
 ### Phase 25: Query surface, TTL, warnings
 **Goal**: Ship the public query verbs (GET / MGET / GET_MULTI), the unified `/debug/warnings` feed, config-recommendation engine, and TTL overrides with defaults.
@@ -152,6 +162,6 @@ Dependency graph:
 | 21. Type system & SDK skeleton | v0 | 3/3 | Complete   | 2026-04-14 |
 | 22. Stream aggregation engine | v0 | 4/4 | Complete   | 2026-04-14 |
 | 23. Joins | v0 | 2/3 | In Progress|  |
-| 24. Watermarks & event-time | v0 | 0/? | Not planned | - |
+| 24. Table storage + Watermarks & event-time | v0 | 0/5 | Planned | - |
 | 25. Query surface, TTL, warnings | v0 | 0/? | Not planned | - |
 | 26. Test migration, bench, docs, demo | v0 | 0/? | Not planned | - |

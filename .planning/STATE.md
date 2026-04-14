@@ -1,8 +1,8 @@
 # Project State
 
 **Current Milestone:** v0 Restructure
-**Active Phase:** 24 — Watermarks + Retractions + Per-Table Storage (next)
-**Last Updated:** 2026-04-14 (post-23-03 closeout)
+**Active Phase:** 24 — Watermarks + Retractions + Per-Table Storage (plan 01 complete)
+**Last Updated:** 2026-04-14 (post-24-01 closeout)
 
 ## Milestone Status
 
@@ -67,5 +67,7 @@ See `.planning/milestones/v2.0-ROADMAP.md` and `.planning/milestones/v2.1-PAUSED
   - 23-01: Stream↔Table enrichment (inner+left, `_right` collision passthrough) + composite group_by keys (lifted from 22-04 deferral); `stream_stream` / `table_table` stubbed for 23-02 / 23-03 — shipped (2026-04-14)
   - 23-02: Stream↔Stream symmetric interval windowed join (`StreamJoinBuffer` primitives + engine wiring, 14 tests) — shipped (2026-04-14)
   - 23-03: Table↔Table same-key join (marker-based cascade), 3-shape cross-integration tests (Rust + pytest), extended benchmark matrix with `join_small_1c`/`enrich_small_1c` characterization cells at 97-98% of `small_1c`. `gate_passed=true` on 7-run median matrix; all 9 cells within ±5% of BASELINE.json — shipped (2026-04-14)
-- Phase 24 (watermarks + retractions + **per-Table row storage**) — next
+- Phase 24 (watermarks + retractions + **per-Table row storage**) — active (1 / 5 plans complete)
   - Scope expansion: CEO Option 1 decision on 2026-04-14 folded the per-Table row storage redesign into Phase 24 (see `.planning/phases/23-joins/23-03-SUMMARY.md::Phase 24 handoff`). Storage redesign is the foundational task before watermark / retraction work — 7 TT tests `#[ignore]`'d in Phase 23 unblock once per-Table shadow storage lands.
+  - 24-01: Table row storage primitive (EntityState.table_rows, TableRow Live/Tombstoned, 4 StateStore methods with 7d grace GC, snapshot codec v7 with v6-on-read migration). 7 + 5 new tests; 679/679 lib; no regression in adjacent suites. Commits `fa260a8`, `3ac04ad`. Shipped 2026-04-14.
+  - 24-02: TCP opcode wiring (OP_PUSH_TABLE / OP_DELETE_TABLE) + SDK `app.push(table, key, fields)` / `app.delete(table, key)` — next.
