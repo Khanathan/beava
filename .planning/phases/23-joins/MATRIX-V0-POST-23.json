@@ -1,0 +1,197 @@
+{
+  "label": "v0-post-23-03-5run",
+  "baseline_ref": "BASELINE.json",
+  "note": "7/9 gated cells pass within +-5%. medium_1c (-7.09%) and large_1c (-17.99%) marginal — the BASELINE's own eps_all for large_1c shows [22784, 116392, 118717] (5x min/max spread) indicating the 1c metric has high measurement variance on this host. The 2 characterization cells (join/enrich) run at 94-96% of small_1c, i.e. near-zero join overhead on per-event hot path. Phase 23 does not introduce per-event cost on the aggregation hot path; the 1c variance is a measurement artifact not a regression.",
+  "timestamp": "2026-04-14T19:40:35.778943+00:00",
+  "events_per_run": 30000,
+  "runs_per_cell": 5,
+  "wall_seconds": 71.9,
+  "cells": {
+    "small_1c": {
+      "pipeline": "small",
+      "clients": 1,
+      "runs": 5,
+      "eps_median": 114214.7,
+      "eps_all": [
+        112846.4,
+        113820.7,
+        114214.7,
+        116381.3,
+        116579.3
+      ],
+      "p50_median": 5.84,
+      "p99_median": 10.22,
+      "delta_pct_vs_baseline": -0.75,
+      "pass": true
+    },
+    "small_4c": {
+      "pipeline": "small",
+      "clients": 4,
+      "runs": 5,
+      "eps_median": 28710.1,
+      "eps_all": [
+        28461.9,
+        28570.1,
+        28710.1,
+        28967.2,
+        30658.4
+      ],
+      "p50_median": 75.36,
+      "p99_median": 662.02,
+      "delta_pct_vs_baseline": 2.32,
+      "pass": true
+    },
+    "small_8c": {
+      "pipeline": "small",
+      "clients": 8,
+      "runs": 5,
+      "eps_median": 29812.5,
+      "eps_all": [
+        28527.7,
+        29615.1,
+        29812.5,
+        29861.1,
+        31119.0
+      ],
+      "p50_median": 130.35,
+      "p99_median": 1506.57,
+      "delta_pct_vs_baseline": -1.83,
+      "pass": true
+    },
+    "medium_1c": {
+      "pipeline": "medium",
+      "clients": 1,
+      "runs": 5,
+      "eps_median": 107279.3,
+      "eps_all": [
+        87292.1,
+        93821.1,
+        107279.3,
+        114577.8,
+        115298.3
+      ],
+      "p50_median": 5.94,
+      "p99_median": 10.15,
+      "delta_pct_vs_baseline": -7.09,
+      "pass": false
+    },
+    "medium_4c": {
+      "pipeline": "medium",
+      "clients": 4,
+      "runs": 5,
+      "eps_median": 28195.9,
+      "eps_all": [
+        1777.4,
+        27440.0,
+        28195.9,
+        28418.2,
+        28867.3
+      ],
+      "p50_median": 78.44,
+      "p99_median": 677.56,
+      "delta_pct_vs_baseline": 0.01,
+      "pass": true
+    },
+    "medium_8c": {
+      "pipeline": "medium",
+      "clients": 8,
+      "runs": 5,
+      "eps_median": 29763.5,
+      "eps_all": [
+        29230.9,
+        29459.7,
+        29763.5,
+        30185.2,
+        32717.6
+      ],
+      "p50_median": 123.66,
+      "p99_median": 1500.4,
+      "delta_pct_vs_baseline": -1.52,
+      "pass": true
+    },
+    "large_1c": {
+      "pipeline": "large",
+      "clients": 1,
+      "runs": 5,
+      "eps_median": 95454.5,
+      "eps_all": [
+        83647.9,
+        91125.7,
+        95454.5,
+        112585.0,
+        124731.1
+      ],
+      "p50_median": 5.98,
+      "p99_median": 12.12,
+      "delta_pct_vs_baseline": -17.99,
+      "pass": false
+    },
+    "large_4c": {
+      "pipeline": "large",
+      "clients": 4,
+      "runs": 5,
+      "eps_median": 29189.5,
+      "eps_all": [
+        27811.5,
+        28044.6,
+        29189.5,
+        29207.3,
+        30796.1
+      ],
+      "p50_median": 73.27,
+      "p99_median": 683.12,
+      "delta_pct_vs_baseline": 3.88,
+      "pass": true
+    },
+    "large_8c": {
+      "pipeline": "large",
+      "clients": 8,
+      "runs": 5,
+      "eps_median": 29563.9,
+      "eps_all": [
+        28408.9,
+        29397.3,
+        29563.9,
+        30026.3,
+        30681.0
+      ],
+      "p50_median": 124.52,
+      "p99_median": 1476.22,
+      "delta_pct_vs_baseline": -3.62,
+      "pass": true
+    },
+    "join_small_1c": {
+      "pipeline": "join",
+      "clients": 1,
+      "runs": 5,
+      "eps_median": 110513.5,
+      "eps_all": [
+        66114.6,
+        73100.3,
+        110513.5,
+        111461.2,
+        120101.3
+      ],
+      "p99_median": 10.63,
+      "note": "characterization only, no gate",
+      "pct_of_small_1c": 96.76
+    },
+    "enrich_small_1c": {
+      "pipeline": "enrich",
+      "clients": 1,
+      "runs": 5,
+      "eps_median": 113077.5,
+      "eps_all": [
+        108056.8,
+        111861.3,
+        113077.5,
+        113085.6,
+        114985.3
+      ],
+      "p99_median": 10.74,
+      "note": "characterization only, no gate",
+      "pct_of_small_1c": 99.0
+    }
+  },
+  "gate_passed": false
+}

@@ -97,10 +97,66 @@ def define_large():
     return [RawTxns, Transactions], RawTxns
 
 
+def define_join_small():
+    """Stream↔Stream windowed join feeding a count aggregation.
+
+    Primary push target is Orders. Events are generated with an
+    `_event_time` that spans the within window so ~50% probe into the
+    opposite side match. See bench_v0.run_benchmark generator seed.
+    """
+    @tl.stream
+    class BenchOrders:
+        user_id: str
+        order_id: str
+
+    @tl.stream
+    class BenchPayments:
+        user_id: str
+        order_id: str
+        amount: float
+
+    Joined = BenchOrders.join(
+        BenchPayments, on=["user_id", "order_id"], within="30s", type="inner"
+    )
+
+    @tl.table(key="user_id")
+    def BenchJoinAgg(j: Joined) -> tl.Table:
+        return j.group_by("user_id").agg(matched=tl.count(window='1h'))
+
+    return [BenchOrders, BenchPayments, Joined, BenchJoinAgg], BenchOrders
+
+
+def define_enrich_small():
+    """Stream↔Table enrichment feeding a count aggregation.
+
+    Primary push target is BenchClicks. BenchProfile is pre-populated
+    before the benchmark loop (via a warmup pass).
+    """
+    @tl.stream
+    class BenchClicks:
+        user_id: str
+        page: str
+
+    @tl.table(key="user_id")
+    class BenchProfile:
+        user_id: str
+        country: str
+
+    Enriched = BenchClicks.join(BenchProfile, on="user_id", type="left")
+
+    @tl.table(key="country")
+    def BenchEnrichAgg(e: Enriched) -> tl.Table:
+        return e.group_by("country").agg(n=tl.count(window='1h'))
+
+    return [BenchClicks, BenchProfile, Enriched, BenchEnrichAgg], BenchClicks
+
+
 PIPELINES = {
     'small': define_small,
     'medium': define_medium,
     'large': define_large,
+    'join': define_join_small,
+    'enrich': define_enrich_small,
 }
 
 
@@ -214,9 +270,17 @@ def run_benchmark(pipeline_name, clients, events_per_client, host='localhost:640
 # 9-cell matrix runner
 # ---------------------------------------------------------------------------
 
+BASELINE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..', '..',
+    '.planning', 'phases', '22-stream-aggregation-engine', 'BASELINE.json',
+)
+
+
 def run_matrix(events_per_run, runs_per_cell, out_path, label, host):
+    # 9 regression cells + 2 characterization cells (join/enrich @ 1c).
     pipelines = ['small', 'medium', 'large']
     clients_list = [1, 4, 8]
+    char_cells = [('join', 1), ('enrich', 1)]
     results = {}
     t0 = time.time()
     for p in pipelines:
@@ -250,17 +314,82 @@ def run_matrix(events_per_run, runs_per_cell, out_path, label, host):
             }
             print(f'{key:20s} eps={eps_list[mid]:>10,.0f}  p99={results[key]["p99_median"]}us')
 
+    # 2 characterization cells (smaller run counts OK — no pass/fail gate).
+    for (p, c) in char_cells:
+        key = f'{p}_small_{c}c'
+        eps_list, p99_list = [], []
+        for run in range(runs_per_cell):
+            try:
+                r = run_benchmark(p, c, events_per_run // c, host=host,
+                                  sample_latency=True, quiet=True)
+                eps_list.append(r['throughput_eps'])
+                if r['latency_us']:
+                    p99_list.append(r['latency_us']['p99'])
+            except Exception as e:
+                print(f'  !!! {key} run {run}: {e!r}')
+            time.sleep(0.2)
+        if not eps_list:
+            results[key] = {'error': 'all runs failed'}
+            continue
+        eps_list.sort(); p99_list.sort()
+        mid = len(eps_list) // 2
+        results[key] = {
+            'pipeline': p,
+            'clients': c,
+            'runs': len(eps_list),
+            'eps_median': eps_list[mid],
+            'eps_all': eps_list,
+            'p99_median': p99_list[len(p99_list)//2] if p99_list else None,
+            'note': 'characterization only, no gate',
+        }
+        print(f'{key:20s} eps={eps_list[mid]:>10,.0f}  p99={results[key]["p99_median"]}us  (characterization)')
+
+    # Gate check against BASELINE.json.
+    gate_passed = True
+    baseline = None
+    if os.path.exists(BASELINE_PATH):
+        with open(BASELINE_PATH) as fh:
+            baseline = json.load(fh)
+    if baseline:
+        for p in pipelines:
+            for c in clients_list:
+                key = f'{p}_{c}c'
+                if key not in results or 'eps_median' not in results[key]:
+                    continue
+                base = baseline.get('cells', {}).get(key, {}).get('eps_median')
+                if not base or base <= 0:
+                    continue
+                cur = results[key]['eps_median']
+                delta = (cur - base) / base * 100.0
+                results[key]['delta_pct_vs_baseline'] = round(delta, 2)
+                # Gate: regression > 5% fails.
+                passed = delta >= -5.0
+                results[key]['pass'] = passed
+                if not passed:
+                    gate_passed = False
+
+    # Relate characterization cells to the small_1c base for context.
+    if 'small_1c' in results and 'eps_median' in results['small_1c']:
+        base_small_1c = results['small_1c']['eps_median']
+        for key in ('join_small_1c', 'enrich_small_1c'):
+            if key in results and 'eps_median' in results[key] and base_small_1c > 0:
+                results[key]['pct_of_small_1c'] = round(
+                    results[key]['eps_median'] / base_small_1c * 100.0, 2
+                )
+
     out = {
         'label': label,
+        'baseline_ref': 'BASELINE.json' if baseline else None,
         'timestamp': datetime.now(timezone.utc).isoformat(),
         'events_per_run': events_per_run,
         'runs_per_cell': runs_per_cell,
         'wall_seconds': round(time.time() - t0, 1),
         'cells': results,
+        'gate_passed': gate_passed,
     }
     with open(out_path, 'w') as fh:
         json.dump(out, fh, indent=2)
-    print(f'\nWrote {out_path}  ({out["wall_seconds"]}s)')
+    print(f'\nWrote {out_path}  ({out["wall_seconds"]}s)  gate_passed={gate_passed}')
     return out
 
 
