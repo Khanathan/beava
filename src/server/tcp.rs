@@ -42,6 +42,18 @@ pub struct Metrics {
     /// Phase 15: number of snapshot cycles skipped because a previous write was
     /// still in progress.
     pub snapshots_skipped: u64,
+    /// Phase 25-02: per-stream history-log compaction counter. Bumped once per
+    /// successful compaction that removed ≥1 entry. Exposed as
+    /// `tally_history_compacted_total{stream}`.
+    pub history_compacted_total: std::collections::HashMap<String, u64>,
+    /// Phase 25-02: per-stream backfill-miss counter. Bumped when a backfill
+    /// read returned an entry set that straddled the compaction floor (some
+    /// events are guaranteed missing). Exposed as
+    /// `tally_history_backfill_misses_total{stream}`.
+    pub history_backfill_misses_total: std::collections::HashMap<String, u64>,
+    /// Phase 25-02: largest observed backfill span per stream in seconds.
+    /// Exposed as `tally_max_backfill_span_seen{stream}`.
+    pub max_backfill_span_seen: std::collections::HashMap<String, u64>,
 }
 
 /// Status of a single backfill task.
@@ -132,6 +144,20 @@ pub struct ConcurrentAppState {
     /// Phase 20: when true, `GET /` serves the public demo page; when false
     /// it serves the debug UI. Set via `--public-mode` / `TALLY_PUBLIC_MODE`.
     pub public_mode: bool,
+
+    /// Phase 25-02: per-Table eviction tracker — bloom filter of recently-
+    /// evicted keys plus per-Table eviction and eviction-then-reinit counters.
+    /// Drives the `/debug/config-recommendations` endpoint and
+    /// `tally_ttl_evictions_total` / `tally_ttl_eviction_then_reinit_total`
+    /// on `/metrics`.
+    pub eviction_tracker: Arc<crate::state::eviction_tracker::EvictionTracker>,
+
+    /// Phase 25-02: shared signal bus backing `/debug/warnings`. All warning
+    /// sources (REGISTER failures, snapshot failures, memory pressure,
+    /// late-drop rate, perf SLO, config recommendations from 25-03) emit
+    /// into this registry via [`crate::server::signals::SignalRegistry::record`].
+    /// In-memory only; restart loses history. See `src/server/signals.rs`.
+    pub signals: crate::server::signals::SharedRegistry,
 }
 
 /// Phase 20: a single entry in the `/public/recent-events` feed.
@@ -247,6 +273,8 @@ pub fn make_concurrent_state_full(
         started_at: std::time::Instant::now(),
         recent_events: PLMutex::new(RecentEventsRing::new()),
         public_mode,
+        eviction_tracker: Arc::new(crate::state::eviction_tracker::EvictionTracker::new()),
+        signals: crate::server::signals::SignalRegistry::new_default().into_shared(),
     })
 }
 
@@ -1811,6 +1839,16 @@ fn handle_push_table(
         fields.insert(k, json_to_feature_value(v));
     }
 
+    // Phase 25-02: eviction-then-reinit detection. If this (table, key) was
+    // evicted recently by TTL, the tracker's bloom will hit and the reinit
+    // counter bumps automatically. This is ONLY meaningful when the row did
+    // NOT already exist in state — if the row is still live, the upsert is
+    // just an update. So we check for existence BEFORE upsert.
+    let pre_existed = state.store.get_table_row(key, table_name).is_some();
+    if !pre_existed {
+        state.eviction_tracker.check_reinit(table_name, key);
+    }
+
     state
         .store
         .upsert_table_row(key, table_name, fields, event_time);
@@ -1958,6 +1996,45 @@ pub async fn run_backfill(
                     stream_state
                         .operators
                         .retain(|(name, _)| !feature_names.contains(name));
+                }
+            }
+        }
+    }
+
+    // Phase 25-02: detect backfill miss — the configured history_ttl is
+    // wider than what the log still holds. Compare the oldest entry's
+    // timestamp against (now - history_ttl); if the oldest surviving entry
+    // is younger than the cutoff, compaction has trimmed the head of the
+    // log and this backfill is guaranteed incomplete.
+    if let (Some(earliest), Some(history_ttl)) = (
+        entries.iter().map(|e| e.timestamp).min(),
+        state
+            .engine
+            .read()
+            .get_stream(&stream_name)
+            .and_then(|s| s.history_ttl),
+    ) {
+        let now_ts = SystemTime::now();
+        let window_floor = now_ts
+            .checked_sub(history_ttl)
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if earliest > window_floor {
+            let mut m = state.metrics.lock();
+            *m.history_backfill_misses_total
+                .entry(stream_name.clone())
+                .or_insert(0) += 1;
+            // Track max observed backfill span (seconds).
+            if let Some(latest) = entries.iter().map(|e| e.timestamp).max() {
+                let span = latest
+                    .duration_since(earliest)
+                    .unwrap_or(std::time::Duration::ZERO)
+                    .as_secs();
+                let cur = m
+                    .max_backfill_span_seen
+                    .entry(stream_name.clone())
+                    .or_insert(0);
+                if span > *cur {
+                    *cur = span;
                 }
             }
         }

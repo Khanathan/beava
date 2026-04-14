@@ -325,6 +325,77 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
             ));
         }
     }
+
+    // Phase 25-02: TTL eviction + history retention counters.
+    let escape = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    body.push_str(
+        "# HELP tally_ttl_evictions_total TTL-triggered evictions per Table\n\
+         # TYPE tally_ttl_evictions_total counter\n",
+    );
+    for (table, count) in state.eviction_tracker.evictions_snapshot() {
+        body.push_str(&format!(
+            "tally_ttl_evictions_total{{table=\"{}\"}} {}\n",
+            escape(&table),
+            count
+        ));
+    }
+    body.push_str(
+        "# HELP tally_ttl_eviction_then_reinit_total Keys evicted by TTL then \
+         re-observed within the bloom window (signal: TTL too short)\n\
+         # TYPE tally_ttl_eviction_then_reinit_total counter\n",
+    );
+    for (table, count) in state.eviction_tracker.reinits_snapshot() {
+        body.push_str(&format!(
+            "tally_ttl_eviction_then_reinit_total{{table=\"{}\"}} {}\n",
+            escape(&table),
+            count
+        ));
+    }
+    body.push_str(
+        "# HELP tally_bloom_memory_bytes Memory held by per-Table eviction bloom filters\n\
+         # TYPE tally_bloom_memory_bytes gauge\n",
+    );
+    body.push_str(&format!(
+        "tally_bloom_memory_bytes {}\n",
+        state.eviction_tracker.memory_bytes()
+    ));
+    {
+        let m = state.metrics.lock();
+        body.push_str(
+            "# HELP tally_history_compacted_total History-log compactions per stream that removed ≥1 entry\n\
+             # TYPE tally_history_compacted_total counter\n",
+        );
+        for (stream, count) in m.history_compacted_total.iter() {
+            body.push_str(&format!(
+                "tally_history_compacted_total{{stream=\"{}\"}} {}\n",
+                escape(stream),
+                count
+            ));
+        }
+        body.push_str(
+            "# HELP tally_history_backfill_misses_total Backfill requests whose window \
+             straddled the compaction floor\n\
+             # TYPE tally_history_backfill_misses_total counter\n",
+        );
+        for (stream, count) in m.history_backfill_misses_total.iter() {
+            body.push_str(&format!(
+                "tally_history_backfill_misses_total{{stream=\"{}\"}} {}\n",
+                escape(stream),
+                count
+            ));
+        }
+        body.push_str(
+            "# HELP tally_max_backfill_span_seen Largest observed backfill span per stream (seconds)\n\
+             # TYPE tally_max_backfill_span_seen gauge\n",
+        );
+        for (stream, span) in m.max_backfill_span_seen.iter() {
+            body.push_str(&format!(
+                "tally_max_backfill_span_seen{{stream=\"{}\"}} {}\n",
+                escape(stream),
+                span
+            ));
+        }
+    }
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4")],
@@ -1163,6 +1234,99 @@ async fn trigger_snapshot(
     }
 }
 
+/// Phase 25-02: `GET /debug/config-recommendations` — surface
+/// TTL/history_ttl suggestions derived from observed eviction-then-reinit
+/// signals. Admin-gated (loopback-or-token).
+///
+/// Wire schema (see `25-CONTEXT.md §Suggestion engine`):
+/// `{ "generated_at": RFC3339, "observation_window": "7d",
+///    "recommendations": [ConfigRecommendation, ...] }`
+async fn debug_config_recommendations(
+    State(state): State<SharedState>,
+) -> Json<serde_json::Value> {
+    let engine = state.engine.read();
+    let recs = crate::engine::recommend::recommend_config(&engine, &state.eviction_tracker);
+    drop(engine);
+    let now_rfc3339 = {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        format_rfc3339_utc(secs)
+    };
+    Json(serde_json::json!({
+        "generated_at": now_rfc3339,
+        "observation_window": "7d",
+        "recommendations": recs,
+    }))
+}
+
+/// Phase 25-02: `GET /debug/warnings` — unified severity-sorted feed of
+/// live signals from every warning source (REGISTER / snapshot /
+/// memory-pressure / late-drop / perf / config). Admin-gated.
+///
+/// Query params:
+///   - `category=config|data_quality|operational|safety|performance` —
+///     optional filter; invalid values return the full unfiltered list.
+///
+/// Response shape (frozen per `25-CONTEXT.md §decisions`):
+/// ```json
+/// { "generated_at": RFC3339,
+///   "observation_window": "7d",
+///   "warnings": [ {id, severity, category, title, detail, action?,
+///                  first_seen, last_seen, evidence}, ... ] }
+/// ```
+async fn debug_warnings(
+    State(state): State<SharedState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let category = params
+        .get("category")
+        .and_then(|s| crate::server::signals::Category::parse(s));
+    let now = std::time::SystemTime::now();
+    // Age out stale entries before snapshotting.
+    state.signals.write().age_out(now);
+    let warnings = state.signals.read().snapshot_sorted(now, category);
+    let now_rfc3339 = {
+        let secs = now
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        format_rfc3339_utc(secs)
+    };
+    Json(serde_json::json!({
+        "generated_at": now_rfc3339,
+        "observation_window": "7d",
+        "warnings": warnings,
+    }))
+}
+
+/// Minimal RFC3339 / ISO 8601 formatter for a UTC unix-seconds timestamp.
+/// Produces e.g. `2026-04-14T21:59:53Z`. Avoids a chrono dependency.
+fn format_rfc3339_utc(secs: u64) -> String {
+    // Gregorian conversion (standard algorithm).
+    let days = (secs / 86400) as i64;
+    let sod = (secs % 86400) as u32;
+    let h = sod / 3600;
+    let m = (sod % 3600) / 60;
+    let s = sod % 60;
+    // Days since 1970-01-01 → y-m-d via Howard Hinnant's algorithm.
+    let z = days + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m_cal = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = y + if m_cal <= 2 { 1 } else { 0 };
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        y, m_cal, d, h, m, s
+    )
+}
+
 async fn debug_backfill(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let tasks = state
         .backfill_tracker
@@ -1228,6 +1392,11 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/debug/streams/{name}", get(debug_stream))
         .route("/debug/memory", get(debug_memory))
         .route("/debug/backfill", get(debug_backfill))
+        .route(
+            "/debug/config-recommendations",
+            get(debug_config_recommendations),
+        )
+        .route("/debug/warnings", get(debug_warnings))
         .route("/debug/topology", get(debug_topology))
         .route("/debug/throughput", get(debug_throughput))
         .route("/debug/latency", get(debug_latency))
