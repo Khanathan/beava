@@ -84,9 +84,9 @@ Key decisions (locked via design conversation 2026-04-14, captured in `.planning
   5. Outer joins rejected at registration with "deferred to v0.1" error
   6. Partial-key joins rejected with "full-key required in v0" error
   7. Tests cover: identical-key joins, composite-key joins, late-event retractions through Stream↔Stream joins
-**Plans:** 3 plans (1/3 complete)
+**Plans:** 3 plans (2/3 complete)
   - [x] 23-01-PLAN.md — Stream↔Table enrichment (inner+left, _right suffix) + composite group_by keys (deferred from 22-04) — shipped 2026-04-14
-  - [ ] 23-02-PLAN.md — Stream↔Stream symmetric interval join (inner+left) with per-key event-time buffers and within-bounded eviction
+  - [x] 23-02-PLAN.md — Stream↔Stream symmetric interval join (inner+left) with per-key event-time buffers and within-bounded eviction — shipped 2026-04-14
   - [ ] 23-03-PLAN.md — Table↔Table same-key join + tombstone propagation + cross-shape integration tests + 11-cell benchmark matrix regression gate
 
 ### Phase 24: Watermarks & event-time

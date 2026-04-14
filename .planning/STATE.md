@@ -1,8 +1,8 @@
 # Project State
 
 **Current Milestone:** v0 Restructure
-**Active Phase:** 23 — Joins (1/3 plans complete; 23-02 stream↔stream + 23-03 table↔table next)
-**Last Updated:** 2026-04-14 (post-23-01)
+**Active Phase:** 23 — Joins (2/3 plans complete; 23-03 table↔table next)
+**Last Updated:** 2026-04-14 (post-23-02)
 
 ## Milestone Status
 
