@@ -10,7 +10,7 @@
 use crate::engine::hll::DistinctCountOp;
 use crate::engine::operators::{
     AvgOp, CountOp, EmaOp, ExactMaxOp, ExactMinOp, FirstNOp, FirstOp, LagOp, LastNOp, LastOp,
-    MaxOp, MinOp, Operator, PercentileOp, StddevOp, SumOp, TopKOp, VarianceOp,
+    MaxOp, MinOp, Operator, PercentileOp, StddevOp, StreamJoinBuffer, SumOp, TopKOp, VarianceOp,
 };
 use crate::error::TallyError;
 use crate::state::store::StaticFeature;
@@ -57,6 +57,9 @@ pub enum OperatorState {
     Variance(VarianceOp),
     TopK(TopKOp),
     FirstN(FirstNOp),
+    // Phase 23-02: Stream↔Stream symmetric interval join buffer.
+    // State-only: the cascade mutates it directly via probe/insert/evict.
+    StreamJoinBuffer(StreamJoinBuffer),
 }
 
 impl OperatorState {
@@ -85,6 +88,7 @@ impl OperatorState {
             Self::Variance(op) => op.push(event, enrichment, now),
             Self::TopK(op) => op.push(event, enrichment, now),
             Self::FirstN(op) => op.push(event, enrichment, now),
+            Self::StreamJoinBuffer(op) => op.push(event, enrichment, now),
         }
     }
 
@@ -108,6 +112,7 @@ impl OperatorState {
             Self::Variance(op) => op.read(now),
             Self::TopK(op) => op.read(now),
             Self::FirstN(op) => op.read(now),
+            Self::StreamJoinBuffer(op) => op.read(now),
         }
     }
 
@@ -133,6 +138,7 @@ impl OperatorState {
             Self::Variance(op) => op.estimated_bytes(),
             Self::TopK(op) => op.estimated_bytes(),
             Self::FirstN(op) => op.estimated_bytes(),
+            Self::StreamJoinBuffer(op) => op.estimated_bytes(),
         }
     }
 
@@ -158,6 +164,7 @@ impl OperatorState {
             Self::Variance(op) => op.num_buckets(),
             Self::TopK(op) => op.num_buckets(),
             Self::FirstN(op) => op.num_buckets(),
+            Self::StreamJoinBuffer(op) => op.num_buckets(),
         }
     }
 
@@ -194,6 +201,7 @@ impl OperatorState {
             Self::Variance(_) => "variance",
             Self::TopK(_) => "top_k",
             Self::FirstN(_) => "first_n",
+            Self::StreamJoinBuffer(_) => "stream_join_buffer",
         }
     }
 }

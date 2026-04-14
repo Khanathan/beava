@@ -2222,6 +2222,162 @@ impl Operator for FirstNOp {
     }
 }
 
+// ======================== StreamJoinBuffer (Phase 23-02) ========================
+
+/// Which side of a Stream↔Stream join a buffered event belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum JoinSide {
+    Left,
+    Right,
+}
+
+/// Per-key event-time-indexed buffers for Stream↔Stream symmetric interval
+/// windowed joins (Phase 23-02). Each buffer holds raw event payloads
+/// (`serde_json::Map<String, Value>`) bucketed by `_event_time` in
+/// milliseconds since the unix epoch.
+///
+/// Eviction runs after every `insert()` and drops entries older than
+/// `max_seen_on_that_side - within_ms` on both sides. This bounds buffer
+/// memory to O(event_rate × within_ms) per key per side.
+///
+/// The operator does not participate in the normal push/read pipeline —
+/// `Operator::push` is a no-op and `Operator::read` returns Missing. The
+/// cascade handler in `pipeline::push_with_cascade_internal` calls
+/// `probe`/`insert`/`evict` directly. The `Operator` trait impl exists so
+/// that `OperatorState::StreamJoinBuffer` can live alongside other operators
+/// inside `StreamEntityState.operators` (same snapshot codec path).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamJoinBuffer {
+    /// Left-side buffered events indexed by event_time_ms → Vec<event_json>.
+    /// Events are stored as stringified JSON so postcard (which cannot
+    /// serialize `serde_json::Value`) can round-trip the buffer via the
+    /// snapshot codec. Callers re-parse on probe.
+    pub left: BTreeMap<u64, Vec<String>>,
+    /// Right-side buffered events indexed by event_time_ms → Vec<event_json>.
+    pub right: BTreeMap<u64, Vec<String>>,
+    /// Window half-width in milliseconds. Matches emit when
+    /// `|left_ts - right_ts| <= within_ms`.
+    pub within_ms: u64,
+    /// Maximum left-side event_time_ms seen. Eviction floor on the left is
+    /// `max_left_ms.saturating_sub(within_ms)`.
+    pub max_left_ms: u64,
+    /// Maximum right-side event_time_ms seen. Eviction floor on the right is
+    /// `max_right_ms.saturating_sub(within_ms)`.
+    pub max_right_ms: u64,
+}
+
+impl StreamJoinBuffer {
+    pub fn new(within_ms: u64) -> Self {
+        Self {
+            left: BTreeMap::new(),
+            right: BTreeMap::new(),
+            within_ms,
+            max_left_ms: 0,
+            max_right_ms: 0,
+        }
+    }
+
+    /// Probe the OPPOSITE side for events whose event_time falls in
+    /// `[event_time_ms - within_ms, event_time_ms + within_ms]` (inclusive
+    /// boundaries per the symmetric interval join spec).
+    ///
+    /// Returns cloned event payloads. Ordering follows BTreeMap range order
+    /// (ascending by event_time, then by insertion order within a timestamp).
+    pub fn probe(
+        &self,
+        probing_side: JoinSide,
+        event_time_ms: u64,
+    ) -> Vec<serde_json::Map<String, serde_json::Value>> {
+        let opposite = match probing_side {
+            JoinSide::Left => &self.right,
+            JoinSide::Right => &self.left,
+        };
+        let lo = event_time_ms.saturating_sub(self.within_ms);
+        let hi = event_time_ms.saturating_add(self.within_ms);
+        let mut out = Vec::new();
+        for (_, events) in opposite.range(lo..=hi) {
+            for ev in events {
+                out.push(ev.clone());
+            }
+        }
+        out
+    }
+
+    /// Insert an event into the appropriate side's buffer and bump
+    /// `max_<side>_ms` if the event_time is later than anything seen.
+    /// Multiple events at the same event_time accumulate as a Vec.
+    pub fn insert(
+        &mut self,
+        side: JoinSide,
+        event_time_ms: u64,
+        event: serde_json::Map<String, serde_json::Value>,
+    ) {
+        match side {
+            JoinSide::Left => {
+                self.left.entry(event_time_ms).or_default().push(event);
+                if event_time_ms > self.max_left_ms {
+                    self.max_left_ms = event_time_ms;
+                }
+            }
+            JoinSide::Right => {
+                self.right.entry(event_time_ms).or_default().push(event);
+                if event_time_ms > self.max_right_ms {
+                    self.max_right_ms = event_time_ms;
+                }
+            }
+        }
+    }
+
+    /// Drop events on both sides older than `max_seen_on_that_side - within_ms`.
+    /// Called after every insert. Bounded O(evicted) per call.
+    pub fn evict(&mut self) {
+        let left_floor = self.max_left_ms.saturating_sub(self.within_ms);
+        let right_floor = self.max_right_ms.saturating_sub(self.within_ms);
+        // BTreeMap retain: drop keys strictly less than the floor.
+        self.left.retain(|&k, _| k >= left_floor);
+        self.right.retain(|&k, _| k >= right_floor);
+    }
+
+    /// Total buffered event count across both sides. For tests / metrics.
+    pub fn total_len(&self) -> usize {
+        self.left.values().map(|v| v.len()).sum::<usize>()
+            + self.right.values().map(|v| v.len()).sum::<usize>()
+    }
+}
+
+impl Operator for StreamJoinBuffer {
+    fn push(
+        &mut self,
+        _event: &serde_json::Value,
+        _enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        _now: SystemTime,
+    ) -> Result<(), TallyError> {
+        // Stream↔Stream buffers are updated via the cascade handler's
+        // `insert`/`evict` calls, not via the standard Operator::push path.
+        Ok(())
+    }
+
+    fn read(&mut self, _now: SystemTime) -> FeatureValue {
+        // No scalar read value; this operator exists purely as a state
+        // carrier. The cascade emits joined events directly to downstreams.
+        FeatureValue::Missing
+    }
+
+    fn estimated_bytes(&self) -> usize {
+        // Rough accounting: BTreeMap node overhead + per-event JSON blob.
+        // We size each buffered map at ~128 bytes (a typical small event);
+        // the real size depends on event shape but this is good enough for
+        // `/debug/memory` reporting.
+        const PER_EVENT_BYTES: usize = 128;
+        (self.total_len()) * PER_EVENT_BYTES
+            + (self.left.len() + self.right.len()) * 48 // BTreeMap node overhead
+    }
+
+    fn num_buckets(&self) -> usize {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
