@@ -73,12 +73,18 @@ Uses a `RingBuffer<u64>` with `num_buckets = ceil(window / bucket)`. Each bucket
 ```python
 import tally as tl
 
-@tl.dataset(key="user_id")
-class Transactions:
-    tx_count_30m  = tl.count(window="30m")
-    tx_count_1h   = tl.count(window="1h")
-    tx_count_24h  = tl.count(window="24h")
-    failed_30m    = tl.count(window="30m", where="status == 'failed'")
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        tx_count_30m=tl.count(window="30m"),
+        tx_count_1h=tl.count(window="1h"),
+        tx_count_24h=tl.count(window="24h"),
+        failed_30m=tl.count(window="30m", where="status == 'failed'"),
+    )
 ```
 
 ---
@@ -121,10 +127,16 @@ Uses two parallel ring buffers: `RingBuffer<f64>` for the running sum and `RingB
 **Example:**
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    tx_sum_1h  = tl.sum("amount", window="1h")
-    tx_sum_24h = tl.sum("amount", window="24h")
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        tx_sum_1h=tl.sum("amount", window="1h"),
+        tx_sum_24h=tl.sum("amount", window="24h"),
+    )
 ```
 
 ---
@@ -167,10 +179,16 @@ Uses two parallel ring buffers: `RingBuffer<u64>` for count and `RingBuffer<f64>
 **Example:**
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    avg_amount_1h  = tl.avg("amount", window="1h")
-    avg_amount_24h = tl.avg("amount", window="24h")
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        avg_amount_1h=tl.avg("amount", window="1h"),
+        avg_amount_24h=tl.avg("amount", window="24h"),
+    )
 ```
 
 ---
@@ -214,9 +232,15 @@ Uses `RingBuffer<MinBucket>` where each bucket defaults to `+INFINITY`. On push,
 **Example:**
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    min_amount_24h = tl.min("amount", window="24h")
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        min_amount_24h=tl.min("amount", window="24h"),
+    )
 ```
 
 ---
@@ -260,9 +284,15 @@ Uses `RingBuffer<MaxBucket>` where each bucket defaults to `-INFINITY`. On push,
 **Example:**
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    max_amount_24h = tl.max("amount", window="24h")
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        max_amount_24h=tl.max("amount", window="24h"),
+    )
 ```
 
 ---
@@ -307,10 +337,17 @@ Uses `RingBuffer<StddevBucket>` where each `StddevBucket` holds `{count: u64, su
 **Example:**
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    amount_stddev_1h = tl.stddev("amount", window="1h")
-    amount_vs_norm   = tl.derive("((_event.amount - avg_amount_1h) / amount_stddev_1h)")
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        amount_stddev_1h=tl.stddev("amount", window="1h"),
+        avg_amount_1h=tl.avg("amount", window="1h"),
+    )
+    amount_vs_norm = tl.derive("((_event.amount - avg_amount_1h) / amount_stddev_1h)")
 ```
 
 ---
@@ -356,11 +393,17 @@ Uses `RingBuffer<PercentileBucket>` where each bucket holds a `Vec<f64>` of all 
 **Example:**
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    p50_amount_1h = tl.percentile("amount", 0.50, window="1h")
-    p95_amount_1h = tl.percentile("amount", 0.95, window="1h")
-    p99_amount_1h = tl.percentile("amount", 0.99, window="1h")
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        p50_amount_1h=tl.percentile("amount", 0.50, window="1h"),
+        p95_amount_1h=tl.percentile("amount", 0.95, window="1h"),
+        p99_amount_1h=tl.percentile("amount", 0.99, window="1h"),
+    )
 ```
 
 ---
@@ -417,10 +460,16 @@ Most fraud use cases (user sees ~5-20 merchants/hour) stay in the exact or hash 
 **Example:**
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    unique_merchants_24h = tl.distinct_count("merchant_id", window="24h")
-    unique_countries_1h  = tl.distinct_count("country", window="1h")
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        unique_merchants_24h=tl.distinct_count("merchant_id", window="24h"),
+        unique_countries_1h=tl.distinct_count("country", window="1h"),
+    )
 ```
 
 ---
@@ -464,9 +513,15 @@ Uses `RingBuffer<ValBucket>` where each bucket stores a `Vec<f64>` of all values
 **Example:**
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    exact_min_amount_1h = tl.exact_min("amount", window="1h")
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        exact_min_amount_1h=tl.exact_min("amount", window="1h"),
+    )
 ```
 
 ---
@@ -508,9 +563,15 @@ Same as `exact_min`: `O(total_events_in_window * ~40 bytes)`.
 **Example:**
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    exact_max_amount_1h = tl.exact_max("amount", window="1h")
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        exact_max_amount_1h=tl.exact_max("amount", window="1h"),
+    )
 ```
 
 ---
@@ -556,11 +617,17 @@ None. Single value + timestamp. O(1) state.
 **Example:**
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    last_country  = tl.last("country")
-    last_merchant = tl.last("merchant_id")
-    last_amount   = tl.last("amount")
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        last_country=tl.last("country"),
+        last_merchant=tl.last("merchant_id"),
+        last_amount=tl.last("amount"),
+    )
 ```
 
 ---
@@ -601,10 +668,16 @@ None. Single value + timestamp. O(1) state. After the first value is stored, `pu
 **Example:**
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    first_country = tl.first("country")
-    signup_source = tl.first("source")
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        first_country=tl.first("country"),
+        signup_source=tl.first("source"),
+    )
 ```
 
 ---
@@ -646,10 +719,16 @@ None. Event-count-based, not time-based. The lag is measured in number of events
 **Example:**
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    prev_amount   = tl.lag("amount", n=1)
-    prev_country  = tl.lag("country", n=1)
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        prev_amount=tl.lag("amount", n=1),
+        prev_country=tl.lag("country", n=1),
+    )
     amount_change = tl.derive("_event.amount - prev_amount")
 ```
 
@@ -694,10 +773,16 @@ None. Event-count-based using a `VecDeque` of capacity N.
 **Example:**
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    last_5_amounts   = tl.last_n("amount", n=5)
-    last_10_merchants = tl.last_n("merchant_id", n=10)
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        last_5_amounts=tl.last_n("amount", n=5),
+        last_10_merchants=tl.last_n("merchant_id", n=10),
+    )
 ```
 
 ---
@@ -746,10 +831,16 @@ None. O(1) state -- just the current EMA value, the last event timestamp, and th
 **Example:**
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    ema_amount_30m = tl.ema("amount", half_life="30m")
-    ema_amount_4h  = tl.ema("amount", half_life="4h")
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        ema_amount_30m=tl.ema("amount", half_life="30m"),
+        ema_amount_4h=tl.ema("amount", half_life="4h"),
+    )
     ema_divergence = tl.derive("ema_amount_30m / ema_amount_4h")
 ```
 
@@ -800,13 +891,19 @@ None. O(1) -- no state, computed on read.
 **Example:**
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    tx_count_30m    = tl.count(window="30m")
-    tx_count_1h     = tl.count(window="1h")
-    tx_count_24h    = tl.count(window="24h")
-    failed_tx_30m   = tl.count(window="30m", where="status == 'failed'")
-    avg_amount_1h   = tl.avg("amount", window="1h")
+@tl.source
+class RawTransactions:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class UserTransactions:
+    features = tl.group_by("user_id").agg(
+        tx_count_30m=tl.count(window="30m"),
+        tx_count_1h=tl.count(window="1h"),
+        tx_count_24h=tl.count(window="24h"),
+        failed_tx_30m=tl.count(window="30m", where="status == 'failed'"),
+        avg_amount_1h=tl.avg("amount", window="1h"),
+    )
 
     # Derived features
     failure_rate    = tl.derive("failed_tx_30m / tx_count_30m")
@@ -888,13 +985,25 @@ The `derive` operator supports referencing features from other streams using the
 Views (`@tl.view`) are the primary mechanism for cross-stream references:
 
 ```python
-@tl.dataset(key="user_id")
-class Transactions:
-    tx_count_1h = tl.count(window="1h")
+@tl.source
+class RawTransactions:
+    pass
 
-@tl.dataset(key="user_id")
+@tl.source
+class RawLogins:
+    pass
+
+@tl.dataset(depends_on=[RawTransactions])
+class Transactions:
+    features = tl.group_by("user_id").agg(
+        tx_count_1h=tl.count(window="1h"),
+    )
+
+@tl.dataset(depends_on=[RawLogins])
 class Logins:
-    login_count_1h = tl.count(window="1h")
+    features = tl.group_by("user_id").agg(
+        login_count_1h=tl.count(window="1h"),
+    )
 
 @tl.view(key="user_id")
 class UserRisk:
@@ -915,9 +1024,15 @@ amount_vs_avg = tl.derive("_event.amount / avg_amount_1h")
 Use `tl.lookup()` to reference features from a different entity key:
 
 ```python
-@tl.dataset(key="merchant_id")
+@tl.source
+class RawMerchantEvents:
+    pass
+
+@tl.dataset(depends_on=[RawMerchantEvents])
 class MerchantActivity:
-    chargeback_count_24h = tl.count(window="24h", where="type == 'chargeback'")
+    features = tl.group_by("merchant_id").agg(
+        chargeback_count_24h=tl.count(window="24h", where="type == 'chargeback'"),
+    )
 
 @tl.view(key="user_id")
 class FraudSignals:
