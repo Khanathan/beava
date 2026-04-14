@@ -33,11 +33,13 @@ key-files:
     - src/server/ui/demo.html
     - src/server/ui/demo.js
     - deploy/smoke.sh
+    - docs/blog/streaming-shouldnt-require-a-platform-team.md
     - .planning/milestones/v2.1-PAUSED-ROADMAP.md
 decisions:
   - "Phase 20 failure_rate derive omitted from the ported pipeline — v0 aggregation catalog has no tl.derive; traction demo only consumes the aggregated counters, ratio can be computed read-side"
   - "Added --register-only and --speed/--target CLI compat flags to replay_30d.py so Phase 20 smoke invocations keep working verbatim"
   - "smoke.sh --local flag (new): admin-denied + TCP-closed invariants replaced with admin-wired + TCP-listening checks; prod mode unchanged; invariant count stays at 6"
+  - "Blog rewrite handled in 26-03 per user scope override (26-03-PLAN delegates to 26-02; user prompt explicitly put the blog in 26-03). Headline replay number left as <TBD after deploy> per user direction rather than sourced from MATRIX-V0-FINAL.json — the canonical number is the bare-metal 30-day run, not the regression-gate matrix."
 metrics:
   duration: "~35min"
   completed: "2026-04-14"
@@ -62,6 +64,7 @@ HEAD: b53f582dc1ab88a9d733ec413406461822335cd0
 | src/server/ui/demo.css               | Unchanged | git diff empty                                                                            |
 | deploy/smoke.sh                      | Extended  | Invariant 4 now asserts `tally_late_events_dropped_total` family (Phase 24-04 HELP line); new `--local` mode (prod 6/6 unchanged) |
 | .planning/milestones/v2.1-PAUSED-ROADMAP.md | Unpaused | Top-of-file status note added; Phase 20 line moved from `[~]` → `[ ]` (v0-ready, awaiting deploy) |
+| docs/blog/streaming-shouldnt-require-a-platform-team.md | Full rewrite | 220 lines; zero `TODO(26-03)` markers; 3× `{{DEMO_URL}}`; explicit "v0 does not do" section (Table-input agg, DAG retraction propagation, outer joins, session windows, CEP, SCAN/SUBSCRIBE, horizontal scale-out, CI/CD); Flink/ksqlDB/Materialize/Fennel competitive framing; headline replay number left as `<TBD after deploy>` per user direction (real number fills in from the bare-metal 5-day run, not from MATRIX-V0-FINAL.json) |
 
 ## Protected deploy files (verified untouched)
 
@@ -156,6 +159,28 @@ None introduced by this plan. The `tally_current_eps` gauge reported
 floating-point quirk of the 5s-EWMA throughput tracker when load is
 applied then stops within a single measurement window, not a stub.
 
+## Launch blog rewrite
+
+- **File:** `docs/blog/streaming-shouldnt-require-a-platform-team.md`
+- **Line count:** 220 (up from 168)
+- **Commit:** `b53f582`
+- **Grep checks:** zero `@tl.source|@tl.dataset|EventSet|FeatureSet` hits; zero `TODO(26-03)` markers
+- **Required tokens present:** `v0.1` (3×), `watermark` (3×), `Stream` (10×), `Table` (11×), `@tl.stream`/`@tl.table`, `Flink`, `ksqlDB`, `Materialize`, `Fennel`, `UDDSketch`, `5-second`, `{{DEMO_URL}}` (3×)
+- **Structure:**
+  1. Founder-voice opening (Viggle/Faire/Fennel framing preserved from prior commit)
+  2. In-memory single-binary thesis (10M-entities-at-8KB math preserved)
+  3. "What v0 ships" — two-type model, DataFrame ops, hybrid sketches, 5s watermark, TTLs, observability
+  4. Five concrete code examples (fraud pipeline, register+push+get, Stream↔Table enrichment, percentile/top_k, get_multi) — all new-API
+  5. "What v0 does not do" — explicit deferral list, 8 items, "coming soon" is not on the list
+  6. Performance section with `<TBD after deploy>` placeholder + live demo URL
+  7. Competitive framing (Flink, ksqlDB, Materialize, Fennel — factual, sources cited)
+  8. Try-it install snippet with the Claude Code `/tally` skill pointer
+- **Scope-override note:** per 26-03-PLAN.md the blog belongs to 26-02; the user's prompt explicitly re-scoped it to 26-03 with the direction "Headline replay number placeholder (real number fills in after bare-metal deploy)". 26-02 no longer owns the blog; 26-02 focuses on `MATRIX-V0-FINAL.json` + `MICRO-V0-FINAL.json` only.
+
+## `.claude/skills/tally/SKILL.md` status
+
+Attempted to port lines 127 (`@tl.source`) and 132 (`@tl.dataset(depends_on=…)`) to `@tl.stream` / `@tl.table` function form. Runtime policy blocked the Edit (`Permission to use Edit has been denied`) — matches the 26-01 SUMMARY note: "runtime policy currently blocks edits to it from this agent". The plan's grep assertion is scoped to `python/ tests/ benchmark/ docs/` and passes; `.claude/` remains out-of-scope. Flagged for 26-04 via the skill-template channel.
+
 ## Handoff to 26-04
 
 - 26-04 sign-off criterion 10 (Phase 20 ports green) is satisfied by
@@ -173,9 +198,17 @@ applied then stops within a single measurement window, not a stub.
 
 ## Self-Check: PASSED
 
-All 8 expected files present on disk. All 3 task commits
-(0b3138b, f490a35, 66cafd9) present in `git log`. No old-API
-references in benchmark/replay, tests/integration, src/server/ui,
-or deploy. replay_30d.py has `@tl.stream` and `@tl.table`.
-deploy/smoke.sh has `invariants` and `tally_late_events_dropped_total`
-anchors. v2.1 roadmap: `Active` marker present, paused marker gone.
+- 8 modified files present on disk (listed in `key-files.modified` + the blog).
+- 4 task commits present in `git log`:
+  - `0b3138b` feat(26-03): port replay CLI + integration tests to v0 SDK
+  - `f490a35` feat(26-03): port demo UI + extend smoke.sh for Phase 24/25 /metrics
+  - `66cafd9` feat(26-03): add smoke.sh --local mode for dev-box full-stack smoke
+  - `b53f582` docs(26-03): rewrite launch blog for v0 honestly
+- Scoped grep `rg -n "@tl\.(source|dataset)|EventSet|FeatureSet" benchmark/replay/ tests/integration/ src/server/ui/ deploy/ docs/blog/` → zero hits.
+- `git diff --stat deploy/tally.service deploy/Caddyfile deploy/provision.sh deploy/README.md` → empty.
+- `pytest tests/integration/test_replay_30d.py -q --timeout=120` → 3 passed in 3.19s.
+- `pytest tests/integration/ -q --timeout=120` → 10 passed in 2.77s (including the 3 replay tests).
+- Full-stack smoke: 100k events replayed in 0.952s @ 104,990 eps against fresh `target/release/tally`.
+- `/public/stats` 6/6 fields present; `/metrics` family `tally_late_events_dropped_total` emitted.
+- Blog: 220 lines, zero `TODO(26-03)`, 3× `{{DEMO_URL}}`, all required tokens present.
+- `.planning/milestones/v2.1-PAUSED-ROADMAP.md`: `Active` marker present (line 17), `[⏸]` marker absent.
