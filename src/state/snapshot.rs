@@ -6,6 +6,13 @@
 //!
 //! v1.1: Snapshot format v4 with per-stream grouped state via
 //! SerializableStreamEntityState. v3 snapshots are gracefully rejected.
+//!
+//! Phase 24 (v6 → v7): `SerializableEntityState` grows a `table_rows` field
+//! holding first-class Table rows (Live or Tombstoned). The v6 layout is
+//! preserved as `SerializableEntityStateV6` + `BaseSnapshotStateV6` /
+//! `DeltaSnapshotStateV6` and migrated on read by initializing `table_rows`
+//! to empty for each entity. No other field changes — streams, static
+//! features, pipelines, and backfill markers all carry over as-is.
 
 use crate::engine::hll::DistinctCountOp;
 use crate::engine::operators::{
@@ -13,7 +20,7 @@ use crate::engine::operators::{
     MaxOp, MinOp, Operator, PercentileOp, StddevOp, StreamJoinBuffer, SumOp, TopKOp, VarianceOp,
 };
 use crate::error::TallyError;
-use crate::state::store::StaticFeature;
+use crate::state::store::{SerializableTableRow, StaticFeature};
 use crate::types::FeatureValue;
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
@@ -22,11 +29,18 @@ use std::time::SystemTime;
 /// If the version doesn't match on load, return None (clean startup from empty state).
 /// v6 (Phase 9, OPS-03/OPS-04): adds base/delta snapshot type discriminator byte
 /// for incremental snapshots.
-pub const SNAPSHOT_FORMAT_VERSION: u8 = 6;
+/// v7 (Phase 24): `SerializableEntityState` grows `table_rows` for first-class
+/// Table row storage. v6 snapshots migrate transparently — see `load_snapshot`.
+pub const SNAPSHOT_FORMAT_VERSION: u8 = 7;
 
 /// Legacy v5 format version byte. Used by `load_legacy_v5` to migrate
 /// existing single-file snapshots to v6 on first startup.
 pub const LEGACY_V5_FORMAT: u8 = 5;
+
+/// Legacy v6 format version byte. Phase 24 added `table_rows` to
+/// `SerializableEntityState`; v6 snapshots are migrated on read by
+/// initializing each entity's `table_rows` to empty.
+pub const LEGACY_V6_FORMAT: u8 = 6;
 
 /// Type tag byte following the version byte in a v6 snapshot file.
 /// 0x00 = full base snapshot, 0x01 = incremental delta snapshot.
@@ -225,13 +239,37 @@ pub struct SerializableStreamEntityState {
     pub last_event_at: Option<SystemTime>,
 }
 
-/// Serializable entity state for snapshot persistence (v4 format).
+/// Serializable entity state for snapshot persistence.
 /// Groups operators by stream name for independent per-stream TTL management.
 /// Uses Vec instead of AHashMap for postcard compatibility.
+///
+/// Phase 24 (v7): added `table_rows` for first-class Table row storage.
+/// v6 snapshots are migrated on read via `SerializableEntityStateV6`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableEntityState {
     pub streams: Vec<(String, SerializableStreamEntityState)>,
     pub static_features: Vec<(String, StaticFeature)>,
+    /// Phase 24: Table rows keyed by table name.
+    pub table_rows: Vec<(String, SerializableTableRow)>,
+}
+
+/// Phase 24: Legacy v6 per-entity layout (no `table_rows`). Used exclusively
+/// for decoding v6 snapshot files on first startup after a v7 binary upgrade.
+/// Promoted to `SerializableEntityState` by defaulting `table_rows` to empty.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializableEntityStateV6 {
+    pub streams: Vec<(String, SerializableStreamEntityState)>,
+    pub static_features: Vec<(String, StaticFeature)>,
+}
+
+impl From<SerializableEntityStateV6> for SerializableEntityState {
+    fn from(v6: SerializableEntityStateV6) -> Self {
+        SerializableEntityState {
+            streams: v6.streams,
+            static_features: v6.static_features,
+            table_rows: Vec::new(),
+        }
+    }
 }
 
 /// Top-level serializable snapshot state.
@@ -285,6 +323,57 @@ pub struct DeltaSnapshotState {
     pub deleted_keys: Vec<String>,
 }
 
+// ================ Phase 24: v6 legacy Base/Delta types for migration ================
+
+/// Phase 24: Legacy v6 base snapshot layout. Identical to `BaseSnapshotState`
+/// except entities use `SerializableEntityStateV6` (no `table_rows`).
+/// Used only to deserialize v6 snapshots before promoting them to v7.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaseSnapshotStateV6 {
+    pub header: SnapshotHeader,
+    pub entities: Vec<(String, SerializableEntityStateV6)>,
+    pub pipelines: Vec<SerializablePipeline>,
+    #[serde(default)]
+    pub backfill_complete: Vec<(String, String)>,
+}
+
+/// Phase 24: Legacy v6 delta snapshot layout (parallel to `BaseSnapshotStateV6`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeltaSnapshotStateV6 {
+    pub header: SnapshotHeader,
+    pub changed_entities: Vec<(String, SerializableEntityStateV6)>,
+    pub deleted_keys: Vec<String>,
+}
+
+impl From<BaseSnapshotStateV6> for BaseSnapshotState {
+    fn from(v6: BaseSnapshotStateV6) -> Self {
+        BaseSnapshotState {
+            header: v6.header,
+            entities: v6
+                .entities
+                .into_iter()
+                .map(|(k, e)| (k, e.into()))
+                .collect(),
+            pipelines: v6.pipelines,
+            backfill_complete: v6.backfill_complete,
+        }
+    }
+}
+
+impl From<DeltaSnapshotStateV6> for DeltaSnapshotState {
+    fn from(v6: DeltaSnapshotStateV6) -> Self {
+        DeltaSnapshotState {
+            header: v6.header,
+            changed_entities: v6
+                .changed_entities
+                .into_iter()
+                .map(|(k, e)| (k, e.into()))
+                .collect(),
+            deleted_keys: v6.deleted_keys,
+        }
+    }
+}
+
 /// Wrapper returned by `load_snapshot_file` that preserves the on-disk type.
 #[derive(Debug, Clone)]
 pub enum SnapshotFile {
@@ -330,6 +419,20 @@ pub fn load_snapshot(bytes: &[u8]) -> Option<SnapshotState> {
     if version == LEGACY_V5_FORMAT {
         return postcard::from_bytes(&bytes[1..]).ok();
     }
+    // Phase 24: Legacy v6 path — deserialize with SerializableEntityStateV6
+    // and promote each entity to v7 with an empty `table_rows` map.
+    if version == LEGACY_V6_FORMAT {
+        if bytes.len() < 2 || bytes[1] != TYPE_TAG_BASE {
+            return None;
+        }
+        let base_v6: BaseSnapshotStateV6 = postcard::from_bytes(&bytes[2..]).ok()?;
+        let base: BaseSnapshotState = base_v6.into();
+        return Some(SnapshotState {
+            entities: base.entities,
+            pipelines: base.pipelines,
+            backfill_complete: base.backfill_complete,
+        });
+    }
     if version != SNAPSHOT_FORMAT_VERSION {
         eprintln!(
             "Snapshot version mismatch: found {}, expected {}. Starting fresh.",
@@ -337,7 +440,7 @@ pub fn load_snapshot(bytes: &[u8]) -> Option<SnapshotState> {
         );
         return None;
     }
-    // v6 path: must be a base snapshot for this legacy API.
+    // v7 path: must be a base snapshot for this legacy API.
     if bytes.len() < 2 {
         return None;
     }
@@ -381,6 +484,18 @@ pub fn load_snapshot_file(bytes: &[u8]) -> Option<SnapshotFile> {
     if bytes.len() < 2 {
         return None;
     }
+    // Phase 24: Accept legacy v6 files and migrate them on read.
+    if bytes[0] == LEGACY_V6_FORMAT {
+        return match bytes[1] {
+            TYPE_TAG_BASE => postcard::from_bytes::<BaseSnapshotStateV6>(&bytes[2..])
+                .ok()
+                .map(|b| SnapshotFile::Base(b.into())),
+            TYPE_TAG_DELTA => postcard::from_bytes::<DeltaSnapshotStateV6>(&bytes[2..])
+                .ok()
+                .map(|d| SnapshotFile::Delta(d.into())),
+            _ => None,
+        };
+    }
     if bytes[0] != SNAPSHOT_FORMAT_VERSION {
         return None;
     }
@@ -393,6 +508,29 @@ pub fn load_snapshot_file(bytes: &[u8]) -> Option<SnapshotFile> {
             .map(SnapshotFile::Delta),
         _ => None,
     }
+}
+
+/// Phase 24 test helper: serialize a v6 base snapshot using the legacy v6
+/// layout (`[0x06][0x00][postcard(BaseSnapshotStateV6)]`). Used by the
+/// v6→v7 migration tests to exercise the read path without duplicating
+/// encoding logic inside test files. Not used at runtime — v6 writes stopped
+/// when `SNAPSHOT_FORMAT_VERSION` moved to 7.
+pub fn save_base_snapshot_v6_for_test(
+    data: &BaseSnapshotStateV6,
+) -> Result<Vec<u8>, postcard::Error> {
+    let mut buf = vec![LEGACY_V6_FORMAT, TYPE_TAG_BASE];
+    buf.extend_from_slice(&postcard::to_stdvec(data)?);
+    Ok(buf)
+}
+
+/// Phase 24 test helper: serialize a v6 delta snapshot in the legacy v6
+/// layout. See `save_base_snapshot_v6_for_test`.
+pub fn save_delta_snapshot_v6_for_test(
+    data: &DeltaSnapshotStateV6,
+) -> Result<Vec<u8>, postcard::Error> {
+    let mut buf = vec![LEGACY_V6_FORMAT, TYPE_TAG_DELTA];
+    buf.extend_from_slice(&postcard::to_stdvec(data)?);
+    Ok(buf)
 }
 
 /// Load a legacy v5 single-file snapshot. Used by startup recovery to
@@ -526,6 +664,7 @@ mod tests {
                             updated_at: now,
                         },
                     )],
+                    table_rows: vec![],
                 },
             )],
             pipelines: vec![SerializablePipeline {
@@ -565,8 +704,8 @@ mod tests {
         };
         let bytes = save_snapshot(&state).expect("save_snapshot should succeed");
         assert_eq!(bytes[0], SNAPSHOT_FORMAT_VERSION);
-        assert_eq!(bytes[0], 0x06);
-        // v6 adds a type tag byte after the version byte.
+        assert_eq!(bytes[0], 0x07);
+        // v6+ layouts carry a type tag byte after the version byte.
         assert_eq!(
             bytes[1], 0x00,
             "legacy save_snapshot must emit base type tag"
@@ -596,6 +735,7 @@ mod tests {
                         },
                     )],
                     static_features: vec![],
+                    table_rows: vec![],
                 },
             )],
             pipelines: vec![],
@@ -759,13 +899,18 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_format_version_is_6() {
-        assert_eq!(SNAPSHOT_FORMAT_VERSION, 6);
+    fn test_snapshot_format_version_is_7() {
+        assert_eq!(SNAPSHOT_FORMAT_VERSION, 7);
     }
 
     #[test]
     fn test_legacy_v5_format_constant() {
         assert_eq!(LEGACY_V5_FORMAT, 5);
+    }
+
+    #[test]
+    fn test_legacy_v6_format_constant() {
+        assert_eq!(LEGACY_V6_FORMAT, 6);
     }
 
     // ======================== Phase 5 Plan 03: DistinctCount OperatorState Tests ========================
@@ -841,6 +986,7 @@ mod tests {
                             updated_at: now,
                         },
                     )],
+                    table_rows: vec![],
                 },
             )],
             pipelines: vec![],
@@ -906,6 +1052,7 @@ mod tests {
                     },
                 )],
                 static_features: vec![],
+                table_rows: vec![],
             },
         )
     }

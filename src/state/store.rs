@@ -20,13 +20,92 @@ use crate::types::{EntityKey, FeatureMap, FeatureValue};
 use ahash::{AHashMap, AHashSet};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// A directly-written feature value (from SET/MSET commands).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StaticFeature {
     pub value: FeatureValue,
     pub updated_at: SystemTime,
+}
+
+/// Phase 24: Tombstone grace window for table rows. Tombstoned rows remain in
+/// the `table_rows` map for this duration so that out-of-order late events and
+/// downstream cascade consumers can still observe the tombstone. After the
+/// grace window, `gc_tombstones` removes them. Locked to 7 days per
+/// `@tl.table(tombstone_grace="7d")` default (v0-restructure-spec §3.1).
+pub const TOMBSTONE_GRACE: Duration = Duration::from_secs(7 * 86400);
+
+/// Phase 24: Lifecycle state for a table row. A row is either `Live` (carrying
+/// its fields) or `Tombstoned` with the timestamp at which it was removed.
+/// Tombstoned rows are retained until `TOMBSTONE_GRACE` has elapsed so late
+/// events and cascade consumers can observe the deletion; see
+/// `StateStore::gc_tombstones`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum TableRowState {
+    /// Row is live. Its fields live on `TableRow.fields`.
+    Live,
+    /// Row was deleted at `since`. `TableRow.fields` is typically empty but
+    /// callers must not rely on that — filter by this variant instead.
+    Tombstoned { since: SystemTime },
+}
+
+/// Phase 24: First-class row in a Table source. Each entity key maps to zero
+/// or more named tables via `EntityState.table_rows`; each `TableRow` owns
+/// its own field map and lifecycle state.
+///
+/// The row is the unit of identity referenced by `(table_name, key)` — the
+/// upcoming `OP_PUSH_TABLE` / `OP_DELETE_TABLE` opcodes (plan 02) and the
+/// Table↔Table join cascade rework (plan 03) both address rows through this
+/// type rather than the legacy `static_features` map.
+///
+/// **Tombstone contract:** `get_table_row` returns `Some(&TableRow)` for
+/// both `Live` and `Tombstoned` rows. Consumers that want only live data
+/// must match on `state`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableRow {
+    /// Row fields keyed by column name. For `Tombstoned` rows this is
+    /// typically empty but the type does not enforce that.
+    pub fields: AHashMap<String, FeatureValue>,
+    /// Live or Tombstoned + since-timestamp.
+    pub state: TableRowState,
+    /// Wall-clock-ish timestamp of the last mutation (upsert or tombstone).
+    pub updated_at: SystemTime,
+}
+
+/// Phase 24: Serialization shape of a `TableRow`. `AHashMap` does not derive
+/// `Serialize`/`Deserialize` so the field map flattens to a `Vec<(k, v)>` on
+/// disk — mirrors how `SerializableEntityState.static_features` handles the
+/// same constraint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SerializableTableRow {
+    pub fields: Vec<(String, FeatureValue)>,
+    pub state: TableRowState,
+    pub updated_at: SystemTime,
+}
+
+impl From<&TableRow> for SerializableTableRow {
+    fn from(row: &TableRow) -> Self {
+        SerializableTableRow {
+            fields: row
+                .fields
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            state: row.state.clone(),
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+impl From<SerializableTableRow> for TableRow {
+    fn from(s: SerializableTableRow) -> Self {
+        TableRow {
+            fields: s.fields.into_iter().collect(),
+            state: s.state,
+            updated_at: s.updated_at,
+        }
+    }
 }
 
 /// Per-stream state within an entity. Isolates operators and last_event_at
@@ -41,6 +120,12 @@ pub struct StreamEntityState {
 
 /// Per-entity state. Holds live features grouped by stream name (from streaming
 /// operators) and static features (from direct SET/MSET writes).
+///
+/// Phase 24: also holds `table_rows` — first-class Table row storage keyed
+/// by table name. This map is independent of `static_features`; upserting a
+/// table row named "X" does not populate `static_features["X"]`, and vice
+/// versa. The legacy `static_features` path is preserved for backward
+/// compatibility with existing SET/MSET callers.
 #[derive(Debug, Clone)]
 pub struct EntityState {
     /// Live features grouped by stream name. Each stream has its own operators
@@ -48,6 +133,10 @@ pub struct EntityState {
     pub streams: AHashMap<String, StreamEntityState>,
     /// Features from direct writes (SET/MSET). Bypass pipeline engine.
     pub static_features: AHashMap<String, StaticFeature>,
+    /// Phase 24: Table rows keyed by table name. Each entry is a first-class
+    /// row (Live or Tombstoned) addressed by `(entity_key, table_name)`. See
+    /// `TableRow` for the lifecycle contract.
+    pub table_rows: AHashMap<String, TableRow>,
 }
 
 impl Default for EntityState {
@@ -55,6 +144,7 @@ impl Default for EntityState {
         Self {
             streams: AHashMap::new(),
             static_features: AHashMap::new(),
+            table_rows: AHashMap::new(),
         }
     }
 }
@@ -71,9 +161,10 @@ impl EntityState {
         self.streams.entry(stream_name.to_string()).or_default()
     }
 
-    /// Returns true when this entity has no streams and no static features.
+    /// Returns true when this entity has no streams, no static features, and
+    /// no table rows (Live or Tombstoned).
     pub fn is_empty(&self) -> bool {
-        self.streams.is_empty() && self.static_features.is_empty()
+        self.streams.is_empty() && self.static_features.is_empty() && self.table_rows.is_empty()
     }
 }
 
@@ -195,6 +286,91 @@ impl StateStore {
             self.mark_dirty(key);
         }
         existed
+    }
+
+    /// Phase 24: Upsert a Table row for `(key, table_name)`. Replaces any
+    /// prior row (Live or Tombstoned) under the same identity with a fresh
+    /// `Live { fields }` row. Marks the key dirty. Accepts an explicit `now`
+    /// timestamp for determinism (same convention as `set_static`).
+    pub fn upsert_table_row(
+        &self,
+        key: &str,
+        table_name: &str,
+        fields: AHashMap<String, FeatureValue>,
+        now: SystemTime,
+    ) {
+        {
+            let mut entity = self.get_or_create_entity(key);
+            entity.table_rows.insert(
+                table_name.to_string(),
+                TableRow {
+                    fields,
+                    state: TableRowState::Live,
+                    updated_at: now,
+                },
+            );
+        }
+        self.mark_dirty(key);
+    }
+
+    /// Phase 24: Tombstone a Table row for `(key, table_name)`. Flips an
+    /// existing row to `Tombstoned { since: now }`, or creates a new
+    /// tombstone-only row with empty fields if none exists. Returns `true`
+    /// if a prior **Live** row existed under this identity — used by callers
+    /// that need to distinguish "deleted a real row" from "deleted absent".
+    /// Marks the key dirty.
+    pub fn tombstone_table_row(&self, key: &str, table_name: &str, now: SystemTime) -> bool {
+        let had_live = {
+            let mut entity = self.get_or_create_entity(key);
+            let prior_live = entity
+                .table_rows
+                .get(table_name)
+                .map(|r| matches!(r.state, TableRowState::Live))
+                .unwrap_or(false);
+            entity.table_rows.insert(
+                table_name.to_string(),
+                TableRow {
+                    fields: AHashMap::new(),
+                    state: TableRowState::Tombstoned { since: now },
+                    updated_at: now,
+                },
+            );
+            prior_live
+        };
+        self.mark_dirty(key);
+        had_live
+    }
+
+    /// Phase 24: Read a Table row for `(key, table_name)`. Returns `None`
+    /// if the entity or the row is absent. Returns `Some(row)` for BOTH
+    /// Live and Tombstoned rows — callers who want live-only data must
+    /// match on `row.state`. Because `DashMap` returns a `Ref` guard, this
+    /// call clones the row to decouple the caller from the shard lock.
+    pub fn get_table_row(&self, key: &str, table_name: &str) -> Option<TableRow> {
+        let entity = self.entities.get(key)?;
+        entity.table_rows.get(table_name).cloned()
+    }
+
+    /// Phase 24: Sweep every entity's `table_rows`, removing Tombstoned
+    /// rows whose `since` is older than `TOMBSTONE_GRACE` relative to `now`.
+    /// Live rows, static_features, and streams are untouched. Returns the
+    /// count of rows removed. Uses `DashMap::iter_mut` so per-shard locking
+    /// bounds the critical section (T-24-01-02).
+    pub fn gc_tombstones(&self, now: SystemTime) -> usize {
+        let mut removed: usize = 0;
+        for mut entry in self.entities.iter_mut() {
+            let before = entry.value().table_rows.len();
+            entry.value_mut().table_rows.retain(|_, row| match row.state {
+                TableRowState::Live => true,
+                TableRowState::Tombstoned { since } => match now.duration_since(since) {
+                    Ok(age) => age <= TOMBSTONE_GRACE,
+                    // `now` is before `since` (clock skew) — keep row.
+                    Err(_) => true,
+                },
+            });
+            removed += before - entry.value().table_rows.len();
+        }
+        removed
     }
 
     /// Collect all feature values for an entity.
@@ -361,6 +537,11 @@ impl StateStore {
                             .iter()
                             .map(|(k, v)| (k.clone(), v.clone()))
                             .collect(),
+                        table_rows: entity
+                            .table_rows
+                            .iter()
+                            .map(|(k, v)| (k.clone(), SerializableTableRow::from(v)))
+                            .collect(),
                     },
                 )
             })
@@ -424,6 +605,11 @@ impl StateStore {
                             .iter()
                             .map(|(k, v)| (k.clone(), v.clone()))
                             .collect(),
+                        table_rows: entity
+                            .table_rows
+                            .iter()
+                            .map(|(k, v)| (k.clone(), SerializableTableRow::from(v)))
+                            .collect(),
                     },
                 )
             })
@@ -460,6 +646,11 @@ impl StateStore {
                             .iter()
                             .map(|(k, v)| (k.clone(), v.clone()))
                             .collect(),
+                        table_rows: entity
+                            .table_rows
+                            .iter()
+                            .map(|(k, v)| (k.clone(), SerializableTableRow::from(v)))
+                            .collect(),
                     },
                 )
             })
@@ -483,6 +674,11 @@ impl StateStore {
             let entity = EntityState {
                 streams,
                 static_features: state.static_features.into_iter().collect(),
+                table_rows: state
+                    .table_rows
+                    .into_iter()
+                    .map(|(k, v)| (k, TableRow::from(v)))
+                    .collect(),
             };
             self.entities.insert(key, entity);
         }
@@ -519,6 +715,11 @@ impl StateStore {
             let entity = EntityState {
                 streams,
                 static_features: state.static_features.into_iter().collect(),
+                table_rows: state
+                    .table_rows
+                    .into_iter()
+                    .map(|(k, v)| (k, TableRow::from(v)))
+                    .collect(),
             };
             self.entities.insert(key, entity);
         }
@@ -1031,6 +1232,7 @@ mod tests {
                         updated_at: now,
                     },
                 )],
+                table_rows: vec![],
             },
         )];
 
