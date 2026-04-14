@@ -482,6 +482,71 @@ pub fn emit_register_failure(registry: &SharedRegistry, pipeline_name: &str, err
     registry.write().record(sig);
 }
 
+/// Plan 25-03: fan `recommend_config` output into the signal registry as
+/// `Category::Config` / `Severity::Info` warnings. One signal per
+/// recommendation; id is stable per knob so re-observation dedupes against
+/// the previous cycle instead of creating duplicates.
+///
+/// The signal carries a `config_change` action so Debug-UI consumers can
+/// render a copy-paste button directly from `/debug/warnings` without
+/// re-fetching `/debug/config-recommendations`.
+///
+/// If a previously-recommended knob no longer crosses threshold, the old
+/// signal is allowed to age out via `age_out()`; we do not proactively
+/// resolve config signals mid-cycle because the recommendation feed itself
+/// is the source of truth and a disappearing knob simply stops refreshing
+/// `last_seen`.
+pub fn emit_config_recommendations(
+    registry: &SharedRegistry,
+    recs: &[crate::engine::recommend::ConfigRecommendation],
+) {
+    if recs.is_empty() {
+        return;
+    }
+    let mut reg = registry.write();
+    for r in recs {
+        // Signal id deliberately stable per knob. We want Table
+        // `UserProfile.ttl` recommendations to dedupe across polling cycles.
+        let id = format!("config.{}", r.knob);
+        // Anchor `evidence_url` at the existing `/debug/config-recommendations`
+        // endpoint with a fragment matching the knob, so the UI can scroll
+        // the recommendation into view when the operator clicks through
+        // from the warnings pane.
+        let evidence = serde_json::json!({
+            "knob": r.knob,
+            "current": r.current,
+            "suggested": r.suggested,
+            "confidence": r.confidence,
+            "reason": r.reason,
+            "copy_paste": r.copy_paste,
+            "evidence_url": format!("/debug/config-recommendations#{}", r.knob),
+        });
+        let title = if r.knob.ends_with(".ttl") {
+            "TTL too short".to_string()
+        } else if r.knob.ends_with(".history_ttl") {
+            "history_ttl too short".to_string()
+        } else {
+            format!("Config recommendation: {}", r.knob)
+        };
+        let sig = Signal::new(
+            id,
+            Severity::Info,
+            Category::Config,
+            title,
+            r.reason.clone(),
+            evidence,
+        )
+        .with_action(serde_json::json!({
+            "type": "config_change",
+            "knob": r.knob,
+            "current": r.current,
+            "suggested": r.suggested,
+            "copy_paste": r.copy_paste,
+        }));
+        reg.record(sig);
+    }
+}
+
 /// Emit a `snapshot.failure` operational signal. Called from the
 /// snapshot-writer's error branch in `main.rs`.
 pub fn emit_snapshot_failure(registry: &SharedRegistry, err: &str) {

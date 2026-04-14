@@ -63,6 +63,16 @@ fn poll_signal_sources(state: &SharedState) {
         .lock()
         .push_percentile_us(99.0, std::time::Instant::now());
     signals::emit_perf_p99_signal(&state.signals, p99_us, 1000.0);
+
+    // 4. Plan 25-03: fan config recommendations into the registry as
+    //    Category::Config / Severity::Info. `recommend_config` is already
+    //    deterministic and idempotent; emitting its output through the same
+    //    registry path gives the UI one feed for everything.
+    let recs = {
+        let engine = state.engine.read();
+        tally::engine::recommend::recommend_config(&engine, &state.eviction_tracker)
+    };
+    signals::emit_config_recommendations(&state.signals, &recs);
 }
 
 fn main() {
