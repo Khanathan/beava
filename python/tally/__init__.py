@@ -39,6 +39,9 @@ from tally._stream import stream, Stream, StreamSource, StreamDerivation
 from tally._table import table, Table, TableSource, TableDerivation
 from tally._validate_v0 import validate, ValidationError
 
+# Plan 21-03: tl.union stub.
+from tally._union import union
+
 # Plan 21-03: aggregation operator descriptors.
 from tally._agg_ops import (
     count,
@@ -91,6 +94,8 @@ __all__ = [
     "TableDerivation",
     "validate",
     "ValidationError",
+    # Union stub (Plan 21-03)
+    "union",
     # Aggregation operators (Plan 21-03)
     "count",
     "sum",
