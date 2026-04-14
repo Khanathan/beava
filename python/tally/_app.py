@@ -17,6 +17,7 @@ import json
 
 from tally._client import TallyClient
 from tally._protocol import (
+    OP_DELETE_TABLE,
     OP_FLUSH,
     OP_GET,
     OP_MGET,
@@ -24,14 +25,17 @@ from tally._protocol import (
     OP_PUSH,
     OP_PUSH_ASYNC,
     OP_PUSH_BATCH,
+    OP_PUSH_TABLE,
     OP_REGISTER,
     OP_SET,
     STATUS_ERROR,
+    encode_delete_table,
     encode_get,
     encode_mget,
     encode_mset,
     encode_push_batch,
     encode_push_binary,
+    encode_push_table,
     encode_register,
     encode_set,
 )
@@ -143,27 +147,82 @@ class App:
     # Push
     # ------------------------------------------------------------------
 
-    def push(self, stream_class: type, event: dict) -> None:
-        """Push an event to a stream (fire-and-forget).
+    def push(self, source, *args) -> None:
+        """Push to a Stream or a Table.
 
-        Returns immediately without waiting for the server to process
-        the event. Errors from this push (or any prior async push) surface
-        on the NEXT ``push``, ``push_sync``, ``flush``, ``get``, ``set``,
-        ``mget``, ``mset``, or ``register`` call on this :class:`App`.
+        This method dispatches on the descriptor's ``_tally_kind`` marker:
 
-        Call :meth:`push_sync` if you need the resulting
-        :class:`FeatureResult` inline. Call :meth:`flush` before program exit
-        to guarantee all pending pushes are drained and any remaining server
-        errors are surfaced.
+        * **Stream form** — ``app.push(stream_class, event)``. Fire-and-forget
+          over ``OP_PUSH_ASYNC``. Returns immediately; errors from this push
+          (or any prior async push) surface on the NEXT ``push``, ``push_sync``,
+          ``flush``, ``get``, ``set``, ``mget``, ``mset``, ``delete``, or
+          ``register`` call. Call :meth:`push_sync` if you need the resulting
+          :class:`FeatureResult` inline. Call :meth:`flush` before program exit
+          to guarantee all pending pushes are drained.
+
+        * **Table form** — ``app.push(table_source, key, fields)``. Synchronous
+          over ``OP_PUSH_TABLE`` (Phase 24-02): this call waits for the server
+          to acknowledge the row upsert so tests and callers can do a
+          race-free ``app.get(key)`` immediately after. Raises
+          :class:`ProtocolError` if the target Table is not registered or
+          the payload is rejected.
 
         Args:
-            stream_class: The pipeline definition (SourceDef or decorated class).
-            event: Event dict (must contain the key field).
+            source: The pipeline definition. A :class:`tally.Stream` subclass
+                (``_tally_kind == "stream"``) selects the Stream form;
+                a :class:`tally.Table` descriptor (``_tally_kind == "table"``)
+                selects the Table form.
+            *args: For the Stream form, ``(event: dict,)``. For the Table
+                form, ``(key: str, fields: dict)``.
         """
         self._client.drain_errors_nonblock()
-        stream_name = stream_class._tally_stream_name
-        payload = encode_push_binary(stream_name, event)
+        kind = getattr(source, "_tally_kind", "stream")
+        name = source._tally_stream_name
+        if kind == "table":
+            # push(table, key, fields) — synchronous push-through.
+            if len(args) != 2:
+                raise TypeError(
+                    f"push(table, key, fields): Table form expects 2 positional "
+                    f"args after the descriptor, got {len(args)}"
+                )
+            key, fields = args
+            if not isinstance(fields, dict):
+                raise TypeError(
+                    f"push(table, key, fields): fields must be a dict, got "
+                    f"{type(fields).__name__}"
+                )
+            payload = encode_push_table(name, key, fields)
+            self._send(OP_PUSH_TABLE, payload)
+            return
+        # Stream form — fire-and-forget.
+        if len(args) != 1:
+            raise TypeError(
+                f"push(stream_class, event): Stream form expects 1 positional "
+                f"arg after the descriptor, got {len(args)}"
+            )
+        event = args[0]
+        payload = encode_push_binary(name, event)
         self._client.send_frame_no_recv(OP_PUSH_ASYNC, payload)
+
+    def delete(self, table, key: str) -> None:
+        """Tombstone a row in a Table source (Phase 24-02).
+
+        Sends an ``OP_DELETE_TABLE`` frame and waits for the server's ack.
+        Tombstoned rows are retained for a 7-day grace window on the server
+        so that late cascade consumers and out-of-order events can still
+        observe the deletion; after the grace window they are garbage-
+        collected from state.
+
+        Raises :class:`ProtocolError` if the Table is not registered.
+
+        Args:
+            table: The Table descriptor (``_tally_kind == "table"``).
+            key: The entity key of the row to tombstone.
+        """
+        self._client.drain_errors_nonblock()
+        name = table._tally_stream_name
+        payload = encode_delete_table(name, key)
+        self._send(OP_DELETE_TABLE, payload)
 
     def _next_batch_id(self) -> int:
         """Return a monotonic batch_id (u32 wrap-around)."""

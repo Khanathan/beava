@@ -29,6 +29,11 @@ class Table(StatelessOpsMixin):
     ``_derive`` cascades key-field renames through the derivation chain.
     """
 
+    # Phase 24-02: Dispatch marker used by :meth:`tally.App.push` and
+    # :meth:`tally.App.delete` to route into the OP_PUSH_TABLE /
+    # OP_DELETE_TABLE wire opcodes. Every Table subclass inherits it.
+    _tally_kind: str = "table"
+
     _key: list[str]
 
     def _derive(

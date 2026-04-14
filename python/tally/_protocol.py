@@ -28,6 +28,10 @@ OP_MGET: int = 0x06
 OP_PUSH_ASYNC: int = 0x07
 OP_FLUSH: int = 0x08
 OP_PUSH_BATCH: int = 0x0A
+# Phase 24-02: Table row opcodes (gap at 0x09 preserved; contiguous after
+# OP_PUSH_BATCH per server-side rationale).
+OP_PUSH_TABLE: int = 0x0B
+OP_DELETE_TABLE: int = 0x0C
 
 STATUS_OK: int = 0x00
 STATUS_ERROR: int = 0x01
@@ -319,6 +323,37 @@ def encode_mget(keys: list[str]) -> bytes:
 def encode_register(definition: dict) -> bytes:
     """Encode REGISTER payload: entire payload is JSON bytes."""
     return json.dumps(definition).encode("utf-8")
+
+
+def encode_push_table(table_name: str, key: str, fields: dict) -> bytes:
+    """Encode an OP_PUSH_TABLE payload (Phase 24-02).
+
+    Wire format: ``[u16 BE name_len][name utf-8][u16 BE key_len][key utf-8][JSON fields]``.
+
+    ``fields`` must be a JSON-serialisable ``dict``; the server rejects
+    non-object payloads with a protocol error.
+    """
+    name_bytes = table_name.encode("utf-8")
+    _check_u16_len("table_name", name_bytes)
+    key_bytes = key.encode("utf-8")
+    _check_u16_len("key", key_bytes)
+    return (
+        encode_string(table_name)
+        + encode_string(key)
+        + json.dumps(fields).encode("utf-8")
+    )
+
+
+def encode_delete_table(table_name: str, key: str) -> bytes:
+    """Encode an OP_DELETE_TABLE payload (Phase 24-02).
+
+    Wire format: ``[u16 BE name_len][name utf-8][u16 BE key_len][key utf-8]``.
+    """
+    name_bytes = table_name.encode("utf-8")
+    _check_u16_len("table_name", name_bytes)
+    key_bytes = key.encode("utf-8")
+    _check_u16_len("key", key_bytes)
+    return encode_string(table_name) + encode_string(key)
 
 
 # ---------------------------------------------------------------------------

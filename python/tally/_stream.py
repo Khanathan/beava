@@ -37,6 +37,11 @@ class Stream(StatelessOpsMixin):
     the chain.
     """
 
+    # Phase 24-02: Dispatch marker used by :meth:`tally.App.push` to route
+    # between the Stream fire-and-forget path and the Table push-through
+    # path. Every Stream subclass inherits this attribute.
+    _tally_kind: str = "stream"
+
     def _derive(
         self,
         *,
