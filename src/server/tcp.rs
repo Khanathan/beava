@@ -1363,12 +1363,53 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             {
                 // payload is a JSON object; iterate its key-value pairs
                 if let serde_json::Value::Object(map) = payload {
-                    for (feat_name, val) in map {
-                        let fv = json_to_feature_value(val);
-                        state.store.set_static(&key, &feat_name, fv, now);
+                    // Phase 23-03: empty-object SET is a tombstone — remove
+                    // all static features for the key and fire Table↔Table
+                    // cascade with tombstoned=true. Non-empty SET is an
+                    // upsert; cascade fires with tombstoned=false.
+                    let tombstoned = map.is_empty();
+                    if tombstoned {
+                        state.store.tombstone_static(&key);
+                    } else {
+                        for (feat_name, val) in map {
+                            let fv = json_to_feature_value(val);
+                            state.store.set_static(&key, &feat_name, fv, now);
+                        }
                     }
                     // Mark entity key dirty for incremental snapshots (OPS-03)
                     state.store.mark_dirty(&key);
+
+                    // Phase 23-03: cascade into Table↔Table join outputs. We
+                    // don't know which input Table fired the SET (protocol is
+                    // key-only), so we cascade for every registered Table
+                    // that has TT-join downstreams. The engine resolves the
+                    // right per-side marker internally.
+                    {
+                        let engine = state.engine.read();
+                        let input_tables: Vec<String> = engine
+                            .list_streams()
+                            .filter_map(|s| {
+                                // Only iterate Tables (key_field Some). We
+                                // can't cheaply know which table the SET
+                                // targets, so fan out to all input tables
+                                // that participate in a TT-join.
+                                if s.key_field.is_some() {
+                                    Some(s.name.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        for input_table in input_tables {
+                            let _ = engine.cascade_table_upsert(
+                                &input_table,
+                                &key,
+                                tombstoned,
+                                &state.store,
+                                now,
+                            );
+                        }
+                    }
                 } else {
                     return Err(TallyError::Protocol(
                         "SET payload must be a JSON object".into(),
@@ -1420,6 +1461,8 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                         // left source's field schema from its previously-
                         // stored raw register JSON so the translator can
                         // partition output fields into left vs right.
+                        // Phase 23-03: also supply a source_meta_lookup for
+                        // table_table key validation.
                         let engine_ref = state.engine.read();
                         let lookup = |name: &str| -> Option<Vec<String>> {
                             engine_ref.get_raw_register_json(name).and_then(|j| {
@@ -1428,9 +1471,49 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                                     .map(|m| m.keys().cloned().collect())
                             })
                         };
-                        let sd = crate::engine::register::v0_join_to_stream_def(
+                        let meta_lookup =
+                            |name: &str| -> Option<(Vec<String>, Vec<(String, String)>)> {
+                                let j = engine_ref.get_raw_register_json(name)?;
+                                // Derive key fields.
+                                let keys: Vec<String> = if let Some(kf) = j
+                                    .get("key_fields")
+                                    .and_then(|v| v.as_array())
+                                {
+                                    kf.iter()
+                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                        .collect()
+                                } else if let Some(k) =
+                                    j.get("key_field").and_then(|v| v.as_str())
+                                {
+                                    vec![k.to_string()]
+                                } else {
+                                    Vec::new()
+                                };
+                                // Derive (field_name, type) tuples. Field spec
+                                // has `{"type": "...", "optional": bool}`;
+                                // `type` may be absent in which case we use "".
+                                let fields: Vec<(String, String)> = j
+                                    .get("fields")
+                                    .and_then(|f| f.as_object())
+                                    .map(|m| {
+                                        m.iter()
+                                            .map(|(n, spec)| {
+                                                let t = spec
+                                                    .get("type")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("")
+                                                    .to_string();
+                                                (n.clone(), t)
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                Some((keys, fields))
+                            };
+                        let sd = crate::engine::register::v0_join_to_stream_def_with_meta(
                             desc,
                             Some(&lookup),
+                            Some(&meta_lookup),
                         )?;
                         drop(engine_ref);
                         sd

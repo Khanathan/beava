@@ -173,6 +173,35 @@ pub enum FeatureDef {
         left_fields: Vec<String>,
         right_fields: Vec<(String, String)>,
     },
+    /// Phase 23-03 — Table↔Table same-key join. Both input Tables share
+    /// identical key declarations (by field name; types validated at REGISTER).
+    /// Output is a Table with the same key declaration.
+    ///
+    /// Cascade semantics (implemented in `push_with_cascade_internal`):
+    ///   - On SET (upsert) on either input Table for key K:
+    ///       * Look up the opposite Table's static_features for K.
+    ///       * If both present → merge (left fields + right-suffixed right fields)
+    ///         and write into the output Table's static_features for K.
+    ///       * If opposite absent:
+    ///           - inner  → tombstone output row for K.
+    ///           - left (upsert on LEFT)  → write output with right fields null.
+    ///           - left (upsert on RIGHT) → tombstone output for K.
+    ///   - On tombstone (delete) on either input Table for K:
+    ///       * inner → tombstone output for K.
+    ///       * left + delete-on-RIGHT → rewrite output with right fields null
+    ///         (left row retained because left side still exists).
+    ///       * left + delete-on-LEFT  → tombstone output for K.
+    ///
+    /// `right_fields` is `(source_name_in_right, emitted_name)`. The SDK
+    /// pre-applies `_right` suffix on column collision.
+    TableTableJoin {
+        left_table: String,
+        right_table: String,
+        on: Vec<String>,
+        join_type: JoinType,
+        left_fields: Vec<String>,
+        right_fields: Vec<(String, String)>,
+    },
 }
 
 /// Phase 23-01 — join semantics. Only Inner + Left are supported in v0;
@@ -195,6 +224,27 @@ pub struct SchemaDiff {
 
 /// Check if two FeatureDef variants are the same operator type
 /// (using std::mem::discriminant to compare enum variant identity).
+/// Phase 23-03: Convert a JSON value into a FeatureValue. Mirrors
+/// `tcp.rs::json_to_feature_value` but kept here because the Table↔Table
+/// cascade helper writes into `static_features` directly.
+fn json_to_fv(v: &serde_json::Value) -> FeatureValue {
+    match v {
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                FeatureValue::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                FeatureValue::Float(f)
+            } else {
+                FeatureValue::Missing
+            }
+        }
+        serde_json::Value::String(s) => FeatureValue::String(s.clone()),
+        serde_json::Value::Null => FeatureValue::Missing,
+        serde_json::Value::Bool(b) => FeatureValue::Int(if *b { 1 } else { 0 }),
+        _ => FeatureValue::Missing,
+    }
+}
+
 fn same_operator_type(a: &FeatureDef, b: &FeatureDef) -> bool {
     std::mem::discriminant(a) == std::mem::discriminant(b)
 }
@@ -220,6 +270,7 @@ pub fn get_backfill_flag(def: &FeatureDef) -> bool {
         FeatureDef::ExactMax { backfill, .. } => *backfill,
         FeatureDef::EnrichFromTable { .. } => false,
         FeatureDef::StreamStreamJoin { .. } => false,
+        FeatureDef::TableTableJoin { .. } => false,
     }
 }
 
@@ -544,6 +595,9 @@ fn create_operator(def: &FeatureDef) -> Option<OperatorState> {
         // Phase 23-01: EnrichFromTable is stateless at the operator level —
         // execution lives in push_internal / cascade (Table lookup + emit).
         FeatureDef::EnrichFromTable { .. } => None,
+        // Phase 23-03: TableTableJoin is stateless — output lives in
+        // static_features of the output Table entity; no operator state.
+        FeatureDef::TableTableJoin { .. } => None,
         // Phase 23-02: StreamStreamJoin state is a per-key StreamJoinBuffer
         // created lazily by the cascade handler (different state shape —
         // needs within_ms from the feature def).
@@ -602,6 +656,7 @@ fn get_where_expr(def: &FeatureDef) -> Option<&Expr> {
         FeatureDef::ExactMax { where_expr, .. } => where_expr.as_ref(),
         FeatureDef::EnrichFromTable { .. } => None,
         FeatureDef::StreamStreamJoin { .. } => None,
+        FeatureDef::TableTableJoin { .. } => None,
     }
 }
 
@@ -1037,6 +1092,211 @@ impl PipelineEngine {
     ) -> Result<FeatureMap, TallyError> {
         self.push_with_cascade_internal(stream_name, event, store, now, true)
     }
+
+    /// Phase 23-03: cascade a Table upsert or tombstone into any downstream
+    /// `TableTableJoin` features whose inputs include `input_table`.
+    ///
+    /// Call sites:
+    ///   - TCP SET (upsert): after writing static_features for `key` on
+    ///     `input_table`, call this with `tombstoned=false`.
+    ///   - TCP "delete" / tombstone (Rust tests): call with `tombstoned=true`
+    ///     after `store.tombstone_static(key)`.
+    ///
+    /// For every downstream Table↔Table join where `input_table` is either
+    /// the left or right input, re-derives the joined row for `key` from
+    /// the CURRENT snapshot of both input Tables' static_features and
+    /// writes/tombstones the output Table accordingly.
+    ///
+    /// Recursion: after updating a Table↔Table output, this method re-invokes
+    /// itself on that output so TT-joins-of-TT-joins cascade. Cycle guard is
+    /// enforced at REGISTER time (translator rejects self-reference).
+    /// Phase 23-03 test-harness alias for `cascade_table_upsert(_, _, false, ..)`.
+    pub fn cascade_tt_after_upsert(
+        &self,
+        input_table: &str,
+        key: &str,
+        store: &StateStore,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
+        self.cascade_table_upsert(input_table, key, false, store, now)
+    }
+
+    /// Phase 23-03 test-harness alias for `cascade_table_upsert(_, _, true, ..)`.
+    pub fn cascade_tt_after_delete(
+        &self,
+        input_table: &str,
+        key: &str,
+        store: &StateStore,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
+        self.cascade_table_upsert(input_table, key, true, store, now)
+    }
+
+    pub fn cascade_table_upsert(
+        &self,
+        input_table: &str,
+        key: &str,
+        tombstoned: bool,
+        store: &StateStore,
+        now: SystemTime,
+    ) -> Result<(), TallyError> {
+        // Phase 23-03 simplified model:
+        //
+        // Both input Tables share the same entity storage under `key` because
+        // v0 keys every Table write by (string) key. Two different Table names
+        // sharing the same key live in the SAME entity. We distinguish sides
+        // by tracking per-side presence via shadow markers written at cascade
+        // time:
+        //     __tt_left_{output}   : 1 if left side currently has a row
+        //     __tt_right_{output}  : 1 if right side currently has a row
+        //
+        // On upsert to `input_table`, we flip the matching side's marker and
+        // re-derive the output row. On tombstone, we flip the marker off.
+        // The output row lives in the same entity under the emitted column
+        // names from right_fields (which were computed at REGISTER time).
+        //
+        // NOTE (known stub): collision suffix case requires the user to write
+        // the right-side's overlapping column under its SDK-suffixed name
+        // (e.g., `status_right` directly) OR use disjoint column names. See
+        // 23-03-SUMMARY "Known Stubs" for the full-suffix plan deferred to
+        // v0.1.
+
+        // Find every stream whose features contain a TableTableJoin referencing
+        // `input_table` on either side.
+        let mut downstreams: Vec<(String, FeatureDef)> = Vec::new();
+        for (sname, sdef) in &self.streams {
+            for (_fn, def) in &sdef.features {
+                if let FeatureDef::TableTableJoin {
+                    left_table,
+                    right_table,
+                    ..
+                } = def
+                {
+                    if left_table == input_table || right_table == input_table {
+                        downstreams.push((sname.clone(), def.clone()));
+                    }
+                }
+            }
+        }
+
+        for (output_name, def) in downstreams {
+            let (left_table, right_table, join_type, right_fields) = match def {
+                FeatureDef::TableTableJoin {
+                    left_table,
+                    right_table,
+                    join_type,
+                    right_fields,
+                    ..
+                } => (left_table, right_table, join_type, right_fields),
+                _ => continue,
+            };
+
+            let left_marker = format!("__tt_left_{}", output_name);
+            let right_marker = format!("__tt_right_{}", output_name);
+
+            // Snapshot both inputs' static_features for `key` (read-only).
+            let entity_row: AHashMap<String, serde_json::Value> = store
+                .get_entity(key)
+                .map(|e| {
+                    e.static_features
+                        .iter()
+                        .map(|(n, sf)| (n.clone(), sf.value.to_json_value()))
+                        .collect::<AHashMap<_, _>>()
+                })
+                .unwrap_or_default();
+
+            // Derive current per-side presence from markers (previous cascade
+            // output) — fall back to "present iff any column exists" on first
+            // cascade.
+            let prev_left_present = entity_row
+                .get(&left_marker)
+                .and_then(|v| v.as_i64())
+                .map(|i| i != 0);
+            let prev_right_present = entity_row
+                .get(&right_marker)
+                .and_then(|v| v.as_i64())
+                .map(|i| i != 0);
+
+            let trig_is_left = input_table == left_table;
+            let trig_is_right = input_table == right_table;
+
+            // Update presence flags according to the trigger.
+            let l_live = if trig_is_left {
+                !tombstoned
+            } else {
+                prev_left_present.unwrap_or(false)
+            };
+            let r_live = if trig_is_right {
+                !tombstoned
+            } else {
+                prev_right_present.unwrap_or(false)
+            };
+
+            // Decide output disposition.
+            let (emit_row, null_right) = match join_type {
+                JoinType::Inner => {
+                    if l_live && r_live { (true, false) } else { (false, false) }
+                }
+                JoinType::Left => {
+                    if l_live { (true, !r_live) } else { (false, false) }
+                }
+            };
+
+            {
+                let mut entity = store.get_or_create_entity(key);
+                if emit_row {
+                    // Write right-side emitted fields.
+                    for (src, emitted) in &right_fields {
+                        let val = if null_right {
+                            serde_json::Value::Null
+                        } else {
+                            entity_row
+                                .get(src)
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null)
+                        };
+                        entity.static_features.insert(
+                            emitted.clone(),
+                            crate::state::store::StaticFeature {
+                                value: json_to_fv(&val),
+                                updated_at: now,
+                            },
+                        );
+                    }
+                } else {
+                    // Tombstone: remove right-side emitted fields for this
+                    // join's output. Other Tables' data on the same entity
+                    // (different output_names) remain.
+                    for (_src, emitted) in &right_fields {
+                        entity.static_features.remove(emitted);
+                    }
+                }
+                // Always write markers (even on tombstone, so the next
+                // cascade has ground truth).
+                entity.static_features.insert(
+                    left_marker.clone(),
+                    crate::state::store::StaticFeature {
+                        value: crate::types::FeatureValue::Int(if l_live { 1 } else { 0 }),
+                        updated_at: now,
+                    },
+                );
+                entity.static_features.insert(
+                    right_marker.clone(),
+                    crate::state::store::StaticFeature {
+                        value: crate::types::FeatureValue::Int(if r_live { 1 } else { 0 }),
+                        updated_at: now,
+                    },
+                );
+            }
+            store.mark_dirty(key);
+
+            // Recursively cascade on the output Table so T↔T stacks.
+            // Treat this as a non-tombstoning upsert into the output table.
+            self.cascade_table_upsert(&output_name, key, !emit_row, store, now)?;
+        }
+        Ok(())
+    }
+
 
     /// Async-mode cascade push: skips feature read + derive evaluation for
     /// primary AND cascade targets. Returns empty FeatureMap. See
@@ -1865,6 +2125,7 @@ impl PipelineEngine {
                     // scheduling accounts for buffer retention.
                     Some(Duration::from_millis(*within_ms))
                 }
+                FeatureDef::TableTableJoin { .. } => None, // stateless output Table
             })
             .max()
             .unwrap_or(Duration::ZERO)

@@ -164,6 +164,39 @@ impl StateStore {
         );
     }
 
+    /// Phase 23-03: Delete all static features for an entity key. Alias for
+    /// `tombstone_static` used by test harnesses and Rust callers that
+    /// model a "delete this row" primitive.
+    pub fn delete_entity(&self, key: &str) -> bool {
+        self.tombstone_static(key)
+    }
+
+    /// Phase 23-03: Tombstone a Table row — remove all static_features for
+    /// the key. Returns `true` if the key existed and had static features
+    /// before the call. Used by Table↔Table join cascade and is the Rust-
+    /// side primitive that higher layers (TCP SET with empty body, a future
+    /// OP_DELETE, or engine-driven tombstone propagation) route through.
+    ///
+    /// NOTE: This does NOT delete live operator state under the key — only
+    /// the Table's directly-written rows. Live aggregations continue to
+    /// exist because they are fed by stream events, not direct writes.
+    /// For a full entity removal see `remove_entity_complete`.
+    pub fn tombstone_static(&self, key: &str) -> bool {
+        let existed = self
+            .entities
+            .get_mut(key)
+            .map(|mut e| {
+                let had_rows = !e.static_features.is_empty();
+                e.static_features.clear();
+                had_rows
+            })
+            .unwrap_or(false);
+        if existed {
+            self.mark_dirty(key);
+        }
+        existed
+    }
+
     /// Collect all feature values for an entity.
     /// Iterates all streams' operators calling read(now) (which advances time
     /// to expire stale buckets), then overlays static_features. Static features

@@ -906,6 +906,48 @@ pub fn v0_join_to_stream_def(
     desc: &JoinDescriptor,
     left_fields_lookup: Option<&dyn Fn(&str) -> Option<Vec<String>>>,
 ) -> Result<crate::engine::pipeline::StreamDefinition, TallyError> {
+    // Phase 23-03: for table_table, re-enter the keyed variant with no source
+    // meta (permissive — assumes SDK already validated key declarations).
+    v0_join_to_stream_def_with_meta(desc, left_fields_lookup, None)
+}
+
+/// Phase 23-03 test-harness companion that accepts a separate `key_lookup`
+/// closure returning the ordered key declaration for a named source. The
+/// field-type dimension is omitted — tests that need key-type mismatch
+/// validation use `v0_join_to_stream_def_with_meta` directly.
+pub fn v0_join_to_stream_def_with_keys(
+    desc: &JoinDescriptor,
+    fields_lookup: Option<&dyn Fn(&str) -> Option<Vec<String>>>,
+    key_lookup: Option<&dyn Fn(&str) -> Option<Vec<String>>>,
+) -> Result<crate::engine::pipeline::StreamDefinition, TallyError> {
+    let meta_adapter = key_lookup.map(|kl| {
+        move |name: &str| -> Option<(Vec<String>, Vec<(String, String)>)> {
+            kl(name).map(|keys| (keys, Vec::new()))
+        }
+    });
+    // Borrow the adapter as a trait object for the call.
+    let meta_ref: Option<&dyn Fn(&str) -> Option<(Vec<String>, Vec<(String, String)>)>> =
+        meta_adapter.as_ref().map(|f| f as &dyn Fn(&str) -> _);
+    v0_join_to_stream_def_with_meta(desc, fields_lookup, meta_ref)
+}
+
+/// Phase 23-03 companion to `v0_join_to_stream_def` that accepts a richer
+/// source-meta lookup used by the `table_table` branch to validate that
+/// both input Tables declare identical key fields and (when the lookup
+/// reveals schema types) identical key types.
+///
+/// `source_meta_lookup(name)` returns `(key_fields, fields)` for the named
+/// source if registered. `key_fields` is the ordered key declaration (from
+/// `key_field` single-key sources it is `[k]`); `fields` is an ordered list
+/// of `(field_name, type_str)` tuples suitable for equality checks.
+#[allow(clippy::type_complexity)]
+pub fn v0_join_to_stream_def_with_meta(
+    desc: &JoinDescriptor,
+    left_fields_lookup: Option<&dyn Fn(&str) -> Option<Vec<String>>>,
+    source_meta_lookup: Option<
+        &dyn Fn(&str) -> Option<(Vec<String>, Vec<(String, String)>)>,
+    >,
+) -> Result<crate::engine::pipeline::StreamDefinition, TallyError> {
     use crate::engine::pipeline::{FeatureDef, JoinType, StreamDefinition};
 
     // Registration-time rejections — T-23-04 (outer) and unknown types.
@@ -1103,11 +1145,171 @@ pub fn v0_join_to_stream_def(
                 max_keys: None,
             })
         }
-        "table_table" => Err(TallyError::Protocol(
-            "v0 REGISTER: shape='table_table' not yet implemented in 23-01; \
-             Plan 23-03 ships Table↔Table same-key joins"
-                .into(),
-        )),
+        "table_table" => {
+            use crate::engine::pipeline::{FeatureDef, StreamDefinition};
+
+            // Validate that both input Tables declare identical key fields.
+            // When source meta is provided (TCP path), also validate key types
+            // and partition output fields into left/right buckets.
+            let (left_keys, left_fields_full): (
+                Vec<String>,
+                Option<Vec<(String, String)>>,
+            ) = match source_meta_lookup.and_then(|l| l(&desc.join.left)) {
+                Some((k, f)) => (k, Some(f)),
+                None => (desc.join.on.clone(), None),
+            };
+            let (right_keys, right_fields_full): (
+                Vec<String>,
+                Option<Vec<(String, String)>>,
+            ) = match source_meta_lookup.and_then(|l| l(&desc.join.right)) {
+                Some((k, f)) => (k, Some(f)),
+                None => (desc.join.on.clone(), None),
+            };
+
+            // Keys must be set-equal (same names, same count).
+            if left_keys.len() != right_keys.len()
+                || left_keys.iter().any(|k| !right_keys.contains(k))
+                || right_keys.iter().any(|k| !left_keys.contains(k))
+            {
+                return Err(TallyError::Protocol(format!(
+                    "v0 REGISTER: Table↔Table join requires identical key declarations \
+                     (both key field names must match); left='{}' keys={:?}, \
+                     right='{}' keys={:?}",
+                    desc.join.left, left_keys, desc.join.right, right_keys
+                )));
+            }
+
+            // Full-key requirement: desc.join.on must be set-equal to both
+            // tables' key declarations (no partial-key joins in v0).
+            if desc.join.on.len() != left_keys.len()
+                || desc.join.on.iter().any(|o| !left_keys.contains(o))
+            {
+                return Err(TallyError::Protocol(format!(
+                    "v0 REGISTER: Table↔Table join requires full-key match; \
+                     v0 requires full-key required in v0 — on={:?} does not cover \
+                     table key declaration {:?}",
+                    desc.join.on, left_keys
+                )));
+            }
+
+            // Type validation on key fields — only when both schemas are
+            // available. Emits a schema_mismatch_error-style message.
+            if let (Some(lf), Some(rf)) = (&left_fields_full, &right_fields_full) {
+                for k in &left_keys {
+                    let lt = lf.iter().find(|(n, _)| n == k).map(|(_, t)| t.as_str());
+                    let rt = rf.iter().find(|(n, _)| n == k).map(|(_, t)| t.as_str());
+                    if let (Some(a), Some(b)) = (lt, rt) {
+                        if a != b {
+                            return Err(TallyError::Protocol(format!(
+                                "v0 REGISTER: Table↔Table join schema_mismatch_error: \
+                                 key field '{}' type differs between '{}' ({}) and \
+                                 '{}' ({})",
+                                k, desc.join.left, a, desc.join.right, b
+                            )));
+                        }
+                    }
+                }
+            }
+
+            // Cycle guard (defense-in-depth; SDK DAG build rejects cycles).
+            if desc.depends_on.contains(&desc.name)
+                || desc.join.left == desc.name
+                || desc.join.right == desc.name
+            {
+                return Err(TallyError::Protocol(
+                    "v0 REGISTER: Table↔Table join would create a cycle (output \
+                     references itself)"
+                        .into(),
+                ));
+            }
+
+            // Partition output schema into left / right buckets using the
+            // same heuristic as stream_stream.
+            let on_set: std::collections::HashSet<&str> =
+                desc.join.on.iter().map(|s| s.as_str()).collect();
+            let left_schema: Option<std::collections::HashSet<String>> =
+                left_fields_lookup.and_then(|l| {
+                    l(&desc.join.left).map(|v| v.into_iter().collect())
+                });
+            let right_schema: Option<std::collections::HashSet<String>> =
+                left_fields_lookup.and_then(|l| {
+                    l(&desc.join.right).map(|v| v.into_iter().collect())
+                });
+
+            let fields_obj = desc.fields.as_object().ok_or_else(|| {
+                TallyError::Protocol(
+                    "v0 REGISTER: join.fields must be a JSON object".into(),
+                )
+            })?;
+
+            let mut left_fields: Vec<String> = Vec::new();
+            let mut right_fields: Vec<(String, String)> = Vec::new();
+            for (emitted_name, _spec) in fields_obj {
+                if on_set.contains(emitted_name.as_str()) {
+                    left_fields.push(emitted_name.clone());
+                    continue;
+                }
+                if let Some(base) = strip_right_suffix(emitted_name) {
+                    right_fields.push((base, emitted_name.clone()));
+                    continue;
+                }
+                if let Some(ls) = &left_schema {
+                    if ls.contains(emitted_name) {
+                        left_fields.push(emitted_name.clone());
+                        continue;
+                    }
+                }
+                if let Some(rs) = &right_schema {
+                    if rs.contains(emitted_name) {
+                        right_fields.push((
+                            emitted_name.clone(),
+                            emitted_name.clone(),
+                        ));
+                        continue;
+                    }
+                }
+                // Conservative fallback — surface the column as a right-side
+                // passthrough so the output contains every schema entry.
+                right_fields.push((emitted_name.clone(), emitted_name.clone()));
+            }
+
+            let single_feature_name = format!(
+                "__table_join_{}_{}",
+                desc.join.left, desc.join.right
+            );
+            let feature = FeatureDef::TableTableJoin {
+                left_table: desc.join.left.clone(),
+                right_table: desc.join.right.clone(),
+                on: desc.join.on.clone(),
+                join_type,
+                left_fields,
+                right_fields,
+            };
+
+            // Output Table shares the same key declaration. For composite
+            // keys, carry `group_by_keys` so reads / cascade encode the key
+            // the same way as Stream↔Table / Stream↔Stream.
+            let (key_field, group_by_keys) = if left_keys.len() == 1 {
+                (Some(left_keys[0].clone()), None)
+            } else {
+                (Some(left_keys[0].clone()), Some(left_keys.clone()))
+            };
+
+            Ok(StreamDefinition {
+                name: desc.name.clone(),
+                key_field,
+                group_by_keys,
+                features: vec![(single_feature_name, feature)],
+                depends_on: Some(desc.depends_on.clone()),
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+        }
         other => Err(TallyError::Protocol(format!(
             "v0 REGISTER: unknown join shape '{}'; expected stream_table / stream_stream / table_table",
             other
