@@ -107,10 +107,10 @@ Key decisions (locked via design conversation 2026-04-14, captured in `.planning
   11. `now()` returns wall-clock; `event_time()` builtin returns current event's event-time; callable in derive + filter expressions
   12. Multi-shape integration DAG (source Stream + source Table + Enrich + Agg + TT-join) behaves correctly under in-order, out-of-order, late-drop, and tombstone-cascade scenarios
   13. 9-cell benchmark matrix passes within ±5% of v0 BASELINE.json; 4 new characterization cells recorded
-**Plans:** 2/5 plans executed
+**Plans:** 3/5 plans executed
   - [x] 24-01-PLAN.md — Table storage primitive (TableRow + TableRowState, StateStore methods, snapshot v6→v7 migration)
   - [x] 24-02-PLAN.md — OP_PUSH_TABLE / OP_DELETE_TABLE opcodes + Python SDK push/delete + merged GET view
-  - [ ] 24-03-PLAN.md — Migrate Phase 23 TT-cascade to table_rows; un-ignore 7 deferred TT tests; drop marker shim
+  - [x] 24-03-PLAN.md — Migrate Phase 23 TT-cascade to table_rows; un-ignore 7 deferred TT tests; drop marker shim
   - [ ] 24-04-PLAN.md — Per-stream watermarks + γ propagation + event-time bucket routing + event_time() builtin + /debug/streams
   - [ ] 24-05-PLAN.md — Multi-shape integration tests + 9-cell benchmark gate + 4 Phase-24 characterization cells + phase SUMMARY
 
