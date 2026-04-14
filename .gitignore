@@ -14,6 +14,7 @@ build/
 
 # Tally-specific
 .planning/
+.thoughts/
 deck/
 *.snapshot*
 events/
@@ -36,4 +37,9 @@ benchmark/**/results/
 # OS
 .DS_Store
 Thumbs.db
-.claude/
+
+# Claude Code: ignore everything except the shipped /tally skill
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/tally/
