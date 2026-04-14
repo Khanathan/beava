@@ -10,7 +10,9 @@
 #   1. /health returns {"status":"ok"}
 #   2. /public/stats returns all 6 required fields
 #   3. Admin endpoint (DELETE /pipelines/*) returns 403 or 404 — NEVER 200
-#   4. /metrics exposes tally_events_total, tally_current_eps, tally_push_latency_p99_seconds
+#   4. /metrics exposes tally_events_total, tally_current_eps, tally_push_latency_p99_seconds,
+#      tally_late_events_dropped_total (Phase 24-04 watermark drops; HELP line required,
+#      per-stream series only present once a stream is registered)
 #   5. Crash-recovery: restart service, keys_total restored within 10% in 15s (needs TALLY_SSH_HOST)
 #   6. TCP 6400 MUST NOT be reachable on the public interface (the CRITICAL invariant)
 #
@@ -19,8 +21,25 @@
 #   replay driver has to run ON the VM itself.
 set -uo pipefail
 
-BASE="${1:?usage: smoke.sh <base-url> [--with-replay]}"
+BASE="${1:?usage: smoke.sh <base-url> [--with-replay|--local]}"
 MODE="${2:-}"
+
+# --local: smoke-check against a raw `target/release/tally` (no Caddy, no
+# systemd). Invariants 3 and 6 can't pass against a local binary because
+# (3) the admin sub-router trusts loopback by design (`require_loopback_or_token`)
+# and (6) the TCP port is listening on all interfaces without the prod-time
+# `bind 127.0.0.1 only` config. In --local mode these two invariants are
+# replaced by equivalent local-topology checks:
+#   3. admin route STRUCTURALLY exists (`GET /pipelines` returns JSON, not 404)
+#      — proves the admin sub-router is wired, which is what we care about
+#      before deploy locks it behind Caddy
+#   6. TCP port is listening on localhost — proves the binary started
+#
+# Plan 26-03 invariant count stays at 6 total in both modes.
+LOCAL_MODE=0
+if [[ "$MODE" == "--local" ]]; then
+	LOCAL_MODE=1
+fi
 
 FAIL=0
 PASS=0
@@ -85,11 +104,12 @@ check "admin DELETE denied from public" "
 # -----------------------------------------------------------------------------
 # 4. /metrics exposes the extended Prometheus fields
 # -----------------------------------------------------------------------------
-check "metrics exposes tally_events_total / eps / p99" "
+check "metrics exposes tally_events_total / eps / p99 / late-drops" "
 	resp=\$(curl -fsS --max-time 10 '${BASE}/metrics') || exit 1
 	echo \"\$resp\" | grep -q 'tally_events_total' &&
 	echo \"\$resp\" | grep -q 'tally_current_eps' &&
-	echo \"\$resp\" | grep -q 'tally_push_latency_p99_seconds'
+	echo \"\$resp\" | grep -q 'tally_push_latency_p99_seconds' &&
+	echo \"\$resp\" | grep -q 'tally_late_events_dropped_total'
 "
 
 # -----------------------------------------------------------------------------

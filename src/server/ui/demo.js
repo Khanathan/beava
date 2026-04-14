@@ -1,5 +1,25 @@
 const $ = id => document.getElementById(id);
 const fmt = n => Number(n).toLocaleString();
+
+// Phase 26-03: parse Prometheus text-format lines. Returns the first numeric
+// value for the given metric name (optionally summed across label series).
+// Tolerant of HELP/TYPE comments and of label sets Phase 25 may have added.
+function sumMetric(text, name) {
+  if (!text) return null;
+  let total = 0;
+  let saw = false;
+  for (const line of text.split('\n')) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    // Match `name <value>` or `name{labels} <value>` exactly.
+    if (t === name || t.startsWith(name + ' ') || t.startsWith(name + '{')) {
+      const v = parseFloat(t.split(/\s+/).pop());
+      if (!Number.isNaN(v)) { total += v; saw = true; }
+    }
+  }
+  return saw ? total : null;
+}
+
 async function poll() {
   try {
     const s = await fetch('/public/stats').then(r => r.json());
@@ -13,6 +33,18 @@ async function poll() {
       const ts = new Date(x.ts).toISOString().slice(11, 19);
       return `<li><code>${ts}</code><b>${x.stream}</b><span>${x.key || '—'}</span></li>`;
     }).join('') || '<li><code>no events yet</code></li>';
+
+    // Phase 24/25 observability: late-drop counter. Surfaced on the demo
+    // so visitors can see watermark drops in real time if the stream drifts.
+    // Missing / zero is fine — we hide the tile in that case.
+    const drops = $('late-drops');
+    if (drops) {
+      try {
+        const mtxt = await fetch('/metrics').then(r => r.text());
+        const total = sumMetric(mtxt, 'tally_late_events_dropped_total');
+        drops.textContent = total == null ? '–' : fmt(total);
+      } catch (_) { /* best-effort */ }
+    }
   } catch (err) { /* keep previous values on transient fetch failures */ }
 }
 $('lookup-form').addEventListener('submit', async ev => {
