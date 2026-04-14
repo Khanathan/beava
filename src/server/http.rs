@@ -151,6 +151,9 @@ async fn get_pipeline(
                     crate::engine::pipeline::FeatureDef::EnrichFromTable { right_table, on, join_type, right_fields } => {
                         serde_json::json!({"name": fname, "type": "enrich_from_table", "right_table": right_table, "on": on, "join_type": format!("{:?}", join_type), "right_fields": right_fields})
                     }
+                    crate::engine::pipeline::FeatureDef::StreamStreamJoin { left_stream, right_stream, on, within_ms, join_type, left_fields, right_fields } => {
+                        serde_json::json!({"name": fname, "type": "stream_stream_join", "left_stream": left_stream, "right_stream": right_stream, "on": on, "within_ms": within_ms, "join_type": format!("{:?}", join_type), "left_fields": left_fields, "right_fields": right_fields})
+                    }
                 })
                 .collect();
             (

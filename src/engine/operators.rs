@@ -2296,8 +2296,15 @@ impl StreamJoinBuffer {
         let hi = event_time_ms.saturating_add(self.within_ms);
         let mut out = Vec::new();
         for (_, events) in opposite.range(lo..=hi) {
-            for ev in events {
-                out.push(ev.clone());
+            for ev_json in events {
+                // Re-parse the stored stringified JSON back into a Map.
+                // If parsing fails (shouldn't happen — we stringified on
+                // insert) we skip that entry; the cascade degrades cleanly.
+                if let Ok(serde_json::Value::Object(m)) =
+                    serde_json::from_str::<serde_json::Value>(ev_json)
+                {
+                    out.push(m);
+                }
             }
         }
         out
@@ -2312,15 +2319,18 @@ impl StreamJoinBuffer {
         event_time_ms: u64,
         event: serde_json::Map<String, serde_json::Value>,
     ) {
+        // Stringify the event payload for postcard compatibility.
+        let s = serde_json::to_string(&serde_json::Value::Object(event))
+            .unwrap_or_else(|_| "{}".to_string());
         match side {
             JoinSide::Left => {
-                self.left.entry(event_time_ms).or_default().push(event);
+                self.left.entry(event_time_ms).or_default().push(s);
                 if event_time_ms > self.max_left_ms {
                     self.max_left_ms = event_time_ms;
                 }
             }
             JoinSide::Right => {
-                self.right.entry(event_time_ms).or_default().push(event);
+                self.right.entry(event_time_ms).or_default().push(s);
                 if event_time_ms > self.max_right_ms {
                     self.max_right_ms = event_time_ms;
                 }

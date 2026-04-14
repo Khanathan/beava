@@ -93,13 +93,10 @@ mod primitives {
         buf.insert(JoinSide::Right, 150, ev(3));
         buf.evict();
 
-        // Round-trip via serde_json — postcard's schema doesn't support
-        // BTreeMap (WontImplement). The snapshot codec wraps OperatorState
-        // via a schema-friendly path; testing that at the state_store level
-        // happens in tests/test_snapshot_hybrid_ops.rs. Here we verify the
-        // type participates in serde round-trips.
-        let json = serde_json::to_string(&buf).expect("serialize");
-        let restored: StreamJoinBuffer = serde_json::from_str(&json).expect("deserialize");
+        // Round-trip via postcard (the production snapshot codec). Events
+        // are stored as stringified JSON internally for postcard compat.
+        let bytes = postcard::to_allocvec(&buf).expect("serialize");
+        let restored: StreamJoinBuffer = postcard::from_bytes(&bytes).expect("deserialize");
 
         assert_eq!(restored.within_ms, 5_000);
         assert_eq!(restored.left.len(), 2);
@@ -494,7 +491,7 @@ mod integration {
             "fields":{"user_id":{"type":"str","optional":false},"region":{"type":"str","optional":false},"_event_time":{"type":"int","optional":false}},
             "join":{"op":"join","left":"Left","right":"Right","on":["user_id","region"],"type":"inner","shape":"stream_stream","within":"30s"},
             "depends_on":["Left","Right"]}"#;
-        let join_val: serde_json::Value = serde_json::from_str(join_json).unwrap();
+        let _join_val: serde_json::Value = serde_json::from_str(join_json).unwrap();
         let join_desc = match parse(join_json) {
             V0RegisterPayload::Join(d) => d,
             _ => panic!(),

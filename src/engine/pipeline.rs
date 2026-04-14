@@ -147,6 +147,32 @@ pub enum FeatureDef {
         join_type: JoinType,
         right_fields: Vec<(String, String)>,
     },
+    /// Phase 23-02 — Stream↔Stream symmetric interval windowed join.
+    ///
+    /// State lives in a per-key `OperatorState::StreamJoinBuffer` under the
+    /// join stream in `EntityState.streams`. On each event arrival from
+    /// `left_stream` or `right_stream`, the cascade probes the opposite side
+    /// for events with `|event_time - other.event_time| <= within_ms`,
+    /// emits one joined event per match, then inserts the arriving event
+    /// and evicts stale entries (floor = max_seen_on_that_side - within_ms).
+    ///
+    /// `right_fields` is `(source_name_in_right, emitted_name)`. The SDK
+    /// pre-applies `_right` suffix on column collision; the engine emits
+    /// emitted_name verbatim.
+    ///
+    /// v0 limitation (documented in 23-02-SUMMARY): for `type=Left`, an
+    /// unmatched left event emits a null-pair on arrival; a later matching
+    /// right-side event emits a SECOND joined pair. Phase 24 will replace
+    /// the null-pair with a retraction-aware retract + insert.
+    StreamStreamJoin {
+        left_stream: String,
+        right_stream: String,
+        on: Vec<String>,
+        within_ms: u64,
+        join_type: JoinType,
+        left_fields: Vec<String>,
+        right_fields: Vec<(String, String)>,
+    },
 }
 
 /// Phase 23-01 — join semantics. Only Inner + Left are supported in v0;
@@ -193,6 +219,7 @@ pub fn get_backfill_flag(def: &FeatureDef) -> bool {
         FeatureDef::ExactMin { backfill, .. } => *backfill,
         FeatureDef::ExactMax { backfill, .. } => *backfill,
         FeatureDef::EnrichFromTable { .. } => false,
+        FeatureDef::StreamStreamJoin { .. } => false,
     }
 }
 
@@ -517,7 +544,41 @@ fn create_operator(def: &FeatureDef) -> Option<OperatorState> {
         // Phase 23-01: EnrichFromTable is stateless at the operator level —
         // execution lives in push_internal / cascade (Table lookup + emit).
         FeatureDef::EnrichFromTable { .. } => None,
+        // Phase 23-02: StreamStreamJoin state is a per-key StreamJoinBuffer
+        // created lazily by the cascade handler (different state shape —
+        // needs within_ms from the feature def).
+        FeatureDef::StreamStreamJoin { .. } => None,
     }
+}
+
+/// Phase 23-02: build a joined event for Stream↔Stream symmetric interval
+/// joins. Starts from `left_map`, then overlays right-side fields per
+/// `right_fields = [(source_in_right, emitted_name), ...]`. If the right
+/// map is empty (null-pair emission on left-side miss), missing values
+/// land as `Value::Null`.
+///
+/// Defense-in-depth mirrors `EnrichFromTable`: refuses to clobber a
+/// pre-existing left field of the same emitted name when the emitted
+/// name differs from the right-side source name (i.e., the SDK has
+/// already renamed the right slot to `_right`-suffixed, so the unsuffixed
+/// emitted_name must have come from the left).
+fn build_joined_event(
+    left_map: &serde_json::Map<String, serde_json::Value>,
+    right_map: &serde_json::Map<String, serde_json::Value>,
+    right_fields: &[(String, String)],
+) -> serde_json::Value {
+    let mut out = left_map.clone();
+    for (right_src, emitted) in right_fields {
+        if out.contains_key(emitted) && emitted != right_src {
+            continue;
+        }
+        let v = right_map
+            .get(right_src)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        out.insert(emitted.clone(), v);
+    }
+    serde_json::Value::Object(out)
 }
 
 /// Extract the where_expr from a FeatureDef, if present.
@@ -540,6 +601,7 @@ fn get_where_expr(def: &FeatureDef) -> Option<&Expr> {
         FeatureDef::ExactMin { where_expr, .. } => where_expr.as_ref(),
         FeatureDef::ExactMax { where_expr, .. } => where_expr.as_ref(),
         FeatureDef::EnrichFromTable { .. } => None,
+        FeatureDef::StreamStreamJoin { .. } => None,
     }
 }
 
@@ -1282,6 +1344,199 @@ impl PipelineEngine {
                 continue;
             }
 
+            // Phase 23-02: Stream↔Stream symmetric interval join.
+            let ss_join = downstream_def.features.iter().find_map(|(fname, def)| {
+                if let FeatureDef::StreamStreamJoin {
+                    left_stream,
+                    right_stream,
+                    on,
+                    within_ms,
+                    join_type,
+                    left_fields,
+                    right_fields,
+                } = def
+                {
+                    Some((
+                        fname.clone(),
+                        left_stream.clone(),
+                        right_stream.clone(),
+                        on.clone(),
+                        *within_ms,
+                        *join_type,
+                        left_fields.clone(),
+                        right_fields.clone(),
+                    ))
+                } else {
+                    None
+                }
+            });
+            if let Some((
+                feat_name,
+                left_stream,
+                right_stream,
+                on_keys,
+                within_ms,
+                join_type,
+                _left_fields,
+                right_fields,
+            )) = ss_join
+            {
+                // Determine which side the arrival came from. The primary
+                // stream (`stream_name`) is the origin of the push.
+                let side_opt: Option<crate::engine::operators::JoinSide> =
+                    if stream_name == left_stream {
+                        Some(crate::engine::operators::JoinSide::Left)
+                    } else if stream_name == right_stream {
+                        Some(crate::engine::operators::JoinSide::Right)
+                    } else {
+                        None
+                    };
+                let side = match side_opt {
+                    Some(s) => s,
+                    None => {
+                        // Join fired from an unrelated upstream — skip.
+                        continue;
+                    }
+                };
+
+                // Compose the per-key composite state key.
+                let state_key =
+                    match crate::engine::register::encode_group_by(&on_keys, &effective_event) {
+                        Ok(k) => k,
+                        Err(_) => {
+                            // On-key missing: skip silently (same semantics
+                            // as Phase 23-01's keyed_ready guard).
+                            continue;
+                        }
+                    };
+
+                // Event-time: parse_event_time returns SystemTime; fall back
+                // to wall-clock `now` when `_event_time` is absent.
+                let event_time_ms: u64 = {
+                    let st = crate::engine::operators::parse_event_time(&effective_event)
+                        .unwrap_or(now);
+                    st.duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0)
+                };
+
+                // Extract the arriving event as a JSON object map.
+                let arriving_map: serde_json::Map<String, serde_json::Value> =
+                    match effective_event.as_object() {
+                        Some(m) => m.clone(),
+                        None => {
+                            return Err(TallyError::Protocol(
+                                "StreamStreamJoin: event is not a JSON object".into(),
+                            ));
+                        }
+                    };
+
+                // Probe opposite side, then insert & evict. Scoped so the
+                // entity guard drops before downstream push_internal calls
+                // (which also take entity locks).
+                let matches: Vec<serde_json::Map<String, serde_json::Value>> = {
+                    let mut entity = store.get_or_create_entity(&state_key);
+                    entity.get_or_create_stream(stream_in_order);
+                    let stream_state = entity.streams.get_mut(stream_in_order).unwrap();
+
+                    if !stream_state.operators.iter().any(|(n, _)| *n == feat_name) {
+                        stream_state.operators.push((
+                            feat_name.clone(),
+                            crate::state::snapshot::OperatorState::StreamJoinBuffer(
+                                crate::engine::operators::StreamJoinBuffer::new(within_ms),
+                            ),
+                        ));
+                    }
+
+                    let buf = stream_state
+                        .operators
+                        .iter_mut()
+                        .find_map(|(n, op)| {
+                            if *n != feat_name {
+                                return None;
+                            }
+                            match op {
+                                crate::state::snapshot::OperatorState::StreamJoinBuffer(b) => {
+                                    Some(b)
+                                }
+                                _ => None,
+                            }
+                        })
+                        .expect("StreamJoinBuffer present");
+
+                    let probed = buf.probe(side, event_time_ms);
+                    buf.insert(side, event_time_ms, arriving_map.clone());
+                    buf.evict();
+                    stream_state.last_event_at = Some(now);
+                    probed
+                };
+
+                // Build joined events.
+                let joined_events: Vec<serde_json::Value> = if !matches.is_empty() {
+                    matches
+                        .into_iter()
+                        .map(|matched| {
+                            let (left_map, right_map) = match side {
+                                crate::engine::operators::JoinSide::Left => {
+                                    (arriving_map.clone(), matched)
+                                }
+                                crate::engine::operators::JoinSide::Right => {
+                                    (matched, arriving_map.clone())
+                                }
+                            };
+                            build_joined_event(&left_map, &right_map, &right_fields)
+                        })
+                        .collect()
+                } else if join_type == JoinType::Left
+                    && side == crate::engine::operators::JoinSide::Left
+                {
+                    // v0 eager null-pair emission for left-side miss. See
+                    // 23-02-SUMMARY "Known Stubs" and
+                    // join-outer-needed.md §4 (retraction doubling).
+                    let null_right: serde_json::Map<String, serde_json::Value> =
+                        serde_json::Map::new();
+                    vec![build_joined_event(&arriving_map, &null_right, &right_fields)]
+                } else {
+                    Vec::new()
+                };
+
+                // Publish the first joined event as this stream's effective
+                // event for downstreams the toposort walk visits next.
+                if let Some(first) = joined_events.first() {
+                    effective_events.insert(stream_in_order.clone(), first.clone());
+                }
+
+                // For extra matches (2nd onward), push directly into every
+                // direct downstream of Joined — the toposort loop visits
+                // each downstream exactly once per outer push.
+                if joined_events.len() > 1 {
+                    let direct_downstreams: Vec<String> = self
+                        .downstream_map
+                        .get(stream_in_order.as_str())
+                        .cloned()
+                        .unwrap_or_default();
+                    for extra in joined_events.iter().skip(1) {
+                        for ds_name in &direct_downstreams {
+                            let _ = self.push_internal(
+                                ds_name,
+                                extra,
+                                None,
+                                None,
+                                store,
+                                now,
+                                false,
+                            );
+                        }
+                    }
+                }
+
+                // No emissions this pass → mark subtree dropped.
+                if joined_events.is_empty() {
+                    dropped.insert(stream_in_order.clone());
+                }
+                continue;
+            }
+
             // Check if this downstream stream has further downstream (for read_features decision)
             let has_further_downstream = self.downstream_map.contains_key(stream_in_order.as_str());
             // Must read features if: caller wants them, OR further downstream needs enrichment
@@ -1605,6 +1860,11 @@ impl PipelineEngine {
                 FeatureDef::ExactMin { window, .. } => Some(*window),
                 FeatureDef::ExactMax { window, .. } => Some(*window),
                 FeatureDef::EnrichFromTable { .. } => None, // stateless / no window
+                FeatureDef::StreamStreamJoin { within_ms, .. } => {
+                    // Treat `within` as the effective window so TTL / eviction
+                    // scheduling accounts for buffer retention.
+                    Some(Duration::from_millis(*within_ms))
+                }
             })
             .max()
             .unwrap_or(Duration::ZERO)

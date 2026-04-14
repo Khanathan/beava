@@ -1006,11 +1006,103 @@ pub fn v0_join_to_stream_def(
                 max_keys: None,
             })
         }
-        "stream_stream" => Err(TallyError::Protocol(
-            "v0 REGISTER: shape='stream_stream' not yet implemented in 23-01; \
-             Plan 23-02 ships Stream↔Stream windowed joins"
-                .into(),
-        )),
+        "stream_stream" => {
+            // Phase 23-02: symmetric interval windowed join with per-key
+            // event-time-indexed buffers on both sides.
+            let within_str = desc.join.within.as_ref().ok_or_else(|| {
+                TallyError::Protocol(
+                    "v0 REGISTER: stream_stream join requires within=<duration> \
+                     (e.g. '30s' / '5m'); missing `within` field"
+                        .into(),
+                )
+            })?;
+            let within = parse_window(within_str, "join.within")?;
+            let within_ms = within.as_millis() as u64;
+
+            // Partition the output schema into left-side fields (passthrough
+            // from the left event) and right-side fields (lifted from the
+            // right event on match). Mirrors the Plan 23-01 stream_table
+            // partitioning logic.
+            let on_set: std::collections::HashSet<&str> =
+                desc.join.on.iter().map(|s| s.as_str()).collect();
+            let left_schema: Option<std::collections::HashSet<String>> =
+                left_fields_lookup.and_then(|lookup| {
+                    lookup(&desc.join.left).map(|v| v.into_iter().collect())
+                });
+            let right_schema: Option<std::collections::HashSet<String>> =
+                left_fields_lookup.and_then(|lookup| {
+                    lookup(&desc.join.right).map(|v| v.into_iter().collect())
+                });
+
+            let fields_obj = desc.fields.as_object().ok_or_else(|| {
+                TallyError::Protocol(
+                    "v0 REGISTER: join.fields must be a JSON object".into(),
+                )
+            })?;
+
+            let mut left_fields: Vec<String> = Vec::new();
+            let mut right_fields: Vec<(String, String)> = Vec::new();
+            for (emitted_name, _spec) in fields_obj {
+                if on_set.contains(emitted_name.as_str()) {
+                    // Join keys come from both sides (equal by definition).
+                    // Record them as left-side passthrough.
+                    left_fields.push(emitted_name.clone());
+                    continue;
+                }
+                if let Some(base) = strip_right_suffix(emitted_name) {
+                    right_fields.push((base, emitted_name.clone()));
+                    continue;
+                }
+                // When schemas known: left-side if in left_schema; otherwise
+                // right-side passthrough.
+                if let Some(ls) = &left_schema {
+                    if ls.contains(emitted_name) {
+                        left_fields.push(emitted_name.clone());
+                        continue;
+                    }
+                }
+                if let Some(rs) = &right_schema {
+                    if rs.contains(emitted_name) {
+                        right_fields.push((emitted_name.clone(), emitted_name.clone()));
+                        continue;
+                    }
+                }
+                // Conservative fallback: passthrough from left (same policy
+                // as stream_table; the `_right` suffix branch above already
+                // catches the collision-renamed right-side slots).
+                left_fields.push(emitted_name.clone());
+            }
+
+            let single_feature_name = format!(
+                "__stream_join_{}_{}", desc.join.left, desc.join.right
+            );
+            let feature = FeatureDef::StreamStreamJoin {
+                left_stream: desc.join.left.clone(),
+                right_stream: desc.join.right.clone(),
+                on: desc.join.on.clone(),
+                within_ms,
+                join_type,
+                left_fields,
+                right_fields,
+            };
+
+            Ok(StreamDefinition {
+                name: desc.name.clone(),
+                // Keyless — the join emits synthesized events. Buffer state
+                // is keyed per composite key of `on` via the cascade.
+                key_field: None,
+                group_by_keys: Some(desc.join.on.clone()),
+                features: vec![(single_feature_name, feature)],
+                depends_on: Some(desc.depends_on.clone()),
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+        }
         "table_table" => Err(TallyError::Protocol(
             "v0 REGISTER: shape='table_table' not yet implemented in 23-01; \
              Plan 23-03 ships Table↔Table same-key joins"
