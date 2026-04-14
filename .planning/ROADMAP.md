@@ -66,7 +66,10 @@ Key decisions (locked via design conversation 2026-04-14, captured in `.planning
   6. `tl.first`, `tl.last`, `tl.first_n`, `tl.last_n` work by event-time
   7. `tl.ema`, `tl.lag` work on Stream inputs; registration rejects them on any Table-tainted input
   8. Ring-buffer windowing supports default windows (1m/5m/1h/24h) with configurable bucket granularity
-**Plans:** TBD
+**Plans:** 1/3 plans executed
+  - [x] 22-01-PLAN.md — REGISTER JSON consumer + aggregation dispatch + OperatorState enum extension (burns v2.0 REGISTER path)
+  - [ ] 22-02-PLAN.md — Linear + order-sensitive operators: count/sum/avg/variance/stddev, min/max (bucket-granular), first/last/first_n/last_n (event-time), ema, lag
+  - [ ] 22-03-PLAN.md — Hybrid sketch operators (UDDSketch percentile + CMS top_k + per-bucket HLL count_distinct) + /debug/key/:key telemetry + benchmark matrix perf gate
 
 ### Phase 23: Joins
 **Goal**: Three join shapes work end-to-end: Stream↔Stream windowed, Stream↔Table enrichment, Table↔Table same-key.
@@ -143,7 +146,7 @@ Dependency graph:
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 21. Type system & SDK skeleton | v0 | 3/3 | Complete   | 2026-04-14 |
-| 22. Stream aggregation engine | v0 | 0/? | Not planned | - |
+| 22. Stream aggregation engine | v0 | 1/3 | In Progress|  |
 | 23. Joins | v0 | 0/? | Not planned | - |
 | 24. Watermarks & event-time | v0 | 0/? | Not planned | - |
 | 25. Query surface, TTL, warnings | v0 | 0/? | Not planned | - |
