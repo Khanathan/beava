@@ -118,27 +118,15 @@ class StreamSource(Stream):
 
     def _compile(self) -> dict[str, Any]:
         """Compile to a RegisterRequest JSON dict (keyless stream source)."""
-        d: dict[str, Any] = {
-            "name": self._name,
-            "key_field": None,
-            "features": [],
-            "fields": {
-                fname: {
-                    "type": spec.py_type.__name__,
-                    "optional": spec.optional,
-                }
-                for fname, spec in self._schema.items()
-            },
-        }
-        if self._history_ttl is not None:
-            d["history_ttl"] = self._history_ttl
-        return d
+        from tally._serialize import compile_to_register_json
+        return compile_to_register_json(self)
 
     def _to_register_json(self) -> dict[str, Any]:
         return self._compile()
 
     def _collect_registrations(self) -> list[dict[str, Any]]:
-        return [self._compile()]
+        from tally._serialize import collect_registrations
+        return collect_registrations(self)
 
     def __repr__(self) -> str:
         return f"StreamSource({self._name!r})"
@@ -195,59 +183,17 @@ class StreamDerivation(Stream):
         return self._name
 
     def _compile(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
-            "name": self._name,
-            "key_field": None,
-            "features": [],
-            "fields": {
-                fname: {
-                    "type": spec.py_type.__name__,
-                    "optional": spec.optional,
-                }
-                for fname, spec in self._schema.items()
-            },
-        }
-        if self._ops:
-            d["ops"] = list(self._ops)
-        if self._upstreams:
-            d["depends_on"] = [u._name for u in self._upstreams]
-        return d
+        from tally._serialize import compile_to_register_json
+        return compile_to_register_json(self)
 
     def _to_register_json(self) -> dict[str, Any]:
         return self._compile()
 
     def _collect_registrations(self) -> list[dict[str, Any]]:
-        """Transitive REGISTER walk: upstreams (depth-first) then self.
-
-        Dedupe happens at App.register level; here we just append in post-order.
-        """
-        out: list[dict[str, Any]] = []
-        seen: set[str] = set()
-
-        def walk(node: Stream) -> None:
-            # Sources and derivations both implement _collect_registrations,
-            # but StreamDerivation recurses through _upstreams explicitly so
-            # we can carry the dedupe set.
-            if isinstance(node, StreamDerivation):
-                for u in node._upstreams:
-                    walk(u)
-            elif hasattr(node, "_collect_registrations"):
-                for reg in node._collect_registrations():
-                    if reg["name"] not in seen:
-                        seen.add(reg["name"])
-                        out.append(reg)
-            if node is self or isinstance(node, StreamDerivation):
-                # Append the derivation's own frame once we've covered its upstreams.
-                pass
-
-        # Walk upstreams first (left-to-right, depth-first).
-        for u in self._upstreams:
-            walk(u)
-        # Then append our own frame if not yet seen.
-        if self._name not in seen:
-            seen.add(self._name)
-            out.append(self._compile())
-        return out
+        """Transitive REGISTER walk via the serializer (handles agg/join/union
+        upstream dispatch uniformly)."""
+        from tally._serialize import collect_registrations
+        return collect_registrations(self)
 
     def __repr__(self) -> str:
         return f"StreamDerivation({self._name!r}, ops={len(self._ops)})"

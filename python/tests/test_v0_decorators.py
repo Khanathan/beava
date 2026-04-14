@@ -82,8 +82,11 @@ class TestStreamDecorator:
 
         reg = Clicks._compile()
         assert reg["name"] == "Clicks"
+        assert reg["kind"] == "stream"
         assert reg["key_field"] is None
-        assert reg["features"] == []
+        # Plan 21-03: aggregation moved under "aggregation.features"; plain
+        # sources no longer emit a top-level `features: []` stub.
+        assert "features" not in reg
         assert reg["fields"]["user_id"] == {"type": "str", "optional": False}
 
     def test_collect_registrations(self):

@@ -134,37 +134,16 @@ class TableSource(Table):
         return self._name
 
     def _compile(self) -> dict[str, Any]:
-        """Compile to a RegisterRequest JSON dict.
-
-        Tables with a single key field write ``key_field`` as a string (matches
-        the existing engine contract); composite keys use ``key_fields``.
-        """
-        d: dict[str, Any] = {
-            "name": self._name,
-            "features": [],
-            "fields": {
-                fname: {
-                    "type": spec.py_type.__name__,
-                    "optional": spec.optional,
-                }
-                for fname, spec in self._schema.items()
-            },
-            "mode": self._mode,
-        }
-        if len(self._key) == 1:
-            d["key_field"] = self._key[0]
-        else:
-            d["key_field"] = None
-            d["key_fields"] = list(self._key)
-        if self._ttl is not None:
-            d["entity_ttl"] = self._ttl
-        return d
+        """Compile to a RegisterRequest JSON dict via the shared serializer."""
+        from tally._serialize import compile_to_register_json
+        return compile_to_register_json(self)
 
     def _to_register_json(self) -> dict[str, Any]:
         return self._compile()
 
     def _collect_registrations(self) -> list[dict[str, Any]]:
-        return [self._compile()]
+        from tally._serialize import collect_registrations
+        return collect_registrations(self)
 
     def __repr__(self) -> str:
         return f"TableSource({self._name!r}, key={list(self._key)!r})"
@@ -217,47 +196,15 @@ class TableDerivation(Table):
         return self._name
 
     def _compile(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
-            "name": self._name,
-            "features": [],
-            "fields": {
-                fname: {
-                    "type": spec.py_type.__name__,
-                    "optional": spec.optional,
-                }
-                for fname, spec in self._schema.items()
-            },
-            "mode": self._mode,
-        }
-        if len(self._key) == 1:
-            d["key_field"] = self._key[0]
-        else:
-            d["key_field"] = None
-            d["key_fields"] = list(self._key)
-        if self._ttl is not None:
-            d["entity_ttl"] = self._ttl
-        if self._ops:
-            d["ops"] = list(self._ops)
-        if self._upstreams:
-            d["depends_on"] = [u._name for u in self._upstreams]
-        return d
+        from tally._serialize import compile_to_register_json
+        return compile_to_register_json(self)
 
     def _to_register_json(self) -> dict[str, Any]:
         return self._compile()
 
     def _collect_registrations(self) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for u in self._upstreams:
-            if hasattr(u, "_collect_registrations"):
-                for reg in u._collect_registrations():
-                    if reg["name"] not in seen:
-                        seen.add(reg["name"])
-                        out.append(reg)
-        if self._name not in seen:
-            seen.add(self._name)
-            out.append(self._compile())
-        return out
+        from tally._serialize import collect_registrations
+        return collect_registrations(self)
 
     def __repr__(self) -> str:
         return (
