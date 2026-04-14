@@ -52,14 +52,17 @@ def test_stream_stream_join_tcp(app):
 
     # Push a matching pair within the window.
     t_ms = int(time.time() * 1000)
-    app.push_sync(Orders, {"user_id": "u1", "order_id": "o1", "_event_time": t_ms})
+    # Unique key per test — the session-scoped `app` fixture shares state
+    # across the whole pytest run; using distinctive prefixes prevents
+    # cross-test pollution (e.g., `u1` collides with 23-01 roundtrip tests).
+    app.push_sync(Orders, {"user_id": "ssj_u1", "order_id": "o1", "_event_time": t_ms})
     app.push_sync(
         Payments,
-        {"user_id": "u1", "order_id": "o1", "amount": 99.0, "_event_time": t_ms + 5000},
+        {"user_id": "ssj_u1", "order_id": "o1", "amount": 99.0, "_event_time": t_ms + 5000},
     )
     app.flush()
 
-    row = app.get("u1").to_dict()
+    row = app.get("ssj_u1").to_dict()
     # At least one matched pair emitted into the aggregation (v0 may double-
     # emit for eager null-pairs under type=left, but this is type=inner).
     assert row.get("matched", 0) >= 1, f"expected matched>=1, got {row!r}"
