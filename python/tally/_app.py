@@ -80,22 +80,64 @@ class App:
     def register(self, *stream_classes) -> None:
         """Register one or more pipeline definitions with the server.
 
-        Accepts v0 Stream/Table descriptors (``StreamSource``, ``TableSource``,
-        and derivation descriptors added in Plan 21-02) which implement the
-        ``_collect_registrations()`` / ``_to_register_json()`` protocols.
+        Accepts v0 Stream/Table descriptors. Before sending anything, runs
+        :func:`tally._validate_v0.validate` on the full descriptor set — if
+        any validation errors surface, raises the first one (with a tail
+        count in the message) and sends no REGISTER frames.
+
+        On success, walks the DAG in topological order, calls
+        ``_collect_registrations()`` on each descriptor, dedupes REGISTER
+        frames by ``name``, and forwards each to the server.
         """
+        from tally._dag import build_dag
+        from tally._validate_v0 import ValidationError, validate
+
         self._client.drain_errors_nonblock()
-        for cls in stream_classes:
-            # Support both decorator classes and v2.0 API objects
-            if hasattr(cls, '_collect_registrations'):
-                # v2.0 API object: register all transitive deps
-                for reg in cls._collect_registrations():
+
+        descriptors = list(stream_classes)
+        errors = validate(*descriptors)
+        if errors:
+            head = errors[0]
+            if len(errors) > 1:
+                raise ValidationError(
+                    kind=head.kind,
+                    path=head.path,
+                    message=(
+                        f"{head.message}\n\n…and {len(errors) - 1} more "
+                        f"validation errors — call tally.validate() to see all"
+                    ),
+                )
+            raise head
+
+        dag = build_dag(descriptors)
+        order = dag.topological_order()
+        seen: set[str] = set()
+        for node_name in order:
+            desc = dag.nodes[node_name]
+            if hasattr(desc, "_collect_registrations"):
+                for reg in desc._collect_registrations():
+                    if reg["name"] in seen:
+                        continue
+                    seen.add(reg["name"])
                     payload = encode_register(reg)
                     self._send(OP_REGISTER, payload)
-            else:
-                definition = cls._to_register_json()
+            elif hasattr(desc, "_to_register_json"):
+                definition = desc._to_register_json()
+                if definition["name"] in seen:
+                    continue
+                seen.add(definition["name"])
                 payload = encode_register(definition)
                 self._send(OP_REGISTER, payload)
+
+    def validate(self, *descriptors) -> list:
+        """Run local validation without any TCP contact.
+
+        Returns a list of :class:`tally.ValidationError` (empty on success).
+        Useful in tests to assert a pipeline is valid without catching
+        exceptions from :meth:`register`.
+        """
+        from tally._validate_v0 import validate as _v
+        return _v(*descriptors)
 
     # ------------------------------------------------------------------
     # Push

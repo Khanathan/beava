@@ -35,8 +35,9 @@ from tally._protocol import (
 # v0 public surface
 from tally._types_core import Optional, Field
 from tally._col import col
-from tally._stream import stream, Stream
-from tally._table import table, Table
+from tally._stream import stream, Stream, StreamSource, StreamDerivation
+from tally._table import table, Table, TableSource, TableDerivation
+from tally._validate_v0 import validate, ValidationError
 
 # OperatorBase is still referenced by Plan 21-03 aggregation-spec descriptors.
 from tally._operators import OperatorBase
@@ -64,6 +65,12 @@ __all__ = [
     "col",
     "Stream",
     "Table",
+    "StreamSource",
+    "StreamDerivation",
+    "TableSource",
+    "TableDerivation",
+    "validate",
+    "ValidationError",
     # Internal (used by Plan 21-03)
     "OperatorBase",
 ]

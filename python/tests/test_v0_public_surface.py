@@ -73,8 +73,7 @@ _REMOVED_PUBLIC_SYMBOLS = [
     "union",
     "EventSet",
     "FeatureSet",
-    "validate",
-    "ValidationError",
+    # validate / ValidationError re-added in Plan 21-02 (local DAG validation).
     # Lowercase-alias operator constructors (return in Plan 21-03 as
     # aggregation-spec descriptors, deliberately not re-exported here).
     "count",
