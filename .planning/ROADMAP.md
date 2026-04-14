@@ -128,7 +128,10 @@ Key decisions (locked via design conversation 2026-04-14, captured in `.planning
   7. `/debug/config-recommendations` endpoint suggests TTL/history_ttl adjustments based on observed eviction/compaction/backfill-miss signals
   8. `tally suggest-config` CLI prints copy-pasteable decorator overrides
   9. `SCAN` and `SUBSCRIBE` opcodes are reserved but return "not implemented in v0" if called
-**Plans:** TBD
+**Plans:** 3 plans
+  - [ ] 25-01-PLAN.md — GET_MULTI opcode end-to-end (Rust + Python SDK) with null-collapse + composite-key support + SCAN/SUBSCRIBE reserved opcodes
+  - [x] 25-02-PLAN.md — Unified `/debug/warnings` feed + SignalRegistry internal bus (5 categories, 4 severities, severity-sorted, dedupe-by-id, 7d age-out) + initial emitters (late-drop / REGISTER-fail / snapshot-fail / memory-pressure / p99 perf)
+  - [ ] 25-03-PLAN.md — TTL defaults (30d Table / 90d Stream) + per-Table double-buffered reinit bloom filter + `/debug/config-recommendations` endpoint wired into SignalRegistry + `tally suggest-config` CLI + startup advisory
 
 ### Phase 26: Test migration, benchmarks, docs, demo rebuild
 **Goal**: Port the existing test suite to the new API, verify no performance regression, rewrite the launch blog, and rebuild Phase 20 traction demo against the new SDK.
@@ -163,5 +166,5 @@ Dependency graph:
 | 22. Stream aggregation engine | v0 | 4/4 | Complete   | 2026-04-14 |
 | 23. Joins | v0 | 2/3 | In Progress|  |
 | 24. Table storage + Watermarks & event-time | v0 | 4/5 | In Progress|  |
-| 25. Query surface, TTL, warnings | v0 | 0/? | Not planned | - |
+| 25. Query surface, TTL, warnings | v0 | 0/3 | Planned    |  |
 | 26. Test migration, bench, docs, demo | v0 | 0/? | Not planned | - |
