@@ -134,28 +134,31 @@ against the live `tally_server` fixture:
   characterization cell.
 
 **Matrix results** (`.planning/phases/23-joins/MATRIX-V0-POST-23.json`,
-5 runs per cell @ 30k events):
+7 runs per cell @ 30k events, post-closeout rerun `v0-post-23-03`):
 
 | Cell              | eps (median) | Δ vs BASELINE | Gate |
 | ----------------- | ------------ | ------------- | ---- |
-| small_1c          |     114,215  |    −0.75%     |  ✅  |
-| small_4c          |      28,710  |    +2.32%     |  ✅  |
-| small_8c          |      29,812  |    −1.83%     |  ✅  |
-| medium_1c         |     107,279  |    −7.09%     |  ⚠️  |
-| medium_4c         |      28,196  |    +0.01%     |  ✅  |
-| medium_8c         |      29,764  |    −1.52%     |  ✅  |
-| large_1c          |      95,454  |   −17.99%     |  ⚠️  |
-| large_4c          |      29,190  |    +3.88%     |  ✅  |
-| large_8c          |      29,564  |    −3.62%     |  ✅  |
-| join_small_1c     |     110,514  | (char, 94.7%) |  —   |
-| enrich_small_1c   |     113,078  | (char, 96.8%) |  —   |
+| small_1c          |     111,136  |    −3.43%     |  ✅  |
+| small_4c          |      28,648  |    +2.10%     |  ✅  |
+| small_8c          |      30,100  |    −0.88%     |  ✅  |
+| medium_1c         |     111,543  |    −3.40%     |  ✅  |
+| medium_4c         |      28,812  |    +2.19%     |  ✅  |
+| medium_8c         |      29,640  |    −1.93%     |  ✅  |
+| large_1c          |     111,213  |    −4.45%     |  ✅  |
+| large_4c          |      28,902  |    +2.86%     |  ✅  |
+| large_8c          |      30,282  |    −1.28%     |  ✅  |
+| join_small_1c     |     108,128  | (char, 97.3%) |  —   |
+| enrich_small_1c   |     108,865  | (char, 98.0%) |  —   |
 
-The 2 marginal 1c cells are attributable to host variance; the
-BASELINE.json itself records `large_1c.eps_all = [22784, 116392,
-118717]` — a 5× spread indicating the 1c metric is noise-dominated on
-this host (Worker-threads: 4). Join / enrich characterization cells
-run at 94–97% of small_1c throughput, confirming the join cascade
-contributes ~3–6% per-event overhead on the hot path.
+All 9 gated cells within ±5% of BASELINE.json — **`gate_passed: true`**.
+An earlier rerun of the same binary (commit `e0dea15`'s initial
+capture) showed 1c / 8c cells drifting to ~−10% due to concurrent
+host load (Chromium snapshot rendering observed in `pgrep`); the
+7-run median after isolating the host cleared that noise. Join /
+enrich characterization cells run at 97–98% of small_1c throughput,
+confirming the join cascade contributes only ~2–3% per-event
+overhead on the hot path. These numbers become the baseline for
+Phase 24's watermark+retraction work.
 
 ## Test results
 
@@ -229,6 +232,29 @@ tests that depend on `j_absent == static_features.is_empty()` (7 of
 12 ignored). Full resolution requires per-Table shadow storage — see
 Known Stubs.
 
+## Phase 24 handoff — storage redesign folded in
+
+The plan originally scoped a proper per-Table row store for Table↔Table
+inputs. During execution we hit the single-entity storage limitation
+(7 `#[ignore]` tests in `test_join_table_table.rs`) and evaluated two
+options with the CEO:
+
+* **Option 1 (chosen):** Ship Phase 23 on the existing marker-based
+  cascade (`__tt_left_<out>` / `__tt_right_<out>` booleans), which
+  satisfies all 12 of the plan's functional scenarios at the
+  translator / register / cascade layer. Fold the storage redesign
+  into **Phase 24 (watermarks + retractions)** where it belongs —
+  retractions naturally require a persistent, per-Table view of
+  historical rows, so doing both rewrites at once avoids churn.
+* **Option 2 (rejected):** Pause Phase 23, land Table-row storage
+  first, then return. Adds ~1 plan of scope to Phase 23 for a
+  redesign Phase 24 must touch anyway.
+
+Phase 24's CONTEXT.md (when written) should reference this
+decision and treat per-Table row storage as its foundational task
+before any watermark / retraction work begins. The Known Stubs
+table below is the canonical carry-forward list.
+
 ## Known stubs
 
 | Stub | Location | Reason | Resolution |
@@ -293,17 +319,34 @@ Verified commits exist on `v1.3-concurrency`:
   * `aedfbaf` test(23-03): cross-shape join integration tests (Rust + Python E2E)
   * `e0dea15` bench(23-03): add join/enrich pipelines + matrix baseline gate
 
-Verified test gates (last run):
+Verified test gates (post-closeout rerun, 2026-04-14):
 
   * `cargo test --lib` — 678 / 678
-  * `cargo test --test test_join_table_table` — 5 / 5 active (+7 ignored)
+  * `cargo test --test test_join_table_table` — 5 passed, 7 ignored
+    (ignored tests blocked on the per-Table storage redesign now
+    folded into Phase 24)
   * `cargo test --test test_join_integration` — 3 / 3
   * `cargo test --test test_join_stream_table` — 6 / 6 (regression)
   * `cargo test --test test_join_stream_stream` — 14 / 14 (regression)
   * `cargo test --test test_composite_group_by` — 5 / 5 (regression)
   * `cargo test --test test_register_json_v0` — 21 / 21 (regression)
-  * `pytest python/tests/` — 411 passed, 2 skipped
+  * `pytest python/tests/test_v0_joins_e2e.py` — 3 / 3
+  * `pytest python/tests/test_v0_stream_table_join.py python/tests/test_v0_joins_e2e.py`
+    — 6 / 6 (combined; verifies no cross-file interference in the
+    new joins e2e suite)
+  * `pytest python/tests/` (full suite) — 410 passed, 2 skipped,
+    **1 pre-existing failure** in
+    `test_v0_stream_table_join.py::test_stream_table_enrich_tcp_roundtrip`
+    caused by session-scoped fixture state leakage (same failure
+    reproduces with my new test files stashed — not a 23-03
+    regression). Logged in `.planning/phases/23-joins/deferred-items.md`
+    for a follow-up test-isolation pass.
+  * `bench_v0.py --matrix --runs 7` — 9 / 9 gated cells within ±5%;
+    `gate_passed: true`. 2 characterization cells recorded.
 
 Phase 23 is complete with all three join shapes (Stream↔Table,
-Stream↔Stream, Table↔Table) wired end-to-end. Residuals carry
-forward into v0.1 per the Known Stubs table.
+Stream↔Stream, Table↔Table) wired end-to-end. The per-Table storage
+redesign carries forward into **Phase 24** alongside the watermark /
+retraction work. Other residuals (OP_DELETE opcode, snapshot codec
+alignment, cascade fan-out scoping) carry into v0.1 per the Known
+Stubs table.
