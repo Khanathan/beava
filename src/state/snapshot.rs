@@ -9,8 +9,8 @@
 
 use crate::engine::hll::DistinctCountOp;
 use crate::engine::operators::{
-    AvgOp, CountOp, EmaOp, ExactMaxOp, ExactMinOp, FirstOp, LagOp, LastNOp, LastOp, MaxOp, MinOp,
-    Operator, PercentileOp, StddevOp, SumOp,
+    AvgOp, CountOp, EmaOp, ExactMaxOp, ExactMinOp, FirstNOp, FirstOp, LagOp, LastNOp, LastOp,
+    MaxOp, MinOp, Operator, PercentileOp, StddevOp, SumOp, TopKOp, VarianceOp,
 };
 use crate::error::TallyError;
 use crate::state::store::StaticFeature;
@@ -53,6 +53,10 @@ pub enum OperatorState {
     First(FirstOp),
     ExactMin(ExactMinOp),
     ExactMax(ExactMaxOp),
+    // Phase 22-01: v0 operator additions. Bodies stubbed; 22-02/03 fill them.
+    Variance(VarianceOp),
+    TopK(TopKOp),
+    FirstN(FirstNOp),
 }
 
 impl OperatorState {
@@ -78,6 +82,9 @@ impl OperatorState {
             Self::First(op) => op.push(event, enrichment, now),
             Self::ExactMin(op) => op.push(event, enrichment, now),
             Self::ExactMax(op) => op.push(event, enrichment, now),
+            Self::Variance(op) => op.push(event, enrichment, now),
+            Self::TopK(op) => op.push(event, enrichment, now),
+            Self::FirstN(op) => op.push(event, enrichment, now),
         }
     }
 
@@ -98,6 +105,9 @@ impl OperatorState {
             Self::First(op) => op.read(now),
             Self::ExactMin(op) => op.read(now),
             Self::ExactMax(op) => op.read(now),
+            Self::Variance(op) => op.read(now),
+            Self::TopK(op) => op.read(now),
+            Self::FirstN(op) => op.read(now),
         }
     }
 
@@ -120,6 +130,9 @@ impl OperatorState {
             Self::First(op) => op.estimated_bytes(),
             Self::ExactMin(op) => op.estimated_bytes(),
             Self::ExactMax(op) => op.estimated_bytes(),
+            Self::Variance(op) => op.estimated_bytes(),
+            Self::TopK(op) => op.estimated_bytes(),
+            Self::FirstN(op) => op.estimated_bytes(),
         }
     }
 
@@ -142,6 +155,9 @@ impl OperatorState {
             Self::First(op) => op.num_buckets(),
             Self::ExactMin(op) => op.num_buckets(),
             Self::ExactMax(op) => op.num_buckets(),
+            Self::Variance(op) => op.num_buckets(),
+            Self::TopK(op) => op.num_buckets(),
+            Self::FirstN(op) => op.num_buckets(),
         }
     }
 
@@ -163,6 +179,9 @@ impl OperatorState {
             Self::First(_) => "first",
             Self::ExactMin(_) => "exact_min",
             Self::ExactMax(_) => "exact_max",
+            Self::Variance(_) => "variance",
+            Self::TopK(_) => "top_k",
+            Self::FirstN(_) => "first_n",
         }
     }
 }

@@ -26,7 +26,7 @@ Key decisions (locked via design conversation 2026-04-14, captured in `.planning
 - Unified `/debug/warnings` endpoint; `/debug/config-recommendations` + `tally suggest-config` CLI
 - Forward-compat: `BackfillSource` trait, reserved `_op` wire field, reserved `mode="append"|"changelog"`
 
-- [ ] **Phase 21: Type system & SDK skeleton** — `@tl.stream`/`@tl.table` decorators, DAG walking from function params, schema inference via class attributes + type hints, operator catalog stubs, DataFrame-parity surface
+- [x] **Phase 21: Type system & SDK skeleton** — `@tl.stream`/`@tl.table` decorators, DAG walking from function params, schema inference via class attributes + type hints, operator catalog stubs, DataFrame-parity surface (completed 2026-04-14)
 - [ ] **Phase 22: Stream aggregation engine** — `group_by().agg()` on Stream inputs, ring-buffer windowing, all aggregation operators (count/sum/avg/min/max/variance/stddev, hybrid UDDSketch percentile, hybrid HLL count_distinct, hybrid CMS+heap top_k, first/last/first_n/last_n/ema/lag)
 - [ ] **Phase 23: Joins** — Stream↔Stream windowed (inner + left, `within=...`), Stream↔Table enrichment at event-time, Table↔Table full-key match
 - [ ] **Phase 24: Watermarks & event-time** — fixed 5s lateness, γ propagation (alignment at join/agg boundaries only), per-stream watermark, `_event_time` JSON field + wall-clock fallback, `tally_late_events_dropped_total` counter
@@ -48,10 +48,10 @@ Key decisions (locked via design conversation 2026-04-14, captured in `.planning
   6. Pipeline DAG builds from function signatures; circular dependencies rejected at registration with a named-cycle error
   7. `.describe()` on any Stream/Table returns inferred schema; mismatch errors name the offending field + closest lexical match
   8. No Rust engine changes required — SDK scaffolding only, backed by placeholder engine ops that raise `NotImplemented` where needed
-**Plans:** 1/3 plans executed
+**Plans:** 3/3 plans complete
   - [x] 21-01-PLAN.md — Core decorators (class form) + schema inference + tl.col expression DSL; delete old @tl.source/@tl.dataset/EventSet/FeatureSet surface
-  - [ ] 21-02-PLAN.md — Stateless operators (filter/map/select/drop/rename/with_columns/cast/fillna) + function-form decorators + DAG discovery from parameter type hints + local tl.validate() wiring
-  - [ ] 21-03-PLAN.md — Aggregation operator catalog (16 ops) + .group_by().agg() stub + .join() stubs (3 shapes) + tl.union + Table.group_by() rejection + REGISTER JSON serialization
+  - [x] 21-02-PLAN.md — Stateless operators (filter/map/select/drop/rename/with_columns/cast/fillna) + function-form decorators + DAG discovery from parameter type hints + local tl.validate() wiring
+  - [x] 21-03-PLAN.md — Aggregation operator catalog (16 ops) + .group_by().agg() stub + .join() stubs (3 shapes) + tl.union + Table.group_by() rejection + REGISTER JSON serialization
 
 ### Phase 22: Stream aggregation engine
 **Goal**: `.group_by(keys).agg(...)` on Stream inputs produces a Table, backed by ring-buffer windowing and the full operator catalog (linear ops + hybrid sketches for percentile/count_distinct/top_k + first/last/ema/lag).
@@ -142,7 +142,7 @@ Dependency graph:
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 21. Type system & SDK skeleton | v0 | 1/3 | In Progress|  |
+| 21. Type system & SDK skeleton | v0 | 3/3 | Complete   | 2026-04-14 |
 | 22. Stream aggregation engine | v0 | 0/? | Not planned | - |
 | 23. Joins | v0 | 0/? | Not planned | - |
 | 24. Watermarks & event-time | v0 | 0/? | Not planned | - |

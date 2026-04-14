@@ -1410,6 +1410,150 @@ impl Operator for ExactMaxOp {
     }
 }
 
+// ======================== Phase 22-01 stub operators ========================
+//
+// These operators are part of the v0 aggregation surface (AggOp descriptors
+// serialized by python/tally/_agg_ops.py). Plan 22-01 lands the dispatch
+// scaffold only — their `push` is a silent no-op and `read` returns Missing.
+// Plans 22-02 (Variance/FirstN ordered/linear) and 22-03 (TopK sketches)
+// replace these bodies with real implementations.
+
+/// Windowed variance. Stub — 22-02 implements Welford running stats.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VarianceOp {
+    pub field: String,
+    pub window: std::time::Duration,
+    pub bucket: std::time::Duration,
+    pub optional: bool,
+}
+
+impl VarianceOp {
+    pub fn new(
+        field: impl Into<String>,
+        window: std::time::Duration,
+        bucket: std::time::Duration,
+        optional: bool,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            window,
+            bucket,
+            optional,
+        }
+    }
+}
+
+impl Operator for VarianceOp {
+    fn push(
+        &mut self,
+        _event: &serde_json::Value,
+        _enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        _now: SystemTime,
+    ) -> Result<(), TallyError> {
+        // Stub: 22-02 implements Welford running stats per bucket.
+        Ok(())
+    }
+    fn read(&mut self, _now: SystemTime) -> FeatureValue {
+        FeatureValue::Missing
+    }
+    fn estimated_bytes(&self) -> usize {
+        0
+    }
+}
+
+/// Windowed top-k by frequency. Stub — 22-03 implements hybrid exact→CMS+heap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopKOp {
+    pub field: String,
+    pub k: usize,
+    pub window: std::time::Duration,
+    pub bucket: std::time::Duration,
+    pub exact_threshold: usize,
+    pub hybrid_width: usize,
+    pub hybrid_depth: usize,
+    pub optional: bool,
+}
+
+impl TopKOp {
+    pub fn new(
+        field: impl Into<String>,
+        k: usize,
+        window: std::time::Duration,
+        bucket: std::time::Duration,
+        exact_threshold: usize,
+        hybrid_width: usize,
+        hybrid_depth: usize,
+        optional: bool,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            k,
+            window,
+            bucket,
+            exact_threshold,
+            hybrid_width,
+            hybrid_depth,
+            optional,
+        }
+    }
+}
+
+impl Operator for TopKOp {
+    fn push(
+        &mut self,
+        _event: &serde_json::Value,
+        _enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        _now: SystemTime,
+    ) -> Result<(), TallyError> {
+        // Stub: 22-03 implements hybrid exact-map → CMS+heap transition.
+        Ok(())
+    }
+    fn read(&mut self, _now: SystemTime) -> FeatureValue {
+        FeatureValue::Missing
+    }
+    fn estimated_bytes(&self) -> usize {
+        0
+    }
+}
+
+/// First N values by event-time arrival. Stub — 22-02 fills in the bounded
+/// ring-buffer body. Note: `LastNOp` already exists in v2.0 code and is
+/// reused by the v0 dispatch for `last_n`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FirstNOp {
+    pub field: String,
+    pub n: usize,
+    pub optional: bool,
+}
+
+impl FirstNOp {
+    pub fn new(field: impl Into<String>, n: usize, optional: bool) -> Self {
+        Self {
+            field: field.into(),
+            n,
+            optional,
+        }
+    }
+}
+
+impl Operator for FirstNOp {
+    fn push(
+        &mut self,
+        _event: &serde_json::Value,
+        _enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        _now: SystemTime,
+    ) -> Result<(), TallyError> {
+        // Stub: 22-02 implements bounded first-N capture.
+        Ok(())
+    }
+    fn read(&mut self, _now: SystemTime) -> FeatureValue {
+        FeatureValue::Missing
+    }
+    fn estimated_bytes(&self) -> usize {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
