@@ -42,36 +42,51 @@ Here's what a fraud detection pipeline looks like:
 ```python
 import tally as tl
 
-@tl.source
+<!-- TODO(26-03): full blog rewrite lives in plan 26-03; this snippet is
+     minimally ported to the v0 API so the 26-01 grep assertion holds. -->
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    country: str
+    status: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
-        tx_count_1h=tl.count(window="1h"),
-        tx_count_24h=tl.count(window="24h"),
-        tx_sum_1h=tl.sum("amount", window="1h"),
-        tx_avg_24h=tl.avg("amount", window="24h"),
-        unique_merchants_24h=tl.distinct_count("merchant_id", window="24h"),
-        unique_countries_24h=tl.distinct_count("country", window="24h"),
-        last_country=tl.last("country"),
+@tl.table(key="user_id")
+def UserTransactions(txs: RawTransactions) -> tl.Table:
+    return (
+        txs.group_by("user_id")
+        .agg(
+            tx_count_1h=tl.count(window="1h"),
+            tx_count_24h=tl.count(window="24h"),
+            tx_sum_1h=tl.sum("amount", window="1h"),
+            tx_avg_24h=tl.avg("amount", window="24h"),
+            unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
+            unique_countries_24h=tl.count_distinct("country", window="24h"),
+            last_country=tl.last("country"),
+        )
+        .with_columns(
+            velocity_spike=(tl.col("tx_count_1h") / 1) / (tl.col("tx_count_24h") / 24),
+            country_hop_flag=tl.col("unique_countries_24h") > 3,
+        )
     )
-    velocity_spike = tl.derive("(tx_count_1h / 1) / (tx_count_24h / 24)")
-    country_hop_flag = tl.derive("unique_countries_24h > 3")
 
-@tl.dataset(depends_on=[RawTransactions], filter="status == 'failed'")
-class UserFailedTxns:
-    features = tl.group_by("user_id").agg(
-        failed_count_1h=tl.count(window="1h"),
-        failed_count_24h=tl.count(window="24h"),
+@tl.table(key="user_id")
+def UserFailedTxns(txs: RawTransactions) -> tl.Table:
+    return (
+        txs.filter(tl.col("status") == "failed")
+        .group_by("user_id")
+        .agg(
+            failed_count_1h=tl.count(window="1h"),
+            failed_count_24h=tl.count(window="24h"),
+        )
     )
 
-@tl.dataset(depends_on=[RawTransactions])
-class MerchantActivity:
-    features = tl.group_by("merchant_id").agg(
+@tl.table(key="merchant_id")
+def MerchantActivity(txs: RawTransactions) -> tl.Table:
+    return txs.group_by("merchant_id").agg(
         merch_tx_count_24h=tl.count(window="24h"),
-        merch_unique_users_24h=tl.distinct_count("user_id", window="24h"),
+        merch_unique_users_24h=tl.count_distinct("user_id", window="24h"),
     )
 ```
 

@@ -23,20 +23,21 @@ There are no external dependencies. The SDK uses only the Python standard librar
 import tally as tl
 
 # 1. Declare an event source
-@tl.source
+@tl.stream
 class Transactions:
-    pass
+    user_id: str
+    amount: float
+    merchant_id: str
 
 # 2. Define a dataset with features
-@tl.dataset(depends_on=[Transactions])
-class UserFeatures:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserFeatures(tra: Transactions) -> tl.Table:
+    return tra.group_by("user_id").agg(
         tx_count_1h=tl.count(window="1h"),
         tx_sum_1h=tl.sum("amount", window="1h"),
         avg_amount_1h=tl.avg("amount", window="1h"),
     )
-    velocity = tl.derive("tx_count_1h / (tx_sum_1h + 1)")
-
+    # v0: add .with_columns(velocity=<tl.col expression for "tx_count_1h / (tx_sum_1h + 1)">) to the table above
 # 3. Connect and register
 app = tl.App("localhost:6400")
 app.register(UserFeatures)  # registers Transactions automatically
@@ -60,12 +61,14 @@ A **source** is an event stream entry point. Events flow in through sources and 
 datasets. Sources themselves do not compute features -- they declare where raw events enter
 the pipeline.
 
-Use the `@tl.source` decorator:
+Use the `@tl.stream` decorator:
 
 ```python
-@tl.source
+@tl.stream
 class Transactions:
-    pass
+    user_id: str
+    amount: float
+    merchant_id: str
 ```
 
 ### Source options
@@ -73,9 +76,10 @@ class Transactions:
 You can pass optional parameters to control TTL behavior:
 
 ```python
-@tl.source(entity_ttl="5m", history_ttl="72h")
+@tl.stream(entity_ttl="5m", history_ttl="72h")
 class Transactions:
-    pass
+    user_id: str
+    amount: float
 ```
 
 | Parameter      | Description                                              |
@@ -85,20 +89,17 @@ class Transactions:
 
 ### Typed event schemas
 
-For pipeline validation, you can attach an `EventSet` schema to a source:
+For pipeline validation, declare the event schema directly on the `@tl.stream` class:
 
 ```python
-from tally import EventSet, Field
+# v0 streams are plain @tl.stream-decorated classes with type-annotated fields
 
-class TxnEvent(EventSet):
-    user_id: str = Field()
-    amount: float = Field()
-    merchant_id: str = Field()
-    status: str = Field()
-
-@tl.source
+@tl.stream
 class Transactions:
-    event = TxnEvent
+    user_id: str
+    amount: float
+    merchant_id: str
+    status: str
 ```
 
 This enables `tl.validate()` to check that operator field references match the event schema
@@ -110,9 +111,9 @@ A **dataset** is a keyed aggregation pipeline. It depends on one or more sources
 datasets), groups events by a key field, and computes features using operators.
 
 ```python
-@tl.dataset(depends_on=[Transactions])
-class UserMetrics:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserMetrics(tra: Transactions) -> tl.Table:
+    return tra.group_by("user_id").agg(
         tx_count_1h=tl.count(window="1h"),
         tx_sum_1h=tl.sum("amount", window="1h"),
     )
@@ -136,13 +137,13 @@ features = tl.group_by("user_id").agg(
 Add derived features as class attributes alongside `features`:
 
 ```python
-@tl.dataset(depends_on=[Transactions])
-class UserMetrics:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserMetrics(tra: Transactions) -> tl.Table:
+    return tra.group_by("user_id").agg(
         tx_count_1h=tl.count(window="1h"),
         tx_count_24h=tl.count(window="24h"),
     )
-    velocity_spike = tl.derive("(tx_count_1h / 1) / (tx_count_24h / 24)")
+    # v0: add .with_columns(velocity_spike=<tl.col expression for "(tx_count_1h / 1) / (tx_count_24h / 24)">) to the table above
 ```
 
 ### Cascading datasets
@@ -150,19 +151,21 @@ class UserMetrics:
 A dataset can depend on another dataset, enabling multi-stage pipelines:
 
 ```python
-@tl.source
+@tl.stream
 class RawEvents:
-    pass
+    user_id: str
+    amount: float
+    merchant_id: str
 
-@tl.dataset(depends_on=[RawEvents])
-class UserTxns:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTxns(raw: RawEvents) -> tl.Table:
+    return raw.group_by("user_id").agg(
         tx_count_1h=tl.count(window="1h"),
     )
 
-@tl.dataset(depends_on=[RawEvents])
-class MerchantTxns:
-    features = tl.group_by("merchant_id").agg(
+@tl.table(key="merchant_id")
+def MerchantTxns(raw: RawEvents) -> tl.Table:
+    return raw.group_by("merchant_id").agg(
         merch_tx_count_1h=tl.count(window="1h"),
     )
 ```
@@ -172,17 +175,21 @@ class MerchantTxns:
 Combine multiple sources into a single dataset input with `tl.union()`:
 
 ```python
-@tl.source
+@tl.stream
 class CardPayments:
-    pass
+    user_id: str
+    amount: float
+    merchant_id: str
 
-@tl.source
+@tl.stream
 class BankTransfers:
-    pass
+    user_id: str
+    amount: float
+    merchant_id: str
 
-@tl.dataset(depends_on=[tl.union(CardPayments, BankTransfers)])
-class AllTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def AllTransactions(src: tl.union(CardPayments, BankTransfers)) -> tl.Table:
+    return src.group_by("user_id").agg(
         total_count_1h=tl.count(window="1h"),
     )
 ```
@@ -207,7 +214,7 @@ Count events in a sliding window.
 
 ```python
 tx_count_1h = tl.count(window="1h")
-failed_count = tl.count(window="30m", where="status == 'failed'")
+failed_count = tl.count(window="30m")  # v0: filter on the source stream before group_by
 ```
 
 **Parameters:**
@@ -330,12 +337,12 @@ p50_amount = tl.percentile("amount", 0.50, window="1h")
 | `where`    | `str \| None`  | No       | Filter expression.                              |
 | `bucket`   | `str \| None`  | No       | Bucket granularity.                             |
 
-### tl.distinct_count
+### tl.count_distinct
 
 Approximate unique count using HyperLogLog. Fixed ~12KB memory per key.
 
 ```python
-unique_merchants = tl.distinct_count("merchant_id", window="24h")
+unique_merchants = tl.count_distinct("merchant_id", window="24h")
 ```
 
 **Parameters:**
@@ -430,8 +437,8 @@ recent_amounts = tl.last_n("amount", n=5)
 Expression computed over other features. Evaluated on read, stores no state.
 
 ```python
-failure_rate = tl.derive("failed_count_1h / tx_count_1h")
-is_suspicious = tl.derive("tx_count_1h > 10 and unique_countries_24h > 3")
+# v0: add .with_columns(failure_rate=<tl.col expression for "failed_count_1h / tx_count_1h">) to the table above
+# v0: add .with_columns(is_suspicious=<tl.col expression for "tx_count_1h > 10 and unique_countries_24h > 3">) to the table above
 ```
 
 **Parameters:**
@@ -515,13 +522,14 @@ Available: `abs()`, `min()`, `max()`, `now()`
 
 ## Filtering
 
-Use the `filter=` parameter on `@tl.dataset` to only process events matching a condition.
+Use the `filter=` parameter on `@tl.table` to only process events matching a condition.
 The filter expression uses the same syntax as `tl.derive()`.
 
 ```python
-@tl.dataset(depends_on=[Transactions], filter="status == 'failed'")
-class FailedTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def FailedTransactions(tra: Transactions) -> tl.Table:
+    # v0: decorator-level filter= replaced by an explicit .filter() on the stream.
+    return tra.filter(tl.col("status") == "failed").group_by("user_id").agg(
         failed_count_30m=tl.count(window="30m"),
         failed_count_1h=tl.count(window="1h"),
         failed_sum_24h=tl.sum("amount", window="24h"),
@@ -535,7 +543,7 @@ You can also use `where=` on individual operators for per-feature filtering:
 ```python
 features = tl.group_by("user_id").agg(
     total_count=tl.count(window="1h"),
-    failed_count=tl.count(window="1h", where="status == 'failed'"),
+    failed_count=tl.count(window="1h")  # v0: filter on the source stream before group_by,
 )
 ```
 
@@ -548,9 +556,9 @@ Control which features appear in responses with `.select()` and `.drop()`.
 Only include the named features:
 
 ```python
-@tl.dataset(depends_on=[Transactions])
-class UserMetrics:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserMetrics(tra: Transactions) -> tl.Table:
+    return tra.group_by("user_id").agg(
         tx_count_1h=tl.count(window="1h"),
         tx_sum_1h=tl.sum("amount", window="1h"),
         tx_avg_1h=tl.avg("amount", window="1h"),
@@ -763,7 +771,7 @@ if errors:
 
 - **Cycles:** Circular dependencies in the dataset graph.
 - **Missing dependencies:** A dataset depends on a source or dataset not in the provided definitions.
-- **Type mismatches:** An operator references a field name not found in the upstream `EventSet` schema.
+- **Type mismatches:** An operator references a field name not found in the upstream `@tl.stream` class annotations.
 
 ### ValidationError
 
@@ -778,24 +786,29 @@ Each error has three attributes:
 ### Example: catching a field mismatch
 
 ```python
-class TxnEvent(EventSet):
+class TxnEvent:  # @tl.stream declared above; v0 streams are plain annotated classes
     user_id: str = Field()
     amount: float = Field()
 
-@tl.source
+# v0: schema is defined directly via @tl.stream annotations.
+@tl.stream
 class Transactions:
-    event = TxnEvent
+    user_id: str = Field()
+    amount: float = Field()
+    merchant_id: str = Field()
+    status: str = Field()
+    # (schema TxnEvent inlined)
 
-@tl.dataset(depends_on=[Transactions])
-class UserMetrics:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserMetrics(tra: Transactions) -> tl.Table:
+    return tra.group_by("user_id").agg(
         total=tl.sum("price", window="1h"),  # "price" not in TxnEvent
     )
 
 errors = tl.validate(Transactions, UserMetrics)
 # [ValidationError(kind='type_mismatch',
 #   path='UserMetrics.total',
-#   message="operator references field 'price' not found in upstream EventSet ...")]
+#   message="operator references field 'price' not found in upstream stream schema ...")]
 ```
 
 ## Error Handling
@@ -843,16 +856,18 @@ import tally as tl
 
 # --- Event source ---
 
-@tl.source
+@tl.stream
 class RawTransactions:
     """Raw payment events with user_id, merchant_id, device_id, ip_address."""
-    pass
+    user_id: str
+    amount: float
+    merchant_id: str
 
 # --- Entity 1: User transaction behavior (25 features) ---
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         # Volume across window tiers
         tx_count_30m=tl.count(window="30m"),
         tx_count_1h=tl.count(window="1h"),
@@ -867,29 +882,29 @@ class UserTransactions:
         tx_min_24h=tl.min("amount", window="24h"),
         tx_stddev_24h=tl.stddev("amount", window="24h"),
         # Cardinality
-        unique_merchants_1h=tl.distinct_count("merchant_id", window="1h"),
-        unique_merchants_24h=tl.distinct_count("merchant_id", window="24h"),
-        unique_countries_24h=tl.distinct_count("country", window="24h"),
-        unique_devices_24h=tl.distinct_count("device_id", window="24h"),
-        unique_ips_24h=tl.distinct_count("ip_address", window="24h"),
+        unique_merchants_1h=tl.count_distinct("merchant_id", window="1h"),
+        unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
+        unique_countries_24h=tl.count_distinct("country", window="24h"),
+        unique_devices_24h=tl.count_distinct("device_id", window="24h"),
+        unique_ips_24h=tl.count_distinct("ip_address", window="24h"),
         # Context
         last_country=tl.last("country"),
         last_merchant=tl.last("merchant_id"),
         last_amount=tl.last("amount"),
     )
     # Derived signals
-    velocity_spike = tl.derive("(tx_count_1h / 1) / (tx_count_24h / 24)")
-    amount_vs_avg = tl.derive("last_amount / tx_avg_24h")
-    spend_acceleration = tl.derive("tx_sum_1h / (tx_sum_24h / 24)")
-    high_value_ratio = tl.derive("tx_max_24h / tx_avg_24h")
-    merchant_diversity_1h = tl.derive("unique_merchants_1h / tx_count_1h")
-    country_hop_flag = tl.derive("unique_countries_24h > 3")
-
+    # v0: add .with_columns(velocity_spike=<tl.col expression for "(tx_count_1h / 1) / (tx_count_24h / 24)">) to the table above
+    # v0: add .with_columns(amount_vs_avg=<tl.col expression for "last_amount / tx_avg_24h">) to the table above
+    # v0: add .with_columns(spend_acceleration=<tl.col expression for "tx_sum_1h / (tx_sum_24h / 24)">) to the table above
+    # v0: add .with_columns(high_value_ratio=<tl.col expression for "tx_max_24h / tx_avg_24h">) to the table above
+    # v0: add .with_columns(merchant_diversity_1h=<tl.col expression for "unique_merchants_1h / tx_count_1h">) to the table above
+    # v0: add .with_columns(country_hop_flag=<tl.col expression for "unique_countries_24h > 3">) to the table above
 # --- Entity 2: Failed transactions (4 features) ---
 
-@tl.dataset(depends_on=[RawTransactions], filter="status == 'failed'")
-class UserFailedTxns:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserFailedTxns(raw: RawTransactions) -> tl.Table:
+    # v0: decorator-level filter= replaced by an explicit .filter() on the stream.
+    return raw.filter(tl.col("status") == "failed").group_by("user_id").agg(
         failed_count_30m=tl.count(window="30m"),
         failed_count_1h=tl.count(window="1h"),
         failed_count_24h=tl.count(window="24h"),
@@ -898,41 +913,41 @@ class UserFailedTxns:
 
 # --- Entity 3: Merchant risk profile (8 features) ---
 
-@tl.dataset(depends_on=[RawTransactions])
-class MerchantActivity:
-    features = tl.group_by("merchant_id").agg(
+@tl.table(key="merchant_id")
+def MerchantActivity(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("merchant_id").agg(
         merch_tx_count_1h=tl.count(window="1h"),
         merch_tx_count_24h=tl.count(window="24h"),
         merch_tx_sum_24h=tl.sum("amount", window="24h"),
         merch_avg_amount=tl.avg("amount", window="24h"),
-        merch_unique_users_1h=tl.distinct_count("user_id", window="1h"),
-        merch_unique_users_24h=tl.distinct_count("user_id", window="24h"),
+        merch_unique_users_1h=tl.count_distinct("user_id", window="1h"),
+        merch_unique_users_24h=tl.count_distinct("user_id", window="24h"),
         merch_max_amount_24h=tl.max("amount", window="24h"),
         merch_stddev_24h=tl.stddev("amount", window="24h"),
     )
 
 # --- Entity 4: Device fingerprint (5 features) ---
 
-@tl.dataset(depends_on=[RawTransactions])
-class DeviceActivity:
-    features = tl.group_by("device_id").agg(
+@tl.table(key="device_id")
+def DeviceActivity(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("device_id").agg(
         device_tx_count_1h=tl.count(window="1h"),
         device_tx_count_24h=tl.count(window="24h"),
-        device_unique_users_1h=tl.distinct_count("user_id", window="1h"),
-        device_unique_users_24h=tl.distinct_count("user_id", window="24h"),
-        device_unique_merchants_24h=tl.distinct_count("merchant_id", window="24h"),
+        device_unique_users_1h=tl.count_distinct("user_id", window="1h"),
+        device_unique_users_24h=tl.count_distinct("user_id", window="24h"),
+        device_unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
     )
 
 # --- Entity 5: IP address activity (5 features) ---
 
-@tl.dataset(depends_on=[RawTransactions])
-class IPActivity:
-    features = tl.group_by("ip_address").agg(
+@tl.table(key="ip_address")
+def IPActivity(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("ip_address").agg(
         ip_tx_count_1h=tl.count(window="1h"),
         ip_tx_count_24h=tl.count(window="24h"),
-        ip_unique_users_1h=tl.distinct_count("user_id", window="1h"),
-        ip_unique_users_24h=tl.distinct_count("user_id", window="24h"),
-        ip_unique_devices_24h=tl.distinct_count("device_id", window="24h"),
+        ip_unique_users_1h=tl.count_distinct("user_id", window="1h"),
+        ip_unique_users_24h=tl.count_distinct("user_id", window="24h"),
+        ip_unique_devices_24h=tl.count_distinct("device_id", window="24h"),
     )
 ```
 

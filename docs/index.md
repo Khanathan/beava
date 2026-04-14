@@ -6,7 +6,7 @@ Tally is a real-time compute engine. Define pipelines, push events, read results
 
 - **[Quick Start](quickstart.md)** — Get Tally running and push your first event in under 5 minutes.
 - **[Python SDK](python-sdk.md)** — Define pipelines, push events, and read features from Python.
-- **[Operators Reference](operators.md)** — All 16 operators: count, sum, avg, min, max, stddev, percentile, distinct_count, last, first, lag, ema, last_n, exact_min, exact_max, derive.
+- **[Operators Reference](operators.md)** — All 16 v0 aggregation operators: count, sum, avg, min, max, variance, stddev, percentile, count_distinct, top_k, first, last, first_n, last_n, ema, lag (plus the tl.col + with_columns expression DSL that replaces tl.derive).
 - **[Architecture](architecture.md)** — How Tally works under the hood: in-memory state, snapshot + WAL persistence, pipeline DAGs.
 - **[Comparison](comparison.md)** — Tally vs Flink+Kafka+Redis: cost, complexity, performance.
 
@@ -23,13 +23,14 @@ Install and run the server, then push your first event:
 ```python
 import tally as tl
 
-@tl.source
+@tl.stream
 class Transactions:
-    pass
+    user_id: str
+    amount: float
 
-@tl.dataset(depends_on=[Transactions])
-class UserFeatures:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserFeatures(txs: Transactions) -> tl.Table:
+    return txs.group_by("user_id").agg(
         tx_count_1h=tl.count(window="1h"),
         tx_sum_1h=tl.sum("amount", window="1h"),
     )

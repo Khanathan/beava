@@ -41,7 +41,7 @@ Count events in a sliding window.
 
 ```python
 tl.count(window="1h")
-tl.count(window="30m", where="status == 'failed'")
+tl.count(window="30m")  # v0: use .filter(tl.col(...) == ...) on the stream instead of where=
 tl.count(window="24h", bucket="15m")
 ```
 
@@ -73,17 +73,21 @@ Uses a `RingBuffer<u64>` with `num_buckets = ceil(window / bucket)`. Each bucket
 ```python
 import tally as tl
 
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         tx_count_30m=tl.count(window="30m"),
         tx_count_1h=tl.count(window="1h"),
         tx_count_24h=tl.count(window="24h"),
-        failed_30m=tl.count(window="30m", where="status == 'failed'"),
+        failed_30m=tl.count(window="30m")  # v0: use .filter(tl.col(...) == ...) on the stream instead of where=
     )
 ```
 
@@ -127,13 +131,17 @@ Uses two parallel ring buffers: `RingBuffer<f64>` for the running sum and `RingB
 **Example:**
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         tx_sum_1h=tl.sum("amount", window="1h"),
         tx_sum_24h=tl.sum("amount", window="24h"),
     )
@@ -179,13 +187,17 @@ Uses two parallel ring buffers: `RingBuffer<u64>` for count and `RingBuffer<f64>
 **Example:**
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         avg_amount_1h=tl.avg("amount", window="1h"),
         avg_amount_24h=tl.avg("amount", window="24h"),
     )
@@ -232,13 +244,17 @@ Uses `RingBuffer<MinBucket>` where each bucket defaults to `+INFINITY`. On push,
 **Example:**
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         min_amount_24h=tl.min("amount", window="24h"),
     )
 ```
@@ -284,13 +300,17 @@ Uses `RingBuffer<MaxBucket>` where each bucket defaults to `-INFINITY`. On push,
 **Example:**
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         max_amount_24h=tl.max("amount", window="24h"),
     )
 ```
@@ -306,7 +326,7 @@ Standard deviation of a numeric field in a sliding window.
 ```python
 tl.stddev("amount", window="1h")
 tl.stddev("amount", window="24h", optional=True)
-tl.stddev("amount", window="1h", where="status == 'success'")
+tl.stddev("amount", window="1h")  # v0: filter on the source stream, not on the op
 ```
 
 **Parameters:**
@@ -337,17 +357,21 @@ Uses `RingBuffer<StddevBucket>` where each `StddevBucket` holds `{count: u64, su
 **Example:**
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         amount_stddev_1h=tl.stddev("amount", window="1h"),
         avg_amount_1h=tl.avg("amount", window="1h"),
     )
-    amount_vs_norm = tl.derive("((_event.amount - avg_amount_1h) / amount_stddev_1h)")
+    # v0: append .with_columns(amount_vs_norm=<tl.col expression for "((_event.amount - avg_amount_1h) / amount_stddev_1h)">) to the table pipeline above
 ```
 
 ---
@@ -361,7 +385,7 @@ Percentile estimation of a numeric field in a sliding window.
 ```python
 tl.percentile("amount", 0.95, window="1h")
 tl.percentile("latency_ms", 0.50, window="30m", optional=True)
-tl.percentile("amount", 0.99, window="24h", where="status == 'success'")
+tl.percentile("amount", 0.99, window="24h")  # v0: filter on the source stream, not on the op
 ```
 
 **Parameters:**
@@ -393,13 +417,17 @@ Uses `RingBuffer<PercentileBucket>` where each bucket holds a `Vec<f64>` of all 
 **Example:**
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         p50_amount_1h=tl.percentile("amount", 0.50, window="1h"),
         p95_amount_1h=tl.percentile("amount", 0.95, window="1h"),
         p99_amount_1h=tl.percentile("amount", 0.99, window="1h"),
@@ -415,8 +443,8 @@ Approximate unique count of a field in a sliding window using adaptive HLL++.
 **Python constructor:**
 
 ```python
-tl.distinct_count("merchant_id", window="24h")
-tl.distinct_count("ip_address", window="1h", bucket="5m")
+tl.count_distinct("merchant_id", window="24h")
+tl.count_distinct("ip_address", window="1h", bucket="5m")
 ```
 
 **Parameters:**
@@ -460,15 +488,19 @@ Most fraud use cases (user sees ~5-20 merchants/hour) stay in the exact or hash 
 **Example:**
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
-        unique_merchants_24h=tl.distinct_count("merchant_id", window="24h"),
-        unique_countries_1h=tl.distinct_count("country", window="1h"),
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
+        unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
+        unique_countries_1h=tl.count_distinct("country", window="1h"),
     )
 ```
 
@@ -513,13 +545,17 @@ Uses `RingBuffer<ValBucket>` where each bucket stores a `Vec<f64>` of all values
 **Example:**
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         exact_min_amount_1h=tl.exact_min("amount", window="1h"),
     )
 ```
@@ -563,13 +599,17 @@ Same as `exact_min`: `O(total_events_in_window * ~40 bytes)`.
 **Example:**
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         exact_max_amount_1h=tl.exact_max("amount", window="1h"),
     )
 ```
@@ -617,13 +657,17 @@ None. Single value + timestamp. O(1) state.
 **Example:**
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         last_country=tl.last("country"),
         last_merchant=tl.last("merchant_id"),
         last_amount=tl.last("amount"),
@@ -668,13 +712,17 @@ None. Single value + timestamp. O(1) state. After the first value is stored, `pu
 **Example:**
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         first_country=tl.first("country"),
         signup_source=tl.first("source"),
     )
@@ -719,17 +767,21 @@ None. Event-count-based, not time-based. The lag is measured in number of events
 **Example:**
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         prev_amount=tl.lag("amount", n=1),
         prev_country=tl.lag("country", n=1),
     )
-    amount_change = tl.derive("_event.amount - prev_amount")
+    # v0: append .with_columns(amount_change=<tl.col expression for "_event.amount - prev_amount">) to the table pipeline above
 ```
 
 ---
@@ -773,13 +825,17 @@ None. Event-count-based using a `VecDeque` of capacity N.
 **Example:**
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         last_5_amounts=tl.last_n("amount", n=5),
         last_10_merchants=tl.last_n("merchant_id", n=10),
     )
@@ -831,17 +887,21 @@ None. O(1) state -- just the current EMA value, the last event timestamp, and th
 **Example:**
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         ema_amount_30m=tl.ema("amount", half_life="30m"),
         ema_amount_4h=tl.ema("amount", half_life="4h"),
     )
-    ema_divergence = tl.derive("ema_amount_30m / ema_amount_4h")
+    # v0: append .with_columns(ema_divergence=<tl.col expression for "ema_amount_30m / ema_amount_4h">) to the table pipeline above
 ```
 
 ---
@@ -891,51 +951,62 @@ None. O(1) -- no state, computed on read.
 **Example:**
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         tx_count_30m=tl.count(window="30m"),
         tx_count_1h=tl.count(window="1h"),
         tx_count_24h=tl.count(window="24h"),
-        failed_tx_30m=tl.count(window="30m", where="status == 'failed'"),
+        failed_tx_30m=tl.count(window="30m")  # v0: use .filter(tl.col(...) == ...) on the stream instead of where=
         avg_amount_1h=tl.avg("amount", window="1h"),
     )
 
     # Derived features
-    failure_rate    = tl.derive("failed_tx_30m / tx_count_30m")
-    velocity_spike  = tl.derive("(tx_count_1h / 1) / (tx_count_24h / 24)")
-    amount_vs_avg   = tl.derive("_event.amount / avg_amount_1h")
+    # v0: append .with_columns(failure_rate=<tl.col expression for "failed_tx_30m / tx_count_30m">) to the table pipeline above
+    # v0: append .with_columns(velocity_spike=<tl.col expression for "(tx_count_1h / 1) / (tx_count_24h / 24)">) to the table pipeline above
+    # v0: append .with_columns(amount_vs_avg=<tl.col expression for "_event.amount / avg_amount_1h">) to the table pipeline above
 ```
 
 ---
 
-## Where Clauses
+## Filtering events before aggregation
 
-Several operators (`count`, `stddev`, `percentile`) support a `where` parameter that filters events before aggregation. Only events matching the condition are processed by the operator.
+The pre-v0 decorator-level `where=` parameter was removed. In v0, filtering
+happens on the stream with `.filter(tl.col(...) == value)` before
+`.group_by(...).agg(...)`. To get per-feature filtering, define a table that
+filters a sub-stream and either merge it into the main table or join the
+sub-aggregation back.
 
-**Syntax:**
-
-Where clauses use the same expression language as `derive`:
+**Examples:**
 
 ```python
 # Equality
-tl.count(window="30m", where="status == 'failed'")
+txs.filter(tl.col("status") == "failed").group_by("user_id").agg(
+    failed_count=tl.count(window="30m"),
+)
 
 # Comparison
-tl.count(window="1h", where="amount > 100")
+txs.filter(tl.col("amount") > 100).group_by("user_id").agg(
+    big_tx_count=tl.count(window="1h"),
+)
 
 # Boolean logic
-tl.count(window="1h", where="status == 'failed' and amount > 100")
-
-# Field access
-tl.count(window="1h", where="country != 'US'")
+txs.filter((tl.col("status") == "success") & (tl.col("amount") > 50)).group_by("user_id").agg(
+    good_count=tl.count(window="1h"),
+)
 ```
 
-The `where` expression is evaluated against each incoming event. If the expression evaluates to a falsy value (false, 0, null), the event is skipped for that operator. Other operators on the same stream without a `where` clause still process the event normally.
+The filter expression runs against each incoming event; events that do not
+match are skipped for the downstream table entirely. Other tables that do not
+apply the filter process the same event normally.
 
 ---
 
@@ -985,30 +1056,38 @@ The `derive` operator supports referencing features from other streams using the
 Views (`@tl.view`) are the primary mechanism for cross-stream references:
 
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.source
+@tl.stream
 class RawLogins:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class Transactions:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def Transactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         tx_count_1h=tl.count(window="1h"),
     )
 
-@tl.dataset(depends_on=[RawLogins])
-class Logins:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def Logins(raw: RawLogins) -> tl.Table:
+    return raw.group_by("user_id").agg(
         login_count_1h=tl.count(window="1h"),
     )
 
 @tl.view(key="user_id")
 class UserRisk:
-    tx_to_login_ratio = tl.derive("Transactions.tx_count_1h / Logins.login_count_1h")
-    is_suspicious     = tl.derive("Transactions.tx_count_1h > 10 and Logins.login_count_1h < 2")
+    # v0: append .with_columns(tx_to_login_ratio=<tl.col expression for "Transactions.tx_count_1h / Logins.login_count_1h">) to the table pipeline above
+    # v0: append .with_columns(is_suspicious=<tl.col expression for "Transactions.tx_count_1h > 10 and Logins.login_count_1h < 2">) to the table pipeline above
 ```
 
 ### Event field access
@@ -1016,7 +1095,7 @@ class UserRisk:
 Use `_event.field_name` in derive expressions to reference raw fields from the current event:
 
 ```python
-amount_vs_avg = tl.derive("_event.amount / avg_amount_1h")
+# v0: append .with_columns(amount_vs_avg=<tl.col expression for "_event.amount / avg_amount_1h">) to the table pipeline above
 ```
 
 ### Cross-key lookups
@@ -1024,14 +1103,18 @@ amount_vs_avg = tl.derive("_event.amount / avg_amount_1h")
 Use `tl.lookup()` to reference features from a different entity key:
 
 ```python
-@tl.source
+@tl.stream
 class RawMerchantEvents:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    status: str
+    country: str
 
-@tl.dataset(depends_on=[RawMerchantEvents])
-class MerchantActivity:
-    features = tl.group_by("merchant_id").agg(
-        chargeback_count_24h=tl.count(window="24h", where="type == 'chargeback'"),
+@tl.table(key="merchant_id")
+def MerchantActivity(raw: RawMerchantEvents) -> tl.Table:
+    return raw.group_by("merchant_id").agg(
+        chargeback_count_24h=tl.count(window="24h")  # v0: use .filter(tl.col(...) == ...) on the stream instead of where=
     )
 
 @tl.view(key="user_id")

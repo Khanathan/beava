@@ -67,19 +67,21 @@ Create a file called `demo.py` at the repo root:
 ```python
 import tally as tl
 
-# Declare an event source
-@tl.source
+# Declare an event stream
+@tl.stream
 class Transactions:
-    pass
+    user_id: str
+    amount: float
+    merchant_id: str
 
-# Define a dataset with features
-@tl.dataset(depends_on=[Transactions])
-class UserFeatures:
-    features = tl.group_by("user_id").agg(
+# Define a keyed table with features
+@tl.table(key="user_id")
+def UserFeatures(txs: Transactions) -> tl.Table:
+    return txs.group_by("user_id").agg(
         tx_count_1h=tl.count(window="1h"),
         tx_sum_1h=tl.sum("amount", window="1h"),
         avg_amount_24h=tl.avg("amount", window="24h"),
-        unique_merchants=tl.distinct_count("merchant_id", window="24h"),
+        unique_merchants=tl.count_distinct("merchant_id", window="24h"),
     )
 
 # Connect and register

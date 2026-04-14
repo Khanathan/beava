@@ -27,31 +27,40 @@ The benchmark pipeline: a fraud detection system for a mid-size fintech. 5 entit
 ```python
 import tally as tl
 
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    merchant_id: str
+    amount: float
+    country: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
-        tx_count_30m=tl.count(window="30m"),
-        tx_count_1h=tl.count(window="1h"),
-        tx_count_24h=tl.count(window="24h"),
-        tx_sum_1h=tl.sum("amount", window="1h"),
-        tx_avg_24h=tl.avg("amount", window="24h"),
-        tx_max_24h=tl.max("amount", window="24h"),
-        unique_merchants_24h=tl.distinct_count("merchant_id", window="24h"),
-        unique_countries_24h=tl.distinct_count("country", window="24h"),
-        last_country=tl.last("country"),
+@tl.table(key="user_id")
+def UserTransactions(txs: RawTransactions) -> tl.Table:
+    return (
+        txs.group_by("user_id")
+        .agg(
+            tx_count_30m=tl.count(window="30m"),
+            tx_count_1h=tl.count(window="1h"),
+            tx_count_24h=tl.count(window="24h"),
+            tx_sum_1h=tl.sum("amount", window="1h"),
+            tx_avg_24h=tl.avg("amount", window="24h"),
+            tx_max_24h=tl.max("amount", window="24h"),
+            unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
+            unique_countries_24h=tl.count_distinct("country", window="24h"),
+            last_country=tl.last("country"),
+            last_amount=tl.last("amount"),
+        )
+        .with_columns(
+            velocity_spike=(tl.col("tx_count_1h") / 1) / (tl.col("tx_count_24h") / 24),
+            amount_vs_avg=tl.col("last_amount") / tl.col("tx_avg_24h"),
+        )
     )
-    velocity_spike = tl.derive("(tx_count_1h / 1) / (tx_count_24h / 24)")
-    amount_vs_avg = tl.derive("last_amount / tx_avg_24h")
 
-@tl.dataset(depends_on=[RawTransactions])
-class MerchantActivity:
-    features = tl.group_by("merchant_id").agg(
+@tl.table(key="merchant_id")
+def MerchantActivity(txs: RawTransactions) -> tl.Table:
+    return txs.group_by("merchant_id").agg(
         merch_tx_count_24h=tl.count(window="24h"),
-        merch_unique_users_24h=tl.distinct_count("user_id", window="24h"),
+        merch_unique_users_24h=tl.count_distinct("user_id", window="24h"),
         merch_avg_amount=tl.avg("amount", window="24h"),
     )
 

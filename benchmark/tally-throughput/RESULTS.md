@@ -28,13 +28,16 @@ Three load-bearing findings, in priority order:
 
 Pipeline:
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    amount: float
+    merchant_id: str
+    status: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class Transactions:
-    features = tl.group_by('user_id').agg(
+@tl.table(key="user_id")
+def Transactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         tx_count_1h=tl.count(window='1h'),
         tx_sum_1h=tl.sum('amount', window='1h'),
         avg_amount_1h=tl.avg('amount', window='1h'),
@@ -51,32 +54,34 @@ class Transactions:
 
 Pipeline:
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    amount: float
+    merchant_id: str
+    status: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class Transactions:
-    features = tl.group_by('user_id').agg(
+@tl.table(key="user_id")
+def Transactions(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("user_id").agg(
         tx_count_1h=tl.count(window='1h'),
         tx_sum_1h=tl.sum('amount', window='1h'),
         avg_amount_1h=tl.avg('amount', window='1h'),
         max_amount_24h=tl.max('amount', window='24h'),
-        failed_count_30m=tl.count(window='30m', where="status == 'failed'"),
+        failed_count_30m=tl.count(window='30m')  # v0: filter on the stream before group_by,
     )
-    failure_rate = tl.derive('failed_count_30m / tx_count_1h')
-
-@tl.dataset(depends_on=[RawTransactions])
-class MerchantActivity:
-    features = tl.group_by('merchant_id').agg(
+    # v0: append .with_columns(failure_rate=<col-expr for "failed_count_30m / tx_count_1h">) to the table pipeline
+@tl.table(key="merchant_id")
+def MerchantActivity(raw: RawTransactions) -> tl.Table:
+    return raw.group_by("merchant_id").agg(
         merchant_tx_count=tl.count(window='1h'),
         merchant_sum=tl.sum('amount', window='1h'),
     )
 
-@tl.dataset(depends_on=[Transactions])
-class UserRisk:
-    features = tl.group_by('user_id').agg()
-    is_high_volume = tl.derive('Transactions.tx_count_1h > 10')
+@tl.table(key="user_id")
+def UserRisk(tra: Transactions) -> tl.Table:
+    return tra.group_by("user_id").agg()
+    # v0: append .with_columns(is_high_volume=<col-expr for "Transactions.tx_count_1h > 10">) to the table pipeline
 ```
 
 **1 client, 50,000 events:**
@@ -99,24 +104,29 @@ This is the single-threaded-core failure mode. Each of the 4 Python threads open
 
 Pipeline:
 ```python
-@tl.source
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    amount: float
+    merchant_id: str
+    status: str
 
-@tl.dataset(depends_on=[RawTransactions])
-class Transactions:
-    # 5 regular features + distinct_count('merchant_id', window='24h') + derive
+@tl.table(key="user_id")
+def Transactions(raw: RawTransactions) -> tl.Table:
+    # 5 regular features + count_distinct('merchant_id', window='24h') + derive
     ...
-@tl.dataset(depends_on=[RawTransactions])
-class MerchantActivity:
-    # 3 features including distinct_count('user_id', window='24h')
-    features = tl.group_by('merchant_id').agg(...)
-@tl.dataset(depends_on=[RawTransactions])
-class DeviceActivity:
-    # 2 features including distinct_count('user_id', window='1h')
-    features = tl.group_by('device_id').agg(...)
-@tl.dataset(depends_on=[Transactions]) class UserRisk: ...
-@tl.dataset(depends_on=[Transactions]) class UserSummary: ...
+@tl.table(key="merchant_id")
+def MerchantActivity(raw: RawTransactions) -> tl.Table:
+    # 3 features including count_distinct('user_id', window='24h')
+    return raw.group_by("merchant_id").agg(...)
+@tl.table(key="device_id")
+def DeviceActivity(raw: RawTransactions) -> tl.Table:
+    # 2 features including count_distinct('user_id', window='1h')
+    return raw.group_by("device_id").agg(...)
+@tl.table(key="user_id")
+def UserRisk(src: Transactions) -> tl.Table: ...
+@tl.table(key="user_id")
+def UserSummary(src: Transactions) -> tl.Table: ...
 ```
 
 **1 client, 20,000 events:**
