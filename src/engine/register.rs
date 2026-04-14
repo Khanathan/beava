@@ -333,14 +333,41 @@ pub fn resolve_window_bucket(
 // Operator dispatch
 // ---------------------------------------------------------------------------
 
+/// Hard cap on `lag(n)` — per-entity memory budget enforcement.
+/// Matches `python/tally/_agg_ops.py::_Lag` at the SDK layer; this is
+/// the defense-in-depth ceiling on the engine side.
+pub const LAG_N_CAP: usize = 10_000;
+
+/// Build the `OperatorState` variant for a given aggregation feature,
+/// rejecting `ema` / `lag` when the upstream is a Table source.
+///
+/// `source_kind` is `"stream"`, `"table"`, or (safest default) `"stream"`
+/// if not known at call time. Phase 21 already rejects the
+/// table-sourced ema/lag at SDK compile time; this is belt-and-suspenders.
+pub fn build_operator_with_source_kind(
+    feat: &AggregationFeature,
+    source_kind: &str,
+) -> Result<OperatorState, TallyError> {
+    // Defense-in-depth: ema / lag require Stream input.
+    if matches!(feat.op_type.as_str(), "ema" | "lag") && source_kind == "table" {
+        return Err(TallyError::Protocol(format!(
+            "v0 REGISTER: '{}' operator requires a Stream source; got a Table \
+             upstream (redundant defense — Phase 21 rejects this at the SDK layer)",
+            feat.op_type
+        )));
+    }
+    build_operator(feat)
+}
+
 /// Build the `OperatorState` variant for a given aggregation feature.
 ///
 /// For all 16 AggOp types this returns the correct variant wired to the
 /// parsed window/bucket and operator-specific parameters. Unknown
 /// `feat.type` values fail with `TallyError::Protocol`.
 ///
-/// Note on stubs: Variance / TopK / FirstN use the 22-01 stub operators
-/// (no-op push, Missing read). Plans 22-02 and 22-03 replace the bodies.
+/// Does not perform upstream-kind validation — use
+/// [`build_operator_with_source_kind`] when the caller has the source
+/// descriptor in scope (e.g. during REGISTER dispatch).
 pub fn build_operator(feat: &AggregationFeature) -> Result<OperatorState, TallyError> {
     let window_bucket = resolve_window_bucket(feat)?;
 
@@ -467,6 +494,13 @@ pub fn build_operator(feat: &AggregationFeature) -> Result<OperatorState, TallyE
             let n = feat
                 .n
                 .ok_or_else(|| TallyError::Protocol("v0 REGISTER: lag requires 'n'".into()))?;
+            if n == 0 || n > LAG_N_CAP {
+                return Err(TallyError::Protocol(format!(
+                    "v0 REGISTER: lag.n={} out of range (1..={}); \
+                     per-entity memory is bounded by this cap",
+                    n, LAG_N_CAP
+                )));
+            }
             OperatorState::Lag(LagOp::new(field, n, optional))
         }
         other => {
@@ -775,6 +809,62 @@ mod tests {
         }"#;
         let p = V0RegisterPayload::parse(json).unwrap();
         assert_eq!(p.descriptor_kind(), "union");
+    }
+
+    // ---- Defense-in-depth for ema / lag ----
+
+    #[test]
+    fn ema_against_table_source_is_rejected() {
+        let mut f = mk_feat("ema");
+        f.window = None;
+        f.half_life = Some("30m".into());
+        let err = build_operator_with_source_kind(&f, "table").unwrap_err();
+        match err {
+            TallyError::Protocol(msg) => {
+                assert!(msg.contains("requires a Stream source"), "msg={}", msg)
+            }
+            _ => panic!("expected Protocol error"),
+        }
+    }
+
+    #[test]
+    fn lag_against_table_source_is_rejected() {
+        let mut f = mk_feat("lag");
+        f.window = None;
+        f.n = Some(3);
+        assert!(build_operator_with_source_kind(&f, "table").is_err());
+    }
+
+    #[test]
+    fn ema_and_lag_against_stream_source_ok() {
+        let mut f = mk_feat("ema");
+        f.window = None;
+        f.half_life = Some("30m".into());
+        assert!(build_operator_with_source_kind(&f, "stream").is_ok());
+        let mut f = mk_feat("lag");
+        f.window = None;
+        f.n = Some(5);
+        assert!(build_operator_with_source_kind(&f, "stream").is_ok());
+    }
+
+    #[test]
+    fn lag_with_n_over_cap_is_rejected() {
+        let mut f = mk_feat("lag");
+        f.window = None;
+        f.n = Some(LAG_N_CAP + 1);
+        let err = build_operator(&f).unwrap_err();
+        match err {
+            TallyError::Protocol(msg) => assert!(msg.contains("out of range"), "msg={}", msg),
+            _ => panic!("expected Protocol error"),
+        }
+    }
+
+    #[test]
+    fn lag_with_zero_n_is_rejected() {
+        let mut f = mk_feat("lag");
+        f.window = None;
+        f.n = Some(0);
+        assert!(build_operator(&f).is_err());
     }
 
     #[test]
