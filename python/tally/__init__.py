@@ -16,9 +16,10 @@ v0 declarative API:
 
     tl.col("amount") > 100     # expression DSL
 
-The old v2.0 ``@tl.source`` / ``@tl.dataset`` / ``EventSet`` / ``FeatureSet``
-decorators are deleted as of Plan 21-01; aggregation / join operators come
-back in Plans 21-02 and 21-03.
+The pre-v0 class-decorator surface (source / dataset decorators and
+the schema / feature-bundle types that backed them) was removed in
+Plan 21-01; aggregation and join operators return in Plans 21-02 and
+21-03 in function form on top of ``@tl.stream`` / ``@tl.table``.
 """
 
 from tally._types import FeatureResult, TallyError, ConnectionError, ProtocolError
