@@ -20,4 +20,12 @@ pub enum TallyError {
 
     #[error("protocol error: {0}")]
     Protocol(String),
+
+    /// Phase 25-01: Reserved opcode / unimplemented feature signaled to the
+    /// client. Maps to `STATUS_ERROR` at the handler boundary (connection
+    /// stays open; NOT torn down). Distinct from `Protocol` so call sites
+    /// and tests can disambiguate "reserved for future version" from
+    /// "malformed frame".
+    #[error("not implemented in v0: {0}")]
+    NotImplemented(String),
 }

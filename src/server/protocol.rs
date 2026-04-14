@@ -27,6 +27,31 @@ pub const OP_PUSH_TABLE: u8 = 0x0B;
 /// Payload: `[u16 table_name_len][table_name utf-8][u16 key_len][key utf-8]`
 pub const OP_DELETE_TABLE: u8 = 0x0C;
 
+/// Phase 25-01: Multi-table feature-vector read.
+///
+/// Assembles N table rows for a single entity key in one TCP round-trip.
+/// Purpose: ML inference paths need 5-20 Tables per prediction; issuing
+/// N sequential GETs is a latency amplifier. Null-collapse: never-seen,
+/// tombstoned (post-grace filtered at source), and registered-but-empty
+/// (pending) all serialize as `null` — indistinguishable at the wire.
+///
+/// Payload: `[u16 count][count × u16-string table_name][u16-string key]`
+/// Response (STATUS_OK): JSON object `{table_name: row_obj | null, ...}`,
+/// keys serialized in request order.
+///
+/// Cardinality guards: `count == 0` is rejected; `count > 256` is rejected
+/// (T-25-01-01 DoS mitigation — bounds per-request memory).
+pub const OP_GET_MULTI: u8 = 0x0D;
+
+/// Phase 25-01: Reserved opcodes for the v0.x query surface expansion.
+///
+/// The 0x10..=0x1F range is reserved per v0-restructure-spec §6.3. v0
+/// parses these opcodes and returns a typed `NotImplemented` protocol
+/// error; the connection stays open so clients can probe capabilities
+/// without tearing down their session.
+pub const OP_SCAN_RESERVED: u8 = 0x10;
+pub const OP_SUBSCRIBE_RESERVED: u8 = 0x11;
+
 // Response status codes
 pub const STATUS_OK: u8 = 0x00;
 pub const STATUS_ERROR: u8 = 0x01;
@@ -96,6 +121,18 @@ pub enum Command {
         table_name: String,
         key: String,
     },
+    /// Phase 25-01: Multi-table feature-vector read. `table_names` preserves
+    /// request order so the handler can serialize the response keys in the
+    /// same order the client asked for.
+    GetMulti {
+        table_names: Vec<String>,
+        key: String,
+    },
+    /// Phase 25-01: Reserved opcode landed at the parser. Handler emits a
+    /// typed `TallyError::NotImplemented` (STATUS_ERROR on the wire) WITHOUT
+    /// tearing down the connection (T-25-01-04). `op_name` identifies which
+    /// reserved opcode so the error message remains descriptive.
+    ReservedNotImplemented { op_name: &'static str },
 }
 
 /// Encode a frame: [4-byte BE length][opcode][payload].
@@ -457,6 +494,44 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
             let key = read_string(&mut buf)?;
             Ok(Command::DeleteTable { table_name, key })
         }
+        OP_GET_MULTI => {
+            // Wire: [u16 count][count × u16-string table_name][u16-string key]
+            if buf.len() < 2 {
+                return Err(TallyError::Protocol(
+                    "GET_MULTI header truncated: need 2 bytes for count".into(),
+                ));
+            }
+            let count = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+            buf = &buf[2..];
+            // Cardinality guards (T-25-01-01): reject empty and oversized
+            // requests BEFORE allocating per-request memory.
+            if count == 0 {
+                return Err(TallyError::Protocol(
+                    "GET_MULTI requires at least one table_name".into(),
+                ));
+            }
+            if count > 256 {
+                return Err(TallyError::Protocol(format!(
+                    "GET_MULTI table_names count exceeds 256: got {}",
+                    count
+                )));
+            }
+            let mut table_names = Vec::with_capacity(count);
+            for _ in 0..count {
+                table_names.push(read_string(&mut buf)?);
+            }
+            let key = read_string(&mut buf)?;
+            Ok(Command::GetMulti { table_names, key })
+        }
+        // Reserved opcodes: we parse them successfully into a marker variant
+        // so the frame-level dispatcher does NOT tear down the connection
+        // (T-25-01-04). The error is emitted later at the handler boundary
+        // where a STATUS_ERROR response + connection-keep-alive is the
+        // established flow for logical errors (compare to `unknown table`).
+        OP_SCAN_RESERVED => Ok(Command::ReservedNotImplemented { op_name: "SCAN" }),
+        OP_SUBSCRIBE_RESERVED => Ok(Command::ReservedNotImplemented {
+            op_name: "SUBSCRIBE",
+        }),
         _ => Err(TallyError::Protocol(format!(
             "unknown opcode: 0x{:02x}",
             opcode
@@ -468,12 +543,30 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
 // Duration string parsing
 // ---------------------------------------------------------------------------
 
+/// Sentinel meaning "no eviction, ever". Returned by `parse_duration_str`
+/// for the literal string "forever". Eviction schedulers MUST skip any
+/// stream/table whose ttl equals this value. v0-restructure-spec §7.2.
+pub const FOREVER_TTL: std::time::Duration = std::time::Duration::from_secs(u64::MAX / 2);
+
+/// Is this a `forever` sentinel (per [`FOREVER_TTL`])?
+pub fn is_forever_ttl(d: std::time::Duration) -> bool {
+    d >= FOREVER_TTL
+}
+
 /// Parse a human-readable duration string into std::time::Duration.
 /// Supported suffixes: ms (milliseconds), s (seconds), m (minutes), h (hours), d (days).
+/// Phase 25-02: also accepts "forever" (→ [`FOREVER_TTL`]) and "0" (→ zero duration).
 pub fn parse_duration_str(s: &str) -> Result<std::time::Duration, TallyError> {
     let s = s.trim();
     if s.is_empty() {
         return Err(TallyError::Protocol("empty duration string".into()));
+    }
+    // Phase 25-02 sentinels — locked by v0-restructure-spec §7.2.
+    if s.eq_ignore_ascii_case("forever") {
+        return Ok(FOREVER_TTL);
+    }
+    if s == "0" {
+        return Ok(std::time::Duration::ZERO);
     }
     // Check for "ms" suffix first (two-character suffix)
     if let Some(num_str) = s.strip_suffix("ms") {
@@ -1629,6 +1722,108 @@ mod tests {
                 assert_eq!(key, "u123");
             }
             _ => panic!("expected DeleteTable command"),
+        }
+    }
+
+    // ----- Phase 25-01: OP_GET_MULTI + reserved opcodes parse_command tests -----
+
+    fn build_get_multi_payload(tables: &[&str], key: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(tables.len() as u16).to_be_bytes());
+        for t in tables {
+            buf.extend_from_slice(&write_string(t));
+        }
+        buf.extend_from_slice(&write_string(key));
+        buf
+    }
+
+    #[test]
+    fn op_get_multi_happy_path() {
+        let payload = build_get_multi_payload(&["UserProfile", "RiskScore"], "u123");
+        let cmd = parse_command(OP_GET_MULTI, &payload).unwrap();
+        match cmd {
+            Command::GetMulti { table_names, key } => {
+                assert_eq!(table_names, vec!["UserProfile", "RiskScore"]);
+                assert_eq!(key, "u123");
+            }
+            _ => panic!("expected GetMulti"),
+        }
+    }
+
+    #[test]
+    fn op_get_multi_rejects_zero_count() {
+        let payload = build_get_multi_payload(&[], "u1");
+        let err = parse_command(OP_GET_MULTI, &payload).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("at least one table_name"), "got: {}", msg);
+    }
+
+    #[test]
+    fn op_get_multi_rejects_oversized_count() {
+        // Build a hand-crafted payload with count=257 but only one short
+        // name — parse_command must reject at the cardinality guard
+        // BEFORE attempting to read 257 strings.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&257u16.to_be_bytes());
+        payload.extend_from_slice(&write_string("T"));
+        payload.extend_from_slice(&write_string("k"));
+        let err = parse_command(OP_GET_MULTI, &payload).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("exceeds 256"), "got: {}", msg);
+    }
+
+    #[test]
+    fn op_get_multi_truncated_payload_errors_without_panic() {
+        // Empty payload: no count bytes.
+        let err = parse_command(OP_GET_MULTI, &[]).unwrap_err();
+        assert!(matches!(err, TallyError::Protocol(_)));
+
+        // Count claims 2 but only one string follows.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&2u16.to_be_bytes());
+        payload.extend_from_slice(&write_string("A"));
+        // No second table string, no key — truncation.
+        let err = parse_command(OP_GET_MULTI, &payload).unwrap_err();
+        assert!(matches!(err, TallyError::Protocol(_)));
+    }
+
+    #[test]
+    fn op_get_multi_accepts_max_count_256() {
+        // Boundary: count=256 should succeed.
+        let names: Vec<String> = (0..256).map(|i| format!("T{}", i)).collect();
+        let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        let payload = build_get_multi_payload(&refs, "k");
+        let cmd = parse_command(OP_GET_MULTI, &payload).unwrap();
+        match cmd {
+            Command::GetMulti { table_names, key } => {
+                assert_eq!(table_names.len(), 256);
+                assert_eq!(key, "k");
+            }
+            _ => panic!("expected GetMulti"),
+        }
+    }
+
+    #[test]
+    fn op_scan_reserved_parses_as_marker_variant() {
+        // Reserved opcodes parse successfully — the handler boundary
+        // converts the marker to NotImplemented to keep the connection alive.
+        let cmd = parse_command(OP_SCAN_RESERVED, &[]).unwrap();
+        match cmd {
+            Command::ReservedNotImplemented { op_name } => {
+                assert_eq!(op_name, "SCAN");
+            }
+            other => panic!("expected ReservedNotImplemented, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn op_subscribe_reserved_parses_as_marker_variant() {
+        let cmd = parse_command(OP_SUBSCRIBE_RESERVED, &[]).unwrap();
+        match cmd {
+            Command::ReservedNotImplemented { op_name } => {
+                assert_eq!(op_name, "SUBSCRIBE");
+            }
+            other => panic!("expected ReservedNotImplemented, got {:?}", other),
         }
     }
 

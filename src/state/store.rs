@@ -351,6 +351,41 @@ impl StateStore {
         entity.table_rows.get(table_name).cloned()
     }
 
+    /// Phase 25-01: Per-Table row projection for `OP_GET_MULTI`. Returns
+    /// `Some(serde_json::Value::Object)` iff the entity exists AND carries
+    /// a `Live` row for `table_name`. Tombstoned rows, absent entities,
+    /// and absent table rows all collapse to `None` — callers cannot
+    /// distinguish them from the return type (T-25-01-02 information-
+    /// disclosure mitigation: tombstones never leak field data through
+    /// this path).
+    ///
+    /// The returned JSON shape matches the flat object a single-table
+    /// row view would produce: field name → value (not prefixed with
+    /// `TableName.`).
+    ///
+    /// `_now` is accepted for API symmetry with `collect_merged_features`;
+    /// tombstone-grace GC is the sole ageing mechanism for table rows and
+    /// runs in `gc_tombstones`, so this read path is time-independent.
+    pub fn collect_table_row_view(
+        &self,
+        key: &str,
+        table_name: &str,
+        _now: SystemTime,
+    ) -> Option<serde_json::Value> {
+        let entity = self.entities.get(key)?;
+        let row = entity.table_rows.get(table_name)?;
+        match row.state {
+            TableRowState::Live => {
+                let mut map = serde_json::Map::with_capacity(row.fields.len());
+                for (name, val) in row.fields.iter() {
+                    map.insert(name.clone(), val.to_json_value());
+                }
+                Some(serde_json::Value::Object(map))
+            }
+            TableRowState::Tombstoned { .. } => None,
+        }
+    }
+
     /// Phase 24: Sweep every entity's `table_rows`, removing Tombstoned
     /// rows whose `since` is older than `TOMBSTONE_GRACE` relative to `now`.
     /// Live rows, static_features, and streams are untouched. Returns the
@@ -1697,5 +1732,77 @@ mod tests {
         let valid_features = ahash::AHashMap::new();
         let snapshot = store.clone_dirty_for_snapshot_with_gc(&valid_features);
         assert!(snapshot.is_empty());
+    }
+
+    // ======================== collect_table_row_view Tests (Phase 25-01) ========================
+
+    mod collect_table_row_view {
+        use super::*;
+
+        #[test]
+        fn never_seen_entity_returns_none() {
+            let store = StateStore::new();
+            let now = ts(1000);
+            assert!(store.collect_table_row_view("nobody", "UserProfile", now).is_none());
+        }
+
+        #[test]
+        fn live_row_returns_some_object_with_fields() {
+            let store = StateStore::new();
+            let now = ts(1000);
+            let mut fields: AHashMap<String, FeatureValue> = AHashMap::new();
+            fields.insert("country".into(), FeatureValue::String("US".into()));
+            fields.insert("score".into(), FeatureValue::Int(42));
+            store.upsert_table_row("u1", "UserProfile", fields, now);
+
+            let v = store
+                .collect_table_row_view("u1", "UserProfile", now)
+                .expect("live row must project to Some");
+            let obj = v.as_object().expect("row view must be a JSON object");
+            assert_eq!(obj.get("country").and_then(|v| v.as_str()), Some("US"));
+            assert_eq!(obj.get("score").and_then(|v| v.as_i64()), Some(42));
+            assert_eq!(obj.len(), 2);
+        }
+
+        #[test]
+        fn tombstoned_row_collapses_to_none() {
+            let store = StateStore::new();
+            let now = ts(1000);
+            let mut fields: AHashMap<String, FeatureValue> = AHashMap::new();
+            fields.insert("x".into(), FeatureValue::Int(1));
+            store.upsert_table_row("u1", "T", fields, now);
+            store.tombstone_table_row("u1", "T", now);
+
+            assert!(
+                store.collect_table_row_view("u1", "T", now).is_none(),
+                "tombstoned rows must never leak fields (T-25-01-02)"
+            );
+        }
+
+        #[test]
+        fn still_none_after_gc_tombstones() {
+            let store = StateStore::new();
+            let now = ts(1000);
+            let mut fields: AHashMap<String, FeatureValue> = AHashMap::new();
+            fields.insert("x".into(), FeatureValue::Int(1));
+            store.upsert_table_row("u1", "T", fields, now);
+            store.tombstone_table_row("u1", "T", now);
+
+            // Advance past TOMBSTONE_GRACE and GC.
+            let later = now + TOMBSTONE_GRACE + Duration::from_secs(1);
+            let removed = store.gc_tombstones(later);
+            assert_eq!(removed, 1);
+            assert!(store.collect_table_row_view("u1", "T", later).is_none());
+        }
+
+        #[test]
+        fn unknown_table_on_existing_entity_returns_none() {
+            let store = StateStore::new();
+            let now = ts(1000);
+            let mut fields: AHashMap<String, FeatureValue> = AHashMap::new();
+            fields.insert("x".into(), FeatureValue::Int(1));
+            store.upsert_table_row("u1", "Known", fields, now);
+            assert!(store.collect_table_row_view("u1", "Unknown", now).is_none());
+        }
     }
 }

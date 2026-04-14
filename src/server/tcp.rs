@@ -1725,6 +1725,13 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
         Command::DeleteTable { table_name, key } => {
             handle_delete_table(state, &table_name, &key, now)
         }
+        Command::GetMulti { table_names, key } => {
+            handle_get_multi(state, &table_names, &key, now)
+        }
+        Command::ReservedNotImplemented { op_name } => Err(TallyError::NotImplemented(format!(
+            "{} reserved in v0; not implemented",
+            op_name
+        ))),
         Command::Mset { .. } => unreachable!("MSET handled separately"),
         // I-2: PushAsync and Flush are intercepted in `handle_connection`
         // BEFORE this function is called — see the three-way match on
@@ -1864,6 +1871,71 @@ fn handle_delete_table(
     }
 
     Ok(Vec::new())
+}
+
+/// Phase 25-01: Dispatch for OP_GET_MULTI.
+///
+/// Assembles a per-table null-collapsed feature vector for a single entity
+/// key in one TCP round-trip.
+///
+/// Behaviour contract (see 25-01-PLAN.md):
+///
+/// 1. Validate EVERY requested `table_name` is registered as a Table BEFORE
+///    any state read. The first unknown name aborts with `TallyError::Protocol`
+///    (maps to `STATUS_ERROR`) — no partial state read, no partial response
+///    (T-25-01-03 tampering mitigation).
+/// 2. For each registered `name`, project `state.store.collect_table_row_view`.
+///    Never-seen, tombstoned, and empty-registered collapse to `null`.
+/// 3. Serialize the response as a JSON object `{name: row|null, ...}` in
+///    request order (serde_json::Map preserves insertion order behind the
+///    `preserve_order` feature; falling back to string-sorted order is
+///    acceptable since the `keys()` iterator on the Python side does not
+///    promise insertion order across serde_json without the feature).
+///    To guarantee request-order serialization regardless of serde_json
+///    feature flags, we build the JSON by hand.
+fn handle_get_multi(
+    state: &SharedState,
+    table_names: &[String],
+    key: &str,
+    now: SystemTime,
+) -> Result<Vec<u8>, TallyError> {
+    // (1) Validate every table is registered under engine read lock.
+    {
+        let engine = state.engine.read();
+        for name in table_names {
+            if !engine.has_registered_table(name) {
+                return Err(TallyError::Protocol(format!("unknown table: {}", name)));
+            }
+        }
+    }
+
+    // (2) Project each table's row view; null-collapse per spec.
+    // Build the JSON body by hand so the response keys serialize in the
+    // request order the client gave us — this is independent of whether
+    // serde_json was built with `preserve_order`.
+    let mut body = Vec::<u8>::with_capacity(64 + 32 * table_names.len());
+    body.push(b'{');
+    for (i, name) in table_names.iter().enumerate() {
+        if i > 0 {
+            body.push(b',');
+        }
+        // Encode the key as a JSON string via serde_json to handle escaping.
+        let key_json = serde_json::to_vec(name)
+            .map_err(|e| TallyError::Protocol(format!("GET_MULTI key serialize: {}", e)))?;
+        body.extend_from_slice(&key_json);
+        body.push(b':');
+        match state.store.collect_table_row_view(key, name, now) {
+            Some(row) => {
+                let row_bytes = serde_json::to_vec(&row).map_err(|e| {
+                    TallyError::Protocol(format!("GET_MULTI row serialize: {}", e))
+                })?;
+                body.extend_from_slice(&row_bytes);
+            }
+            None => body.extend_from_slice(b"null"),
+        }
+    }
+    body.push(b'}');
+    Ok(body)
 }
 
 /// Cooperative backfill: reads event log entries, pushes to new operators in 64-event chunks.
