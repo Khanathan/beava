@@ -29,7 +29,7 @@ Key decisions (locked via design conversation 2026-04-14, captured in `.planning
 - [x] **Phase 21: Type system & SDK skeleton** — `@tl.stream`/`@tl.table` decorators, DAG walking from function params, schema inference via class attributes + type hints, operator catalog stubs, DataFrame-parity surface (completed 2026-04-14)
 - [x] **Phase 22: Stream aggregation engine** — `group_by().agg()` on Stream inputs, ring-buffer windowing, all aggregation operators (count/sum/avg/min/max/variance/stddev, hybrid UDDSketch percentile, hybrid HLL count_distinct, hybrid CMS+heap top_k, first/last/first_n/last_n/ema/lag) (completed 2026-04-14)
 - [x] **Phase 23: Joins** — Stream↔Stream windowed (inner + left, `within=...`), Stream↔Table enrichment at event-time, Table↔Table full-key match (marker-based; per-Table row storage redesign folded into Phase 24) (completed 2026-04-14)
-- [ ] **Phase 24: Table storage redesign + Watermarks & event-time** — Table row primitive (`EntityState.table_rows` with Live/Tombstoned, v6→v7 snapshot, OP_PUSH_TABLE/OP_DELETE_TABLE opcodes, Python SDK `push(table,key,fields)`/`delete`); migrate Phase 23 TT-cascade off marker shim and un-ignore 7 deferred tests; per-stream watermarks (max(event_time)−5s, fixed) with γ propagation at join/agg boundaries, `_event_time` JSON field + wall-clock fallback, `tally_late_events_dropped_total{stream}` counter, event-time bucket routing, `event_time()` expression builtin — **1 / 5 plans complete** (24-01 storage primitive shipped 2026-04-14)
+- [ ] **Phase 24: Table storage redesign + Watermarks & event-time** — Table row primitive (`EntityState.table_rows` with Live/Tombstoned, v6→v7 snapshot, OP_PUSH_TABLE/OP_DELETE_TABLE opcodes, Python SDK `push(table,key,fields)`/`delete`); migrate Phase 23 TT-cascade off marker shim and un-ignore 7 deferred tests; per-stream watermarks (max(event_time)−5s, fixed) with γ propagation at join/agg boundaries, `_event_time` JSON field + wall-clock fallback, `tally_late_events_dropped_total{stream}` counter, event-time bucket routing, `event_time()` expression builtin — **4 / 5 plans complete** (24-04 watermarks + event-time shipped 2026-04-14)
 - [ ] **Phase 25: Query surface, TTL, warnings** — GET_MULTI opcode, `/debug/warnings` unified health endpoint, `/debug/config-recommendations`, `tally suggest-config` CLI, TTL defaults (Table 30d, Stream 90d, tombstone 7d) + override pattern + suggestion engine
 - [ ] **Phase 26: Test migration, benchmarks, docs, demo rebuild** — port existing 744+ tests to new API, benchmark regression gate (within −5% of v2.0 baseline 1.1M eps), rewrite `docs/blog/streaming-shouldnt-require-a-platform-team.md`, rebuild Phase 20 traction demo against new API, sign-off
 
@@ -107,11 +107,11 @@ Key decisions (locked via design conversation 2026-04-14, captured in `.planning
   11. `now()` returns wall-clock; `event_time()` builtin returns current event's event-time; callable in derive + filter expressions
   12. Multi-shape integration DAG (source Stream + source Table + Enrich + Agg + TT-join) behaves correctly under in-order, out-of-order, late-drop, and tombstone-cascade scenarios
   13. 9-cell benchmark matrix passes within ±5% of v0 BASELINE.json; 4 new characterization cells recorded
-**Plans:** 3/5 plans executed
+**Plans:** 4/5 plans executed
   - [x] 24-01-PLAN.md — Table storage primitive (TableRow + TableRowState, StateStore methods, snapshot v6→v7 migration)
   - [x] 24-02-PLAN.md — OP_PUSH_TABLE / OP_DELETE_TABLE opcodes + Python SDK push/delete + merged GET view
   - [x] 24-03-PLAN.md — Migrate Phase 23 TT-cascade to table_rows; un-ignore 7 deferred TT tests; drop marker shim
-  - [ ] 24-04-PLAN.md — Per-stream watermarks + γ propagation + event-time bucket routing + event_time() builtin + /debug/streams
+  - [x] 24-04-PLAN.md — Per-stream watermarks + γ propagation + event-time bucket routing + event_time() builtin + /debug/streams
   - [ ] 24-05-PLAN.md — Multi-shape integration tests + 9-cell benchmark gate + 4 Phase-24 characterization cells + phase SUMMARY
 
 ### Phase 25: Query surface, TTL, warnings
@@ -162,6 +162,6 @@ Dependency graph:
 | 21. Type system & SDK skeleton | v0 | 3/3 | Complete   | 2026-04-14 |
 | 22. Stream aggregation engine | v0 | 4/4 | Complete   | 2026-04-14 |
 | 23. Joins | v0 | 2/3 | In Progress|  |
-| 24. Table storage + Watermarks & event-time | v0 | 2/5 | In Progress|  |
+| 24. Table storage + Watermarks & event-time | v0 | 4/5 | In Progress|  |
 | 25. Query surface, TTL, warnings | v0 | 0/? | Not planned | - |
 | 26. Test migration, bench, docs, demo | v0 | 0/? | Not planned | - |
