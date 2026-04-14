@@ -145,9 +145,9 @@ Key decisions (locked via design conversation 2026-04-14, captured in `.planning
   5. Phase 20 traction demo replay CLI, demo.html, and 6-invariant smoke script ported to new API; pass locally
   6. `docs/` site updated with new SDK reference, migration note (internal-only, since pre-launch)
   7. Phase 20 (v2.1) artifacts ready to deploy via already-written Hetzner scripts — no re-provision needed, just recompile binary + redeploy
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
   - [x] 26-01-PLAN.md — Test migration: delete old API refs, un-skip v0-migrated tests, verify ≥744 green across cargo/pytest
-  - [ ] 26-02-PLAN.md — Benchmark regression gate (9-cell matrix + criterion sketch within −5% of BASELINE, fix in place if red) + launch blog rewrite (honest v0 story, {{DEMO_URL}} placeholder, headline numbers from MATRIX-V0-FINAL.json)
+  - [x] 26-02-PLAN.md — Benchmark regression gate (9-cell matrix + criterion sketch within −5% of BASELINE, fix in place if red) + launch blog rewrite (honest v0 story, {{DEMO_URL}} placeholder, headline numbers from MATRIX-V0-FINAL.json) — gate_passed=true (worst small_1c −4.84%); UDDSketch/CMS/HLL inserts 23.7/14.3/43.2 ns (all <200 ns); blog rewritten (237 lines, 6 code examples, 8 deferred items) with MATRIX-V0-FINAL.json numbers
   - [ ] 26-03-PLAN.md — Phase 20 traction demo rebuild: port generator.py / replay_30d.py / demo UI / smoke.sh to v0 SDK + post-25 /metrics shape; full-stack local smoke; unpause v2.1-PAUSED-ROADMAP.md (NOT deployed)
   - [ ] 26-04-PLAN.md — Sign-off: 11-criteria checklist, STATE.md/ROADMAP.md update, archive v0-ROADMAP.md, v2.1 Launch resume instructions; reconcile Phase 25 duplicate dirs (25-query-ttl-warnings/ canonical vs 25-query-surface-ttl-warnings/ legacy)
 
