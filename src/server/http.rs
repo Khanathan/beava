@@ -460,6 +460,12 @@ async fn debug_key(State(state): State<SharedState>, Path(key): Path<String>) ->
                 if buckets > 0 {
                     entry["num_buckets"] = serde_json::json!(buckets);
                 }
+                // Plan 22-03: hybrid-op telemetry for percentile / top_k /
+                // distinct_count. Default None; serialized when present.
+                if let Some(tel) = op.hybrid_telemetry() {
+                    entry["hybrid_telemetry"] = serde_json::to_value(&tel)
+                        .unwrap_or(serde_json::Value::Null);
+                }
                 live_ops.push(entry);
             }
         }

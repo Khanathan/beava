@@ -161,6 +161,18 @@ impl OperatorState {
         }
     }
 
+    /// Hybrid telemetry for exact→sketch operators. Returns `None` for
+    /// non-hybrid operators. Surfaced in `/debug/key/:key`.
+    pub fn hybrid_telemetry(&self) -> Option<crate::engine::operators::HybridTelemetry> {
+        use crate::engine::operators::Operator;
+        match self {
+            Self::Percentile(op) => op.hybrid_telemetry(),
+            Self::DistinctCount(op) => op.hybrid_telemetry(),
+            Self::TopK(op) => op.hybrid_telemetry(),
+            _ => None,
+        }
+    }
+
     /// Human-readable operator type name.
     pub fn operator_type_name(&self) -> &'static str {
         match self {
