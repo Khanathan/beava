@@ -103,10 +103,11 @@ Client sends PUSH frame
    d. Collect enrichment values for downstream cascade
    |
    v
-5. Read features (sync path only):
-   - For each operator: call operator.read(now) to get current value
-   - Evaluate derive expressions via expression engine
-   - Apply projection filter if configured
+5. (No feature read on the write path.)
+   Sync PUSH returns an empty JSON `{}` as acknowledgment. Clients that need
+   the updated values issue a subsequent GET. Async PUSH (0x07) and PUSH_BATCH
+   (0x0A) do not produce any response body at all on success. This keeps the
+   write path fast and uniform -- read work happens only on demand via GET.
    |
    v
 6. Mark entity key dirty for incremental snapshots

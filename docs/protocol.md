@@ -115,27 +115,30 @@ JSON bytes: a JSON object mapping feature names to their current values. In the 
 Push to stream "Transactions" with event `{"user_id": "u123", "amount": 50.0}`:
 
 ```
-Frame:
-  00 00 00 1E        length = 30
-  01                  opcode = PUSH
-  00 0C              stream name length = 12
-  54 72 61 6E 73 ... "Transactions"
-  00 02              field count = 2
-  00 07              key length = 7
-  75 73 65 72 5F ... "user_id"
-  04                  TYPE_STR
-  00 04              string value length = 4
-  75 31 32 33        "u123"
-  00 06              key length = 6
-  61 6D 6F 75 ...    "amount"
-  03                  TYPE_F64
-  40 49 00 00 ...    50.0 as IEEE754 double (big-endian)
+Frame (total = 4-byte length prefix + 50-byte payload = 54 bytes on the wire):
+
+  00 00 00 32                              length = 50 (payload bytes after this)
+  01                                        opcode = PUSH
+  00 0C                                     stream name length = 12
+  54 72 61 6E 73 61 63 74 69 6F 6E 73      "Transactions"
+  00 02                                     field count = 2
+  00 07                                     key length = 7
+  75 73 65 72 5F 69 64                     "user_id"
+  04                                        TYPE_STR
+  00 04                                     string value length = 4
+  75 31 32 33                              "u123"
+  00 06                                     key length = 6
+  61 6D 6F 75 6E 74                        "amount"
+  03                                        TYPE_F64
+  40 49 00 00 00 00 00 00                  50.0 as IEEE754 double (big-endian)
 
 Response:
-  00 00 00 03        length = 3
-  00                  STATUS_OK
-  7B 7D              "{}" (JSON)
+  00 00 00 03                               length = 3
+  00                                        STATUS_OK
+  7B 7D                                     "{}" (JSON)
 ```
+
+Payload byte count: 1 (opcode) + 2 + 12 (stream name) + 2 (field count) + 2 + 7 (key) + 1 + 2 + 4 (string value) + 2 + 6 (key) + 1 + 8 (f64) = 50 bytes.
 
 ---
 

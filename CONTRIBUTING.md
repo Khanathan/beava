@@ -7,8 +7,10 @@ Welcome! Tally is a real-time feature server: push events in, get features out, 
 **Prerequisites:**
 
 - Rust stable toolchain (install via [rustup](https://rustup.rs/))
-- Python 3.10+
-- pip
+- `rustfmt` and `clippy` components: `rustup component add rustfmt clippy`
+- Python 3.10+ and pip
+- On Debian/Ubuntu: `sudo apt install build-essential pkg-config libssl-dev`
+- On macOS: `brew install openssl@3`
 
 **Build and run:**
 

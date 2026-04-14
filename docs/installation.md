@@ -89,7 +89,7 @@ Tally is configured through environment variables:
 | `TALLY_SNAPSHOT` | `true` | Enable periodic snapshots to disk |
 | `TALLY_SNAPSHOT_PATH` | `tally.snapshot` | Path prefix for snapshot files |
 | `TALLY_EVENT_LOG` | `true` | Enable append-only event log (WAL) |
-| `TALLY_DATA_DIR` | `.` | Base directory for event log files (`./events/` by default) |
+| `TALLY_DATA_DIR` | `.` | Base directory. Event log files are written to `{TALLY_DATA_DIR}/events/`. |
 
 Example:
 

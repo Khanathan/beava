@@ -420,7 +420,7 @@ Memory usage breakdown. Shows total entity count, registered stream count, an es
 }
 ```
 
-The `estimated_bytes` values use a rough estimate of ~2KB per entity-stream pair. Views show `key_count: 0` because they are computed on read, not stored.
+The `estimated_bytes` values are computed from the actual operator state in memory (ring buffer sizes, HLL register bytes, per-value overhead). Each stream entry also includes `operator_breakdown` (bytes by operator type) and `features` (per-feature byte totals). Views show `key_count: 0` because they are computed on read, not stored.
 
 **Status Codes**
 

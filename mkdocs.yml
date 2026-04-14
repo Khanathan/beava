@@ -1,6 +1,6 @@
 site_name: Tally
-site_description: "Real-time feature server. Push events, get features."
-site_url: ""
+site_description: "Real-time compute engine. Push events, read results in microseconds. One binary, in-memory, zero infrastructure."
+site_url: "https://petrpan26.github.io/tally/"
 repo_url: https://github.com/petrpan26/tally
 repo_name: petrpan26/tally
 
