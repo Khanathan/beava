@@ -3,7 +3,7 @@
 //! Each operator wraps one or more `RingBuffer`s and implements the `Operator`
 //! trait: `push()` to ingest an event, `read()` to get the current aggregate.
 
-use super::cms::{CountMinSketch, TopKHeap, TopKValue, DEFAULT_CMS_DEPTH, DEFAULT_CMS_WIDTH};
+use super::cms::{CountMinSketch, TopKHeap, TopKValue};
 use super::retracting_ring::RetractingRingBuffer;
 use super::uddsketch::UDDSketch;
 use super::window::RingBuffer;
@@ -1744,7 +1744,51 @@ impl Operator for VarianceOp {
     }
 }
 
-/// Windowed top-k by frequency. Stub — 22-03 implements hybrid exact→CMS+heap.
+// ======================== TopKOp ========================
+
+/// Default transition threshold for `top_k` (unique values). Planner-locked
+/// at 1024 per 22-03.
+pub const TOP_K_EXACT_THRESHOLD: usize = 1024;
+
+/// Per-bucket retention record for `top_k`. Stores every value pushed into
+/// the bucket (with per-value count) so bucket expiry can drive exact-map
+/// decrements or CMS decrements.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TopKBucket {
+    /// `(value, count)` pairs. Values are not deduplicated across buckets;
+    /// dedup happens in the exact map / CMS.
+    pub entries: Vec<(TopKValue, u64)>,
+}
+
+/// Mode enum for `TopKOp`. One-way transition Exact → Sketch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TopKMode {
+    /// Exact counts per unique value across the whole window.
+    #[serde(rename = "v0_top_k_exact")]
+    Exact {
+        /// `value → cumulative window count`.
+        counts: BTreeMap<TopKValue, u64>,
+    },
+    /// CMS-backed approximate counts + heavy-hitter heap.
+    #[serde(rename = "v0_top_k_hybrid")]
+    Sketch {
+        sketch: CountMinSketch,
+        heap: TopKHeap,
+    },
+}
+
+/// Hybrid windowed top-k by frequency.
+///
+/// - **Exact mode (≤ 1024 unique values):** per-window `BTreeMap<TopKValue, u64>`
+///   tracking cumulative counts. Per-bucket retention list lets us decrement
+///   entries when the bucket expires.
+/// - **Sketch mode (> 1024 uniques):** `CountMinSketch` (w, d configurable)
+///   + `TopKHeap` candidate list of size ~`8k`. Per-bucket retention list
+///   drives CMS decrements on bucket expiry.
+///
+/// Transition happens when `counts.len() > exact_threshold` right after an
+/// insert.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopKOp {
     pub field: String,
@@ -1755,6 +1799,8 @@ pub struct TopKOp {
     pub hybrid_width: usize,
     pub hybrid_depth: usize,
     pub optional: bool,
+    retention: RetractingRingBuffer<TopKBucket>,
+    mode: TopKMode,
 }
 
 impl TopKOp {
@@ -1768,6 +1814,7 @@ impl TopKOp {
         hybrid_depth: usize,
         optional: bool,
     ) -> Self {
+        let retention = RetractingRingBuffer::new(window, bucket);
         Self {
             field: field.into(),
             k,
@@ -1777,25 +1824,231 @@ impl TopKOp {
             hybrid_width,
             hybrid_depth,
             optional,
+            retention,
+            mode: TopKMode::Exact {
+                counts: BTreeMap::new(),
+            },
         }
+    }
+
+    /// `"exact"` or `"sketch"` — for `/debug/key` telemetry and tests.
+    pub fn mode_name(&self) -> &'static str {
+        match &self.mode {
+            TopKMode::Exact { .. } => "exact",
+            TopKMode::Sketch { .. } => "sketch",
+        }
+    }
+
+    /// Unique value count currently tracked in exact mode (None in sketch).
+    pub fn exact_count(&self) -> Option<usize> {
+        match &self.mode {
+            TopKMode::Exact { counts } => Some(counts.len()),
+            TopKMode::Sketch { .. } => None,
+        }
+    }
+
+    /// Transition threshold read-only.
+    pub fn transition_at(&self) -> usize {
+        self.exact_threshold
+    }
+
+    /// Extract a `TopKValue` from a JSON event field.
+    fn extract_value(val: &serde_json::Value) -> Option<TopKValue> {
+        TopKValue::from_json(val)
+    }
+
+    /// Bulk-decrement a retention bucket against the current mode.
+    fn retract_bucket(bucket: &mut TopKBucket, mode: &mut TopKMode) {
+        match mode {
+            TopKMode::Exact { counts } => {
+                for (v, c) in bucket.entries.drain(..) {
+                    if let Some(existing) = counts.get_mut(&v) {
+                        *existing = existing.saturating_sub(c);
+                        if *existing == 0 {
+                            counts.remove(&v);
+                        }
+                    }
+                }
+            }
+            TopKMode::Sketch { sketch, heap } => {
+                for (v, c) in bucket.entries.drain(..) {
+                    let h = v.hash64();
+                    sketch.update(h, -(c as i64));
+                }
+                heap.prune_empty(sketch);
+            }
+        }
+    }
+
+    /// Called after an insert; promote Exact → Sketch when thresholds cross.
+    fn maybe_transition(&mut self) {
+        let should = matches!(
+            &self.mode,
+            TopKMode::Exact { counts } if counts.len() > self.exact_threshold
+        );
+        if !should {
+            return;
+        }
+        let old_counts = match std::mem::replace(
+            &mut self.mode,
+            TopKMode::Exact {
+                counts: BTreeMap::new(),
+            },
+        ) {
+            TopKMode::Exact { counts } => counts,
+            _ => unreachable!(),
+        };
+        let mut sketch = CountMinSketch::new(self.hybrid_width, self.hybrid_depth.min(8).max(1));
+        let mut heap = TopKHeap::new(self.k.max(1));
+        for (v, c) in &old_counts {
+            let h = v.hash64();
+            sketch.update(h, *c as i64);
+        }
+        // Observe every former exact value as a candidate. Heap capacity
+        // self-prunes to the top k.
+        for (v, _) in old_counts.iter() {
+            heap.observe(v, &sketch);
+        }
+        self.mode = TopKMode::Sketch { sketch, heap };
     }
 }
 
 impl Operator for TopKOp {
     fn push(
         &mut self,
-        _event: &serde_json::Value,
-        _enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
-        _now: SystemTime,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
     ) -> Result<(), TallyError> {
-        // Stub: 22-03 implements hybrid exact-map → CMS+heap transition.
+        let val = match resolve_field(&self.field, event, enrichment) {
+            None => {
+                return if self.optional {
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "scalar".into(),
+                        got: "absent".into(),
+                    })
+                }
+            }
+            Some(v) => v,
+        };
+        let key = match Self::extract_value(val) {
+            Some(k) => k,
+            None => {
+                return Err(TallyError::Type {
+                    field: self.field.clone(),
+                    expected: "scalar".into(),
+                    got: format!("{}", val),
+                });
+            }
+        };
+        // 1. Retain into current bucket.
+        let mode_ptr = &mut self.mode;
+        self.retention.update_current(
+            |bucket| {
+                // increment counts for this value within this bucket
+                if let Some(entry) = bucket.entries.iter_mut().find(|(v, _)| v == &key) {
+                    entry.1 = entry.1.saturating_add(1);
+                } else {
+                    bucket.entries.push((key.clone(), 1));
+                }
+            },
+            now,
+            |bucket| Self::retract_bucket(bucket, mode_ptr),
+        );
+        // 2. Apply forward update to mode.
+        match &mut self.mode {
+            TopKMode::Exact { counts } => {
+                *counts.entry(key.clone()).or_insert(0) += 1;
+            }
+            TopKMode::Sketch { sketch, heap } => {
+                let h = key.hash64();
+                sketch.insert(h);
+                heap.observe(&key, sketch);
+            }
+        }
+        self.maybe_transition();
         Ok(())
     }
-    fn read(&mut self, _now: SystemTime) -> FeatureValue {
-        FeatureValue::Missing
+
+    fn read(&mut self, now: SystemTime) -> FeatureValue {
+        let mode_ptr = &mut self.mode;
+        self.retention
+            .advance_to(now, |bucket| Self::retract_bucket(bucket, mode_ptr));
+        let top_pairs: Vec<(TopKValue, u64)> = match &self.mode {
+            TopKMode::Exact { counts } => {
+                if counts.is_empty() {
+                    return FeatureValue::Missing;
+                }
+                let mut pairs: Vec<(TopKValue, u64)> = counts
+                    .iter()
+                    .map(|(v, c)| (v.clone(), *c))
+                    .collect();
+                pairs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                pairs.truncate(self.k);
+                pairs
+            }
+            TopKMode::Sketch { sketch, heap } => {
+                if sketch.total() == 0 {
+                    return FeatureValue::Missing;
+                }
+                heap.top_k(sketch)
+                    .into_iter()
+                    .map(|(v, c)| (v, c.max(0) as u64))
+                    .collect()
+            }
+        };
+        if top_pairs.is_empty() {
+            return FeatureValue::Missing;
+        }
+        let arr: Vec<serde_json::Value> = top_pairs
+            .into_iter()
+            .map(|(v, c)| {
+                serde_json::json!({
+                    "value": v.to_json(),
+                    "count": c,
+                })
+            })
+            .collect();
+        FeatureValue::String(serde_json::Value::Array(arr).to_string())
     }
+
     fn estimated_bytes(&self) -> usize {
-        0
+        let mut total = 0usize;
+        // retention
+        for bucket in self.retention.buckets_iter() {
+            total += bucket.entries.capacity() * (std::mem::size_of::<TopKValue>() + 8);
+        }
+        match &self.mode {
+            TopKMode::Exact { counts } => {
+                total += counts.len() * (std::mem::size_of::<TopKValue>() + 8 + 48);
+            }
+            TopKMode::Sketch { sketch, heap } => {
+                total += sketch.estimated_bytes() + heap.estimated_bytes();
+            }
+        }
+        total
+    }
+
+    fn num_buckets(&self) -> usize {
+        self.retention.num_buckets()
+    }
+
+    fn hybrid_telemetry(&self) -> Option<HybridTelemetry> {
+        let (mode, exact_count) = match &self.mode {
+            TopKMode::Exact { counts } => ("exact", counts.len()),
+            TopKMode::Sketch { .. } => ("sketch", self.exact_threshold),
+        };
+        Some(HybridTelemetry {
+            op: "top_k",
+            mode,
+            exact_count,
+            transition_at: self.exact_threshold,
+            sketch_alpha_current: None,
+            memory_bytes: self.estimated_bytes(),
+        })
     }
 }
 
