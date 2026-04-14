@@ -145,12 +145,18 @@ Key decisions (locked via design conversation 2026-04-14, captured in `.planning
   5. Phase 20 traction demo replay CLI, demo.html, and 6-invariant smoke script ported to new API; pass locally
   6. `docs/` site updated with new SDK reference, migration note (internal-only, since pre-launch)
   7. Phase 20 (v2.1) artifacts ready to deploy via already-written Hetzner scripts — no re-provision needed, just recompile binary + redeploy
-**Plans:** TBD
+**Plans:** 1/4 plans executed
+  - [x] 26-01-PLAN.md — Test migration: delete old API refs, un-skip v0-migrated tests, verify ≥744 green across cargo/pytest
+  - [ ] 26-02-PLAN.md — Benchmark regression gate (9-cell matrix + criterion sketch within −5% of BASELINE, fix in place if red) + launch blog rewrite (honest v0 story, {{DEMO_URL}} placeholder, headline numbers from MATRIX-V0-FINAL.json)
+  - [ ] 26-03-PLAN.md — Phase 20 traction demo rebuild: port generator.py / replay_30d.py / demo UI / smoke.sh to v0 SDK + post-25 /metrics shape; full-stack local smoke; unpause v2.1-PAUSED-ROADMAP.md (NOT deployed)
+  - [ ] 26-04-PLAN.md — Sign-off: 11-criteria checklist, STATE.md/ROADMAP.md update, archive v0-ROADMAP.md, v2.1 Launch resume instructions; reconcile Phase 25 duplicate dirs (25-query-ttl-warnings/ canonical vs 25-query-surface-ttl-warnings/ legacy)
 
 ## Progress
 
 **Execution Order:**
 Phase 21 blocks all others. 22 + 23 parallelize after 21. 24 can start mid-22. 25 needs 21 + 22. 26 is last.
+
+**Housekeeping (assigned to 26-04 sign-off):** Two parallel Phase 25 directories exist on disk (`.planning/phases/25-query-ttl-warnings/` and `.planning/phases/25-query-surface-ttl-warnings/`). The former is canonical (has 25-SUMMARY.md, MATRIX-V0-POST-25.json, and all plan SUMMARYs referenced by 26-CONTEXT.md); the latter is legacy scaffolding with only plan stubs + deferred-items.md. 26-04 reconciles by confirming the canonical dir and archiving or deleting the duplicate.
 
 Dependency graph:
 ```
@@ -167,4 +173,4 @@ Dependency graph:
 | 23. Joins | v0 | 2/3 | In Progress|  |
 | 24. Table storage + Watermarks & event-time | v0 | 4/5 | In Progress|  |
 | 25. Query surface, TTL, warnings | v0 | 0/3 | Planned    |  |
-| 26. Test migration, bench, docs, demo | v0 | 0/? | Not planned | - |
+| 26. Test migration, bench, docs, demo | v0 | 1/4 | In Progress|  |
