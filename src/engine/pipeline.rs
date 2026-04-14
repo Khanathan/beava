@@ -278,6 +278,13 @@ pub struct StreamDefinition {
     /// Key field for entity extraction. None = keyless stream (raw event ingestion).
     /// Keyless streams cannot have windowed operators -- only derive features are allowed.
     pub key_field: Option<String>,
+    /// Composite group_by keys (Phase 23-01). When present, entity key is derived by
+    /// `encode_group_by(keys, event)` (pipe-joined string) instead of `key_field`.
+    /// Single-key case: fast path through `key_field`. Composite: use these keys.
+    /// `key_field` must be Some when `group_by_keys` is Some (points at keys[0] for
+    /// consumers that expect a single key field name — legacy read paths see the
+    /// composite key by way of the entity's state store entry).
+    pub group_by_keys: Option<Vec<String>>,
     pub features: Vec<(String, FeatureDef)>, // (feature_name, definition)
     /// Upstream stream dependencies for composable pipeline DAG.
     /// None means no dependencies (root stream).
@@ -300,6 +307,25 @@ pub struct StreamDefinition {
     pub pipeline_ttl: Option<Duration>,
     /// Maximum number of entity keys for this stream (schema-only, no runtime enforcement yet).
     pub max_keys: Option<u64>,
+}
+
+impl Default for StreamDefinition {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            key_field: None,
+            group_by_keys: None,
+            features: Vec::new(),
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+        }
+    }
 }
 
 /// The pipeline engine. Holds registered stream definitions and coordinates
@@ -703,31 +729,38 @@ impl PipelineEngine {
             return Ok(FeatureMap::new());
         }
 
-        // 2. Extract entity key from event JSON (T-01-11 mitigation)
-        let key_field = stream.key_field.as_ref().unwrap(); // safe: checked above
-        let key = match event.get(key_field) {
-            Some(serde_json::Value::String(s)) => {
-                if s.is_empty() {
-                    return Err(TallyError::Protocol(format!(
-                        "empty key field '{}'",
-                        key_field
-                    )));
+        // 2. Extract entity key from event JSON (T-01-11 mitigation).
+        // Phase 23-01: composite group_by — use `encode_group_by` when the
+        // stream was registered with multiple keys. Single-key fast path
+        // preserved.
+        let key = if let Some(gb_keys) = &stream.group_by_keys {
+            crate::engine::register::encode_group_by(gb_keys, event)?
+        } else {
+            let key_field = stream.key_field.as_ref().unwrap(); // safe: checked above
+            match event.get(key_field) {
+                Some(serde_json::Value::String(s)) => {
+                    if s.is_empty() {
+                        return Err(TallyError::Protocol(format!(
+                            "empty key field '{}'",
+                            key_field
+                        )));
+                    }
+                    s.clone()
                 }
-                s.clone()
-            }
-            Some(other) => {
-                return Err(TallyError::Type {
-                    field: key_field.clone(),
-                    expected: "string".into(),
-                    got: format!("{}", other),
-                });
-            }
-            None => {
-                return Err(TallyError::Type {
-                    field: key_field.clone(),
-                    expected: "string".into(),
-                    got: "absent".into(),
-                });
+                Some(other) => {
+                    return Err(TallyError::Type {
+                        field: key_field.clone(),
+                        expected: "string".into(),
+                        got: format!("{}", other),
+                    });
+                }
+                None => {
+                    return Err(TallyError::Type {
+                        field: key_field.clone(),
+                        expected: "string".into(),
+                        got: "absent".into(),
+                    });
+                }
             }
         };
 
@@ -1113,32 +1146,44 @@ impl PipelineEngine {
             // Must read features if: caller wants them, OR further downstream needs enrichment
             let ds_read_features = read_features || has_further_downstream;
 
-            // For keyed downstream: check if key_field exists in event
-            if let Some(ref key_field) = downstream_def.key_field {
-                match event.get(key_field) {
-                    Some(serde_json::Value::String(k)) if !k.is_empty() => {
-                        let ds_features = self.push_internal(
-                            stream_in_order,
-                            event,
-                            Some(&enrichment_json),
-                            Some(&enrichment_fv),
-                            store,
-                            now,
-                            ds_read_features,
-                        )?;
+            // For keyed downstream: check if key_field(s) exist in event.
+            // Phase 23-01: composite group_by downstreams must have every key
+            // field present; fall back to single-key check otherwise.
+            let keyed_ready = if let Some(gb_keys) = &downstream_def.group_by_keys {
+                gb_keys.iter().all(|k| match event.get(k) {
+                    Some(serde_json::Value::String(s)) => !s.is_empty(),
+                    Some(serde_json::Value::Number(_)) => true,
+                    Some(serde_json::Value::Bool(_)) => true,
+                    _ => false,
+                })
+            } else if let Some(kf) = &downstream_def.key_field {
+                matches!(event.get(kf), Some(serde_json::Value::String(k)) if !k.is_empty())
+            } else {
+                false
+            };
+            if downstream_def.key_field.is_some() {
+                if !keyed_ready {
+                    continue; // Key missing -- skip (LEFT JOIN semantics)
+                }
+                let ds_features = self.push_internal(
+                    stream_in_order,
+                    event,
+                    Some(&enrichment_json),
+                    Some(&enrichment_fv),
+                    store,
+                    now,
+                    ds_read_features,
+                )?;
 
-                        // Accumulate this stream's results for further downstream
-                        if has_further_downstream {
-                            for (name, value) in &ds_features {
-                                let qualified = format!("{}.{}", stream_in_order, name);
-                                enrichment_json.insert(qualified.clone(), value.to_json_value());
-                                enrichment_json.insert(name.clone(), value.to_json_value());
-                                enrichment_fv.insert(qualified, value.clone());
-                                enrichment_fv.insert(name.clone(), value.clone());
-                            }
-                        }
+                // Accumulate this stream's results for further downstream
+                if has_further_downstream {
+                    for (name, value) in &ds_features {
+                        let qualified = format!("{}.{}", stream_in_order, name);
+                        enrichment_json.insert(qualified.clone(), value.to_json_value());
+                        enrichment_json.insert(name.clone(), value.to_json_value());
+                        enrichment_fv.insert(qualified, value.clone());
+                        enrichment_fv.insert(name.clone(), value.clone());
                     }
-                    _ => continue, // Key missing -- skip (LEFT JOIN semantics)
                 }
             } else {
                 // Keyless downstream
@@ -1538,6 +1583,7 @@ mod tests {
         StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "tx_count_1h".into(),
@@ -1597,6 +1643,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![],
             depends_on: None,
             filter: None,
@@ -1695,6 +1742,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "stream1".into(),
                 key_field: Some("id".into()),
+                group_by_keys: None,
                 features: vec![
                     (
                         "c1".into(),
@@ -1731,6 +1779,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "stream2".into(),
                 key_field: Some("id".into()),
+                group_by_keys: None,
                 features: vec![(
                     "c2".into(),
                     FeatureDef::Count {
@@ -1766,6 +1815,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "derived".into(),
                 key_field: Some("id".into()),
+                group_by_keys: None,
                 features: vec![(
                     "ratio".into(),
                     FeatureDef::Derive {
@@ -1883,6 +1933,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "min_amount_1h".into(),
@@ -1958,6 +2009,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "tx_count_1h".into(),
@@ -2054,6 +2106,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "stream1".into(),
                 key_field: Some("id".into()),
+                group_by_keys: None,
                 features: vec![(
                     "dc_24h".into(),
                     FeatureDef::DistinctCount {
@@ -2134,6 +2187,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "Transactions".into(),
                 key_field: Some("user_id".into()),
+                group_by_keys: None,
                 features: vec![(
                     "tx_count_1h".into(),
                     FeatureDef::Count {
@@ -2157,6 +2211,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "Logins".into(),
                 key_field: Some("user_id".into()),
+                group_by_keys: None,
                 features: vec![(
                     "login_count_1h".into(),
                     FeatureDef::Count {
@@ -2235,6 +2290,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "MerchantActivity".into(),
                 key_field: Some("merchant_id".into()),
+                group_by_keys: None,
                 features: vec![(
                     "chargeback_count_24h".into(),
                     FeatureDef::Count {
@@ -2260,6 +2316,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "Transactions".into(),
                 key_field: Some("user_id".into()),
+                group_by_keys: None,
                 features: vec![
                     (
                         "tx_count_1h".into(),
@@ -2345,6 +2402,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "Transactions".into(),
                 key_field: Some("user_id".into()),
+                group_by_keys: None,
                 features: vec![(
                     "last_merchant_id".into(),
                     FeatureDef::Last {
@@ -2368,6 +2426,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "MerchantActivity".into(),
                 key_field: Some("merchant_id".into()),
+                group_by_keys: None,
                 features: vec![(
                     "chargeback_count_24h".into(),
                     FeatureDef::Count {
@@ -2420,6 +2479,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![],
             depends_on: None,
             filter: None,
@@ -2438,6 +2498,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![],
             depends_on: None,
             filter: None,
@@ -2459,6 +2520,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "Transactions".into(),
                 key_field: Some("user_id".into()),
+                group_by_keys: None,
                 features: vec![],
                 depends_on: None,
                 filter: None,
@@ -2483,6 +2545,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "Transactions".into(),
                 key_field: Some("user_id".into()),
+                group_by_keys: None,
                 features: vec![],
                 depends_on: None,
                 filter: None,
@@ -2510,6 +2573,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "stream1".into(),
                 key_field: Some("id".into()),
+                group_by_keys: None,
                 features: vec![
                     (
                         "min_1h".into(),
@@ -2555,6 +2619,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "RawEvents".into(),
             key_field: None,
+            group_by_keys: None,
             features: vec![],
             depends_on: None,
             filter: None,
@@ -2576,6 +2641,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "RawEvents".into(),
             key_field: None,
+            group_by_keys: None,
             features: vec![(
                 "bad_count".into(),
                 FeatureDef::Count {
@@ -2615,6 +2681,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "RawEvents".into(),
             key_field: None,
+            group_by_keys: None,
             features: vec![(
                 "doubled".into(),
                 FeatureDef::Derive {
@@ -2641,6 +2708,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "RawEvents".into(),
             key_field: None,
+            group_by_keys: None,
             features: vec![],
             depends_on: None,
             filter: None,
@@ -2669,6 +2737,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "Enriched".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "tx_count_1h".into(),
                 FeatureDef::Count {
@@ -2703,6 +2772,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "FailedOnly".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "cnt".into(),
                 FeatureDef::Count {
@@ -2734,6 +2804,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "FailedTx".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "cnt".into(),
                 FeatureDef::Count {
@@ -2795,6 +2866,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "Transactions".into(),
                 key_field: Some("user_id".into()),
+                group_by_keys: None,
                 features: vec![],
                 depends_on: None,
                 filter: None,
@@ -2811,6 +2883,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "RawEvents".into(),
                 key_field: None,
+                group_by_keys: None,
                 features: vec![],
                 depends_on: None,
                 filter: None,
@@ -2851,6 +2924,7 @@ mod tests {
         let c = StreamDefinition {
             name: "C".into(),
             key_field: Some("uid".into()),
+            group_by_keys: None,
             features: vec![],
             entity_ttl: None,
             history_ttl: None,
@@ -2864,6 +2938,7 @@ mod tests {
         let b = StreamDefinition {
             name: "B".into(),
             key_field: Some("uid".into()),
+            group_by_keys: None,
             features: vec![],
             entity_ttl: None,
             history_ttl: None,
@@ -2877,6 +2952,7 @@ mod tests {
         let a = StreamDefinition {
             name: "A".into(),
             key_field: None,
+            group_by_keys: None,
             features: vec![],
             entity_ttl: None,
             history_ttl: None,
@@ -2907,6 +2983,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "tx_count_1h".into(),
                 FeatureDef::Count {
@@ -2940,6 +3017,7 @@ mod tests {
         let stream1 = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "tx_count_1h".into(),
                 FeatureDef::Count {
@@ -2966,6 +3044,7 @@ mod tests {
         let stream2 = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "tx_count_1h".into(),
@@ -3009,6 +3088,7 @@ mod tests {
         let stream1 = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "tx_count_1h".into(),
@@ -3046,6 +3126,7 @@ mod tests {
         let stream2 = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "tx_count_1h".into(),
                 FeatureDef::Count {
@@ -3076,6 +3157,7 @@ mod tests {
         let stream1 = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "f1".into(),
                 FeatureDef::Count {
@@ -3100,6 +3182,7 @@ mod tests {
         let stream2 = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "f1".into(),
                 FeatureDef::Sum {
@@ -3136,6 +3219,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "tx_count_1h".into(),
@@ -3208,6 +3292,7 @@ mod tests {
         let stream1 = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "tx_count_1h".into(),
                 FeatureDef::Count {
@@ -3246,6 +3331,7 @@ mod tests {
         let stream2 = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "tx_count_1h".into(),
@@ -3307,6 +3393,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "Transactions".into(),
                 key_field: Some("user_id".into()),
+                group_by_keys: None,
                 features: vec![
                     (
                         "tx_count_1h".into(),
@@ -3338,6 +3425,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "Logins".into(),
                 key_field: Some("user_id".into()),
+                group_by_keys: None,
                 features: vec![(
                     "login_count_1h".into(),
                     FeatureDef::Count {
@@ -3381,6 +3469,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "tx_count_1h".into(),
@@ -3451,6 +3540,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "tx_count_1h".into(),
                 FeatureDef::Count {

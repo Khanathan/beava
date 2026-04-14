@@ -32,6 +32,7 @@ fn tx_stream() -> StreamDefinition {
     StreamDefinition {
         name: "Transactions".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![
             (
                 "tx_count_1h".into(),
@@ -314,6 +315,7 @@ fn test_eviction_marks_deleted_and_delta_includes_it() {
         .register(StreamDefinition {
             name: "stream_short".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "count".into(),
                 FeatureDef::Count {

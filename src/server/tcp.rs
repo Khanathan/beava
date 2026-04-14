@@ -1724,6 +1724,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "tx_count_1h".into(),
@@ -2063,6 +2064,7 @@ mod tests {
         let stream = StreamDefinition {
             name: "MerchantActivity".into(),
             key_field: Some("merchant_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "merchant_tx_count_1h".into(),
                 FeatureDef::Count {

@@ -19,6 +19,7 @@ fn make_tx_stream_with_derive() -> StreamDefinition {
     StreamDefinition {
         name: "Transactions".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![
             (
                 "tx_count_1h".into(),
@@ -171,6 +172,7 @@ fn test_derive_division_by_zero_returns_missing() {
     let stream = StreamDefinition {
         name: "Test".into(),
         key_field: Some("id".into()),
+        group_by_keys: None,
         features: vec![
             (
                 "count_1h".into(),
@@ -252,6 +254,7 @@ fn test_window_expiration_end_to_end() {
     let stream = StreamDefinition {
         name: "Short".into(),
         key_field: Some("id".into()),
+        group_by_keys: None,
         features: vec![(
             "count_5m".into(),
             FeatureDef::Count {
@@ -307,6 +310,7 @@ fn test_derive_with_event_field_access() {
     let stream = StreamDefinition {
         name: "Test".into(),
         key_field: Some("id".into()),
+        group_by_keys: None,
         features: vec![
             (
                 "avg_1h".into(),
@@ -406,6 +410,7 @@ fn make_keyless_stream(name: &str) -> StreamDefinition {
     StreamDefinition {
         name: name.into(),
         key_field: None,
+        group_by_keys: None,
         features: vec![],
         entity_ttl: None,
         history_ttl: None,
@@ -422,6 +427,7 @@ fn make_keyed_dependent_stream(name: &str, key: &str, deps: Vec<&str>) -> Stream
     StreamDefinition {
         name: name.into(),
         key_field: Some(key.into()),
+        group_by_keys: None,
         features: vec![(
             "count_1h".into(),
             FeatureDef::Count {
@@ -639,6 +645,7 @@ fn test_keyed_to_keyed_cascade() {
     let a = StreamDefinition {
         name: "A".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![(
             "a_count".into(),
             FeatureDef::Count {
@@ -660,6 +667,7 @@ fn test_keyed_to_keyed_cascade() {
     let b = StreamDefinition {
         name: "B".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![(
             "b_count".into(),
             FeatureDef::Count {
@@ -843,6 +851,7 @@ async fn test_backfill_replay_deterministic() {
     let stream1 = StreamDefinition {
         name: "Transactions".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![(
             "count_1h".into(),
             FeatureDef::Count {
@@ -891,6 +900,7 @@ async fn test_backfill_replay_deterministic() {
     let stream2 = StreamDefinition {
         name: "Transactions".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![
             (
                 "count_1h".into(),
@@ -991,6 +1001,7 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
     let stream1 = StreamDefinition {
         name: "Txns".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![(
             "count_1h".into(),
             FeatureDef::Count {
@@ -1033,6 +1044,7 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
     let stream2 = StreamDefinition {
         name: "Txns".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![
             (
                 "count_1h".into(),
@@ -1133,6 +1145,7 @@ fn test_schema_evolution_add_remove() {
     let stream1 = StreamDefinition {
         name: "Txns".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![
             (
                 "count_1h".into(),
@@ -1187,6 +1200,7 @@ fn test_schema_evolution_add_remove() {
     let stream2 = StreamDefinition {
         name: "Txns".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![
             (
                 "count_1h".into(),
@@ -1251,6 +1265,7 @@ async fn test_backfill_idempotent_restart() {
     let stream1 = StreamDefinition {
         name: "Txns".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![(
             "count_1h".into(),
             FeatureDef::Count {
@@ -1300,6 +1315,7 @@ async fn test_backfill_idempotent_restart() {
     let stream2 = StreamDefinition {
         name: "Txns".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![
             (
                 "count_1h".into(),
@@ -1570,6 +1586,7 @@ fn test_enriched_derive_to_downstream_sum() {
         .register(StreamDefinition {
             name: "RawTxns".into(),
             key_field: None,
+            group_by_keys: None,
             features: vec![],
             depends_on: None,
             filter: None,
@@ -1587,6 +1604,7 @@ fn test_enriched_derive_to_downstream_sum() {
         .register(StreamDefinition {
             name: "CurrencyNorm".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "amount_usd".into(),
                 FeatureDef::Derive {
@@ -1609,6 +1627,7 @@ fn test_enriched_derive_to_downstream_sum() {
         .register(StreamDefinition {
             name: "UserStats".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "total_usd_1h".into(),
                 FeatureDef::Sum {
@@ -1667,6 +1686,7 @@ fn test_enriched_multi_hop_cascade() {
         .register(StreamDefinition {
             name: "HopA".into(),
             key_field: None,
+            group_by_keys: None,
             features: vec![],
             depends_on: None,
             filter: None,
@@ -1684,6 +1704,7 @@ fn test_enriched_multi_hop_cascade() {
         .register(StreamDefinition {
             name: "HopB".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "computed_b".into(),
                 FeatureDef::Derive {
@@ -1706,6 +1727,7 @@ fn test_enriched_multi_hop_cascade() {
         .register(StreamDefinition {
             name: "HopC".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "sum_b".into(),
@@ -1741,6 +1763,7 @@ fn test_enriched_multi_hop_cascade() {
         .register(StreamDefinition {
             name: "HopD".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "sum_c".into(),
                 FeatureDef::Sum {
@@ -1807,6 +1830,7 @@ fn test_enriched_cascade_async_mode() {
         .register(StreamDefinition {
             name: "AsyncRaw".into(),
             key_field: None,
+            group_by_keys: None,
             features: vec![],
             depends_on: None,
             filter: None,
@@ -1823,6 +1847,7 @@ fn test_enriched_cascade_async_mode() {
         .register(StreamDefinition {
             name: "AsyncNorm".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "amount_usd".into(),
                 FeatureDef::Derive {
@@ -1844,6 +1869,7 @@ fn test_enriched_cascade_async_mode() {
         .register(StreamDefinition {
             name: "AsyncStats".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "total_usd_1h".into(),
                 FeatureDef::Sum {
@@ -1915,6 +1941,7 @@ fn test_enriched_where_clause() {
         .register(StreamDefinition {
             name: "WhereRaw".into(),
             key_field: None,
+            group_by_keys: None,
             features: vec![],
             depends_on: None,
             filter: None,
@@ -1931,6 +1958,7 @@ fn test_enriched_where_clause() {
         .register(StreamDefinition {
             name: "WhereNorm".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "amount_usd".into(),
                 FeatureDef::Derive {
@@ -1953,6 +1981,7 @@ fn test_enriched_where_clause() {
         .register(StreamDefinition {
             name: "WhereFiltered".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "high_value_count".into(),
                 FeatureDef::Count {
@@ -2023,6 +2052,7 @@ fn test_enriched_field_resolution_qualified() {
         .register(StreamDefinition {
             name: "QualRaw".into(),
             key_field: None,
+            group_by_keys: None,
             features: vec![],
             depends_on: None,
             filter: None,
@@ -2039,6 +2069,7 @@ fn test_enriched_field_resolution_qualified() {
         .register(StreamDefinition {
             name: "QualNorm".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "val".into(),
                 FeatureDef::Derive {
@@ -2060,6 +2091,7 @@ fn test_enriched_field_resolution_qualified() {
         .register(StreamDefinition {
             name: "QualAgg".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "total".into(),
                 FeatureDef::Sum {
@@ -2112,6 +2144,7 @@ fn test_enriched_field_resolution_unqualified() {
         .register(StreamDefinition {
             name: "UnqualRaw".into(),
             key_field: None,
+            group_by_keys: None,
             features: vec![],
             depends_on: None,
             filter: None,
@@ -2128,6 +2161,7 @@ fn test_enriched_field_resolution_unqualified() {
         .register(StreamDefinition {
             name: "UnqualNorm".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "uval".into(),
                 FeatureDef::Derive {
@@ -2150,6 +2184,7 @@ fn test_enriched_field_resolution_unqualified() {
         .register(StreamDefinition {
             name: "UnqualAgg".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "total".into(),
                 FeatureDef::Sum {
@@ -2202,6 +2237,7 @@ fn test_enriched_no_cascade_unchanged() {
         .register(StreamDefinition {
             name: "Solo".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "count_1h".into(),
@@ -2286,6 +2322,7 @@ fn test_projection_select_push() {
         .register(StreamDefinition {
             name: "Txns".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "count_1h".into(),
@@ -2360,6 +2397,7 @@ fn test_projection_drop_push() {
         .register(StreamDefinition {
             name: "Txns".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "count_1h".into(),
@@ -2433,6 +2471,7 @@ fn test_projection_select_get() {
         .register(StreamDefinition {
             name: "Txns".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "count_1h".into(),
@@ -2486,6 +2525,7 @@ fn test_projection_drop_get() {
         .register(StreamDefinition {
             name: "Txns".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "count_1h".into(),
@@ -2543,6 +2583,7 @@ fn test_projection_derive_still_evaluates() {
         .register(StreamDefinition {
             name: "Txns".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![
                 (
                     "count_1h".into(),

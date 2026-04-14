@@ -137,6 +137,7 @@ fn register_test_pipeline(state: &SharedState) {
     let transactions = StreamDefinition {
         name: "Transactions".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![(
             "tx_count_1h".into(),
             FeatureDef::Count {
@@ -162,6 +163,7 @@ fn register_test_pipeline(state: &SharedState) {
     let logins = StreamDefinition {
         name: "Logins".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![(
             "login_count_1h".into(),
             FeatureDef::Count {
@@ -185,6 +187,7 @@ fn register_test_pipeline(state: &SharedState) {
     let aggregates = StreamDefinition {
         name: "Aggregates".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![(
             "daily_sum".into(),
             FeatureDef::Sum {
@@ -395,6 +398,7 @@ async fn topology_nodes_include_operators_field() {
         let tx_def = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "tx_count_1h".into(),
                 FeatureDef::Count {
@@ -480,6 +484,7 @@ async fn topology_operators_pass_through_where_clause() {
         let tx_def = StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "failed_1h".into(),
                 FeatureDef::Count {
@@ -556,6 +561,7 @@ async fn topology_view_operators_include_lookup_shape() {
         let merchant_def = StreamDefinition {
             name: "MerchantActivity".into(),
             key_field: Some("merchant_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "chargeback_count_24h".into(),
                 FeatureDef::Count {

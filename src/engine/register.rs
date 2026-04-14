@@ -791,14 +791,19 @@ pub fn v0_aggregation_to_stream_def(
             "v0→v2 xlate: aggregation.keys must be non-empty".into(),
         ));
     }
-    if desc.aggregation.keys.len() > 1 {
-        return Err(TallyError::Protocol(
-            "v0→v2 xlate: composite group_by keys not yet supported in v0→v2 \
-             translator (Phase 23); use a single-key aggregation for now"
-                .into(),
-        ));
-    }
-    let key_field = Some(desc.aggregation.keys[0].clone());
+    // Phase 23-01: composite group_by keys lifted. `encode_group_by` composes
+    // the entity key string from multiple event fields (`k1|k2|...`). The
+    // single-key fast path is preserved — `encode_group_by` of a one-element
+    // slice returns just the scalar string.
+    let keys = &desc.aggregation.keys;
+    let (key_field, group_by_keys) = if keys.len() == 1 {
+        (Some(keys[0].clone()), None)
+    } else {
+        // Composite: `key_field` still points at keys[0] for downstream code
+        // paths that want a representative field name, but `group_by_keys` is
+        // what drives the actual entity-key encoding in `push_internal`.
+        (Some(keys[0].clone()), Some(keys.clone()))
+    };
     let mut features: Vec<(String, crate::engine::pipeline::FeatureDef)> =
         Vec::with_capacity(desc.aggregation.features.len());
     for feat in &desc.aggregation.features {
@@ -808,6 +813,7 @@ pub fn v0_aggregation_to_stream_def(
     Ok(StreamDefinition {
         name: desc.name.clone(),
         key_field,
+        group_by_keys,
         features,
         depends_on: Some(vec![desc.aggregation.source.clone()]),
         filter: None,
@@ -837,10 +843,20 @@ pub fn v0_source_to_stream_def(
     // For kind=stream: a keyless ingestion stream with no features. Push
     // events flow through the cascade to any dependent aggregation streams.
     // For kind=table: a single-key target (direct writes via SET/MSET).
-    let key_field = desc.key_field.clone();
+    // Phase 23-01: Table sources may declare a composite key via `key_fields`.
+    // In that case, SET lookups / Stream↔Table enrichment must look the entity
+    // up under the pipe-encoded composite key. Stash the field list on
+    // `group_by_keys` so consumers have a consistent accessor.
+    let (key_field, group_by_keys) = match (&desc.key_field, &desc.key_fields) {
+        (Some(k), _) => (Some(k.clone()), None),
+        (None, Some(ks)) if ks.len() == 1 => (Some(ks[0].clone()), None),
+        (None, Some(ks)) if !ks.is_empty() => (Some(ks[0].clone()), Some(ks.clone())),
+        _ => (None, None),
+    };
     Ok(StreamDefinition {
         name: desc.name.clone(),
         key_field,
+        group_by_keys,
         features: Vec::new(),
         depends_on: None,
         filter: None,

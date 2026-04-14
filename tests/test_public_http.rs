@@ -98,6 +98,7 @@ fn register_txns(state: &SharedState) {
         .register(StreamDefinition {
             name: "Transactions".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "tx_count_1h".into(),
                 FeatureDef::Count {

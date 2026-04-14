@@ -126,6 +126,7 @@ mod tests {
         StreamDefinition {
             name: name.to_string(),
             key_field: Some("user_id".to_string()),
+            group_by_keys: None,
             features: vec![(
                 "count".to_string(),
                 FeatureDef::Count {
@@ -235,6 +236,7 @@ mod tests {
         StreamDefinition {
             name: name.to_string(),
             key_field: Some("user_id".to_string()),
+            group_by_keys: None,
             features: vec![(
                 "count".to_string(),
                 FeatureDef::Count {
@@ -386,6 +388,7 @@ mod tests {
             .register(StreamDefinition {
                 name: "derived_only".to_string(),
                 key_field: Some("user_id".to_string()),
+                group_by_keys: None,
                 features: vec![(
                     "ratio".to_string(),
                     FeatureDef::Derive {

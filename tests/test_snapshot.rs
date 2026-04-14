@@ -18,6 +18,7 @@ fn make_tx_stream() -> StreamDefinition {
     StreamDefinition {
         name: "Transactions".into(),
         key_field: Some("user_id".into()),
+        group_by_keys: None,
         features: vec![
             (
                 "tx_count_1h".into(),
@@ -143,6 +144,7 @@ fn test_eviction_removes_old_entity() {
         .register(StreamDefinition {
             name: "stream1".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "count".into(),
                 FeatureDef::Count {
@@ -204,6 +206,7 @@ fn test_eviction_preserves_entity_with_no_events() {
         .register(StreamDefinition {
             name: "stream1".into(),
             key_field: Some("user_id".into()),
+            group_by_keys: None,
             features: vec![(
                 "count".into(),
                 FeatureDef::Count {

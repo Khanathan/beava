@@ -1018,6 +1018,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
     Ok(StreamDefinition {
         name: req.name,
         key_field: req.key_field,
+        group_by_keys: None,
         features,
         depends_on: req.depends_on,
         filter,

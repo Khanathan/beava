@@ -32,6 +32,7 @@ fn make_count_stream(name: &str, key: &str) -> StreamDefinition {
     StreamDefinition {
         name: name.into(),
         key_field: Some(key.into()),
+        group_by_keys: None,
         features: vec![(
             "count_1h".into(),
             FeatureDef::Count {
@@ -56,6 +57,7 @@ fn make_cascade_child(name: &str, key: &str, parent: &str) -> StreamDefinition {
     StreamDefinition {
         name: name.into(),
         key_field: Some(key.into()),
+        group_by_keys: None,
         features: vec![(
             "count_1h".into(),
             FeatureDef::Count {
