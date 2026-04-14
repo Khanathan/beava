@@ -4,12 +4,13 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use tally::engine::pipeline::PipelineEngine;
+use tally::server::auth::resolve_tcp_bind;
 use tally::server::http::run_http_server;
 use tally::server::protocol::{
     convert_register_request, convert_view_register_request, RegisterRequest,
 };
 use tally::server::tcp::{
-    make_concurrent_state, run_backfill, run_tcp_server, BackfillStatus, BackfillTracker,
+    make_concurrent_state_full, run_backfill, run_tcp_server, BackfillStatus, BackfillTracker,
     SharedState,
 };
 use tally::state::event_log::EventLog;
@@ -42,6 +43,30 @@ fn main() {
     runtime.block_on(async_main());
 }
 
+/// Phase 20: minimal CLI arg lookup. Scans `std::env::args()` for
+/// `--<name> <value>` or `--<name>=<value>`; returns the first match. Boolean
+/// flags use `arg_flag(name)`. We deliberately avoid pulling in `clap` for one
+/// or two flags.
+fn arg_value(name: &str) -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    let long = format!("--{}", name);
+    let long_eq = format!("--{}=", name);
+    while let Some(a) = args.next() {
+        if a == long {
+            return args.next();
+        }
+        if let Some(rest) = a.strip_prefix(&long_eq) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+fn arg_flag(name: &str) -> bool {
+    let long = format!("--{}", name);
+    std::env::args().skip(1).any(|a| a == long)
+}
+
 async fn async_main() {
     let tcp_port = std::env::var("TALLY_TCP_PORT").unwrap_or_else(|_| "6400".into());
     let http_port = std::env::var("TALLY_HTTP_PORT").unwrap_or_else(|_| "6401".into());
@@ -60,8 +85,26 @@ async fn async_main() {
         .map(|v| v != "false" && v != "0")
         .unwrap_or(true);
 
-    let tcp_addr = format!("0.0.0.0:{}", tcp_port);
+    // Phase 20 (TRAC-05): TCP listener defaults to loopback so the raw TCP
+    // protocol (PUSH/SET/MSET/REGISTER) is never reachable on the public
+    // internet unless the operator opts in via `--tcp-bind 0.0.0.0`.
+    let tcp_bind_env = std::env::var("TALLY_TCP_BIND").ok();
+    let tcp_bind_cli = arg_value("tcp-bind");
+    let tcp_addr = resolve_tcp_bind(tcp_bind_env.as_deref(), tcp_bind_cli.as_deref(), &tcp_port);
+    // HTTP continues to bind 0.0.0.0 — it is the public surface (deploy/Caddyfile
+    // further restricts at the edge; admin routes are middleware-gated).
     let http_addr = format!("0.0.0.0:{}", http_port);
+
+    // Phase 20: admin bearer token (TRAC-05). Presence is optional — without
+    // one, admin routes only work from loopback. Public demo hosts set this so
+    // ops can call admin routes through the Caddy reverse-proxy.
+    let admin_token = std::env::var("TALLY_ADMIN_TOKEN").ok().filter(|s| !s.is_empty());
+    // Phase 20: public-mode toggle (TRAC-06). When set, `GET /` serves
+    // `demo.html` from the embed root. Otherwise it serves the debug UI.
+    let public_mode = arg_flag("public-mode")
+        || std::env::var("TALLY_PUBLIC_MODE")
+            .map(|v| v != "false" && v != "0")
+            .unwrap_or(false);
 
     // Initialize event log directory (skip if disabled)
     let event_log = if event_log_enabled {
@@ -78,7 +121,8 @@ async fn async_main() {
     };
 
     // Phase 14: ConcurrentAppState with per-field locking.
-    let state: SharedState = make_concurrent_state(
+    // Phase 20: also carries admin_token + public_mode.
+    let state: SharedState = make_concurrent_state_full(
         PipelineEngine::new(),
         StateStore::new(),
         event_log,
@@ -86,6 +130,8 @@ async fn async_main() {
         Arc::new(BackfillTracker::default()),
         snapshot_enabled,
         event_log_enabled,
+        admin_token,
+        public_mode,
     );
 
     // Phase 9: how often to write a full base snapshot. Every Nth cycle is a

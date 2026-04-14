@@ -115,6 +115,72 @@ pub struct ConcurrentAppState {
     /// Phase 15: cycle guard — true while a snapshot write is in progress.
     /// Prevents overlapping writes when the timer fires faster than I/O completes.
     pub snapshot_in_progress: AtomicBool,
+
+    /// Phase 20: optional bearer token for admin HTTP routes. Loaded from
+    /// `TALLY_ADMIN_TOKEN` at startup. If `None`, non-loopback admin requests
+    /// are always rejected (403).
+    pub admin_token: Option<String>,
+
+    /// Phase 20: instant the server started. Used by `/public/stats` to
+    /// report uptime.
+    pub started_at: std::time::Instant,
+
+    /// Phase 20: bounded ring buffer of the most recent PUSH events for the
+    /// public `/public/recent-events` endpoint.
+    pub recent_events: PLMutex<RecentEventsRing>,
+
+    /// Phase 20: when true, `GET /` serves the public demo page; when false
+    /// it serves the debug UI. Set via `--public-mode` / `TALLY_PUBLIC_MODE`.
+    pub public_mode: bool,
+}
+
+/// Phase 20: a single entry in the `/public/recent-events` feed.
+#[derive(Debug, Clone)]
+pub struct RecentEvent {
+    pub ts_ms: u64,
+    pub stream: String,
+    pub key: String,
+    pub payload_preview: String,
+}
+
+/// Phase 20: bounded in-memory ring of the last `CAPACITY` PUSH events. Used
+/// by the public read-only `/public/recent-events` endpoint so the demo page
+/// has something alive to render without exposing the full event log.
+pub struct RecentEventsRing {
+    buf: std::collections::VecDeque<RecentEvent>,
+    capacity: usize,
+}
+
+impl RecentEventsRing {
+    pub const CAPACITY: usize = 100;
+    pub const PAYLOAD_PREVIEW_MAX: usize = 200;
+
+    pub fn new() -> Self {
+        Self {
+            buf: std::collections::VecDeque::with_capacity(Self::CAPACITY),
+            capacity: Self::CAPACITY,
+        }
+    }
+
+    /// Push a new event, evicting the oldest if at capacity.
+    pub fn push(&mut self, ev: RecentEvent) {
+        if self.buf.len() == self.capacity {
+            self.buf.pop_front();
+        }
+        self.buf.push_back(ev);
+    }
+
+    /// Return up to `limit` most-recent events, newest first.
+    pub fn snapshot(&self, limit: usize) -> Vec<RecentEvent> {
+        let n = limit.min(self.buf.len());
+        self.buf.iter().rev().take(n).cloned().collect()
+    }
+}
+
+impl Default for RecentEventsRing {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Shared state handle for concurrent connection handlers.
@@ -131,6 +197,34 @@ pub fn make_concurrent_state(
     backfill_tracker: Arc<BackfillTracker>,
     snapshot_enabled: bool,
     event_log_enabled: bool,
+) -> SharedState {
+    make_concurrent_state_full(
+        engine,
+        store,
+        event_log,
+        snapshot_path,
+        backfill_tracker,
+        snapshot_enabled,
+        event_log_enabled,
+        None,
+        false,
+    )
+}
+
+/// Phase 20: full constructor that accepts the admin token and public-mode
+/// flag. The legacy `make_concurrent_state` delegates here with `None`/`false`
+/// so existing callers keep working.
+#[allow(clippy::too_many_arguments)]
+pub fn make_concurrent_state_full(
+    engine: PipelineEngine,
+    store: StateStore,
+    event_log: Option<EventLog>,
+    snapshot_path: std::path::PathBuf,
+    backfill_tracker: Arc<BackfillTracker>,
+    snapshot_enabled: bool,
+    event_log_enabled: bool,
+    admin_token: Option<String>,
+    public_mode: bool,
 ) -> SharedState {
     Arc::new(ConcurrentAppState {
         engine: RwLock::new(engine),
@@ -149,6 +243,10 @@ pub fn make_concurrent_state(
         snapshot_enabled,
         event_log_enabled,
         snapshot_in_progress: AtomicBool::new(false),
+        admin_token,
+        started_at: std::time::Instant::now(),
+        recent_events: PLMutex::new(RecentEventsRing::new()),
+        public_mode,
     })
 }
 
@@ -822,6 +920,10 @@ fn handle_push_core_ex(
         metrics.events_total += 1;
     }
 
+    // Phase 20: capture the event in the recent-events ring for the public
+    // read-only feed. Bounded at RecentEventsRing::CAPACITY — O(1) write.
+    record_recent_event(state, stream_name, payload, now);
+
     // Phase 10.2: record latency into histogram tracker
     let push_us = push_elapsed.as_secs_f64() * 1_000_000.0;
     {
@@ -1151,7 +1253,58 @@ pub fn handle_push_batch(
     // Metrics bump once per batch.
     state.metrics.lock().events_total += batch.len() as u64;
 
+    // Phase 20: record each event in the recent-events ring (bounded).
+    for (idx, ev) in batch.iter().enumerate() {
+        if results[idx].is_ok() {
+            record_recent_event(state, &ev.stream_name, &ev.payload, ev.now);
+        }
+    }
+
     results
+}
+
+/// Phase 20: push a single event into the public recent-events ring.
+/// Extracts the key (if the primary stream has one) and truncates the payload
+/// to `RecentEventsRing::PAYLOAD_PREVIEW_MAX` characters.
+fn record_recent_event(
+    state: &SharedState,
+    stream_name: &str,
+    payload: &serde_json::Value,
+    now: SystemTime,
+) {
+    let ts_ms = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let key = {
+        let engine = state.engine.read();
+        engine
+            .get_stream(stream_name)
+            .and_then(|s| s.key_field.clone())
+            .and_then(|kf| {
+                payload
+                    .get(kf.as_str())
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default()
+    };
+    let mut preview = serde_json::to_string(payload).unwrap_or_default();
+    if preview.len() > RecentEventsRing::PAYLOAD_PREVIEW_MAX {
+        // Truncate at char boundary to avoid splitting a UTF-8 codepoint.
+        let mut cut = RecentEventsRing::PAYLOAD_PREVIEW_MAX;
+        while !preview.is_char_boundary(cut) && cut > 0 {
+            cut -= 1;
+        }
+        preview.truncate(cut);
+    }
+    let ev = RecentEvent {
+        ts_ms,
+        stream: stream_name.to_string(),
+        key,
+        payload_preview: preview,
+    };
+    state.recent_events.lock().push(ev);
 }
 
 // Phase 12 Task 2: `handle_push_async` removed. All async pushes now flow

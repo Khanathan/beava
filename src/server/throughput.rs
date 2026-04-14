@@ -146,6 +146,18 @@ impl ThroughputTracker {
         self.streams.iter().map(|(k, v)| (k.clone(), *v)).collect()
     }
 
+    /// Phase 20: global events-per-second across all streams, 5 s EWMA.
+    /// Sum of every stream's `ewma_5s`. Used by `/public/stats` and
+    /// `/metrics`.
+    pub fn eps_5s(&self) -> f64 {
+        self.streams.values().map(|s| s.ewma_5s).sum()
+    }
+
+    /// Phase 20: global events-per-second across all streams, 60 s EWMA.
+    pub fn eps_60s(&self) -> f64 {
+        self.streams.values().map(|s| s.ewma_1m).sum()
+    }
+
     /// Test-only accessor for the cascade/fan-out dedup correctness test.
     // NOTE: test-only; not part of the public snapshot API. The real public
     // surface is `snapshot()` which returns EWMA rates, not raw counters.

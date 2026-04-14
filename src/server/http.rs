@@ -6,18 +6,31 @@
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{header, HeaderName, HeaderValue, StatusCode},
+    middleware,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
+use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 use tokio::net::TcpListener;
 
 use super::tcp::SharedState;
+use crate::server::auth::require_loopback_or_token;
 use crate::server::protocol::{convert_register_request, RegisterRequest};
-use crate::server::ui::{ui_index, ui_static};
+use crate::server::ui::{ui_index, ui_static, UiAssets};
+
+/// Phase 20: CORS headers applied to every `/public/*` response so the launch
+/// blog (and other third-party sites) can fetch live metrics cross-origin.
+/// Caddy may override this at the edge — that's intentional.
+fn cors_headers() -> [(HeaderName, HeaderValue); 1] {
+    [(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    )]
+}
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok"}))
@@ -239,6 +252,15 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
     drop(metrics);
     let memory_bytes = keys_total * 2048; // Rough estimate: ~2KB per entity with operators
 
+    // Phase 20 TRAC-07: current EPS (5s EWMA summed across streams) and p99
+    // PUSH latency taken from the Phase 10.2 rolling histogram. Both read a
+    // snapshot of their respective trackers; no mutation.
+    let current_eps = state.throughput.lock().eps_5s();
+    let now_inst = std::time::Instant::now();
+    let p99_push_us = state.latency.lock().push_percentile_us(99.0, now_inst);
+    // Prometheus convention: seconds, not microseconds.
+    let p99_push_seconds = p99_push_us / 1_000_000.0;
+
     let body = format!(
         "# HELP tally_keys_total Number of entity keys in memory\n\
          # TYPE tally_keys_total gauge\n\
@@ -249,6 +271,12 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
          # HELP tally_push_latency_seconds Last observed PUSH latency\n\
          # TYPE tally_push_latency_seconds gauge\n\
          tally_push_latency_seconds {}\n\
+         # HELP tally_push_latency_p99_seconds Rolling p99 PUSH latency (5 min window)\n\
+         # TYPE tally_push_latency_p99_seconds gauge\n\
+         tally_push_latency_p99_seconds {}\n\
+         # HELP tally_current_eps Events per second (5s EWMA, all streams)\n\
+         # TYPE tally_current_eps gauge\n\
+         tally_current_eps {}\n\
          # HELP tally_snapshot_duration_seconds Last snapshot write duration\n\
          # TYPE tally_snapshot_duration_seconds gauge\n\
          tally_snapshot_duration_seconds {}\n\
@@ -258,13 +286,145 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
          # HELP tally_snapshots_skipped_total Snapshot cycles skipped due to in-progress write\n\
          # TYPE tally_snapshots_skipped_total counter\n\
          tally_snapshots_skipped_total {}\n",
-        keys_total, events_total, push_latency, snapshot_duration, memory_bytes, snapshots_skipped,
+        keys_total,
+        events_total,
+        push_latency,
+        p99_push_seconds,
+        current_eps,
+        snapshot_duration,
+        memory_bytes,
+        snapshots_skipped,
     );
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4")],
         body,
     )
+}
+
+// ========================================================================
+// Phase 20: Public read-only surface (TRAC-04).
+// ========================================================================
+
+/// Query parameters for `GET /public/recent-events`.
+#[derive(Debug, serde::Deserialize, Default)]
+struct RecentEventsQuery {
+    /// Maximum number of events to return. Clamped to [1, 100]; default 20.
+    limit: Option<usize>,
+}
+
+/// `GET /public/features/{key}` — return the computed feature map for one key.
+///
+/// SECURITY (TRAC-04): response MUST NOT expose operator internal state —
+/// no bucket arrays, no HLL bitmaps, no operator type names. We only include
+/// feature NAME -> VALUE (scalar / string / number / null). Contrast with
+/// `/debug/key/{key}` which is admin-gated and exposes everything.
+async fn public_features(
+    State(state): State<SharedState>,
+    Path(key): Path<String>,
+) -> impl IntoResponse {
+    let now = SystemTime::now();
+    // Fast existence check first so we can return 404 without computing.
+    if state.store.get_entity(&key).is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            cors_headers(),
+            Json(serde_json::json!({"error": "key not found"})),
+        )
+            .into_response();
+    }
+    let features = state.store.get_all_features(&key, now);
+    let feature_json: serde_json::Map<String, serde_json::Value> = features
+        .iter()
+        .map(|(k, v)| (k.clone(), v.to_json_value()))
+        .collect();
+    (
+        StatusCode::OK,
+        cors_headers(),
+        Json(serde_json::json!({
+            "key": key,
+            "features": feature_json,
+        })),
+    )
+        .into_response()
+}
+
+/// `GET /public/recent-events?limit=N` — tail of the in-memory recent-events
+/// ring. Defaults to 20 events, clamped to the ring capacity (100).
+async fn public_recent_events(
+    State(state): State<SharedState>,
+    Query(q): Query<RecentEventsQuery>,
+) -> impl IntoResponse {
+    let limit = q
+        .limit
+        .unwrap_or(20)
+        .clamp(1, crate::server::tcp::RecentEventsRing::CAPACITY);
+    let events = state.recent_events.lock().snapshot(limit);
+    let events_json: Vec<serde_json::Value> = events
+        .into_iter()
+        .map(|e| {
+            serde_json::json!({
+                "ts": e.ts_ms,
+                "stream": e.stream,
+                "key": e.key,
+                "payload_preview": e.payload_preview,
+            })
+        })
+        .collect();
+    (
+        StatusCode::OK,
+        cors_headers(),
+        Json(serde_json::json!({"events": events_json})),
+    )
+        .into_response()
+}
+
+/// `GET /public/stats` — aggregate counters for the demo page tiles.
+async fn public_stats(State(state): State<SharedState>) -> impl IntoResponse {
+    let events_total = state.metrics.lock().events_total;
+    let current_eps = state.throughput.lock().eps_5s();
+    let now_inst = std::time::Instant::now();
+    let latency = state.latency.lock();
+    let p99_push_us = latency.push_percentile_us(99.0, now_inst);
+    let p50_push_us = latency.push_percentile_us(50.0, now_inst);
+    drop(latency);
+    let uptime_seconds = state.started_at.elapsed().as_secs();
+    let keys_total = state.store.entity_count();
+    (
+        StatusCode::OK,
+        cors_headers(),
+        Json(serde_json::json!({
+            "events_total":    events_total,
+            "current_eps":     current_eps,
+            "p99_push_us":     p99_push_us,
+            "p50_push_us":     p50_push_us,
+            "uptime_seconds":  uptime_seconds,
+            "keys_total":      keys_total,
+        })),
+    )
+        .into_response()
+}
+
+/// `GET /` dispatch: public demo page when `public_mode=true`, debug UI
+/// otherwise. Keeps the existing `/static/*` handler unchanged — both pages
+/// load their assets from the same embed root.
+async fn root_dispatch(State(state): State<SharedState>) -> axum::response::Response {
+    if state.public_mode {
+        match UiAssets::get("demo.html") {
+            Some(content) => {
+                let body = String::from_utf8_lossy(&content.data).to_string();
+                (
+                    StatusCode::OK,
+                    [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                    body,
+                )
+                    .into_response()
+            }
+            None => (StatusCode::NOT_FOUND, "demo.html not embedded").into_response(),
+        }
+    } else {
+        ui_index().await
+    }
 }
 
 async fn debug_key(State(state): State<SharedState>, Path(key): Path<String>) -> impl IntoResponse {
@@ -926,34 +1086,64 @@ async fn debug_backfill(State(state): State<SharedState>) -> Json<serde_json::Va
     }))
 }
 
+/// Phase 20: assemble the full HTTP router by MERGING a public sub-router with
+/// an admin sub-router, the latter gated by `require_loopback_or_token`.
+///
+/// Public (ungated) routes:
+///   - `GET /health`, `GET /metrics`
+///   - `GET /public/features/{key}`, `GET /public/recent-events`, `GET /public/stats`
+///   - `GET /`, `GET /static/{*file}`
+///
+/// Admin (gated) routes:
+///   - `GET|POST /pipelines`, `GET|DELETE /pipelines/{name}`
+///   - `POST /snapshot`
+///   - `GET /debug/{key,memory,backfill,topology,throughput,latency}`
 pub fn build_router(state: SharedState) -> Router {
-    Router::new()
+    let public_router = Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(metrics_endpoint))
+        .route("/public/features/{key}", get(public_features))
+        .route("/public/recent-events", get(public_recent_events))
+        .route("/public/stats", get(public_stats))
+        .route("/", get(root_dispatch))
+        .route("/static/{*file}", get(ui_static));
+
+    let admin_router = Router::new()
         .route("/pipelines", get(list_pipelines).post(create_pipeline))
         .route(
             "/pipelines/{name}",
             get(get_pipeline).delete(delete_pipeline),
         )
-        .route("/metrics", get(metrics_endpoint))
         .route("/debug/key/{key}", get(debug_key))
         .route("/debug/memory", get(debug_memory))
         .route("/debug/backfill", get(debug_backfill))
-        .route("/debug/topology", get(debug_topology)) // NEW (DBUI-01)
-        .route("/debug/throughput", get(debug_throughput)) // NEW (DBUI-02)
-        .route("/debug/latency", get(debug_latency)) // NEW (DBUI-07)
+        .route("/debug/topology", get(debug_topology))
+        .route("/debug/throughput", get(debug_throughput))
+        .route("/debug/latency", get(debug_latency))
         .route("/snapshot", post(trigger_snapshot))
-        .route("/", get(ui_index)) // NEW (DBUI-05)
-        .route("/static/{*file}", get(ui_static)) // NEW (DBUI-05)
-        .with_state(state)
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_loopback_or_token,
+        ));
+
+    public_router.merge(admin_router).with_state(state)
 }
 
 /// Start the HTTP management server on the given address.
+///
+/// Phase 20: uses `into_make_service_with_connect_info::<SocketAddr>()` so the
+/// `ConnectInfo<SocketAddr>` extractor in `require_loopback_or_token` works at
+/// runtime. Tests that exercise the router via `oneshot` inject this extension
+/// manually (see `tests/test_admin_auth.rs`).
 pub async fn run_http_server(addr: &str, state: SharedState) -> Result<(), std::io::Error> {
     let app = build_router(state);
     let listener = TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .await
-        .map_err(std::io::Error::other)
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .map_err(std::io::Error::other)
 }
 
 /// Start the HTTP management server from a pre-bound listener (for tests).
@@ -962,9 +1152,12 @@ pub async fn run_http_server_with_listener(
     state: SharedState,
 ) -> Result<(), std::io::Error> {
     let app = build_router(state);
-    axum::serve(listener, app)
-        .await
-        .map_err(std::io::Error::other)
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .map_err(std::io::Error::other)
 }
 
 // ======================== Phase 15 Tests ========================
@@ -1041,6 +1234,17 @@ mod tests {
         assert_eq!(state.metrics.lock().snapshots_skipped, 1);
     }
 
+    /// Phase 20: admin routes now require a `ConnectInfo<SocketAddr>` extension
+    /// (populated by axum via `into_make_service_with_connect_info`). Tests
+    /// using `oneshot` must insert one manually. Loopback peers bypass the
+    /// token check, keeping the test setup minimal.
+    fn inject_loopback(req: &mut axum::http::Request<axum::body::Body>) {
+        use axum::extract::ConnectInfo;
+        use std::net::SocketAddr;
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+    }
+
     #[tokio::test]
     async fn test_snapshot_trigger_returns_409_when_in_progress() {
         use axum::body::Body;
@@ -1052,11 +1256,12 @@ mod tests {
         state.snapshot_in_progress.store(true, Ordering::Release);
 
         let app = build_router(state);
-        let req = Request::builder()
+        let mut req = Request::builder()
             .method("POST")
             .uri("/snapshot")
             .body(Body::empty())
             .unwrap();
+        inject_loopback(&mut req);
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::CONFLICT);
@@ -1079,11 +1284,12 @@ mod tests {
         );
 
         let app = build_router(state);
-        let req = Request::builder()
+        let mut req = Request::builder()
             .method("POST")
             .uri("/snapshot")
             .body(Body::empty())
             .unwrap();
+        inject_loopback(&mut req);
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);

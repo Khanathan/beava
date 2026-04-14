@@ -313,6 +313,16 @@ impl LatencyTracker {
         }
     }
 
+    /// Phase 20: snapshot the global PUSH histogram and return a requested
+    /// percentile (0-100) in microseconds. Used by `/public/stats` and the
+    /// extended `/metrics` to report the p99 PUSH latency without exposing
+    /// the internal histogram layout.
+    pub fn push_percentile_us(&self, q: f64, now: Instant) -> f64 {
+        self.command_histograms[CommandKind::Push as usize]
+            .snapshot(now)
+            .percentile(q)
+    }
+
     /// Record a PUSH latency: updates both the global PUSH histogram and the per-stream histogram.
     pub fn record_push(&mut self, stream_name: &str, micros: f64, now: Instant) {
         self.command_histograms[CommandKind::Push as usize].record(micros, now);
