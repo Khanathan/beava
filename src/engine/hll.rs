@@ -42,9 +42,15 @@ const HLL_ALPHA: f64 = 0.7213 / (1.0 + 1.079 / HLL_M as f64);
 
 /// Phase 1 max: flat array. ClickHouse uses 16.
 const EXACT_THRESHOLD: usize = 16;
-/// Phase 2 max: hash set. Transition when hash set memory ≈ HLL dense memory.
-/// HLL dense = 4096 registers = 4 KB. At 8 bytes/hash, 4KB / 8 = 512 entries.
-const HASH_THRESHOLD: usize = 512;
+/// Phase 2 max: hash set → HLL dense transition.
+///
+/// Plan 22-03 bumps this from 512 to **1024** per the v0 hybrid-operator
+/// locked spec: exact distinct-count up to 1024 uniques, then HLL. The
+/// hash-set memory cost at 1024 × 8B = 8 KB is still comparable to the
+/// 4 KB HLL dense representation (both small absolute costs); the win is
+/// that zero-error distinct-count covers the vast majority of per-bucket
+/// fraud workloads.
+const HASH_THRESHOLD: usize = 1024;
 
 /// HLL++ linear counting threshold for p=12 (from Google's zetasketch).
 /// Below this raw estimate, linear counting is preferred.
@@ -492,6 +498,51 @@ impl Operator for DistinctCountOp {
 
     fn num_buckets(&self) -> usize {
         self.buffer.num_buckets()
+    }
+
+    fn hybrid_telemetry(&self) -> Option<crate::engine::operators::HybridTelemetry> {
+        // Union-of-buckets mode classification: if any bucket has already
+        // promoted to Dense (HLL), report "sketch"; otherwise "exact".
+        // exact_count is the sum of currently-tracked exact/hashset uniques.
+        let mut any_dense = false;
+        let mut exact_count = 0usize;
+        for bucket in self.buffer.buckets_iter() {
+            match bucket.phase_name() {
+                "hll" => {
+                    any_dense = true;
+                }
+                _ => {
+                    exact_count += bucket.count() as usize;
+                }
+            }
+        }
+        Some(crate::engine::operators::HybridTelemetry {
+            op: "distinct_count",
+            mode: if any_dense { "sketch" } else { "exact" },
+            exact_count,
+            transition_at: HASH_THRESHOLD,
+            sketch_alpha_current: None,
+            memory_bytes: self.estimated_bytes(),
+        })
+    }
+}
+
+impl DistinctCountOp {
+    /// `"exact"` if no per-bucket sketch has promoted to dense HLL yet,
+    /// `"sketch"` otherwise. Matches the hybrid-op taxonomy in plan 22-03.
+    pub fn mode_name(&self) -> &'static str {
+        for bucket in self.buffer.buckets_iter() {
+            if bucket.phase_name() == "hll" {
+                return "sketch";
+            }
+        }
+        "exact"
+    }
+
+    /// Transition threshold (unique values per bucket before promoting to
+    /// dense HLL). Exposed for tests.
+    pub fn transition_at(&self) -> usize {
+        HASH_THRESHOLD
     }
 }
 
