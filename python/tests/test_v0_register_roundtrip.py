@@ -210,12 +210,15 @@ def test_pipeline_with_all_sixteen_aggops_serializes():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(
-    reason="TCP REGISTER → register_v0 wiring lands in 22-02 with operator "
-    "bodies; 22-01 ships the parser + dispatch scaffold only. This test "
-    "becomes active when register_v0 is bound to opcode 0x05."
-)
 def test_full_tcp_roundtrip_register_push_get(app):
+    """Plan 22-04: end-to-end TCP round-trip for a v0 aggregation pipeline.
+
+    REGISTER dispatches to the v0→v2 translator in
+    ``src/engine/register.rs::v0_aggregation_to_stream_def`` so the existing
+    PipelineEngine cascade drives the new ``group_by(...).agg(...)``
+    aggregation. PUSH on the source stream cascades into the target table
+    keyed by ``user_id``; GET returns the computed features.
+    """
     @tl.stream
     class Transactions:
         user_id: str
@@ -228,8 +231,11 @@ def test_full_tcp_roundtrip_register_push_get(app):
             total=tl.sum("amount", window="1h"),
         )
 
-    app.register(UserSpend)
-    app.push(Transactions, {"user_id": "u1", "amount": 50.0})
-    row = app.get(UserSpend, "u1")
-    assert row["n"] == 1
-    assert row["total"] == 50.0
+    app.register(Transactions, UserSpend)
+    app.push_sync(Transactions, {"user_id": "u1", "amount": 50.0})
+    app.flush()
+    row = app.get("u1")
+    # FeatureResult stores the raw mapping; numeric count/sum come back as
+    # int/float respectively.
+    assert row["n"] == 1, f"expected n=1, got {row!r}"
+    assert row["total"] == 50.0, f"expected total=50.0, got {row!r}"

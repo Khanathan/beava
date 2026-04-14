@@ -1397,6 +1397,57 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
         }
         Command::Register { payload } => {
             let raw_json = payload.clone();
+
+            // Plan 22-04: v0 REGISTER dispatch. v0 payloads always carry a top-level
+            // `kind` field ("stream" | "table"). v2.0 payloads never had one — detect
+            // by the presence of `kind` and route to the v0 translator → existing
+            // PipelineEngine.register via the v0→v2 bridge.
+            let is_v0 = raw_json.get("kind").is_some();
+            if is_v0 {
+                let v0_bytes = serde_json::to_vec(&raw_json).map_err(|e| {
+                    TallyError::Protocol(format!("v0 REGISTER: re-serialize failed: {}", e))
+                })?;
+                let parsed = crate::engine::register::V0RegisterPayload::parse(&v0_bytes)?;
+                let stream_def = match &parsed {
+                    crate::engine::register::V0RegisterPayload::Source(desc) => {
+                        crate::engine::register::v0_source_to_stream_def(desc)?
+                    }
+                    crate::engine::register::V0RegisterPayload::Aggregation(desc) => {
+                        crate::engine::register::v0_aggregation_to_stream_def(desc)?
+                    }
+                    crate::engine::register::V0RegisterPayload::StatelessChain(_)
+                    | crate::engine::register::V0RegisterPayload::Join(_)
+                    | crate::engine::register::V0RegisterPayload::Union(_) => {
+                        return Err(TallyError::Protocol(format!(
+                            "v0 REGISTER: descriptor kind '{}' not yet wired for end-to-end \
+                             execution (Phase 23 lands joins/stateless-chains/union)",
+                            parsed.descriptor_kind()
+                        )));
+                    }
+                };
+                let def_name = stream_def.name.clone();
+                let mut engine = state.engine.write();
+                let diff = engine.register(stream_def)?;
+                // Track for event log (flow preserved from v2.0 path).
+                let history_ttl = engine.get_stream(&def_name).and_then(|s| s.history_ttl);
+                {
+                    let mut event_log = state.event_log.lock();
+                    if let Some(ref mut log) = *event_log {
+                        let _ = log.register_stream(&def_name, history_ttl);
+                    }
+                }
+                engine.store_raw_register_json(&def_name, raw_json);
+                let diff_json = serde_json::json!({
+                    "status": "ok",
+                    "kind": "v0",
+                    "name": def_name,
+                    "added": diff.added,
+                    "removed": diff.removed,
+                    "backfilling": diff.backfilling,
+                });
+                return Ok(serde_json::to_vec(&diff_json).unwrap());
+            }
+
             let req: protocol::RegisterRequest = serde_json::from_value(payload)
                 .map_err(|e| TallyError::Protocol(format!("invalid register payload: {}", e)))?;
             let def_name = req.name.clone();

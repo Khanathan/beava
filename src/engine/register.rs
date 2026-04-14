@@ -560,6 +560,300 @@ pub fn encode_group_by(
 }
 
 // ---------------------------------------------------------------------------
+// v0 → v2.0 translator (Plan 22-04 TCP wiring)
+// ---------------------------------------------------------------------------
+
+/// Translate a v0 `AggregationFeature` into a v2.0 `FeatureDef` so the
+/// existing `PipelineEngine::register` / `push_with_cascade` machinery can
+/// drive the new aggregation end-to-end without a parallel runtime.
+///
+/// Operators supported at the translation boundary: every linear op that v2.0
+/// already supports (count / sum / avg / min / max / stddev / distinct_count
+/// / last / first / lag / ema / last_n / percentile). Variance / top_k /
+/// first_n are v0-only operators (22-02 / 22-03 landed the OperatorState
+/// variants but no FeatureDef variant exists) — the translator returns
+/// `TallyError::Protocol` for these and 22-05 can add FeatureDef variants
+/// when the operator set grows.
+///
+/// `where_expr` is translated straight through if present.
+pub fn v0_feature_to_feature_def(
+    feat: &AggregationFeature,
+) -> Result<crate::engine::pipeline::FeatureDef, TallyError> {
+    use crate::engine::expression::parse_expr;
+    use crate::engine::pipeline::FeatureDef;
+
+    let window_bucket = resolve_window_bucket(feat)?;
+    let require_field = |ctx: &str| -> Result<String, TallyError> {
+        feat.field
+            .clone()
+            .ok_or_else(|| TallyError::Protocol(format!("v0→v2 xlate: {} requires 'field'", ctx)))
+    };
+    let require_window = |ctx: &str| -> Result<(Duration, Duration), TallyError> {
+        window_bucket.ok_or_else(|| {
+            TallyError::Protocol(format!("v0→v2 xlate: {} requires 'window'", ctx))
+        })
+    };
+    let where_expr = match feat.r#where.as_deref() {
+        Some(expr_str) if !expr_str.is_empty() => Some(parse_expr(expr_str).map_err(|e| {
+            TallyError::Protocol(format!("v0→v2 xlate: invalid where expr: {}", e))
+        })?),
+        _ => None,
+    };
+    let optional = true;
+    let backfill = false;
+
+    let def = match feat.op_type.as_str() {
+        "count" => {
+            let (window, bucket) = require_window("count")?;
+            FeatureDef::Count {
+                window,
+                bucket,
+                where_expr,
+                backfill,
+            }
+        }
+        "sum" => {
+            let field = require_field("sum")?;
+            let (window, bucket) = require_window("sum")?;
+            FeatureDef::Sum {
+                field,
+                window,
+                bucket,
+                optional,
+                where_expr,
+                backfill,
+            }
+        }
+        "avg" => {
+            let field = require_field("avg")?;
+            let (window, bucket) = require_window("avg")?;
+            FeatureDef::Avg {
+                field,
+                window,
+                bucket,
+                optional,
+                where_expr,
+                backfill,
+            }
+        }
+        "min" => {
+            let field = require_field("min")?;
+            let (window, bucket) = require_window("min")?;
+            FeatureDef::Min {
+                field,
+                window,
+                bucket,
+                optional,
+                where_expr,
+                backfill,
+            }
+        }
+        "max" => {
+            let field = require_field("max")?;
+            let (window, bucket) = require_window("max")?;
+            FeatureDef::Max {
+                field,
+                window,
+                bucket,
+                optional,
+                where_expr,
+                backfill,
+            }
+        }
+        "stddev" => {
+            let field = require_field("stddev")?;
+            let (window, bucket) = require_window("stddev")?;
+            FeatureDef::Stddev {
+                field,
+                window,
+                bucket,
+                optional,
+                where_expr,
+                backfill,
+            }
+        }
+        "count_distinct" => {
+            let field = require_field("count_distinct")?;
+            let (window, bucket) = require_window("count_distinct")?;
+            FeatureDef::DistinctCount {
+                field,
+                window,
+                bucket,
+                optional,
+                where_expr,
+                backfill,
+            }
+        }
+        "percentile" => {
+            let field = require_field("percentile")?;
+            let (window, bucket) = require_window("percentile")?;
+            let quantile = feat.quantile.ok_or_else(|| {
+                TallyError::Protocol("v0→v2 xlate: percentile requires 'quantile'".into())
+            })?;
+            FeatureDef::Percentile {
+                field,
+                quantile,
+                window,
+                bucket,
+                optional,
+                where_expr,
+                backfill,
+            }
+        }
+        "first" => {
+            let field = require_field("first")?;
+            FeatureDef::First {
+                field,
+                optional,
+                backfill,
+            }
+        }
+        "last" => {
+            let field = require_field("last")?;
+            FeatureDef::Last {
+                field,
+                optional,
+                backfill,
+            }
+        }
+        "last_n" => {
+            let field = require_field("last_n")?;
+            let n = feat
+                .n
+                .ok_or_else(|| TallyError::Protocol("v0→v2 xlate: last_n requires 'n'".into()))?;
+            FeatureDef::LastN {
+                field,
+                n,
+                optional,
+                backfill,
+            }
+        }
+        "ema" => {
+            let field = require_field("ema")?;
+            let hl = feat
+                .half_life
+                .as_deref()
+                .ok_or_else(|| TallyError::Protocol("v0→v2 xlate: ema requires 'half_life'".into()))?;
+            let half_life_secs = parse_window(hl, "ema.half_life")?.as_secs_f64();
+            FeatureDef::Ema {
+                field,
+                half_life_secs,
+                optional,
+                backfill,
+            }
+        }
+        "lag" => {
+            let field = require_field("lag")?;
+            let n = feat
+                .n
+                .ok_or_else(|| TallyError::Protocol("v0→v2 xlate: lag requires 'n'".into()))?;
+            if n == 0 || n > LAG_N_CAP {
+                return Err(TallyError::Protocol(format!(
+                    "v0→v2 xlate: lag.n={} out of range (1..={})",
+                    n, LAG_N_CAP
+                )));
+            }
+            FeatureDef::Lag {
+                field,
+                n,
+                optional,
+                backfill,
+            }
+        }
+        // v0-only operators: no v2.0 FeatureDef variant yet.
+        other @ ("variance" | "top_k" | "first_n") => {
+            return Err(TallyError::Protocol(format!(
+                "v0→v2 xlate: op '{}' has no v2.0 FeatureDef equivalent; \
+                 add a FeatureDef variant in pipeline.rs to enable end-to-end wiring",
+                other
+            )));
+        }
+        other => {
+            return Err(TallyError::Protocol(format!(
+                "v0→v2 xlate: unknown aggregation op type: {}",
+                other
+            )));
+        }
+    };
+    Ok(def)
+}
+
+/// Translate a v0 `AggregationDescriptor` into a v2.0 `StreamDefinition`.
+/// Single-key group_by maps directly to `key_field`; composite keys error for
+/// now (Plan 22-04 scope — composite keys land alongside joins in Phase 23).
+pub fn v0_aggregation_to_stream_def(
+    desc: &AggregationDescriptor,
+) -> Result<crate::engine::pipeline::StreamDefinition, TallyError> {
+    use crate::engine::pipeline::StreamDefinition;
+
+    if desc.aggregation.keys.is_empty() {
+        return Err(TallyError::Protocol(
+            "v0→v2 xlate: aggregation.keys must be non-empty".into(),
+        ));
+    }
+    if desc.aggregation.keys.len() > 1 {
+        return Err(TallyError::Protocol(
+            "v0→v2 xlate: composite group_by keys not yet supported in v0→v2 \
+             translator (Phase 23); use a single-key aggregation for now"
+                .into(),
+        ));
+    }
+    let key_field = Some(desc.aggregation.keys[0].clone());
+    let mut features: Vec<(String, crate::engine::pipeline::FeatureDef)> =
+        Vec::with_capacity(desc.aggregation.features.len());
+    for feat in &desc.aggregation.features {
+        let def = v0_feature_to_feature_def(feat)?;
+        features.push((feat.name.clone(), def));
+    }
+    Ok(StreamDefinition {
+        name: desc.name.clone(),
+        key_field,
+        features,
+        depends_on: Some(vec![desc.aggregation.source.clone()]),
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
+    })
+}
+
+/// Translate a v0 `SourceDescriptor` (stream kind) into a v2.0
+/// `StreamDefinition` with no features — a raw ingestion stream. Downstream
+/// aggregations use `depends_on` to fan out from the source.
+pub fn v0_source_to_stream_def(
+    desc: &SourceDescriptor,
+) -> Result<crate::engine::pipeline::StreamDefinition, TallyError> {
+    use crate::engine::pipeline::StreamDefinition;
+
+    if desc.kind != "stream" && desc.kind != "table" {
+        return Err(TallyError::Protocol(format!(
+            "v0→v2 xlate: SourceDescriptor.kind must be 'stream' or 'table', got '{}'",
+            desc.kind
+        )));
+    }
+    // For kind=stream: a keyless ingestion stream with no features. Push
+    // events flow through the cascade to any dependent aggregation streams.
+    // For kind=table: a single-key target (direct writes via SET/MSET).
+    let key_field = desc.key_field.clone();
+    Ok(StreamDefinition {
+        name: desc.name.clone(),
+        key_field,
+        features: Vec::new(),
+        depends_on: None,
+        filter: None,
+        entity_ttl: None,
+        history_ttl: None,
+        projection: None,
+        ephemeral: None,
+        pipeline_ttl: None,
+        max_keys: None,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
