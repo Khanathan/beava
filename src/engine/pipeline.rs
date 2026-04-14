@@ -224,27 +224,6 @@ pub struct SchemaDiff {
 
 /// Check if two FeatureDef variants are the same operator type
 /// (using std::mem::discriminant to compare enum variant identity).
-/// Phase 23-03: Convert a JSON value into a FeatureValue. Mirrors
-/// `tcp.rs::json_to_feature_value` but kept here because the Table↔Table
-/// cascade helper writes into `static_features` directly.
-fn json_to_fv(v: &serde_json::Value) -> FeatureValue {
-    match v {
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                FeatureValue::Int(i)
-            } else if let Some(f) = n.as_f64() {
-                FeatureValue::Float(f)
-            } else {
-                FeatureValue::Missing
-            }
-        }
-        serde_json::Value::String(s) => FeatureValue::String(s.clone()),
-        serde_json::Value::Null => FeatureValue::Missing,
-        serde_json::Value::Bool(b) => FeatureValue::Int(if *b { 1 } else { 0 }),
-        _ => FeatureValue::Missing,
-    }
-}
-
 fn same_operator_type(a: &FeatureDef, b: &FeatureDef) -> bool {
     std::mem::discriminant(a) == std::mem::discriminant(b)
 }
@@ -1136,30 +1115,29 @@ impl PipelineEngine {
         &self,
         input_table: &str,
         key: &str,
-        tombstoned: bool,
+        _tombstoned: bool,
         store: &StateStore,
         now: SystemTime,
     ) -> Result<(), TallyError> {
-        // Phase 23-03 simplified model:
+        // Phase 24-03 — reworked off Phase 23's shadow-marker shim.
         //
-        // Both input Tables share the same entity storage under `key` because
-        // v0 keys every Table write by (string) key. Two different Table names
-        // sharing the same key live in the SAME entity. We distinguish sides
-        // by tracking per-side presence via shadow markers written at cascade
-        // time:
-        //     __tt_left_{output}   : 1 if left side currently has a row
-        //     __tt_right_{output}  : 1 if right side currently has a row
+        // The cascade now derives output state purely from real Table row
+        // storage via `StateStore::get_table_row`. Both input Tables live
+        // in `EntityState.table_rows` as independent rows keyed by
+        // `(key, table_name)` (plan 01), and OP_PUSH_TABLE /
+        // OP_DELETE_TABLE wire them in (plan 02). The `_tombstoned` flag
+        // is retained in the signature for call-site compatibility but is
+        // no longer read — the row state IS the ground truth.
         //
-        // On upsert to `input_table`, we flip the matching side's marker and
-        // re-derive the output row. On tombstone, we flip the marker off.
-        // The output row lives in the same entity under the emitted column
-        // names from right_fields (which were computed at REGISTER time).
-        //
-        // NOTE (known stub): collision suffix case requires the user to write
-        // the right-side's overlapping column under its SDK-suffixed name
-        // (e.g., `status_right` directly) OR use disjoint column names. See
-        // 23-03-SUMMARY "Known Stubs" for the full-suffix plan deferred to
-        // v0.1.
+        // For each registered TT-join J = left_table ⋈ right_table:
+        //   - read both sides via get_table_row
+        //   - compute per-side liveness (Some(Live) → true)
+        //   - per join_type, decide:
+        //       Inner:  both live → merged Live row; else Tombstoned
+        //       Left:   left live + right live  → merged Live row
+        //               left live + right miss  → Live row with null right fields
+        //               left missing / tombstoned → Tombstoned
+        //   - recurse on the output name so TT-join-of-TT-join stacks.
 
         // Find every stream whose features contain a TableTableJoin referencing
         // `input_table` on either side.
@@ -1180,119 +1158,91 @@ impl PipelineEngine {
         }
 
         for (output_name, def) in downstreams {
-            let (left_table, right_table, join_type, right_fields) = match def {
+            let (left_table, right_table, join_type, left_fields, right_fields) = match def {
                 FeatureDef::TableTableJoin {
                     left_table,
                     right_table,
                     join_type,
+                    left_fields,
                     right_fields,
                     ..
-                } => (left_table, right_table, join_type, right_fields),
+                } => (left_table, right_table, join_type, left_fields, right_fields),
                 _ => continue,
             };
 
-            let left_marker = format!("__tt_left_{}", output_name);
-            let right_marker = format!("__tt_right_{}", output_name);
+            let left_row = store.get_table_row(key, &left_table);
+            let right_row = store.get_table_row(key, &right_table);
+            let l_live = matches!(
+                left_row.as_ref().map(|r| &r.state),
+                Some(crate::state::store::TableRowState::Live)
+            );
+            let r_live = matches!(
+                right_row.as_ref().map(|r| &r.state),
+                Some(crate::state::store::TableRowState::Live)
+            );
 
-            // Snapshot both inputs' static_features for `key` (read-only).
-            let entity_row: AHashMap<String, serde_json::Value> = store
-                .get_entity(key)
-                .map(|e| {
-                    e.static_features
-                        .iter()
-                        .map(|(n, sf)| (n.clone(), sf.value.to_json_value()))
-                        .collect::<AHashMap<_, _>>()
-                })
-                .unwrap_or_default();
-
-            // Derive current per-side presence from markers (previous cascade
-            // output) — fall back to "present iff any column exists" on first
-            // cascade.
-            let prev_left_present = entity_row
-                .get(&left_marker)
-                .and_then(|v| v.as_i64())
-                .map(|i| i != 0);
-            let prev_right_present = entity_row
-                .get(&right_marker)
-                .and_then(|v| v.as_i64())
-                .map(|i| i != 0);
-
-            let trig_is_left = input_table == left_table;
-            let trig_is_right = input_table == right_table;
-
-            // Update presence flags according to the trigger.
-            let l_live = if trig_is_left {
-                !tombstoned
-            } else {
-                prev_left_present.unwrap_or(false)
-            };
-            let r_live = if trig_is_right {
-                !tombstoned
-            } else {
-                prev_right_present.unwrap_or(false)
-            };
-
-            // Decide output disposition.
-            let (emit_row, null_right) = match join_type {
+            // Decide output disposition. (emit_live, null_right_fields)
+            let (emit_live, null_right) = match join_type {
                 JoinType::Inner => {
-                    if l_live && r_live { (true, false) } else { (false, false) }
+                    if l_live && r_live {
+                        (true, false)
+                    } else {
+                        (false, false)
+                    }
                 }
                 JoinType::Left => {
-                    if l_live { (true, !r_live) } else { (false, false) }
+                    if l_live && r_live {
+                        (true, false)
+                    } else if l_live {
+                        (true, true)
+                    } else {
+                        (false, false)
+                    }
                 }
             };
 
-            {
-                let mut entity = store.get_or_create_entity(key);
-                if emit_row {
-                    // Write right-side emitted fields.
-                    for (src, emitted) in &right_fields {
-                        let val = if null_right {
-                            serde_json::Value::Null
-                        } else {
-                            entity_row
-                                .get(src)
-                                .cloned()
-                                .unwrap_or(serde_json::Value::Null)
-                        };
-                        entity.static_features.insert(
-                            emitted.clone(),
-                            crate::state::store::StaticFeature {
-                                value: json_to_fv(&val),
-                                updated_at: now,
-                            },
-                        );
-                    }
-                } else {
-                    // Tombstone: remove right-side emitted fields for this
-                    // join's output. Other Tables' data on the same entity
-                    // (different output_names) remain.
-                    for (_src, emitted) in &right_fields {
-                        entity.static_features.remove(emitted);
+            let output_tombstoned = !emit_live;
+
+            if emit_live {
+                let mut merged: AHashMap<String, FeatureValue> = AHashMap::new();
+
+                // Left side: copy every declared left_field from left_row.fields.
+                if let Some(lr) = left_row.as_ref() {
+                    for lf in &left_fields {
+                        let v = lr
+                            .fields
+                            .get(lf)
+                            .cloned()
+                            .unwrap_or(FeatureValue::Missing);
+                        merged.insert(lf.clone(), v);
                     }
                 }
-                // Always write markers (even on tombstone, so the next
-                // cascade has ground truth).
-                entity.static_features.insert(
-                    left_marker.clone(),
-                    crate::state::store::StaticFeature {
-                        value: crate::types::FeatureValue::Int(if l_live { 1 } else { 0 }),
-                        updated_at: now,
-                    },
-                );
-                entity.static_features.insert(
-                    right_marker.clone(),
-                    crate::state::store::StaticFeature {
-                        value: crate::types::FeatureValue::Int(if r_live { 1 } else { 0 }),
-                        updated_at: now,
-                    },
-                );
-            }
-            store.mark_dirty(key);
 
-            // Recursively cascade on the output Table so T↔T stacks.
-            // Treat this as a non-tombstoning upsert into the output table.
-            self.cascade_table_upsert(&output_name, key, !emit_row, store, now)?;
+                // Right side: map (source_in_right → emitted_in_output).
+                for (src, emitted) in &right_fields {
+                    // If the emitted name already landed from the left side
+                    // (overlap without suffix), keep left's value (left wins).
+                    if merged.contains_key(emitted) {
+                        continue;
+                    }
+                    let v = if null_right {
+                        FeatureValue::Missing
+                    } else {
+                        right_row
+                            .as_ref()
+                            .and_then(|rr| rr.fields.get(src).cloned())
+                            .unwrap_or(FeatureValue::Missing)
+                    };
+                    merged.insert(emitted.clone(), v);
+                }
+
+                store.upsert_table_row(key, &output_name, merged, now);
+            } else {
+                store.tombstone_table_row(key, &output_name, now);
+            }
+
+            // Recurse on the output Table so TT-join-of-TT-join cascades.
+            self.cascade_table_upsert(&output_name, key, output_tombstoned, store, now)?;
         }
         Ok(())
     }
