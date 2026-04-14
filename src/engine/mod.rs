@@ -4,6 +4,7 @@ pub mod expression;
 pub mod hll;
 pub mod operators;
 pub mod pipeline;
+pub mod recommend;
 pub mod register;
 pub mod retracting_ring;
 pub mod uddsketch;

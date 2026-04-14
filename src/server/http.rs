@@ -222,11 +222,21 @@ async fn create_pipeline(
             engine.store_raw_register_json(&def_name, body);
             (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
         }
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": format!("{}", e)})),
-        )
-            .into_response(),
+        Err(e) => {
+            // Phase 25-02: emit a safety signal so failed registrations
+            // surface on /debug/warnings.
+            drop(engine);
+            crate::server::signals::emit_register_failure(
+                &state.signals,
+                &def_name,
+                &format!("{}", e),
+            );
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("{}", e)})),
+            )
+                .into_response()
+        }
     }
 }
 

@@ -39,6 +39,22 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
+// Phase 25-02: v0 TTL defaults — applied at REGISTER-time when the SDK did not
+// emit an explicit value. Locked by v0-restructure-spec §7.2.
+// ---------------------------------------------------------------------------
+
+/// Default `entity_ttl` (aka Table `ttl`) applied when a Table source / derivation
+/// is registered without an explicit override. 30 days per spec.
+pub const DEFAULT_TABLE_TTL: &str = "30d";
+
+/// Default `history_ttl` applied when a Stream source is registered without an
+/// explicit override. 90 days per spec. The existing `event_log::DEFAULT_HISTORY_TTL`
+/// (72h) is the *fallback* used by the event log when no stream-level ttl was
+/// plumbed through; Phase 25-02 now always plumbs through the 90d default at
+/// registration time, so the 72h fallback never fires in normal operation.
+pub const DEFAULT_STREAM_HISTORY_TTL: &str = "90d";
+
+// ---------------------------------------------------------------------------
 // Payload structs — serde-shaped to match python/tally/_serialize.py verbatim.
 // ---------------------------------------------------------------------------
 
@@ -870,6 +886,40 @@ pub fn v0_source_to_stream_def(
         (None, Some(ks)) if !ks.is_empty() => (Some(ks[0].clone()), Some(ks.clone())),
         _ => (None, None),
     };
+
+    // Phase 25-02: apply v0 TTL defaults if the SDK did not specify one.
+    // Table sources → DEFAULT_TABLE_TTL (30d).
+    // Stream sources → DEFAULT_STREAM_HISTORY_TTL (90d) for event-log retention.
+    // The SDK may emit "forever" / "0" — those flow through unchanged.
+    use crate::server::protocol::parse_duration_str;
+    let entity_ttl = if desc.kind == "table" {
+        let s = desc
+            .entity_ttl
+            .as_deref()
+            .unwrap_or(DEFAULT_TABLE_TTL);
+        Some(parse_duration_str(s)?)
+    } else {
+        // For stream sources, entity_ttl is orthogonal to history_ttl and
+        // left unset so global TTL behavior applies.
+        desc.entity_ttl
+            .as_deref()
+            .map(parse_duration_str)
+            .transpose()?
+    };
+    let history_ttl = if desc.kind == "stream" {
+        let s = desc
+            .history_ttl
+            .as_deref()
+            .unwrap_or(DEFAULT_STREAM_HISTORY_TTL);
+        Some(parse_duration_str(s)?)
+    } else {
+        // Tables don't have an event log history.
+        desc.history_ttl
+            .as_deref()
+            .map(parse_duration_str)
+            .transpose()?
+    };
+
     Ok(StreamDefinition {
         name: desc.name.clone(),
         key_field,
@@ -877,8 +927,8 @@ pub fn v0_source_to_stream_def(
         features: Vec::new(),
         depends_on: None,
         filter: None,
-        entity_ttl: None,
-        history_ttl: None,
+        entity_ttl,
+        history_ttl,
         projection: None,
         ephemeral: None,
         pipeline_ttl: None,

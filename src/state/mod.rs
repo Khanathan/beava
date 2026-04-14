@@ -1,5 +1,6 @@
 pub mod event_log;
 pub mod eviction;
+pub mod eviction_tracker;
 pub mod snapshot;
 pub mod store;
 

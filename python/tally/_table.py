@@ -21,6 +21,48 @@ from tally._stateless_ops import StatelessOpsMixin
 from tally._types_core import FieldSpec
 
 
+# Phase 25-02: client-side duration-string validator. Mirrors the server's
+# parse_duration_str in src/server/protocol.rs so bad values fail at
+# decorator time rather than after a network round-trip. Accepts ms/s/m/h/d
+# suffixes plus the "forever" and "0" sentinels.
+_DURATION_SUFFIXES = ("ms", "s", "m", "h", "d")
+
+
+def _validate_duration_str(s: str, *, field: str) -> None:
+    if not isinstance(s, str):
+        raise ValueError(
+            f"{field} must be a string duration (e.g. '30d', 'forever'), "
+            f"got {type(s).__name__}"
+        )
+    st = s.strip()
+    if not st:
+        raise ValueError(f"{field} must not be empty")
+    if st.lower() == "forever":
+        return
+    if st == "0":
+        return
+    # ms first (two-char suffix)
+    if st.endswith("ms"):
+        num = st[:-2]
+    else:
+        num = None
+        for suf in ("s", "m", "h", "d"):
+            if st.endswith(suf):
+                num = st[: -len(suf)]
+                break
+        if num is None:
+            raise ValueError(
+                f"{field}: invalid duration '{s}'. Use a number followed by "
+                f"one of {_DURATION_SUFFIXES} (e.g. '30d') or 'forever' / '0'"
+            )
+    try:
+        int(num)
+    except ValueError as e:
+        raise ValueError(
+            f"{field}: invalid duration '{s}': non-numeric magnitude"
+        ) from e
+
+
 class Table(StatelessOpsMixin):
     """Marker / runtime type for tabular inputs.
 
@@ -334,6 +376,11 @@ def table(
     """
     if key is None:
         raise TypeError("@tl.table requires key=... (str or list[str])")
+
+    # Phase 25-02: validate ttl string client-side. Mirrors the server's
+    # parse_duration_str: ms/s/m/h/d + "forever"/"0" sentinels.
+    if ttl is not None:
+        _validate_duration_str(ttl, field="ttl")
 
     if isinstance(key, str):
         key_list = [key]

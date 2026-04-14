@@ -112,6 +112,74 @@ pub fn evict_expired_keys(
     evict_expired_stream_entries(store, engine, now, ttl_multiplier)
 }
 
+/// Phase 25-02: Evict expired Table rows (not stream entries) based on per-Table
+/// TTL, and record each evicted (table, key) pair in the supplied
+/// [`EvictionTracker`] so the recommendation engine can detect
+/// eviction→reinit patterns. Returns the number of Table rows evicted.
+///
+/// This is the Table-row companion of `evict_expired_stream_entries`. It walks
+/// every `EntityState.table_rows`, checks each row's `updated_at` against the
+/// per-Table `entity_ttl`, and evicts rows whose age exceeds that TTL. Tables
+/// whose TTL is the `FOREVER_TTL` sentinel are skipped unconditionally.
+///
+/// Tombstoned rows are left alone — they are reaped by `gc_tombstones`.
+pub fn evict_expired_table_rows(
+    store: &StateStore,
+    engine: &PipelineEngine,
+    tracker: &crate::state::eviction_tracker::EvictionTracker,
+    now: SystemTime,
+) -> usize {
+    use crate::server::protocol::is_forever_ttl;
+    use crate::state::store::TableRowState;
+
+    let mut total_evicted = 0;
+
+    // Collect (entity_key, table_name) pairs to evict. Two-phase so we don't
+    // hold a read borrow while mutating.
+    let entity_keys: Vec<String> = store.entity_keys();
+    let mut eviction_plan: Vec<(String, String)> = Vec::new();
+
+    for key in &entity_keys {
+        let Some(entity) = store.get_entity(key) else {
+            continue;
+        };
+        for (table_name, row) in entity.table_rows.iter() {
+            // Skip tombstoned — gc_tombstones owns that path.
+            if !matches!(row.state, TableRowState::Live) {
+                continue;
+            }
+            let ttl = match engine.get_stream_entity_ttl(table_name) {
+                Some(t) => t,
+                None => continue, // Table with no TTL configured — skip
+            };
+            if is_forever_ttl(ttl) {
+                continue;
+            }
+            let age = now
+                .duration_since(row.updated_at)
+                .unwrap_or(std::time::Duration::ZERO);
+            if age >= ttl {
+                eviction_plan.push((key.clone(), table_name.clone()));
+            }
+        }
+    }
+
+    for (key, table_name) in &eviction_plan {
+        // Record BEFORE mutating so the tracker sees the eviction even if
+        // we fail to mutate (paranoia: the counter tracks *intent*).
+        tracker.record_eviction(table_name, key);
+        if let Some(mut entity) = store.get_entity_mut(key) {
+            entity.table_rows.remove(table_name);
+        }
+        total_evicted += 1;
+    }
+
+    // Clean up entities that became fully empty.
+    store.remove_empty_entities();
+
+    total_evicted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

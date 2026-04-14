@@ -324,7 +324,15 @@ def _build_stream_derivation_from_func(
     )
 
 
-def stream(cls: type | FunctionType | None = None, *, history_ttl: str | None = None):
+def stream(cls: type | FunctionType | None = None, *, history_ttl: str | None = None):  # noqa: D401
+    # Phase 25-02: validate history_ttl client-side (server also validates).
+    if history_ttl is not None:
+        from tally._table import _validate_duration_str
+        _validate_duration_str(history_ttl, field="history_ttl")
+    return _stream_impl(cls, history_ttl=history_ttl)
+
+
+def _stream_impl(cls: type | FunctionType | None = None, *, history_ttl: str | None = None):
     """Decorator that declares a Stream — class form or function form.
 
     Class form::

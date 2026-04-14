@@ -1523,8 +1523,17 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             Ok(vec![])
         }
         Command::Register { payload } => {
+            // Phase 25-02: track the pipeline name so we can emit a safety
+            // signal on failure. Extracted up-front from the payload (best
+            // effort — falls back to "unknown" if the JSON is malformed).
+            let pipeline_name_for_signal = payload
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
             let raw_json = payload.clone();
 
+            let result = (|| -> Result<Vec<u8>, TallyError> {
             // Plan 22-04: v0 REGISTER dispatch. v0 payloads always carry a top-level
             // `kind` field ("stream" | "table"). v2.0 payloads never had one — detect
             // by the presence of `kind` and route to the v0 translator → existing
@@ -1726,6 +1735,19 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                 });
                 Ok(serde_json::to_vec(&diff_json).unwrap())
             }
+            })();
+            // Phase 25-02: on REGISTER error, emit a safety signal so it
+            // surfaces on /debug/warnings. The signal id is stable per
+            // pipeline (`register.failure.{name}`) so repeated failures
+            // dedupe rather than spam.
+            if let Err(ref e) = result {
+                crate::server::signals::emit_register_failure(
+                    &state.signals,
+                    &pipeline_name_for_signal,
+                    &format!("{}", e),
+                );
+            }
+            result
         }
         Command::Mget { keys } => {
             let engine = state.engine.read();

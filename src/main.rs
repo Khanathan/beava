@@ -29,6 +29,42 @@ enum SnapshotData {
     Delta(DeltaSnapshotState),
 }
 
+/// Phase 25-02: Poll every non-event-driven signal source on the snapshot
+/// cycle (default 30s). Emitters dedupe by stable id, so repeat calls are
+/// free. Called from the periodic snapshot task after each write attempt.
+fn poll_signal_sources(state: &SharedState) {
+    use tally::server::signals;
+
+    let now = SystemTime::now();
+
+    // 1. Late-event drop rate (data_quality). Pull the per-stream counter
+    //    from the pipeline engine's shared `late_drops` map and let the
+    //    emitter compute a per-second rate against the previous sample.
+    //    Threshold: 1 drop/sec default (placeholder SLO per CONTEXT).
+    let drops: Vec<(String, u64)> = {
+        let engine = state.engine.read();
+        let snap = engine.late_drops.read().snapshot();
+        snap
+    };
+    signals::emit_late_drop_signals(&state.signals, &drops, now, 1.0);
+
+    // 2. Memory pressure (operational). `TALLY_MEMORY_LIMIT_MB` env var
+    //    drives the threshold; if unset the emitter is a no-op.
+    let limit_bytes = std::env::var("TALLY_MEMORY_LIMIT_MB")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|mb| mb * 1_048_576);
+    signals::emit_memory_pressure_signal(&state.signals, limit_bytes);
+
+    // 3. PUSH p99 SLO breach (performance). Sample from the latency
+    //    tracker; threshold 1ms (10× the CLAUDE.md 100µs design target).
+    let p99_us = state
+        .latency
+        .lock()
+        .push_percentile_us(99.0, std::time::Instant::now());
+    signals::emit_perf_p99_signal(&state.signals, p99_us, 1000.0);
+}
+
 fn main() {
     let worker_threads: usize = std::env::var("TALLY_WORKER_THREADS")
         .ok()
@@ -482,9 +518,29 @@ async fn async_main() {
                             if is_full { "base" } else { "delta" },
                         );
                     }
-                    Ok(Err(e)) => eprintln!("Snapshot write failed: {}", e),
-                    Err(e) => eprintln!("Snapshot task panicked: {}", e),
+                    Ok(Err(e)) => {
+                        eprintln!("Snapshot write failed: {}", e);
+                        // Phase 25-02: emit operational signal so the failure
+                        // surfaces on /debug/warnings. record() does no disk
+                        // I/O, so we cannot recurse on repeat failures.
+                        tally::server::signals::emit_snapshot_failure(
+                            &snap_state.signals,
+                            &format!("{}", e),
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("Snapshot task panicked: {}", e);
+                        tally::server::signals::emit_snapshot_failure(
+                            &snap_state.signals,
+                            &format!("snapshot task panicked: {}", e),
+                        );
+                    }
                 }
+
+                // Phase 25-02: poll the remaining signal sources on each
+                // snapshot cycle. These emitters are idempotent (dedupe by
+                // stable id) so firing every 30s is free.
+                poll_signal_sources(&snap_state);
             }
         });
     } // if snapshot_enabled
@@ -499,8 +555,23 @@ async fn async_main() {
             let now = std::time::SystemTime::now();
             let engine = evict_state.engine.read();
             let evicted = evict_expired_keys(&evict_state.store, &engine, now, ttl_multiplier);
-            if evicted > 0 {
-                eprintln!("Evicted {} expired keys", evicted);
+            // Phase 25-02: evict expired Table rows (per-Table TTL) and record
+            // each eviction in the EvictionTracker so eviction→reinit signals
+            // surface on /metrics and /debug/config-recommendations.
+            let table_evicted = tally::state::eviction::evict_expired_table_rows(
+                &evict_state.store,
+                &engine,
+                &evict_state.eviction_tracker,
+                now,
+            );
+            // Rotate per-Table bloom generations so the 7d rolling window
+            // actually rolls.
+            evict_state.eviction_tracker.rotate_generation(now);
+            if evicted > 0 || table_evicted > 0 {
+                eprintln!(
+                    "Evicted {} expired stream entries, {} expired Table rows",
+                    evicted, table_evicted
+                );
             }
         }
     });
@@ -555,6 +626,12 @@ async fn async_main() {
                         if let Some(ref mut log) = *event_log {
                             match log.compact_stream(stream_name, now) {
                                 Ok(removed) if removed > 0 => {
+                                    // Phase 25-02: bump per-stream compaction counter.
+                                    let mut m = compact_state.metrics.lock();
+                                    *m.history_compacted_total
+                                        .entry(stream_name.clone())
+                                        .or_insert(0) += 1;
+                                    drop(m);
                                     eprintln!(
                                         "Compacted {}: removed {} expired entries",
                                         stream_name, removed
@@ -577,6 +654,34 @@ async fn async_main() {
     // Log ephemeral mode if both persistence mechanisms are disabled
     if !snapshot_enabled && !event_log_enabled {
         eprintln!("Running in ephemeral mode (no persistence)");
+    }
+
+    // Phase 25-02: startup advisory log. If we loaded a snapshot that
+    // carries eviction/reinit history, recommendations may fire immediately
+    // at boot. Emit one terse line per knob (or a single summary line if
+    // there are more than 3) so operators see the signal without grepping
+    // Prometheus.
+    {
+        let engine = state.engine.read();
+        let recs =
+            tally::engine::recommend::recommend_config(&engine, &state.eviction_tracker);
+        drop(engine);
+        if !recs.is_empty() {
+            if recs.len() > 3 {
+                eprintln!(
+                    "advisory: {} config recommendations available; run \
+                     'tally suggest-config' or query /debug/config-recommendations",
+                    recs.len()
+                );
+            } else {
+                for r in &recs {
+                    eprintln!(
+                        "advisory: {} '{}' → '{}' ({})",
+                        r.knob, r.current, r.suggested, r.reason
+                    );
+                }
+            }
+        }
     }
 
     tokio::select! {
