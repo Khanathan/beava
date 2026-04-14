@@ -26,13 +26,14 @@ import time
 
 import pytest
 
-# The CLI at benchmark/replay/replay_30d.py is still pinned to the pre-v0
-# @tl.source / @tl.dataset decorators; Phase 26-01 leaves that port to plan
-# 26-03 (traction demo rebuild). Skip this entire module until 26-03 lands
-# the new-API CLI; unskipping is tracked as an explicit 26-03 deliverable.
+# The CLI at benchmark/replay/replay_30d.py is still pinned to the
+# removed pre-v0 class-decorator surface; Phase 26-01 leaves that port
+# to plan 26-03 (traction demo rebuild). Skip this entire module until
+# 26-03 lands the new-API CLI; unskipping is tracked as an explicit
+# 26-03 deliverable.
 pytest.skip(
-    "port in 26-03 — benchmark/replay/replay_30d.py still imports the removed "
-    "@tl.source / @tl.dataset surface; the CLI rewrite is owned by plan 26-03.",
+    "port in 26-03 - benchmark/replay/replay_30d.py still imports the removed "
+    "pre-v0 decorator surface; the CLI rewrite is owned by plan 26-03.",
     allow_module_level=True,
 )
 
