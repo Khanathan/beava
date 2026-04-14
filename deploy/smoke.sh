@@ -89,17 +89,26 @@ check "public/stats has all 6 fields" "
 "
 
 # -----------------------------------------------------------------------------
-# 3. Admin endpoint denied from the public side (must be 401/403/404 — never 2xx)
+# 3. Admin endpoint denied from the public side (must be 401/403/404 — never 2xx).
+#    --local mode: admin is loopback-trusted by design; instead assert the
+#    admin sub-router is structurally wired (GET /pipelines returns JSON).
 # -----------------------------------------------------------------------------
-check "admin POST denied from public" "
-	code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST '${BASE}/pipelines')
-	[[ \"\$code\" == \"401\" || \"\$code\" == \"403\" || \"\$code\" == \"404\" ]]
-"
+if [[ "$LOCAL_MODE" -eq 1 ]]; then
+	check "admin sub-router wired (GET /pipelines returns JSON on loopback)" "
+		resp=\$(curl -fsS --max-time 10 -H 'Accept: application/json' '${BASE}/pipelines') || exit 1
+		echo \"\$resp\" | head -c 1 | grep -qE '[\\[{]'
+	"
+else
+	check "admin POST denied from public" "
+		code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST '${BASE}/pipelines')
+		[[ \"\$code\" == \"401\" || \"\$code\" == \"403\" || \"\$code\" == \"404\" ]]
+	"
 
-check "admin DELETE denied from public" "
-	code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X DELETE '${BASE}/pipelines/Transactions')
-	[[ \"\$code\" == \"401\" || \"\$code\" == \"403\" || \"\$code\" == \"404\" ]]
-"
+	check "admin DELETE denied from public" "
+		code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X DELETE '${BASE}/pipelines/Transactions')
+		[[ \"\$code\" == \"401\" || \"\$code\" == \"403\" || \"\$code\" == \"404\" ]]
+	"
+fi
 
 # -----------------------------------------------------------------------------
 # 4. /metrics exposes the extended Prometheus fields
@@ -156,14 +165,29 @@ fi
 # 7. CRITICAL: TCP 6400 MUST NOT be reachable on the public interface.
 #    This is the single most important security invariant of the deploy.
 #    If this fails, the raw unauthenticated protocol is exposed to the internet.
+#    --local mode: raw binary listens on TCP; verify listener is UP instead.
 # -----------------------------------------------------------------------------
-# Use `nc` if available, else bash's /dev/tcp. Connection MUST fail (timeout or refused).
-if command -v nc >/dev/null 2>&1; then
-	check "TCP 6400 closed on public interface" "! nc -z -w 2 '${PUBLIC_HOST}' 6400"
+if [[ "$LOCAL_MODE" -eq 1 ]]; then
+	# Local: listener must be UP so the replay CLI can connect. Honors
+	# TALLY_LOCAL_TCP_PORT env override; defaults to the standard 6400.
+	LOCAL_TCP_PORT="${TALLY_LOCAL_TCP_PORT:-6400}"
+	if command -v nc >/dev/null 2>&1; then
+		check "TCP ${LOCAL_TCP_PORT} listening on loopback (local mode)" "nc -z -w 2 127.0.0.1 ${LOCAL_TCP_PORT}"
+	else
+		check "TCP ${LOCAL_TCP_PORT} listening on loopback (bash /dev/tcp, local mode)" "
+			timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/${LOCAL_TCP_PORT}' 2>/dev/null
+		"
+	fi
 else
-	check "TCP 6400 closed on public interface (bash /dev/tcp)" "
-		! timeout 2 bash -c 'exec 3<>/dev/tcp/${PUBLIC_HOST}/6400' 2>/dev/null
-	"
+	# Use `nc` if available, else bash's /dev/tcp. Connection MUST fail
+	# (timeout or refused) in prod mode.
+	if command -v nc >/dev/null 2>&1; then
+		check "TCP 6400 closed on public interface" "! nc -z -w 2 '${PUBLIC_HOST}' 6400"
+	else
+		check "TCP 6400 closed on public interface (bash /dev/tcp)" "
+			! timeout 2 bash -c 'exec 3<>/dev/tcp/${PUBLIC_HOST}/6400' 2>/dev/null
+		"
+	fi
 fi
 
 echo
