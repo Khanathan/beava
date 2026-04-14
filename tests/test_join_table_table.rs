@@ -12,11 +12,12 @@
 
 use std::time::SystemTime;
 
+use ahash::AHashMap;
 use tally::engine::pipeline::PipelineEngine;
 use tally::engine::register::{
     v0_join_to_stream_def, v0_source_to_stream_def, V0RegisterPayload,
 };
-use tally::state::store::StateStore;
+use tally::state::store::{StateStore, TableRowState};
 use tally::types::FeatureValue;
 
 fn parse(json: &str) -> V0RegisterPayload {
@@ -111,34 +112,42 @@ fn build_engine(
     (engine, StateStore::new())
 }
 
-fn set_row(store: &StateStore, key: &str, row: &[(&str, FeatureValue)]) {
-    let now = SystemTime::now();
+// Phase 24-03: test harness drives inputs through the real `table_rows`
+// primitives (upsert_table_row / tombstone_table_row) rather than the
+// Phase 23-03 static_features shadow. Observations read the output Table
+// row via `StateStore::get_table_row(key, "J")`.
+
+fn fields_map(row: &[(&str, FeatureValue)]) -> AHashMap<String, FeatureValue> {
+    let mut m = AHashMap::new();
     for (n, v) in row {
-        store.set_static(key, n, v.clone(), now);
+        m.insert((*n).to_string(), v.clone());
     }
+    m
 }
 
-/// Fetch a static feature value off an output table row as JSON (Null if absent).
+/// Fetch a field value off the output Table row (J) as JSON.
+/// Returns `Null` if the row is absent OR tombstoned OR the field is Missing.
 fn j_field(store: &StateStore, key: &str, field: &str) -> serde_json::Value {
-    match store.get_entity(key) {
-        Some(e) => match e.static_features.get(field) {
-            Some(sf) => sf.value.to_json_value(),
-            None => serde_json::Value::Null,
-        },
-        None => serde_json::Value::Null,
+    match store.get_table_row(key, "J") {
+        Some(row) if matches!(row.state, TableRowState::Live) => row
+            .fields
+            .get(field)
+            .map(|v| v.to_json_value())
+            .unwrap_or(serde_json::Value::Null),
+        _ => serde_json::Value::Null,
     }
 }
 
-/// Returns true iff the output row at `key` is "absent" — either the entity
-/// doesn't exist, OR its static_features map is empty (tombstone).
+/// Returns true iff the output Table row J for `key` is "absent" —
+/// either no row exists OR the row is Tombstoned.
 fn j_absent(store: &StateStore, key: &str) -> bool {
-    match store.get_entity(key) {
-        Some(e) => e.static_features.is_empty(),
+    match store.get_table_row(key, "J") {
         None => true,
+        Some(r) => !matches!(r.state, TableRowState::Live),
     }
 }
 
-// Simulate a SET on an input table, then run the TT cascade from the engine.
+// Upsert a real Table row on `input_table` and run the TT cascade.
 fn set_and_cascade(
     engine: &PipelineEngine,
     store: &StateStore,
@@ -146,21 +155,22 @@ fn set_and_cascade(
     key: &str,
     row: &[(&str, FeatureValue)],
 ) {
-    set_row(store, key, row);
     let now = SystemTime::now();
+    store.upsert_table_row(key, input_table, fields_map(row), now);
     engine
         .cascade_tt_after_upsert(input_table, key, store, now)
         .expect("tt cascade after upsert");
 }
 
+// Tombstone a real Table row on `input_table` and run the TT cascade.
 fn delete_and_cascade(
     engine: &PipelineEngine,
     store: &StateStore,
     input_table: &str,
     key: &str,
 ) {
-    store.delete_entity(key);
     let now = SystemTime::now();
+    store.tombstone_table_row(key, input_table, now);
     engine
         .cascade_tt_after_delete(input_table, key, store, now)
         .expect("tt cascade after delete");
@@ -178,20 +188,15 @@ const B_FIELDS_Y: &str =
     r#"{"user_id":{"type":"str","optional":false},"y":{"type":"int","optional":false}}"#;
 const KEY_USER: &str = r#""key_field":"user_id""#;
 
-// NOTE (Phase 23-03 Known Stub): v0 stores input Tables' rows in the same
-// StateStore entity as the join output Table (all keyed by plain string).
-// The 7 tests marked `#[ignore]` below depend on a cleaner separation
-// (per-Table shadow namespacing) that is deferred to v0.1 — the plan
-// describes this as "output Table is a regular EntityState", which does
-// not distinguish input data from output data when both share the same key.
-// The join cascade, registration rejections, and the simplest disjoint-
-// column scenarios DO exercise correctly.
-//
-// See 23-03-SUMMARY "Known Stubs" for the resolution plan.
+// NOTE (Phase 24-03): the 7 tests that were previously `#[ignore]`'d under
+// the Phase 23-03 "single-entity storage limitation" note have been
+// un-ignored now that the cascade reads from `EntityState.table_rows`
+// (plan 01) via `StateStore::get_table_row`. Input rows are written via
+// `upsert_table_row` / `tombstone_table_row`; observations read the output
+// Table row at (key, "J"). See 24-03-SUMMARY for the migration notes.
 
 // (1) Inner join: upsert both sides, output row merges.
 #[test]
-#[ignore]
 fn tt_inner_upsert_both_sides() {
     let (engine, store) = build_engine(
         A_FIELDS_X,
@@ -212,7 +217,6 @@ fn tt_inner_upsert_both_sides() {
 
 // (2) Inner join: only left side → no emit.
 #[test]
-#[ignore = "v0: single-entity storage limitation (see top of file)"]
 fn tt_inner_only_left_no_emit() {
     let (engine, store) = build_engine(
         A_FIELDS_X,
@@ -246,7 +250,6 @@ fn tt_left_only_left_emits_null_right() {
 
 // (4) Inner: both sides populated, delete right → output tombstoned.
 #[test]
-#[ignore = "v0: single-entity storage limitation (see top of file)"]
 fn tt_inner_tombstone_right_deletes_output() {
     let (engine, store) = build_engine(
         A_FIELDS_X,
@@ -269,7 +272,6 @@ fn tt_inner_tombstone_right_deletes_output() {
 
 // (5) Left: delete right nulls right fields but keeps left row.
 #[test]
-#[ignore = "v0: single-entity storage limitation (see top of file)"]
 fn tt_left_tombstone_right_nulls_right_fields() {
     let (engine, store) = build_engine(
         A_FIELDS_X,
@@ -289,7 +291,6 @@ fn tt_left_tombstone_right_nulls_right_fields() {
 
 // (6) Delete left tombstones output for both inner and left.
 #[test]
-#[ignore = "v0: single-entity storage limitation (see top of file)"]
 fn tt_tombstone_left_deletes_output_inner_and_left() {
     for jt in ["inner", "left"] {
         let (engine, store) = build_engine(
@@ -315,7 +316,6 @@ fn tt_tombstone_left_deletes_output_inner_and_left() {
 // (7) Collision suffix: left has `status`, right has `status` → output has
 //     `status` (from left) and `status_right` (from right).
 #[test]
-#[ignore = "v0: single-entity storage limitation (see top of file)"]
 fn tt_collision_suffix_on_output() {
     let a_fields = r#"{"user_id":{"type":"str","optional":false},"status":{"type":"str","optional":false}}"#;
     let b_fields = r#"{"user_id":{"type":"str","optional":false},"status":{"type":"str","optional":false}}"#;
@@ -353,7 +353,6 @@ fn tt_collision_suffix_on_output() {
 // (8) Composite key: both tables keyed on [user_id, region]; deletion on one
 //     composite row leaves the other untouched.
 #[test]
-#[ignore = "v0: single-entity storage limitation (see top of file)"]
 fn tt_composite_key() {
     let a_fields = r#"{"user_id":{"type":"str","optional":false},"region":{"type":"str","optional":false},"x":{"type":"int","optional":false}}"#;
     let b_fields = r#"{"user_id":{"type":"str","optional":false},"region":{"type":"str","optional":false},"y":{"type":"int","optional":false}}"#;
@@ -639,8 +638,12 @@ fn tt_cascades_recursively_through_chain() {
     set_and_cascade(&engine, &store, "A", "u1", &[("x", FeatureValue::Int(1))]);
     set_and_cascade(&engine, &store, "B", "u1", &[("y", FeatureValue::Int(2))]);
     set_and_cascade(&engine, &store, "C", "u1", &[("z", FeatureValue::Int(3))]);
-    // K must contain all three fields merged.
-    assert_eq!(j_field(&store, "u1", "x"), serde_json::json!(1));
-    assert_eq!(j_field(&store, "u1", "y"), serde_json::json!(2));
-    assert_eq!(j_field(&store, "u1", "z"), serde_json::json!(3));
+    // K = J.join(C) must contain all three fields merged (x,y from J; z from C).
+    let k_row = store
+        .get_table_row("u1", "K")
+        .expect("K must be live after A+B+C cascade");
+    assert!(matches!(k_row.state, TableRowState::Live));
+    assert_eq!(k_row.fields.get("x"), Some(&FeatureValue::Int(1)));
+    assert_eq!(k_row.fields.get("y"), Some(&FeatureValue::Int(2)));
+    assert_eq!(k_row.fields.get("z"), Some(&FeatureValue::Int(3)));
 }
