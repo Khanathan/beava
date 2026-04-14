@@ -858,10 +858,13 @@ pub struct LagOp {
 
 impl LagOp {
     pub fn new(field: impl Into<String>, n: usize, optional: bool) -> Self {
+        // Capacity is n+1: the buffer holds the N previous values plus the
+        // current one. After push, `front()` is exactly the value from N
+        // events ago. See test_lag_returns_n_events_ago.
         Self {
             field: field.into(),
             n,
-            values: VecDeque::with_capacity(n),
+            values: VecDeque::with_capacity(n + 1),
             optional,
         }
     }
@@ -902,7 +905,8 @@ impl Operator for LagOp {
                     _ => FeatureValue::Missing,
                 };
                 self.values.push_back(fv);
-                if self.values.len() > self.n {
+                // Cap at n+1 entries: N history slots + the current event.
+                while self.values.len() > self.n + 1 {
                     self.values.pop_front();
                 }
                 Ok(())
@@ -911,8 +915,8 @@ impl Operator for LagOp {
     }
 
     fn read(&mut self, _now: SystemTime) -> FeatureValue {
-        // Return the oldest value (N events ago). If buffer not full yet, Missing.
-        if self.values.len() == self.n {
+        // Need at least n+1 entries to have "N events ago" available.
+        if self.values.len() == self.n + 1 {
             self.values
                 .front()
                 .cloned()
@@ -923,8 +927,8 @@ impl Operator for LagOp {
     }
 
     fn estimated_bytes(&self) -> usize {
-        // VecDeque of N FeatureValues, ~32 bytes each estimated
-        self.n * 32
+        // VecDeque holds N+1 FeatureValues at steady state, ~32 bytes each.
+        (self.n + 1) * 32
     }
 }
 
@@ -2732,39 +2736,50 @@ mod tests {
     // ======================== LagOp Tests ========================
 
     #[test]
-    fn test_lag_returns_missing_until_n_events() {
+    fn test_lag_returns_missing_until_n_plus_1_events() {
+        // Plan 22-02 semantics: lag(n) stores n+1 values and returns the
+        // front — i.e. the value from *exactly* N events before the current.
+        // With n=3 and 3 events pushed, we only have "2 events ago" — still
+        // Missing; 4th event unlocks lag(3) = 1st-pushed value.
         let mut op = LagOp::new("amount", 3, false);
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 10.0}), None, t).unwrap();
-        assert_eq!(op.read(t), FeatureValue::Missing); // only 1 event, need 3
+        assert_eq!(op.read(t), FeatureValue::Missing);
         op.push(&json!({"amount": 20.0}), None, t).unwrap();
-        assert_eq!(op.read(t), FeatureValue::Missing); // only 2 events
+        assert_eq!(op.read(t), FeatureValue::Missing);
         op.push(&json!({"amount": 30.0}), None, t).unwrap();
-        // Now buffer is full [10, 20, 30], lag(3) returns front = 10
+        assert_eq!(op.read(t), FeatureValue::Missing); // still missing — only 3 entries
+        op.push(&json!({"amount": 40.0}), None, t).unwrap();
+        // Buffer = [10, 20, 30, 40]; lag(3) = front = 10 (value 3 events before 40).
         assert_eq!(op.read(t), FeatureValue::Float(10.0));
     }
 
     #[test]
-    fn test_lag_returns_nth_oldest_value() {
+    fn test_lag_returns_nth_prior_value() {
+        // n=2: need 3 events to read lag(2).
         let mut op = LagOp::new("amount", 2, false);
         let t = ts(1000 * 60);
         op.push(&json!({"amount": 100.0}), None, t).unwrap();
         op.push(&json!({"amount": 200.0}), None, t).unwrap();
-        // Buffer [100, 200], lag(2) = 100
-        assert_eq!(op.read(t), FeatureValue::Float(100.0));
+        assert_eq!(op.read(t), FeatureValue::Missing); // only 2 entries
         op.push(&json!({"amount": 300.0}), None, t).unwrap();
-        // Buffer [200, 300], lag(2) = 200
+        // Buffer [100, 200, 300]; lag(2) = 100 (value 2 events before 300).
+        assert_eq!(op.read(t), FeatureValue::Float(100.0));
+        op.push(&json!({"amount": 400.0}), None, t).unwrap();
+        // Buffer [200, 300, 400]; lag(2) = 200.
         assert_eq!(op.read(t), FeatureValue::Float(200.0));
     }
 
     #[test]
     fn test_lag_with_string_values() {
+        // n=1 requires 2 events to return a value.
         let mut op = LagOp::new("country", 1, false);
         let t = ts(1000 * 60);
         op.push(&json!({"country": "US"}), None, t).unwrap();
-        assert_eq!(op.read(t), FeatureValue::String("US".into()));
+        assert_eq!(op.read(t), FeatureValue::Missing);
         op.push(&json!({"country": "UK"}), None, t).unwrap();
-        assert_eq!(op.read(t), FeatureValue::String("UK".into()));
+        // Buffer ["US", "UK"]; lag(1) = "US".
+        assert_eq!(op.read(t), FeatureValue::String("US".into()));
     }
 
     #[test]
