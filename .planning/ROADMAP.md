@@ -2,43 +2,149 @@
 
 ## Milestones
 
-- [x] **v1.0 -- Foundation** (Phases 1-5) -- Complete 2026-04-09 -- see `.planning/milestones/v1.0-ROADMAP.md`
-- [x] **v1.1 -- Event Log & Composable Pipelines** (Phases 6-10.2) -- Complete 2026-04-10 -- see `.planning/milestones/v1.1-ROADMAP.md` (archived within v2.0)
-- [x] **v1.2 -- Fire-and-Forget PUSH** (Phase 11) -- Complete 2026-04-11
-- [x] **v1.3 -- Concurrency & Batching** (Phases 12-15) -- Complete 2026-04-12
-- [x] **v2.0 -- New API & Engine** (Phases 16-19) -- Complete 2026-04-13 -- see `.planning/milestones/v2.0-ROADMAP.md`
-- [ ] **v2.1 -- Launch** (Phase 20) -- Active
+- [x] **v1.0 -- Foundation** (Phases 1-5) -- Complete 2026-04-09 -- archived
+- [x] **v1.1–v1.3 -- Event Log, Pipelines, Concurrency** (Phases 6-15) -- Complete 2026-04-12
+- [x] **v2.0 -- API & Engine** (Phases 16-19) -- Complete 2026-04-13 -- `.planning/milestones/v2.0-ROADMAP.md`
+- [⏸] **v2.1 -- Launch** (Phase 20) -- PAUSED pending v0 restructure -- code artifacts on disk, see `.planning/milestones/v2.1-PAUSED-ROADMAP.md`. Resume after v0 ships.
+- [ ] **v0 -- Restructure** (Phases 21-26) -- Active. Type system redesign: Stream + Table model, DataFrame-parity operators, watermark-based out-of-order handling, UDDSketch/CMS+heap hybrid sketches. Blocks launch.
 
 ## Phases
 
-### v2.1 Launch (Active)
+### v0 Restructure (Active)
 
-**Milestone Goal:** Ship Tally publicly. Prove traction with a live, read-only demo and a headline benchmark number (30-day historical replay time) surfaced in the launch blog.
+**Milestone Goal:** Rebuild Tally's public API around two types (Stream + Table) and DataFrame-style operators. Introduce event-time watermarks (5s fixed, tunable later). Ship UDDSketch-backed percentile, CMS+heap-backed top_k, and HLL-hybrid count_distinct. Disable Table aggregation in v0 (deferred to v0.1). Result: clean minimal API that ships as the public v0 launch.
 
-- [~] **Phase 20: Traction Demo** - Read-only public web showcase + 30-day historical replay benchmark + blog integration, runs live 5 days post-launch (artifacts shipped 2026-04-14; 20-03 awaiting VM provision + 5-day sign-off)
+Key decisions (locked via design conversation 2026-04-14, captured in `.planning/research/v0-restructure-spec.md`):
+- Two types: `Stream` (append-only log) + `Table` (keyed current-state with upsert + tombstone)
+- `@tl.stream` / `@tl.table` decorators; class body = source, function body = derivation
+- DataFrame-parity ops (filter, map, select, drop, rename, with_columns, cast, fillna, group_by.agg, join, union)
+- Stream-input aggregation only in v0; Table-input `group_by().agg()` deferred to v0.1 (eliminates Case 3 retraction complexity)
+- Watermarks: 5s fixed, γ model (alignment at join/agg boundaries), per-stream
+- Hybrid sketches: percentile (exact→UDDSketch@256), count_distinct (exact→HLL@1024), top_k (exact→CMS+heap@1024)
+- Joins: Stream↔Stream windowed (inner+left, `within=...`), Stream↔Table enrichment, Table↔Table same-key
+- Query surface: GET/MGET/GET_MULTI; null-collapse; no SCAN/SUBSCRIBE in v0
+- Unified `/debug/warnings` endpoint; `/debug/config-recommendations` + `tally suggest-config` CLI
+- Forward-compat: `BackfillSource` trait, reserved `_op` wire field, reserved `mode="append"|"changelog"`
+
+- [ ] **Phase 21: Type system & SDK skeleton** — `@tl.stream`/`@tl.table` decorators, DAG walking from function params, schema inference via class attributes + type hints, operator catalog stubs, DataFrame-parity surface
+- [ ] **Phase 22: Stream aggregation engine** — `group_by().agg()` on Stream inputs, ring-buffer windowing, all aggregation operators (count/sum/avg/min/max/variance/stddev, hybrid UDDSketch percentile, hybrid HLL count_distinct, hybrid CMS+heap top_k, first/last/first_n/last_n/ema/lag)
+- [ ] **Phase 23: Joins** — Stream↔Stream windowed (inner + left, `within=...`), Stream↔Table enrichment at event-time, Table↔Table full-key match
+- [ ] **Phase 24: Watermarks & event-time** — fixed 5s lateness, γ propagation (alignment at join/agg boundaries only), per-stream watermark, `_event_time` JSON field + wall-clock fallback, `tally_late_events_dropped_total` counter
+- [ ] **Phase 25: Query surface, TTL, warnings** — GET_MULTI opcode, `/debug/warnings` unified health endpoint, `/debug/config-recommendations`, `tally suggest-config` CLI, TTL defaults (Table 30d, Stream 90d, tombstone 7d) + override pattern + suggestion engine
+- [ ] **Phase 26: Test migration, benchmarks, docs, demo rebuild** — port existing 744+ tests to new API, benchmark regression gate (within −5% of v2.0 baseline 1.1M eps), rewrite `docs/blog/streaming-shouldnt-require-a-platform-team.md`, rebuild Phase 20 traction demo against new API, sign-off
 
 ## Phase Details
 
-### Phase 20: Traction Demo
-**Goal**: Public-facing, **read-only** web demo showcasing Tally running live for 5 days post-launch (view features + query state, no public write access), with a historical-replay benchmark that ingests the last 30 days of data on startup and records wall-clock throughput -- surfaced as a headline number in the launch blog post.
-**Depends on**: Phase 19 (v2.0 complete)
-**Requirements**: TRAC-01, TRAC-02, TRAC-03, TRAC-04, TRAC-05, TRAC-06, TRAC-07, TRAC-08, TRAC-09, TRAC-10, TRAC-11
+### Phase 21: Type system & SDK skeleton
+**Goal**: Ship the `Stream` and `Table` types + `@tl.stream` / `@tl.table` decorators + DataFrame-parity operator catalog stubs, with DAG-from-function-signature discovery and inferred output schemas. Foundation for all subsequent phases.
+**Depends on**: None (first phase)
+**Requirements**: TBD (captured during `/gsd-plan-phase 21`)
 **Success Criteria** (what must be TRUE):
-  1. A standalone benchmark script replays the last 30 days of historical events into a fresh Tally instance as fast as possible and prints total time, events/sec, and final state size -- reusable as a historical-backfill tool
-  2. Visitors to a public URL can browse the live Tally instance read-only: query features for any key (GET) and inspect recent events / computed feature values -- no public PUSH/SET write access
-  3. The live demo page surfaces aggregate traction metrics (total events processed since launch, uptime, p99 push latency, current events/sec) updated in near-real-time
-  4. The launch blog post embeds or links the live demo and prominently displays the 30-day replay wall-clock time as a headline number
-  5. The deployed demo stays up for at least 5 consecutive days post-launch without manual intervention, with crash-recovery from snapshot verified
-**Plans:** 3/3 plans complete
-- [x] 20-01-PLAN.md — Deterministic 30-day replay CLI (`benchmark/replay/replay_30d.py`) + multi-process `push_many(batch_size=1000)` driver + integration test at 100k-event scale
-- [x] 20-02-PLAN.md — `/public/*` read-only HTTP surface + `require_loopback_or_token` admin middleware + extended `/metrics` + vanilla-JS demo.html (~150 LOC) via existing rust-embed
-- [~] 20-03-PLAN.md — Hetzner CX22 deploy (systemd + Caddyfile + provision.sh) + smoke script (6 invariants incl. TCP 6400 closed publicly) + blog post update with headline replay time + 5-day live-run sign-off with mid-run crash recovery — artifacts + LIVE_SIGNOFF framework shipped 2026-04-14; VM provision (human action) + 5-day sign-off (calendar-gated) pending
+  1. User can declare a Stream source via `@tl.stream class X` with schema from class attributes + type hints; validate() succeeds
+  2. User can declare a Table source via `@tl.table(key=[...]) class X` with composite key support; validate() succeeds
+  3. User can declare a Stream derivation via `@tl.stream def X(...) -> Stream:` with upstream dependencies auto-discovered from function parameter types
+  4. User can declare a Table derivation via `@tl.table(key=[...]) def X(...) -> Table:`
+  5. Operator catalog stubs exist for filter, map, select, drop, rename, with_columns, cast, fillna — called on a Stream or Table returns same type; tests verify schema inference
+  6. Pipeline DAG builds from function signatures; circular dependencies rejected at registration with a named-cycle error
+  7. `.describe()` on any Stream/Table returns inferred schema; mismatch errors name the offending field + closest lexical match
+  8. No Rust engine changes required — SDK scaffolding only, backed by placeholder engine ops that raise `NotImplemented` where needed
+**Plans:** 1/3 plans executed
+  - [x] 21-01-PLAN.md — Core decorators (class form) + schema inference + tl.col expression DSL; delete old @tl.source/@tl.dataset/EventSet/FeatureSet surface
+  - [ ] 21-02-PLAN.md — Stateless operators (filter/map/select/drop/rename/with_columns/cast/fillna) + function-form decorators + DAG discovery from parameter type hints + local tl.validate() wiring
+  - [ ] 21-03-PLAN.md — Aggregation operator catalog (16 ops) + .group_by().agg() stub + .join() stubs (3 shapes) + tl.union + Table.group_by() rejection + REGISTER JSON serialization
+
+### Phase 22: Stream aggregation engine
+**Goal**: `.group_by(keys).agg(...)` on Stream inputs produces a Table, backed by ring-buffer windowing and the full operator catalog (linear ops + hybrid sketches for percentile/count_distinct/top_k + first/last/ema/lag).
+**Depends on**: Phase 21
+**Requirements**: TBD
+**Success Criteria**:
+  1. User can call `stream.group_by(keys).agg(feature=tl.op(...))` returning a Table with one row per unique (keys) tuple
+  2. All linear operators (count, sum, avg, variance, stddev) emit correct values under windowed semantics
+  3. `tl.percentile` uses hybrid exact → UDDSketch at threshold=256; transition tested; α drift exposed in `/debug/key/:key`
+  4. `tl.count_distinct` uses hybrid exact HashSet → HLL (precision=14) at threshold=1024; transition tested
+  5. `tl.top_k` uses hybrid exact HashMap → CMS+heap at threshold=1024; transition tested
+  6. `tl.first`, `tl.last`, `tl.first_n`, `tl.last_n` work by event-time
+  7. `tl.ema`, `tl.lag` work on Stream inputs; registration rejects them on any Table-tainted input
+  8. Ring-buffer windowing supports default windows (1m/5m/1h/24h) with configurable bucket granularity
+**Plans:** TBD
+
+### Phase 23: Joins
+**Goal**: Three join shapes work end-to-end: Stream↔Stream windowed, Stream↔Table enrichment, Table↔Table same-key.
+**Depends on**: Phase 21, Phase 22
+**Requirements**: TBD
+**Success Criteria**:
+  1. `stream_a.join(stream_b, on=[...], within="30m", type="inner"|"left")` emits joined events
+  2. Stream↔Table enrichment: `stream.join(table, on=[...])` point-in-time joins event with Table's current row for that key
+  3. Table↔Table same-key: `table_a.join(table_b, on=[...])` returns Table with union of fields, polars-style `_right` suffix on collision
+  4. Schema inference correctly unions fields across join inputs
+  5. Outer joins rejected at registration with "deferred to v0.1" error
+  6. Partial-key joins rejected with "full-key required in v0" error
+  7. Tests cover: identical-key joins, composite-key joins, late-event retractions through Stream↔Stream joins
+**Plans:** TBD
+
+### Phase 24: Watermarks & event-time
+**Goal**: Event-time flows through the engine with a fixed 5-second lateness tolerance; late events are dropped with an exposed counter; watermark aligns at join/agg boundaries.
+**Depends on**: Phase 22 (for aggregation boundary alignment), Phase 23 (for join boundary alignment)
+**Requirements**: TBD
+**Success Criteria**:
+  1. Events carry an `_event_time` JSON field; absent → falls back to wall-clock arrival time
+  2. Each Stream source tracks its watermark = max(event_time seen) − 5s; exposed in `/debug/key/:stream`
+  3. Events with event_time < watermark are dropped; `tally_late_events_dropped_total{stream}` counter increments
+  4. Stateless ops (filter/map/select/drop/rename/with_columns/cast/fillna) pass watermark through without modification
+  5. Joins take `min(wm_left, wm_right)` as output watermark; ensures neither side emits prematurely
+  6. Aggregations attach watermark to their output Table; late-arriving-but-in-window events update the correct bucket
+  7. `now()` builtin returns wall-clock; `event_time()` builtin returns current event's event-time; semantics documented in SDK
+  8. Tests cover: out-of-order events within 5s land in correct bucket; events > 5s late are dropped; watermark alignment across multi-input operators
+**Plans:** TBD
+
+### Phase 25: Query surface, TTL, warnings
+**Goal**: Ship the public query verbs (GET / MGET / GET_MULTI), the unified `/debug/warnings` feed, config-recommendation engine, and TTL overrides with defaults.
+**Depends on**: Phase 21, Phase 22 (for live metrics to feed warnings)
+**Requirements**: TBD
+**Success Criteria**:
+  1. `GET(table_name, key)` returns row or null for composite/simple keys
+  2. `MGET(table_name, [keys])` returns `{key → row or null}` in a single round-trip
+  3. `GET_MULTI([table_names], key)` returns `{table → row or null}` for feature-vector assembly
+  4. Null-collapse on not-found (never-seen / tombstoned / pending all return null)
+  5. `@tl.table(ttl="30d")` and `@tl.stream(history_ttl="90d")` defaults applied; user-override on decorator works
+  6. `/debug/warnings` endpoint returns severity-sorted JSON feed covering config/data_quality/operational/safety/performance categories
+  7. `/debug/config-recommendations` endpoint suggests TTL/history_ttl adjustments based on observed eviction/compaction/backfill-miss signals
+  8. `tally suggest-config` CLI prints copy-pasteable decorator overrides
+  9. `SCAN` and `SUBSCRIBE` opcodes are reserved but return "not implemented in v0" if called
+**Plans:** TBD
+
+### Phase 26: Test migration, benchmarks, docs, demo rebuild
+**Goal**: Port the existing test suite to the new API, verify no performance regression, rewrite the launch blog, and rebuild Phase 20 traction demo against the new SDK.
+**Depends on**: Phase 21, 22, 23, 24, 25
+**Requirements**: TBD
+**Success Criteria**:
+  1. All pre-v0 tests (≥ 744 baseline) ported to new API; `cargo test && pytest` pass
+  2. No references to old API surface (`@tl.source`, `@tl.dataset`, `EventSet`, `FeatureSet`) remain in SDK or tests
+  3. Benchmark matrix: small/medium/large × 1c/4c/8c passes within −5% of v2.0 baseline (1.1M eps)
+  4. `docs/blog/streaming-shouldnt-require-a-platform-team.md` rewritten to describe the new Stream/Table/retraction story honestly (no mentions of deferred features as shipped)
+  5. Phase 20 traction demo replay CLI, demo.html, and 6-invariant smoke script ported to new API; pass locally
+  6. `docs/` site updated with new SDK reference, migration note (internal-only, since pre-launch)
+  7. Phase 20 (v2.1) artifacts ready to deploy via already-written Hetzner scripts — no re-provision needed, just recompile binary + redeploy
+**Plans:** TBD
 
 ## Progress
 
 **Execution Order:**
-Phase 20 is the only active phase in v2.1. Plans 20-01 and 20-02 are parallel (Wave 1); 20-03 depends on both (Wave 2).
+Phase 21 blocks all others. 22 + 23 parallelize after 21. 24 can start mid-22. 25 needs 21 + 22. 26 is last.
+
+Dependency graph:
+```
+21 ─┬─► 22 ─┬─► 23 ─► 26
+   │      │        ▲
+   │      └─► 24 ───┤
+   └────────► 25 ───┘
+```
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 20. Traction Demo | v2.1 | 2.5/3 | Artifacts shipped; 5-day live run pending | — |
+| 21. Type system & SDK skeleton | v0 | 1/3 | In Progress|  |
+| 22. Stream aggregation engine | v0 | 0/? | Not planned | - |
+| 23. Joins | v0 | 0/? | Not planned | - |
+| 24. Watermarks & event-time | v0 | 0/? | Not planned | - |
+| 25. Query surface, TTL, warnings | v0 | 0/? | Not planned | - |
+| 26. Test migration, bench, docs, demo | v0 | 0/? | Not planned | - |
