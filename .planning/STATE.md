@@ -54,3 +54,13 @@ Replace the public API with the two-type (Stream + Table) model, DataFrame-parit
 ## Phase History
 
 See `.planning/milestones/v2.0-ROADMAP.md` and `.planning/milestones/v2.1-PAUSED-ROADMAP.md` for archived phase details (1-20).
+
+### v0 Restructure progress
+
+- Phase 21 (SDK surface + DAG + REGISTER serializer): Complete (2026-04-14)
+- Phase 22 (Stream aggregation engine): Complete (2026-04-14)
+  - 22-01: v0 REGISTER parser + build_operator dispatch — shipped
+  - 22-02: linear + order-sensitive operator bodies (Welford, event-time First/Last, FirstN, ema, lag) — shipped
+  - 22-03: hybrid sketch operators (UDDSketch / CMS+heap / HLL threshold 1024) + telemetry — shipped
+  - 22-04: TCP REGISTER v0 wiring + BASELINE.json + criterion install + TopK optimization + 9-cell matrix (all 9 cells ≤5% baseline) — shipped
+- Phase 23 (joins) — next, can proceed on the wired v0 TCP path

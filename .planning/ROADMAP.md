@@ -27,7 +27,7 @@ Key decisions (locked via design conversation 2026-04-14, captured in `.planning
 - Forward-compat: `BackfillSource` trait, reserved `_op` wire field, reserved `mode="append"|"changelog"`
 
 - [x] **Phase 21: Type system & SDK skeleton** — `@tl.stream`/`@tl.table` decorators, DAG walking from function params, schema inference via class attributes + type hints, operator catalog stubs, DataFrame-parity surface (completed 2026-04-14)
-- [ ] **Phase 22: Stream aggregation engine** — `group_by().agg()` on Stream inputs, ring-buffer windowing, all aggregation operators (count/sum/avg/min/max/variance/stddev, hybrid UDDSketch percentile, hybrid HLL count_distinct, hybrid CMS+heap top_k, first/last/first_n/last_n/ema/lag)
+- [x] **Phase 22: Stream aggregation engine** — `group_by().agg()` on Stream inputs, ring-buffer windowing, all aggregation operators (count/sum/avg/min/max/variance/stddev, hybrid UDDSketch percentile, hybrid HLL count_distinct, hybrid CMS+heap top_k, first/last/first_n/last_n/ema/lag) (completed 2026-04-14)
 - [ ] **Phase 23: Joins** — Stream↔Stream windowed (inner + left, `within=...`), Stream↔Table enrichment at event-time, Table↔Table full-key match
 - [ ] **Phase 24: Watermarks & event-time** — fixed 5s lateness, γ propagation (alignment at join/agg boundaries only), per-stream watermark, `_event_time` JSON field + wall-clock fallback, `tally_late_events_dropped_total` counter
 - [ ] **Phase 25: Query surface, TTL, warnings** — GET_MULTI opcode, `/debug/warnings` unified health endpoint, `/debug/config-recommendations`, `tally suggest-config` CLI, TTL defaults (Table 30d, Stream 90d, tombstone 7d) + override pattern + suggestion engine
@@ -66,10 +66,11 @@ Key decisions (locked via design conversation 2026-04-14, captured in `.planning
   6. `tl.first`, `tl.last`, `tl.first_n`, `tl.last_n` work by event-time
   7. `tl.ema`, `tl.lag` work on Stream inputs; registration rejects them on any Table-tainted input
   8. Ring-buffer windowing supports default windows (1m/5m/1h/24h) with configurable bucket granularity
-**Plans:** 2/3 plans executed
+**Plans:** 4/4 plans complete
   - [x] 22-01-PLAN.md — REGISTER JSON consumer + aggregation dispatch + OperatorState enum extension (burns v2.0 REGISTER path)
   - [x] 22-02-PLAN.md — Linear + order-sensitive operators: count/sum/avg/variance/stddev, min/max (bucket-granular), first/last/first_n/last_n (event-time), ema, lag
-  - [ ] 22-03-PLAN.md — Hybrid sketch operators (UDDSketch percentile + CMS top_k + per-bucket HLL count_distinct) + /debug/key/:key telemetry + benchmark matrix perf gate
+  - [x] 22-03-PLAN.md — Hybrid sketch operators (UDDSketch percentile + CMS top_k + per-bucket HLL count_distinct) + /debug/key/:key telemetry + benchmark matrix perf gate
+  - [x] 22-04-PLAN.md — TCP REGISTER v0 wiring (v0→v2 translator) + BASELINE.json + criterion install + TopKHeap optimization + 9-cell matrix (all cells ≤5% baseline)
 
 ### Phase 23: Joins
 **Goal**: Three join shapes work end-to-end: Stream↔Stream windowed, Stream↔Table enrichment, Table↔Table same-key.
@@ -146,7 +147,7 @@ Dependency graph:
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 21. Type system & SDK skeleton | v0 | 3/3 | Complete   | 2026-04-14 |
-| 22. Stream aggregation engine | v0 | 2/3 | In Progress|  |
+| 22. Stream aggregation engine | v0 | 4/4 | Complete   | 2026-04-14 |
 | 23. Joins | v0 | 0/? | Not planned | - |
 | 24. Watermarks & event-time | v0 | 0/? | Not planned | - |
 | 25. Query surface, TTL, warnings | v0 | 0/? | Not planned | - |
