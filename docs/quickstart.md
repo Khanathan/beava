@@ -4,22 +4,33 @@ Get Tally running and push your first event in under 5 minutes.
 
 ## Prerequisites
 
-- **Rust toolchain** (stable) -- install via [rustup](https://rustup.rs/), OR
-- **Docker** (coming soon)
+Pick one:
+- **Docker** (fastest path) -- install [Docker Desktop](https://docs.docker.com/get-docker/)
+- **Rust toolchain** (stable) -- install via [rustup](https://rustup.rs/)
+
+Plus:
 - **Python 3.10+** with pip
 
 ## 1. Start the Server
 
-### From source
+### Option A: Docker
+
+```bash
+git clone https://github.com/petrpan26/tally.git
+cd tally
+docker compose up -d
+```
+
+### Option B: From source
 
 ```bash
 git clone https://github.com/petrpan26/tally.git
 cd tally
 cargo build --release
-./target/release/tally
+./target/release/tally &
 ```
 
-The server starts on TCP port 6400 (protocol) and HTTP port 6401 (management).
+Either path starts Tally on TCP port 6400 (protocol) and HTTP port 6401 (management).
 
 Verify it is running:
 
@@ -27,18 +38,31 @@ Verify it is running:
 curl http://localhost:6401/health
 ```
 
+Expected output:
+
+```json
+{"status":"ok"}
+```
+
 ## 2. Install the Python SDK
 
-In a separate terminal:
+From the repo root (`cd tally` if you're not already there):
 
 ```bash
-cd tally/python
+cd python
 pip install -e .
+cd ..
+```
+
+Verify:
+
+```bash
+python -c "import tally; print('SDK ready')"
 ```
 
 ## 3. Define a Pipeline
 
-Create a file called `demo.py`:
+Create a file called `demo.py` at the repo root:
 
 ```python
 import tally as tl
@@ -55,22 +79,25 @@ class UserFeatures:
         tx_count_1h=tl.count(window="1h"),
         tx_sum_1h=tl.sum("amount", window="1h"),
         avg_amount_24h=tl.avg("amount", window="24h"),
+        unique_merchants=tl.distinct_count("merchant_id", window="24h"),
     )
 
 # Connect and register
 app = tl.App("localhost:6400")
 app.register(Transactions, UserFeatures)
 
-# Push an event -- get updated features in the response
-features = app.push(Transactions, {
-    "user_id": "u123",
-    "amount": 50.0,
-    "merchant_id": "m456",
-})
+# Push events (fire-and-forget, fast)
+app.push(Transactions, {"user_id": "u123", "amount": 50.0, "merchant_id": "m456"})
+app.push(Transactions, {"user_id": "u123", "amount": 120.0, "merchant_id": "m789"})
+app.push(Transactions, {"user_id": "u123", "amount": 25.0, "merchant_id": "m456"})
+app.flush()
 
-print(f"tx_count_1h:    {features.tx_count_1h}")
-print(f"tx_sum_1h:      {features.tx_sum_1h}")
-print(f"avg_amount_24h: {features.avg_amount_24h}")
+# Read computed results (instant, from in-memory state)
+features = app.get("u123")
+print(f"tx_count_1h:      {features.tx_count_1h}")
+print(f"tx_sum_1h:        {features.tx_sum_1h}")
+print(f"avg_amount_24h:   {features.avg_amount_24h}")
+print(f"unique_merchants: {features.unique_merchants}")
 ```
 
 ## 4. Run It
@@ -79,19 +106,80 @@ print(f"avg_amount_24h: {features.avg_amount_24h}")
 python demo.py
 ```
 
-You should see the computed feature values printed. Push more events and watch the counts and sums update in real time.
+Expected output:
 
-## 5. Read Features Later
+```
+tx_count_1h:      3
+tx_sum_1h:        195.0
+avg_amount_24h:   65.0
+unique_merchants: 2
+```
 
-You can also read the current feature values for any entity key without pushing a new event:
+Push more events and watch the counts and sums update.
+
+## 5. Inspect What's Happening
+
+Tally ships with a management API for debugging:
+
+```bash
+# Memory usage breakdown
+curl http://localhost:6401/debug/memory | python -m json.tool
+
+# All features for a specific entity
+curl http://localhost:6401/debug/key/u123 | python -m json.tool
+
+# Pipeline topology
+curl http://localhost:6401/debug/topology | python -m json.tool
+```
+
+## Troubleshooting
+
+### Server won't start: "address already in use"
+
+Something is using port 6400 or 6401. Either stop it or change Tally's port:
+
+```bash
+TALLY_TCP_PORT=7400 TALLY_HTTP_PORT=7401 ./target/release/tally
+```
+
+### `cargo build` fails
+
+On Linux, you may need build essentials and OpenSSL dev headers:
+
+```bash
+# Debian/Ubuntu
+sudo apt install build-essential pkg-config libssl-dev
+
+# macOS
+brew install openssl@3
+```
+
+### `ConnectionError` when running Python
+
+The server isn't running, or it's on a different port. Check:
+
+```bash
+curl http://localhost:6401/health
+```
+
+If no response, start the server. If it's on a different port, pass it explicitly:
 
 ```python
-all_features = app.get("u123")
-print(all_features)
+app = tl.App("localhost:7400")  # match TALLY_TCP_PORT
+```
+
+### `pip install -e .` fails
+
+Make sure you're in the `python/` subdirectory, not the repo root:
+
+```bash
+pwd              # should end in .../tally/python
+ls pyproject.toml   # should exist
 ```
 
 ## Next Steps
 
-- **[Python SDK Guide](python-sdk.md)** -- Full API reference: sources, datasets, cascades, views, projections, and validation.
+- **[Python SDK Guide](python-sdk.md)** -- Full API reference: sources, datasets, cascades, projections, and validation.
 - **[Operators Reference](operators.md)** -- All 16 built-in operators with parameters, window behavior, and examples.
 - **[Architecture](architecture.md)** -- How Tally works under the hood.
+- **`/tally` Claude Code skill** -- Type `/tally` in [Claude Code](https://claude.ai/claude-code) for a guided setup with pipeline generation, realistic test data, and capacity planning.
