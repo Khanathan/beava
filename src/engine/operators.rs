@@ -3,6 +3,9 @@
 //! Each operator wraps one or more `RingBuffer`s and implements the `Operator`
 //! trait: `push()` to ingest an event, `read()` to get the current aggregate.
 
+use super::cms::{CountMinSketch, TopKHeap, TopKValue, DEFAULT_CMS_DEPTH, DEFAULT_CMS_WIDTH};
+use super::retracting_ring::RetractingRingBuffer;
+use super::uddsketch::UDDSketch;
 use super::window::RingBuffer;
 use crate::error::TallyError;
 use crate::types::FeatureValue;
@@ -10,6 +13,22 @@ use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::time::SystemTime;
+
+// ======================== HybridTelemetry ========================
+
+/// Telemetry record reported by hybrid exact→sketch operators to
+/// `/debug/key/:key`. Populated by operators that override
+/// `Operator::hybrid_telemetry`. See plan 22-03 §Observability.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HybridTelemetry {
+    pub op: &'static str,
+    pub mode: &'static str, // "exact" or "sketch"
+    pub exact_count: usize,
+    pub transition_at: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sketch_alpha_current: Option<f64>,
+    pub memory_bytes: usize,
+}
 
 /// Resolve a field value from enrichment overlay first, then raw event.
 /// Used by all field-reading operators (sum, avg, min, max, last, etc.).
@@ -50,6 +69,13 @@ pub trait Operator: std::fmt::Debug + Send {
     /// Number of ring buffer buckets, or 0 for non-windowed operators.
     fn num_buckets(&self) -> usize {
         0
+    }
+
+    /// Hybrid exact→sketch operators return their current mode + memory
+    /// telemetry here. Default `None` for non-hybrid operators. Surfaced via
+    /// `/debug/key/:key` in the HTTP layer.
+    fn hybrid_telemetry(&self) -> Option<HybridTelemetry> {
+        None
     }
 }
 
@@ -711,9 +737,10 @@ impl Operator for StddevOp {
 
 // ======================== PercentileBucket ========================
 
-/// Bucket wrapper for PercentileOp. Stores a sorted Vec<f64> of all values
-/// pushed into this time bucket. On read, values from all non-expired buckets
-/// are merged and the quantile is computed exactly.
+/// Per-bucket retention list. In **Exact** mode, this holds the raw values
+/// inserted in the bucket (used to rebuild the global sorted vec on
+/// advance). In **Sketch** mode, it holds the same raw values so they can
+/// be passed to `UDDSketch::decrement` on bucket expiry.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct PercentileBucket {
     pub values: Vec<f64>,
@@ -721,15 +748,46 @@ pub struct PercentileBucket {
 
 // ======================== PercentileOp ========================
 
-/// Computes an approximate percentile of a numeric field within a window.
-/// Uses sorted Vec<f64> per ring bucket (exact within bucket granularity).
-/// On read: merges all non-expired bucket values and computes the quantile
-/// using linear interpolation (same as numpy's default method).
+/// Locked exact→sketch transition threshold. Per plan 22-03: 257th value
+/// triggers promotion to UDDSketch(α₀=0.01).
+pub const PERCENTILE_EXACT_THRESHOLD: usize = 256;
+
+/// Starting alpha for the UDDSketch after transition.
+pub const PERCENTILE_SKETCH_ALPHA: f64 = 0.01;
+
+/// Internal mode of a `PercentileOp`. One-way transition Exact → Sketch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PercentileMode {
+    /// Exact sorted-vec mode. Active for ≤ 256 observations.
+    #[serde(rename = "v0_percentile_exact")]
+    Exact {
+        /// Flat collection of values currently in the window; re-sorted on read.
+        total_count: usize,
+    },
+    /// UDDSketch-backed sketch mode.
+    #[serde(rename = "v0_percentile_hybrid")]
+    Sketch { sketch: UDDSketch },
+}
+
+/// Hybrid exact→sketch percentile operator.
+///
+/// - **Exact mode (default, ≤256 observations):** per-bucket `Vec<f64>` of
+///   raw values kept in `retention`. On `read`, all non-expired buckets'
+///   values are flat-merged, sorted, and interpolated (numpy default).
+/// - **Sketch mode (> 256):** raw values are inserted into a UDDSketch
+///   (α₀=0.01, max_buckets=2048). The per-bucket retention list is kept so
+///   that on bucket expiry we call `sketch.decrement(v)` per value.
+///
+/// Transition is one-way: once Sketch, never back to Exact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PercentileOp {
     field: String,
     quantile: f64,
-    buffer: RingBuffer<PercentileBucket>,
+    /// Per-bucket raw values. Always tracked (both modes). In Exact mode
+    /// this is the state-of-truth; in Sketch mode it's the retraction log.
+    retention: RetractingRingBuffer<PercentileBucket>,
+    mode: PercentileMode,
     optional: bool,
 }
 
@@ -744,7 +802,8 @@ impl PercentileOp {
         Self {
             field: field.into(),
             quantile: quantile.clamp(0.0, 1.0),
-            buffer: RingBuffer::new(window_duration, bucket_duration),
+            retention: RetractingRingBuffer::new(window_duration, bucket_duration),
+            mode: PercentileMode::Exact { total_count: 0 },
             optional,
         }
     }
@@ -773,6 +832,43 @@ impl PercentileOp {
             sorted[lower] * (1.0 - frac) + sorted[upper] * frac
         }
     }
+
+    /// Observe that the current total has just crossed the exact threshold.
+    /// Transitions to Sketch mode: seed a fresh UDDSketch with every value
+    /// currently in the retention buckets.
+    fn maybe_transition(&mut self) {
+        let should_transition = matches!(
+            &self.mode,
+            PercentileMode::Exact { total_count } if *total_count > PERCENTILE_EXACT_THRESHOLD
+        );
+        if !should_transition {
+            return;
+        }
+        let mut sketch = UDDSketch::new(PERCENTILE_SKETCH_ALPHA, 2048);
+        for bucket in self.retention.buckets_iter() {
+            for v in &bucket.values {
+                sketch.insert(*v);
+            }
+        }
+        self.mode = PercentileMode::Sketch { sketch };
+    }
+
+    /// For introspection/tests: read current mode as `"exact"` or `"sketch"`.
+    pub fn mode_name(&self) -> &'static str {
+        match &self.mode {
+            PercentileMode::Exact { .. } => "exact",
+            PercentileMode::Sketch { .. } => "sketch",
+        }
+    }
+
+    /// Test helper: count of observations currently tracked in Exact mode.
+    /// Returns `None` in Sketch mode (caller should inspect the sketch).
+    pub fn exact_count(&self) -> Option<usize> {
+        match &self.mode {
+            PercentileMode::Exact { total_count } => Some(*total_count),
+            PercentileMode::Sketch { .. } => None,
+        }
+    }
 }
 
 impl Operator for PercentileOp {
@@ -782,9 +878,9 @@ impl Operator for PercentileOp {
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
     ) -> Result<(), TallyError> {
-        match resolve_field(&self.field, event, enrichment) {
+        let val = match resolve_field(&self.field, event, enrichment) {
             None => {
-                if self.optional {
+                return if self.optional {
                     Ok(())
                 } else {
                     Err(TallyError::Type {
@@ -794,52 +890,130 @@ impl Operator for PercentileOp {
                     })
                 }
             }
-            Some(val) => {
-                if let Some(f) = val.as_f64() {
-                    self.buffer.update_current(
-                        |bucket| {
-                            bucket.values.push(f);
-                        },
-                        now,
-                    );
-                    Ok(())
+            Some(v) => v,
+        };
+        let f = match val.as_f64() {
+            Some(x) => x,
+            None => {
+                return Err(TallyError::Type {
+                    field: self.field.clone(),
+                    expected: "numeric".into(),
+                    got: format!("{}", val),
+                })
+            }
+        };
+
+        // Record into retention + per-mode state. Eviction callback handles
+        // sketch decrement and exact-mode total adjustment.
+        match &mut self.mode {
+            PercentileMode::Exact { total_count } => {
+                let mut evicted = 0usize;
+                self.retention.update_current(
+                    |bucket| bucket.values.push(f),
+                    now,
+                    |bucket| {
+                        evicted += bucket.values.len();
+                        bucket.values.clear();
+                    },
+                );
+                *total_count = total_count.saturating_sub(evicted).saturating_add(1);
+            }
+            PercentileMode::Sketch { sketch } => {
+                // Eviction → decrement sketch for each expiring value.
+                // Use raw pointer dance avoided: borrow sketch mutably inside
+                // the closure via a capture.
+                self.retention.update_current(
+                    |bucket| bucket.values.push(f),
+                    now,
+                    |bucket| {
+                        for v in bucket.values.drain(..) {
+                            sketch.decrement(v);
+                        }
+                    },
+                );
+                sketch.insert(f);
+            }
+        }
+        self.maybe_transition();
+        Ok(())
+    }
+
+    fn read(&mut self, now: SystemTime) -> FeatureValue {
+        // Advance time; on eviction, apply mode-appropriate retraction.
+        match &mut self.mode {
+            PercentileMode::Exact { total_count } => {
+                let mut evicted = 0usize;
+                self.retention.advance_to(now, |bucket| {
+                    evicted += bucket.values.len();
+                    bucket.values.clear();
+                });
+                *total_count = total_count.saturating_sub(evicted);
+            }
+            PercentileMode::Sketch { sketch } => {
+                self.retention.advance_to(now, |bucket| {
+                    for v in bucket.values.drain(..) {
+                        sketch.decrement(v);
+                    }
+                });
+            }
+        }
+        match &self.mode {
+            PercentileMode::Exact { .. } => {
+                let mut all: Vec<f64> = Vec::new();
+                for bucket in self.retention.buckets_iter() {
+                    all.extend_from_slice(&bucket.values);
+                }
+                if all.is_empty() {
+                    return FeatureValue::Missing;
+                }
+                all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                FeatureValue::Float(Self::compute_quantile(&all, self.quantile))
+            }
+            PercentileMode::Sketch { sketch } => {
+                if sketch.is_empty() {
+                    FeatureValue::Missing
                 } else {
-                    Err(TallyError::Type {
-                        field: self.field.clone(),
-                        expected: "numeric".into(),
-                        got: format!("{}", val),
-                    })
+                    let q = sketch.quantile(self.quantile);
+                    if q.is_finite() {
+                        FeatureValue::Float(q)
+                    } else {
+                        FeatureValue::Missing
+                    }
                 }
             }
         }
     }
 
-    fn read(&mut self, now: SystemTime) -> FeatureValue {
-        self.buffer.advance_to(now);
-        // Collect all values from all buckets, then sort
-        let mut all_values: Vec<f64> = Vec::new();
-        for bucket in self.buffer.buckets_iter() {
-            all_values.extend_from_slice(&bucket.values);
-        }
-        if all_values.is_empty() {
-            return FeatureValue::Missing;
-        }
-        all_values.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        FeatureValue::Float(Self::compute_quantile(&all_values, self.quantile))
-    }
-
     fn estimated_bytes(&self) -> usize {
-        // RingBuffer<PercentileBucket{values: Vec<f64>}>
-        // Each bucket has a Vec<f64> with variable length. Estimate from actual data.
-        let mut total = self.buffer.num_buckets() * std::mem::size_of::<PercentileBucket>();
-        for bucket in self.buffer.buckets_iter() {
+        let mut total = self.retention.num_buckets() * std::mem::size_of::<PercentileBucket>();
+        for bucket in self.retention.buckets_iter() {
             total += bucket.values.capacity() * std::mem::size_of::<f64>();
+        }
+        if let PercentileMode::Sketch { sketch } = &self.mode {
+            total += sketch.estimated_bytes();
         }
         total
     }
 
     fn num_buckets(&self) -> usize {
-        self.buffer.num_buckets()
+        self.retention.num_buckets()
+    }
+
+    fn hybrid_telemetry(&self) -> Option<HybridTelemetry> {
+        let (mode, exact_count, sketch_alpha_current) = match &self.mode {
+            PercentileMode::Exact { total_count } => ("exact", *total_count, None),
+            PercentileMode::Sketch { sketch } => {
+                ("sketch", PERCENTILE_EXACT_THRESHOLD, Some(sketch.current_alpha()))
+            }
+        };
+        Some(HybridTelemetry {
+            op: "percentile",
+            mode,
+            exact_count,
+            transition_at: PERCENTILE_EXACT_THRESHOLD,
+            sketch_alpha_current,
+            memory_bytes: self.estimated_bytes(),
+        })
     }
 }
 
