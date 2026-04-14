@@ -1506,6 +1506,14 @@ impl PipelineEngine {
                 }
             });
             if let Some((right_table, on_keys, join_type, right_fields)) = enrich_feat {
+                // Phase 24-04 γ: Stream↔Table enrichment — the Stream
+                // side's watermark propagates unchanged; the Table
+                // side does not gate (Table.wm never exceeds the
+                // source Stream.wm for the attached-to-Table case
+                // already covered by aggregation propagation).
+                self.watermarks
+                    .write()
+                    .propagate_stateless(stream_name, stream_in_order);
                 // Compose the right-side lookup key from the effective event.
                 let right_key =
                     match crate::engine::register::encode_group_by(&on_keys, &effective_event) {
@@ -1602,6 +1610,14 @@ impl PipelineEngine {
                 right_fields,
             )) = ss_join
             {
+                // Phase 24-04 γ: Stream↔Stream join output watermark =
+                // min(left_wm, right_wm). Applied before match work so
+                // the output's wm reflects BOTH inputs as of right now.
+                self.watermarks.write().propagate_join(
+                    &left_stream,
+                    &right_stream,
+                    stream_in_order,
+                );
                 // Determine which side the arrival came from. The primary
                 // stream (`stream_name`) is the origin of the push.
                 let side_opt: Option<crate::engine::operators::JoinSide> =
@@ -1778,6 +1794,20 @@ impl PipelineEngine {
             } else {
                 false
             };
+            // Phase 24-04 γ: pick the right propagation rule.
+            //   - Keyed downstream (aggregation / Table): attach input
+            //     stream's watermark to the output Table.
+            //   - Keyless downstream (stateless derives): pass through.
+            if downstream_def.key_field.is_some() {
+                self.watermarks
+                    .write()
+                    .attach_to_table(stream_name, stream_in_order);
+            } else {
+                self.watermarks
+                    .write()
+                    .propagate_stateless(stream_name, stream_in_order);
+            }
+
             if downstream_def.key_field.is_some() {
                 if !keyed_ready {
                     continue; // Key missing -- skip (LEFT JOIN semantics)

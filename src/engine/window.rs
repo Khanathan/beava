@@ -108,18 +108,110 @@ impl<T: Default + Clone> RingBuffer<T> {
 
 impl<T: Default + Clone + AddAssign> RingBuffer<T> {
     /// Add a value to the current bucket, advancing time if needed.
+    ///
+    /// Retained as a thin compatibility shim: from Phase 24-04 onwards
+    /// every production caller in `src/engine/operators.rs` passes the
+    /// parsed event-time as `now`, and we route through
+    /// `add_at_event_time` so out-of-order events within the window
+    /// land in their historical bucket. A direct alias is cheaper than
+    /// churning every operator call-site.
     pub fn add_to_current(&mut self, value: T, now: SystemTime) {
-        self.advance_to(now);
-        self.buckets[self.head] += value;
+        self.add_at_event_time(value, now);
+    }
+
+    /// Phase 24-04: event-time aware add. Routes `value` into the
+    /// bucket that CONTAINS `event_time` rather than the head bucket.
+    ///
+    /// Behavior:
+    /// - If `event_time >= current_bucket_start + bucket_duration`:
+    ///   advance the head forward (existing expiry semantics) and add
+    ///   to the new head. Same as `add_to_current(value, event_time)`.
+    /// - If `event_time` is within the current bucket: add to head
+    ///   (same as before).
+    /// - If `event_time` falls in a historical bucket still inside the
+    ///   window: the corresponding ring slot is incremented in place —
+    ///   out-of-order events within the window land in the correct
+    ///   bucket.
+    /// - If `event_time` is older than the full window (older than
+    ///   `current_bucket_start - (num_buckets - 1) * bucket_duration`):
+    ///   silently dropped. This is redundant with the
+    ///   `WatermarkTracker` late-drop gate at the TCP layer but safe.
+    pub fn add_at_event_time(&mut self, value: T, event_time: SystemTime) {
+        if let Some(idx) = self.bucket_index_for(event_time) {
+            self.buckets[idx] += value;
+        }
     }
 }
 
 impl<T: Default + Clone> RingBuffer<T> {
     /// Mutate the current (head) bucket via a closure, advancing time if needed.
-    /// Used by min/max operators which need conditional replacement, not additive update.
+    ///
+    /// Phase 24-04: now a shim onto `update_at_event_time` — `now` is
+    /// treated as the event-time by every production caller (the
+    /// rename at the operator layer is explicit in Task 2; this keeps
+    /// it local to the ring).
     pub fn update_current<F: FnOnce(&mut T)>(&mut self, f: F, now: SystemTime) {
-        self.advance_to(now);
-        f(&mut self.buckets[self.head]);
+        self.update_at_event_time(f, now);
+    }
+
+    /// Phase 24-04: event-time aware update. Picks the bucket
+    /// containing `event_time` (see `add_at_event_time` for routing
+    /// semantics). If the event_time is out-of-window, the closure
+    /// is NOT invoked — the event is dropped at the ring level.
+    pub fn update_at_event_time<F: FnOnce(&mut T)>(
+        &mut self,
+        f: F,
+        event_time: SystemTime,
+    ) {
+        if let Some(idx) = self.bucket_index_for(event_time) {
+            f(&mut self.buckets[idx]);
+        }
+    }
+
+    /// Resolve the ring slot corresponding to `event_time`. Returns
+    /// `None` if the event is older than the full window. Side effect:
+    /// if `event_time > current_bucket_start + bucket_duration`, the
+    /// head is advanced forward (new head slot is zeroed per existing
+    /// `advance_to` semantics) and the returned index is the new head.
+    fn bucket_index_for(&mut self, event_time: SystemTime) -> Option<usize> {
+        // Fresh ring — use existing path to initialize.
+        let start = match self.current_bucket_start {
+            Some(s) => s,
+            None => {
+                self.advance_to(event_time);
+                return Some(self.head);
+            }
+        };
+
+        // Forward case: event_time is in the head bucket or beyond →
+        // existing advance_to handles bucket expiry.
+        if event_time >= start {
+            self.advance_to(event_time);
+            return Some(self.head);
+        }
+
+        // Historical case: compute how many buckets back from the head
+        // this event_time falls. Align event_time to its bucket start
+        // and compare.
+        let et_bucket_start = self.bucket_start_for(event_time);
+        let delta = match start.duration_since(et_bucket_start) {
+            Ok(d) => d,
+            Err(_) => return None,
+        };
+        let bucket_secs = self.bucket_duration.as_secs();
+        if bucket_secs == 0 {
+            return Some(self.head);
+        }
+        let delta_buckets = (delta.as_secs() / bucket_secs) as usize;
+        let num_buckets = self.buckets.len();
+        if delta_buckets >= num_buckets {
+            // Past the full window → drop.
+            return None;
+        }
+        // Walk back from the head. Add num_buckets to avoid negative
+        // wrap under modular subtraction.
+        let idx = (self.head + num_buckets - delta_buckets) % num_buckets;
+        Some(idx)
     }
 
     /// Iterate over all bucket values in the ring buffer.
