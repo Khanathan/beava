@@ -1,24 +1,52 @@
-"""``@tl.table`` decorator + Table / TableSource runtime types.
+"""``@tl.table`` decorator + Table / TableSource / TableDerivation runtime types.
 
-Class-form only in Plan 21-01. ``mode="changelog"`` is reserved for v0.1
-and raises ``NotImplementedError``. Function-form Tables ship in Plan 21-02.
+Plan 21-01 shipped the class form. Plan 21-02 adds:
+  * :class:`StatelessOpsMixin` on :class:`Table` — stateless ops on Tables.
+  * :class:`TableDerivation` — returned by ops + function-form derivations.
+  * Function-form ``@tl.table(key=...) def X(...) -> Table:`` — the function
+    is invoked once at registration with upstream descriptors; the returned
+    Table is renamed to the function name and its upstreams captured.
 """
 
 from __future__ import annotations
 
+import inspect
+import typing
+from types import FunctionType
 from typing import Any
 
 from tally._describe import format_describe
 from tally._schema_v0 import extract_schema, schema_mismatch_error
+from tally._stateless_ops import StatelessOpsMixin
 from tally._types_core import FieldSpec
 
 
-class Table:
+class Table(StatelessOpsMixin):
     """Marker / runtime type for tabular inputs.
 
-    Both :class:`TableSource` (external, via ``@tl.table class``) and future
-    ``TableDerivation`` (via ``@tl.table def`` in Plan 21-02) subclass Table.
+    Both :class:`TableSource` and :class:`TableDerivation` subclass Table.
+    The :class:`StatelessOpsMixin` provides the 8 per-row ops; Table's
+    ``_derive`` cascades key-field renames through the derivation chain.
     """
+
+    _key: list[str]
+
+    def _derive(
+        self,
+        *,
+        schema: dict[str, FieldSpec],
+        op: dict[str, Any],
+    ) -> "TableDerivation":
+        return TableDerivation(
+            name=self._name,
+            schema=schema,
+            key=list(self._key),
+            mode=getattr(self, "_mode", "append"),
+            ttl=getattr(self, "_ttl", None),
+            ops=list(self._ops) + [op],
+            upstream=self,
+            upstreams=[self],
+        )
 
 
 class TableSource(Table):
@@ -42,6 +70,8 @@ class TableSource(Table):
         self._key = key
         self._mode = mode
         self._ttl = ttl
+        self._ops: list[dict[str, Any]] = []
+        self._upstreams: list[Table] = []
 
     # --- public introspection ---
     def describe(self) -> dict[str, Any]:
@@ -96,32 +126,221 @@ class TableSource(Table):
         return f"TableSource({self._name!r}, key={list(self._key)!r})"
 
 
+class TableDerivation(Table):
+    """A Table produced by stateless ops or by ``@tl.table def ... -> Table``.
+
+    Carries the key list (which may have been rewritten by ``.rename``), the
+    linear op chain, and the parameter-declared upstreams for DAG build.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        schema: dict[str, FieldSpec],
+        key: list[str],
+        mode: str = "append",
+        ttl: str | None = None,
+        ops: list[dict[str, Any]],
+        upstream: Table | None,
+        upstreams: list[Any],
+        func: FunctionType | None = None,
+        type_hints: dict[str, Any] | None = None,
+    ) -> None:
+        self._name = name
+        self._schema = schema
+        self._key = key
+        self._mode = mode
+        self._ttl = ttl
+        self._ops = ops
+        self._upstream = upstream
+        self._upstreams = upstreams
+        self._func = func
+        self._type_hints = type_hints or {}
+
+    def describe(self) -> dict[str, Any]:
+        return format_describe(
+            name=self._name,
+            kind="table",
+            key=list(self._key),
+            mode=self._mode,
+            schema=self._schema,
+            ttl=self._ttl,
+        )
+
+    @property
+    def _tally_stream_name(self) -> str:
+        return self._name
+
+    def _compile(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "name": self._name,
+            "features": [],
+            "fields": {
+                fname: {
+                    "type": spec.py_type.__name__,
+                    "optional": spec.optional,
+                }
+                for fname, spec in self._schema.items()
+            },
+            "mode": self._mode,
+        }
+        if len(self._key) == 1:
+            d["key_field"] = self._key[0]
+        else:
+            d["key_field"] = None
+            d["key_fields"] = list(self._key)
+        if self._ttl is not None:
+            d["entity_ttl"] = self._ttl
+        if self._ops:
+            d["ops"] = list(self._ops)
+        if self._upstreams:
+            d["depends_on"] = [u._name for u in self._upstreams]
+        return d
+
+    def _to_register_json(self) -> dict[str, Any]:
+        return self._compile()
+
+    def _collect_registrations(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for u in self._upstreams:
+            if hasattr(u, "_collect_registrations"):
+                for reg in u._collect_registrations():
+                    if reg["name"] not in seen:
+                        seen.add(reg["name"])
+                        out.append(reg)
+        if self._name not in seen:
+            seen.add(self._name)
+            out.append(self._compile())
+        return out
+
+    def __repr__(self) -> str:
+        return (
+            f"TableDerivation({self._name!r}, key={self._key!r}, "
+            f"ops={len(self._ops)})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Decorator
+# ---------------------------------------------------------------------------
+
+
+def _build_table_derivation_from_func(
+    func: FunctionType,
+    *,
+    key_list: list[str],
+    ttl: str | None,
+    mode: str,
+) -> TableDerivation:
+    """Invoke a derivation function once to build its TableDerivation."""
+    try:
+        hints = typing.get_type_hints(func)
+    except Exception:
+        hints = dict(getattr(func, "__annotations__", {}))
+
+    if "return" not in hints:
+        raise TypeError(
+            f"@tl.table function {func.__name__!r} must declare a "
+            f"return type annotation (``-> Table``)"
+        )
+    ret = hints["return"]
+    if not (isinstance(ret, type) and issubclass(ret, Table)):
+        raise TypeError(
+            f"@tl.table function {func.__name__!r} must return Table; "
+            f"annotation was {ret!r}"
+        )
+
+    sig = inspect.signature(func)
+    params = list(sig.parameters.values())
+    if not params:
+        raise TypeError(
+            f"derivation function {func.__name__!r} has no upstreams; "
+            f"annotate parameters with your Stream/Table types"
+        )
+    upstreams: list[Any] = []
+    for p in params:
+        if p.name not in hints:
+            raise TypeError(
+                f"derivation function {func.__name__!r} parameter {p.name!r} "
+                f"has no type annotation"
+            )
+        upstreams.append(hints[p.name])
+
+    result = func(*upstreams)
+    if not isinstance(result, Table):
+        raise TypeError(
+            f"derivation function {func.__name__!r} annotated -> Table but "
+            f"returned {type(result).__name__}"
+        )
+
+    # If upstreams include something with a key field and the derivation
+    # passes through / transforms the key, we enforce the declared key still
+    # matches the result's actual key field list.
+    result_key = getattr(result, "_key", key_list)
+
+    if isinstance(result, TableDerivation):
+        # Enforce declared key matches the derivation's current key list.
+        if list(result_key) != list(key_list):
+            raise TypeError(
+                f"@tl.table(key={key_list!r}) function {func.__name__!r} "
+                f"returned a Table with key {list(result_key)!r}; rename or "
+                f"project so the output key matches the declared key"
+            )
+        result._name = func.__name__
+        result._upstreams = list(upstreams)
+        result._func = func
+        result._type_hints = hints
+        result._mode = mode
+        result._ttl = ttl
+        return result
+
+    # result is a TableSource — wrap as a passthrough TableDerivation.
+    if list(result_key) != list(key_list):
+        raise TypeError(
+            f"@tl.table(key={key_list!r}) function {func.__name__!r} "
+            f"returned a Table with key {list(result_key)!r}"
+        )
+    return TableDerivation(
+        name=func.__name__,
+        schema=dict(result._schema),
+        key=list(key_list),
+        mode=mode,
+        ttl=ttl,
+        ops=[],
+        upstream=result,
+        upstreams=list(upstreams),
+        func=func,
+        type_hints=hints,
+    )
+
+
 def table(
-    cls: type | None = None,
+    cls: type | FunctionType | None = None,
     *,
     key: str | list[str] | None = None,
     ttl: str | None = None,
     mode: str = "append",
 ):
-    """Decorator that declares a Table.
+    """Decorator that declares a Table (class or function form).
 
-    Usage::
+    Class form::
 
         @tl.table(key="user_id")
         class Users:
             user_id: str
             name: str
 
-        @tl.table(key=["user_id", "merchant_id"], ttl="30d")
-        class UM:
-            user_id: str
-            merchant_id: str
-            score: float
+    Function form (Plan 21-02)::
+
+        @tl.table(key="user_id")
+        def UserLast(clicks: Clicks) -> tl.Table:
+            return clicks  # until aggregation lands in 21-03
     """
     if key is None:
         raise TypeError("@tl.table requires key=... (str or list[str])")
 
-    # Normalize key to list[str]
     if isinstance(key, str):
         key_list = [key]
     elif isinstance(key, (list, tuple)) and all(isinstance(k, str) for k in key):
@@ -133,7 +352,6 @@ def table(
     if not key_list:
         raise TypeError("@tl.table key must not be empty")
 
-    # Validate mode
     if mode == "changelog":
         raise NotImplementedError(
             "mode='changelog' ships in v0.1; use mode='append' (default)"
@@ -143,34 +361,33 @@ def table(
             f"@tl.table mode must be 'append' or 'changelog', got {mode!r}"
         )
 
-    def _wrap(target: Any) -> TableSource:
-        if not isinstance(target, type):
-            raise NotImplementedError(
-                "@tl.table function form ships in Plan 21-02; "
-                "use @tl.table class form until then"
+    def _wrap(target: Any) -> Table:
+        if isinstance(target, FunctionType):
+            return _build_table_derivation_from_func(
+                target, key_list=key_list, ttl=ttl, mode=mode
             )
-        schema = extract_schema(target)
-
-        # Every key field must be declared in the schema.
-        for k in key_list:
-            if k not in schema:
-                raise TypeError(
-                    schema_mismatch_error(k, schema, f"{target.__name__} schema")
-                )
-
-        return TableSource(
-            name=target.__name__,
-            schema=schema,
-            key=key_list,
-            mode=mode,
-            ttl=ttl,
+        if isinstance(target, type):
+            schema = extract_schema(target)
+            for k in key_list:
+                if k not in schema:
+                    raise TypeError(
+                        schema_mismatch_error(k, schema, f"{target.__name__} schema")
+                    )
+            return TableSource(
+                name=target.__name__,
+                schema=schema,
+                key=key_list,
+                mode=mode,
+                ttl=ttl,
+            )
+        raise TypeError(
+            f"@tl.table must be applied to a class or function, got "
+            f"{type(target).__name__}"
         )
 
-    # Table always uses keyword arguments, so we never hit the bare form.
-    # But support it defensively in case someone writes `@tl.table` with no parens.
     if cls is not None:
         return _wrap(cls)
     return _wrap
 
 
-__all__ = ["table", "Table", "TableSource"]
+__all__ = ["table", "Table", "TableSource", "TableDerivation"]
