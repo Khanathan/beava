@@ -49,20 +49,22 @@ curl -s http://localhost:6401/health | python3 -m json.tool
 cat > /tmp/tally_demo.py << 'PYEOF'
 import tally as tl
 
-# Define a source -- raw payment events
-@tl.source
+# Define a stream -- raw payment events
+@tl.stream
 class RawTransactions:
-    pass
+    user_id: str
+    amount: float
+    merchant_id: str
 
 # Define features -- 5 real-time fraud signals
-@tl.dataset(depends_on=[RawTransactions])
-class UserFeatures:
-    features = tl.group_by("user_id").agg(
+@tl.table(key="user_id")
+def UserFeatures(txs: RawTransactions) -> tl.Table:
+    return txs.group_by("user_id").agg(
         tx_count_1h=tl.count(window="1h"),
         tx_sum_1h=tl.sum("amount", window="1h"),
         avg_amount=tl.avg("amount", window="1h"),
         max_amount=tl.max("amount", window="1h"),
-        unique_merchants=tl.distinct_count("merchant_id", window="1h"),
+        unique_merchants=tl.count_distinct("merchant_id", window="1h"),
     )
 
 # Connect and register

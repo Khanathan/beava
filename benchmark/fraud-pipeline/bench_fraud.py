@@ -29,99 +29,120 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'python')
 import tally as tl
 
 # ---------------------------------------------------------------------------
-# Pipeline definition: 5 entity types, 47 features
+# Pipeline definition: 5 entity types, 47 features (v0 API)
 # ---------------------------------------------------------------------------
 
-@tl.source
+@tl.stream
 class RawTransactions:
     """Raw payment events. Each event has user_id, merchant_id, device_id, ip."""
-    pass
+    user_id: str
+    merchant_id: str
+    device_id: str
+    ip_address: str
+    amount: float
+    country: str
+    status: str
+    currency: str
+
 
 # --- Entity 1: User transaction behavior (25 features) ---
 
-@tl.dataset(depends_on=[RawTransactions])
-class UserTransactions:
-    features = tl.group_by("user_id").agg(
-        # Volume across window tiers
-        tx_count_30m=tl.count(window="30m"),
-        tx_count_1h=tl.count(window="1h"),
-        tx_count_24h=tl.count(window="24h"),
-        tx_count_7d=tl.count(window="7d"),
-        # Amount aggregations
-        tx_sum_1h=tl.sum("amount", window="1h"),
-        tx_sum_24h=tl.sum("amount", window="24h"),
-        tx_avg_1h=tl.avg("amount", window="1h"),
-        tx_avg_24h=tl.avg("amount", window="24h"),
-        tx_max_24h=tl.max("amount", window="24h"),
-        tx_min_24h=tl.min("amount", window="24h"),
-        tx_stddev_24h=tl.stddev("amount", window="24h"),
-        # Cardinality
-        unique_merchants_1h=tl.distinct_count("merchant_id", window="1h"),
-        unique_merchants_24h=tl.distinct_count("merchant_id", window="24h"),
-        unique_countries_24h=tl.distinct_count("country", window="24h"),
-        unique_devices_24h=tl.distinct_count("device_id", window="24h"),
-        unique_ips_24h=tl.distinct_count("ip_address", window="24h"),
-        # Context
-        last_country=tl.last("country"),
-        last_merchant=tl.last("merchant_id"),
-        last_amount=tl.last("amount"),
+@tl.table(key="user_id")
+def UserTransactions(txs: RawTransactions) -> tl.Table:
+    return (
+        txs.group_by("user_id")
+        .agg(
+            # Volume across window tiers
+            tx_count_30m=tl.count(window="30m"),
+            tx_count_1h=tl.count(window="1h"),
+            tx_count_24h=tl.count(window="24h"),
+            tx_count_7d=tl.count(window="7d"),
+            # Amount aggregations
+            tx_sum_1h=tl.sum("amount", window="1h"),
+            tx_sum_24h=tl.sum("amount", window="24h"),
+            tx_avg_1h=tl.avg("amount", window="1h"),
+            tx_avg_24h=tl.avg("amount", window="24h"),
+            tx_max_24h=tl.max("amount", window="24h"),
+            tx_min_24h=tl.min("amount", window="24h"),
+            tx_stddev_24h=tl.stddev("amount", window="24h"),
+            # Cardinality
+            unique_merchants_1h=tl.count_distinct("merchant_id", window="1h"),
+            unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
+            unique_countries_24h=tl.count_distinct("country", window="24h"),
+            unique_devices_24h=tl.count_distinct("device_id", window="24h"),
+            unique_ips_24h=tl.count_distinct("ip_address", window="24h"),
+            # Context
+            last_country=tl.last("country"),
+            last_merchant=tl.last("merchant_id"),
+            last_amount=tl.last("amount"),
+        )
+        .with_columns(
+            velocity_spike=(tl.col("tx_count_1h") / 1) / (tl.col("tx_count_24h") / 24),
+            amount_vs_avg=tl.col("last_amount") / tl.col("tx_avg_24h"),
+            spend_acceleration=tl.col("tx_sum_1h") / (tl.col("tx_sum_24h") / 24),
+            high_value_ratio=tl.col("tx_max_24h") / tl.col("tx_avg_24h"),
+            merchant_diversity_1h=tl.col("unique_merchants_1h") / tl.col("tx_count_1h"),
+            country_hop_flag=tl.col("unique_countries_24h") > 3,
+        )
     )
-    # Derived signals
-    velocity_spike = tl.derive("(tx_count_1h / 1) / (tx_count_24h / 24)")
-    amount_vs_avg = tl.derive("last_amount / tx_avg_24h")
-    spend_acceleration = tl.derive("tx_sum_1h / (tx_sum_24h / 24)")
-    high_value_ratio = tl.derive("tx_max_24h / tx_avg_24h")
-    merchant_diversity_1h = tl.derive("unique_merchants_1h / tx_count_1h")
-    country_hop_flag = tl.derive("unique_countries_24h > 3")
+
 
 # --- Entity 2: Failed transactions (4 features) ---
 
-@tl.dataset(depends_on=[RawTransactions], filter="status == 'failed'")
-class UserFailedTxns:
-    features = tl.group_by("user_id").agg(
-        failed_count_30m=tl.count(window="30m"),
-        failed_count_1h=tl.count(window="1h"),
-        failed_count_24h=tl.count(window="24h"),
-        failed_sum_24h=tl.sum("amount", window="24h"),
+@tl.table(key="user_id")
+def UserFailedTxns(txs: RawTransactions) -> tl.Table:
+    # v0 replaced decorator-level filter= with an explicit .filter() pre-step.
+    return (
+        txs.filter(tl.col("status") == "failed")
+        .group_by("user_id")
+        .agg(
+            failed_count_30m=tl.count(window="30m"),
+            failed_count_1h=tl.count(window="1h"),
+            failed_count_24h=tl.count(window="24h"),
+            failed_sum_24h=tl.sum("amount", window="24h"),
+        )
     )
+
 
 # --- Entity 3: Merchant risk profile (8 features) ---
 
-@tl.dataset(depends_on=[RawTransactions])
-class MerchantActivity:
-    features = tl.group_by("merchant_id").agg(
+@tl.table(key="merchant_id")
+def MerchantActivity(txs: RawTransactions) -> tl.Table:
+    return txs.group_by("merchant_id").agg(
         merch_tx_count_1h=tl.count(window="1h"),
         merch_tx_count_24h=tl.count(window="24h"),
         merch_tx_sum_24h=tl.sum("amount", window="24h"),
         merch_avg_amount=tl.avg("amount", window="24h"),
-        merch_unique_users_1h=tl.distinct_count("user_id", window="1h"),
-        merch_unique_users_24h=tl.distinct_count("user_id", window="24h"),
+        merch_unique_users_1h=tl.count_distinct("user_id", window="1h"),
+        merch_unique_users_24h=tl.count_distinct("user_id", window="24h"),
         merch_max_amount_24h=tl.max("amount", window="24h"),
         merch_stddev_24h=tl.stddev("amount", window="24h"),
     )
 
+
 # --- Entity 4: Device fingerprint (5 features) ---
 
-@tl.dataset(depends_on=[RawTransactions])
-class DeviceActivity:
-    features = tl.group_by("device_id").agg(
+@tl.table(key="device_id")
+def DeviceActivity(txs: RawTransactions) -> tl.Table:
+    return txs.group_by("device_id").agg(
         device_tx_count_1h=tl.count(window="1h"),
         device_tx_count_24h=tl.count(window="24h"),
-        device_unique_users_1h=tl.distinct_count("user_id", window="1h"),
-        device_unique_users_24h=tl.distinct_count("user_id", window="24h"),
-        device_unique_merchants_24h=tl.distinct_count("merchant_id", window="24h"),
+        device_unique_users_1h=tl.count_distinct("user_id", window="1h"),
+        device_unique_users_24h=tl.count_distinct("user_id", window="24h"),
+        device_unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
     )
+
 
 # --- Entity 5: IP address activity (5 features) ---
 
-@tl.dataset(depends_on=[RawTransactions])
-class IPActivity:
-    features = tl.group_by("ip_address").agg(
+@tl.table(key="ip_address")
+def IPActivity(txs: RawTransactions) -> tl.Table:
+    return txs.group_by("ip_address").agg(
         ip_tx_count_1h=tl.count(window="1h"),
         ip_tx_count_24h=tl.count(window="24h"),
-        ip_unique_users_1h=tl.distinct_count("user_id", window="1h"),
-        ip_unique_users_24h=tl.distinct_count("user_id", window="24h"),
-        ip_unique_devices_24h=tl.distinct_count("device_id", window="24h"),
+        ip_unique_users_1h=tl.count_distinct("user_id", window="1h"),
+        ip_unique_users_24h=tl.count_distinct("user_id", window="24h"),
+        ip_unique_devices_24h=tl.count_distinct("device_id", window="24h"),
     )
 
 ALL_DATASETS = [
@@ -221,7 +242,7 @@ def profile_pipeline():
     print(f"   IPActivity:         5")
     print(f" Windows:   30m, 1h, 24h, 7d")
     print(f" Operators: count, sum, avg, min, max, stddev,")
-    print(f"            distinct_count (HLL), last, derive")
+    print(f"            count_distinct (HLL), last, with_columns")
     print()
 
     # Push 1000 events to warm up

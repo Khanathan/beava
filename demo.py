@@ -15,25 +15,41 @@ sys.path.insert(0, "python")
 
 import tally as tl
 
-# -- Tally v2.0 Pipeline: one event per keystroke ------------------
+# -- Tally v0 Pipeline: one event per keystroke --------------------
 
-@tl.source
+@tl.stream
 class RawKeystrokes:
     """Raw keystroke events from the typing test."""
-    pass
+    user_id: str
+    char: str
+    expected: str
+    correct: int
+    gap_ms: float
+    position: int
 
-@tl.dataset(depends_on=[RawKeystrokes])
-class KeystrokeFeatures:
-    features = tl.group_by("user_id").agg(
-        keys_total=tl.count(window="1h"),
-        keys_1m=tl.count(window="1m"),
-        correct_1m=tl.count(window="1m", where="_event.correct == 1"),
-        errors_1m=tl.count(window="1m", where="_event.correct == 0"),
-        avg_gap_ms=tl.avg("gap_ms", window="1m"),
-        max_gap_ms=tl.max("gap_ms", window="1m"),
+
+@tl.table(key="user_id")
+def KeystrokeFeatures(ks: RawKeystrokes) -> tl.Table:
+    # Two filtered sub-streams so the correct/error counts only see
+    # their respective events. v0's count(where=...) was replaced by
+    # explicit .filter(col) before .group_by(...).agg(...).
+    correct = ks.filter(tl.col("correct") == 1)
+    errors = ks.filter(tl.col("correct") == 0)
+    return (
+        ks.group_by("user_id")
+        .agg(
+            keys_total=tl.count(window="1h"),
+            keys_1m=tl.count(window="1m"),
+            avg_gap_ms=tl.avg("gap_ms", window="1m"),
+            max_gap_ms=tl.max("gap_ms", window="1m"),
+        )
+        .join(correct.group_by("user_id").agg(correct_1m=tl.count(window="1m")), on="user_id", type="left")
+        .join(errors.group_by("user_id").agg(errors_1m=tl.count(window="1m")), on="user_id", type="left")
+        .with_columns(
+            accuracy=tl.col("correct_1m") / tl.col("keys_1m") * 100,
+            wpm=tl.col("keys_1m") / 5,  # standard: 1 word = 5 chars
+        )
     )
-    accuracy = tl.derive("correct_1m / keys_1m * 100")
-    wpm = tl.derive("keys_1m / 5")  # standard: 1 word = 5 chars
 
 # -- Passages ------------------------------------------------------
 
