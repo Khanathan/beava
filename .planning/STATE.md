@@ -1,8 +1,8 @@
 # Project State
 
 **Current Milestone:** v0 Restructure
-**Active Phase:** 24 — Watermarks + Retractions + Per-Table Storage (plans 01, 02, 03, 04 complete)
-**Last Updated:** 2026-04-14 (post-24-04 closeout)
+**Active Phase:** 25 — Query surface + TTL + warnings (pending kickoff; Phase 24 closed)
+**Last Updated:** 2026-04-14 (post-24-05 closeout)
 
 ## Milestone Status
 
@@ -67,10 +67,11 @@ See `.planning/milestones/v2.0-ROADMAP.md` and `.planning/milestones/v2.1-PAUSED
   - 23-01: Stream↔Table enrichment (inner+left, `_right` collision passthrough) + composite group_by keys (lifted from 22-04 deferral); `stream_stream` / `table_table` stubbed for 23-02 / 23-03 — shipped (2026-04-14)
   - 23-02: Stream↔Stream symmetric interval windowed join (`StreamJoinBuffer` primitives + engine wiring, 14 tests) — shipped (2026-04-14)
   - 23-03: Table↔Table same-key join (marker-based cascade), 3-shape cross-integration tests (Rust + pytest), extended benchmark matrix with `join_small_1c`/`enrich_small_1c` characterization cells at 97-98% of `small_1c`. `gate_passed=true` on 7-run median matrix; all 9 cells within ±5% of BASELINE.json — shipped (2026-04-14)
-- Phase 24 (watermarks + retractions + **per-Table row storage**) — active (4 / 5 plans complete)
-  - Scope expansion: CEO Option 1 decision on 2026-04-14 folded the per-Table row storage redesign into Phase 24 (see `.planning/phases/23-joins/23-03-SUMMARY.md::Phase 24 handoff`). Storage redesign is the foundational task before watermark / retraction work — 7 TT tests `#[ignore]`'d in Phase 23 unblock once per-Table shadow storage lands.
+- Phase 24 (watermarks + retractions + **per-Table row storage**) — **Complete** (5 / 5 plans, 2026-04-14)
+  - Scope expansion: CEO Option 1 decision on 2026-04-14 folded the per-Table row storage redesign into Phase 24 (see `.planning/phases/23-joins/23-03-SUMMARY.md::Phase 24 handoff`). Storage redesign was the foundational task before watermark / retraction work — 7 TT tests `#[ignore]`'d in Phase 23 unblocked once per-Table shadow storage landed.
   - 24-01: Table row storage primitive (EntityState.table_rows, TableRow Live/Tombstoned, 4 StateStore methods with 7d grace GC, snapshot codec v7 with v6-on-read migration). 7 + 5 new tests; 679/679 lib; no regression in adjacent suites. Commits `fa260a8`, `3ac04ad`. Shipped 2026-04-14.
   - 24-02: TCP opcode wiring (OP_PUSH_TABLE=0x0B / OP_DELETE_TABLE=0x0C) + merged GET view (streams + Live table_rows + static_features) + Python SDK `app.push(table, key, fields)` / `app.delete(table, key)` via `_tally_kind` dispatch. 6 Rust TCP tests + 3 parse-level + 7 pytest e2e. 682/682 lib; 418 pytests pass. Commits `f539af2`, `6b4a668`. Shipped 2026-04-14.
   - 24-03: TT cascade migration — rewrote `cascade_table_upsert` to read `table_rows[A]/[B]` via `get_table_row` and write to `table_rows[output]`; removed `__tt_left_*`/`__tt_right_*` markers entirely; un-ignored all 7 Phase 23 TT tests (12/12 pass). 5 new migration tests. Regression gauntlet green (ST 6/6, SS 14/14, integration 3/3, composite 5/5, register 21/21, pytest 418+2). Commits `5352e21`, `b4f0038`. Shipped 2026-04-14.
   - 24-04: Per-stream watermarks + `_event_time` parsing (iso8601 / unix-ms / unix-seconds, wall-clock fallback) + γ propagation at join/agg boundaries (stateless pass-through) + event-time bucket routing in RingBuffer (out-of-order within 5s lands in historical bucket) + `event_time()` builtin + `/debug/streams/:name` + `tally_late_events_dropped_total{stream}` counter on `/metrics`. 9 + 7 new Rust integration tests, 4 new pytest e2e, 700/700 lib (up from 697). Commits `ba478f9`, `43678c1`, `8688bc6`. Shipped 2026-04-14.
-  - 24-05: Multi-shape integration tests + 9-cell benchmark gate — next.
+  - 24-05: Multi-shape DAG integration tests (5/5 in `tests/test_phase24_integration.rs` covering storage + watermarks + cascade together: happy path, OOO within 5s, late drop past 5s, tombstone cascade through TT-join, 7d-grace GC) + 9-cell benchmark matrix gate (`MATRIX-V0-POST-24.json`, 7-run median, all 9 cells within −5% of BASELINE; gate_passed=true) + 4 new characterization cells (`late_events_small_1c`, `tombstone_cascade_small_1c`, `tt_join_real_small_1c`, `enrich_with_wm_small_1c`). Phase 24 SUMMARY written; 700/700 lib + 422 pytest pass on fresh server. Commits `060d30c`, `edc0e1f`. Shipped 2026-04-14.
+- Phase 25 (query surface, TTL, warnings) — pending kickoff.
