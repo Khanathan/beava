@@ -42,18 +42,20 @@ def test_stream_table_enrich_tcp_roundtrip(app):
 
     app.register(Clicks, UserProfile, Enriched, EnrichedAgg)
 
-    # Right-side row exists for u1 only.
-    app.set("u1", {"country": "US"})
+    # Unique key prefix per test — the session-scoped `app` fixture shares
+    # state across the whole pytest run; distinctive prefixes prevent
+    # cross-test pollution (matches the pattern used in test_v0_joins_e2e.py).
+    app.set("stj_u1", {"country": "US"})
 
-    # Left-hit (u1) and left-miss (u2) — type=left so both must cascade.
-    app.push_sync(Clicks, {"user_id": "u1", "page": "/home"})
-    app.push_sync(Clicks, {"user_id": "u2", "page": "/x"})
+    # Left-hit (stj_u1) and left-miss (stj_u2) — type=left so both cascade.
+    app.push_sync(Clicks, {"user_id": "stj_u1", "page": "/home"})
+    app.push_sync(Clicks, {"user_id": "stj_u2", "page": "/x"})
     app.flush()
 
-    row_u1 = app.get("u1")
-    row_u2 = app.get("u2")
-    assert row_u1["n"] == 1, f"u1 enriched-agg row: {row_u1!r}"
-    assert row_u2["n"] == 1, f"u2 left-miss row should still cascade: {row_u2!r}"
+    row_u1 = app.get("stj_u1")
+    row_u2 = app.get("stj_u2")
+    assert row_u1["n"] == 1, f"stj_u1 enriched-agg row: {row_u1!r}"
+    assert row_u2["n"] == 1, f"stj_u2 left-miss row should still cascade: {row_u2!r}"
 
 
 def test_stream_table_enrich_composite_key_tcp(app):
