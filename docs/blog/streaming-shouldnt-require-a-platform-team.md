@@ -147,20 +147,37 @@ I'm writing this section out in full because I'd rather you know before you pick
 
 ## Performance
 
-Benchmarks are in the repo (`benchmark/tally-throughput/bench_v0.py`). The nine-cell matrix — small/medium/large pipelines × 1/4/8 clients — is the pre-launch regression gate; v0 sign-off requires every cell within 5% of the v2.0 baseline.
+Benchmarks live in the repo under `benchmark/tally-throughput/bench_v0.py`. The nine-cell matrix — small / medium / large pipelines × 1 / 4 / 8 concurrent clients — is the pre-launch regression gate; v0 sign-off requires every cell within 5% of the v2.0 baseline captured in `.planning/phases/22-stream-aggregation-engine/BASELINE.json`.
 
-The launch headline number will be the 30-day replay on the production VM: thirty million synthetic fraud-shaped events, pushed through the fraud pipeline (counts, sums, percentiles, distinct counts, heavy hitters), measured on a [Hetzner CX22]({{DEMO_URL}}) (2 vCPU, 4 GB RAM). That number fills in here once the 5-day bare-metal run completes:
+Headline number, sourced from the worst 1-client cell of `MATRIX-V0-FINAL.json` (so the quote is honest rather than cherry-picked):
 
-```
-$ python3 benchmark/replay/replay_30d.py --events 30000000 --workers 8
-events_total=30000000
-elapsed_seconds=<TBD after deploy>
-events_per_sec=<TBD after deploy>
-p50_push_us=<TBD>
-p99_push_us=<TBD>
-```
+**`small_1c`: 109,518 events/sec sustained, 6.13 µs p50, 9.55 µs p99 push latency** (7-run median, 30,000 events per run; regression vs v2.0 baseline: −4.84%).
 
-The live demo at **{{DEMO_URL}}** polls `/public/stats` every two seconds and shows the counters update in real time — read-only, nothing to set up. Sketch micro-benchmarks are in the repo too: UDDSketch insert under 500 ns, Count-Min Sketch insert under 200 ns, HyperLogLog insert under 200 ns, on commodity hardware.
+Box: Intel Xeon 6975P-C, 48 vCPU (24 cores / 2 threads), 380 GiB RAM, KVM guest on Debian 13, built with `cargo build --release --bin tally`. The full matrix:
+
+| Cell        |   eps_median |  p50 µs |  p99 µs | Δ% vs BASELINE |
+|-------------|-------------:|--------:|--------:|---------------:|
+| small_1c    |      109,518 |    6.13 |    9.55 |          −4.84 |
+| small_4c    |       28,452 |   78.66 |  683.33 |          +1.40 |
+| small_8c    |       30,565 |  119.48 | 1549.81 |          +0.65 |
+| medium_1c   |      111,264 |    6.14 |   10.96 |          −3.64 |
+| medium_4c   |       27,651 |   78.95 |  674.40 |          −1.93 |
+| medium_8c   |       30,222 |  120.85 | 1412.94 |          −0.01 |
+| large_1c    |      113,169 |    6.12 |   11.49 |          −2.77 |
+| large_4c    |       28,795 |   77.64 |  697.88 |          +2.48 |
+| large_8c    |       29,697 |  128.56 | 1597.86 |          −3.19 |
+
+1-client cells are 7-run medians; 4c and 8c cells are 3-run medians, matching the BASELINE.json protocol. Every cell runs on a freshly-started server so the numbers are not inflated by warm caches from earlier runs.
+
+Sketch micro-benchmarks from `MICRO-V0-FINAL.json`, same box:
+
+| Operator          | Target  | Measured  |
+|-------------------|--------:|----------:|
+| UDDSketch insert  | 500 ns  |  23.74 ns |
+| Count-Min insert  | 200 ns  |  14.34 ns |
+| HyperLogLog insert| 200 ns  |  43.17 ns |
+
+The production launch will replay thirty million synthetic fraud-shaped events through the full fraud pipeline on a small Hetzner VM (2 vCPU, 4 GB RAM); the live demo at **{{DEMO_URL}}** will poll `/public/stats` every two seconds so you can watch the counters update on a machine two orders of magnitude smaller than this benchmark box. The gap between numbers on this box and numbers on a `CX22` is exactly the kind of thing a single-binary architecture lets you characterise honestly — same code, different RAM budget.
 
 ## How this fits in the landscape
 
