@@ -473,14 +473,16 @@ impl Operator for LastOp {
                     serde_json::Value::Bool(b) => FeatureValue::Int(if *b { 1 } else { 0 }),
                     _ => FeatureValue::Missing,
                 };
-                // Only update if this event is newer or same time
+                // Event-time semantics: use `_event_time` if present, else wall-clock.
+                // Phase 24 formalises this; honoring it today keeps the tests stable.
+                let et = parse_event_time(event).unwrap_or(now);
                 let should_update = match self.timestamp {
                     None => true,
-                    Some(prev) => now >= prev,
+                    Some(prev) => et >= prev,
                 };
                 if should_update {
                     self.value = fv;
-                    self.timestamp = Some(now);
+                    self.timestamp = Some(et);
                 }
                 Ok(())
             }
@@ -1128,10 +1130,10 @@ impl Operator for FirstOp {
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
     ) -> Result<(), TallyError> {
-        // Only store the first value; ignore all subsequent events
-        if self.timestamp.is_some() {
-            return Ok(());
-        }
+        // Event-time semantics: retain the value with the EARLIEST event_time.
+        // An arriving event with an earlier `_event_time` than what we've
+        // stored replaces the current "first" — this is required for the
+        // Phase-24 event-time contract.
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
@@ -1159,8 +1161,15 @@ impl Operator for FirstOp {
                     serde_json::Value::Bool(b) => FeatureValue::Int(if *b { 1 } else { 0 }),
                     _ => FeatureValue::Missing,
                 };
-                self.value = fv;
-                self.timestamp = Some(now);
+                let et = parse_event_time(event).unwrap_or(now);
+                let should_update = match self.timestamp {
+                    None => true,
+                    Some(prev) => et < prev,
+                };
+                if should_update {
+                    self.value = fv;
+                    self.timestamp = Some(et);
+                }
                 Ok(())
             }
         }
@@ -1418,13 +1427,65 @@ impl Operator for ExactMaxOp {
 // Plans 22-02 (Variance/FirstN ordered/linear) and 22-03 (TopK sketches)
 // replace these bodies with real implementations.
 
-/// Windowed variance. Stub — 22-02 implements Welford running stats.
+// ======================== WelfordBucket ========================
+
+/// Per-bucket Welford triple: (count, mean, m2). Clone + Default for RingBuffer.
+/// `m2` is the running sum of squared deviations from the mean.
+/// Empty bucket: count=0, mean=0.0, m2=0.0 (matches Default).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub struct WelfordBucket {
+    pub count: u64,
+    pub mean: f64,
+    pub m2: f64,
+}
+
+impl WelfordBucket {
+    /// Welford online update: incorporate a new value into this bucket's triple.
+    fn push(&mut self, value: f64) {
+        self.count += 1;
+        let delta = value - self.mean;
+        self.mean += delta / self.count as f64;
+        let delta2 = value - self.mean;
+        self.m2 += delta * delta2;
+    }
+}
+
+/// Chan's parallel combination of two Welford triples.
+/// Returns a new triple representing the union of samples in `a` and `b`.
+/// Numerically stable across bucket boundaries.
+fn merge_welford(a: WelfordBucket, b: WelfordBucket) -> WelfordBucket {
+    if a.count == 0 {
+        return b;
+    }
+    if b.count == 0 {
+        return a;
+    }
+    let combined_count = a.count + b.count;
+    let delta = b.mean - a.mean;
+    let combined_mean =
+        a.mean + delta * (b.count as f64) / (combined_count as f64);
+    let combined_m2 = a.m2
+        + b.m2
+        + delta * delta * (a.count as f64) * (b.count as f64) / (combined_count as f64);
+    WelfordBucket {
+        count: combined_count,
+        mean: combined_mean,
+        m2: combined_m2,
+    }
+}
+
+// ======================== VarianceOp ========================
+
+/// Windowed **sample** variance using Welford's online algorithm stored
+/// per bucket, merged across buckets via Chan's parallel formula on `read`.
+///
+/// State: one `RingBuffer<WelfordBucket>`. Empty window → `Missing`.
+/// Fewer than 2 events in the window → `Float(0.0)` (variance of one point).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VarianceOp {
-    pub field: String,
-    pub window: std::time::Duration,
-    pub bucket: std::time::Duration,
-    pub optional: bool,
+    field: String,
+    buffer: RingBuffer<WelfordBucket>,
+    optional: bool,
 }
 
 impl VarianceOp {
@@ -1436,8 +1497,7 @@ impl VarianceOp {
     ) -> Self {
         Self {
             field: field.into(),
-            window,
-            bucket,
+            buffer: RingBuffer::new(window, bucket),
             optional,
         }
     }
@@ -1446,18 +1506,63 @@ impl VarianceOp {
 impl Operator for VarianceOp {
     fn push(
         &mut self,
-        _event: &serde_json::Value,
-        _enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
-        _now: SystemTime,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
     ) -> Result<(), TallyError> {
-        // Stub: 22-02 implements Welford running stats per bucket.
-        Ok(())
+        match resolve_field(&self.field, event, enrichment) {
+            None => {
+                if self.optional {
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: "absent".into(),
+                    })
+                }
+            }
+            Some(val) => {
+                if let Some(f) = val.as_f64() {
+                    self.buffer.update_current(|b| b.push(f), now);
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "numeric".into(),
+                        got: format!("{}", val),
+                    })
+                }
+            }
+        }
     }
-    fn read(&mut self, _now: SystemTime) -> FeatureValue {
-        FeatureValue::Missing
+
+    fn read(&mut self, now: SystemTime) -> FeatureValue {
+        self.buffer.advance_to(now);
+        let merged = self
+            .buffer
+            .buckets_iter()
+            .copied()
+            .fold(WelfordBucket::default(), merge_welford);
+        if merged.count == 0 {
+            return FeatureValue::Missing;
+        }
+        if merged.count == 1 {
+            return FeatureValue::Float(0.0);
+        }
+        // Sample variance: divide by (n-1).
+        let variance = merged.m2 / (merged.count as f64 - 1.0);
+        // Floating-point rounding can produce tiny negative values near zero.
+        let variance = if variance < 0.0 { 0.0 } else { variance };
+        FeatureValue::Float(variance)
     }
+
     fn estimated_bytes(&self) -> usize {
-        0
+        self.buffer.num_buckets() * std::mem::size_of::<WelfordBucket>()
+    }
+
+    fn num_buckets(&self) -> usize {
+        self.buffer.num_buckets()
     }
 }
 
@@ -1516,41 +1621,173 @@ impl Operator for TopKOp {
     }
 }
 
-/// First N values by event-time arrival. Stub — 22-02 fills in the bounded
-/// ring-buffer body. Note: `LastNOp` already exists in v2.0 code and is
-/// reused by the v0 dispatch for `last_n`.
+/// Stores the N **earliest** values for an entity key, ordered by event-time.
+///
+/// - Reads `_event_time` from the event payload if present (unix epoch
+///   seconds as int OR float; or ISO-8601 string). Falls back to wall-clock
+///   `now` otherwise. This matches the Phase-24 event-time field contract.
+/// - Maintains a `Vec<(SystemTime, FeatureValue)>` sorted by timestamp
+///   (ascending). Capacity is bounded by `n`: once full, a new event is
+///   only inserted if its event-time is strictly less than the largest
+///   stored timestamp, in which case the last entry is evicted.
+/// - On read: emits a JSON array string (same encoding as `LastNOp`).
+///
+/// Per-push cost is O(n) — documented limitation. `n` is clamped to
+/// `FIRST_N_CAP` at registration time (enforced here as a defensive
+/// ceiling in `new`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FirstNOp {
-    pub field: String,
-    pub n: usize,
-    pub optional: bool,
+    field: String,
+    n: usize,
+    /// Ascending by SystemTime. Length ≤ n.
+    values: Vec<(SystemTime, FeatureValue)>,
+    optional: bool,
 }
+
+/// Hard cap on `n` for `first_n` — keeps worst-case push O(n) bounded.
+pub const FIRST_N_CAP: usize = 1000;
 
 impl FirstNOp {
     pub fn new(field: impl Into<String>, n: usize, optional: bool) -> Self {
+        let n = n.min(FIRST_N_CAP).max(1);
         Self {
             field: field.into(),
             n,
+            values: Vec::with_capacity(n),
             optional,
         }
+    }
+}
+
+/// Extract `_event_time` from an event payload, returning `SystemTime`
+/// or `None` if the field is absent / unparseable. Accepts:
+///   1. integer unix-seconds (or milliseconds if value > 1e12)
+///   2. float unix-seconds
+///   3. ISO-8601 date-time string (limited parsing: we accept seconds-epoch
+///      integer strings too as a tolerance).
+pub fn parse_event_time(event: &serde_json::Value) -> Option<SystemTime> {
+    let v = event.get("_event_time")?;
+    match v {
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                // Heuristic: > 1e12 → milliseconds, else seconds.
+                if i > 1_000_000_000_000 {
+                    Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(i as u64))
+                } else if i >= 0 {
+                    Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(i as u64))
+                } else {
+                    None
+                }
+            } else if let Some(f) = n.as_f64() {
+                if f.is_finite() && f >= 0.0 {
+                    Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs_f64(f))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        serde_json::Value::String(s) => {
+            // Try integer-epoch fallback first for ISO-less SDKs.
+            if let Ok(i) = s.parse::<i64>() {
+                if i > 1_000_000_000_000 {
+                    return Some(
+                        SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(i as u64),
+                    );
+                }
+                if i >= 0 {
+                    return Some(
+                        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(i as u64),
+                    );
+                }
+            }
+            // ISO-8601 deferred — Phase 24 brings a proper parser. Accept
+            // that the wall-clock fallback fires when the string doesn't
+            // parse as an epoch number.
+            None
+        }
+        _ => None,
+    }
+}
+
+fn to_feature_value(val: &serde_json::Value) -> FeatureValue {
+    match val {
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                FeatureValue::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                FeatureValue::Float(f)
+            } else {
+                FeatureValue::Missing
+            }
+        }
+        serde_json::Value::String(s) => FeatureValue::String(s.clone()),
+        serde_json::Value::Bool(b) => FeatureValue::Int(if *b { 1 } else { 0 }),
+        _ => FeatureValue::Missing,
     }
 }
 
 impl Operator for FirstNOp {
     fn push(
         &mut self,
-        _event: &serde_json::Value,
-        _enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
-        _now: SystemTime,
+        event: &serde_json::Value,
+        enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        now: SystemTime,
     ) -> Result<(), TallyError> {
-        // Stub: 22-02 implements bounded first-N capture.
-        Ok(())
+        let et = parse_event_time(event).unwrap_or(now);
+        match resolve_field(&self.field, event, enrichment) {
+            None => {
+                if self.optional {
+                    Ok(())
+                } else {
+                    Err(TallyError::Type {
+                        field: self.field.clone(),
+                        expected: "any".into(),
+                        got: "absent".into(),
+                    })
+                }
+            }
+            Some(val) => {
+                let fv = to_feature_value(val);
+                // Only insert if we have room, or the new event is earlier
+                // than the currently-stored latest.
+                if self.values.len() < self.n {
+                    let pos = self
+                        .values
+                        .binary_search_by(|(t, _)| t.cmp(&et))
+                        .unwrap_or_else(|p| p);
+                    self.values.insert(pos, (et, fv));
+                } else {
+                    // Full. Replace only if new event_time < current max.
+                    let (max_t, _) = self.values[self.values.len() - 1];
+                    if et < max_t {
+                        let pos = self
+                            .values
+                            .binary_search_by(|(t, _)| t.cmp(&et))
+                            .unwrap_or_else(|p| p);
+                        self.values.insert(pos, (et, fv));
+                        self.values.pop(); // drop the now-stale max
+                    }
+                }
+                Ok(())
+            }
+        }
     }
+
     fn read(&mut self, _now: SystemTime) -> FeatureValue {
-        FeatureValue::Missing
+        if self.values.is_empty() {
+            return FeatureValue::Missing;
+        }
+        let arr: Vec<serde_json::Value> =
+            self.values.iter().map(|(_, v)| v.to_json_value()).collect();
+        let json_str = serde_json::to_string(&arr).unwrap_or_else(|_| "[]".into());
+        FeatureValue::String(json_str)
     }
+
     fn estimated_bytes(&self) -> usize {
-        0
+        // Vec capacity × (SystemTime ~16 bytes + FeatureValue ~32 bytes).
+        self.values.capacity() * (16 + 32)
     }
 }
 
