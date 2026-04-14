@@ -1,8 +1,8 @@
 # Project State
 
 **Current Milestone:** v0 Restructure
-**Active Phase:** α — Type system & SDK skeleton (not yet planned)
-**Last Updated:** 2026-04-14
+**Active Phase:** 23 — Joins (1/3 plans complete; 23-02 stream↔stream + 23-03 table↔table next)
+**Last Updated:** 2026-04-14 (post-23-01)
 
 ## Milestone Status
 
@@ -63,4 +63,5 @@ See `.planning/milestones/v2.0-ROADMAP.md` and `.planning/milestones/v2.1-PAUSED
   - 22-02: linear + order-sensitive operator bodies (Welford, event-time First/Last, FirstN, ema, lag) — shipped
   - 22-03: hybrid sketch operators (UDDSketch / CMS+heap / HLL threshold 1024) + telemetry — shipped
   - 22-04: TCP REGISTER v0 wiring + BASELINE.json + criterion install + TopK optimization + 9-cell matrix (all 9 cells ≤5% baseline) — shipped
-- Phase 23 (joins) — next, can proceed on the wired v0 TCP path
+- Phase 23 (joins) — in progress (1/3 plans complete)
+  - 23-01: Stream↔Table enrichment (inner+left, `_right` collision passthrough) + composite group_by keys (lifted from 22-04 deferral); `stream_stream` / `table_table` stubbed for 23-02 / 23-03 — shipped (2026-04-14)
