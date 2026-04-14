@@ -1,8 +1,8 @@
 # Project State
 
 **Current Milestone:** v0 Restructure
-**Active Phase:** 23 — Joins (2/3 plans complete; 23-03 table↔table next)
-**Last Updated:** 2026-04-14 (post-23-02)
+**Active Phase:** 24 — Watermarks + Retractions + Per-Table Storage (next)
+**Last Updated:** 2026-04-14 (post-23-03 closeout)
 
 ## Milestone Status
 
@@ -63,5 +63,9 @@ See `.planning/milestones/v2.0-ROADMAP.md` and `.planning/milestones/v2.1-PAUSED
   - 22-02: linear + order-sensitive operator bodies (Welford, event-time First/Last, FirstN, ema, lag) — shipped
   - 22-03: hybrid sketch operators (UDDSketch / CMS+heap / HLL threshold 1024) + telemetry — shipped
   - 22-04: TCP REGISTER v0 wiring + BASELINE.json + criterion install + TopK optimization + 9-cell matrix (all 9 cells ≤5% baseline) — shipped
-- Phase 23 (joins) — in progress (1/3 plans complete)
+- Phase 23 (joins) — **Complete** (3/3 plans, 2026-04-14)
   - 23-01: Stream↔Table enrichment (inner+left, `_right` collision passthrough) + composite group_by keys (lifted from 22-04 deferral); `stream_stream` / `table_table` stubbed for 23-02 / 23-03 — shipped (2026-04-14)
+  - 23-02: Stream↔Stream symmetric interval windowed join (`StreamJoinBuffer` primitives + engine wiring, 14 tests) — shipped (2026-04-14)
+  - 23-03: Table↔Table same-key join (marker-based cascade), 3-shape cross-integration tests (Rust + pytest), extended benchmark matrix with `join_small_1c`/`enrich_small_1c` characterization cells at 97-98% of `small_1c`. `gate_passed=true` on 7-run median matrix; all 9 cells within ±5% of BASELINE.json — shipped (2026-04-14)
+- Phase 24 (watermarks + retractions + **per-Table row storage**) — next
+  - Scope expansion: CEO Option 1 decision on 2026-04-14 folded the per-Table row storage redesign into Phase 24 (see `.planning/phases/23-joins/23-03-SUMMARY.md::Phase 24 handoff`). Storage redesign is the foundational task before watermark / retraction work — 7 TT tests `#[ignore]`'d in Phase 23 unblock once per-Table shadow storage lands.
