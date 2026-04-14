@@ -8,5 +8,11 @@ version = "0.1.0"
 requires-python = ">=3.10"
 description = "Python SDK for Tally real-time feature server"
 
+[project.scripts]
+# Plan 25-03: stdlib-only operator CLI. Backs `tally suggest-config`,
+# which pretty-prints /debug/config-recommendations output grouped by
+# decorator target.
+tally = "tally._cli:main"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
