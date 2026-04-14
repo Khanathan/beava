@@ -231,18 +231,57 @@ class StreamDerivation(Stream):
 # ---------------------------------------------------------------------------
 
 
+def _resolve_func_hints(func: FunctionType) -> dict[str, Any]:
+    """Resolve a function's type annotations with best-effort forward-ref support.
+
+    ``typing.get_type_hints`` fails when annotations reference names that live
+    only in an enclosing function's locals (common under pytest). We first try
+    ``get_type_hints`` with an augmented ``localns`` pulled from the nearest
+    enclosing frames, then fall back to eval'ing each string annotation against
+    function globals + caller locals.
+    """
+    # Collect caller-frame locals — works for decorators applied inside test
+    # methods / closures.
+    localns: dict[str, Any] = {}
+    try:
+        import sys as _sys
+        frame = _sys._getframe(1)
+        depth = 0
+        while frame is not None and depth < 8:
+            for k, v in frame.f_locals.items():
+                localns.setdefault(k, v)
+            frame = frame.f_back
+            depth += 1
+    except Exception:
+        pass
+
+    try:
+        return typing.get_type_hints(func, localns=localns)
+    except Exception:
+        pass
+
+    # Final fallback: eval each annotation individually against globals + localns.
+    globalns = getattr(func, "__globals__", {})
+    ns = {**globalns, **localns}
+    out: dict[str, Any] = {}
+    for name, ann in getattr(func, "__annotations__", {}).items():
+        if isinstance(ann, str):
+            try:
+                out[name] = eval(ann, ns)
+            except Exception:
+                out[name] = ann  # leave as string — downstream will error
+        else:
+            out[name] = ann
+    return out
+
+
 def _build_stream_derivation_from_func(
     func: FunctionType,
     *,
     history_ttl: str | None = None,
 ) -> StreamDerivation:
     """Invoke a derivation function once to build its StreamDerivation."""
-    # Resolve type hints (fall back to raw __annotations__ on failure — e.g.
-    # when forward references don't resolve).
-    try:
-        hints = typing.get_type_hints(func)
-    except Exception:
-        hints = dict(getattr(func, "__annotations__", {}))
+    hints = _resolve_func_hints(func)
 
     if "return" not in hints:
         raise TypeError(

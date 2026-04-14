@@ -235,10 +235,8 @@ def _build_table_derivation_from_func(
     mode: str,
 ) -> TableDerivation:
     """Invoke a derivation function once to build its TableDerivation."""
-    try:
-        hints = typing.get_type_hints(func)
-    except Exception:
-        hints = dict(getattr(func, "__annotations__", {}))
+    from tally._stream import _resolve_func_hints
+    hints = _resolve_func_hints(func)
 
     if "return" not in hints:
         raise TypeError(
