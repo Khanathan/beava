@@ -113,3 +113,69 @@ def generate(
     # already-evicted buckets).
     events.sort(key=lambda e: e["ts"])
     return events
+
+
+# ---------------------------------------------------------------------------
+# Tiny CLI shim (Phase 26-03)
+# ---------------------------------------------------------------------------
+# The Phase 26-03 full-stack smoke calls
+#   python3 benchmark/replay/generator.py --register-only --target localhost:6400
+# as a "declare the pipelines on a running server" step before the replay.
+# Delegates to replay_30d.py so there is exactly one canonical definition of
+# the pipeline DAG; this file stays focused on deterministic event generation.
+
+
+def _cli(argv=None) -> int:
+    import argparse
+    import os as _os
+    import sys as _sys
+
+    p = argparse.ArgumentParser(
+        description="Deterministic fraud-event generator. "
+                    "Invoked with --register-only, registers the replay pipelines "
+                    "on a running Tally server and exits."
+    )
+    p.add_argument("--register-only", action="store_true", default=False,
+                   help="Register pipelines on the Tally server and exit.")
+    p.add_argument("--target", default=None,
+                   help="host:port of the Tally server (alias for --host/--port).")
+    p.add_argument("--host", default="localhost")
+    p.add_argument("--port", type=int, default=6400)
+    p.add_argument("--preview", type=int, default=0,
+                   help="If >0, print that many generated events as JSONL and exit "
+                        "(no server contact).")
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--days", type=int, default=30)
+    args = p.parse_args(argv)
+
+    if args.preview > 0:
+        import json as _json
+        events = generate(args.preview, seed=args.seed, days=args.days)
+        for ev in events:
+            print(_json.dumps(ev, sort_keys=True))
+        return 0
+
+    if not args.register_only:
+        p.print_help(_sys.stderr)
+        return 2
+
+    # Delegate to the replay CLI's --register-only path so the pipeline DAG
+    # stays defined in exactly one place.
+    _here = _os.path.dirname(_os.path.abspath(__file__))
+    _root = _os.path.abspath(_os.path.join(_here, "..", ".."))
+    for _p in (_root, _os.path.join(_root, "python")):
+        if _p not in _sys.path:
+            _sys.path.insert(0, _p)
+    from benchmark.replay.replay_30d import main as _replay_main  # noqa: E402
+
+    forward = ["--register-only"]
+    if args.target:
+        forward += ["--target", args.target]
+    else:
+        forward += ["--host", args.host, "--port", str(args.port)]
+    return _replay_main(forward)
+
+
+if __name__ == "__main__":
+    import sys as _sys
+    _sys.exit(_cli())

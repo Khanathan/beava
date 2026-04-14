@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""30-day deterministic replay benchmark for Tally.
+"""30-day deterministic replay benchmark for Tally (v0 SDK port).
 
 Synthesizes a user-specified number of fraud events (default: 30M) spread
 over a 30-day timestamp window, replays them into a running Tally instance
@@ -27,6 +27,15 @@ Dual purpose:
    30 seconds of wall-clock produces the same feature values you would
    have computed streaming in real time.
 
+Plan 26-03 port notes:
+- Pre-v0 decorator classes have been replaced by tl.stream + function-form
+  tl.table(key=...) returning raw.group_by(key).agg(...). See _build_pipeline().
+- The pre-v0 derive() helper is not part of the v0 aggregation catalog —
+  the failure_rate feature is therefore omitted from the pipeline definition
+  here (computed downstream in the demo UI or at read time by the caller).
+  This is an intentional surface reduction; the traction demo only relies
+  on the aggregated counters, not the derived ratio.
+
 Usage::
 
     # Launch headline run (requires production-sized box)
@@ -34,6 +43,9 @@ Usage::
 
     # Smoke run against a local dev server
     python benchmark/replay/replay_30d.py --events 100000 --workers 4
+
+    # Register pipelines only (no replay) — used by smoke.sh & 26-03 full-stack
+    python benchmark/replay/replay_30d.py --register-only --host 127.0.0.1 --port 6400
 
     # Backfill from a JSONL trace
     python benchmark/replay/replay_30d.py --input events.jsonl --workers 8
@@ -59,39 +71,47 @@ for _p in (_PROJECT_ROOT, os.path.join(_PROJECT_ROOT, "python")):
         sys.path.insert(0, _p)
 
 import tally as tl  # noqa: E402
-from tally import dataset, group_by, source  # noqa: E402
 
 from benchmark.replay.generator import generate  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Pipeline definition (fraud shape, medium-complexity)
+# Pipeline definition (fraud shape, medium-complexity) — v0 SDK
 # ---------------------------------------------------------------------------
 
 def _build_pipeline():
-    """Define the replay pipeline.
+    """Define the replay pipeline using the v0 SDK (``@tl.stream`` + ``@tl.table``).
 
     Built inside a function so (a) decorators only run when we need them
     and (b) multiprocessing workers can rebuild an equivalent definition
     without sharing live objects across the fork boundary.
+
+    Returns:
+        ``(descriptors, primary_stream)`` where ``descriptors`` is the list
+        to pass to ``app.register(*descriptors)`` and ``primary_stream`` is
+        the Stream class the replay driver pushes events into.
     """
 
-    @source
+    @tl.stream
     class RawTxns:
-        pass
+        user_id: str
+        merchant_id: str
+        amount: float
+        status: str
+        country: str
+        ts: int
 
-    @dataset(depends_on=[RawTxns])
-    class Transactions:
-        features = group_by("user_id").agg(
+    @tl.table(key="user_id")
+    def UserFeatures(raw: RawTxns) -> tl.Table:
+        return raw.group_by("user_id").agg(
             tx_count_1h=tl.count(window="1h"),
             tx_sum_1h=tl.sum("amount", window="1h"),
             avg_amount_1h=tl.avg("amount", window="1h"),
             max_amount_24h=tl.max("amount", window="24h"),
             failed_count_30m=tl.count(window="30m", where="status == 'failed'"),
         )
-        failure_rate = tl.derive("failed_count_30m / tx_count_1h")
 
-    return [RawTxns, Transactions], RawTxns
+    return [RawTxns, UserFeatures], RawTxns
 
 
 # ---------------------------------------------------------------------------
@@ -277,11 +297,33 @@ def _parse_args(argv=None) -> argparse.Namespace:
                    help="Send a small warmup batch before the measured run (default: on)")
     p.add_argument("--no-warmup", dest="warmup", action="store_false",
                    help="Skip warmup (useful in CI where wall-clock is tight)")
+    p.add_argument("--speed", default=None,
+                   help="Replay speed marker (e.g. '1000x'). Accepted but not used internally — "
+                        "generator timestamps are pre-stamped, so 'speed' is implicit in wall-clock "
+                        "ingestion rate. Flag kept for Phase 20 CLI compatibility.")
+    p.add_argument("--target", default=None,
+                   help="Legacy alias for 'host:port'. If set, overrides --host/--port.")
+    p.add_argument("--register-only", action="store_true", default=False,
+                   help="Register pipelines on the server and exit (no replay). Used by "
+                        "deploy/smoke.sh and the Phase 26-03 full-stack smoke run.")
     p.add_argument("--input", default=None,
                    help="Optional JSONL file of events; bypasses the synthetic generator (backfill mode)")
     p.add_argument("--output", default=None,
                    help="Optional path to write the report as JSON in addition to stdout")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+
+    # Resolve --target (Phase 20 convenience) into host/port.
+    if args.target:
+        if ":" in args.target:
+            h, pstr = args.target.rsplit(":", 1)
+            args.host = h
+            try:
+                args.port = int(pstr)
+            except ValueError:
+                pass
+        else:
+            args.host = args.target
+    return args
 
 
 def main(argv=None) -> int:
@@ -297,6 +339,13 @@ def main(argv=None) -> int:
         print(f"ERROR: could not connect to Tally at {args.host}:{args.port}: {exc}",
               file=sys.stderr)
         return 2
+
+    # Register-only mode: the CLI is being used as a "declare pipelines" tool
+    # (e.g. by deploy/smoke.sh or by 26-03's full-stack smoke). Exit clean.
+    if args.register_only:
+        print(f"registered pipelines on {args.host}:{args.port}: "
+              f"{[getattr(s, '_tally_stream_name', getattr(s, '__name__', '?')) for s in streams]}")
+        return 0
 
     # Optional warmup — not timed, discarded.
     if args.warmup:
