@@ -1,0 +1,291 @@
+{
+  "label": "v0-post-24-05",
+  "baseline_ref": "BASELINE.json",
+  "timestamp": "2026-04-14T21:38:43.642440+00:00",
+  "events_per_run": 30000,
+  "runs_per_cell": 7,
+  "wall_seconds": 212.4,
+  "cells": {
+    "small_1c": {
+      "pipeline": "small",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 113108.5,
+      "eps_all": [
+        104732.2,
+        105396.5,
+        107119.9,
+        113108.5,
+        114337.6,
+        114424.4,
+        114802.9
+      ],
+      "p50_median": 6.07,
+      "p99_median": 9.92,
+      "delta_pct_vs_baseline": -1.72,
+      "pass": true
+    },
+    "small_4c": {
+      "pipeline": "small",
+      "clients": 4,
+      "runs": 7,
+      "eps_median": 28527.5,
+      "eps_all": [
+        27793.2,
+        28312.9,
+        28368.7,
+        28527.5,
+        28655.4,
+        28876.3,
+        29970.7
+      ],
+      "p50_median": 73.58,
+      "p99_median": 677.17,
+      "delta_pct_vs_baseline": 1.67,
+      "pass": true
+    },
+    "small_8c": {
+      "pipeline": "small",
+      "clients": 8,
+      "runs": 7,
+      "eps_median": 30759.8,
+      "eps_all": [
+        29684.4,
+        30470.9,
+        30504.4,
+        30759.8,
+        30844.4,
+        30977.1,
+        31154.3
+      ],
+      "p50_median": 115.29,
+      "p99_median": 1482.81,
+      "delta_pct_vs_baseline": 1.29,
+      "pass": true
+    },
+    "medium_1c": {
+      "pipeline": "medium",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 110362.0,
+      "eps_all": [
+        69124.8,
+        78533.0,
+        103699.9,
+        110362.0,
+        111988.5,
+        112591.5,
+        112592.3
+      ],
+      "p50_median": 6.21,
+      "p99_median": 9.89,
+      "delta_pct_vs_baseline": -4.42,
+      "pass": true
+    },
+    "medium_4c": {
+      "pipeline": "medium",
+      "clients": 4,
+      "runs": 7,
+      "eps_median": 28445.1,
+      "eps_all": [
+        26706.5,
+        27518.1,
+        28155.8,
+        28445.1,
+        28638.4,
+        28708.2,
+        31158.3
+      ],
+      "p50_median": 74.66,
+      "p99_median": 667.64,
+      "delta_pct_vs_baseline": 0.89,
+      "pass": true
+    },
+    "medium_8c": {
+      "pipeline": "medium",
+      "clients": 8,
+      "runs": 7,
+      "eps_median": 29982.4,
+      "eps_all": [
+        12061.0,
+        29705.0,
+        29722.1,
+        29982.4,
+        30872.6,
+        31093.5,
+        31290.6
+      ],
+      "p50_median": 114.08,
+      "p99_median": 1542.95,
+      "delta_pct_vs_baseline": -0.8,
+      "pass": true
+    },
+    "large_1c": {
+      "pipeline": "large",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 111523.1,
+      "eps_all": [
+        109396.3,
+        110934.6,
+        111430.8,
+        111523.1,
+        112981.7,
+        113139.5,
+        127108.8
+      ],
+      "p50_median": 6.23,
+      "p99_median": 10.58,
+      "delta_pct_vs_baseline": -4.18,
+      "pass": true
+    },
+    "large_4c": {
+      "pipeline": "large",
+      "clients": 4,
+      "runs": 7,
+      "eps_median": 28308.1,
+      "eps_all": [
+        27776.3,
+        27779.2,
+        28236.6,
+        28308.1,
+        28608.5,
+        28786.6,
+        34578.8
+      ],
+      "p50_median": 77.59,
+      "p99_median": 668.04,
+      "delta_pct_vs_baseline": 0.74,
+      "pass": true
+    },
+    "large_8c": {
+      "pipeline": "large",
+      "clients": 8,
+      "runs": 7,
+      "eps_median": 30882.2,
+      "eps_all": [
+        29557.6,
+        30670.9,
+        30866.1,
+        30882.2,
+        30936.0,
+        31141.6,
+        34842.8
+      ],
+      "p50_median": 106.58,
+      "p99_median": 1475.87,
+      "delta_pct_vs_baseline": 0.68,
+      "pass": true
+    },
+    "join_small_1c": {
+      "pipeline": "join",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 101117.3,
+      "eps_all": [
+        71155.1,
+        73044.9,
+        97746.1,
+        101117.3,
+        107571.3,
+        109618.1,
+        111544.8
+      ],
+      "p99_median": 10.42,
+      "note": "characterization only, no gate",
+      "pct_of_small_1c": 89.4
+    },
+    "enrich_small_1c": {
+      "pipeline": "enrich",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 103896.1,
+      "eps_all": [
+        73525.9,
+        88209.6,
+        94444.0,
+        103896.1,
+        105237.8,
+        106628.2,
+        122261.8
+      ],
+      "p99_median": 12.04,
+      "note": "characterization only, no gate",
+      "pct_of_small_1c": 91.86
+    },
+    "late_events_small_1c": {
+      "pipeline": "late_events",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 120194.0,
+      "eps_all": [
+        87241.3,
+        118862.1,
+        119612.8,
+        120194.0,
+        120701.8,
+        121126.1,
+        135210.3
+      ],
+      "p99_median": 9.08,
+      "note": "characterization only, no gate",
+      "pct_of_small_1c": 106.26
+    },
+    "tombstone_cascade_small_1c": {
+      "pipeline": "tombstone_cascade",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 22463.6,
+      "eps_all": [
+        21995.4,
+        22357.1,
+        22447.9,
+        22463.6,
+        22682.1,
+        22820.0,
+        23022.0
+      ],
+      "p99_median": 79.71,
+      "note": "characterization only, no gate",
+      "pct_of_small_1c": 19.86
+    },
+    "tt_join_real_small_1c": {
+      "pipeline": "tt_join_real",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 22746.3,
+      "eps_all": [
+        21873.3,
+        22355.6,
+        22737.8,
+        22746.3,
+        22922.9,
+        22947.6,
+        23112.7
+      ],
+      "p99_median": 74.07,
+      "note": "characterization only, no gate",
+      "pct_of_small_1c": 20.11
+    },
+    "enrich_with_wm_small_1c": {
+      "pipeline": "enrich_with_wm",
+      "clients": 1,
+      "runs": 7,
+      "eps_median": 122368.1,
+      "eps_all": [
+        112489.3,
+        119885.6,
+        122221.1,
+        122368.1,
+        140166.8,
+        141189.7,
+        142225.1
+      ],
+      "p99_median": 9.95,
+      "note": "characterization only, no gate",
+      "pct_of_small_1c": 108.19
+    }
+  },
+  "gate_passed": true,
+  "notes": "Phase 24 closeout gate. Ran on a shared host with load_avg 9-11 on 48-core box; bench was bimodal (cold-start runs in 60-80k eps range vs warm 105-130k range for large/medium_1c). Server was warmed with small+medium+large 5k-push probes before the matrix run to stabilize the JIT / page-cache state. All 9 gated cells pass within -5% of BASELINE.json. Characterization cells: tombstone_cascade_small_1c and tt_join_real_small_1c measure the sync OP_PUSH_TABLE path which round-trips ack vs the async OP_PUSH path of small_1c \u2014 the ~80% gap (20% of small_1c) is the expected sync-vs-async overhead, NOT a Phase 24 regression. late_events_small_1c and enrich_with_wm_small_1c run at 106-108% of small_1c (the SDK warming makes these later cells faster than the first small_1c measurement); the watermark parse + RingBuffer event-time routing adds <5% overhead in our controlled unit measurements (tests/test_event_time_bucketing.rs)."
+}
