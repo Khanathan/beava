@@ -1415,8 +1415,27 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                     crate::engine::register::V0RegisterPayload::Aggregation(desc) => {
                         crate::engine::register::v0_aggregation_to_stream_def(desc)?
                     }
+                    crate::engine::register::V0RegisterPayload::Join(desc) => {
+                        // Phase 23-01: Stream↔Table enrichment. Look up the
+                        // left source's field schema from its previously-
+                        // stored raw register JSON so the translator can
+                        // partition output fields into left vs right.
+                        let engine_ref = state.engine.read();
+                        let lookup = |name: &str| -> Option<Vec<String>> {
+                            engine_ref.get_raw_register_json(name).and_then(|j| {
+                                j.get("fields")
+                                    .and_then(|f| f.as_object())
+                                    .map(|m| m.keys().cloned().collect())
+                            })
+                        };
+                        let sd = crate::engine::register::v0_join_to_stream_def(
+                            desc,
+                            Some(&lookup),
+                        )?;
+                        drop(engine_ref);
+                        sd
+                    }
                     crate::engine::register::V0RegisterPayload::StatelessChain(_)
-                    | crate::engine::register::V0RegisterPayload::Join(_)
                     | crate::engine::register::V0RegisterPayload::Union(_) => {
                         return Err(TallyError::Protocol(format!(
                             "v0 REGISTER: descriptor kind '{}' not yet wired for end-to-end \

@@ -132,6 +132,29 @@ pub enum FeatureDef {
         where_expr: Option<Expr>,
         backfill: bool,
     },
+    /// Phase 23-01 — Stream↔Table enrichment join. State-free on the output
+    /// side; on each left-side event, looks up `right_table`'s current row
+    /// for the joined key(s) and emits the left event merged with right-side
+    /// fields. Inner: drops when the Table has no matching row. Left: emits
+    /// with null right-side fields on miss.
+    ///
+    /// `right_fields` is `(source_name_in_right, emitted_name)`. The SDK
+    /// already applies `_right` suffix on column collision (polars-style)
+    /// before compiling REGISTER, so the engine emits emitted_name verbatim.
+    EnrichFromTable {
+        right_table: String,
+        on: Vec<String>,
+        join_type: JoinType,
+        right_fields: Vec<(String, String)>,
+    },
+}
+
+/// Phase 23-01 — join semantics. Only Inner + Left are supported in v0;
+/// outer/full/cross are rejected at registration (SDK + engine defense in depth).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinType {
+    Inner,
+    Left,
 }
 
 /// Schema diff result from re-registering a stream.
@@ -169,6 +192,7 @@ pub fn get_backfill_flag(def: &FeatureDef) -> bool {
         FeatureDef::First { backfill, .. } => *backfill,
         FeatureDef::ExactMin { backfill, .. } => *backfill,
         FeatureDef::ExactMax { backfill, .. } => *backfill,
+        FeatureDef::EnrichFromTable { .. } => false,
     }
 }
 
@@ -490,6 +514,9 @@ fn create_operator(def: &FeatureDef) -> Option<OperatorState> {
             *bucket,
             *optional,
         ))),
+        // Phase 23-01: EnrichFromTable is stateless at the operator level —
+        // execution lives in push_internal / cascade (Table lookup + emit).
+        FeatureDef::EnrichFromTable { .. } => None,
     }
 }
 
@@ -512,6 +539,7 @@ fn get_where_expr(def: &FeatureDef) -> Option<&Expr> {
         FeatureDef::First { .. } => None,
         FeatureDef::ExactMin { where_expr, .. } => where_expr.as_ref(),
         FeatureDef::ExactMax { where_expr, .. } => where_expr.as_ref(),
+        FeatureDef::EnrichFromTable { .. } => None,
     }
 }
 
@@ -1091,6 +1119,16 @@ impl PipelineEngine {
         let mut enrichment_json: AHashMap<String, serde_json::Value> = AHashMap::new();
         let mut enrichment_fv: AHashMap<String, FeatureValue> = AHashMap::new();
 
+        // Phase 23-01: per-stream effective event map. When a downstream stream
+        // is an EnrichFromTable (Stream↔Table) join, its effective event is the
+        // left event merged with the Table's row. Downstream of the join see
+        // the enriched event — aggregations keyed on a right-side field (e.g.
+        // `country`) only work if the field is materialized into the event.
+        let mut effective_events: AHashMap<String, serde_json::Value> = AHashMap::new();
+        // Streams whose upstream enrichment dropped the event (inner-miss) —
+        // their entire downstream subtree is skipped for this push.
+        let mut dropped: AHashSet<String> = AHashSet::new();
+
         // Primary push -- MUST read features when downstream exists (Pitfall 5)
         // even if outer caller requested read_features=false (async mode)
         let primary_features =
@@ -1141,6 +1179,109 @@ impl PipelineEngine {
                 None => continue,
             };
 
+            // Phase 23-01: resolve the effective event for this downstream —
+            // the original event, unless an upstream EnrichFromTable built a
+            // synthesized enriched event for this stream's subtree.
+            // If any upstream in the depends_on chain dropped the event via
+            // inner-miss, skip this stream entirely.
+            let upstream_dropped = downstream_def
+                .depends_on
+                .as_ref()
+                .map(|deps| deps.iter().any(|d| dropped.contains(d)))
+                .unwrap_or(false);
+            if upstream_dropped {
+                dropped.insert(stream_in_order.clone());
+                continue;
+            }
+            // Pick the most-specific effective event: if exactly one upstream
+            // has a synthesized event, use that. Otherwise use the original.
+            // For v0, stream_table joins have exactly one left upstream that
+            // may carry an enriched event; table_table / stream_stream are
+            // stubbed in 23-02/23-03.
+            let effective_event: serde_json::Value = downstream_def
+                .depends_on
+                .as_ref()
+                .and_then(|deps| {
+                    deps.iter().find_map(|d| effective_events.get(d).cloned())
+                })
+                .unwrap_or_else(|| event.clone());
+
+            // Phase 23-01: if THIS stream carries an EnrichFromTable feature,
+            // build its synthesized event from (effective upstream event) ⋈
+            // (right Table's current row) and publish it for downstream.
+            let enrich_feat = downstream_def.features.iter().find_map(|(_n, def)| {
+                if let FeatureDef::EnrichFromTable {
+                    right_table,
+                    on,
+                    join_type,
+                    right_fields,
+                } = def
+                {
+                    Some((right_table.clone(), on.clone(), *join_type, right_fields.clone()))
+                } else {
+                    None
+                }
+            });
+            if let Some((right_table, on_keys, join_type, right_fields)) = enrich_feat {
+                // Compose the right-side lookup key from the effective event.
+                let right_key =
+                    match crate::engine::register::encode_group_by(&on_keys, &effective_event) {
+                        Ok(k) => k,
+                        Err(e) => return Err(e),
+                    };
+                // Point-in-time lookup of the right table's current row.
+                // We snapshot the static_features map (direct SET writes) —
+                // Stream↔Table enrichment reads only overwrite-mode Table
+                // current state, which lands in static_features. Live
+                // operators on the right side are ignored intentionally (they
+                // would be Stream↔Stream territory — see 23-02).
+                let right_row: Option<AHashMap<String, serde_json::Value>> =
+                    store.get_entity(&right_key).map(|entity_ref| {
+                        entity_ref
+                            .static_features
+                            .iter()
+                            .map(|(n, sf)| (n.clone(), sf.value.to_json_value()))
+                            .collect()
+                    });
+                // Inner + miss → drop whole subtree.
+                if right_row.is_none() && join_type == JoinType::Inner {
+                    dropped.insert(stream_in_order.clone());
+                    // Track the right table name for read-only assertion; no
+                    // further work required.
+                    let _ = right_table;
+                    continue;
+                }
+                // Build enriched event.
+                let mut enriched = effective_event.clone();
+                let enriched_map = enriched.as_object_mut().ok_or_else(|| {
+                    TallyError::Protocol(
+                        "EnrichFromTable: event is not a JSON object".into(),
+                    )
+                })?;
+                for (right_src, emitted) in &right_fields {
+                    // Defense-in-depth: refuse to clobber a pre-existing left
+                    // field of the same name. The SDK already suffixes `_right`
+                    // on collision (T-23-03); we must not silently overwrite.
+                    if enriched_map.contains_key(emitted) && emitted != right_src {
+                        // collision slot is `_right`-suffixed — safe to insert.
+                        // (If the SDK emitted a colliding non-suffixed name
+                        // that's already a left field, we still surface the
+                        // collision — keep the left value.)
+                        continue;
+                    }
+                    let v = right_row
+                        .as_ref()
+                        .and_then(|r| r.get(right_src).cloned())
+                        .unwrap_or(serde_json::Value::Null);
+                    enriched_map.insert(emitted.clone(), v);
+                }
+                effective_events.insert(stream_in_order.clone(), enriched);
+                // EnrichFromTable itself has no operator state and no key_field
+                // — skip push_internal execution for this stream; continue to
+                // next downstream with the synthesized event in place.
+                continue;
+            }
+
             // Check if this downstream stream has further downstream (for read_features decision)
             let has_further_downstream = self.downstream_map.contains_key(stream_in_order.as_str());
             // Must read features if: caller wants them, OR further downstream needs enrichment
@@ -1150,14 +1291,14 @@ impl PipelineEngine {
             // Phase 23-01: composite group_by downstreams must have every key
             // field present; fall back to single-key check otherwise.
             let keyed_ready = if let Some(gb_keys) = &downstream_def.group_by_keys {
-                gb_keys.iter().all(|k| match event.get(k) {
+                gb_keys.iter().all(|k| match effective_event.get(k) {
                     Some(serde_json::Value::String(s)) => !s.is_empty(),
                     Some(serde_json::Value::Number(_)) => true,
                     Some(serde_json::Value::Bool(_)) => true,
                     _ => false,
                 })
             } else if let Some(kf) = &downstream_def.key_field {
-                matches!(event.get(kf), Some(serde_json::Value::String(k)) if !k.is_empty())
+                matches!(effective_event.get(kf), Some(serde_json::Value::String(k)) if !k.is_empty())
             } else {
                 false
             };
@@ -1167,7 +1308,7 @@ impl PipelineEngine {
                 }
                 let ds_features = self.push_internal(
                     stream_in_order,
-                    event,
+                    &effective_event,
                     Some(&enrichment_json),
                     Some(&enrichment_fv),
                     store,
@@ -1189,7 +1330,7 @@ impl PipelineEngine {
                 // Keyless downstream
                 let ds_features = self.push_internal(
                     stream_in_order,
-                    event,
+                    &effective_event,
                     Some(&enrichment_json),
                     Some(&enrichment_fv),
                     store,
@@ -1463,6 +1604,7 @@ impl PipelineEngine {
                 FeatureDef::First { .. } => None, // No window
                 FeatureDef::ExactMin { window, .. } => Some(*window),
                 FeatureDef::ExactMax { window, .. } => Some(*window),
+                FeatureDef::EnrichFromTable { .. } => None, // stateless / no window
             })
             .max()
             .unwrap_or(Duration::ZERO)

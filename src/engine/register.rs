@@ -125,7 +125,8 @@ pub struct AggregationSpec {
     pub features: Vec<AggregationFeature>,
 }
 
-/// Stream/Table derivation carrying a `join: {...}` block. Stub for 23.
+/// Stream/Table derivation carrying a `join: {...}` block. Phase 23-01
+/// consumes this via `v0_join_to_stream_def`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct JoinDescriptor {
     pub name: String,
@@ -137,9 +138,25 @@ pub struct JoinDescriptor {
     #[serde(default)]
     pub mode: Option<String>,
     pub fields: serde_json::Value,
-    pub join: serde_json::Value,
+    pub join: JoinSpec,
     #[serde(default)]
     pub depends_on: Vec<String>,
+}
+
+/// Typed shape of the `join: {...}` block. Mirrors
+/// `python/tally/_join.py::JoinSpec._to_join_json()`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct JoinSpec {
+    #[serde(default)]
+    pub op: String, // always "join" when emitted by the SDK; optional for test fixtures
+    pub left: String,
+    pub right: String,
+    pub on: Vec<String>,
+    #[serde(default)]
+    pub within: Option<String>,
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub shape: String, // "stream_stream" | "stream_table" | "table_table"
 }
 
 /// StreamDerivation carrying a `union: {sources:[...]}` block. Stub.
@@ -867,6 +884,161 @@ pub fn v0_source_to_stream_def(
         pipeline_ttl: None,
         max_keys: None,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Join translation — Phase 23-01
+// ---------------------------------------------------------------------------
+
+/// Translate a v0 `JoinDescriptor` into a v2.0 `StreamDefinition`.
+///
+/// Phase 23-01 implements `shape="stream_table"` (enrichment join). The
+/// `stream_stream` and `table_table` shapes are deliberately stubbed here —
+/// Plans 23-02 and 23-03 replace the stub with typed implementations.
+///
+/// `left_fields_lookup` is a closure that returns the left stream's own
+/// field names (the raw source schema), so the translator can partition
+/// `desc.fields` into left-side keys vs right-side keys. When `None`, the
+/// translator falls back to a conservative heuristic: fields with a
+/// `_right*` suffix are right-side; everything else is left-side (and thus
+/// does NOT need to be materialized by the enrichment).
+pub fn v0_join_to_stream_def(
+    desc: &JoinDescriptor,
+    left_fields_lookup: Option<&dyn Fn(&str) -> Option<Vec<String>>>,
+) -> Result<crate::engine::pipeline::StreamDefinition, TallyError> {
+    use crate::engine::pipeline::{FeatureDef, JoinType, StreamDefinition};
+
+    // Registration-time rejections — T-23-04 (outer) and unknown types.
+    let join_type = match desc.join.type_.as_str() {
+        "inner" => JoinType::Inner,
+        "left" => JoinType::Left,
+        "outer" => {
+            return Err(TallyError::Protocol(
+                "v0 REGISTER: outer joins deferred to v0.1; use two inner+left \
+                 joins unioned as a workaround"
+                    .into(),
+            ));
+        }
+        other => {
+            return Err(TallyError::Protocol(format!(
+                "v0 REGISTER: join type must be 'inner' or 'left', got '{}'",
+                other
+            )));
+        }
+    };
+
+    if desc.join.on.is_empty() {
+        return Err(TallyError::Protocol(
+            "v0 REGISTER: join.on must declare at least one key field".into(),
+        ));
+    }
+
+    // Shape dispatch.
+    match desc.join.shape.as_str() {
+        "stream_table" => {
+            // Identify the set of right-side fields to materialize from the
+            // Table. Start with the full output schema, remove join keys,
+            // remove left-side fields (if lookup provided), remove any name
+            // already present on the left schema.
+            let on_set: std::collections::HashSet<&str> =
+                desc.join.on.iter().map(|s| s.as_str()).collect();
+            let left_schema: Option<std::collections::HashSet<String>> =
+                left_fields_lookup.and_then(|lookup| {
+                    lookup(&desc.join.left).map(|v| v.into_iter().collect())
+                });
+
+            // `desc.fields` is a JSON object whose keys are output field
+            // names. We iterate the keys in document order.
+            let fields_obj = desc.fields.as_object().ok_or_else(|| {
+                TallyError::Protocol(
+                    "v0 REGISTER: join.fields must be a JSON object".into(),
+                )
+            })?;
+            let mut right_fields: Vec<(String, String)> = Vec::new();
+            for (emitted_name, _spec) in fields_obj {
+                if on_set.contains(emitted_name.as_str()) {
+                    continue;
+                }
+                // `_right` suffixes mean an SDK-applied collision rename —
+                // unambiguously a right-side field. Source = strip suffix.
+                if let Some(base) = strip_right_suffix(emitted_name) {
+                    right_fields.push((base, emitted_name.clone()));
+                    continue;
+                }
+                // When the left schema is known, skip fields that belong to
+                // the left. Otherwise conservatively include the field as a
+                // right-side passthrough (source_name == emitted_name).
+                if let Some(ls) = &left_schema {
+                    if ls.contains(emitted_name) {
+                        continue;
+                    }
+                    right_fields.push((emitted_name.clone(), emitted_name.clone()));
+                } else {
+                    // Without left-schema knowledge, skip bare names — they're
+                    // most likely left-side fields already present on the
+                    // event. (The `_right` suffix loop above still catches
+                    // any renamed right-side field.)
+                }
+            }
+
+            let single_feature_name = format!("__enrich_from_{}", desc.join.right);
+            let feature = FeatureDef::EnrichFromTable {
+                right_table: desc.join.right.clone(),
+                on: desc.join.on.clone(),
+                join_type,
+                right_fields,
+            };
+
+            Ok(StreamDefinition {
+                name: desc.name.clone(),
+                // Enrichment output is a keyless stream — it cascades events
+                // to downstream aggregations without storing its own state.
+                key_field: None,
+                group_by_keys: None,
+                features: vec![(single_feature_name, feature)],
+                depends_on: Some(desc.depends_on.clone()),
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+            })
+        }
+        "stream_stream" => Err(TallyError::Protocol(
+            "v0 REGISTER: shape='stream_stream' not yet implemented in 23-01; \
+             Plan 23-02 ships Stream↔Stream windowed joins"
+                .into(),
+        )),
+        "table_table" => Err(TallyError::Protocol(
+            "v0 REGISTER: shape='table_table' not yet implemented in 23-01; \
+             Plan 23-03 ships Table↔Table same-key joins"
+                .into(),
+        )),
+        other => Err(TallyError::Protocol(format!(
+            "v0 REGISTER: unknown join shape '{}'; expected stream_table / stream_stream / table_table",
+            other
+        ))),
+    }
+}
+
+/// Strip `_right` / `_right2` / `_right3` ... suffix from a field name.
+/// Returns `Some(base)` if the suffix matched, `None` otherwise. Mirrors
+/// `_join.py::compute_joined_schema`'s collision renaming loop.
+fn strip_right_suffix(name: &str) -> Option<String> {
+    if let Some(base) = name.strip_suffix("_right") {
+        return Some(base.to_string());
+    }
+    // _right{N} for N>=2 — the SDK appends index starting at 2.
+    if let Some(idx_start) = name.rfind("_right") {
+        let tail = &name[idx_start + "_right".len()..];
+        if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) {
+            let base = &name[..idx_start];
+            return Some(base.to_string());
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------

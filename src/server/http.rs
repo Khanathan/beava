@@ -148,6 +148,9 @@ async fn get_pipeline(
                     crate::engine::pipeline::FeatureDef::ExactMax { field, window, bucket, optional, .. } => {
                         serde_json::json!({"name": fname, "type": "exact_max", "field": field, "window_secs": window.as_secs(), "bucket_secs": bucket.as_secs(), "optional": optional})
                     }
+                    crate::engine::pipeline::FeatureDef::EnrichFromTable { right_table, on, join_type, right_fields } => {
+                        serde_json::json!({"name": fname, "type": "enrich_from_table", "right_table": right_table, "on": on, "join_type": format!("{:?}", join_type), "right_fields": right_fields})
+                    }
                 })
                 .collect();
             (
