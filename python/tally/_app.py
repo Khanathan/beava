@@ -80,9 +80,9 @@ class App:
     def register(self, *stream_classes) -> None:
         """Register one or more pipeline definitions with the server.
 
-        Accepts v2.0 API objects (SourceDef, DatasetDef) which implement
-        ``_collect_registrations()`` and ``_to_register_json()`` protocols,
-        as well as legacy ``@tally.stream``/``@tally.view`` decorated classes.
+        Accepts v0 Stream/Table descriptors (``StreamSource``, ``TableSource``,
+        and derivation descriptors added in Plan 21-02) which implement the
+        ``_collect_registrations()`` / ``_to_register_json()`` protocols.
         """
         self._client.drain_errors_nonblock()
         for cls in stream_classes:

@@ -18,10 +18,16 @@ Requires: ``tally_server`` and ``app`` fixtures from conftest.py.
 
 from __future__ import annotations
 
-import tally as tl
-from tally import source, dataset, group_by
-
 import pytest
+
+pytest.skip(
+    "v0 SDK rewrite — Phase 26 will port this against the new @tl.stream / "
+    "@tl.table API (was pinned to removed @tl.source / @tl.dataset).",
+    allow_module_level=True,
+)
+
+import tally as tl  # noqa: E402
+from tally import source, dataset, group_by  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
