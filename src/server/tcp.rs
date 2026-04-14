@@ -1145,18 +1145,40 @@ pub fn handle_push_batch(
             .get_stream(stream_name)
             .and_then(|s| s.key_field.as_deref());
 
-        // Build event refs inline (stack-friendly for typical batch sizes).
-        let events_refs: Vec<&serde_json::Value> = batch.iter().map(|ev| &ev.payload).collect();
-
-        let now = batch[0].now;
+        // Phase 24-04: per-event event-time parse + late-drop gate. Each
+        // event gets its own `_event_time` (or wall-clock fallback); the
+        // stream's watermark is checked BEFORE the batch call so late
+        // events never reach the operator bucket router.
+        let mut kept_refs: Vec<&serde_json::Value> = Vec::with_capacity(batch.len());
+        let mut kept_idxs: Vec<usize> = Vec::with_capacity(batch.len());
+        let mut min_event_time: Option<SystemTime> = None;
+        for (idx, ev) in batch.iter().enumerate() {
+            let et = crate::engine::event_time::parse_event_time(&ev.payload, ev.now);
+            let wm = engine.watermarks.read().watermark(stream_name);
+            if let Some(wm) = wm {
+                if et < wm {
+                    engine.late_drops.write().increment(stream_name);
+                    continue;
+                }
+            }
+            engine.watermarks.write().observe(stream_name, et);
+            kept_refs.push(&ev.payload);
+            kept_idxs.push(idx);
+            min_event_time = Some(match min_event_time {
+                Some(m) => m.min(et),
+                None => et,
+            });
+        }
+        let now = min_event_time.unwrap_or(batch[0].now);
 
         let per_event =
-            engine.push_batch_with_cascade_no_features(stream_name, &events_refs, store, now);
+            engine.push_batch_with_cascade_no_features(stream_name, &kept_refs, store, now);
 
         // Scatter errors to result slots.
-        for (idx, res) in per_event.into_iter().enumerate() {
+        for (k_idx, res) in per_event.into_iter().enumerate() {
             if let Err(e) = res {
-                results[idx] = Err(e);
+                let orig = kept_idxs[k_idx];
+                results[orig] = Err(e);
             }
         }
 
@@ -1202,21 +1224,36 @@ pub fn handle_push_batch(
                 .get_stream(stream_name)
                 .and_then(|s| s.key_field.as_deref());
 
-            let events_refs: Vec<&serde_json::Value> =
-                indices.iter().map(|&i| &batch[i].payload).collect();
-
-            let now = indices
-                .iter()
-                .map(|&i| batch[i].now)
-                .min()
-                .unwrap_or_else(SystemTime::now);
+            // Phase 24-04: per-event late-drop gate for this stream group.
+            let mut kept_refs: Vec<&serde_json::Value> = Vec::with_capacity(indices.len());
+            let mut kept_orig: Vec<usize> = Vec::with_capacity(indices.len());
+            let mut min_et: Option<SystemTime> = None;
+            for &i in indices {
+                let et =
+                    crate::engine::event_time::parse_event_time(&batch[i].payload, batch[i].now);
+                let wm = engine.watermarks.read().watermark(stream_name);
+                if let Some(wm) = wm {
+                    if et < wm {
+                        engine.late_drops.write().increment(stream_name);
+                        continue;
+                    }
+                }
+                engine.watermarks.write().observe(stream_name, et);
+                kept_refs.push(&batch[i].payload);
+                kept_orig.push(i);
+                min_et = Some(match min_et {
+                    Some(m) => m.min(et),
+                    None => et,
+                });
+            }
+            let now = min_et.unwrap_or_else(SystemTime::now);
 
             let per_event =
-                engine.push_batch_with_cascade_no_features(stream_name, &events_refs, store, now);
+                engine.push_batch_with_cascade_no_features(stream_name, &kept_refs, store, now);
 
-            for (slot_idx, res) in indices.iter().zip(per_event.into_iter()) {
+            for (k_idx, res) in per_event.into_iter().enumerate() {
                 if let Err(e) = res {
-                    results[*slot_idx] = Err(e);
+                    results[kept_orig[k_idx]] = Err(e);
                 }
             }
 
@@ -1320,16 +1357,37 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             payload,
             raw_payload,
         } => {
+            // Phase 24-04: parse `_event_time` from payload (falls back to
+            // wall-clock `now` if absent / unparseable). The parsed
+            // event-time is (a) checked against the stream's current
+            // watermark for late-drop, (b) recorded as the stream's
+            // latest observation, (c) used as the "now" for operator
+            // bucket routing in the push-through pipeline.
+            let event_time = crate::engine::event_time::parse_event_time(&payload, now);
+            {
+                let engine = state.engine.read();
+                let wm = engine.watermarks.read().watermark(&stream_name);
+                if let Some(wm) = wm {
+                    if event_time < wm {
+                        // Late event — drop silently with counter increment.
+                        engine.late_drops.write().increment(&stream_name);
+                        return Ok(feature_map_to_json(&crate::types::FeatureMap::new()));
+                    }
+                }
+                engine.watermarks.write().observe(&stream_name, event_time);
+            }
             // PERF: sync push path also skips feature read + derive eval. The
             // response is a synchronous ack ({}) confirming the event was
             // processed — callers that need features should use OP_GET after.
-            // This removes the HLL read cost from the sync hot path too, at
-            // the cost of breaking the v1.1 push_sync "returns features"
-            // contract. Clients relying on that contract must migrate to
-            // push() + get() or accept an empty map.
             // Plan 11-06: raw_payload goes to the event log directly.
-            let _features =
-                handle_push_core_ex(state, &stream_name, &payload, &raw_payload, now, false)?;
+            let _features = handle_push_core_ex(
+                state,
+                &stream_name,
+                &payload,
+                &raw_payload,
+                event_time,
+                false,
+            )?;
             Ok(feature_map_to_json(&crate::types::FeatureMap::new()))
         }
         Command::Get { key } => {
@@ -1717,26 +1775,57 @@ fn handle_push_table(
             ))
         }
     };
+
+    // Phase 24-04: parse `_event_time` (stripped from the stored fields —
+    // it's metadata, not a column) before converting to FeatureValues.
+    // Late-drop: Tables track their own watermark off _event_time.
+    let fields_value = serde_json::Value::Object(map);
+    let event_time = crate::engine::event_time::parse_event_time(&fields_value, now);
+    {
+        let engine = state.engine.read();
+        let wm = engine.watermarks.read().watermark(table_name);
+        if let Some(wm) = wm {
+            if event_time < wm {
+                engine.late_drops.write().increment(table_name);
+                return Ok(Vec::new());
+            }
+        }
+        engine.watermarks.write().observe(table_name, event_time);
+    }
+    let map = match fields_value {
+        serde_json::Value::Object(m) => m,
+        _ => unreachable!(),
+    };
     let mut fields: ahash::AHashMap<String, FeatureValue> = ahash::AHashMap::new();
     for (k, v) in map {
+        if k == crate::engine::event_time::EVENT_TIME_FIELD {
+            continue;
+        }
         fields.insert(k, json_to_feature_value(v));
     }
 
-    // Phase 24-04: replace with `_event_time` parsing for watermark alignment.
-    state.store.upsert_table_row(key, table_name, fields, now);
+    state
+        .store
+        .upsert_table_row(key, table_name, fields, event_time);
     state.store.mark_dirty(key);
 
     // Keep Phase 23 TT cascade hook alive. Plan 03 will rework the cascade
     // internals to consume `table_rows` rather than `static_features`.
     {
         let engine = state.engine.read();
-        let _ = engine.cascade_table_upsert(table_name, key, false, &state.store, now);
+        let _ = engine.cascade_table_upsert(table_name, key, false, &state.store, event_time);
     }
 
     Ok(Vec::new())
 }
 
 /// Phase 24-02: Dispatch for OP_DELETE_TABLE. Symmetric with `handle_push_table`.
+///
+/// Phase 24-04: advances the Table's watermark off `_event_time` if the
+/// DELETE payload carried one. The opcode wire format (Phase 24-02)
+/// doesn't include a JSON fields payload, so delete's event-time is
+/// always wall-clock — the code path is here so future protocol
+/// expansion (delete-with-metadata) has the hook in place.
 fn handle_delete_table(
     state: &SharedState,
     table_name: &str,
@@ -1753,13 +1842,25 @@ fn handle_delete_table(
         }
     }
 
-    // Phase 24-04: replace with `_event_time` parsing.
-    state.store.tombstone_table_row(key, table_name, now);
+    let event_time = now;
+    {
+        let engine = state.engine.read();
+        let wm = engine.watermarks.read().watermark(table_name);
+        if let Some(wm) = wm {
+            if event_time < wm {
+                engine.late_drops.write().increment(table_name);
+                return Ok(Vec::new());
+            }
+        }
+        engine.watermarks.write().observe(table_name, event_time);
+    }
+
+    state.store.tombstone_table_row(key, table_name, event_time);
     state.store.mark_dirty(key);
 
     {
         let engine = state.engine.read();
-        let _ = engine.cascade_table_upsert(table_name, key, true, &state.store, now);
+        let _ = engine.cascade_table_upsert(table_name, key, true, &state.store, event_time);
     }
 
     Ok(Vec::new())

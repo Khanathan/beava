@@ -4,6 +4,7 @@
 //! synchronous push-through flow: event -> extract key -> update operators
 //! -> evaluate derives -> return feature map.
 
+use super::event_time::{LateDropCounters, SharedLateDrops, SharedWatermarks, WatermarkTracker};
 use super::expression::{eval, EvalContext, Expr};
 use super::hll::DistinctCountOp;
 use super::operators::{
@@ -425,6 +426,14 @@ pub struct PipelineEngine {
     topo_order: Vec<String>,
     /// Pre-computed: for each stream, which streams are directly downstream.
     downstream_map: AHashMap<String, Vec<String>>,
+    /// Phase 24-04 — per-stream watermark state. Wrapped in a `RwLock`
+    /// so the hot path (observe on every PUSH) can acquire a write lock
+    /// for the brief `observe` call while read-heavy debug / γ-lookup
+    /// paths take shared access.
+    pub watermarks: SharedWatermarks,
+    /// Phase 24-04 — per-stream late-drop counter. Exported as
+    /// `tally_late_events_dropped_total{stream}` via `/metrics`.
+    pub late_drops: SharedLateDrops,
 }
 
 /// Create an operator instance from a FeatureDef (non-derive only).
@@ -656,6 +665,8 @@ impl PipelineEngine {
             node_indices: AHashMap::new(),
             topo_order: Vec::new(),
             downstream_map: AHashMap::new(),
+            watermarks: parking_lot::RwLock::new(WatermarkTracker::new()),
+            late_drops: parking_lot::RwLock::new(LateDropCounters::new()),
         }
     }
 

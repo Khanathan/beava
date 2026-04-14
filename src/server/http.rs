@@ -270,7 +270,7 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
     // Prometheus convention: seconds, not microseconds.
     let p99_push_seconds = p99_push_us / 1_000_000.0;
 
-    let body = format!(
+    let mut body = format!(
         "# HELP tally_keys_total Number of entity keys in memory\n\
          # TYPE tally_keys_total gauge\n\
          tally_keys_total {}\n\
@@ -304,6 +304,27 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
         memory_bytes,
         snapshots_skipped,
     );
+
+    // Phase 24-04: per-stream late-drop counter. Label cardinality is
+    // bounded by registered streams (T-24-04-05).
+    body.push_str(
+        "# HELP tally_late_events_dropped_total Events dropped for arriving with \
+         event_time older than the stream's current watermark\n\
+         # TYPE tally_late_events_dropped_total counter\n",
+    );
+    {
+        let engine = state.engine.read();
+        let drops = engine.late_drops.read().snapshot();
+        for (stream, count) in drops {
+            // Basic label-value escaping: backslashes and double quotes per
+            // Prometheus exposition grammar.
+            let escaped = stream.replace('\\', "\\\\").replace('"', "\\\"");
+            body.push_str(&format!(
+                "tally_late_events_dropped_total{{stream=\"{}\"}} {}\n",
+                escaped, count
+            ));
+        }
+    }
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4")],
