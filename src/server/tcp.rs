@@ -2768,36 +2768,51 @@ async fn handle_log_fetch(
                 continue;
             }
 
-            // Key extraction + scope filter. Keyless streams: skip
-            // (v0 replica contract is key-bearing events only).
-            let kf = match &kf {
-                Some(k) => k.as_str(),
-                None => continue,
-            };
-
-            let (fmt, body) = decode_log_payload(&entry.payload);
-            let event_value: serde_json::Value = match fmt {
-                LOG_FMT_BINARY => {
-                    let mut buf = body;
-                    match protocol::decode_event_binary(&mut buf) {
-                        Ok(v) => v,
-                        Err(_) => continue, // skip malformed (T-08-08)
+            // Key extraction + scope filter.
+            //
+            // Keyed streams: extract the per-event key from the declared
+            // key_field and apply the full (stream + keys + key_prefix) scope
+            // filter. Drop events missing or malformed at their key field.
+            //
+            // Keyless streams: there is no per-event key to compare against.
+            // Emit the event if the caller asked for the stream with no
+            // per-key filter; drop it if the caller requested keys/key_prefix
+            // (can't apply a key filter without a key_field).
+            match &kf {
+                Some(kf_name) => {
+                    let (fmt, body) = decode_log_payload(&entry.payload);
+                    let event_value: serde_json::Value = match fmt {
+                        LOG_FMT_BINARY => {
+                            let mut buf = body;
+                            match protocol::decode_event_binary(&mut buf) {
+                                Ok(v) => v,
+                                Err(_) => continue, // skip malformed (T-08-08)
+                            }
+                        }
+                        LOG_FMT_JSON => match serde_json::from_slice(body) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        },
+                        _ => continue,
+                    };
+                    let key = match event_value.get(kf_name.as_str()) {
+                        Some(serde_json::Value::String(s)) if !s.is_empty() => s.as_str(),
+                        _ => continue,
+                    };
+                    if !crate::server::replica::entity_matches_scope(
+                        &stream_arr,
+                        key,
+                        &scope,
+                    ) {
+                        continue;
                     }
                 }
-                LOG_FMT_JSON => match serde_json::from_slice(body) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                },
-                _ => continue,
-            };
-
-            let key = match event_value.get(kf) {
-                Some(serde_json::Value::String(s)) if !s.is_empty() => s.as_str(),
-                _ => continue,
-            };
-
-            if !crate::server::replica::entity_matches_scope(&stream_arr, key, &scope) {
-                continue;
+                None => {
+                    if scope.keys.is_some() || scope.key_prefix.is_some() {
+                        continue;
+                    }
+                    // Stream overlap already guaranteed by the outer loop.
+                }
             }
 
             // Emit event frame: body = [u64 ts_ms][u32 payload_len][payload].
