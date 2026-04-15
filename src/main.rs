@@ -118,11 +118,16 @@ fn main() {
                 }
             })
             .unwrap_or_else(|| "7400".into());
-        std::env::set_var("TALLY_TCP_PORT", &local_port_raw);
+        // `--local-port` is the scientist-facing HTTP port (tl.Client,
+        // /debug/ready, /debug/key/*). TCP is +1 for the raw protocol
+        // (needed to reject local PUSHes and for future SUBSCRIBE clients).
+        let local_http: u16 = local_port_raw.parse().unwrap_or(7400);
+        let local_tcp = local_http.saturating_add(1);
         std::env::set_var("TALLY_HTTP_PORT", &local_port_raw);
+        std::env::set_var("TALLY_TCP_PORT", local_tcp.to_string());
         eprintln!(
-            "tally fork — remote={} scope={:?} since_ms={} -> localhost:{}",
-            cfg.remote, cfg.streams, cfg.since_millis, local_port_raw
+            "tally fork — remote={} scope={:?} since_ms={} -> http://localhost:{} (tcp :{})",
+            cfg.remote, cfg.streams, cfg.since_millis, local_http, local_tcp
         );
         FORK_CONFIG
             .set(cfg)
