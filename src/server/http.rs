@@ -36,6 +36,21 @@ async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok"}))
 }
 
+/// Phase 37-01: readiness endpoint. Returns 200 unconditionally once
+/// reachable — in replica/fork mode the HTTP listener only binds after
+/// the catchup-done oneshot fires (see `main.rs::async_main`), so the
+/// endpoint being routable is proof of readiness. In non-replica mode
+/// this is equivalent to `/health`.
+async fn debug_ready(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let replica_mode = state
+        .replica_mode
+        .load(std::sync::atomic::Ordering::Relaxed);
+    Json(serde_json::json!({
+        "ready": true,
+        "replica_mode": replica_mode,
+    }))
+}
+
 async fn list_pipelines(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let engine = state.engine.read();
     let names: Vec<String> = engine.list_streams().map(|s| s.name.clone()).collect();
@@ -1449,6 +1464,7 @@ async fn debug_backfill(State(state): State<SharedState>) -> Json<serde_json::Va
 pub fn build_router(state: SharedState) -> Router {
     let public_router = Router::new()
         .route("/health", get(health))
+        .route("/debug/ready", get(debug_ready))
         .route("/metrics", get(metrics_endpoint))
         .route("/public/features/{key}", get(public_features))
         .route("/public/recent-events", get(public_recent_events))

@@ -78,7 +78,57 @@ fn poll_signal_sources(state: &SharedState) {
     signals::emit_config_recommendations(&state.signals, &recs);
 }
 
+/// Phase 37-01: fork-synthesized replica config. Populated by `main()` when
+/// `tally fork ...` is invoked; consumed by `async_main` in place of the
+/// normal `--replica-*` parsing path.
+static FORK_CONFIG: std::sync::OnceLock<ReplicaBootConfig> = std::sync::OnceLock::new();
+
 fn main() {
+    // Phase 37-01: handle `tally fork` subcommand. Parse fork flags, set
+    // TALLY_TCP_PORT / TALLY_HTTP_PORT for the local-port override, print
+    // the banner, and stash the synthesized replica config for async_main.
+    if is_fork_subcommand() {
+        let args: Vec<String> = std::env::args().collect();
+        let cfg = match parse_fork_args_from(&args) {
+            Ok(cfg) => cfg,
+            Err(e) if e == "__HELP__" => {
+                print_fork_help();
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("{}", e);
+                eprintln!("Run `tally fork --help` for usage.");
+                std::process::exit(2);
+            }
+        };
+        // Re-read the local-port from the args to drive env overrides
+        // (it lives on the fork config only implicitly — we stashed it by
+        // setting block_until_catchup=true and by writing env vars now).
+        let local_port_raw = args
+            .iter()
+            .skip(2)
+            .enumerate()
+            .find_map(|(i, a)| {
+                if a == "--local-port" {
+                    args.get(i + 3).cloned()
+                } else if let Some(rest) = a.strip_prefix("--local-port=") {
+                    Some(rest.to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "7400".into());
+        std::env::set_var("TALLY_TCP_PORT", &local_port_raw);
+        std::env::set_var("TALLY_HTTP_PORT", &local_port_raw);
+        eprintln!(
+            "tally fork — remote={} scope={:?} since_ms={} -> localhost:{}",
+            cfg.remote, cfg.streams, cfg.since_millis, local_port_raw
+        );
+        FORK_CONFIG
+            .set(cfg)
+            .expect("FORK_CONFIG must be set exactly once");
+    }
+
     let worker_threads: usize = std::env::var("TALLY_WORKER_THREADS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -114,6 +164,127 @@ fn arg_value(name: &str) -> Option<String> {
 fn arg_flag(name: &str) -> bool {
     let long = format!("--{}", name);
     std::env::args().skip(1).any(|a| a == long)
+}
+
+/// Phase 37-01: detect `tally fork` subcommand — looks at `args[1]`.
+fn is_fork_subcommand() -> bool {
+    std::env::args().nth(1).as_deref() == Some("fork")
+}
+
+/// Phase 37-01: `tally fork` is a scientist-facing wrapper around the
+/// Phase 36 replica-mode boot. It parses its own flag set (`--remote`,
+/// `--streams`, etc.), translates them into a `ReplicaBootConfig`, and
+/// sets `TALLY_TCP_PORT` / `TALLY_HTTP_PORT` env vars so downstream code
+/// binds the listener on the scientist-requested local port.
+///
+/// `args` is the full argv slice (args[0] = binary, args[1] = "fork",
+/// remainder = fork flags). Pulled out so we can unit-test flag parsing
+/// without spawning a subprocess.
+fn parse_fork_args_from(args: &[String]) -> Result<ReplicaBootConfig, String> {
+    // Mini arg reader that scans `args[2..]` (skip binary + "fork").
+    fn get(args: &[String], name: &str) -> Option<String> {
+        let long = format!("--{}", name);
+        let long_eq = format!("--{}=", name);
+        let mut it = args.iter().skip(2);
+        while let Some(a) = it.next() {
+            if a == &long {
+                return it.next().cloned();
+            }
+            if let Some(rest) = a.strip_prefix(&long_eq) {
+                return Some(rest.to_string());
+            }
+        }
+        None
+    }
+    fn has_help(args: &[String]) -> bool {
+        args.iter()
+            .skip(2)
+            .any(|a| a == "--help" || a == "-h")
+    }
+
+    if has_help(args) {
+        return Err("__HELP__".into());
+    }
+
+    let remote = get(args, "remote")
+        .ok_or_else(|| "tally fork: --remote HOST:PORT required".to_string())?;
+    let streams_raw = get(args, "streams")
+        .ok_or_else(|| "tally fork: --streams s1,s2,... required".to_string())?;
+    let streams: Vec<String> = streams_raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if streams.is_empty() {
+        return Err("tally fork: --streams must list at least one stream".into());
+    }
+    // `--since` defaults to full history.
+    let since_raw = get(args, "since").unwrap_or_else(|| "1970-01-01T00:00:00Z".into());
+    let since_millis = parse_replica_since(&since_raw)
+        .map_err(|e| format!("tally fork: bad --since: {}", e))?;
+    let keys = get(args, "keys").map(|s| {
+        s.split(',')
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+            .collect::<Vec<_>>()
+    });
+    let key_prefix = get(args, "key-prefix");
+    if keys.is_some() && key_prefix.is_some() {
+        return Err("tally fork: --keys and --key-prefix are mutually exclusive".into());
+    }
+    let token = get(args, "token")
+        .or_else(|| std::env::var("TALLY_REPLICA_TOKEN").ok())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            "tally fork: --token (or TALLY_REPLICA_TOKEN env var) required".to_string()
+        })?;
+    // `--local-port` defaults to 7400.
+    let local_port_raw = get(args, "local-port").unwrap_or_else(|| "7400".into());
+    let local_port: u16 = local_port_raw
+        .parse()
+        .map_err(|_| format!("tally fork: bad --local-port '{}'", local_port_raw))?;
+    if local_port == 0 {
+        return Err("tally fork: --local-port must be > 0".into());
+    }
+    let pipeline_file = get(args, "pipeline-file").map(std::path::PathBuf::from);
+
+    Ok(ReplicaBootConfig {
+        remote,
+        since_millis,
+        streams,
+        keys,
+        key_prefix,
+        token,
+        block_until_catchup: true,
+        pipeline_file,
+    })
+}
+
+fn print_fork_help() {
+    eprintln!(
+        "usage: tally fork --remote HOST:PORT --streams s1,s2 [OPTIONS]\n\
+         \n\
+         Scoped local replica for scientists. Wraps `tally --replica-*` with\n\
+         scientist-friendly defaults: blocks until catchup, picks a loopback\n\
+         local port, defaults `--since` to full history.\n\
+         \n\
+         Required flags:\n\
+           --remote HOST:PORT      Upstream tally cluster.\n\
+           --streams s1,s2,...     Streams to replicate.\n\
+           --token TOKEN           Admin token (or TALLY_REPLICA_TOKEN env).\n\
+         \n\
+         Optional flags:\n\
+           --since TS              ISO-8601 UTC or u64 ms; default 1970-01-01T00:00:00Z.\n\
+           --keys k1,k2            Exact keys to replicate (mutex with --key-prefix).\n\
+           --key-prefix P          Prefix filter (mutex with --keys).\n\
+           --local-port PORT       TCP + HTTP bind port; default 7400.\n\
+           --pipeline-file PATH    REGISTER JSON file (single object or array).\n\
+                                   Same shape as HTTP POST /pipelines.\n\
+         \n\
+         Python-authored pipelines: launch `tally fork` without --pipeline-file,\n\
+         then from Python run `tl.register(pipeline, remote=\"localhost:PORT\")`\n\
+         after the fork prints its ready banner.\n"
+    );
 }
 
 /// Phase 36-01: parse `--replica-since` as either ISO-8601 UTC or raw
@@ -524,11 +695,16 @@ async fn async_main() {
     // `--replica-pipeline-file`, and spawn the replica-client loop.
     // Listener startup waits on `catchup_done_rx` when
     // `--replica-block-until-catchup=true` (the default).
-    let replica_boot = match parse_replica_boot_config() {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!("Replica-mode CLI error: {}", e);
-            std::process::exit(1);
+    let replica_boot = if let Some(cfg) = FORK_CONFIG.get() {
+        // Phase 37-01: `tally fork` path — config was synthesized in main().
+        Some(cfg.clone())
+    } else {
+        match parse_replica_boot_config() {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("Replica-mode CLI error: {}", e);
+                std::process::exit(1);
+            }
         }
     };
     let catchup_rx: Option<tokio::sync::oneshot::Receiver<()>> = if let Some(ref cfg) =
@@ -1105,5 +1281,189 @@ mod replica_cli_tests {
     fn rejects_garbage() {
         assert!(parse_replica_since("not-a-timestamp").is_err());
         assert!(parse_replica_since("2021/01/01").is_err());
+    }
+}
+
+// ================ Phase 37-01: `tally fork` flag parser tests =============
+
+#[cfg(test)]
+mod fork_cli_tests {
+    use super::parse_fork_args_from;
+
+    fn argv(xs: &[&str]) -> Vec<String> {
+        xs.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_minimal_happy_path() {
+        let args = argv(&[
+            "tally",
+            "fork",
+            "--remote",
+            "localhost:6400",
+            "--streams",
+            "Transactions",
+            "--token",
+            "T",
+        ]);
+        let cfg = parse_fork_args_from(&args).unwrap();
+        assert_eq!(cfg.remote, "localhost:6400");
+        assert_eq!(cfg.streams, vec!["Transactions".to_string()]);
+        assert_eq!(cfg.token, "T");
+        // Default since = 1970 epoch.
+        assert_eq!(cfg.since_millis, 0);
+        // Default block_until_catchup = true.
+        assert!(cfg.block_until_catchup);
+        assert!(cfg.keys.is_none());
+        assert!(cfg.key_prefix.is_none());
+        assert!(cfg.pipeline_file.is_none());
+    }
+
+    #[test]
+    fn parses_all_flags() {
+        let args = argv(&[
+            "tally",
+            "fork",
+            "--remote",
+            "10.0.0.1:7000",
+            "--streams",
+            "Transactions,Clicks",
+            "--since",
+            "2021-01-01T00:00:00Z",
+            "--keys",
+            "u1,u2",
+            "--token",
+            "tok",
+            "--local-port",
+            "8080",
+            "--pipeline-file",
+            "/tmp/p.json",
+        ]);
+        let cfg = parse_fork_args_from(&args).unwrap();
+        assert_eq!(cfg.streams.len(), 2);
+        assert_eq!(cfg.since_millis, 1_609_459_200_000);
+        assert_eq!(cfg.keys.as_ref().unwrap().len(), 2);
+        assert_eq!(
+            cfg.pipeline_file.as_ref().unwrap().to_str().unwrap(),
+            "/tmp/p.json"
+        );
+    }
+
+    #[test]
+    fn accepts_eq_form() {
+        let args = argv(&[
+            "tally",
+            "fork",
+            "--remote=h:1",
+            "--streams=s",
+            "--token=t",
+        ]);
+        let cfg = parse_fork_args_from(&args).unwrap();
+        assert_eq!(cfg.remote, "h:1");
+    }
+
+    #[test]
+    fn rejects_missing_remote() {
+        let args = argv(&["tally", "fork", "--streams", "s", "--token", "t"]);
+        let err = parse_fork_args_from(&args).unwrap_err();
+        assert!(err.contains("--remote"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_missing_streams() {
+        let args = argv(&["tally", "fork", "--remote", "h:1", "--token", "t"]);
+        let err = parse_fork_args_from(&args).unwrap_err();
+        assert!(err.contains("--streams"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_missing_token_without_env() {
+        // Ensure env is not set for this test.
+        let saved = std::env::var("TALLY_REPLICA_TOKEN").ok();
+        std::env::remove_var("TALLY_REPLICA_TOKEN");
+        let args = argv(&["tally", "fork", "--remote", "h:1", "--streams", "s"]);
+        let err = parse_fork_args_from(&args).unwrap_err();
+        assert!(err.contains("--token"), "{}", err);
+        if let Some(v) = saved {
+            std::env::set_var("TALLY_REPLICA_TOKEN", v);
+        }
+    }
+
+    #[test]
+    fn rejects_ambiguous_since() {
+        let args = argv(&[
+            "tally",
+            "fork",
+            "--remote",
+            "h:1",
+            "--streams",
+            "s",
+            "--token",
+            "t",
+            "--since",
+            "not-a-timestamp",
+        ]);
+        assert!(parse_fork_args_from(&args).is_err());
+    }
+
+    #[test]
+    fn rejects_keys_and_key_prefix_mutex() {
+        let args = argv(&[
+            "tally",
+            "fork",
+            "--remote",
+            "h:1",
+            "--streams",
+            "s",
+            "--token",
+            "t",
+            "--keys",
+            "a",
+            "--key-prefix",
+            "p",
+        ]);
+        let err = parse_fork_args_from(&args).unwrap_err();
+        assert!(err.contains("mutually exclusive"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_invalid_local_port() {
+        let args = argv(&[
+            "tally",
+            "fork",
+            "--remote",
+            "h:1",
+            "--streams",
+            "s",
+            "--token",
+            "t",
+            "--local-port",
+            "not-a-number",
+        ]);
+        assert!(parse_fork_args_from(&args).is_err());
+    }
+
+    #[test]
+    fn rejects_zero_local_port() {
+        let args = argv(&[
+            "tally",
+            "fork",
+            "--remote",
+            "h:1",
+            "--streams",
+            "s",
+            "--token",
+            "t",
+            "--local-port",
+            "0",
+        ]);
+        assert!(parse_fork_args_from(&args).is_err());
+    }
+
+    #[test]
+    fn help_flag_returns_help_sentinel() {
+        let args = argv(&["tally", "fork", "--help"]);
+        let err = parse_fork_args_from(&args).unwrap_err();
+        assert_eq!(err, "__HELP__");
     }
 }
