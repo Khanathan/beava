@@ -36,7 +36,7 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
 
 **Option M phases:**
 - [ ] **Phase 35: `OP_LOG_FETCH{from_ts, scope}`** — Server ships the historical-CDC opcode. Timestamp cursor, at-least-once on boundary, per-stream ordering. 1 plan.
-- [ ] **Phase 36: Replica-mode server boot** — `tally serve --replica-from HOST --replica-since T --replica-streams S --replica-token T [--replica-pipeline-file F]`. LOG_FETCH catchup → SUBSCRIBE live-tail, all feeding local ingest. Listener gate until catchup-done. 1 plan, 4 tasks.
+- [x] **Phase 36: Replica-mode server boot** — `tally serve --replica-from HOST --replica-since T --replica-streams S --replica-token T [--replica-pipeline-file F]`. LOG_FETCH catchup → SUBSCRIBE live-tail, all feeding local ingest. Listener gate until catchup-done. 1 plan, 4 tasks. (completed 2026-04-15)
 - [ ] **Phase 37: `tally fork` CLI + E2E demo** — `tally fork --remote ... --since ... --streams ... --pipeline-file ...` wrapper + load-bearing pytest that proves the scientist workflow end-to-end. 1 plan.
 - [ ] **Phase 38: Mothball Option K surfaces** — Delete obsolete embedded-client code, `tally_cli clone/query/inspect/sync`, `python-native/` crate. Housekeeping. 1 plan.
 
@@ -112,8 +112,8 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
 ### Phase 36: Replica-mode server boot (Option M)
 **Goal**: `tally serve --replica-from HOST:PORT --replica-since T --replica-streams S --replica-token T [--replica-pipeline-file F]` boot mode. Server connects to remote, runs LOG_FETCH catchup, transitions to SUBSCRIBE live-tail, routes all events through its own local ingest path (persisted to Phase 6 logs; routed through any registered scientist pipelines). Listener binding gated until catchup-done. Rejects local PUSH in replica mode. Auto-reconnects SUBSCRIBE on drop with timestamp-resume.
 **Depends on**: Phase 27 (OP_SUBSCRIBE), Phase 35 (OP_LOG_FETCH), Phase 28-01 (feature flags — active), Phase 31-01 (streaming consumer code — reused)
-**Plans:** 1 plan
-- [ ] 36-01-PLAN.md — CLI flag parsing + ReplicaClient loop + ingest routing (replica_ingest) + listener gate + integration test
+**Plans:** 1/1 plans complete
+- [x] 36-01-PLAN.md — CLI flag parsing + ReplicaClient loop + ingest routing (replica_ingest) + listener gate + integration test
 
 ### Phase 37: `tally fork` CLI + E2E demo (Option M)
 **Goal**: Ship `tally fork --remote HOST --since T --streams S --keys K --token T [--local-port 7400] [--pipeline-file P]` as a scientist-ergonomic wrapper for `tally serve --replica-from ...`, plus the load-bearing E2E pytest that proves the whole Option M workflow (prod → fork → register pipeline → query → live update).
@@ -148,6 +148,6 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
 | 33. Upstream backfill sources (stretch) | v0 | 0/? | Not planned | — |
 | 34. Write-back / promote (stretch) | v0 | 0/? | Not planned | — |
 | 35. OP_LOG_FETCH | v0 | 0/1 | **Planned (Option M)** | — |
-| 36. Replica-mode server boot | v0 | 0/1 | **Planned (Option M)** | — |
+| 36. Replica-mode server boot | v0 | 1/1 | Complete   | 2026-04-15 |
 | 37. `tally fork` CLI + E2E demo | v0 | 0/1 | **Planned (Option M)** | — |
 | 38. Mothball Option K surfaces | v0 | 0/1 | **Planned (Option M)** | — |
