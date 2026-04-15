@@ -4,8 +4,17 @@
 //! Writes are buffered (BufWriter::write_all is ~100-300ns memcpy).
 //! fsync is done periodically via a background timer, never on the hot path.
 //! Compaction rewrites log files excluding entries older than history_ttl.
+//!
+//! **Phase 40:** Each writer lives behind its own `parking_lot::Mutex` inside a
+//! `DashMap` so two different streams can be pushed concurrently without
+//! contending for a global lock. Same-stream pushes still serialize on that
+//! stream's writer mutex — required because the per-file append format needs
+//! total ordering of `[len][entry]` records. The `EventLog` itself exposes
+//! `&self` methods so it can live behind `Arc<EventLog>` without an outer
+//! `Mutex<Option<..>>` wrapper.
 
-use ahash::AHashMap;
+use dashmap::DashMap;
+use parking_lot::Mutex as PLMutex;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read as IoRead, Write};
@@ -50,9 +59,13 @@ pub struct LogEntry {
 
 pub struct EventLog {
     log_dir: PathBuf,
-    writers: AHashMap<String, BufWriter<File>>,
+    /// Per-stream writers behind fine-grained locks. DashMap provides lock-free
+    /// lookup by stream name; each entry's `PLMutex<BufWriter<File>>` is held
+    /// only for the duration of a single append/batch-append/fsync. Two pushes
+    /// to different streams never contend.
+    writers: DashMap<String, PLMutex<BufWriter<File>>>,
     /// Per-stream history TTL for compaction. Streams not in this map are not logged.
-    history_ttls: AHashMap<String, Duration>,
+    history_ttls: DashMap<String, Duration>,
 }
 
 impl EventLog {
@@ -61,30 +74,32 @@ impl EventLog {
         fs::create_dir_all(&log_dir)?;
         Ok(Self {
             log_dir,
-            writers: AHashMap::new(),
-            history_ttls: AHashMap::new(),
+            writers: DashMap::new(),
+            history_ttls: DashMap::new(),
         })
     }
 
     /// Register a stream for event logging.
     /// Creates/opens the log file in append mode. Idempotent (re-registration is a no-op).
     pub fn register_stream(
-        &mut self,
+        &self,
         stream_name: &str,
         history_ttl: Option<Duration>,
     ) -> std::io::Result<()> {
-        let sanitized = sanitize_stream_name(stream_name);
         if self.writers.contains_key(stream_name) {
             return Ok(()); // idempotent re-registration
         }
+        let sanitized = sanitize_stream_name(stream_name);
         let path = self.log_dir.join(format!("{}.log", sanitized));
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        // `or_insert_with` handles the race where two threads register the
+        // same stream simultaneously — only one BufWriter survives.
         self.writers
-            .insert(stream_name.to_string(), BufWriter::new(file));
-        self.history_ttls.insert(
-            stream_name.to_string(),
-            history_ttl.unwrap_or(DEFAULT_HISTORY_TTL),
-        );
+            .entry(stream_name.to_string())
+            .or_insert_with(|| PLMutex::new(BufWriter::new(file)));
+        self.history_ttls
+            .entry(stream_name.to_string())
+            .or_insert_with(|| history_ttl.unwrap_or(DEFAULT_HISTORY_TTL));
         Ok(())
     }
 
@@ -92,12 +107,12 @@ impl EventLog {
     /// Returns Ok(false) if the stream is not registered (no error).
     /// Uses length-prefixed postcard serialization: [u32 BE len][postcard bytes].
     pub fn append(
-        &mut self,
+        &self,
         stream_name: &str,
         event_bytes: &[u8],
         now: SystemTime,
     ) -> std::io::Result<bool> {
-        let writer = match self.writers.get_mut(stream_name) {
+        let writer_cell = match self.writers.get(stream_name) {
             Some(w) => w,
             None => return Ok(false),
         };
@@ -107,8 +122,9 @@ impl EventLog {
         };
         let encoded = postcard::to_stdvec(&entry).map_err(std::io::Error::other)?;
         let len = encoded.len() as u32;
-        writer.write_all(&len.to_be_bytes())?;
-        writer.write_all(&encoded)?;
+        let mut guard = writer_cell.lock();
+        guard.write_all(&len.to_be_bytes())?;
+        guard.write_all(&encoded)?;
         Ok(true)
     }
 
@@ -119,12 +135,9 @@ impl EventLog {
     /// `append` method's `Ok(false)` contract — no error).
     ///
     /// All events share the same `now` timestamp. Performs a **single**
-    /// `writers.get_mut` lookup for the whole batch, then encodes and writes
-    /// each event under that one writer handle. This is the amortization
-    /// win Phase 12 needs on the async push coalescing hot path — per-event
-    /// HashMap lookups are hoisted to once-per-batch.
+    /// writer lookup + one lock acquisition for the whole batch.
     pub fn append_many(
-        &mut self,
+        &self,
         stream_name: &str,
         event_bytes_list: &[&[u8]],
         now: SystemTime,
@@ -132,10 +145,11 @@ impl EventLog {
         if event_bytes_list.is_empty() {
             return Ok(0);
         }
-        let writer = match self.writers.get_mut(stream_name) {
+        let writer_cell = match self.writers.get(stream_name) {
             Some(w) => w,
             None => return Ok(0),
         };
+        let mut guard = writer_cell.lock();
         let mut written = 0usize;
         for bytes in event_bytes_list {
             let entry = LogEntry {
@@ -144,8 +158,8 @@ impl EventLog {
             };
             let encoded = postcard::to_stdvec(&entry).map_err(std::io::Error::other)?;
             let len = encoded.len() as u32;
-            writer.write_all(&len.to_be_bytes())?;
-            writer.write_all(&encoded)?;
+            guard.write_all(&len.to_be_bytes())?;
+            guard.write_all(&encoded)?;
             written += 1;
         }
         Ok(written)
@@ -181,10 +195,14 @@ impl EventLog {
 
     /// Flush all writers and call fdatasync (sync_data).
     /// Called from background timer only, never on the hot path.
-    pub fn fsync_all(&mut self) -> std::io::Result<()> {
-        for writer in self.writers.values_mut() {
-            writer.flush()?;
-            writer.get_ref().sync_data()?;
+    ///
+    /// Iterates the DashMap and briefly locks each writer. Wall time is the
+    /// sum of per-stream flush latencies — typically microseconds each.
+    pub fn fsync_all(&self) -> std::io::Result<()> {
+        for entry in self.writers.iter() {
+            let mut guard = entry.value().lock();
+            guard.flush()?;
+            guard.get_ref().sync_data()?;
         }
         Ok(())
     }
@@ -192,13 +210,26 @@ impl EventLog {
     /// Compact a stream's log file by removing entries older than history_ttl.
     /// Writes surviving entries to a tmp file, then atomically renames.
     /// Returns the count of removed entries.
-    pub fn compact_stream(&mut self, stream_name: &str, now: SystemTime) -> std::io::Result<usize> {
+    ///
+    /// Takes `&self` via interior mutability: briefly removes the writer from
+    /// the DashMap (flushing it first), rewrites the file, then reinserts a
+    /// fresh writer. Concurrent `append` calls during the rename window will
+    /// see `Ok(false)` (unregistered) — acceptable because compaction runs
+    /// from a single-threaded background timer and the window is ~ms.
+    pub fn compact_stream(&self, stream_name: &str, now: SystemTime) -> std::io::Result<usize> {
         let history_ttl = match self.history_ttls.get(stream_name) {
             Some(ttl) => *ttl,
             None => return Ok(0), // not registered
         };
 
-        // Read all entries
+        // Flush the existing writer (under its own lock) before reading, so
+        // recent buffered entries are included in the compaction scan.
+        if let Some(writer_cell) = self.writers.get(stream_name) {
+            let mut guard = writer_cell.lock();
+            guard.flush()?;
+        }
+
+        // Read all entries from disk
         let entries = self.read_entries(stream_name)?;
         let cutoff = now
             .checked_sub(history_ttl)
@@ -230,7 +261,7 @@ impl EventLog {
             tmp_writer.flush()?;
         }
 
-        // Close old writer by removing it
+        // Close old writer by removing it from the map.
         self.writers.remove(stream_name);
 
         // Atomic rename
@@ -242,28 +273,33 @@ impl EventLog {
             .append(true)
             .open(&log_path)?;
         self.writers
-            .insert(stream_name.to_string(), BufWriter::new(file));
+            .insert(stream_name.to_string(), PLMutex::new(BufWriter::new(file)));
 
         Ok(removed_count)
     }
 
     /// Deregister a stream: flush writer and remove from the writers map.
     /// Does NOT delete the log file (preserve history for potential re-registration).
-    pub fn deregister_stream(&mut self, stream_name: &str) -> std::io::Result<()> {
-        if let Some(mut writer) = self.writers.remove(stream_name) {
-            writer.flush()?;
+    pub fn deregister_stream(&self, stream_name: &str) -> std::io::Result<()> {
+        if let Some((_, writer_cell)) = self.writers.remove(stream_name) {
+            let mut guard = writer_cell.lock();
+            guard.flush()?;
         }
         Ok(())
     }
 
     /// Get the history TTL for a stream.
     pub fn get_history_ttl(&self, stream_name: &str) -> Option<Duration> {
-        self.history_ttls.get(stream_name).copied()
+        self.history_ttls.get(stream_name).map(|r| *r)
     }
 
-    /// Return an iterator over registered stream names.
-    pub fn registered_streams(&self) -> impl Iterator<Item = &str> {
-        self.writers.keys().map(|s| s.as_str())
+    /// Return a snapshot Vec of registered stream names.
+    ///
+    /// Phase 40: this returns owned `String`s instead of `&str` references
+    /// because DashMap entries can't safely yield borrowed keys across
+    /// concurrent mutations.
+    pub fn registered_streams(&self) -> Vec<String> {
+        self.writers.iter().map(|e| e.key().clone()).collect()
     }
 }
 
@@ -335,7 +371,7 @@ mod tests {
     #[test]
     fn test_register_stream_creates_log_file() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("Transactions", None).unwrap();
         let log_file = tmp.path().join("Transactions.log");
         assert!(log_file.exists());
@@ -344,7 +380,7 @@ mod tests {
     #[test]
     fn test_append_writes_length_prefixed_entry() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("Transactions", None).unwrap();
 
         let now = ts(1000);
@@ -363,7 +399,7 @@ mod tests {
     #[test]
     fn test_read_entries_returns_all_entries() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("TestStream", None).unwrap();
 
         let now = ts(1000);
@@ -382,7 +418,7 @@ mod tests {
     #[test]
     fn test_multiple_appends_sequential_read() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("S", None).unwrap();
 
         for i in 0..10 {
@@ -401,7 +437,7 @@ mod tests {
     #[test]
     fn test_append_unregistered_stream_returns_false() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         let result = log.append("Unknown", b"data", ts(1000)).unwrap();
         assert!(!result);
     }
@@ -409,7 +445,7 @@ mod tests {
     #[test]
     fn test_fsync_all_flushes_without_error() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("A", None).unwrap();
         log.register_stream("B", None).unwrap();
         log.append("A", b"data_a", ts(1000)).unwrap();
@@ -420,7 +456,7 @@ mod tests {
     #[test]
     fn test_compact_stream_removes_expired_entries() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         // Use 10-second TTL for testing
         log.register_stream("S", Some(Duration::from_secs(10)))
             .unwrap();
@@ -445,7 +481,7 @@ mod tests {
     #[test]
     fn test_compact_keyless_stream_removes_expired() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("KeylessStream", Some(Duration::from_secs(5)))
             .unwrap();
 
@@ -465,7 +501,7 @@ mod tests {
     #[test]
     fn test_compact_stream_preserves_recent_entries() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("S", Some(Duration::from_secs(100)))
             .unwrap();
 
@@ -484,7 +520,7 @@ mod tests {
     #[test]
     fn test_compact_stream_no_expired_produces_identical_output() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("S", Some(Duration::from_secs(1000)))
             .unwrap();
 
@@ -507,7 +543,7 @@ mod tests {
     #[test]
     fn test_compact_uses_tmp_file_and_renames() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("S", Some(Duration::from_secs(10)))
             .unwrap();
 
@@ -532,7 +568,7 @@ mod tests {
     #[test]
     fn test_deregister_stream_removes_writer() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("S", None).unwrap();
         log.append("S", b"data", ts(1000)).unwrap();
 
@@ -556,7 +592,7 @@ mod tests {
         assert_eq!(DEFAULT_HISTORY_TTL, Duration::from_secs(259200));
 
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("S", None).unwrap();
         assert_eq!(log.get_history_ttl("S"), Some(DEFAULT_HISTORY_TTL));
     }
@@ -564,7 +600,7 @@ mod tests {
     #[test]
     fn test_register_stream_idempotent() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("S", Some(Duration::from_secs(100)))
             .unwrap();
         log.append("S", b"data", ts(1000)).unwrap();
@@ -601,20 +637,20 @@ mod tests {
     #[test]
     fn test_registered_streams_iterator() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("A", None).unwrap();
         log.register_stream("B", None).unwrap();
         log.register_stream("C", None).unwrap();
 
-        let mut names: Vec<&str> = log.registered_streams().collect();
+        let mut names: Vec<String> = log.registered_streams();
         names.sort();
-        assert_eq!(names, vec!["A", "B", "C"]);
+        assert_eq!(names, vec!["A".to_string(), "B".to_string(), "C".to_string()]);
     }
 
     #[test]
     fn test_append_empty_payload() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("S", None).unwrap();
         log.append("S", b"", ts(1000)).unwrap();
         log.fsync_all().unwrap();
@@ -627,7 +663,7 @@ mod tests {
     #[test]
     fn test_append_large_payload() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("S", None).unwrap();
 
         let large = vec![0xABu8; 100_000];
@@ -643,7 +679,7 @@ mod tests {
     #[test]
     fn test_custom_history_ttl() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         let ttl = Duration::from_secs(3600);
         log.register_stream("S", Some(ttl)).unwrap();
         assert_eq!(log.get_history_ttl("S"), Some(ttl));
@@ -654,5 +690,94 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         assert_eq!(log.get_history_ttl("NotRegistered"), None);
+    }
+
+    // ---------- Phase 40: parallel-write scaling test ----------
+
+    /// Proves that two threads pushing to *different* streams do not fully
+    /// serialize. Each thread does a fixed amount of CPU + I/O work under the
+    /// writer lock; with the per-stream lock refactor the two threads should
+    /// run mostly in parallel.
+    ///
+    /// Tolerance: we require the 2-thread wall time to be less than
+    /// `1.5 × single_thread_time`. A fully-serialized implementation would
+    /// take `~2 × single_thread_time`; a perfectly parallel implementation
+    /// takes `~1 × single_thread_time`. 1.5× leaves comfortable headroom for
+    /// CI jitter while still failing loudly if someone accidentally reintroduces
+    /// a global lock.
+    #[test]
+    fn parallel_writes_to_different_streams_do_not_serialize() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        use std::time::Instant;
+
+        const N_EVENTS: usize = 2_000;
+        // A biggish payload so BufWriter flushes hit the kernel and the
+        // writer lock is actually held for measurable time.
+        let payload = vec![0xAAu8; 4096];
+
+        // --- Baseline: single thread, 2× N_EVENTS to one stream ---------
+        let tmp_baseline = tempfile::TempDir::new().unwrap();
+        let baseline_log = EventLog::new(tmp_baseline.path().to_path_buf()).unwrap();
+        baseline_log.register_stream("A", None).unwrap();
+        let t0 = Instant::now();
+        for _ in 0..(N_EVENTS * 2) {
+            baseline_log.append("A", &payload, ts(0)).unwrap();
+        }
+        baseline_log.fsync_all().unwrap();
+        let single_thread_time = t0.elapsed();
+
+        // --- Parallel: two threads, N_EVENTS each to *different* streams ---
+        let tmp_parallel = tempfile::TempDir::new().unwrap();
+        let parallel_log = Arc::new(EventLog::new(tmp_parallel.path().to_path_buf()).unwrap());
+        parallel_log.register_stream("A", None).unwrap();
+        parallel_log.register_stream("B", None).unwrap();
+
+        let barrier = Arc::new(Barrier::new(2));
+
+        let log_a = Arc::clone(&parallel_log);
+        let barrier_a = Arc::clone(&barrier);
+        let payload_a = payload.clone();
+        let h_a = thread::spawn(move || {
+            barrier_a.wait();
+            for _ in 0..N_EVENTS {
+                log_a.append("A", &payload_a, ts(0)).unwrap();
+            }
+        });
+
+        let log_b = Arc::clone(&parallel_log);
+        let barrier_b = Arc::clone(&barrier);
+        let payload_b = payload.clone();
+        let h_b = thread::spawn(move || {
+            barrier_b.wait();
+            for _ in 0..N_EVENTS {
+                log_b.append("B", &payload_b, ts(0)).unwrap();
+            }
+        });
+
+        let t1 = Instant::now();
+        h_a.join().unwrap();
+        h_b.join().unwrap();
+        let parallel_time = t1.elapsed();
+        parallel_log.fsync_all().unwrap();
+
+        // Both streams wrote all their events.
+        let entries_a = parallel_log.read_entries("A").unwrap();
+        let entries_b = parallel_log.read_entries("B").unwrap();
+        assert_eq!(entries_a.len(), N_EVENTS);
+        assert_eq!(entries_b.len(), N_EVENTS);
+
+        // Scaling assertion: parallel wall time should be well under 1.5× the
+        // serial-equivalent time. With a global lock this would be ~1.0× and
+        // pass trivially on tiny payloads — that's why N_EVENTS and payload
+        // size are large enough to make lock hold-time meaningful.
+        let ratio = parallel_time.as_secs_f64() / single_thread_time.as_secs_f64();
+        assert!(
+            ratio < 1.5,
+            "parallel writes appear serialized: parallel={:?} single={:?} ratio={:.2}",
+            parallel_time,
+            single_thread_time,
+            ratio,
+        );
     }
 }
