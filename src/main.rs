@@ -252,6 +252,27 @@ fn parse_fork_args_from(args: &[String]) -> Result<ReplicaBootConfig, String> {
         return Err("tally fork: --local-port must be > 0".into());
     }
     let pipeline_file = get(args, "pipeline-file").map(std::path::PathBuf::from);
+    // Phase 44-01: scientist-facing `--extract-at T1,T2,...` → translate to
+    // the replica-mode `extract_at_millis` list. Each entry accepts the
+    // same ISO-8601 / u64-ms shapes as `--since`.
+    let extract_at_millis: Vec<u64> = match get(args, "extract-at") {
+        Some(raw) => {
+            let mut out = Vec::new();
+            for tok in raw.split(',') {
+                let t = tok.trim();
+                if t.is_empty() {
+                    continue;
+                }
+                let ms = parse_replica_since(t).map_err(|e| {
+                    format!("tally fork: bad --extract-at entry '{}': {}", t, e)
+                })?;
+                out.push(ms);
+            }
+            out.sort_unstable();
+            out
+        }
+        None => Vec::new(),
+    };
 
     Ok(ReplicaBootConfig {
         remote,
@@ -262,6 +283,7 @@ fn parse_fork_args_from(args: &[String]) -> Result<ReplicaBootConfig, String> {
         token,
         block_until_catchup: true,
         pipeline_file,
+        extract_at_millis,
     })
 }
 
@@ -285,6 +307,10 @@ fn print_fork_help() {
            --local-port PORT       TCP + HTTP bind port; default 7400.\n\
            --pipeline-file PATH    REGISTER JSON file (single object or array).\n\
                                    Same shape as HTTP POST /pipelines.\n\
+           --extract-at T1,T2,...  Historical extraction timestamps (ISO-8601\n\
+                                   UTC or u64 ms). Replay captures per-scope-\n\
+                                   key feature state as it crosses each Tᵢ;\n\
+                                   query via GET /extracts after catchup.\n\
          \n\
          Python-authored pipelines: launch `tally fork` without --pipeline-file,\n\
          then from Python run `tl.register(pipeline, remote=\"localhost:PORT\")`\n\
@@ -426,6 +452,27 @@ fn parse_replica_boot_config() -> Result<Option<ReplicaBootConfig>, String> {
         None => true,
     };
     let pipeline_file = arg_value("replica-pipeline-file").map(std::path::PathBuf::from);
+    // Phase 44-01: `--replica-extract-at T1,T2,...` — historical extraction
+    // timestamps. Each entry parsed via `parse_replica_since` (ISO-8601 UTC
+    // or raw u64 ms). Sorted ascending; empty when flag absent.
+    let extract_at_millis: Vec<u64> = match arg_value("replica-extract-at") {
+        Some(raw) => {
+            let mut out = Vec::new();
+            for tok in raw.split(',') {
+                let t = tok.trim();
+                if t.is_empty() {
+                    continue;
+                }
+                let ms = parse_replica_since(t).map_err(|e| {
+                    format!("--replica-extract-at: bad entry '{}': {}", t, e)
+                })?;
+                out.push(ms);
+            }
+            out.sort_unstable();
+            out
+        }
+        None => Vec::new(),
+    };
     Ok(Some(ReplicaBootConfig {
         remote,
         since_millis,
@@ -435,6 +482,7 @@ fn parse_replica_boot_config() -> Result<Option<ReplicaBootConfig>, String> {
         token,
         block_until_catchup,
         pipeline_file,
+        extract_at_millis,
     }))
 }
 
@@ -1496,6 +1544,84 @@ mod fork_cli_tests {
         let args = argv(&["tally", "fork", "--help"]);
         let err = parse_fork_args_from(&args).unwrap_err();
         assert_eq!(err, "__HELP__");
+    }
+
+    // Phase 44-01: --extract-at parsing.
+    #[test]
+    fn parses_extract_at_iso8601_list_and_sorts() {
+        let args = argv(&[
+            "tally",
+            "fork",
+            "--remote",
+            "h:1",
+            "--streams",
+            "s",
+            "--token",
+            "t",
+            "--extract-at",
+            "2026-04-01T10:00:00Z,2026-03-01T10:00:00Z,2026-03-15T10:00:00Z",
+        ]);
+        let cfg = parse_fork_args_from(&args).unwrap();
+        assert_eq!(cfg.extract_at_millis.len(), 3);
+        // Must be sorted ascending regardless of input order.
+        assert!(cfg.extract_at_millis[0] < cfg.extract_at_millis[1]);
+        assert!(cfg.extract_at_millis[1] < cfg.extract_at_millis[2]);
+        // March 1 2026 < March 15 2026 < April 1 2026 (exact ms values
+        // computed by the shared parse_replica_since helper; here we just
+        // assert the parsed values round-trip in sorted order).
+        assert_eq!(
+            cfg.extract_at_millis[0],
+            super::parse_replica_since("2026-03-01T10:00:00Z").unwrap()
+        );
+        assert_eq!(
+            cfg.extract_at_millis[2],
+            super::parse_replica_since("2026-04-01T10:00:00Z").unwrap()
+        );
+    }
+
+    #[test]
+    fn parses_extract_at_u64_millis_mix() {
+        let args = argv(&[
+            "tally",
+            "fork",
+            "--remote",
+            "h:1",
+            "--streams",
+            "s",
+            "--token",
+            "t",
+            "--extract-at",
+            "5000,1000,3000",
+        ]);
+        let cfg = parse_fork_args_from(&args).unwrap();
+        assert_eq!(cfg.extract_at_millis, vec![1000, 3000, 5000]);
+    }
+
+    #[test]
+    fn extract_at_default_empty_when_absent() {
+        let args = argv(&[
+            "tally", "fork", "--remote", "h:1", "--streams", "s", "--token", "t",
+        ]);
+        let cfg = parse_fork_args_from(&args).unwrap();
+        assert!(cfg.extract_at_millis.is_empty());
+    }
+
+    #[test]
+    fn rejects_bad_extract_at_entry() {
+        let args = argv(&[
+            "tally",
+            "fork",
+            "--remote",
+            "h:1",
+            "--streams",
+            "s",
+            "--token",
+            "t",
+            "--extract-at",
+            "1000,not-a-ts,3000",
+        ]);
+        let err = parse_fork_args_from(&args).unwrap_err();
+        assert!(err.contains("--extract-at"), "{}", err);
     }
 }
 

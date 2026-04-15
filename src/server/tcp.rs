@@ -214,6 +214,16 @@ pub struct ConcurrentAppState {
     /// actually locks `self.latency` and records. Histogram shape is
     /// preserved; lock-acquire rate drops ~94%.
     pub latency_sample_counter: std::sync::atomic::AtomicU64,
+
+    /// Phase 44-01: historical-extraction registry. Populated by
+    /// `ReplicaClient::snapshot_extract` during historical catchup when
+    /// `--replica-extract-at T1,T2,...` is set. Outer key is the requested
+    /// unix-millis timestamp (sorted ascending by the client); inner map
+    /// is `entity_key -> {feature_name: feature_value}` JSON. Exposed via
+    /// `GET /extracts`. Empty for non-replica servers and for replicas
+    /// launched without `--replica-extract-at`.
+    pub extracted_history:
+        dashmap::DashMap<u64, dashmap::DashMap<String, serde_json::Value>>,
 }
 
 /// Phase 41-01 T4: only every Nth PUSH records into the latency histogram.
@@ -362,6 +372,7 @@ pub fn make_concurrent_state_full(
         last_push_latency_nanos: std::sync::atomic::AtomicU64::new(0),
         atomic_throughput: crate::server::throughput::AtomicThroughput::new(),
         latency_sample_counter: std::sync::atomic::AtomicU64::new(0),
+        extracted_history: dashmap::DashMap::new(),
     })
 }
 

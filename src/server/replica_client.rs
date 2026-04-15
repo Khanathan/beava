@@ -67,6 +67,15 @@ pub struct ReplicaBootConfig {
     pub block_until_catchup: bool,
     /// Optional REGISTER-JSON payload path to seed pipelines before catchup.
     pub pipeline_file: Option<std::path::PathBuf>,
+    /// Phase 44-01: sorted ascending list of unix-millis timestamps at which
+    /// the historical-catchup loop should snapshot per-scope-key feature
+    /// state. Empty = no historical extraction (default behavior).
+    ///
+    /// Semantics: maintain a cursor `i = 0`; before applying event E with
+    /// `E.ts_ms`, while `i < n && E.ts_ms > extract_at_millis[i]`, snapshot
+    /// current state and `i += 1`. After LOG_FETCH END, snapshot any
+    /// remaining entries against the final state.
+    pub extract_at_millis: Vec<u64>,
 }
 
 impl ReplicaBootConfig {
@@ -234,6 +243,13 @@ impl ReplicaClient {
         stream.write_all(&frame).await?;
         stream.flush().await?;
 
+        // Phase 44-01: historical-extract cursor. Tracks the next
+        // `extract_at_millis[i]` threshold we haven't yet crossed. Before
+        // applying each event E with ts_ms, advance the cursor + snapshot
+        // for every threshold strictly less than E.ts_ms.
+        let mut extract_cursor: usize = 0;
+        let extract_at = &self.config.extract_at_millis.clone();
+
         // Read response frames until END (or STATUS_ERROR).
         loop {
             let frame_len = read_u32_be(&mut stream).await?;
@@ -251,6 +267,15 @@ impl ReplicaClient {
             let tag = body[0];
             match tag {
                 t if t == REPLICA_FRAME_TAG_END => {
+                    // Phase 44-01: snapshot any remaining extract_at entries
+                    // that were never crossed during replay. They capture
+                    // the state-as-of end-of-log, which is the correct
+                    // semantics for "extract_at T in the future" — replay
+                    // finishes before T, state-at-end is state-at-T.
+                    while extract_cursor < extract_at.len() {
+                        self.snapshot_extract(extract_at[extract_cursor]);
+                        extract_cursor += 1;
+                    }
                     return Ok(());
                 }
                 t if t == REPLICA_FRAME_TAG_EVENT => {
@@ -273,6 +298,14 @@ impl ReplicaClient {
                         )));
                     }
                     let payload = &body[13..13 + payload_len];
+                    // Phase 44-01: snapshot-before-apply for every cursor
+                    // threshold strictly less than this event's ts_ms.
+                    while extract_cursor < extract_at.len()
+                        && ts_ms > extract_at[extract_cursor]
+                    {
+                        self.snapshot_extract(extract_at[extract_cursor]);
+                        extract_cursor += 1;
+                    }
                     self.apply_event(ts_ms, payload)?;
                 }
                 0x01 => {
@@ -365,6 +398,42 @@ impl ReplicaClient {
                 .saturating_add(nanos as u64 / 1_000_000);
             let payload = &body[17..17 + payload_len];
             self.apply_event(ts_ms, payload)?;
+        }
+    }
+
+    /// Phase 44-01: capture a per-scope-key snapshot of computed features
+    /// into `state.extracted_history[ts_ms]`. Called from the historical
+    /// catchup loop just before applying an event whose ts crosses a
+    /// configured `--replica-extract-at` threshold.
+    ///
+    /// Scope iteration: prefers `config.keys` if non-empty, else falls back
+    /// to every entity currently in the StateStore. Keys with no features
+    /// yet are skipped (consistent with the "missing key → None" semantics).
+    fn snapshot_extract(&self, ts_ms: u64) {
+        use dashmap::DashMap;
+        let now = std::time::SystemTime::now();
+        let keys: Vec<String> = match &self.config.keys {
+            Some(ks) if !ks.is_empty() => ks.clone(),
+            _ => self.app.store.entity_keys(),
+        };
+        // Outer get-or-insert is lock-free per DashMap; inner inserts are
+        // per-key and rare (one write per key per extract_at threshold).
+        let inner = self
+            .app
+            .extracted_history
+            .entry(ts_ms)
+            .or_insert_with(DashMap::new);
+        for key in keys {
+            let feats = self.app.store.get_all_features(&key, now);
+            if feats.is_empty() {
+                continue;
+            }
+            // FeatureMap → serde_json::Value::Object keyed by feature name.
+            let mut obj = serde_json::Map::new();
+            for (fname, fval) in feats.iter() {
+                obj.insert(fname.clone(), fval.to_json_value());
+            }
+            inner.insert(key, serde_json::Value::Object(obj));
         }
     }
 
@@ -501,6 +570,7 @@ mod tests {
             token: "tok".into(),
             block_until_catchup: true,
             pipeline_file: None,
+            extract_at_millis: Vec::new(),
         }
     }
 
