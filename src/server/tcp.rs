@@ -143,6 +143,11 @@ pub struct ConcurrentAppState {
 
     /// Phase 20: bounded ring buffer of the most recent PUSH events for the
     /// public `/public/recent-events` endpoint.
+    ///
+    /// Phase 41-01 T1: gated behind `feature = "demo"` — the ring's per-push
+    /// `PLMutex` insert was ~12% of futex time in the 8-proc 8-stream bench.
+    /// Default server build omits this field + its push site + its endpoint.
+    #[cfg(feature = "demo")]
     pub recent_events: PLMutex<RecentEventsRing>,
 
     /// Phase 20: when true, `GET /` serves the public demo page; when false
@@ -182,9 +187,45 @@ pub struct ConcurrentAppState {
     /// it needs to issue a resume LOG_FETCH after a SUBSCRIBE drop. When
     /// `replica_mode` is false, this value is unused and stays at 0.
     pub replica_last_applied_ts_ms: std::sync::atomic::AtomicU64,
+
+    /// Phase 41-01 T2: lock-free per-push event counter. Replaces the
+    /// `events_total` field that used to live inside `Metrics` behind a
+    /// `PLMutex`. Bumped on every successful PUSH (single + batch paths);
+    /// read by `/metrics` and `/public/stats`. Other `Metrics` fields are
+    /// rarely written and stay behind the mutex.
+    pub events_total: std::sync::atomic::AtomicU64,
+
+    /// Phase 41-01 T2: last observed PUSH latency, in nanoseconds. Replaces
+    /// `Metrics::push_latency_seconds` which used to live inside the mutex
+    /// and was rewritten on every successful PUSH. Stored as nanos to keep
+    /// a `u64` atomic; `/metrics` divides by 1e9 for the seconds output.
+    pub last_push_latency_nanos: std::sync::atomic::AtomicU64,
+
+    /// Phase 41-01 T3: lock-free rolling-window EPS counter used on the
+    /// hot PUSH path and exposed via `/metrics` and `/public/stats` as the
+    /// global 5-second EPS rate. Replaces the per-push bump into the
+    /// `PLMutex<ThroughputTracker>`. The per-stream EWMA tracker
+    /// (`self.throughput`) stays live for `/debug/throughput` but is no
+    /// longer touched by the hot path.
+    pub atomic_throughput: crate::server::throughput::AtomicThroughput,
+
+    /// Phase 41-01 T4: sampling counter for the latency histogram. Every
+    /// PUSH bumps this `Relaxed`; only 1-in-`LATENCY_SAMPLE_STRIDE`
+    /// actually locks `self.latency` and records. Histogram shape is
+    /// preserved; lock-acquire rate drops ~94%.
+    pub latency_sample_counter: std::sync::atomic::AtomicU64,
 }
 
+/// Phase 41-01 T4: only every Nth PUSH records into the latency histogram.
+/// Preserves p50/p99 shape while reducing per-push lock acquisitions by
+/// ~(N-1)/N. Must be a power of two for the `& (STRIDE-1)` fast-path, but
+/// `% STRIDE` is also fine and keeps the code readable.
+pub const LATENCY_SAMPLE_STRIDE: u64 = 16;
+
 /// Phase 20: a single entry in the `/public/recent-events` feed.
+///
+/// Phase 41-01 T1: gated behind `feature = "demo"`.
+#[cfg(feature = "demo")]
 #[derive(Debug, Clone)]
 pub struct RecentEvent {
     pub ts_ms: u64,
@@ -196,11 +237,15 @@ pub struct RecentEvent {
 /// Phase 20: bounded in-memory ring of the last `CAPACITY` PUSH events. Used
 /// by the public read-only `/public/recent-events` endpoint so the demo page
 /// has something alive to render without exposing the full event log.
+///
+/// Phase 41-01 T1: gated behind `feature = "demo"`.
+#[cfg(feature = "demo")]
 pub struct RecentEventsRing {
     buf: std::collections::VecDeque<RecentEvent>,
     capacity: usize,
 }
 
+#[cfg(feature = "demo")]
 impl RecentEventsRing {
     pub const CAPACITY: usize = 100;
     pub const PAYLOAD_PREVIEW_MAX: usize = 200;
@@ -227,6 +272,7 @@ impl RecentEventsRing {
     }
 }
 
+#[cfg(feature = "demo")]
 impl Default for RecentEventsRing {
     fn default() -> Self {
         Self::new()
@@ -304,6 +350,7 @@ pub fn make_concurrent_state_full(
         snapshot_in_progress: AtomicBool::new(false),
         admin_token,
         started_at: std::time::Instant::now(),
+        #[cfg(feature = "demo")]
         recent_events: PLMutex::new(RecentEventsRing::new()),
         public_mode,
         eviction_tracker: Arc::new(crate::state::eviction_tracker::EvictionTracker::new()),
@@ -311,6 +358,10 @@ pub fn make_concurrent_state_full(
         subscriber_registry,
         replica_mode: AtomicBool::new(false),
         replica_last_applied_ts_ms: std::sync::atomic::AtomicU64::new(0),
+        events_total: std::sync::atomic::AtomicU64::new(0),
+        last_push_latency_nanos: std::sync::atomic::AtomicU64::new(0),
+        atomic_throughput: crate::server::throughput::AtomicThroughput::new(),
+        latency_sample_counter: std::sync::atomic::AtomicU64::new(0),
     })
 }
 
@@ -1084,54 +1135,43 @@ fn handle_push_core_ex(
             let _ = log.append(target_name, &log_payload, now);
         }
     }
-    {
-        let now_inst = std::time::Instant::now();
-        let primary_key_field_for_tp = engine
-            .get_stream(stream_name)
-            .and_then(|s| s.key_field.clone());
-        let tp_targets_all = engine.fan_out_targets();
-        let mut touched: Vec<&str> =
-            Vec::with_capacity(1 + cascade_targets.len() + tp_targets_all.len());
-        touched.push(stream_name);
-        for ds in &cascade_targets {
-            touched.push(ds.as_str());
-        }
-        for (target_name, target_key_field) in &tp_targets_all {
-            if target_name == stream_name {
-                continue;
-            }
-            if primary_key_field_for_tp.as_deref() == Some(target_key_field.as_str()) {
-                continue;
-            }
-            if cascade_targets.iter().any(|ct| ct == target_name) {
-                continue;
-            }
-            let key_present = matches!(
-                payload.get(target_key_field.as_str()),
-                Some(serde_json::Value::String(s)) if !s.is_empty()
-            );
-            if !key_present {
-                continue;
-            }
-            touched.push(target_name.as_str());
-        }
-        state.throughput.lock().bump_unique(touched, now_inst);
-    }
+    // Phase 41-01 T3: lock-free atomic ring counter (used by /metrics
+    // and /public/stats). The old code built a `touched` vector of
+    // primary + cascade + fan-out targets and fed it into the per-stream
+    // EWMA `ThroughputTracker`; that tracker is no longer part of the hot
+    // path. We just bump the global EPS ring once per successful PUSH —
+    // cascade/fan-out event counts are still visible via /metrics
+    // (tally_events_total counts successful PUSHes, not derived events).
+    // Per-stream EPS visibility on `/debug/throughput` becomes admin-path
+    // only; see 41-01-SUMMARY.md for the trade-off.
+    state.atomic_throughput.bump(1);
 
     let push_elapsed = push_start.elapsed();
-    {
-        let mut metrics = state.metrics.lock();
-        metrics.push_latency_seconds = push_elapsed.as_secs_f64();
-        metrics.events_total += 1;
-    }
+    // Phase 41-01 T2: lock-free counter + last-latency gauge.
+    state
+        .events_total
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    state.last_push_latency_nanos.store(
+        push_elapsed.as_nanos().min(u64::MAX as u128) as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
 
     // Phase 20: capture the event in the recent-events ring for the public
     // read-only feed. Bounded at RecentEventsRing::CAPACITY — O(1) write.
+    //
+    // Phase 41-01 T1: gated behind `feature = "demo"`. Default server build
+    // omits this call entirely.
+    #[cfg(feature = "demo")]
     record_recent_event(state, stream_name, payload, now);
 
     // Phase 10.2: record latency into histogram tracker
+    // Phase 41-01 T4: sampled 1-in-LATENCY_SAMPLE_STRIDE to drop ~94% of
+    // per-push latency-mutex acquisitions. Histogram shape preserved.
     let push_us = push_elapsed.as_secs_f64() * 1_000_000.0;
-    {
+    let sample_n = state
+        .latency_sample_counter
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if sample_n % LATENCY_SAMPLE_STRIDE == 0 {
         let mut latency = state.latency.lock();
         latency.record_push(stream_name, push_us, std::time::Instant::now());
         if latency.slow_queries_would_accept(crate::server::latency::CommandKind::Push, push_us) {
@@ -1497,10 +1537,19 @@ pub fn handle_push_batch(
         }
     }
 
-    // Metrics bump once per batch.
-    state.metrics.lock().events_total += batch.len() as u64;
+    // Phase 41-01 T2: lock-free events counter + T3 atomic throughput
+    // ring. One fetch_add per batch — no `state.metrics.lock()` here.
+    let batch_len = batch.len() as u64;
+    state
+        .events_total
+        .fetch_add(batch_len, std::sync::atomic::Ordering::Relaxed);
+    state.atomic_throughput.bump(batch_len);
 
     // Phase 20: record each event in the recent-events ring (bounded).
+    //
+    // Phase 41-01 T1: gated behind `feature = "demo"`. Default server build
+    // skips the per-event ring insert entirely.
+    #[cfg(feature = "demo")]
     for (idx, ev) in batch.iter().enumerate() {
         if results[idx].is_ok() {
             record_recent_event(state, &ev.stream_name, &ev.payload, ev.now);
@@ -1513,6 +1562,9 @@ pub fn handle_push_batch(
 /// Phase 20: push a single event into the public recent-events ring.
 /// Extracts the key (if the primary stream has one) and truncates the payload
 /// to `RecentEventsRing::PAYLOAD_PREVIEW_MAX` characters.
+///
+/// Phase 41-01 T1: gated behind `feature = "demo"` along with its callers.
+#[cfg(feature = "demo")]
 fn record_recent_event(
     state: &SharedState,
     stream_name: &str,

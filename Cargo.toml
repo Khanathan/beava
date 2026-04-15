@@ -10,6 +10,11 @@ edition = "2021"
 default = ["server"]
 server = []
 client = []
+# Phase 41-01 T1: gates the `/public/recent-events` demo endpoint and its
+# backing in-memory ring. OFF by default — production server build ships
+# without the per-push ring-buffer mutex that the ring requires. Enable
+# only when compiling for the launch/demo UI.
+demo = ["server"]
 
 [dependencies]
 ahash = "0.8"

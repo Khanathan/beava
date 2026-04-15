@@ -292,9 +292,16 @@ async fn delete_pipeline(
 
 async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse {
     let keys_total = state.store.entity_count();
+    // Phase 41-01 T2: events_total + last-push latency are now lock-free
+    // atomics on AppState. Only the rare-write fields stay behind the mutex.
+    let events_total = state
+        .events_total
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let push_latency = state
+        .last_push_latency_nanos
+        .load(std::sync::atomic::Ordering::Relaxed) as f64
+        / 1_000_000_000.0;
     let metrics = state.metrics.lock();
-    let events_total = metrics.events_total;
-    let push_latency = metrics.push_latency_seconds;
     let snapshot_duration = metrics.snapshot_duration_ms as f64 / 1000.0;
     let snapshots_skipped = metrics.snapshots_skipped;
     drop(metrics);
@@ -303,7 +310,9 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
     // Phase 20 TRAC-07: current EPS (5s EWMA summed across streams) and p99
     // PUSH latency taken from the Phase 10.2 rolling histogram. Both read a
     // snapshot of their respective trackers; no mutation.
-    let current_eps = state.throughput.lock().eps_5s();
+    //
+    // Phase 41-01 T3: current_eps now reads the lock-free atomic ring.
+    let current_eps = state.atomic_throughput.eps_5s();
     let now_inst = std::time::Instant::now();
     let p99_push_us = state.latency.lock().push_percentile_us(99.0, now_inst);
     // Prometheus convention: seconds, not microseconds.
@@ -495,6 +504,7 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
 // ========================================================================
 
 /// Query parameters for `GET /public/recent-events`.
+#[cfg(feature = "demo")]
 #[derive(Debug, serde::Deserialize, Default)]
 struct RecentEventsQuery {
     /// Maximum number of events to return. Clamped to [1, 100]; default 20.
@@ -539,6 +549,11 @@ async fn public_features(
 
 /// `GET /public/recent-events?limit=N` — tail of the in-memory recent-events
 /// ring. Defaults to 20 events, clamped to the ring capacity (100).
+///
+/// Phase 41-01 T1: gated behind `feature = "demo"`. Default server build
+/// does not compile this handler; the `/public/recent-events` route is
+/// also not registered, so requests return 404.
+#[cfg(feature = "demo")]
 async fn public_recent_events(
     State(state): State<SharedState>,
     Query(q): Query<RecentEventsQuery>,
@@ -569,8 +584,11 @@ async fn public_recent_events(
 
 /// `GET /public/stats` — aggregate counters for the demo page tiles.
 async fn public_stats(State(state): State<SharedState>) -> impl IntoResponse {
-    let events_total = state.metrics.lock().events_total;
-    let current_eps = state.throughput.lock().eps_5s();
+    // Phase 41-01 T2+T3: lock-free reads.
+    let events_total = state
+        .events_total
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let current_eps = state.atomic_throughput.eps_5s();
     let now_inst = std::time::Instant::now();
     let latency = state.latency.lock();
     let p99_push_us = latency.push_percentile_us(99.0, now_inst);
@@ -1460,15 +1478,19 @@ async fn debug_backfill(State(state): State<SharedState>) -> Json<serde_json::Va
 ///   - `POST /snapshot`
 ///   - `GET /debug/{key,memory,backfill,topology,throughput,latency}`
 pub fn build_router(state: SharedState) -> Router {
+    // Phase 41-01 T1: the `/public/recent-events` route + handler are only
+    // compiled under `--features demo`. Default builds return 404 — the
+    // route is simply not registered.
     let public_router = Router::new()
         .route("/health", get(health))
         .route("/debug/ready", get(debug_ready))
         .route("/metrics", get(metrics_endpoint))
         .route("/public/features/{key}", get(public_features))
-        .route("/public/recent-events", get(public_recent_events))
         .route("/public/stats", get(public_stats))
         .route("/", get(root_dispatch))
         .route("/static/{*file}", get(ui_static));
+    #[cfg(feature = "demo")]
+    let public_router = public_router.route("/public/recent-events", get(public_recent_events));
 
     let admin_router = Router::new()
         .route("/pipelines", get(list_pipelines).post(create_pipeline))

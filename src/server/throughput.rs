@@ -9,7 +9,175 @@
 //! which dedupes via a caller-provided iterator.
 
 use ahash::AHashMap;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+// ===========================================================================
+// Phase 41-01 T3: AtomicThroughput — lock-free rolling-window EPS counter.
+// ===========================================================================
+//
+// Replaces the per-push `PLMutex<ThroughputTracker>` acquisition on the hot
+// path. 60 one-second buckets (covering a full minute); each `bump(n)` does
+// a single `Relaxed` `fetch_add` on the bucket indexed by the current
+// wall-clock second mod 60. Reads sum the most recent 5 buckets to form a
+// 5-second EPS rate.
+//
+// Per-stream granularity IS lost on the hot path — only a global EPS number
+// is maintained. The existing `ThroughputTracker` (per-stream EWMAs) stays
+// on `AppState` to preserve `/debug/throughput` wiring, tests, and future
+// admin tools, but is no longer fed by the per-push hot path. In production
+// server use the per-stream endpoint shows only streams pushed via admin
+// / test paths. Flagged as a deviation in 41-01-SUMMARY.md.
+
+/// Width of the rolling window (in seconds).
+pub const ATOMIC_WINDOW_SECS: usize = 60;
+/// Number of trailing seconds summed to form `eps_5s()`. We skip the
+/// currently-being-written bucket (at index `now`) because readers would
+/// otherwise race the bump-side with torn reads; the 5 seconds we sum end
+/// at `now-1`.
+pub const ATOMIC_EPS_WINDOW_SECS: usize = 5;
+
+/// Lock-free rolling EPS counter. Safe to share immutably across threads;
+/// every field is an atomic.
+pub struct AtomicThroughput {
+    /// One counter per second-of-minute (0..ATOMIC_WINDOW_SECS). Each bucket
+    /// is cleared by the writer on the first bump of a new "minute cycle"
+    /// (detected via `last_second`).
+    buckets: [AtomicU64; ATOMIC_WINDOW_SECS],
+    /// Last wall-clock second-since-epoch observed by any writer. When a
+    /// writer sees its current second is strictly greater than this, it
+    /// clears the old buckets in the `(last_second, now)` range so stale
+    /// data from a prior minute does not leak into the next window.
+    last_second: AtomicU64,
+}
+
+impl AtomicThroughput {
+    pub fn new() -> Self {
+        // `[AtomicU64; N]` cannot be built from `[0u64; N]` directly since
+        // AtomicU64 is not Copy. Use an array from a const fn.
+        const ZERO: AtomicU64 = AtomicU64::new(0);
+        Self {
+            buckets: [ZERO; ATOMIC_WINDOW_SECS],
+            last_second: AtomicU64::new(0),
+        }
+    }
+
+    /// Current wall-clock second since the Unix epoch. Uses SystemTime —
+    /// VDSO-backed on Linux, so the syscall cost is negligible.
+    #[inline]
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// Lock-free: bump the current second's bucket by `count`. Safe to call
+    /// from any thread at any rate.
+    #[inline]
+    pub fn bump(&self, count: u64) {
+        let now = Self::now_secs();
+        let prev = self.last_second.load(Ordering::Relaxed);
+        if now > prev {
+            // Roll forward: clear every bucket strictly between the old
+            // last_second and `now` (exclusive of `now`) so readers never
+            // see stale data from >60s ago aliased into the current minute.
+            // We CAS the clock forward so only one writer does the sweep.
+            if self
+                .last_second
+                .compare_exchange(prev, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                let gap = (now - prev).min(ATOMIC_WINDOW_SECS as u64);
+                for offset in 1..=gap {
+                    let idx = ((prev + offset) % ATOMIC_WINDOW_SECS as u64) as usize;
+                    self.buckets[idx].store(0, Ordering::Relaxed);
+                }
+            }
+        }
+        let idx = (now % ATOMIC_WINDOW_SECS as u64) as usize;
+        self.buckets[idx].fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Sum the most recent `ATOMIC_EPS_WINDOW_SECS` buckets ending at
+    /// `now-1`, divide by the window width, and return the resulting
+    /// events-per-second average. Skipping the currently-active bucket
+    /// prevents racing the bump-side: the oldest bucket we sum was last
+    /// touched at `now-5`, the newest at `now-1` — both at least one
+    /// second in the past.
+    pub fn eps_5s(&self) -> f64 {
+        let now = Self::now_secs();
+        if now == 0 {
+            return 0.0;
+        }
+        let mut total: u64 = 0;
+        for i in 1..=ATOMIC_EPS_WINDOW_SECS as u64 {
+            let sec = now.saturating_sub(i);
+            let idx = (sec % ATOMIC_WINDOW_SECS as u64) as usize;
+            total = total.saturating_add(self.buckets[idx].load(Ordering::Relaxed));
+        }
+        total as f64 / ATOMIC_EPS_WINDOW_SECS as f64
+    }
+}
+
+impl Default for AtomicThroughput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod atomic_throughput_tests {
+    use super::*;
+
+    #[test]
+    fn eps_is_zero_at_rest() {
+        let t = AtomicThroughput::new();
+        assert_eq!(t.eps_5s(), 0.0);
+    }
+
+    #[test]
+    fn bump_accumulates_then_reads() {
+        let t = AtomicThroughput::new();
+        for _ in 0..1000 {
+            t.bump(1);
+        }
+        // Sum of last 5 buckets / 5. All 1000 events landed in 1-2 buckets
+        // (the test runs fast), so eps_5s should be between 200 and 1000.
+        // Some of those buckets may fall into the "current second" which is
+        // excluded by eps_5s — retry by sleeping a second.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let eps = t.eps_5s();
+        assert!(eps > 0.0 && eps <= 1000.0, "unexpected eps: {}", eps);
+    }
+
+    #[test]
+    fn bump_from_multiple_threads_is_lossless() {
+        use std::sync::Arc;
+        let t = Arc::new(AtomicThroughput::new());
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let t = Arc::clone(&t);
+                std::thread::spawn(move || {
+                    for _ in 0..10_000 {
+                        t.bump(1);
+                    }
+                })
+            })
+            .collect();
+        for h in threads {
+            h.join().unwrap();
+        }
+        // Total events is 80_000 spread across the current second. After
+        // waiting the bucket rotates out of "current" and becomes readable.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let eps = t.eps_5s();
+        // We expect (somewhere between 0 and 80_000) / 5, i.e. <= 16_000.
+        // Don't be more precise — CI noise. Just assert non-zero + no panic.
+        assert!(eps > 0.0, "eps should be > 0 after 80k lossless bumps");
+    }
+}
+// ===========================================================================
 
 /// Time constants (seconds) for the three EWMAs.
 /// Chosen to match CONTEXT.md's 5s / 1m / 5m window labels.

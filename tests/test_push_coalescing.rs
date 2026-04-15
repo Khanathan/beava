@@ -217,7 +217,13 @@ fn empty_batch_returns_empty_no_side_effects() {
     register(&state, vec![count_stream("A", "user_id")]);
     let results = handle_push_batch(&state, &[]);
     assert!(results.is_empty());
-    assert_eq!(state.metrics.lock().events_total, 0);
+    // Phase 41-01 T2: events_total moved to AppState.events_total (atomic).
+    assert_eq!(
+        state
+            .events_total
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
 }
 
 #[test]
@@ -236,7 +242,13 @@ fn three_events_one_stream_single_append_many() {
     assert_eq!(get_count(&state, "A", "u1"), Some(2));
     assert_eq!(get_count(&state, "A", "u2"), Some(1));
     // Metrics bumped by the full batch length.
-    assert_eq!(state.metrics.lock().events_total, 3);
+    // Phase 41-01 T2: events_total moved to AppState.events_total (atomic).
+    assert_eq!(
+        state
+            .events_total
+            .load(std::sync::atomic::Ordering::Relaxed),
+        3
+    );
 }
 
 #[test]
@@ -259,7 +271,13 @@ fn mixed_streams_preserve_input_order_and_state() {
     assert!(results.iter().all(|r| r.is_ok()));
     assert_eq!(get_count(&state, "A", "u1"), Some(2));
     assert_eq!(get_count(&state, "B", "u1"), Some(2));
-    assert_eq!(state.metrics.lock().events_total, 4);
+    // Phase 41-01 T2: events_total moved to AppState.events_total (atomic).
+    assert_eq!(
+        state
+            .events_total
+            .load(std::sync::atomic::Ordering::Relaxed),
+        4
+    );
 }
 
 #[test]

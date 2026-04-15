@@ -15,7 +15,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use tally::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use tally::server::tcp::{make_concurrent_state_full, BackfillTracker, RecentEvent, SharedState};
+use tally::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
+#[cfg(feature = "demo")]
+use tally::server::tcp::RecentEvent;
 use tally::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
@@ -133,6 +135,7 @@ fn push_many(state: &SharedState, key: &str, n: usize) {
     }
 }
 
+#[cfg(feature = "demo")]
 fn seed_recent_events(state: &SharedState, n: usize) {
     let mut ring = state.recent_events.lock();
     for i in 0..n {
@@ -194,6 +197,7 @@ async fn public_features_unknown_key() {
 // TRAC-04: /public/recent-events
 // ===========================================================================
 
+#[cfg(feature = "demo")]
 #[tokio::test]
 async fn public_recent_events_default_limit() {
     let (port, state) = start_server().await;
@@ -207,6 +211,7 @@ async fn public_recent_events_default_limit() {
     assert_eq!(events.len(), 20, "should return exactly 20 with 40 seeded");
 }
 
+#[cfg(feature = "demo")]
 #[tokio::test]
 async fn public_recent_events_limit_clamp() {
     let (port, state) = start_server().await;
