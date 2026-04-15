@@ -1432,6 +1432,50 @@ fn format_rfc3339_utc(secs: u64) -> String {
     )
 }
 
+/// Phase 44-01: `GET /extracts` — return the historical-extraction registry
+/// captured during replica catchup (see `--replica-extract-at` /
+/// `tally fork --extract-at`).
+///
+/// Response shape (timestamps ISO-8601 UTC, sorted ascending):
+/// ```json
+/// {
+///   "extracts": {
+///     "2026-03-01T10:00:00Z": {"u1": {"count": 1, "total": 10.0}, ...},
+///     "2026-03-15T10:00:00Z": {...}
+///   }
+/// }
+/// ```
+/// Empty object when no extractions were requested or replay has not yet
+/// captured any.
+async fn debug_extracts(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    // Collect into a Vec so we can sort by timestamp; DashMap iteration
+    // order is unspecified.
+    let mut entries: Vec<(u64, serde_json::Map<String, serde_json::Value>)> =
+        Vec::with_capacity(state.extracted_history.len());
+    for outer in state.extracted_history.iter() {
+        let ts = *outer.key();
+        let inner = outer.value();
+        let mut key_map = serde_json::Map::with_capacity(inner.len());
+        for kv in inner.iter() {
+            key_map.insert(kv.key().clone(), kv.value().clone());
+        }
+        entries.push((ts, key_map));
+    }
+    entries.sort_by_key(|(ts, _)| *ts);
+
+    let mut out = serde_json::Map::with_capacity(entries.len());
+    for (ts, key_map) in entries {
+        // Same ISO-8601 formatter the warnings/config-recs endpoints use —
+        // the v0 shape operates in whole seconds; sub-second precision is
+        // dropped (extract_at granularity is defined in whole seconds for
+        // the demo, see docs/data-scientist-demo.md).
+        let secs = ts / 1000;
+        let iso = format_rfc3339_utc(secs);
+        out.insert(iso, serde_json::Value::Object(key_map));
+    }
+    Json(serde_json::json!({"extracts": serde_json::Value::Object(out)}))
+}
+
 async fn debug_backfill(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let tasks = state
         .backfill_tracker
@@ -1502,6 +1546,7 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/debug/streams/{name}", get(debug_stream))
         .route("/debug/memory", get(debug_memory))
         .route("/debug/backfill", get(debug_backfill))
+        .route("/extracts", get(debug_extracts))
         .route(
             "/debug/config-recommendations",
             get(debug_config_recommendations),
