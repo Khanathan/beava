@@ -165,6 +165,19 @@ pub struct ConcurrentAppState {
     /// removes entries for live `OP_SUBSCRIBE` sessions. Shared with the
     /// pipeline engine via `PipelineEngine::install_subscribers`.
     pub subscriber_registry: Arc<crate::server::replica::SubscriberRegistry>,
+
+    /// Phase 36-01: when `true`, this server is running as a replica (boot
+    /// launched with `--replica-from ...`). Gates local PUSH handling
+    /// (rejected) and flips ingest routing so CDC-replay events bypass the
+    /// subscriber-notify hook. See `src/server/replica_client.rs`.
+    pub replica_mode: AtomicBool,
+
+    /// Phase 36-01: monotonic `last_applied_event_timestamp_ms` for the
+    /// replica client's SUBSCRIBE reconnect cursor. Updated by every
+    /// successful `replica_ingest` call; read by `ReplicaClient::run` when
+    /// it needs to issue a resume LOG_FETCH after a SUBSCRIBE drop. When
+    /// `replica_mode` is false, this value is unused and stays at 0.
+    pub replica_last_applied_ts_ms: std::sync::atomic::AtomicU64,
 }
 
 /// Phase 20: a single entry in the `/public/recent-events` feed.
@@ -292,6 +305,8 @@ pub fn make_concurrent_state_full(
         eviction_tracker: Arc::new(crate::state::eviction_tracker::EvictionTracker::new()),
         signals,
         subscriber_registry,
+        replica_mode: AtomicBool::new(false),
+        replica_last_applied_ts_ms: std::sync::atomic::AtomicU64::new(0),
     })
 }
 
@@ -825,6 +840,90 @@ async fn flush_drain(
     Ok(())
 }
 
+/// Phase 36-01: replica-mode ingest entry point.
+///
+/// Accepts an event pulled from the upstream `OP_LOG_FETCH` / `OP_SUBSCRIBE`
+/// stream and routes it through the exact same side-effect pipeline a local
+/// PUSH would take: `push_with_cascade_no_features` (operators tick, state
+/// advances), event-log append (so chained replicas can re-LOG_FETCH), and
+/// dirty marking for incremental snapshots.
+///
+/// Differences from a local PUSH:
+///   * No admin-auth check (events are pre-authenticated at the upstream).
+///   * No `notify_subscribers` call — in replica mode `main.rs` does NOT
+///     install the subscriber_registry into the engine, so the hook inside
+///     `push_internal` is already a no-op. This is the "thin approach"
+///     documented in 36-01-PLAN.md §stop-and-report to avoid factoring
+///     `push_with_cascade_internal` (300+ lines).
+///   * Bumps `tally_replica_events_ingested_total{stream}` instead of the
+///     normal accept counter / throughput tracker (replicated events are
+///     not locally-accepted traffic — operators need a separate signal).
+///
+/// `event_time` is the upstream's `timestamp_ms`; we use it verbatim as
+/// the "now" parameter so operator bucket routing matches the source
+/// cluster. Also updates `state.replica_last_applied_ts_ms` atomically
+/// on success so the SUBSCRIBE reconnect path can cursor-resume.
+pub fn replica_ingest(
+    state: &SharedState,
+    stream_name: &str,
+    ts_ms: u64,
+    raw_payload: &[u8],
+) -> Result<(), TallyError> {
+    use crate::state::event_log::{decode_log_payload, LOG_FMT_BINARY, LOG_FMT_JSON};
+    // Decode the log-payload wrapper (format byte + body) that the upstream
+    // persisted. The body is either binary-tagged (OP_PUSH binary wire) or
+    // JSON-tagged (HTTP POST path) — in both cases we need a `serde_json::Value`
+    // for `handle_push_core_ex` (it's the interface every push path uses).
+    let (fmt, body) = decode_log_payload(raw_payload);
+    let payload_value: serde_json::Value = match fmt {
+        LOG_FMT_BINARY => {
+            let mut buf = body;
+            protocol::decode_event_binary(&mut buf).map_err(|e| {
+                TallyError::Protocol(format!("replica_ingest: binary decode: {}", e))
+            })?
+        }
+        LOG_FMT_JSON => serde_json::from_slice(body).map_err(|e| {
+            TallyError::Protocol(format!("replica_ingest: json decode: {}", e))
+        })?,
+        other => {
+            return Err(TallyError::Protocol(format!(
+                "replica_ingest: unknown log fmt byte 0x{:02x}",
+                other
+            )));
+        }
+    };
+
+    // Reconstitute the event-time marker. On the source cluster the writer
+    // stored `SystemTime::now()` at append; we use the wire `ts_ms` so the
+    // replica's watermark progresses in lock-step with upstream.
+    let event_time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(ts_ms);
+
+    // For the log-append inside handle_push_core_ex we pass `raw_payload = body`
+    // (the un-wrapped binary/JSON body) — make_log_payload re-wraps. This
+    // mirrors the sync OP_PUSH path, which feeds `raw_payload` straight from
+    // the wire frame into make_log_payload.
+    let _features = handle_push_core_ex(
+        state,
+        stream_name,
+        &payload_value,
+        // raw_payload_for_relog: pass-through if binary, empty if JSON (legacy).
+        if fmt == LOG_FMT_BINARY { body } else { &[] },
+        event_time,
+        false, // no feature read on replica ingest (async-mode semantics)
+    )?;
+
+    // Bump per-stream replica-ingest counter.
+    crate::server::replica::bump_replica_events_ingested(stream_name);
+
+    // Advance the SUBSCRIBE reconnect cursor. Relaxed is fine: the reconnect
+    // path only needs eventual-consistency and we accept a duplicate at the
+    // reconnect boundary by design (see 36-CONTEXT.md §failure policy).
+    state
+        .replica_last_applied_ts_ms
+        .fetch_max(ts_ms, Ordering::Relaxed);
+    Ok(())
+}
+
 /// Core PUSH side-effect pipeline shared by sync and async push paths (Phase 11).
 ///
 /// Performs the full PUSH work under a single lock acquisition:
@@ -1226,6 +1325,17 @@ pub fn handle_push_batch(
     if batch.is_empty() {
         return Vec::new();
     }
+    // Phase 36-01: replica mode rejects async-batch PUSH alongside sync PUSH.
+    if state.replica_mode.load(Ordering::Relaxed) {
+        return batch
+            .iter()
+            .map(|_| {
+                Err(TallyError::Protocol(
+                    "replica mode: local PUSH disabled".into(),
+                ))
+            })
+            .collect();
+    }
 
     // Fast path: check if all events target the same stream (common case
     // under single-client sustained load). Avoids the grouping Vec entirely.
@@ -1464,6 +1574,15 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             payload,
             raw_payload,
         } => {
+            // Phase 36-01: replica mode rejects client-originated PUSH.
+            // Events must come from the configured upstream via the replica
+            // client loop. Scientists wanting synthetic events need a
+            // separate helper flag (deferred — see 36-CONTEXT.md §deferred).
+            if state.replica_mode.load(Ordering::Relaxed) {
+                return Err(TallyError::Protocol(
+                    "replica mode: local PUSH disabled".into(),
+                ));
+            }
             // Phase 24-04: parse `_event_time` from payload (falls back to
             // wall-clock `now` if absent / unparseable). The parsed
             // event-time is (a) checked against the stream's current

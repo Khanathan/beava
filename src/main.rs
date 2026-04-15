@@ -11,6 +11,7 @@ use tally::server::http::run_http_server;
 use tally::server::protocol::{
     convert_register_request, convert_view_register_request, RegisterRequest,
 };
+use tally::server::replica_client::{ReplicaBootConfig, ReplicaClient};
 use tally::server::tcp::{
     make_concurrent_state_full, run_backfill, run_tcp_server, BackfillStatus, BackfillTracker,
     SharedState,
@@ -113,6 +114,201 @@ fn arg_value(name: &str) -> Option<String> {
 fn arg_flag(name: &str) -> bool {
     let long = format!("--{}", name);
     std::env::args().skip(1).any(|a| a == long)
+}
+
+/// Phase 36-01: parse `--replica-since` as either ISO-8601 UTC or raw
+/// u64 milliseconds. Ambiguous / unparseable inputs return an Err that
+/// `async_main` surfaces with a clear error message.
+///
+/// Supported formats:
+///   * `1712345678000` — plain u64 milliseconds since UNIX epoch.
+///   * `2026-04-14T12:34:56Z` — ISO-8601 UTC; subsecond `.fff` optional.
+///   * `2026-04-14T12:34:56.789Z` — with millisecond fraction.
+fn parse_replica_since(input: &str) -> Result<u64, String> {
+    let s = input.trim();
+    if s.is_empty() {
+        return Err("empty --replica-since".into());
+    }
+    // Numeric: u64 ms since epoch. Bare integer — no suffix.
+    if s.chars().all(|c| c.is_ascii_digit()) {
+        return s
+            .parse::<u64>()
+            .map_err(|e| format!("invalid u64 ms: {}", e));
+    }
+    // ISO-8601 UTC. We hand-roll a parser rather than pull in chrono —
+    // the expected shape is YYYY-MM-DDTHH:MM:SS[.fff]Z.
+    let s = s.strip_suffix('Z').ok_or_else(|| {
+        format!(
+            "--replica-since: '{}' is neither u64 ms nor ISO-8601 UTC (missing trailing Z)",
+            s
+        )
+    })?;
+    let (date_part, time_part) = s
+        .split_once('T')
+        .ok_or_else(|| format!("--replica-since: missing 'T' separator in '{}'", s))?;
+    let date_parts: Vec<&str> = date_part.split('-').collect();
+    if date_parts.len() != 3 {
+        return Err(format!("--replica-since: bad date in '{}'", date_part));
+    }
+    let year: i32 = date_parts[0]
+        .parse()
+        .map_err(|_| format!("--replica-since: bad year '{}'", date_parts[0]))?;
+    let month: u32 = date_parts[1]
+        .parse()
+        .map_err(|_| format!("--replica-since: bad month '{}'", date_parts[1]))?;
+    let day: u32 = date_parts[2]
+        .parse()
+        .map_err(|_| format!("--replica-since: bad day '{}'", date_parts[2]))?;
+    let (hms, fraction_ms): (&str, u64) = match time_part.split_once('.') {
+        Some((hms, frac)) => {
+            // Accept 1..=9 digit fraction; truncate/pad to ms.
+            if !frac.chars().all(|c| c.is_ascii_digit()) || frac.is_empty() {
+                return Err(format!("--replica-since: bad fraction '{}'", frac));
+            }
+            let padded: String = frac.chars().take(3).collect();
+            let padded = format!("{:0<3}", padded);
+            (hms, padded.parse::<u64>().unwrap_or(0))
+        }
+        None => (time_part, 0),
+    };
+    let hms_parts: Vec<&str> = hms.split(':').collect();
+    if hms_parts.len() != 3 {
+        return Err(format!("--replica-since: bad time '{}'", hms));
+    }
+    let hour: u32 = hms_parts[0]
+        .parse()
+        .map_err(|_| format!("--replica-since: bad hour '{}'", hms_parts[0]))?;
+    let minute: u32 = hms_parts[1]
+        .parse()
+        .map_err(|_| format!("--replica-since: bad minute '{}'", hms_parts[1]))?;
+    let second: u32 = hms_parts[2]
+        .parse()
+        .map_err(|_| format!("--replica-since: bad second '{}'", hms_parts[2]))?;
+    // Convert to unix timestamp. Days-from-civil algorithm (Howard Hinnant).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = (y - era * 400) as u32;
+    let m = month as i32;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day as i32 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy as u32;
+    let days_since_epoch: i64 = (era * 146_097 + doe as i32 - 719_468) as i64;
+    let secs: i64 = days_since_epoch * 86_400
+        + hour as i64 * 3600
+        + minute as i64 * 60
+        + second as i64;
+    if secs < 0 {
+        return Err(format!("--replica-since: pre-epoch timestamp '{}'", input));
+    }
+    Ok((secs as u64) * 1_000 + fraction_ms)
+}
+
+/// Phase 36-01: parse all `--replica-*` CLI flags (and env-var fallbacks)
+/// into a `ReplicaBootConfig`. Returns:
+///   * `Ok(None)` if `--replica-from` is absent — server stays in normal
+///     (non-replica) mode.
+///   * `Ok(Some(config))` on valid replica-mode flags.
+///   * `Err(msg)` on flag validation errors (missing required flag,
+///     unparseable --replica-since, both --replica-keys and
+///     --replica-key-prefix set, etc.).
+fn parse_replica_boot_config() -> Result<Option<ReplicaBootConfig>, String> {
+    let remote = match arg_value("replica-from") {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+    let since_raw = arg_value("replica-since")
+        .ok_or_else(|| "--replica-from set but --replica-since missing".to_string())?;
+    let since_millis = parse_replica_since(&since_raw)?;
+    let streams_raw = arg_value("replica-streams")
+        .ok_or_else(|| "--replica-from set but --replica-streams missing".to_string())?;
+    let streams: Vec<String> = streams_raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if streams.is_empty() {
+        return Err("--replica-streams must list at least one stream".into());
+    }
+    let keys = arg_value("replica-keys").map(|s| {
+        s.split(',')
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+            .collect::<Vec<_>>()
+    });
+    let key_prefix = arg_value("replica-key-prefix");
+    if keys.is_some() && key_prefix.is_some() {
+        return Err("--replica-keys and --replica-key-prefix are mutually exclusive".into());
+    }
+    let token = arg_value("replica-token")
+        .or_else(|| std::env::var("TALLY_REPLICA_TOKEN").ok())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            "--replica-token (or TALLY_REPLICA_TOKEN env var) required in replica mode".to_string()
+        })?;
+    // Default true per 36-CONTEXT.md §Listener gating.
+    let block_until_catchup = match arg_value("replica-block-until-catchup") {
+        Some(v) => !matches!(v.as_str(), "false" | "0" | "no"),
+        None => true,
+    };
+    let pipeline_file = arg_value("replica-pipeline-file").map(std::path::PathBuf::from);
+    Ok(Some(ReplicaBootConfig {
+        remote,
+        since_millis,
+        streams,
+        keys,
+        key_prefix,
+        token,
+        block_until_catchup,
+        pipeline_file,
+    }))
+}
+
+/// Phase 36-01: register pipelines from a JSON file before catchup begins.
+/// Accepts either a single REGISTER object or a JSON array of them.
+fn seed_pipelines_from_file(
+    state: &SharedState,
+    path: &std::path::Path,
+) -> Result<usize, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let doc: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("parse {}: {}", path.display(), e))?;
+    let items: Vec<serde_json::Value> = match doc {
+        serde_json::Value::Array(a) => a,
+        other @ serde_json::Value::Object(_) => vec![other],
+        _ => return Err("pipeline file must be object or array of objects".into()),
+    };
+    let mut n = 0usize;
+    let mut engine = state.engine.write();
+    for item in items {
+        let req: RegisterRequest = serde_json::from_value(item.clone())
+            .map_err(|e| format!("bad register JSON: {}", e))?;
+        let name = req.name.clone();
+        let is_view = req.definition_type.as_deref() == Some("view");
+        if is_view {
+            let view_def = convert_view_register_request(req)
+                .map_err(|e| format!("convert view: {}", e))?;
+            engine
+                .register_view(view_def)
+                .map_err(|e| format!("register view {}: {}", name, e))?;
+        } else {
+            let stream_def = convert_register_request(req)
+                .map_err(|e| format!("convert stream: {}", e))?;
+            engine
+                .register(stream_def)
+                .map_err(|e| format!("register stream {}: {}", name, e))?;
+            // Also register with the event log so replicated PUSHes persist.
+            let history_ttl = engine
+                .get_stream(&name)
+                .and_then(|s| s.history_ttl);
+            let mut event_log = state.event_log.lock();
+            if let Some(ref mut log) = *event_log {
+                let _ = log.register_stream(&name, history_ttl);
+            }
+        }
+        engine.store_raw_register_json(&name, item);
+        n += 1;
+    }
+    Ok(n)
 }
 
 async fn async_main() {
@@ -321,6 +517,67 @@ async fn async_main() {
                 ));
             }
         }
+    }
+
+    // Phase 36-01: if the process was launched with `--replica-from`,
+    // parse the replica-mode flags, seed pipelines from the optional
+    // `--replica-pipeline-file`, and spawn the replica-client loop.
+    // Listener startup waits on `catchup_done_rx` when
+    // `--replica-block-until-catchup=true` (the default).
+    let replica_boot = match parse_replica_boot_config() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("Replica-mode CLI error: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let catchup_rx: Option<tokio::sync::oneshot::Receiver<()>> = if let Some(ref cfg) =
+        replica_boot
+    {
+        eprintln!(
+            "Replica mode: from={} since_ms={} streams={:?} keys={:?} key_prefix={:?} block_until_catchup={}",
+            cfg.remote,
+            cfg.since_millis,
+            cfg.streams,
+            cfg.keys,
+            cfg.key_prefix,
+            cfg.block_until_catchup
+        );
+        state
+            .replica_mode
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        // Seed pipelines from file before catchup starts so the ingested
+        // events flow through the scientist's registered aggregates.
+        if let Some(ref pf) = cfg.pipeline_file {
+            match seed_pipelines_from_file(&state, pf) {
+                Ok(n) => eprintln!("Replica: seeded {} pipelines from {}", n, pf.display()),
+                Err(e) => {
+                    eprintln!("Replica: pipeline-file error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        let (catchup_tx, catchup_rx) = tokio::sync::oneshot::channel();
+        let block = cfg.block_until_catchup;
+        let client = ReplicaClient::new(cfg.clone(), state.clone(), catchup_tx);
+        tokio::spawn(async move {
+            if let Err(e) = client.run().await {
+                eprintln!("Replica client FATAL: {}", e);
+                std::process::exit(1);
+            }
+        });
+        if block {
+            Some(catchup_rx)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Gate listeners on catchup-done if requested.
+    if let Some(rx) = catchup_rx {
+        let _ = rx.await;
     }
 
     let tcp_state = state.clone();
@@ -804,4 +1061,49 @@ pub(crate) fn load_incremental_snapshots(
     }
 
     None
+}
+
+// ================ Phase 36-01: replica-mode CLI parser tests ===============
+
+#[cfg(test)]
+mod replica_cli_tests {
+    use super::parse_replica_since;
+
+    #[test]
+    fn parses_raw_u64_millis() {
+        assert_eq!(parse_replica_since("0").unwrap(), 0);
+        assert_eq!(parse_replica_since("1712345678000").unwrap(), 1712345678000);
+    }
+
+    #[test]
+    fn parses_iso_8601_utc_whole_seconds() {
+        // 1970-01-01T00:00:00Z = 0ms.
+        assert_eq!(parse_replica_since("1970-01-01T00:00:00Z").unwrap(), 0);
+        // 2021-01-01T00:00:00Z = 1609459200000ms.
+        let ms = parse_replica_since("2021-01-01T00:00:00Z").unwrap();
+        assert_eq!(ms, 1_609_459_200_000);
+    }
+
+    #[test]
+    fn parses_iso_8601_with_millis() {
+        let ms = parse_replica_since("2021-01-01T00:00:00.123Z").unwrap();
+        assert_eq!(ms, 1_609_459_200_123);
+    }
+
+    #[test]
+    fn rejects_empty() {
+        assert!(parse_replica_since("").is_err());
+        assert!(parse_replica_since("   ").is_err());
+    }
+
+    #[test]
+    fn rejects_missing_z_suffix() {
+        assert!(parse_replica_since("2021-01-01T00:00:00").is_err());
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(parse_replica_since("not-a-timestamp").is_err());
+        assert!(parse_replica_since("2021/01/01").is_err());
+    }
 }

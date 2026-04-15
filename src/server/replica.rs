@@ -73,6 +73,39 @@ static EVENTS_PUSHED_BY_STREAM: std::sync::OnceLock<DashMap<String, AtomicU64>> 
 static LOG_ENTRIES_SENT_BY_STREAM: std::sync::OnceLock<DashMap<String, AtomicU64>> =
     std::sync::OnceLock::new();
 
+/// Phase 36-01: per-stream `tally_replica_events_ingested_total{stream}`
+/// counter. Bumped once per event routed through `replica_ingest`
+/// (i.e., every CDC event the replica-client loop applies locally). Kept
+/// separate from the normal `events_total` metric so operators can see
+/// replica-sourced traffic distinctly from locally-accepted traffic.
+static REPLICA_EVENTS_INGESTED_BY_STREAM: std::sync::OnceLock<DashMap<String, AtomicU64>> =
+    std::sync::OnceLock::new();
+
+fn replica_events_ingested_map() -> &'static DashMap<String, AtomicU64> {
+    REPLICA_EVENTS_INGESTED_BY_STREAM.get_or_init(DashMap::new)
+}
+
+/// Phase 36-01: bump the per-stream replica-events-ingested counter by 1.
+pub fn bump_replica_events_ingested(stream: &str) {
+    let m = replica_events_ingested_map();
+    if let Some(existing) = m.get(stream) {
+        existing.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    m.entry(stream.to_owned())
+        .or_insert_with(|| AtomicU64::new(0))
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+/// Phase 36-01: read snapshot of `(stream, count)` pairs for the per-stream
+/// replica-events-ingested counter. Exposed for tests + `/metrics` wiring.
+pub fn replica_events_ingested_snapshot() -> Vec<(String, u64)> {
+    replica_events_ingested_map()
+        .iter()
+        .map(|kv| (kv.key().clone(), kv.value().load(Ordering::Relaxed)))
+        .collect()
+}
+
 fn log_entries_sent_map() -> &'static DashMap<String, AtomicU64> {
     LOG_ENTRIES_SENT_BY_STREAM.get_or_init(DashMap::new)
 }
