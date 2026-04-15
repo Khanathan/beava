@@ -1,196 +1,182 @@
 #!/usr/bin/env bash
-# Clone-and-run throughput benchmark.
-#
-# Spins up 8 independent python3 client processes that push events in
-# parallel to a Rust Tally server configured with worker threads equal to
-# the host CPU count. Runs the SIMPLE (2 features) and COMPLEX (40+
-# features, HLL, stddev, multi-window) pipelines back-to-back against a
-# fresh server, and prints throughput + a sample feature vector + memory.
+# Clone-and-run throughput benchmark. Duration-based, fixed wall-time.
 #
 # Usage:
-#   ./benchmark/fraud-pipeline/run_bench.sh                # defaults
-#   EVENTS=1000000 ./benchmark/fraud-pipeline/run_bench.sh # bigger run
+#   ./run_bench.sh                          # defaults: MODE=complex, CPUS=host
+#   MODE=simple ./run_bench.sh              # 1-table / 2-feature pipeline
+#   MODE=complex ./run_bench.sh             # 5-table / ~40-feature pipeline
+#   CPUS=8 ./run_bench.sh                   # override fan-out + server threads
+#   WARMUP=10 MEASURE=30 ./run_bench.sh     # longer run if you need one
+#
+# Timing (defaults):
+#   build (if needed)   ~10s one-time
+#   server start        ~1s
+#   warmup              ~5s
+#   measure             ~15s     (EPS printed live every 2s)
+#   ──────────────────────
+#   total               ~21s     reports stable steady-state eps
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN="$REPO/target/release/tally"
+BENCH="$REPO/benchmark/fraud-pipeline/bench.py"
 TOKEN="${TALLY_ADMIN_TOKEN:-dev-admin-token}"
 TCP_PORT="${TCP_PORT:-6400}"
 HTTP_PORT="${HTTP_PORT:-6401}"
-EVENTS="${EVENTS:-200000}"
+MODE="${MODE:-complex}"
+WARMUP="${WARMUP:-5}"
+MEASURE="${MEASURE:-15}"
 
-# CPU detection — mac first, linux fallback.
-if CPUS=$(sysctl -n hw.ncpu 2>/dev/null); then :
-elif CPUS=$(nproc 2>/dev/null); then :
-else CPUS=4; fi
-
-# One client per core; server also gets all cores. They time-share.
-CLIENTS="${CLIENTS:-$CPUS}"
-THREADS="${THREADS:-$CPUS}"
+# Detect host CPUs.
+if   _c=$(sysctl -n hw.ncpu 2>/dev/null); then CPUS_HOST=$_c
+elif _c=$(nproc 2>/dev/null);              then CPUS_HOST=$_c
+else CPUS_HOST=4; fi
+CPUS="${CPUS:-$CPUS_HOST}"
 
 cd "$REPO"
 
-echo "==> Host CPUs: $CPUS  |  server threads: $THREADS  |  client procs: $CLIENTS  |  events: $EVENTS"
-
-# Build if needed.
+# Build if binary is missing.
 if [[ ! -x "$BIN" ]]; then
   echo "==> Building tally (release)..."
   cargo build --release --bin tally
 fi
 
+# Clean slate on ports + data dir.
+pkill -9 -f bench.py 2>/dev/null || true
+pkill -9 -f "target/release/tally serve" 2>/dev/null || true
+sleep 1
 rm -rf "$REPO/events"
 
-LOG="$(mktemp -t tally-bench.XXXXXX.log)"
-echo "==> Starting server (log: $LOG)"
-TALLY_ADMIN_TOKEN="$TOKEN" TALLY_WORKER_THREADS="$THREADS" \
+echo "==> MODE=$MODE  CPUS=$CPUS  warmup=${WARMUP}s  measure=${MEASURE}s"
+SRV_LOG="$(mktemp -t tally-bench.XXXXXX.log)"
+TALLY_ADMIN_TOKEN="$TOKEN" TALLY_WORKER_THREADS="$CPUS" \
   "$BIN" serve --http-port "$HTTP_PORT" --tcp-port "$TCP_PORT" \
-  > "$LOG" 2>&1 &
+  > "$SRV_LOG" 2>&1 &
 SERVER_PID=$!
 
 cleanup() {
-  echo
-  echo "==> Stopping server (pid $SERVER_PID)"
+  pkill -9 -f bench.py 2>/dev/null || true
   kill "$SERVER_PID" 2>/dev/null || true
   wait "$SERVER_PID" 2>/dev/null || true
-  rm -rf "$REPO/events"
 }
 trap cleanup EXIT INT TERM
 
-echo -n "==> Waiting for /debug/ready"
 for _ in $(seq 1 30); do
-  if curl -sf "http://127.0.0.1:$HTTP_PORT/debug/ready" >/dev/null 2>&1; then
-    echo " ready."; break
-  fi
-  echo -n "."; sleep 0.5
+  curl -sf "http://127.0.0.1:$HTTP_PORT/debug/ready" >/dev/null 2>&1 && break
+  sleep 0.3
 done
 
 export PYTHONPATH="$REPO/python:$REPO/benchmark/fraud-pipeline"
+TMPDIR=$(mktemp -d -t tally-bench.XXXXXX)
 
-# Per-client event count (integer division; total may round down slightly).
-PER_CLIENT=$(( EVENTS / CLIENTS ))
-TOTAL=$(( PER_CLIENT * CLIENTS ))
-
-run_mode() {
-  local MODE="$1"
-
-  # Fresh server between modes so numbers aren't cumulative.
-  kill "$SERVER_PID" 2>/dev/null || true
-  wait "$SERVER_PID" 2>/dev/null || true
-  rm -rf "$REPO/events"
-  TALLY_ADMIN_TOKEN="$TOKEN" TALLY_WORKER_THREADS="$THREADS" \
-    "$BIN" serve --http-port "$HTTP_PORT" --tcp-port "$TCP_PORT" \
-    > "$LOG" 2>&1 &
-  SERVER_PID=$!
-  for _ in $(seq 1 30); do
-    curl -sf "http://127.0.0.1:$HTTP_PORT/debug/ready" >/dev/null 2>&1 && break
-    sleep 0.3
+CLIENT_PIDS=()
+spawn_clients() {
+  local dur="$1"; local tag="$2"
+  CLIENT_PIDS=()
+  for i in $(seq 0 $((CPUS - 1))); do
+    python3 "$BENCH" --mode "$MODE" --duration "$dur" --proc-id "$i" \
+      --host "localhost:$TCP_PORT" > "$TMPDIR/$tag-$i.jsonl" 2>&1 &
+    CLIENT_PIDS+=($!)
   done
+}
+wait_clients() {
+  # `wait` with no args waits for every backgrounded child (including the
+  # tally server, which never exits). Pass the client pids explicitly so we
+  # only block on them.
+  for pid in "${CLIENT_PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
+}
 
-  echo
-  echo "=== $(echo "$MODE" | tr '[:lower:]' '[:upper:]') pipeline benchmark ==="
-  echo "  Clients:    $CLIENTS independent OS processes"
-  echo "  Per-client: $(printf "%'d" "$PER_CLIENT") events"
-  echo "  Total:      $(printf "%'d" "$TOTAL") events"
-  echo
+# ── Warmup ── clients run, output discarded. Pays cold-start entity init.
+echo "==> Warming up (${WARMUP}s)..."
+spawn_clients "$WARMUP" warmup
+wait_clients
+rm -f "$TMPDIR"/warmup-*.jsonl
 
-  # Spawn N independent python3 processes in parallel. Each writes its
-  # JSON result to a dedicated tmpfile. We wait for all, then parse.
-  local TMPDIR
-  TMPDIR=$(mktemp -d -t tally-bench.XXXXXX)
-  local PIDS=()
-  local T0 T1
-  T0=$(python3 -c 'import time; print(time.monotonic())')
-  for i in $(seq 0 $(( CLIENTS - 1 ))); do
-    python3 "$REPO/benchmark/fraud-pipeline/bench_two.py" \
-      --mode "$MODE" \
-      --events "$PER_CLIENT" \
-      --proc-id "$i" \
-      --host "localhost:$TCP_PORT" \
-      > "$TMPDIR/out-$i.json" 2>"$TMPDIR/err-$i.log" &
-    PIDS+=($!)
-  done
-  for pid in "${PIDS[@]}"; do wait "$pid" || true; done
-  T1=$(python3 -c 'import time; print(time.monotonic())')
+# ── Measure ── clients stream checkpoint JSONL lines; shell aggregates.
+echo "==> Measuring (${MEASURE}s) — live EPS:"
+spawn_clients "$MEASURE" measure
 
-  # Aggregate + print via python so formatting is consistent with bench_two.
-  python3 - "$TMPDIR" "$T0" "$T1" "$TOTAL" "$HTTP_PORT" "$TOKEN" <<'PY'
-import json, sys, urllib.request, time
-tmp, t0, t1, total, http_port, token = sys.argv[1:]
-t0, t1, total = float(t0), float(t1), int(total)
-wall = t1 - t0
+# Poll checkpoint files every 2s and print live aggregate eps. Disable
+# pipefail/errexit here — transient "no data yet" states are normal and the
+# loop should keep trying, not abort the whole run.
+set +e
+t_start=$(python3 -c 'import time; print(time.monotonic())')
+last_events=0
+last_t=0
+while :; do
+  # Exit when all clients have emitted a "final" line.
+  finals=$(grep -l '"phase": "final"' "$TMPDIR"/measure-*.jsonl 2>/dev/null | wc -l)
+  if [[ "$finals" -ge "$CPUS" ]]; then break; fi
 
-import glob
-rows = []
-for f in sorted(glob.glob(f"{tmp}/out-*.json")):
-    try:
-        rows.append(json.loads(open(f).read().splitlines()[-1]))
-    except Exception:
-        pass
+  sleep 2
+  # Sum latest checkpoint's event count across clients. `read` returns
+  # non-zero on empty input (no checkpoints yet) — tolerate under set -e.
+  t_now=""; total=""
+  # Guard with || true — read returns non-zero on empty input.
+  { read -r t_now total || true; } <<<"$(python3 - "$TMPDIR" <<'PY'
+import glob, json, sys
+tmp = sys.argv[1]
+total = 0; t = 0.0
+for f in glob.glob(f"{tmp}/measure-*.jsonl"):
+    ckpts = [l for l in open(f).read().splitlines() if '"phase"' in l]
+    if not ckpts: continue
+    last = json.loads(ckpts[-1])
+    total += last["events"]; t = max(t, last["t"])
+print(f"{t:.2f} {total}")
+PY
+)"
+  if [[ -n "$total" && "$total" != "0" ]]; then
+    dt=$(python3 -c "print(max(0.01, $t_now - $last_t))")
+    inst=$(python3 -c "print(int(($total - $last_events) / $dt))")
+    avg=$(python3 -c "print(int($total / max(0.01, $t_now)))")
+    printf "   t=%5.1fs  total=%12d events  instant=%10s eps  avg=%10s eps\n" \
+      "$t_now" "$total" "$(printf "%'d" "$inst")" "$(printf "%'d" "$avg")"
+    last_events=$total; last_t=$t_now
+  fi
+done
+wait_clients
 
-rows.sort(key=lambda r: r["proc_id"])
-for r in rows:
-    eps = r["events"] / r["elapsed"]
-    print(f"  [client-{r['proc_id']}] {r['events']:>9,} events in "
-          f"{r['elapsed']:>6.2f}s  =>  {eps:>10,.0f} eps")
+# Final steady-state eps from the "final" lines — this is the authoritative number.
+python3 - "$TMPDIR" "$MODE" "$CPUS" "$HTTP_PORT" "$TOKEN" <<'PY'
+import glob, json, sys, urllib.request
+tmp, mode, cpus, http, token = sys.argv[1:]
+finals = []
+for f in sorted(glob.glob(f"{tmp}/measure-*.jsonl")):
+    for line in reversed(open(f).read().splitlines()):
+        if '"phase": "final"' in line:
+            finals.append(json.loads(line)); break
 
+total = sum(r["events"] for r in finals)
+wall  = max(r["t"] for r in finals)
 print()
-print(f"  Wall time:  {wall:.2f}s")
-print(f"  Aggregate:  {total / wall:,.0f} events/sec")
-print(f"  Per event:  {wall / total * 1e6:.1f} µs")
+print(f"==> STEADY-STATE ({mode}, {cpus} clients):")
+print(f"    Events:     {total:,}")
+print(f"    Wall:       {wall:.2f}s")
+print(f"    Aggregate:  {int(total / wall):,} events/sec")
+print(f"    Per event:  {wall / total * 1e6:.1f} µs")
 
-# Runtime phase profile — averages across clients. 'ingest' is the
-# client-side wall from register-return → flush-return; the per-phase
-# rows show where that wall went.
-def _avg(key):
-    vals = [r[key] for r in rows if key in r]
-    return sum(vals) / len(vals) if vals else 0.0
-
-if rows and "t_push" in rows[0]:
-    print()
-    print("  --- Runtime profile (avg across clients) ---")
-    print(f"    connect    : {_avg('t_connect')*1000:>7.1f} ms")
-    print(f"    register   : {_avg('t_register')*1000:>7.1f} ms")
-    print(f"    gen events : {_avg('t_gen')*1000:>7.1f} ms  (client-side, pre-push)")
-    print(f"    push loop  : {_avg('t_push')*1000:>7.1f} ms")
-    print(f"    flush      : {_avg('t_flush')*1000:>7.1f} ms")
-    print(f"    batch p50/p95/p99 (ms): "
-          f"{_avg('batch_p50_ms'):.2f} / "
-          f"{_avg('batch_p95_ms'):.2f} / "
-          f"{_avg('batch_p99_ms'):.2f}")
-
-time.sleep(0.3)
-print()
-print("  --- Sample features (key=user_000001) ---")
 try:
     req = urllib.request.Request(
-        f"http://127.0.0.1:{http_port}/debug/key/user_000001",
+        f"http://127.0.0.1:{http}/debug/key/user_000001",
         headers={"Authorization": f"Bearer {token}"},
     )
     body = json.loads(urllib.request.urlopen(req, timeout=5).read())
     feats = body.get("computed_features") or {}
+    print()
+    print("    Sample features (key=user_000001):")
     for k in sorted(feats):
-        print(f"    {k}: {feats[k]}")
-except Exception as e:
-    print(f"    (could not read features: {e})")
+        print(f"      {k}: {feats[k]}")
+except Exception:
+    pass
 
 try:
-    mem = json.loads(urllib.request.urlopen(
-        f"http://127.0.0.1:{http_port}/debug/memory", timeout=5).read())
-    b = mem.get("estimated_bytes", 0)
-    ents = mem.get("entity_count", 0)
+    mem = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{http}/debug/memory").read())
+    b = mem.get("estimated_bytes", 0); ents = mem.get("entity_count", 0)
     per = b / ents if ents else 0
     print()
-    print(f"  Memory:     {b / 1024 / 1024:.1f} MB across "
-          f"{ents:,} entities  ({per:,.0f} B/entity)")
+    print(f"    Memory:     {b / 1024 / 1024:.1f} MB across {ents:,} entities  ({per:,.0f} B/entity)")
 except Exception:
     pass
 PY
 
-  rm -rf "$TMPDIR"
-}
-
-run_mode simple
-run_mode complex
-
-echo
-echo "==> Benchmark complete."
+rm -rf "$TMPDIR"

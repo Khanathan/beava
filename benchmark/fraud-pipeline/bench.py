@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Single-process benchmark client.
+"""Single-process duration-based benchmark client.
 
 One instance of this script = one client process. The shell orchestrator
 (`run_bench.sh`) spawns N of these concurrently via `python3 ... &` so each
-runs in a genuinely independent OS process (no shared GIL, no
-multiprocessing.Pool fork overhead).
+runs in a genuinely independent OS process (no shared GIL, no multiprocessing
+fork overhead).
 
-Each client registers pipelines, generates N events locally, pushes in
-batches, flushes, and prints a single JSON result line to stdout. The shell
-harness collects those JSON lines and aggregates.
+Each client registers pipelines, generates events on the fly, and pushes as
+fast as it can for ``--duration`` seconds. It emits a checkpoint JSON line
+every ``--checkpoint`` seconds showing running throughput, then a final
+summary line. The shell harness consumes the checkpoint stream to show live
+EPS; the final line is authoritative.
 
-Usage (manual):
-    python3 bench_two.py --mode simple --events 20000 --proc-id 0 --host localhost:6400
-
-Stdout contract:
-    last line = {"proc_id": int, "events": int, "elapsed": float}
+Stdout lines:
+    {"proc_id": int, "phase": "checkpoint", "t": float, "events": int}
+    {"proc_id": int, "phase": "final",      "t": float, "events": int}
 """
 
 import argparse
@@ -31,7 +31,7 @@ import tally as tl  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Pipelines
+# Pipelines (single stream; two workload variants)
 # ---------------------------------------------------------------------------
 
 @tl.stream
@@ -131,11 +131,11 @@ COMPLEX_PIPELINES = [
 
 
 # ---------------------------------------------------------------------------
-# Event generation
+# Event generation (Zipfian key distribution — realistic fraud skew)
 # ---------------------------------------------------------------------------
 
 COUNTRIES = ["US", "GB", "DE", "FR", "JP", "BR", "IN", "NG", "CN", "AU"]
-STATUSES = ["success"] * 8 + ["failed"] * 2  # 20% failure
+STATUSES = ["success"] * 8 + ["failed"] * 2
 
 
 def _zipf_id(prefix: str, n: int, alpha: float = 1.2) -> str:
@@ -147,72 +147,68 @@ def _zipf_id(prefix: str, n: int, alpha: float = 1.2) -> str:
 
 def _event() -> dict:
     return {
-        "user_id": _zipf_id("user_", 10000),
+        "user_id":     _zipf_id("user_",  10000),
         "merchant_id": _zipf_id("merch_", 2000),
-        "device_id": _zipf_id("dev_", 5000),
-        "ip_address": _zipf_id("ip_", 8000),
-        "amount": round(random.lognormvariate(3.5, 1.5), 2),
-        "country": random.choice(COUNTRIES),
-        "status": random.choice(STATUSES),
-        "currency": "USD",
+        "device_id":   _zipf_id("dev_",   5000),
+        "ip_address":  _zipf_id("ip_",    8000),
+        "amount":      round(random.lognormvariate(3.5, 1.5), 2),
+        "country":     random.choice(COUNTRIES),
+        "status":      random.choice(STATUSES),
+        "currency":    "USD",
     }
+
+
+def _emit(obj: dict) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
 
 
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--mode", choices=["simple", "complex"], required=True)
-    p.add_argument("--events", type=int, required=True)
+    p.add_argument("--duration", type=float, required=True, help="Seconds to push events")
     p.add_argument("--proc-id", type=int, required=True)
     p.add_argument("--host", default="localhost:6400")
     p.add_argument("--batch", type=int, default=1000)
+    p.add_argument("--checkpoint", type=float, default=2.0, help="Seconds between checkpoint lines")
     args = p.parse_args()
 
     random.seed(args.proc_id * 7919 + 17)
 
     pipelines = SIMPLE_PIPELINES if args.mode == "simple" else COMPLEX_PIPELINES
+    app = tl.App(args.host)
+    app.register(*pipelines)
 
     t0 = time.monotonic()
-    app = tl.App(args.host)
-    t_connect = time.monotonic()
-    app.register(*pipelines)
-    t_register = time.monotonic()
-
-    events = [_event() for _ in range(args.events)]
-    t_gen = time.monotonic()
-
+    t_last_ckpt = t0
     sent = 0
-    batch_latencies: list[float] = []
-    while sent < args.events:
-        chunk = events[sent:sent + args.batch]
-        bs = time.monotonic()
-        app.push_many(Transactions, chunk)
-        batch_latencies.append(time.monotonic() - bs)
-        sent += len(chunk)
-    t_push = time.monotonic()
+
+    # Pre-generate one batch; we'll refresh each push so the buffer stays
+    # resident but values vary.
+    batch = [_event() for _ in range(args.batch)]
+
+    while True:
+        t = time.monotonic()
+        if t - t0 >= args.duration:
+            break
+        # Refresh a few slots each batch so the stream isn't a loop of
+        # identical events (small cost, ~0.3 µs/event).
+        for i in range(min(100, args.batch)):
+            batch[i] = _event()
+        app.push_many(Transactions, batch)
+        sent += len(batch)
+
+        if t - t_last_ckpt >= args.checkpoint:
+            _emit({"proc_id": args.proc_id, "phase": "checkpoint",
+                   "t": t - t0, "events": sent})
+            t_last_ckpt = t
 
     app.flush()
-    t_flush = time.monotonic()
+    t_final = time.monotonic() - t0
     app.close()
 
-    batch_latencies.sort()
-    n = len(batch_latencies) or 1
-    p50 = batch_latencies[n // 2]
-    p95 = batch_latencies[min(int(n * 0.95), n - 1)]
-    p99 = batch_latencies[min(int(n * 0.99), n - 1)]
-
-    print(json.dumps({
-        "proc_id": args.proc_id,
-        "events": args.events,
-        "elapsed": t_flush - t_register,          # ingest wall-clock
-        "t_connect":  t_connect  - t0,
-        "t_register": t_register - t_connect,
-        "t_gen":      t_gen      - t_register,
-        "t_push":     t_push     - t_gen,
-        "t_flush":    t_flush    - t_push,
-        "batch_p50_ms": p50 * 1000,
-        "batch_p95_ms": p95 * 1000,
-        "batch_p99_ms": p99 * 1000,
-    }))
+    _emit({"proc_id": args.proc_id, "phase": "final",
+           "t": t_final, "events": sent})
 
 
 if __name__ == "__main__":
