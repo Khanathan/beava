@@ -192,9 +192,13 @@ impl LockFreeStreamLog {
         Ok(())
     }
 
-    /// `fdatasync(fd)` — flush written data to disk.
+    /// `fdatasync(fd)` — flush written data to disk. macOS has no
+    /// `fdatasync`; fall back to `fsync`.
     pub fn fsync(&self) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
         let rc = unsafe { libc::fdatasync(self.fd.as_raw_fd()) };
+        #[cfg(not(target_os = "linux"))]
+        let rc = unsafe { libc::fsync(self.fd.as_raw_fd()) };
         if rc < 0 {
             return Err(io::Error::last_os_error());
         }
