@@ -12,6 +12,11 @@ dist/
 build/
 *.whl
 
+# Plan 30-01: maturin develop drops the built extension into the source tree
+# so pytest against the symlinked python/ layout can find it. The compiled
+# artefact is regenerated on every `maturin build` / `maturin develop`.
+python-native/python_src/tally/_native*.so
+
 # Tally-specific
 .planning/
 .thoughts/
