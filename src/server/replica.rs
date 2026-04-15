@@ -24,7 +24,7 @@
 //! when the full replica metric surface is rounded out. The counter is
 //! still readable via `snapshot_bytes_sent_total()` for tests.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -288,6 +288,14 @@ pub struct ReplicaSession {
 /// A closed receiver (drain task exited) drops with `reason="disconnect"`.
 pub struct SubscriberRegistry {
     sessions: DashMap<u64, ReplicaSession>,
+    /// Fast-path counter mirroring `sessions.len()`. The push hot path calls
+    /// `notify_subscribers` once per cascaded operator (~25× per event), so
+    /// the default `DashMap::is_empty()` check — which walks all shards and
+    /// takes a brief shard read-lock each call — becomes ~20% of worker CPU
+    /// when the registry is empty. A `Relaxed` atomic load on this field is
+    /// ~2 ns, and exactness doesn't matter: we only ever compare to 0 for a
+    /// short-circuit. The authoritative count is still `sessions.len()`.
+    active: AtomicUsize,
     next_id: AtomicU64,
     signals: SharedRegistry,
 }
@@ -304,6 +312,7 @@ impl SubscriberRegistry {
     pub fn new(signals: SharedRegistry) -> Self {
         Self {
             sessions: DashMap::new(),
+            active: AtomicUsize::new(0),
             next_id: AtomicU64::new(1),
             signals,
         }
@@ -322,6 +331,7 @@ impl SubscriberRegistry {
                 last_err: None,
             },
         );
+        self.active.fetch_add(1, Ordering::Relaxed);
         id
     }
 
@@ -346,6 +356,7 @@ impl SubscriberRegistry {
             // Already removed by a concurrent path — don't double-count.
             return;
         }
+        self.active.fetch_sub(1, Ordering::Relaxed);
         match reason {
             "backpressure" => {
                 DROPPED_BACKPRESSURE.fetch_add(1, Ordering::Relaxed);
@@ -366,7 +377,11 @@ impl SubscriberRegistry {
     /// `payload` is the serialized event JSON bytes; `now` is the event's
     /// logical timestamp (caller-provided — normally `SystemTime::now()`).
     pub fn notify_subscribers(&self, stream: &str, key: &str, payload: &[u8], now: SystemTime) {
-        if self.sessions.is_empty() {
+        // Hot path: ~25 calls per cascaded event. `DashMap::is_empty()` walks
+        // all shards + takes a brief read-lock each call (~300 ns), whereas a
+        // `Relaxed` load on a mirrored counter is ~2 ns. At 124k eps × 25 ops
+        // × 10 workers this is the difference between ~20% CPU and ~0.
+        if self.active.load(Ordering::Relaxed) == 0 {
             return;
         }
         let stream_arr = [stream];
