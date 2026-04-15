@@ -83,7 +83,7 @@ jobs:
   python-native:
     name: Python native extension (maturin build + pytest)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     needs: rust
     steps:
       - uses: actions/checkout@v4
@@ -104,10 +104,10 @@ jobs:
           restore-keys: |
             rust-native-${{ runner.os }}-
 
-      - name: Install maturin + pytest
+      - name: Install maturin + pytest (+ timeout plugin)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "maturin>=1.7,<2.0" pytest
+          python -m pip install "maturin>=1.7,<2.0" pytest pytest-timeout
 
       # Plan 30-01: maturin's `python-source` does not follow `..` paths or
       # symlinks, so the canonical SDK lives under `python-native/python_src/tally`
@@ -126,7 +126,7 @@ jobs:
       - name: Create fresh venv and install wheel
         run: |
           python -m venv /tmp/native-venv
-          /tmp/native-venv/bin/pip install --upgrade pip pytest
+          /tmp/native-venv/bin/pip install --upgrade pip pytest pytest-timeout
           /tmp/native-venv/bin/pip install python-native/target/wheels/tally-*.whl || \
             /tmp/native-venv/bin/pip install target/wheels/tally-*.whl
 
@@ -139,4 +139,16 @@ jobs:
         # as rootdir — prevents python/pyproject.toml from shadowing the installed
         # wheel with the source-tree tally package.
         working-directory: python-native
-        run: /tmp/native-venv/bin/python -m pytest tests/ -v
+        run: /tmp/native-venv/bin/python -m pytest tests/ -v --ignore=tests/integration
+
+      # Plan 30-02: E2E integration tests require a built `tally` server
+      # binary (to spawn) and a built `tally_cli` binary (to subprocess).
+      # We build release for speed-on-CI; fixtures in
+      # python-native/tests/integration/conftest.py pick release when
+      # available, debug otherwise.
+      - name: Build release binaries for E2E (tally + tally_cli)
+        run: cargo build --release --features client --bins
+
+      - name: Run Plan 30-02 E2E integration tests
+        working-directory: python-native
+        run: /tmp/native-venv/bin/python -m pytest tests/integration/ -v --timeout=120
