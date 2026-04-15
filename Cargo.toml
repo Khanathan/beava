@@ -31,8 +31,17 @@ tower = { version = "0.5", features = ["util"] }
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 [[bin]]
+name = "tally"
+path = "src/main.rs"
+required-features = ["server"]
+
+[[bin]]
 name = "tally_suggest_config"
 path = "src/bin/tally_suggest_config.rs"
+
+[[bin]]
+name = "tally_cli"
+path = "src/bin/tally_cli.rs"
 
 [[bench]]
 name = "uddsketch_ops"
