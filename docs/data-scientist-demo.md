@@ -249,6 +249,69 @@ time** — exactly what you'd want as labels for offline training.
 
 ---
 
+## Throughput benchmark — simple vs complex pipelines
+
+`benchmark/fraud-pipeline/run_bench.sh` auto-sizes to the host, runs the
+**simple** pipeline (1 table / 2 features) and the **complex** pipeline (5
+tables / ~40 features, HLL `count_distinct`, `stddev`, multi-window, `filter`)
+against a fresh server between runs, and prints a sample feature vector +
+memory footprint.
+
+Key design points:
+- Detects CPU count (`sysctl -n hw.ncpu` on macOS, `nproc` on Linux) and
+  splits cores between server worker threads and client processes
+  (default: half each).
+- Spawns **N independent `python3` OS processes** in parallel via shell `&`,
+  not `multiprocessing.Pool` — so each client runs in its own interpreter
+  with no shared GIL and no fork-pool scheduling overhead.
+- Each client writes a single JSON result line to stdout; the shell
+  aggregates wall-clock EPS across all N.
+
+```bash
+./benchmark/fraud-pipeline/run_bench.sh                   # autosize
+EVENTS=500000 ./benchmark/fraud-pipeline/run_bench.sh     # bigger run
+CLIENTS=8 THREADS=8 ./benchmark/fraud-pipeline/run_bench.sh  # override
+```
+
+Sample output on a 10-core M-series Mac (100k events, 5 clients, 5 threads):
+
+```
+==> Host CPUs: 10  |  server threads: 5  |  client procs: 5  |  events: 100000
+
+=== SIMPLE pipeline benchmark ===
+  [client-0..4]  each 20,000 events in ~0.17s => ~115k eps
+  Wall time:  0.38s
+  Aggregate:  265,860 events/sec   (3.8 µs/event)
+
+  Sample features (key=user_000001):
+    tx_count_1h: 15303
+    tx_sum_1h:   1,571,636.25
+  Memory: 8.7 MB across 6,343 entities (~1.4 KB/entity)
+
+=== COMPLEX pipeline benchmark ===
+  [client-0..4]  each 20,000 events in ~1.16s => ~17k eps
+  Wall time:  1.36s
+  Aggregate:  73,670 events/sec    (13.6 µs/event)
+
+  Sample features (key=user_000001):
+    tx_count_30m/1h/24h/7d:  15,303
+    tx_sum_1h:               1,571,636.25
+    tx_avg_24h:              102.70
+    tx_max_24h:              12,926.80
+    tx_stddev_24h:           294.24
+    unique_merchants_1h:     ~1,318 (HLL estimate)
+    unique_devices_24h:      ~1,909 (HLL estimate)
+    unique_countries_24h:    10
+    last_country: BR  |  last_merchant: merch_000001
+  Memory: 3.9 GB across 18,211 entities (~222 KB/entity)
+```
+
+The ~3.6× throughput difference (simple → complex) and the per-entity memory
+gap (1.4 KB → 222 KB) both come from the additional HLL sketches, stddev
+moment state, and per-window ring buffers declared in the complex pipeline.
+
+---
+
 ## What runs where
 
 | Step | Where |
