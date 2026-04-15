@@ -72,8 +72,8 @@ Full design discussion: `.planning/phases/27-server-replica-endpoints/27-CONTEXT
 ### Phase 30: Python Pipeline API + local query surface
 **Goal**: Ship `tally.Pipeline(remote=..., streams=..., keys?=..., mode="historical").run(); .get(key, stream=...); .inspect()` via PyO3/maturin (Linux x86_64 wheel, Python >=3.10), plus `tally query` / `tally inspect` CLI subcommands. Typed error hierarchy (TallyError + OutOfScopeError / ClientConnectError / HandshakeError / ReplicaStateError), `.pyi` stubs, E2E pytest, CI wheel-build job.
 **Depends on**: Phase 28-04 (real client `Session` + `StateStore`)
-**Plans:** 4/4 plans complete
-- [ ] 30-01-PLAN.md — `python-native/` cdylib crate + maturin pyproject; PyO3 `Pipeline` class with `__init__`/`.run()` (GIL-releasing)/`.get()`/`.inspect()`; typed exceptions; `.pyi` stubs; unit tests + CI wheel job
+**Plans:** 1/2 plans executed
+- [x] 30-01-PLAN.md — `python-native/` cdylib crate + maturin pyproject; PyO3 `Pipeline` class with `__init__`/`.run()` (GIL-releasing)/`.get()`/`.inspect()`; typed exceptions; `.pyi` stubs; unit tests + CI wheel job
 - [ ] 30-02-PLAN.md — `tally query` / `tally inspect` CLI subcommands (pure Rust); E2E pytest spinning up a real server, seeding events via existing Python SDK, asserting `Pipeline.run/get/inspect` + `OutOfScopeError` + CLI coverage
 
 ### Phase 31: Streaming mode + watch
@@ -113,7 +113,7 @@ Full design discussion: `.planning/phases/27-server-replica-endpoints/27-CONTEXT
 | 26. Test migration, bench, docs, demo | v0 | 4/4 | Complete | 2026-04-14 |
 | 27. Server-side replica endpoints (Option K) | v0 | 2/2 | Complete   | 2026-04-15 |
 | 28. Client engine embedding + historical clone | v0 | 4/4 | Complete   | 2026-04-15 |
-| 30. Python Pipeline API + local query surface | v0 | 0/2 | Planned | — |
+| 30. Python Pipeline API + local query surface | v0 | 1/2 | In Progress|  |
 | 31. Streaming mode + watch (Option K) | v0 | 1/2 | 31-02 planned; 31-01 needs re-plan | — |
 | 32. Resume + reconnect (stretch) | v0 | 0/? | Not planned | — |
 | 33. Upstream backfill sources (stretch) | v0 | 0/? | Not planned | — |
