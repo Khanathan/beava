@@ -57,9 +57,14 @@ Plans:
 - [ ] 27-03-PLAN.md — OP_SUBSCRIBE (0x11) + SubscriberRegistry (DashMap) + ingest-path notify hook + 10k backpressure drop + metrics + signals
 
 ### Phase 28: Client engine embedding
-**Goal**: Extract `tally-core` crate (or feature-flag the engine crate); client-side `StateStore` + `PipelineEngine::apply_event` with no listeners; stub `tally` CLI with `clone`/`sync` subcommands.
-**Depends on**: Phase 27
-**Plans**: 0/? — not planned yet
+**Goal**: Feature-flag the main `tally` crate into `client`/`server` flavors; ship a shared `tally::client` module with a stub `Session` + `OutOfScopeError`; add a `tally_cli` bin target with `clone`/`sync` subcommand skeletons; prove the engine runs in a no-listener context via a client-features round-trip test. Phase 29 wires network + state application on top of this surface.
+**Depends on**: Phase 27 (in flight; stub session compiles independently — does not block)
+**Plans:** 3 plans
+
+Plans:
+- [ ] 28-01-PLAN.md — Add `client`/`server` Cargo features; gate server modules + main.rs; smoke test both feature builds
+- [ ] 28-02-PLAN.md — `src/bin/tally_cli.rs` with hand-rolled arg parsing; `clone`/`sync` stubs; `--mode streaming` rejected with Phase 31 pointer
+- [ ] 28-03-PLAN.md — `src/client/mod.rs` (Session + OutOfScopeError); engine side-effect audit; client-features `apply`/push round-trip integration test
 
 ### Phase 29: Session manager + log consumer + dependency analyzer (historical mode end-to-end)
 **Goal**: Walk the client pipeline DAG to derive scope automatically; persistent TCP session with reconnect re-sending scope; log consumer calling `apply_event` per entry; mode state machine (`bootstrap → catchup → done`); out-of-scope queries raise `OutOfScopeError`. Historical mode ships here: `tally clone <remote>` produces a frozen local replica scoped to declared dependencies.
@@ -113,7 +118,7 @@ Plans:
 | 25. Query surface, TTL, warnings | v0 | 3/3 | Complete | 2026-04-14 |
 | 26. Test migration, bench, docs, demo | v0 | 4/4 | Complete | 2026-04-14 |
 | 27. Server-side replica endpoints | v0 | 0/? | Not planned | — |
-| 28. Client engine embedding | v0 | 0/? | Not planned | — |
+| 28. Client engine embedding | v0 | 0/3 | Planned | — |
 | 29. Session manager + log consumer (historical) | v0 | 0/? | Not planned | — |
 | 30. Python Pipeline API + local query surface | v0 | 0/2 | Planned | — |
 | 31. Streaming mode + watch | v0 | 0/? | Not planned | — |
