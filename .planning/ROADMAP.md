@@ -66,10 +66,13 @@ Plans:
 - [ ] 28-02-PLAN.md — `src/bin/tally_cli.rs` with hand-rolled arg parsing; `clone`/`sync` stubs; `--mode streaming` rejected with Phase 31 pointer
 - [ ] 28-03-PLAN.md — `src/client/mod.rs` (Session + OutOfScopeError); engine side-effect audit; client-features `apply`/push round-trip integration test
 
-### Phase 29: Session manager + log consumer + dependency analyzer (historical mode end-to-end)
-**Goal**: Walk the client pipeline DAG to derive scope automatically; persistent TCP session with reconnect re-sending scope; log consumer calling `apply_event` per entry; mode state machine (`bootstrap → catchup → done`); out-of-scope queries raise `OutOfScopeError`. Historical mode ships here: `tally clone <remote>` produces a frozen local replica scoped to declared dependencies.
+### Phase 29: Session manager + log consumer + historical mode E2E
+**Goal**: Wire Phase 28's client scaffolding into a working `tally clone` end-to-end. Persistent TCP session with exponential-jitter reconnect (1s→30s ±20%, cap 5 attempts); scope from CLI flags only (`--streams`, `--keys`, `--key-prefix`) — DAG-derived scope deferred to Phase 30; bootstrap loop (`OP_SNAPSHOT_FETCH` → `apply_event` per entry, capture HWM); catchup loop (`OP_LOG_FETCH{from: hwm}` → `apply_event`, seq-monotonicity asserted); plain `Mode::{Bootstrap, Catchup, Done}` with logged transitions; `OutOfScopeError` raised at `client.get(key)` time; `tally sync` stubbed for Phase 31.
 **Depends on**: Phase 27, Phase 28
-**Plans**: 0/? — not planned yet
+**Plans**: 3 plans
+- [ ] 29-01-PLAN.md — TCP session + reconnect + opcode-agnostic framing + scope handshake (wave 1)
+- [ ] 29-02-PLAN.md — Bootstrap loop: OP_SNAPSHOT_FETCH streaming-decode + apply_event + HWM capture (wave 2)
+- [ ] 29-03-PLAN.md — Catchup loop + seq monotonicity + mode state machine + tally clone CLI + tally sync stub + E2E Python integration test (wave 3)
 
 ### Phase 30: Python Pipeline API + local query surface
 **Goal**: Ship `tally.Pipeline(remote=..., streams=..., keys?=..., mode="historical").run(); .get(key, stream=...); .inspect()` via PyO3/maturin (Linux x86_64 wheel, Python >=3.10), plus `tally query` / `tally inspect` CLI subcommands wrapping the same Rust Session + StateStore primitives. Typed error hierarchy (TallyError + OutOfScopeError / ClientConnectError / HandshakeError / ReplicaStateError), hand-written .pyi stubs, E2E pytest against a real server, CI wheel-build job.
