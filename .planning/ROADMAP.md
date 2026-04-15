@@ -33,7 +33,7 @@
 Full design discussion: `.planning/phases/27-server-replica-endpoints/27-CONTEXT.md` (Option K revision).
 
 - [x] **Phase 27: Server-side replica endpoints (2 opcodes)** — `OP_SNAPSHOT_FETCH{scope}` (0x12) + `OP_SUBSCRIBE{scope}` (0x11). In-memory filter of `BaseSnapshotState`; `SubscriberRegistry` with DashMap + 10k bounded queue; ingest-path notify hook; admin-token auth; response-header `snapshot_taken_at`. No LOG_FETCH. Per-subscriber order only. (completed 2026-04-15)
-- [ ] **Phase 28: Client engine embedding + historical clone** — feature-flag `client`/`server` on main crate; `tally_cli` bin with `clone`/`sync` subcommands; `src/client/` module with real `Session`, `OutOfScopeError`, and historical-mode snapshot fetch. `tally clone` ships in this phase (plan 28-04). `tally sync` stubs.
+- [x] **Phase 28: Client engine embedding + historical clone** — feature-flag `client`/`server` on main crate; `tally_cli` bin with `clone`/`sync` subcommands; `src/client/` module with real `Session`, `OutOfScopeError`, and historical-mode snapshot fetch. `tally clone` ships in this phase (plan 28-04). `tally sync` stubs. (completed 2026-04-15)
 - [ ] **Phase 30: Python Pipeline API + local query surface** — PyO3/maturin `tally.Pipeline(...).run()/.get()/.inspect()`; typed error hierarchy; `tally query` / `tally inspect` CLI.
 - [ ] **Phase 31: Streaming mode + watch** — subscribe-first buffered-replay client dance; bg apply thread + RwLock on client StateStore; PyO3 `.watch()` generator; `tally sync` NDJSON CLI.
 - [ ] **Phase 32: Resume + reconnect (stretch)** — persist last-applied timestamp per scope; on `SubscriberDroppedError`, reconnect and resume.
@@ -64,15 +64,15 @@ Full design discussion: `.planning/phases/27-server-replica-endpoints/27-CONTEXT
 **Goal**: Feature-flag the main crate into `client`/`server` flavors; ship `tally_cli` bin with real `tally clone` historical-mode clone backed by `OP_SNAPSHOT_FETCH`; `OutOfScopeError` raised at `client.get(key)` time. `tally sync` stays a stub until Phase 31.
 **Depends on**: Phase 27 (Scope codec + OP_SNAPSHOT_FETCH); in-flight phase 28-01/02/03 plans already compile against a stub Session, so they're independent.
 **Plans**: 4 plans (Phase 29 folded in as 28-04)
-- [ ] 28-01-PLAN.md — Add `client`/`server` Cargo features; gate server modules + main.rs; smoke test both feature builds
-- [ ] 28-02-PLAN.md — `src/bin/tally_cli.rs` with hand-rolled arg parsing; `clone`/`sync` stubs; `--mode streaming` rejected with Phase 31 pointer
-- [ ] 28-03-PLAN.md — `src/client/mod.rs` (stub Session + OutOfScopeError + scope types); engine side-effect audit; client-features `apply`/push round-trip integration test
-- [ ] 28-04-PLAN.md — Replace 28-02's `tally clone` stub with real TCP session + OP_SNAPSHOT_FETCH handshake + postcard deserialize into client StateStore; exponential-jitter reconnect; OutOfScopeError at `.get()` time; E2E `tests/integration/test_tally_clone.py` against a real server with fixture events
+- [x] 28-01-PLAN.md — Add `client`/`server` Cargo features; gate server modules + main.rs; smoke test both feature builds
+- [x] 28-02-PLAN.md — `src/bin/tally_cli.rs` with hand-rolled arg parsing; `clone`/`sync` stubs; `--mode streaming` rejected with Phase 31 pointer
+- [x] 28-03-PLAN.md — `src/client/mod.rs` (stub Session + OutOfScopeError + scope types); engine side-effect audit; client-features `apply`/push round-trip integration test
+- [x] 28-04-PLAN.md — Replace 28-02's `tally clone` stub with real TCP session + OP_SNAPSHOT_FETCH handshake + postcard deserialize into client StateStore; exponential-jitter reconnect; OutOfScopeError at `.get()` time; E2E `tests/integration/test_tally_clone.py` against a real server with fixture events
 
 ### Phase 30: Python Pipeline API + local query surface
 **Goal**: Ship `tally.Pipeline(remote=..., streams=..., keys?=..., mode="historical").run(); .get(key, stream=...); .inspect()` via PyO3/maturin (Linux x86_64 wheel, Python >=3.10), plus `tally query` / `tally inspect` CLI subcommands. Typed error hierarchy (TallyError + OutOfScopeError / ClientConnectError / HandshakeError / ReplicaStateError), `.pyi` stubs, E2E pytest, CI wheel-build job.
 **Depends on**: Phase 28-04 (real client `Session` + `StateStore`)
-**Plans:** 2/2 plans complete
+**Plans:** 4/4 plans complete
 - [ ] 30-01-PLAN.md — `python-native/` cdylib crate + maturin pyproject; PyO3 `Pipeline` class with `__init__`/`.run()` (GIL-releasing)/`.get()`/`.inspect()`; typed exceptions; `.pyi` stubs; unit tests + CI wheel job
 - [ ] 30-02-PLAN.md — `tally query` / `tally inspect` CLI subcommands (pure Rust); E2E pytest spinning up a real server, seeding events via existing Python SDK, asserting `Pipeline.run/get/inspect` + `OutOfScopeError` + CLI coverage
 
@@ -112,7 +112,7 @@ Full design discussion: `.planning/phases/27-server-replica-endpoints/27-CONTEXT
 | 25. Query surface, TTL, warnings | v0 | 3/3 | Complete | 2026-04-14 |
 | 26. Test migration, bench, docs, demo | v0 | 4/4 | Complete | 2026-04-14 |
 | 27. Server-side replica endpoints (Option K) | v0 | 2/2 | Complete   | 2026-04-15 |
-| 28. Client engine embedding + historical clone | v0 | 0/4 | 3/4 planned; 28-04 needs plan | — |
+| 28. Client engine embedding + historical clone | v0 | 4/4 | Complete   | 2026-04-15 |
 | 30. Python Pipeline API + local query surface | v0 | 0/2 | Planned | — |
 | 31. Streaming mode + watch (Option K) | v0 | 1/2 | 31-02 planned; 31-01 needs re-plan | — |
 | 32. Resume + reconnect (stretch) | v0 | 0/? | Not planned | — |
