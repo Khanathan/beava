@@ -456,31 +456,73 @@ fn seed_pipelines_from_file(
     let mut n = 0usize;
     let mut engine = state.engine.write();
     for item in items {
-        let req: RegisterRequest = serde_json::from_value(item.clone())
-            .map_err(|e| format!("bad register JSON: {}", e))?;
-        let name = req.name.clone();
-        let is_view = req.definition_type.as_deref() == Some("view");
-        if is_view {
-            let view_def = convert_view_register_request(req)
-                .map_err(|e| format!("convert view: {}", e))?;
-            engine
-                .register_view(view_def)
-                .map_err(|e| format!("register view {}: {}", name, e))?;
-        } else {
-            let stream_def = convert_register_request(req)
-                .map_err(|e| format!("convert stream: {}", e))?;
+        // Plan 39-01 (T1 follow-up): mirror the v0-vs-legacy dispatch from the
+        // OP_REGISTER TCP handler (src/server/tcp.rs::Command::Register).
+        // The Python SDK emits v0-shape REGISTER docs (`kind:"stream"|"table"`,
+        // `aggregation:{...}`) which serde_json::from_value::<RegisterRequest>
+        // can't parse — legacy path expects `features:[...]`. Route through
+        // V0RegisterPayload::parse → v0_*_to_stream_def when `kind` is present.
+        let is_v0 = item.get("kind").is_some();
+        let name = if is_v0 {
+            let v0_bytes = serde_json::to_vec(&item)
+                .map_err(|e| format!("v0 REGISTER: re-serialize failed: {}", e))?;
+            let parsed = tally::engine::register::V0RegisterPayload::parse(&v0_bytes)
+                .map_err(|e| format!("parse v0 REGISTER: {}", e))?;
+            let stream_def = match &parsed {
+                tally::engine::register::V0RegisterPayload::Source(desc) => {
+                    tally::engine::register::v0_source_to_stream_def(desc)
+                        .map_err(|e| format!("v0 source → stream_def: {}", e))?
+                }
+                tally::engine::register::V0RegisterPayload::Aggregation(desc) => {
+                    tally::engine::register::v0_aggregation_to_stream_def(desc)
+                        .map_err(|e| format!("v0 aggregation → stream_def: {}", e))?
+                }
+                other => {
+                    return Err(format!(
+                        "v0 REGISTER: descriptor kind '{}' not supported in pipeline-file seed \
+                         (joins/stateless-chains/union come later)",
+                        other.descriptor_kind()
+                    ));
+                }
+            };
+            let def_name = stream_def.name.clone();
             engine
                 .register(stream_def)
-                .map_err(|e| format!("register stream {}: {}", name, e))?;
-            // Also register with the event log so replicated PUSHes persist.
-            let history_ttl = engine
-                .get_stream(&name)
-                .and_then(|s| s.history_ttl);
+                .map_err(|e| format!("register v0 stream {}: {}", def_name, e))?;
+            let history_ttl = engine.get_stream(&def_name).and_then(|s| s.history_ttl);
             let mut event_log = state.event_log.lock();
             if let Some(ref mut log) = *event_log {
-                let _ = log.register_stream(&name, history_ttl);
+                let _ = log.register_stream(&def_name, history_ttl);
             }
-        }
+            def_name
+        } else {
+            let req: RegisterRequest = serde_json::from_value(item.clone())
+                .map_err(|e| format!("bad register JSON: {}", e))?;
+            let name = req.name.clone();
+            let is_view = req.definition_type.as_deref() == Some("view");
+            if is_view {
+                let view_def = convert_view_register_request(req)
+                    .map_err(|e| format!("convert view: {}", e))?;
+                engine
+                    .register_view(view_def)
+                    .map_err(|e| format!("register view {}: {}", name, e))?;
+            } else {
+                let stream_def = convert_register_request(req)
+                    .map_err(|e| format!("convert stream: {}", e))?;
+                engine
+                    .register(stream_def)
+                    .map_err(|e| format!("register stream {}: {}", name, e))?;
+                // Also register with the event log so replicated PUSHes persist.
+                let history_ttl = engine
+                    .get_stream(&name)
+                    .and_then(|s| s.history_ttl);
+                let mut event_log = state.event_log.lock();
+                if let Some(ref mut log) = *event_log {
+                    let _ = log.register_stream(&name, history_ttl);
+                }
+            }
+            name
+        };
         engine.store_raw_register_json(&name, item);
         n += 1;
     }
@@ -1470,5 +1512,108 @@ mod fork_cli_tests {
         let args = argv(&["tally", "fork", "--help"]);
         let err = parse_fork_args_from(&args).unwrap_err();
         assert_eq!(err, "__HELP__");
+    }
+}
+
+// ============ Plan 39-01: seed_pipelines_from_file dispatch tests ==========
+
+#[cfg(test)]
+mod seed_pipelines_tests {
+    use super::seed_pipelines_from_file;
+    use std::io::Write;
+    use std::sync::Arc;
+    use tally::engine::pipeline::PipelineEngine;
+    use tally::server::tcp::{make_concurrent_state, BackfillTracker};
+    use tally::state::store::StateStore;
+
+    fn fresh_state() -> tally::server::tcp::SharedState {
+        let tmp = tempfile::tempdir().unwrap();
+        let snapshot_path = tmp.path().join("snap");
+        // Leak tempdir so the path is valid for the life of the test; tests are
+        // short-lived and tempdir cleanup is best-effort.
+        std::mem::forget(tmp);
+        make_concurrent_state(
+            PipelineEngine::new(),
+            StateStore::new(),
+            None,
+            snapshot_path,
+            Arc::new(BackfillTracker::default()),
+            false,
+            false,
+        )
+    }
+
+    fn write_tmp(contents: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(contents.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    #[test]
+    fn loads_v0_stream_shape() {
+        // v0 SDK shape: carries `kind: "stream"`.
+        let doc = serde_json::json!({
+            "kind": "stream",
+            "name": "Transactions",
+            "fields": {
+                "user_id": {"type": "string"},
+                "amount": {"type": "f64"}
+            },
+            "key_field": "user_id"
+        });
+        let file = write_tmp(&doc.to_string());
+        let state = fresh_state();
+        let n = seed_pipelines_from_file(&state, file.path()).expect("v0 stream should load");
+        assert_eq!(n, 1);
+        let engine = state.engine.read();
+        assert!(engine.get_stream("Transactions").is_some());
+    }
+
+    #[test]
+    fn loads_legacy_features_shape() {
+        // Legacy v2.0 shape — features array, no `kind` field.
+        let doc = serde_json::json!({
+            "name": "LegacyStream",
+            "event_schema": {
+                "user_id": "string",
+                "amount": "f64"
+            },
+            "key_field": "user_id",
+            "features": []
+        });
+        let file = write_tmp(&doc.to_string());
+        let state = fresh_state();
+        let n = seed_pipelines_from_file(&state, file.path())
+            .expect("legacy features shape should load");
+        assert_eq!(n, 1);
+        let engine = state.engine.read();
+        assert!(engine.get_stream("LegacyStream").is_some());
+    }
+
+    #[test]
+    fn loads_mixed_array_both_shapes() {
+        let doc = serde_json::json!([
+            {
+                "kind": "stream",
+                "name": "S1",
+                "fields": {"k": {"type": "string"}},
+                "key_field": "k"
+            },
+            {
+                "name": "S2",
+                "event_schema": {"k": "string"},
+                "key_field": "k",
+                "features": []
+            }
+        ]);
+        let file = write_tmp(&doc.to_string());
+        let state = fresh_state();
+        let n = seed_pipelines_from_file(&state, file.path())
+            .expect("mixed array should load both");
+        assert_eq!(n, 2);
+        let engine = state.engine.read();
+        assert!(engine.get_stream("S1").is_some());
+        assert!(engine.get_stream("S2").is_some());
     }
 }
