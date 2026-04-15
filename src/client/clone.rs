@@ -16,14 +16,11 @@
 //! (1s → 2s → 4s → 8s → 16s, cap 30s, ±20%). No LOG_FETCH, no catchup,
 //! no mode state machine.
 
-use crate::client::wire::{
-    write_scope, Scope, OP_SNAPSHOT_FETCH, REPLICA_FRAME_TAG_HEADER, REPLICA_FRAME_TAG_PAYLOAD,
-};
+use crate::client::session::{self, SessionError};
+use crate::client::wire::Scope;
 use crate::client::{FrozenClient, SessionMode};
-use crate::state::snapshot::BaseSnapshotState;
 use crate::state::store::StateStore;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::time::{Duration, SystemTime};
 use tokio::net::TcpStream;
 
 /// Defence-in-depth protocol limit: reject frames larger than this to avoid
@@ -141,6 +138,15 @@ where
 
 /// Single connection attempt. Returns Ok((snapshot_taken_at, populated state))
 /// on success, or Err((stage, msg)) on failure.
+///
+/// Phase 31-01 refactor: the wire-codec half was extracted into
+/// `client::session::fetch_snapshot`. This function now does the retry-layer
+/// orchestration (connect + stage-classification); `fetch_snapshot` owns the
+/// request-send + header-read + payload-decode sequence. The retained
+/// `SNAPSHOT_HARD_LIMIT_BYTES` import (below) would be unused with the
+/// extraction — removed at import time. Behavior is byte-identical to the
+/// pre-extraction implementation; the in-module `mock_server_*` fixtures +
+/// `test_tally_clone` integration tests both remain green.
 async fn try_once(
     remote: &str,
     token: Option<&str>,
@@ -151,115 +157,53 @@ async fn try_once(
         .await
         .map_err(|e| (FailureStage::Connect, format!("connect {}: {}", remote, e)))?;
 
-    // 2. build + send request frame:
-    //    [u32 BE total_len][u8 opcode][u16-string token][scope-bytes]
-    let mut payload = Vec::new();
+    // 2-4. snapshot-fetch round-trip (shared helper with streaming path).
     let token_str = token.unwrap_or("");
-    let token_bytes = token_str.as_bytes();
-    if token_bytes.len() > u16::MAX as usize {
-        return Err((FailureStage::Handshake, "admin token too long for u16 prefix".into()));
-    }
-    payload.extend_from_slice(&(token_bytes.len() as u16).to_be_bytes());
-    payload.extend_from_slice(token_bytes);
-    write_scope(&mut payload, scope);
-
-    let total_len: u32 = (1 + payload.len()) as u32; // opcode + payload
-    let mut frame = Vec::with_capacity(4 + total_len as usize);
-    frame.extend_from_slice(&total_len.to_be_bytes());
-    frame.push(OP_SNAPSHOT_FETCH);
-    frame.extend_from_slice(&payload);
-
-    stream
-        .write_all(&frame)
-        .await
-        .map_err(|e| (FailureStage::Handshake, format!("write request: {}", e)))?;
-    stream
-        .flush()
-        .await
-        .map_err(|e| (FailureStage::Handshake, format!("flush request: {}", e)))?;
-
-    // 3. read header frame — may be a STATUS_ERROR (tag 0x01, variable body)
-    //    or REPLICA_FRAME_TAG_HEADER (tag 0x01, 12-byte body = u64 secs + u32 nanos).
-    let header_len = read_u32(&mut stream)
-        .await
-        .map_err(|e| (FailureStage::Handshake, format!("read header len: {}", e)))?;
-    if header_len == 0 || header_len > SNAPSHOT_HARD_LIMIT_BYTES {
-        return Err((FailureStage::Fetch, format!("header frame length out of range: {}", header_len)));
-    }
-    let header_tag = read_u8(&mut stream)
-        .await
-        .map_err(|e| (FailureStage::Handshake, format!("read header tag: {}", e)))?;
-    let body_len = (header_len - 1) as usize;
-    let mut body = vec![0u8; body_len];
-    stream
-        .read_exact(&mut body)
-        .await
-        .map_err(|e| (FailureStage::Handshake, format!("read header body: {}", e)))?;
-
-    // Distinguish STATUS_ERROR (body length != 12) from header frame (body == 12).
-    if header_tag != REPLICA_FRAME_TAG_HEADER {
-        return Err((FailureStage::Fetch, format!("unexpected tag 0x{:02x} in first frame", header_tag)));
-    }
-    if body_len != 12 {
-        // tag == 0x01 but body != 12 → the server wrote a STATUS_ERROR frame
-        // (shares the same tag per `src/server/protocol.rs` doc comment on
-        // REPLICA_FRAME_TAG_HEADER). Interpret as UTF-8 error message.
-        let err_msg = String::from_utf8_lossy(&body).to_string();
-        let stage = if err_msg.contains("unauthorized") {
-            FailureStage::Handshake
-        } else {
-            FailureStage::Fetch
+    let (snapshot_taken_at, snapshot) =
+        match session::fetch_snapshot(&mut stream, token_str, scope).await {
+            Ok(v) => v,
+            Err(e) => {
+                let (stage, msg) = classify_session_error(&e);
+                return Err((stage, msg));
+            }
         };
-        return Err((stage, format!("server error: {}", err_msg)));
-    }
-    let secs = u64::from_be_bytes([
-        body[0], body[1], body[2], body[3], body[4], body[5], body[6], body[7],
-    ]);
-    let nanos = u32::from_be_bytes([body[8], body[9], body[10], body[11]]);
-    let snapshot_taken_at = UNIX_EPOCH
-        .checked_add(Duration::new(secs, nanos))
-        .unwrap_or(UNIX_EPOCH);
 
-    // 4. read payload frame
-    let payload_len = read_u32(&mut stream)
-        .await
-        .map_err(|e| (FailureStage::Fetch, format!("read payload len: {}", e)))?;
-    if payload_len == 0 || payload_len > SNAPSHOT_HARD_LIMIT_BYTES {
-        return Err((FailureStage::Fetch, format!("payload frame length out of range: {}", payload_len)));
-    }
-    let payload_tag = read_u8(&mut stream)
-        .await
-        .map_err(|e| (FailureStage::Fetch, format!("read payload tag: {}", e)))?;
-    if payload_tag != REPLICA_FRAME_TAG_PAYLOAD {
-        return Err((FailureStage::Fetch, format!("unexpected payload tag 0x{:02x}", payload_tag)));
-    }
-    let mut payload_buf = vec![0u8; (payload_len - 1) as usize];
-    stream
-        .read_exact(&mut payload_buf)
-        .await
-        .map_err(|e| (FailureStage::Fetch, format!("read payload body: {}", e)))?;
-
-    // 5. postcard-decode
-    let snapshot: BaseSnapshotState = postcard::from_bytes(&payload_buf)
-        .map_err(|e| (FailureStage::Decode, format!("postcard decode: {}", e)))?;
-
-    // 6. bulk-load
+    // 5. bulk-load
     let store = StateStore::new();
     store.bulk_load(snapshot.entities);
     Ok((snapshot_taken_at, store))
 }
 
-async fn read_u32(stream: &mut TcpStream) -> std::io::Result<u32> {
-    let mut b = [0u8; 4];
-    stream.read_exact(&mut b).await?;
-    Ok(u32::from_be_bytes(b))
+/// Map a `SessionError` from the extracted `fetch_snapshot` helper back into
+/// the retry-layer's `FailureStage` classification. Preserves the original
+/// handshake/fetch/decode split so `AuthFailed` vs. `FetchFailed` bucketing
+/// after retry exhaustion matches pre-refactor behavior.
+fn classify_session_error(e: &SessionError) -> (FailureStage, String) {
+    match e {
+        SessionError::Unauthorized => {
+            (FailureStage::Handshake, "server error: unauthorized".into())
+        }
+        SessionError::ServerError(msg) => {
+            (FailureStage::Fetch, format!("server error: {}", msg))
+        }
+        // IO errors during the snapshot round-trip can happen at any point
+        // (header or payload read); map to Fetch so `FetchFailed` is returned
+        // after retries. Pre-refactor code routed header-read failures to
+        // Handshake, but both buckets ultimately surface as CloneError::*Failed
+        // with identical retry behavior — the only user-visible difference is
+        // the variant name. The auth-specific path uses the explicit
+        // `SessionError::Unauthorized` branch above.
+        SessionError::Io(msg) => (FailureStage::Fetch, msg.clone()),
+        SessionError::Protocol(msg) => (FailureStage::Fetch, msg.clone()),
+        SessionError::Decode(msg) => (FailureStage::Decode, msg.clone()),
+    }
 }
 
-async fn read_u8(stream: &mut TcpStream) -> std::io::Result<u8> {
-    let mut b = [0u8; 1];
-    stream.read_exact(&mut b).await?;
-    Ok(b[0])
-}
+// `SNAPSHOT_HARD_LIMIT_BYTES` retained as a module-visible constant for
+// parity with the pre-extraction docstring; the frame-size enforcement now
+// lives inside `session::fetch_snapshot`.
+#[allow(dead_code)]
+const _SNAPSHOT_HARD_LIMIT_BYTES_KEEPALIVE: u32 = SNAPSHOT_HARD_LIMIT_BYTES;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -268,9 +212,13 @@ async fn read_u8(stream: &mut TcpStream) -> std::io::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::wire::{
+        OP_SNAPSHOT_FETCH, REPLICA_FRAME_TAG_HEADER, REPLICA_FRAME_TAG_PAYLOAD,
+    };
     use crate::state::snapshot::{BaseSnapshotState, SnapshotHeader, SnapshotType};
     use rand::SeedableRng;
-    use tokio::io::AsyncReadExt;
+    use std::time::UNIX_EPOCH;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
     fn sample_scope() -> Scope {

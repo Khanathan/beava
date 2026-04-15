@@ -12,6 +12,18 @@ pub mod wire;
 // cheap and makes tests runnable under `cargo test` without feature gymnastics.
 pub mod clone;
 
+// Phase 31-01: streaming-mode session (Option K subscribe-first dance).
+// - `session` hosts the shared handshake / snapshot-fetch helpers used by
+//   both `clone::run_clone` and `streaming::StreamingClient::connect`.
+// - `state` exposes the `StreamingStore = Arc<parking_lot::RwLock<StateStore>>`
+//   alias used only on the streaming path.
+// - `streaming` is the live-subscribe client itself.
+pub mod session;
+pub mod state;
+pub mod streaming;
+
+pub use streaming::{BufferedEvent, StopReason, StreamingClient, WatcherDispatch};
+
 use crate::state::snapshot::SerializableEntityState;
 use crate::state::store::StateStore;
 use std::time::SystemTime;
