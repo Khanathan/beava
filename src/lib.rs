@@ -1,3 +1,4 @@
+pub mod client;
 pub mod duration;
 pub mod engine;
 pub mod error;
