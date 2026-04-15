@@ -120,6 +120,51 @@ curl -H "Authorization: Bearer $PROD_ADMIN_TOKEN" \
 
 ---
 
+## Path C — historical point-in-time extraction (Phase 44-01)
+
+Scientists frequently need "what did these feature values look like at `T_i`?" for multiple `T_i` in one go — e.g. training a model that needs features as-of each label timestamp. `tl.fork(extract_at=[...])` does this in a single replay:
+
+```python
+from datetime import datetime, timezone
+
+t1 = datetime(2026, 3, 5, 10, 0, 0, tzinfo=timezone.utc)
+t2 = datetime(2026, 3, 15, 10, 0, 0, tzinfo=timezone.utc)
+t3 = datetime(2026, 4, 1, 10, 0, 0, tzinfo=timezone.utc)
+
+with tl.fork(
+    remote="prod.tally.internal:6400",
+    streams=[Transactions],
+    keys=["u1", "u2"],
+    since="2026-03-01T00:00:00Z",
+    token="prod-admin-token",
+    pipelines=[TxnSummary],
+    extract_at=[t1, t2, t3],   # datetime / ISO-8601 str / unix-ms int all OK
+) as fork:
+    history = fork.extract_history()
+    # {
+    #   "2026-03-05T10:00:00Z": {
+    #       "u1": {"count": 3, "total": 60.0},
+    #       "u2": {"count": 1, "total": 5.0}
+    #   },
+    #   "2026-03-15T10:00:00Z": {...},
+    #   "2026-04-01T10:00:00Z": {...}
+    # }
+```
+
+**Semantics:**
+- Replay streams events from `since` forward once.
+- Maintains a sorted cursor across the declared `extract_at` timestamps.
+- Just before applying the first event with `event.ts > extract_at[i]`, snapshots the computed feature map for every key in scope into `extracted_history[extract_at[i]]`.
+- After `LOG_FETCH END`, snapshots any trailing thresholds (no event crossed them) against end-of-replay state — so `extract_at` values "in the future" relative to the log end return the final state.
+
+**Under the hood:** exposed as `GET /extracts` on the fork; the Python wrapper is a thin one-shot fetch after catchup. CLI equivalent: `tally fork --extract-at T1,T2,T3 ...`.
+
+**Scope:** extractions honour the same `--keys` / `--key-prefix` filter the fork uses. Keys outside scope are not captured. Keys in scope with no events yet at `extract_at[i]` are skipped (consistent with "missing key → None" elsewhere in the API).
+
+**Memory:** `N extractions × K keys × F features`. For the typical scientist workflow (N≤10, K≤100, F<20) this is trivial. Scope aggressively if you need hundreds of checkpoints × thousands of keys.
+
+---
+
 ## What runs where
 
 | Step | Where |
