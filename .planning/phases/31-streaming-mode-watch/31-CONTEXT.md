@@ -1,5 +1,14 @@
 # Phase 31: Streaming mode + watch - Context
 
+> **SUPERSEDED 2026-04-15 by Option M (Phase 36).** The embedded
+> `StreamingClient` + subscribe-first dance designed here was deleted in
+> Phase 38-01. Live-tailing is now handled inside the replica-mode
+> server (Phase 36's OP_SUBSCRIBE loop after OP_LOG_FETCH catchup); the
+> scientist's Python code just queries the local replica via `tally.App`.
+> No client-side two-socket dance, no per-event apply thread, no
+> `.watch()` Python generator. Plan 31-01 SUMMARY retained as
+> historical record.
+
 **Gathered:** 2026-04-15
 **Revised:** 2026-04-15 (Option K — subscribe-first buffered-replay dance; no Catchup mode)
 **Status:** Ready for planning

@@ -37,7 +37,7 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
 **Option M phases:**
 - [ ] **Phase 35: `OP_LOG_FETCH{from_ts, scope}`** — Server ships the historical-CDC opcode. Timestamp cursor, at-least-once on boundary, per-stream ordering. 1 plan.
 - [x] **Phase 36: Replica-mode server boot** — `tally serve --replica-from HOST --replica-since T --replica-streams S --replica-token T [--replica-pipeline-file F]`. LOG_FETCH catchup → SUBSCRIBE live-tail, all feeding local ingest. Listener gate until catchup-done. 1 plan, 4 tasks. (completed 2026-04-15)
-- [ ] **Phase 37: `tally fork` CLI + E2E demo** — `tally fork --remote ... --since ... --streams ... --pipeline-file ...` wrapper + load-bearing pytest that proves the scientist workflow end-to-end. 1 plan.
+- [x] **Phase 37: `tally fork` CLI + E2E demo** — `tally fork --remote ... --since ... --streams ... --pipeline-file ...` wrapper + load-bearing pytest that proves the scientist workflow end-to-end. 1 plan. (completed 2026-04-15)
 - [ ] **Phase 38: Mothball Option K surfaces** — Delete obsolete embedded-client code, `tally_cli clone/query/inspect/sync`, `python-native/` crate. Housekeeping. 1 plan.
 
 **Stretch (unchanged):**
@@ -118,8 +118,8 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
 ### Phase 37: `tally fork` CLI + E2E demo (Option M)
 **Goal**: Ship `tally fork --remote HOST --since T --streams S --keys K --token T [--local-port 7400] [--pipeline-file P]` as a scientist-ergonomic wrapper for `tally serve --replica-from ...`, plus the load-bearing E2E pytest that proves the whole Option M workflow (prod → fork → register pipeline → query → live update).
 **Depends on**: Phase 35, Phase 36
-**Plans:** 1 plan
-- [ ] 37-01-PLAN.md — `tally fork` subcommand + `/debug/ready` endpoint + test_fork_demo.py end-to-end
+**Plans:** 1/1 plans complete
+- [x] 37-01-PLAN.md — `tally fork` subcommand + `/debug/ready` endpoint + test_fork_demo.py end-to-end
 
 ### Phase 38: Mothball Option K surfaces (Option M housekeeping)
 **Goal**: Delete superseded embedded-client code (`src/client/clone.rs`, `streaming.rs`, `state.rs`; `tally_cli clone/query/inspect/sync`; `python-native/` crate). Banner-tag Option K CONTEXTs as SUPERSEDED. Prevents future readers from confusing dead paths with live ones.
@@ -149,5 +149,5 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
 | 34. Write-back / promote (stretch) | v0 | 0/? | Not planned | — |
 | 35. OP_LOG_FETCH | v0 | 0/1 | **Planned (Option M)** | — |
 | 36. Replica-mode server boot | v0 | 1/1 | Complete   | 2026-04-15 |
-| 37. `tally fork` CLI + E2E demo | v0 | 0/1 | **Planned (Option M)** | — |
+| 37. `tally fork` CLI + E2E demo | v0 | 1/1 | Complete   | 2026-04-15 |
 | 38. Mothball Option K surfaces | v0 | 0/1 | **Planned (Option M)** | — |

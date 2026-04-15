@@ -22,35 +22,12 @@ Plan 21-01; aggregation and join operators return in Plans 21-02 and
 21-03 in function form on top of ``@tl.stream`` / ``@tl.table``.
 """
 
-from tally._types import FeatureResult, ConnectionError, ProtocolError
-from tally._types import TallyError as _PureTallyError
+from tally._types import FeatureResult, ConnectionError, ProtocolError, TallyError
 
-# Plan 30-01: pull in the native replica-client surface when the compiled
-# extension is available. The maturin-built wheel bundles both the hand-written
-# Python modules and `tally._native`; the pure-Python hatch build does NOT
-# include the native extension, so the import is guarded — authors writing
-# pipelines against the legacy hatch install keep working, they just don't get
-# `Pipeline` / the replica error hierarchy on import.
-try:
-    from tally._native import (
-        Pipeline,
-        TallyError,  # native base; supersedes the pure-Python stub above.
-        OutOfScopeError,
-        ClientConnectError,
-        HandshakeError,
-        ReplicaStateError,
-    )
-
-    _HAS_NATIVE = True
-except ImportError:
-    # Fallback to the pure-Python base for the hatch-only install path.
-    TallyError = _PureTallyError  # type: ignore[assignment,misc]
-    Pipeline = None  # type: ignore[assignment,misc]
-    OutOfScopeError = None  # type: ignore[assignment,misc]
-    ClientConnectError = None  # type: ignore[assignment,misc]
-    HandshakeError = None  # type: ignore[assignment,misc]
-    ReplicaStateError = None  # type: ignore[assignment,misc]
-    _HAS_NATIVE = False
+# Phase 38-01 mothball: the `tally._native` PyO3 extension (Plan 30-01) is
+# gone. Scientists now run the scoped replica via `tally fork` (Phase 37)
+# and talk to it through the pure-Python `tally.App` over HTTP/TCP — no
+# native extension required.
 from tally._app import App
 from tally._protocol import (
     OP_PUSH,
@@ -103,12 +80,6 @@ __all__ = [
     "TallyError",
     "ConnectionError",
     "ProtocolError",
-    # Plan 30-01: native replica-client surface (populated when _native is installed).
-    "Pipeline",
-    "OutOfScopeError",
-    "ClientConnectError",
-    "HandshakeError",
-    "ReplicaStateError",
     # App
     "App",
     # Protocol constants

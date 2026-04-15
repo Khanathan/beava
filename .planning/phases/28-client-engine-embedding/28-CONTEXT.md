@@ -1,5 +1,22 @@
 # Phase 28: Client engine embedding - Context
 
+> **SUPERSEDED 2026-04-15 by Option M (Phase 36).** The embedded-client
+> surface this phase designed (`tally::client::{clone,streaming,state}`,
+> `FrozenClient`, `run_clone`) was deleted in Phase 38-01. Scientists now
+> run a scoped local replica via `tally fork` (Phase 37), which boots a
+> full server in replica mode (Phase 36) and catches up through
+> `OP_LOG_FETCH` (Phase 35).
+>
+> **STILL ACTIVE:** Plan 28-01 (feature-flag split: `server` vs `client`
+> cargo features + the `cargo build --no-default-features --features
+> client --lib` smoke gate in `scripts/check-feature-builds.sh`). That
+> machinery keeps the engine compilable outside a server context; the
+> `tests/client_engine_roundtrip.rs` anti-regression test still runs.
+>
+> **SUPERSEDED:** plans 28-02 / 28-03 / 28-04 (`tally_cli` skeleton,
+> `FrozenClient`, `run_clone` wire-up). Their SUMMARY files are retained
+> as historical record.
+
 **Gathered:** 2026-04-14
 **Revised:** 2026-04-15 (Option K — Phase 29 folded in as plan 28-04)
 **Status:** Ready for planning

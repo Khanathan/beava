@@ -3,20 +3,20 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-last_updated: "2026-04-15T03:43:03.806Z"
+last_updated: "2026-04-15T03:54:57.801Z"
 progress:
   total_phases: 12
-  completed_phases: 6
+  completed_phases: 7
   total_plans: 17
-  completed_plans: 14
-  percent: 82
+  completed_plans: 15
+  percent: 88
 ---
 
 # Project State
 
 **Current Milestone:** v0 — Data-Scientist Fork (Phases 27, 35-38; Option K phases 28/30/31 superseded)
-**Active Phase:** 35 — OP_LOG_FETCH (Option M kickoff) — planned, not yet executed
-**Last Updated:** 2026-04-15 (Option M adopted: scientist forks CDC via LOG_FETCH+SUBSCRIBE, replica IS a local Tally server. Option K mid-flight Phase 31-02 cancelled. Phases 35-38 planned.)
+**Active Phase:** 38 — Mothball Option K surfaces — COMPLETE (Option M shipping; housekeeping done)
+**Last Updated:** 2026-04-15 (Option M v0 complete: Phases 35 + 36 + 37 green; Phase 38-01 mothballed Option K surfaces — deleted `src/client/{clone,streaming,state,session}.rs`, `tally_cli` binary, `python-native/` PyO3 crate. Scientists use `tally fork` + pure-Python SDK.)
 
 ## Milestone Status
 

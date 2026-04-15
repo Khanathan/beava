@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "python-native"]
+members = ["."]
 
 [package]
 name = "tally"
@@ -42,10 +42,6 @@ required-features = ["server"]
 [[bin]]
 name = "tally_suggest_config"
 path = "src/bin/tally_suggest_config.rs"
-
-[[bin]]
-name = "tally_cli"
-path = "src/bin/tally_cli.rs"
 
 [[bench]]
 name = "uddsketch_ops"

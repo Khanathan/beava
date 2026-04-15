@@ -1,5 +1,14 @@
 # Phase 30: Python Pipeline API + local query surface - Context
 
+> **SUPERSEDED 2026-04-15 by Option M (Phase 36).** The `python-native`
+> PyO3 crate, `tally.Pipeline` class, and `tally._native` extension
+> designed here were all deleted in Phase 38-01. The scientist workflow
+> is now: `tally fork --remote HOST:PORT --streams ... --keys ...`
+> (Phase 37) spawns a scoped local replica; Python talks to it via the
+> existing pure-Python `tally.App` over HTTP/TCP. No native extension,
+> no wheel-packaging complexity, no embedded engine in Python process.
+> Plan 30-01 and 30-02 SUMMARY files retained as historical record.
+
 **Gathered:** 2026-04-14
 **Status:** Ready for planning
 **Mode:** Interactive discuss (user directive: "easiest for v0 and demo")

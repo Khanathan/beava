@@ -738,11 +738,14 @@ impl StateStore {
             .collect()
     }
 
-    /// Phase 28-04: bulk-insert aggregated entity state from a remote snapshot.
+    /// Bulk-insert aggregated entity state from a remote snapshot.
     ///
-    /// Used by the client-side snapshot bootstrap (`tally::client::clone::run_clone`).
-    /// Does **NOT** run events through `apply_event` — the input is aggregated
-    /// state from a `BaseSnapshotState`; replaying would double-count.
+    /// Used by the replica-mode server boot (Phase 36,
+    /// `src/server/replica_client.rs`) after fetching a `BaseSnapshotState`
+    /// over the wire. Does **NOT** run events through `apply_event` — the
+    /// input is aggregated state already; replaying would double-count.
+    /// (Originally introduced in Phase 28-04 for the Option K embedded
+    /// `FrozenClient`, which was mothballed in Phase 38-01.)
     ///
     /// Unlike `restore_from_snapshot`, this does NOT clear existing entities.
     /// Overlapping keys are overwritten (last write wins), matching the
