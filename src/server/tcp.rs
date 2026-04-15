@@ -1451,13 +1451,19 @@ pub fn handle_push_batch(
             }
         }
 
-        // Deferred event log append — per-stream writer lock inside `log`.
+        // Deferred event log append. Phase 42: batch into a single
+        // `append_many` so the whole batch becomes one `O_APPEND` `write()`
+        // syscall — batch-atomic, lock-free, one kernel transition.
         if let Some(ref log) = state.event_log {
+            let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(batch.len());
             for (idx, ev) in batch.iter().enumerate() {
                 if results[idx].is_ok() {
-                    let lp = make_log_payload(&ev.payload, &ev.raw_payload);
-                    let _ = log.append(stream_name, &lp, now);
+                    payloads.push(make_log_payload(&ev.payload, &ev.raw_payload));
                 }
+            }
+            if !payloads.is_empty() {
+                let refs: Vec<&[u8]> = payloads.iter().map(|v| v.as_slice()).collect();
+                let _ = log.append_many(stream_name, &refs, now);
             }
         }
     } else {
@@ -1524,15 +1530,36 @@ pub fn handle_push_batch(
             }
         }
 
-        // Deferred event log append — per-stream writer lock inside `log`.
+        // Deferred event log append. Phase 42: use `append_many` so the
+        // whole per-stream group becomes one `O_APPEND` `write()` syscall
+        // — batch-atomic and lock-free.
+        //
+        // We materialize the `Vec<u8>` payloads per group into owned buffers
+        // (postcard wire format is keyed from `make_log_payload`) and then
+        // pass borrowed slice references to `append_many`. All events in a
+        // group share the same `batch[i].now` of the first successful entry
+        // — historically `append_many` took a single `now`; we preserve that
+        // by using the first event's timestamp per group. (Batched pushes
+        // are microseconds apart; event-time / watermark handles ordering
+        // semantically.)
         if let Some(ref log) = state.event_log {
             for (stream_name, indices) in &groups {
+                // Gather successful events' log payloads.
+                let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(indices.len());
+                let mut group_now: Option<std::time::SystemTime> = None;
                 for &i in indices {
                     if results[i].is_ok() {
-                        let lp = make_log_payload(&batch[i].payload, &batch[i].raw_payload);
-                        let _ = log.append(stream_name, &lp, batch[i].now);
+                        if group_now.is_none() {
+                            group_now = Some(batch[i].now);
+                        }
+                        payloads.push(make_log_payload(&batch[i].payload, &batch[i].raw_payload));
                     }
                 }
+                if payloads.is_empty() {
+                    continue;
+                }
+                let refs: Vec<&[u8]> = payloads.iter().map(|v| v.as_slice()).collect();
+                let _ = log.append_many(stream_name, &refs, group_now.unwrap());
             }
         }
     }
