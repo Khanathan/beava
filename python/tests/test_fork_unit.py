@@ -496,6 +496,117 @@ class TestForkSpawnMocked:
         finally:
             replica.stop()
 
+    def test_extract_at_flag_datetime(
+        self, transactions_stream, fake_binary, monkeypatch
+    ):
+        """Phase 44-01: extract_at=[datetime, int, str] serialises to --extract-at."""
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, argv, env=None, stdout=None, stderr=None):
+                captured["argv"] = argv
+                self.stdout = stdout
+                self.stderr = stderr
+                self.pid = 7
+            def poll(self):
+                return None
+            def send_signal(self, sig):
+                pass
+            def wait(self, timeout=None):
+                return 0
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(_fork_mod.subprocess, "Popen", FakePopen)
+        monkeypatch.setattr(_fork_mod, "_poll_ready", lambda *a, **kw: None)
+
+        from datetime import datetime, timezone
+        replica = tl.fork(
+            remote="h:1",
+            streams=[transactions_stream],
+            token="t",
+            extract_at=[
+                datetime(2026, 3, 1, 10, 0, 0, tzinfo=timezone.utc),
+                5000,
+                "2026-04-01T10:00:00Z",
+            ],
+            local_port=19000,
+            binary_path=str(fake_binary),
+        )
+        try:
+            argv = captured["argv"]
+            assert "--extract-at" in argv
+            val = argv[argv.index("--extract-at") + 1]
+            parts = val.split(",")
+            assert parts[0] == "2026-03-01T10:00:00Z"
+            assert parts[1] == "5000"
+            assert parts[2] == "2026-04-01T10:00:00Z"
+        finally:
+            replica.stop()
+
+    def test_extract_at_rejects_bad_entry(self, transactions_stream, fake_binary):
+        """Phase 44-01: invalid entry types raise ForkValidationError."""
+        with pytest.raises(tl.ForkValidationError, match="extract_at"):
+            # float is not accepted.
+            _fork_mod._format_extract_at([1.5])
+
+        with pytest.raises(tl.ForkValidationError, match="extract_at"):
+            _fork_mod._format_extract_at([True])  # bool is explicitly rejected
+
+        with pytest.raises(tl.ForkValidationError, match="non-empty"):
+            _fork_mod._format_extract_at([])
+
+    def test_extract_history_parses_response(self, monkeypatch, tmp_path):
+        """Phase 44-01: ForkedReplica.extract_history() round-trips /extracts JSON."""
+        # Set up a replica handle with a mock _DoneProc; we'll monkeypatch urlopen.
+        replica = _fork_mod.ForkedReplica(
+            proc=_DoneProc(),
+            local_port=18123,
+            token="tok",
+            seed_file=None,
+            stdout_log=None,
+            stderr_log=None,
+            streams=[],
+            pipelines=[],
+        )
+
+        class FakeResp:
+            def __init__(self, body):
+                self._body = body
+            def read(self):
+                return self._body
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        response_body = json.dumps({
+            "extracts": {
+                "2026-03-01T10:00:00Z": {
+                    "u1": {"count": 1, "total": 10.0},
+                    "u2": {"count": 1, "total": 5.0},
+                },
+                "2026-03-15T10:00:00Z": {
+                    "u1": {"count": 2, "total": 30.0},
+                },
+            }
+        }).encode("utf-8")
+
+        called = {}
+        def fake_urlopen(req, timeout=None):
+            called["url"] = req.full_url
+            called["auth"] = req.get_header("Authorization")
+            return FakeResp(response_body)
+
+        monkeypatch.setattr(_fork_mod.urllib.request, "urlopen", fake_urlopen)
+        out = replica.extract_history()
+        assert called["url"] == "http://127.0.0.1:18123/extracts"
+        assert called["auth"] == "Bearer tok"
+        assert "2026-03-01T10:00:00Z" in out
+        assert out["2026-03-01T10:00:00Z"]["u1"] == {"count": 1, "total": 10.0}
+        assert out["2026-03-15T10:00:00Z"]["u1"] == {"count": 2, "total": 30.0}
+        replica.stop()
+
     def test_key_prefix_flag(
         self, transactions_stream, fake_binary, monkeypatch
     ):

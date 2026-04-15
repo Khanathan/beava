@@ -54,6 +54,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -402,6 +403,39 @@ class ForkedReplica:
             out[k] = self.get(k, key=k) if False else self._raw_features(k)
         return out
 
+    def extract_history(self) -> dict[str, dict[str, dict]]:
+        """Fetch the historical extraction registry from this fork.
+
+        Phase 44-01. Returns the snapshots captured during ``--extract-at``
+        replay, keyed by ISO-8601 timestamp (server-formatted) and then by
+        entity key. Empty dict when ``extract_at=`` was not passed or no
+        snapshot has landed yet.
+
+        Example::
+
+            with tl.fork(..., extract_at=[t1, t2, t3]) as fork:
+                history = fork.extract_history()
+                # {"2026-03-01T10:00:00Z": {"u1": {"count": 1, "total": 10.0}},
+                #  "2026-03-15T10:00:00Z": {...}, ...}
+        """
+        self._ensure_alive()
+        url = f"{self.local_url}/extracts"
+        req = urllib.request.Request(
+            url,
+            method="GET",
+            headers={"Authorization": f"Bearer {self._token}"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        if not isinstance(body, dict):
+            return {}
+        extracts = body.get("extracts")
+        if not isinstance(extracts, dict):
+            return {}
+        # Defensive copy — return plain dicts not shared with the server
+        # response object.
+        return {k: dict(v) if isinstance(v, dict) else {} for k, v in extracts.items()}
+
     def _raw_features(self, key: str) -> dict | None:
         url = f"{self.local_url}/debug/key/{key}"
         req = urllib.request.Request(
@@ -539,6 +573,49 @@ def _format_since(since: str | int) -> str:
     raise ForkValidationError(f"since must be str or int, got {since!r}")
 
 
+def _format_extract_at_entry(entry: Any) -> str:
+    """Serialize a single ``extract_at`` entry for the ``--extract-at`` flag.
+
+    Accepts ``datetime`` (serialized as ISO-8601 UTC with trailing ``Z``),
+    ``int`` (unix milliseconds, stringified), or ``str`` (passed through).
+    """
+    if isinstance(entry, datetime):
+        # Normalize to UTC; if naive, assume UTC (scientist demo convention).
+        if entry.tzinfo is None:
+            entry = entry.replace(tzinfo=timezone.utc)
+        else:
+            entry = entry.astimezone(timezone.utc)
+        # isoformat emits '+00:00'; the Rust parser expects trailing 'Z'.
+        iso = entry.replace(tzinfo=None).isoformat()
+        # Drop microsecond precision to keep things at ms (server parses
+        # up to 3 fractional digits anyway).
+        if "." in iso:
+            head, frac = iso.split(".", 1)
+            iso = f"{head}.{frac[:3]}"
+        return iso + "Z"
+    if isinstance(entry, bool):
+        # bool is a subclass of int; reject explicitly.
+        raise ForkValidationError(
+            f"extract_at entries must be datetime/int/str; got bool {entry!r}"
+        )
+    if isinstance(entry, int):
+        return str(entry)
+    if isinstance(entry, str) and entry:
+        return entry
+    raise ForkValidationError(
+        f"extract_at entries must be datetime/int/str; got {entry!r}"
+    )
+
+
+def _format_extract_at(entries: list) -> str:
+    """Serialize a list of extract_at entries to the comma-separated CLI form."""
+    if not isinstance(entries, (list, tuple)) or not entries:
+        raise ForkValidationError(
+            "extract_at must be a non-empty list of datetime/int/str entries"
+        )
+    return ",".join(_format_extract_at_entry(e) for e in entries)
+
+
 def _poll_ready(
     local_port: int,
     ready_timeout: float,
@@ -589,6 +666,7 @@ def fork(
     since: str | int = "1970-01-01T00:00:00Z",
     token: str | None = None,
     pipelines: list | None = None,
+    extract_at: list | None = None,
     local_port: int | None = None,
     binary_path: str | None = None,
     ready_timeout: float = 30.0,
@@ -608,6 +686,11 @@ def fork(
         pipelines: Optional ``@tl.table`` / derivation descriptors to register
             on the fork (via the ``--pipeline-file`` seed). Transitive upstream
             streams are also auto-registered via ``_collect_registrations``.
+        extract_at: Phase 44-01. Optional list of extraction timestamps
+            (``datetime``, ISO-8601 string, or unix-ms int). During historical
+            replay, the fork captures per-scope-key feature state as it
+            crosses each timestamp. Query via :meth:`ForkedReplica.extract_history`
+            after catchup. Default: ``None`` (no historical extraction).
         local_port: HTTP port for the fork (also uses TCP on port + 1).
             Auto-allocated if None.
         binary_path: Path to the ``tally`` binary. Defaults to ``tally`` on PATH.
@@ -665,6 +748,11 @@ def fork(
         argv += ["--key-prefix", key_prefix]
     if seed_file is not None:
         argv += ["--pipeline-file", str(seed_file)]
+    if extract_at is not None:
+        # Phase 44-01: accept datetime/int/str entries; serialise to the
+        # comma-separated wire format the `tally fork --extract-at` flag
+        # (and the underlying `--replica-extract-at` flag) consume.
+        argv += ["--extract-at", _format_extract_at(extract_at)]
 
     sub_env = os.environ.copy()
     # Admin-token must be set so the fork's /debug/* routes accept the
