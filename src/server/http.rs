@@ -362,7 +362,7 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
     );
     {
         let engine = state.engine.read();
-        let drops = engine.late_drops.read().snapshot();
+        let drops = engine.late_drops.snapshot();
         for (stream, count) in drops {
             // Basic label-value escaping: backslashes and double quotes per
             // Prometheus exposition grammar.
@@ -705,10 +705,10 @@ async fn debug_key(State(state): State<SharedState>, Path(key): Path<String>) ->
     // the other per-key snapshots.
     let watermarks_json: serde_json::Map<String, serde_json::Value> = {
         let engine = state.engine.read();
-        let tracker = engine.watermarks.read();
+        let tracker = &engine.watermarks;
         let mut out = serde_json::Map::new();
         for (stream, max) in tracker.iter_streams() {
-            if let Some(wm) = tracker.watermark(stream) {
+            if let Some(wm) = tracker.watermark(&stream) {
                 let ms = wm
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
@@ -751,7 +751,7 @@ async fn debug_stream(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     let engine = state.engine.read();
-    let tracker = engine.watermarks.read();
+    let tracker = &engine.watermarks;
     let observed_max = match tracker.observed_max(&name) {
         Some(m) => m,
         None => {
@@ -766,7 +766,7 @@ async fn debug_stream(
     };
     let wm = tracker.watermark(&name).unwrap_or(observed_max);
     let last_event = tracker.last_event_time(&name).unwrap_or(observed_max);
-    let late_drops = engine.late_drops.read().get(&name);
+    let late_drops = engine.late_drops.get(&name);
 
     let to_ms = |t: std::time::SystemTime| -> u64 {
         t.duration_since(std::time::UNIX_EPOCH)

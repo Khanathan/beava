@@ -46,7 +46,7 @@ fn poll_signal_sources(state: &SharedState) {
     //    Threshold: 1 drop/sec default (placeholder SLO per CONTEXT).
     let drops: Vec<(String, u64)> = {
         let engine = state.engine.read();
-        let snap = engine.late_drops.read().snapshot();
+        let snap = engine.late_drops.snapshot();
         snap
     };
     signals::emit_late_drop_signals(&state.signals, &drops, now, 1.0);

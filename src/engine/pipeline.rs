@@ -676,8 +676,8 @@ impl PipelineEngine {
             node_indices: AHashMap::new(),
             topo_order: Vec::new(),
             downstream_map: AHashMap::new(),
-            watermarks: parking_lot::RwLock::new(WatermarkTracker::new()),
-            late_drops: parking_lot::RwLock::new(LateDropCounters::new()),
+            watermarks: WatermarkTracker::new(),
+            late_drops: LateDropCounters::new(),
             #[cfg(feature = "server")]
             subscriber_registry: None,
         }
@@ -1556,7 +1556,6 @@ impl PipelineEngine {
                 // source Stream.wm for the attached-to-Table case
                 // already covered by aggregation propagation).
                 self.watermarks
-                    .write()
                     .propagate_stateless(stream_name, stream_in_order);
                 // Compose the right-side lookup key from the effective event.
                 let right_key =
@@ -1657,7 +1656,7 @@ impl PipelineEngine {
                 // Phase 24-04 γ: Stream↔Stream join output watermark =
                 // min(left_wm, right_wm). Applied before match work so
                 // the output's wm reflects BOTH inputs as of right now.
-                self.watermarks.write().propagate_join(
+                self.watermarks.propagate_join(
                     &left_stream,
                     &right_stream,
                     stream_in_order,
@@ -1844,11 +1843,9 @@ impl PipelineEngine {
             //   - Keyless downstream (stateless derives): pass through.
             if downstream_def.key_field.is_some() {
                 self.watermarks
-                    .write()
                     .attach_to_table(stream_name, stream_in_order);
             } else {
                 self.watermarks
-                    .write()
                     .propagate_stateless(stream_name, stream_in_order);
             }
 

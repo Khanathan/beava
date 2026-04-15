@@ -231,7 +231,7 @@ async fn aggregation_gets_input_watermark() {
     }
 
     let engine = state.engine.read();
-    let wm = engine.watermarks.read().watermark("ClicksAgg").unwrap();
+    let wm = engine.watermarks.watermark("ClicksAgg").unwrap();
     // Aggregation output Table inherits input stream watermark = 110 − 5.
     assert_eq!(wm, ts(110) - WATERMARK_LATENESS);
     assert_eq!(wm, ts(105));
@@ -271,8 +271,8 @@ async fn stateless_op_passes_watermark_through() {
     send_frame(&mut s, OP_PUSH, &build_push_with_et("Clicks", "u1", 110)).await;
 
     let engine = state.engine.read();
-    let input = engine.watermarks.read().watermark("Clicks").unwrap();
-    let output = engine.watermarks.read().watermark("Derived");
+    let input = engine.watermarks.watermark("Clicks").unwrap();
+    let output = engine.watermarks.watermark("Derived");
     match output {
         Some(out) => assert_eq!(
             input, out,
@@ -330,7 +330,7 @@ async fn out_of_order_within_5s_lands_in_correct_bucket() {
     // one (t-6).
     let engine = state.engine.read();
     assert_eq!(
-        engine.late_drops.read().get("Clicks"),
+        engine.late_drops.get("Clicks"),
         1,
         "t-6 should have been late-dropped"
     );
@@ -367,13 +367,12 @@ async fn ss_join_watermark_is_min_of_inputs() {
     // test_join_stream_stream regressions; this test guards the
     // Phase 24-04 min-semantic wire-up.
     let engine = PipelineEngine::new();
-    engine.watermarks.write().observe("L", ts(200));
-    engine.watermarks.write().observe("R", ts(100));
+    engine.watermarks.observe("L", ts(200));
+    engine.watermarks.observe("R", ts(100));
     engine
         .watermarks
-        .write()
         .propagate_join("L", "R", "J");
-    let wm = engine.watermarks.read().watermark("J").unwrap();
+    let wm = engine.watermarks.watermark("J").unwrap();
     // min(200, 100) = 100; watermark = 100 − 5 = 95.
     assert_eq!(wm, ts(95));
 }

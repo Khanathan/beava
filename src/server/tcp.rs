@@ -1410,14 +1410,14 @@ pub fn handle_push_batch(
         let mut min_event_time: Option<SystemTime> = None;
         for (idx, ev) in batch.iter().enumerate() {
             let et = crate::engine::event_time::parse_event_time(&ev.payload, ev.now);
-            let wm = engine.watermarks.read().watermark(stream_name);
+            let wm = engine.watermarks.watermark(stream_name);
             if let Some(wm) = wm {
                 if et < wm {
-                    engine.late_drops.write().increment(stream_name);
+                    engine.late_drops.increment(stream_name);
                     continue;
                 }
             }
-            engine.watermarks.write().observe(stream_name, et);
+            engine.watermarks.observe(stream_name, et);
             kept_refs.push(&ev.payload);
             kept_idxs.push(idx);
             min_event_time = Some(match min_event_time {
@@ -1490,14 +1490,14 @@ pub fn handle_push_batch(
             for &i in indices {
                 let et =
                     crate::engine::event_time::parse_event_time(&batch[i].payload, batch[i].now);
-                let wm = engine.watermarks.read().watermark(stream_name);
+                let wm = engine.watermarks.watermark(stream_name);
                 if let Some(wm) = wm {
                     if et < wm {
-                        engine.late_drops.write().increment(stream_name);
+                        engine.late_drops.increment(stream_name);
                         continue;
                     }
                 }
-                engine.watermarks.write().observe(stream_name, et);
+                engine.watermarks.observe(stream_name, et);
                 kept_refs.push(&batch[i].payload);
                 kept_orig.push(i);
                 min_et = Some(match min_et {
@@ -1664,15 +1664,15 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             let event_time = crate::engine::event_time::parse_event_time(&payload, now);
             {
                 let engine = state.engine.read();
-                let wm = engine.watermarks.read().watermark(&stream_name);
+                let wm = engine.watermarks.watermark(&stream_name);
                 if let Some(wm) = wm {
                     if event_time < wm {
                         // Late event — drop silently with counter increment.
-                        engine.late_drops.write().increment(&stream_name);
+                        engine.late_drops.increment(&stream_name);
                         return Ok(feature_map_to_json(&crate::types::FeatureMap::new()));
                     }
                 }
-                engine.watermarks.write().observe(&stream_name, event_time);
+                engine.watermarks.observe(&stream_name, event_time);
             }
             // PERF: sync push path also skips feature read + derive eval. The
             // response is a synchronous ack ({}) confirming the event was
@@ -2125,14 +2125,14 @@ fn handle_push_table(
     let event_time = crate::engine::event_time::parse_event_time(&fields_value, now);
     {
         let engine = state.engine.read();
-        let wm = engine.watermarks.read().watermark(table_name);
+        let wm = engine.watermarks.watermark(table_name);
         if let Some(wm) = wm {
             if event_time < wm {
-                engine.late_drops.write().increment(table_name);
+                engine.late_drops.increment(table_name);
                 return Ok(Vec::new());
             }
         }
-        engine.watermarks.write().observe(table_name, event_time);
+        engine.watermarks.observe(table_name, event_time);
     }
     let map = match fields_value {
         serde_json::Value::Object(m) => m,
@@ -2197,14 +2197,14 @@ fn handle_delete_table(
     let event_time = now;
     {
         let engine = state.engine.read();
-        let wm = engine.watermarks.read().watermark(table_name);
+        let wm = engine.watermarks.watermark(table_name);
         if let Some(wm) = wm {
             if event_time < wm {
-                engine.late_drops.write().increment(table_name);
+                engine.late_drops.increment(table_name);
                 return Ok(Vec::new());
             }
         }
-        engine.watermarks.write().observe(table_name, event_time);
+        engine.watermarks.observe(table_name, event_time);
     }
 
     state.store.tombstone_table_row(key, table_name, event_time);

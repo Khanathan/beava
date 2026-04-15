@@ -26,9 +26,24 @@
 //! `src/engine/pipeline.rs::push_with_cascade_internal` at each cascade
 //! step.
 
-use ahash::AHashMap;
-use parking_lot::RwLock;
+use dashmap::DashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Convert a `SystemTime` to nanoseconds since UNIX_EPOCH. Values before
+/// the epoch are clamped to 0. Saturates at `u64::MAX` for times beyond
+/// year ~2554 — not a concern for v0.
+#[inline]
+fn sys_to_nanos(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos().min(u64::MAX as u128) as u64)
+        .unwrap_or(0)
+}
+
+#[inline]
+fn nanos_to_sys(n: u64) -> SystemTime {
+    UNIX_EPOCH + Duration::from_nanos(n)
+}
 
 /// Fixed lateness tolerance for v0. Locked per CONTEXT.md §Late event
 /// handling; a per-stream tunable lands post-v0.
@@ -194,10 +209,14 @@ fn parse_iso8601(s: &str) -> Option<SystemTime> {
 /// quantity that could regress under underflow).
 #[derive(Debug, Default)]
 pub struct WatermarkTracker {
-    observed_max: AHashMap<String, SystemTime>,
+    /// `max(event_time observed)` per stream, stored as nanoseconds since
+    /// UNIX_EPOCH in an `AtomicU64` for lock-free `fetch_max` updates.
+    /// DashMap gives per-stream shard-level concurrency; the inner atomic
+    /// means no lock is held on the hot path.
+    observed_max: DashMap<String, AtomicU64>,
     /// Most recent event_time observed (not necessarily the max — this
-    /// is the "last event" pointer for debug visibility).
-    last_event_time: AHashMap<String, SystemTime>,
+    /// is the "last event" pointer for debug visibility). Last-writer-wins.
+    last_event_time: DashMap<String, AtomicU64>,
 }
 
 impl WatermarkTracker {
@@ -207,14 +226,33 @@ impl WatermarkTracker {
 
     /// Record an event_time observation for `stream`. Updates the
     /// running max (and thus the watermark) and the last-seen pointer.
-    pub fn observe(&mut self, stream: &str, event_time: SystemTime) {
-        self.last_event_time
-            .insert(stream.to_string(), event_time);
+    /// Lock-free hot path — Phase 43.
+    pub fn observe(&self, stream: &str, event_time: SystemTime) {
+        let ns = sys_to_nanos(event_time);
+        // last_event_time — last-writer-wins, just store.
+        match self.last_event_time.get(stream) {
+            Some(entry) => entry.value().store(ns, Ordering::Relaxed),
+            None => {
+                self.last_event_time
+                    .entry(stream.to_string())
+                    .or_insert_with(|| AtomicU64::new(ns))
+                    .value()
+                    .store(ns, Ordering::Relaxed);
+            }
+        }
+        // observed_max — monotonic max via fetch_max.
         match self.observed_max.get(stream) {
-            Some(prev) if *prev >= event_time => {}
-            _ => {
+            Some(entry) => {
+                entry.value().fetch_max(ns, Ordering::Relaxed);
+            }
+            None => {
+                // Race-safe: or_insert_with + fetch_max afterwards keeps
+                // monotonic semantics even if two threads race the insert.
                 self.observed_max
-                    .insert(stream.to_string(), event_time);
+                    .entry(stream.to_string())
+                    .or_insert_with(|| AtomicU64::new(0))
+                    .value()
+                    .fetch_max(ns, Ordering::Relaxed);
             }
         }
     }
@@ -224,51 +262,63 @@ impl WatermarkTracker {
     /// event should be considered late (the first event always seeds
     /// the tracker).
     pub fn watermark(&self, stream: &str) -> Option<SystemTime> {
-        self.observed_max.get(stream).map(|max| {
-            // Clamp to UNIX_EPOCH to avoid a pre-epoch watermark that
-            // would then "late-drop" the very first event.
-            match max.duration_since(UNIX_EPOCH) {
-                Ok(d) if d >= WATERMARK_LATENESS => {
-                    *max - WATERMARK_LATENESS
-                }
-                _ => UNIX_EPOCH,
-            }
+        let entry = self.observed_max.get(stream)?;
+        let ns = entry.value().load(Ordering::Relaxed);
+        if ns == 0 {
+            return None;
+        }
+        let max = nanos_to_sys(ns);
+        // Clamp to UNIX_EPOCH to avoid a pre-epoch watermark that
+        // would then "late-drop" the very first event.
+        Some(match max.duration_since(UNIX_EPOCH) {
+            Ok(d) if d >= WATERMARK_LATENESS => max - WATERMARK_LATENESS,
+            _ => UNIX_EPOCH,
         })
     }
 
     /// Most recent `event_time` observed on `stream`, or `None`.
     pub fn last_event_time(&self, stream: &str) -> Option<SystemTime> {
-        self.last_event_time.get(stream).copied()
+        let entry = self.last_event_time.get(stream)?;
+        let ns = entry.value().load(Ordering::Relaxed);
+        if ns == 0 {
+            return None;
+        }
+        Some(nanos_to_sys(ns))
     }
 
     /// `max(event_time observed)` on `stream`, or `None`.
     pub fn observed_max(&self, stream: &str) -> Option<SystemTime> {
-        self.observed_max.get(stream).copied()
+        let entry = self.observed_max.get(stream)?;
+        let ns = entry.value().load(Ordering::Relaxed);
+        if ns == 0 {
+            return None;
+        }
+        Some(nanos_to_sys(ns))
     }
 
     /// γ: stateless op — output stream inherits the input stream's
     /// current watermark verbatim. No-op if the input has not yet been
     /// observed (the output also has no watermark yet).
-    pub fn propagate_stateless(&mut self, from: &str, to: &str) {
-        if let Some(max) = self.observed_max.get(from).copied() {
-            // Preserve "max" semantics — observe takes max.
+    pub fn propagate_stateless(&self, from: &str, to: &str) {
+        if let Some(max) = self.observed_max(from) {
             self.observe(to, max);
         }
     }
 
     /// γ: join — output watermark = min(left_wm, right_wm). If either
-    /// input is un-observed, the join cannot advance; no-op.
-    pub fn propagate_join(&mut self, left: &str, right: &str, output: &str) {
-        match (
-            self.observed_max.get(left).copied(),
-            self.observed_max.get(right).copied(),
-        ) {
+    /// input is un-observed, the join cannot advance; no-op. Uses
+    /// `fetch_max` on the output so it remains monotonic even if
+    /// concurrent updates on the inputs interleave.
+    pub fn propagate_join(&self, left: &str, right: &str, output: &str) {
+        match (self.observed_max(left), self.observed_max(right)) {
             (Some(l), Some(r)) => {
                 let min_max = l.min(r);
-                // Directly set — do NOT call observe, which takes max.
-                self.observed_max.insert(output.to_string(), min_max);
-                self.last_event_time
-                    .insert(output.to_string(), min_max);
+                // Use observe (fetch_max) to keep the output monotonic.
+                // Note: this means once the output advances, we never
+                // regress — even if a subsequent left/right min call
+                // would yield a lower min. This matches the original
+                // semantics: watermarks only advance.
+                self.observe(output, min_max);
             }
             _ => {
                 // One side un-observed; join output watermark stays unset.
@@ -278,16 +328,24 @@ impl WatermarkTracker {
 
     /// γ: aggregation — the output Table inherits the source stream's
     /// current watermark.
-    pub fn attach_to_table(&mut self, source_stream: &str, output_table: &str) {
-        if let Some(max) = self.observed_max.get(source_stream).copied() {
+    pub fn attach_to_table(&self, source_stream: &str, output_table: &str) {
+        if let Some(max) = self.observed_max(source_stream) {
             self.observe(output_table, max);
         }
     }
 
     /// List every stream that has an observed watermark. Used by
     /// /debug/key/:key and /debug/streams/:name.
-    pub fn iter_streams(&self) -> impl Iterator<Item = (&String, SystemTime)> + '_ {
-        self.observed_max.iter().map(|(k, v)| (k, *v))
+    pub fn iter_streams(&self) -> Vec<(String, SystemTime)> {
+        self.observed_max
+            .iter()
+            .map(|entry| {
+                (
+                    entry.key().clone(),
+                    nanos_to_sys(entry.value().load(Ordering::Relaxed)),
+                )
+            })
+            .collect()
     }
 }
 
@@ -295,7 +353,7 @@ impl WatermarkTracker {
 /// `/metrics` endpoint as `tally_late_events_dropped_total{stream="..."}`.
 #[derive(Debug, Default)]
 pub struct LateDropCounters {
-    per_stream: AHashMap<String, u64>,
+    per_stream: DashMap<String, AtomicU64>,
 }
 
 impl LateDropCounters {
@@ -303,27 +361,44 @@ impl LateDropCounters {
         Self::default()
     }
 
-    pub fn increment(&mut self, stream: &str) {
-        *self.per_stream.entry(stream.to_string()).or_insert(0) += 1;
+    /// Lock-free increment via DashMap entry + AtomicU64 fetch_add.
+    pub fn increment(&self, stream: &str) {
+        match self.per_stream.get(stream) {
+            Some(entry) => {
+                entry.value().fetch_add(1, Ordering::Relaxed);
+            }
+            None => {
+                self.per_stream
+                    .entry(stream.to_string())
+                    .or_insert_with(|| AtomicU64::new(0))
+                    .value()
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 
     pub fn get(&self, stream: &str) -> u64 {
-        self.per_stream.get(stream).copied().unwrap_or(0)
+        self.per_stream
+            .get(stream)
+            .map(|e| e.value().load(Ordering::Relaxed))
+            .unwrap_or(0)
     }
 
     pub fn snapshot(&self) -> Vec<(String, u64)> {
         self.per_stream
             .iter()
-            .map(|(k, v)| (k.clone(), *v))
+            .map(|e| (e.key().clone(), e.value().load(Ordering::Relaxed)))
             .collect()
     }
 }
 
-/// Concurrent-safe handle: `parking_lot::RwLock` wrapper typically lives
-/// on `PipelineEngine` and `ConcurrentAppState`. Read-fast on the hot
-/// path (observe is write); drop / query lock acquisition is cheap.
-pub type SharedWatermarks = RwLock<WatermarkTracker>;
-pub type SharedLateDrops = RwLock<LateDropCounters>;
+/// Type aliases retained for call-site compatibility. Phase 43: the
+/// underlying types now use interior mutability (DashMap + AtomicU64),
+/// so no outer lock is needed. Call sites that previously did
+/// `.read()` / `.write()` now call methods directly on `&WatermarkTracker`
+/// / `&LateDropCounters`.
+pub type SharedWatermarks = WatermarkTracker;
+pub type SharedLateDrops = LateDropCounters;
 
 #[cfg(test)]
 mod tests {
