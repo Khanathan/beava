@@ -426,6 +426,12 @@ pub struct PipelineEngine {
     topo_order: Vec<String>,
     /// Pre-computed: for each stream, which streams are directly downstream.
     downstream_map: AHashMap<String, Vec<String>>,
+    /// Pre-computed at finalize_dag: for each primary stream, the flat list
+    /// of downstream stream names to visit in topological order. Skips
+    /// the BFS + `topo_order.iter().filter(to_visit.contains(..))` O(N²)
+    /// walk that push_with_cascade_internal used to run per event. Empty
+    /// value = leaf stream (no cascade).
+    cascade_plan: AHashMap<String, Vec<String>>,
     /// Phase 24-04 — per-stream watermark state. Wrapped in a `RwLock`
     /// so the hot path (observe on every PUSH) can acquire a write lock
     /// for the brief `observe` call while read-heavy debug / γ-lookup
@@ -676,6 +682,7 @@ impl PipelineEngine {
             node_indices: AHashMap::new(),
             topo_order: Vec::new(),
             downstream_map: AHashMap::new(),
+            cascade_plan: AHashMap::new(),
             watermarks: WatermarkTracker::new(),
             late_drops: LateDropCounters::new(),
             #[cfg(feature = "server")]
@@ -1112,6 +1119,42 @@ impl PipelineEngine {
         self.dag = dag;
         self.node_indices = indices;
         self.downstream_map = downstream_map;
+
+        // Pre-compute the cascade plan: for every primary stream, BFS over
+        // `downstream_map` once to collect the set of reachable streams,
+        // then emit them filtered by `topo_order`. push_with_cascade_internal
+        // used to do this BFS + topo-order filter per event and used
+        // Vec::contains (O(N)) for the membership test — a shared O(N²)
+        // per-event penalty at ~15% of server CPU. Now it's a single
+        // `Vec<String>` lookup per event.
+        let mut cascade_plan: AHashMap<String, Vec<String>> = AHashMap::new();
+        for primary in self.streams.keys() {
+            let mut reachable: AHashSet<String> = AHashSet::new();
+            let mut frontier: Vec<String> = self
+                .downstream_map
+                .get(primary)
+                .cloned()
+                .unwrap_or_default();
+            while let Some(s) = frontier.pop() {
+                if !reachable.insert(s.clone()) {
+                    continue;
+                }
+                if let Some(next) = self.downstream_map.get(&s) {
+                    frontier.extend(next.iter().cloned());
+                }
+            }
+            if reachable.is_empty() {
+                continue; // leaf; no cascade plan entry
+            }
+            let plan: Vec<String> = self
+                .topo_order
+                .iter()
+                .filter(|s| reachable.contains(s.as_str()))
+                .cloned()
+                .collect();
+            cascade_plan.insert(primary.clone(), plan);
+        }
+        self.cascade_plan = cascade_plan;
         Ok(())
     }
 
@@ -1434,13 +1477,16 @@ impl PipelineEngine {
         now: SystemTime,
         read_features: bool,
     ) -> Result<FeatureMap, TallyError> {
-        // Determine if downstream cascade exists
-        let has_downstream = self.downstream_map.contains_key(stream_name);
-
-        if !has_downstream {
-            // No cascade -- skip enrichment overhead entirely
-            return self.push_internal(stream_name, event, None, None, store, now, read_features);
-        }
+        // Determine if downstream cascade exists. `cascade_plan` is populated
+        // at finalize_dag time so this is a single AHashMap hit; a missing
+        // entry (or empty plan) means "leaf stream, no cascade".
+        let cascade = match self.cascade_plan.get(stream_name) {
+            Some(plan) if !plan.is_empty() => plan,
+            _ => {
+                return self
+                    .push_internal(stream_name, event, None, None, store, now, read_features)
+            }
+        };
 
         // Stack-local enrichment accumulators (C-5: never enter DashMap)
         let mut enrichment_json: AHashMap<String, serde_json::Value> = AHashMap::new();
@@ -1470,37 +1516,10 @@ impl PipelineEngine {
             enrichment_fv.insert(name.clone(), value.clone()); // unqualified
         }
 
-        // BFS to find all reachable downstream streams
-        let mut visited = AHashSet::new();
-        visited.insert(stream_name.to_string());
-        let mut to_visit = Vec::new();
-
-        if let Some(direct_downstream) = self.downstream_map.get(stream_name) {
-            for ds in direct_downstream {
-                if visited.insert(ds.clone()) {
-                    to_visit.push(ds.clone());
-                }
-            }
-        }
-
-        let mut i = 0;
-        while i < to_visit.len() {
-            let current = to_visit[i].clone();
-            if let Some(next_downstream) = self.downstream_map.get(&current) {
-                for ds in next_downstream {
-                    if visited.insert(ds.clone()) {
-                        to_visit.push(ds.clone());
-                    }
-                }
-            }
-            i += 1;
-        }
-
-        // Execute in topological order with enrichment
-        for stream_in_order in &self.topo_order {
-            if !to_visit.contains(stream_in_order) {
-                continue;
-            }
+        // Iterate the pre-computed cascade plan — already topologically
+        // ordered and filtered to only the streams reachable from the
+        // primary. No per-event BFS, no AHashSet allocation, no Vec::contains.
+        for stream_in_order in cascade {
             let downstream_def = match self.streams.get(stream_in_order) {
                 Some(d) => d,
                 None => continue,
