@@ -636,6 +636,28 @@ async fn handle_connection(
             continue;
         }
 
+        // Phase 27-01: OP_SNAPSHOT_FETCH has a two-frame response shape
+        // (header + payload), so it bypasses the STATUS_OK envelope used
+        // by every other sync command. Handle it inline and continue the
+        // read loop — the handler writes both response frames itself and
+        // may also write a single STATUS_ERROR envelope on validation /
+        // auth failure.
+        if let Command::SnapshotFetch {
+            admin_token,
+            scope,
+        } = cmd
+        {
+            flush_drain(&mut writer, &mut pending_drain).await?;
+            if let Err(e) =
+                handle_snapshot_fetch(&mut writer, &admin_token, scope, &state).await
+            {
+                let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
+                writer.write_all(&resp).await?;
+                writer.flush().await?;
+            }
+            continue;
+        }
+
         // Sync dispatch path. cmd is one of Mset/Flush/other.
         let cmd_start = std::time::Instant::now();
         let is_mset = matches!(&cmd, Command::Mset { .. });
@@ -1792,6 +1814,17 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
         Command::PushAsync { .. } | Command::Flush | Command::PushBatch { .. } => {
             unreachable!("PushAsync/Flush/PushBatch handled by handle_connection dispatch")
         }
+        // Phase 27-01: OP_SNAPSHOT_FETCH is normally intercepted in
+        // `handle_connection` and dispatched to `handle_snapshot_fetch`,
+        // which emits a header + payload frame pair instead of a single
+        // STATUS_OK envelope. Landing here means the connection-level
+        // interception was skipped (e.g. the inner tight-loop sync
+        // dispatch after an async burst). Return STATUS_ERROR rather
+        // than panicking — the client will see a structured refusal and
+        // can retry on a quiescent connection.
+        Command::SnapshotFetch { .. } => Err(TallyError::Protocol(
+            "OP_SNAPSHOT_FETCH not supported on this dispatch path (mix with async pushes not allowed)".into(),
+        )),
     }
 }
 
@@ -2141,6 +2174,168 @@ fn json_to_feature_value(v: serde_json::Value) -> FeatureValue {
         serde_json::Value::Bool(b) => FeatureValue::Int(if b { 1 } else { 0 }),
         _ => FeatureValue::Missing, // Arrays/objects -> Missing
     }
+}
+
+/// Phase 27-01: dispatch for `OP_SNAPSHOT_FETCH`.
+///
+/// Flow (locked by `27-01-PLAN.md` + user direction on admin-token shape):
+///
+/// 1. **Admin-token gate.** If `state.admin_token` is `Some(expected)`,
+///    the client-provided `admin_token` must match exactly. If the server
+///    has no admin token configured, reject (the replica wire is admin-
+///    only in v0; a misconfigured server refuses rather than leaking
+///    snapshot bytes to anonymous clients). Failure → `TallyError::Auth`.
+/// 2. **Capture `snapshot_taken_at = SystemTime::now()`.** Response-only;
+///    never persisted.
+/// 3. **Collect known streams.** From `state.engine.read().list_streams()`.
+/// 4. **Validate scope.** `protocol::validate_scope` runs all seven locked
+///    rejection rules. Failure → `TallyError::Protocol`.
+/// 5. **Acquire the base snapshot.** Read the on-disk snapshot file via
+///    `load_snapshot_file`. If the snapshot file is missing / corrupt,
+///    synthesize an empty `BaseSnapshotState` so that a fresh server with
+///    no snapshot still returns a valid (empty) response.
+/// 6. **Filter in-memory.** `replica::filter_base_snapshot`.
+/// 7. **Serialize filtered state with postcard** and emit the header +
+///    payload frame pair. Increment
+///    `tally_replica_snapshot_bytes_sent_total` by payload length.
+async fn handle_snapshot_fetch(
+    writer: &mut BufWriter<tokio::net::tcp::OwnedWriteHalf>,
+    admin_token: &str,
+    scope: protocol::Scope,
+    state: &SharedState,
+) -> Result<(), TallyError> {
+    // (1) Admin-token gate — wire-level bearer check (no loopback bypass on
+    // the replica path; admin-only always). Empty expected token (`Some("")`)
+    // is not a supported configuration — treat as unauthenticated.
+    let authed = match state.admin_token.as_deref() {
+        Some(expected) if !expected.is_empty() && expected == admin_token => true,
+        _ => false,
+    };
+    if !authed {
+        return Err(TallyError::Protocol("unauthorized".into()));
+    }
+
+    // (2) Capture response-only timestamp.
+    let snapshot_taken_at = SystemTime::now();
+
+    // (3) Known-streams lookup from the pipeline registry.
+    let known: std::collections::HashSet<String> = {
+        let engine = state.engine.read();
+        engine.list_streams().map(|s| s.name.clone()).collect()
+    };
+
+    // (4) Validate — all seven rules.
+    if let Err(e) = protocol::validate_scope(&scope, &known) {
+        return Err(TallyError::Protocol(format!("invalid scope: {}", e)));
+    }
+
+    // (5) Acquire the base snapshot. Missing / corrupt file → empty.
+    let base = load_base_snapshot_for_fetch(state);
+
+    // (6) Filter in-memory.
+    let filtered = crate::server::replica::filter_base_snapshot(&base, &scope);
+
+    // (7) Serialize + emit header + payload frames.
+    let payload_bytes = postcard::to_allocvec(&filtered)
+        .map_err(|e| TallyError::Protocol(format!("snapshot serialize failed: {}", e)))?;
+
+    // Header frame body: [u64 BE ts_secs][u32 BE ts_nanos]. `encode_frame`
+    // adds the 4-byte length prefix + 1-byte tag (reused as "opcode" here —
+    // the framing shape is identical to every other TCP frame).
+    let (ts_secs, ts_nanos) = match snapshot_taken_at.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => (d.as_secs(), d.subsec_nanos()),
+        // Clock running backwards (extremely unlikely) — emit zeros.
+        Err(_) => (0u64, 0u32),
+    };
+    let mut header_body = Vec::with_capacity(12);
+    header_body.extend_from_slice(&ts_secs.to_be_bytes());
+    header_body.extend_from_slice(&ts_nanos.to_be_bytes());
+    let header_frame =
+        protocol::encode_frame(protocol::REPLICA_FRAME_TAG_HEADER, &header_body);
+    writer.write_all(&header_frame).await.map_err(|e| {
+        TallyError::Protocol(format!("write snapshot header frame failed: {}", e))
+    })?;
+
+    let payload_frame =
+        protocol::encode_frame(protocol::REPLICA_FRAME_TAG_PAYLOAD, &payload_bytes);
+    writer.write_all(&payload_frame).await.map_err(|e| {
+        TallyError::Protocol(format!("write snapshot payload frame failed: {}", e))
+    })?;
+    writer.flush().await.map_err(|e| {
+        TallyError::Protocol(format!("flush snapshot response failed: {}", e))
+    })?;
+
+    // (7c) Metric bump.
+    crate::server::replica::record_snapshot_bytes_sent(payload_bytes.len() as u64);
+    Ok(())
+}
+
+/// Phase 27-01 helper: read the current base snapshot off disk.
+///
+/// Source-of-truth lookup order (matches `src/main.rs::load_incremental_snapshots`
+/// for startup — we want the replica endpoint to see what recovery would see):
+///   1. Highest-sequence `tally.snapshot.base.*` in `snapshot_path`'s parent
+///      directory (the Phase 9+ layout production actually writes).
+///   2. The file at `snapshot_path` itself, if it exists (legacy single-blob
+///      layout + a convenient test escape hatch).
+///   3. An empty `BaseSnapshotState` otherwise. Missing / corrupt / Delta
+///      files all fall through to empty. This keeps the wire contract intact
+///      on fresh servers and servers that haven't taken their first base
+///      snapshot yet.
+///
+/// Note: this deliberately does NOT apply delta snapshots on top of the base.
+/// The v0 replica contract is "ship the latest persisted base"; delta-aware
+/// replication is out of scope for 27-01 per `27-01-PLAN.md §objective`.
+fn load_base_snapshot_for_fetch(state: &SharedState) -> crate::state::snapshot::BaseSnapshotState {
+    use crate::state::snapshot::{
+        load_snapshot_file, BaseSnapshotState, SnapshotFile, SnapshotHeader, SnapshotType,
+    };
+    let empty = || BaseSnapshotState {
+        header: SnapshotHeader {
+            snapshot_type: SnapshotType::Base,
+            sequence: 0,
+        },
+        entities: vec![],
+        pipelines: vec![],
+        backfill_complete: vec![],
+    };
+
+    // (1) Scan parent dir for `tally.snapshot.base.*` — pick the highest seq.
+    let snap_dir = state
+        .snapshot_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut best: Option<(u64, std::path::PathBuf)> = None;
+    if let Ok(entries) = std::fs::read_dir(snap_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy().into_owned();
+            if let Some(seq_str) = name_str.strip_prefix("tally.snapshot.base.") {
+                if let Ok(seq) = seq_str.parse::<u64>() {
+                    match &best {
+                        Some((cur, _)) if *cur >= seq => {}
+                        _ => best = Some((seq, entry.path())),
+                    }
+                }
+            }
+        }
+    }
+    if let Some((_, path)) = best {
+        if let Ok(bytes) = std::fs::read(&path) {
+            if let Some(SnapshotFile::Base(b)) = load_snapshot_file(&bytes) {
+                return b;
+            }
+        }
+    }
+
+    // (2) Legacy / test: read `snapshot_path` directly.
+    if let Ok(bytes) = std::fs::read(&state.snapshot_path) {
+        if let Some(SnapshotFile::Base(b)) = load_snapshot_file(&bytes) {
+            return b;
+        }
+    }
+
+    empty()
 }
 
 /// Handle MSET with cooperative yielding: process 1024-key chunks, yield between.

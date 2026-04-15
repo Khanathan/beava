@@ -52,6 +52,37 @@ pub const OP_GET_MULTI: u8 = 0x0D;
 pub const OP_SCAN_RESERVED: u8 = 0x10;
 pub const OP_SUBSCRIBE_RESERVED: u8 = 0x11;
 
+/// Phase 27-01: Scope-aware snapshot fetch for replica clients.
+///
+/// Wire (request payload, after the frame header):
+///   `[u16 BE token_len][token_bytes][Scope]`
+///   — the admin bearer token is length-prefixed in-band (no
+///     connection-level handshake state); scope bytes follow and are
+///     decoded by `read_scope`.
+///
+/// Response on success: two frames, emitted in order on the same connection:
+///   Header frame:  `[u32 BE frame_len=1+8+4][u8 tag=0x01][u64 BE ts_secs][u32 BE ts_nanos]`
+///   Payload frame: `[u32 BE frame_len=1+N][u8 tag=0x02][postcard(BaseSnapshotState) bytes]`
+///
+/// Response on failure (auth / validation / snapshot I/O): a single
+/// standard STATUS_ERROR frame (`[u32 len][0x01][error_message]`) — the
+/// same shape every other TCP opcode emits on error — and no header or
+/// payload frame follows. Clients can distinguish error vs success by the
+/// first byte after the length prefix (`0x01` error status vs `0x01`
+/// header tag — they collide numerically, so clients must peek the length
+/// to decide: a 13-byte frame is a header; everything else on the first
+/// post-request read is an error. See `tests/test_replica_snapshot_fetch.rs`).
+///
+/// `snapshot_taken_at` is the server's `SystemTime::now()` at the moment
+/// the handler begins processing the request. It is **response-only** and
+/// is never persisted. See `27-CONTEXT.md §snapshot_taken_at semantics`.
+pub const OP_SNAPSHOT_FETCH: u8 = 0x12;
+
+// Phase 27-01 snapshot-fetch response-frame tags (tag byte follows the
+// u32 BE length prefix; same framing shape as opcode/status frames).
+pub const REPLICA_FRAME_TAG_HEADER: u8 = 0x01;
+pub const REPLICA_FRAME_TAG_PAYLOAD: u8 = 0x02;
+
 // Response status codes
 pub const STATUS_OK: u8 = 0x00;
 pub const STATUS_ERROR: u8 = 0x01;
@@ -133,6 +164,212 @@ pub enum Command {
     /// tearing down the connection (T-25-01-04). `op_name` identifies which
     /// reserved opcode so the error message remains descriptive.
     ReservedNotImplemented { op_name: &'static str },
+    /// Phase 27-01: scope-aware snapshot fetch. Decoded by `parse_command`
+    /// from `OP_SNAPSHOT_FETCH` frames; the handler performs auth + scope
+    /// validation itself before doing any snapshot I/O.
+    ///
+    /// `admin_token` is the bearer token the client presented in the frame
+    /// payload (length-prefixed u16 before the scope bytes — see
+    /// `OP_SNAPSHOT_FETCH` docs). The handler compares it against
+    /// `ConcurrentAppState.admin_token`. An empty string means the client
+    /// sent a zero-length token, which the handler rejects with
+    /// STATUS_ERROR "unauthorized" unless the server also has `admin_token`
+    /// set to `Some("")` (not a supported configuration).
+    SnapshotFetch { admin_token: String, scope: Scope },
+}
+
+/// Phase 27-01: Scope describes the subset of entities a replica client wants.
+///
+/// Wire shape (big-endian throughout, reuses `read_string`/`write_string`):
+///   [u16 n_streams][n_streams × u16-string]           // required, non-empty
+///   [u8 has_keys]                                     // 0 or 1
+///     if has_keys: [u32 n_keys][n_keys × u16-string]
+///   [u8 has_prefix]                                   // 0 or 1
+///     if has_prefix: [u16-string prefix]
+///   [u16-string pull]                                 // "all" only in v0
+///
+/// Validation is run separately by `validate_scope` AFTER decoding: the
+/// codec accepts any well-formed bytes and the validator rejects by semantic
+/// rule. This mirrors the rest of the protocol (`parse_command` is
+/// structural, handlers enforce semantics).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scope {
+    pub streams: Vec<String>,
+    pub keys: Option<Vec<String>>,
+    pub key_prefix: Option<String>,
+    pub pull: String,
+}
+
+/// Phase 27-01: structured rejection reasons for `validate_scope`.
+///
+/// Missing-auth is NOT a variant here — admin-token checks live in the
+/// TCP dispatch layer and fire before the handler ever touches a Scope.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScopeError {
+    EmptyStreams,
+    UnknownStream(String),
+    KeysAndPrefix,
+    PullNotImplemented(String),
+    TooManyKeys(usize),
+    EmptyPrefix,
+    EmptyKey,
+}
+
+impl std::fmt::Display for ScopeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScopeError::EmptyStreams => write!(f, "scope.streams must be non-empty"),
+            ScopeError::UnknownStream(s) => write!(f, "scope.streams references unknown stream: {}", s),
+            ScopeError::KeysAndPrefix => write!(f, "scope.keys and scope.key_prefix are mutually exclusive"),
+            ScopeError::PullNotImplemented(p) => write!(f, "scope.pull='{}' is not implemented in v0 (only 'all')", p),
+            ScopeError::TooManyKeys(n) => write!(f, "scope.keys.len()={} exceeds cap of 10000", n),
+            ScopeError::EmptyPrefix => write!(f, "scope.key_prefix must not be an empty string (omit instead)"),
+            ScopeError::EmptyKey => write!(f, "scope.keys must not contain empty strings"),
+        }
+    }
+}
+
+/// Phase 27-01: append a Scope to `buf` using the shape documented on `Scope`.
+pub fn write_scope(buf: &mut Vec<u8>, scope: &Scope) {
+    assert!(
+        scope.streams.len() <= u16::MAX as usize,
+        "scope.streams too long for u16 len prefix"
+    );
+    buf.extend_from_slice(&(scope.streams.len() as u16).to_be_bytes());
+    for s in &scope.streams {
+        buf.extend_from_slice(&write_string(s));
+    }
+    match &scope.keys {
+        Some(keys) => {
+            buf.push(1u8);
+            assert!(
+                keys.len() <= u32::MAX as usize,
+                "scope.keys too long for u32 len prefix"
+            );
+            buf.extend_from_slice(&(keys.len() as u32).to_be_bytes());
+            for k in keys {
+                buf.extend_from_slice(&write_string(k));
+            }
+        }
+        None => buf.push(0u8),
+    }
+    match &scope.key_prefix {
+        Some(p) => {
+            buf.push(1u8);
+            buf.extend_from_slice(&write_string(p));
+        }
+        None => buf.push(0u8),
+    }
+    buf.extend_from_slice(&write_string(&scope.pull));
+}
+
+/// Phase 27-01: decode a Scope from the wire. Advances `*buf` past consumed
+/// bytes. Returns `TallyError::Protocol` on truncation / bad UTF-8.
+pub fn read_scope(buf: &mut &[u8]) -> Result<Scope, TallyError> {
+    if buf.len() < 2 {
+        return Err(TallyError::Protocol(
+            "scope header truncated: need 2 bytes for n_streams".into(),
+        ));
+    }
+    let n_streams = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+    *buf = &buf[2..];
+    let mut streams = Vec::with_capacity(n_streams.min(buf.len() / 2));
+    for _ in 0..n_streams {
+        streams.push(read_string(buf)?);
+    }
+    if buf.is_empty() {
+        return Err(TallyError::Protocol("scope truncated: need has_keys byte".into()));
+    }
+    let has_keys = buf[0];
+    *buf = &buf[1..];
+    let keys = match has_keys {
+        0 => None,
+        1 => {
+            if buf.len() < 4 {
+                return Err(TallyError::Protocol("scope.keys truncated: need 4 bytes for count".into()));
+            }
+            let n_keys = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+            *buf = &buf[4..];
+            // Cap the preallocation against remaining buffer to avoid u32-driven OOM
+            let cap = n_keys.min(buf.len() / 2);
+            let mut ks = Vec::with_capacity(cap);
+            for _ in 0..n_keys {
+                ks.push(read_string(buf)?);
+            }
+            Some(ks)
+        }
+        other => {
+            return Err(TallyError::Protocol(format!(
+                "scope has_keys byte must be 0 or 1, got {}",
+                other
+            )));
+        }
+    };
+    if buf.is_empty() {
+        return Err(TallyError::Protocol(
+            "scope truncated: need has_prefix byte".into(),
+        ));
+    }
+    let has_prefix = buf[0];
+    *buf = &buf[1..];
+    let key_prefix = match has_prefix {
+        0 => None,
+        1 => Some(read_string(buf)?),
+        other => {
+            return Err(TallyError::Protocol(format!(
+                "scope has_prefix byte must be 0 or 1, got {}",
+                other
+            )));
+        }
+    };
+    let pull = read_string(buf)?;
+    Ok(Scope {
+        streams,
+        keys,
+        key_prefix,
+        pull,
+    })
+}
+
+/// Phase 27-01: structural + semantic Scope validator.
+///
+/// Runs the locked rejection rules from `27-CONTEXT.md §Scope validation`
+/// in order. Auth is NOT checked here — the TCP handler gates admin-token
+/// BEFORE calling this. Returns the first rule that fires.
+pub fn validate_scope(
+    scope: &Scope,
+    known_streams: &std::collections::HashSet<String>,
+) -> Result<(), ScopeError> {
+    if scope.streams.is_empty() {
+        return Err(ScopeError::EmptyStreams);
+    }
+    for s in &scope.streams {
+        if !known_streams.contains(s) {
+            return Err(ScopeError::UnknownStream(s.clone()));
+        }
+    }
+    if scope.keys.is_some() && scope.key_prefix.is_some() {
+        return Err(ScopeError::KeysAndPrefix);
+    }
+    if scope.pull != "all" {
+        return Err(ScopeError::PullNotImplemented(scope.pull.clone()));
+    }
+    if let Some(keys) = &scope.keys {
+        if keys.len() > 10_000 {
+            return Err(ScopeError::TooManyKeys(keys.len()));
+        }
+        for k in keys {
+            if k.is_empty() {
+                return Err(ScopeError::EmptyKey);
+            }
+        }
+    }
+    if let Some(prefix) = &scope.key_prefix {
+        if prefix.is_empty() {
+            return Err(ScopeError::EmptyPrefix);
+        }
+    }
+    Ok(())
 }
 
 /// Encode a frame: [4-byte BE length][opcode][payload].
@@ -532,6 +769,13 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
         OP_SUBSCRIBE_RESERVED => Ok(Command::ReservedNotImplemented {
             op_name: "SUBSCRIBE",
         }),
+        OP_SNAPSHOT_FETCH => {
+            // Wire: [u16 token_len][token_bytes][scope_bytes]. See the doc
+            // comment on `OP_SNAPSHOT_FETCH` for rationale.
+            let admin_token = read_string(&mut buf)?;
+            let scope = read_scope(&mut buf)?;
+            Ok(Command::SnapshotFetch { admin_token, scope })
+        }
         _ => Err(TallyError::Protocol(format!(
             "unknown opcode: 0x{:02x}",
             opcode
@@ -3352,5 +3596,253 @@ mod tests {
         assert_eq!(req.ephemeral, Some(true));
         assert_eq!(req.ttl, Some("1h".to_string()));
         assert_eq!(req.max_keys, Some(10000));
+    }
+
+    // ===================================================================
+    // Phase 27-01: Scope struct, wire codec, validator, parse_command.
+    // ===================================================================
+
+    fn known(streams: &[&str]) -> std::collections::HashSet<String> {
+        streams.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn roundtrip(scope: &Scope) -> Scope {
+        let mut buf = Vec::new();
+        write_scope(&mut buf, scope);
+        let mut cursor: &[u8] = &buf;
+        let decoded = read_scope(&mut cursor).expect("read_scope must succeed");
+        assert!(cursor.is_empty(), "read_scope must consume all bytes");
+        decoded
+    }
+
+    #[test]
+    fn test_scope_codec_streams_only() {
+        let scope = Scope {
+            streams: vec!["orders".into(), "clicks".into()],
+            keys: None,
+            key_prefix: None,
+            pull: "all".into(),
+        };
+        assert_eq!(roundtrip(&scope), scope);
+    }
+
+    #[test]
+    fn test_scope_codec_with_keys() {
+        let scope = Scope {
+            streams: vec!["orders".into()],
+            keys: Some(vec!["k1".into(), "k2".into(), "k3".into()]),
+            key_prefix: None,
+            pull: "all".into(),
+        };
+        assert_eq!(roundtrip(&scope), scope);
+    }
+
+    #[test]
+    fn test_scope_codec_with_prefix() {
+        let scope = Scope {
+            streams: vec!["orders".into()],
+            keys: None,
+            key_prefix: Some("user_".into()),
+            pull: "all".into(),
+        };
+        assert_eq!(roundtrip(&scope), scope);
+    }
+
+    #[test]
+    fn test_scope_codec_with_empty_keys_vec() {
+        // Structurally valid — empty keys Vec (semantic validation is separate).
+        let scope = Scope {
+            streams: vec!["orders".into()],
+            keys: Some(vec![]),
+            key_prefix: None,
+            pull: "all".into(),
+        };
+        assert_eq!(roundtrip(&scope), scope);
+    }
+
+    #[test]
+    fn test_scope_codec_rejects_truncated_header() {
+        let mut buf: &[u8] = &[0u8];
+        assert!(read_scope(&mut buf).is_err());
+    }
+
+    #[test]
+    fn test_scope_codec_rejects_bad_has_keys_byte() {
+        // n_streams=1, one string "x", has_keys=7 (illegal)
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        buf.extend_from_slice(&write_string("x"));
+        buf.push(7);
+        let mut cursor: &[u8] = &buf;
+        assert!(read_scope(&mut cursor).is_err());
+    }
+
+    #[test]
+    fn test_validate_scope_accepts_valid() {
+        let scope = Scope {
+            streams: vec!["orders".into()],
+            keys: None,
+            key_prefix: None,
+            pull: "all".into(),
+        };
+        validate_scope(&scope, &known(&["orders", "clicks"])).unwrap();
+    }
+
+    #[test]
+    fn test_validate_scope_rejects_empty_streams() {
+        let scope = Scope {
+            streams: vec![],
+            keys: None,
+            key_prefix: None,
+            pull: "all".into(),
+        };
+        assert_eq!(
+            validate_scope(&scope, &known(&["orders"])).unwrap_err(),
+            ScopeError::EmptyStreams
+        );
+    }
+
+    #[test]
+    fn test_validate_scope_rejects_unknown_stream() {
+        let scope = Scope {
+            streams: vec!["nope".into()],
+            keys: None,
+            key_prefix: None,
+            pull: "all".into(),
+        };
+        assert_eq!(
+            validate_scope(&scope, &known(&["orders"])).unwrap_err(),
+            ScopeError::UnknownStream("nope".into())
+        );
+    }
+
+    #[test]
+    fn test_validate_scope_rejects_keys_and_prefix() {
+        let scope = Scope {
+            streams: vec!["orders".into()],
+            keys: Some(vec!["k1".into()]),
+            key_prefix: Some("u".into()),
+            pull: "all".into(),
+        };
+        assert_eq!(
+            validate_scope(&scope, &known(&["orders"])).unwrap_err(),
+            ScopeError::KeysAndPrefix
+        );
+    }
+
+    #[test]
+    fn test_validate_scope_rejects_pull_not_all() {
+        let scope = Scope {
+            streams: vec!["orders".into()],
+            keys: None,
+            key_prefix: None,
+            pull: "historical".into(),
+        };
+        assert_eq!(
+            validate_scope(&scope, &known(&["orders"])).unwrap_err(),
+            ScopeError::PullNotImplemented("historical".into())
+        );
+    }
+
+    #[test]
+    fn test_validate_scope_rejects_too_many_keys() {
+        let keys: Vec<String> = (0..10_001).map(|i| format!("k{}", i)).collect();
+        let scope = Scope {
+            streams: vec!["orders".into()],
+            keys: Some(keys),
+            key_prefix: None,
+            pull: "all".into(),
+        };
+        assert_eq!(
+            validate_scope(&scope, &known(&["orders"])).unwrap_err(),
+            ScopeError::TooManyKeys(10_001)
+        );
+    }
+
+    #[test]
+    fn test_validate_scope_rejects_empty_prefix() {
+        let scope = Scope {
+            streams: vec!["orders".into()],
+            keys: None,
+            key_prefix: Some(String::new()),
+            pull: "all".into(),
+        };
+        assert_eq!(
+            validate_scope(&scope, &known(&["orders"])).unwrap_err(),
+            ScopeError::EmptyPrefix
+        );
+    }
+
+    #[test]
+    fn test_validate_scope_rejects_empty_key() {
+        let scope = Scope {
+            streams: vec!["orders".into()],
+            keys: Some(vec!["ok".into(), String::new()]),
+            key_prefix: None,
+            pull: "all".into(),
+        };
+        assert_eq!(
+            validate_scope(&scope, &known(&["orders"])).unwrap_err(),
+            ScopeError::EmptyKey
+        );
+    }
+
+    #[test]
+    fn test_scope_error_display_is_single_line() {
+        for err in [
+            ScopeError::EmptyStreams,
+            ScopeError::UnknownStream("x".into()),
+            ScopeError::KeysAndPrefix,
+            ScopeError::PullNotImplemented("foo".into()),
+            ScopeError::TooManyKeys(42),
+            ScopeError::EmptyPrefix,
+            ScopeError::EmptyKey,
+        ] {
+            let s = format!("{}", err);
+            assert!(!s.is_empty());
+            assert!(!s.contains('\n'), "Display must be single-line: {:?}", err);
+        }
+    }
+
+    #[test]
+    fn test_parse_command_snapshot_fetch_roundtrip() {
+        let scope = Scope {
+            streams: vec!["orders".into(), "clicks".into()],
+            keys: Some(vec!["k1".into()]),
+            key_prefix: None,
+            pull: "all".into(),
+        };
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&write_string("shh-admin"));
+        write_scope(&mut buf, &scope);
+        let cmd = parse_command(OP_SNAPSHOT_FETCH, &buf).unwrap();
+        match cmd {
+            Command::SnapshotFetch {
+                admin_token,
+                scope: got,
+            } => {
+                assert_eq!(admin_token, "shh-admin");
+                assert_eq!(got, scope);
+            }
+            other => panic!("expected SnapshotFetch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_command_snapshot_fetch_empty_token() {
+        let scope = Scope {
+            streams: vec!["orders".into()],
+            keys: None,
+            key_prefix: None,
+            pull: "all".into(),
+        };
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&write_string(""));
+        write_scope(&mut buf, &scope);
+        let cmd = parse_command(OP_SNAPSHOT_FETCH, &buf).unwrap();
+        match cmd {
+            Command::SnapshotFetch { admin_token, .. } => assert_eq!(admin_token, ""),
+            other => panic!("expected SnapshotFetch, got {:?}", other),
+        }
     }
 }
