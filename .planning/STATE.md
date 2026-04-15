@@ -14,9 +14,9 @@ progress:
 
 # Project State
 
-**Current Milestone:** v0 — Local Replica leg (Phases 27-34)
-**Active Phase:** 30 — Python Pipeline API (PyO3 + CLI + E2E) — **Plan 30-02 complete** (CLI subcommands `query`/`inspect` + 9 E2E tests landed; 30-01 already complete)
-**Last Updated:** 2026-04-14 (Plan 30-02 landed: `tally query`/`inspect` pure-Rust CLI + E2E pytest suite wiring the PyO3 Pipeline against a live server)
+**Current Milestone:** v0 — Data-Scientist Fork (Phases 27, 35-38; Option K phases 28/30/31 superseded)
+**Active Phase:** 35 — OP_LOG_FETCH (Option M kickoff) — planned, not yet executed
+**Last Updated:** 2026-04-15 (Option M adopted: scientist forks CDC via LOG_FETCH+SUBSCRIBE, replica IS a local Tally server. Option K mid-flight Phase 31-02 cancelled. Phases 35-38 planned.)
 
 ## Milestone Status
 

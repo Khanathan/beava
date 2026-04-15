@@ -6,7 +6,7 @@
 - [x] **v1.1–v1.3 -- Event Log, Pipelines, Concurrency** (Phases 6-15) -- Complete 2026-04-12
 - [x] **v2.0 -- API & Engine** (Phases 16-19) -- Complete 2026-04-13 -- `.planning/milestones/v2.0-ROADMAP.md`
 - [x] **v2.1 -- Launch** (Phase 20) -- Engineering complete 2026-04-14 (live-run ops pending, calendar-gated) -- `.planning/milestones/v2.1-ROADMAP.md`
-- [ ] **v0 -- Restructure + Local Replica** (Phases 21-34) -- Active. Phases 21-26 shipped 2026-04-14 (restructure); Phases 27, 28, 30, 31 are the v0 replica leg. Restructure archive: `.planning/milestones/v0-ROADMAP.md`.
+- [ ] **v0 -- Restructure + Data-Scientist Fork** (Phases 21-38) -- Active. Phases 21-26 shipped 2026-04-14 (restructure); Phase 27 shipped 2026-04-15 (server replica opcodes); Option K (phases 28/30/31) SUPERSEDED 2026-04-15 by Option M (phases 35-38) — local server in replica mode. Restructure archive: `.planning/milestones/v0-ROADMAP.md`.
 
 ## Phases
 
@@ -14,33 +14,38 @@
 
 **Outcome:** Two-type (Stream + Table) API, DataFrame-parity operators, hybrid sketches (UDDSketch / CMS+heap / HLL), 5-second fixed event-time watermarks with γ propagation, per-Table row storage with 7d tombstone grace, unified `/debug/warnings` + `tally suggest-config`, zero-old-API codebase, 9-cell benchmark matrix within −5% of v2.0 BASELINE (worst cell −4.84%), launch blog rewritten honestly. **All 11 sign-off criteria green** — see `.planning/phases/26-test-migration-bench-docs-demo/26-SIGNOFF.md`. Full phase list + plan history archived in `.planning/milestones/v0-ROADMAP.md`.
 
-### v0 Local Replica — Option K (Phases 27, 28, 30, 31 — Active)
+### v0 Data-Scientist Fork — Option M (Phases 35-38 — Active)
 
-**Revised 2026-04-15** after executor stopped at a primitive mismatch: the prior plan assumed a global event-log seq counter and streamable snapshot frames, neither of which exist. Under user directive "easiest for v0 and demo" the design reduces to **Option K: snapshot + subscribe only** (no LOG_FETCH, no catchup loop, no seq).
+**Adopted 2026-04-15** after user clarified the real product: data scientists fork a scoped CDC stream from prod to their laptop, register their **own** pipelines (different from prod's), run historical replay + live tail. Option K (embedded-engine client, phases 28/30/31) SUPERSEDED because it didn't deliver live-updated aggregates under scientist-defined pipelines.
 
-**What Option K delivers:**
-- `tally clone` (historical mode): one-shot OP_SNAPSHOT_FETCH → deserialize → queryable local replica at a point in time. Re-run to get a different point in time.
-- `tally sync` (streaming mode): subscribe-first buffered-replay dance (open subscribe socket, buffer, fetch snapshot, apply, drop pre-snapshot events, apply rest, continue live). Feeds `pipe.watch(key)`.
+**Architecture:** the replica IS a full Tally server process running in "replica mode". It pulls events from remote via `OP_LOG_FETCH` (historical) + `OP_SUBSCRIBE` (live), routes them through its own ingest path, persists to local per-stream log, runs scientist's registered pipelines, serves queries via normal HTTP/TCP. Scientist connects with `tl.Client(remote="localhost:7400")`.
 
-**Cut from v0** (moved to v0.2 or later):
-- `OP_LOG_FETCH` + arbitrary-range event replay — requires event-log seq (schema change).
-- Global seq-monotonic SUBSCRIBE ordering — requires seq. Replaced with per-subscriber accept order.
-- Streamable snapshot format — requires snapshot v8.
-- DAG-derived automatic scope.
-- Phase 29 (session manager + catchup) — folded into Phase 28 as plan 28-04.
-- Phase 32/33/34 — stretch, unchanged.
+**No snapshot seed in MVP** (user directive 2026-04-15): replay CDC from scratch is simpler and sufficient for demo.
 
-Full design discussion: `.planning/phases/27-server-replica-endpoints/27-CONTEXT.md` (Option K revision).
+**Load-bearing primitives:**
+1. Scoped `OP_LOG_FETCH{from_ts_millis, scope}` — ships Phase 35.
+2. Server `--replica-from` boot mode — ships Phase 36.
+3. `tally fork` CLI + E2E demo — ships Phase 37.
+4. Mothball Option K surfaces — Phase 38.
 
-- [x] **Phase 27: Server-side replica endpoints (2 opcodes)** — `OP_SNAPSHOT_FETCH{scope}` (0x12) + `OP_SUBSCRIBE{scope}` (0x11). In-memory filter of `BaseSnapshotState`; `SubscriberRegistry` with DashMap + 10k bounded queue; ingest-path notify hook; admin-token auth; response-header `snapshot_taken_at`. No LOG_FETCH. Per-subscriber order only. (completed 2026-04-15)
-- [x] **Phase 28: Client engine embedding + historical clone** — feature-flag `client`/`server` on main crate; `tally_cli` bin with `clone`/`sync` subcommands; `src/client/` module with real `Session`, `OutOfScopeError`, and historical-mode snapshot fetch. `tally clone` ships in this phase (plan 28-04). `tally sync` stubs. (completed 2026-04-15)
-- [x] **Phase 30: Python Pipeline API + local query surface** — PyO3/maturin `tally.Pipeline(...).run()/.get()/.inspect()`; typed error hierarchy; `tally query` / `tally inspect` CLI. (completed 2026-04-15)
-- [ ] **Phase 31: Streaming mode + watch** — subscribe-first buffered-replay client dance; bg apply thread + RwLock on client StateStore; PyO3 `.watch()` generator; `tally sync` NDJSON CLI.
-- [ ] **Phase 32: Resume + reconnect (stretch)** — persist last-applied timestamp per scope; on `SubscriberDroppedError`, reconnect and resume.
-- [ ] **Phase 33: Upstream backfill sources (stretch)** — `source="s3://..."` / `source="snowflake://..."` instead of `remote=`; reuses Phase 22 `BackfillSource` trait.
-- [ ] **Phase 34: Write-back / promote (stretch)** — register a feature on the client, compute locally, `.promote()` to cluster.
+SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; CONTEXT files banner-tagged):
+- [x] **Phase 27: Server-side replica endpoints (2 opcodes)** — `OP_SNAPSHOT_FETCH{scope}` (0x12) + `OP_SUBSCRIBE{scope}` (0x11). **STILL ACTIVE** — SUBSCRIBE is reused by Phase 36's replica client; SNAPSHOT_FETCH kept but unused by Option M MVP. (completed 2026-04-15)
+- [SUPERSEDED] **Phase 28: Client engine embedding + historical clone** (28-01 crate features still active; 28-02/03/04 obsoleted). Mothballed by Phase 38.
+- [SUPERSEDED] **Phase 30: Python Pipeline API** — PyO3 Pipeline obsoleted. Scientists use `tl.Client` HTTP SDK against `localhost:7400`. Mothballed by Phase 38.
+- [SUPERSEDED] **Phase 31: Streaming mode + watch** — 31-01 committed but unused; 31-02 cancelled mid-flight. Mothballed by Phase 38.
 
-~~Phase 29~~ (Session manager + historical E2E) — **removed 2026-04-15**. Its remaining work (~30 lines of client-side snapshot fetch + deserialize) folded into Phase 28 as plan 28-04. Original 29-CONTEXT preserved at `.planning/phases/29-session-manager-historical-OBSOLETE/`.
+**Option M phases:**
+- [ ] **Phase 35: `OP_LOG_FETCH{from_ts, scope}`** — Server ships the historical-CDC opcode. Timestamp cursor, at-least-once on boundary, per-stream ordering. 1 plan.
+- [ ] **Phase 36: Replica-mode server boot** — `tally serve --replica-from HOST --replica-since T --replica-streams S --replica-token T [--replica-pipeline-file F]`. LOG_FETCH catchup → SUBSCRIBE live-tail, all feeding local ingest. Listener gate until catchup-done. 1 plan, 4 tasks.
+- [ ] **Phase 37: `tally fork` CLI + E2E demo** — `tally fork --remote ... --since ... --streams ... --pipeline-file ...` wrapper + load-bearing pytest that proves the scientist workflow end-to-end. 1 plan.
+- [ ] **Phase 38: Mothball Option K surfaces** — Delete obsolete embedded-client code, `tally_cli clone/query/inspect/sync`, `python-native/` crate. Housekeeping. 1 plan.
+
+**Stretch (unchanged):**
+- [ ] **Phase 32: Resume across restarts (stretch)** — persist `last_applied_timestamp` to disk; replica re-runs from there.
+- [ ] **Phase 33: Upstream backfill sources (stretch)** — `source="s3://..."` instead of `--replica-from`; reuses Phase 22 `BackfillSource` trait.
+- [ ] **Phase 34: Write-back / promote (stretch)** — scientist's compute → promote to cluster.
+
+~~Phase 29~~ (removed 2026-04-15, Option K era).
 
 ## Phase Details
 
@@ -98,9 +103,33 @@ Full design discussion: `.planning/phases/27-server-replica-endpoints/27-CONTEXT
 **Depends on**: Phase 30, Phase 31
 **Plans**: 0/? — not planned yet
 
+### Phase 35: OP_LOG_FETCH (Option M)
+**Goal**: Add scoped time-ranged historical CDC pull opcode `OP_LOG_FETCH{from_ts_millis, scope}` (0x13). Timestamp-based cursor (at-least-once on boundary), per-stream order, reuses Phase 6 per-stream log readers + Phase 27 Scope codec + admin-token auth pattern. Terminal `REPLICA_FRAME_TAG_END` (0x04) signals caught-up-to-tail.
+**Depends on**: Phase 27 (Scope codec, entity_matches_scope), Phase 6 (per-stream log files)
+**Plans:** 1 plan
+- [ ] 35-01-PLAN.md — Opcode + Command variant + handler + per-stream log iteration + timestamp gate + Rust/Python tests
+
+### Phase 36: Replica-mode server boot (Option M)
+**Goal**: `tally serve --replica-from HOST:PORT --replica-since T --replica-streams S --replica-token T [--replica-pipeline-file F]` boot mode. Server connects to remote, runs LOG_FETCH catchup, transitions to SUBSCRIBE live-tail, routes all events through its own local ingest path (persisted to Phase 6 logs; routed through any registered scientist pipelines). Listener binding gated until catchup-done. Rejects local PUSH in replica mode. Auto-reconnects SUBSCRIBE on drop with timestamp-resume.
+**Depends on**: Phase 27 (OP_SUBSCRIBE), Phase 35 (OP_LOG_FETCH), Phase 28-01 (feature flags — active), Phase 31-01 (streaming consumer code — reused)
+**Plans:** 1 plan
+- [ ] 36-01-PLAN.md — CLI flag parsing + ReplicaClient loop + ingest routing (replica_ingest) + listener gate + integration test
+
+### Phase 37: `tally fork` CLI + E2E demo (Option M)
+**Goal**: Ship `tally fork --remote HOST --since T --streams S --keys K --token T [--local-port 7400] [--pipeline-file P]` as a scientist-ergonomic wrapper for `tally serve --replica-from ...`, plus the load-bearing E2E pytest that proves the whole Option M workflow (prod → fork → register pipeline → query → live update).
+**Depends on**: Phase 35, Phase 36
+**Plans:** 1 plan
+- [ ] 37-01-PLAN.md — `tally fork` subcommand + `/debug/ready` endpoint + test_fork_demo.py end-to-end
+
+### Phase 38: Mothball Option K surfaces (Option M housekeeping)
+**Goal**: Delete superseded embedded-client code (`src/client/clone.rs`, `streaming.rs`, `state.rs`; `tally_cli clone/query/inspect/sync`; `python-native/` crate). Banner-tag Option K CONTEXTs as SUPERSEDED. Prevents future readers from confusing dead paths with live ones.
+**Depends on**: Phase 35, Phase 36, Phase 37 all green
+**Plans:** 1 plan
+- [ ] 38-01-PLAN.md — Delete Rust modules + tally_cli subcommands + python-native crate + doc sweep
+
 ## Progress
 
-**Execution Order:** v0 Restructure (Phases 21-26) complete; v2.1 Launch (Phase 20) engineering complete, deploy ops pending async; v0 Local Replica under Option K runs 27 → 28 → 30 → 31 (Phase 29 folded into 28-04).
+**Execution Order:** v0 Restructure (Phases 21-26) complete; v2.1 Launch (Phase 20) engineering complete, deploy ops pending async; Phase 27 server opcodes shipped. **Option M active**: Phase 35 (OP_LOG_FETCH) → Phase 36 (replica-mode boot) → Phase 37 (tally fork + E2E demo) → Phase 38 (mothball Option K).
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -111,10 +140,14 @@ Full design discussion: `.planning/phases/27-server-replica-endpoints/27-CONTEXT
 | 24. Table storage + Watermarks & event-time | v0 | 5/5 | Complete | 2026-04-14 |
 | 25. Query surface, TTL, warnings | v0 | 3/3 | Complete | 2026-04-14 |
 | 26. Test migration, bench, docs, demo | v0 | 4/4 | Complete | 2026-04-14 |
-| 27. Server-side replica endpoints (Option K) | v0 | 2/2 | Complete   | 2026-04-15 |
-| 28. Client engine embedding + historical clone | v0 | 4/4 | Complete   | 2026-04-15 |
-| 30. Python Pipeline API + local query surface | v0 | 2/2 | Complete   | 2026-04-15 |
-| 31. Streaming mode + watch (Option K) | v0 | 1/2 | 31-02 planned; 31-01 needs re-plan | — |
-| 32. Resume + reconnect (stretch) | v0 | 0/? | Not planned | — |
+| 27. Server-side replica endpoints | v0 | 2/2 | Complete (SUBSCRIBE reused by Option M) | 2026-04-15 |
+| 28. Client engine embedding + historical clone | v0 | 4/4 | SUPERSEDED by Option M (mothballed in Phase 38) | 2026-04-15 |
+| 30. Python Pipeline API + local query surface | v0 | 2/2 | SUPERSEDED by Option M (mothballed in Phase 38) | 2026-04-15 |
+| 31. Streaming mode + watch (Option K) | v0 | 1/2 | SUPERSEDED mid-flight (31-02 cancelled); 31-01 shipped but unused | 2026-04-15 (partial) |
+| 32. Resume across restarts (stretch) | v0 | 0/? | Not planned | — |
 | 33. Upstream backfill sources (stretch) | v0 | 0/? | Not planned | — |
-| 34. Write-back / promote flow (stretch) | v0 | 0/? | Not planned | — |
+| 34. Write-back / promote (stretch) | v0 | 0/? | Not planned | — |
+| 35. OP_LOG_FETCH | v0 | 0/1 | **Planned (Option M)** | — |
+| 36. Replica-mode server boot | v0 | 0/1 | **Planned (Option M)** | — |
+| 37. `tally fork` CLI + E2E demo | v0 | 0/1 | **Planned (Option M)** | — |
+| 38. Mothball Option K surfaces | v0 | 0/1 | **Planned (Option M)** | — |
