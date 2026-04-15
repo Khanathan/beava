@@ -246,8 +246,7 @@ async fn create_pipeline(
             if !is_view {
                 let history_ttl =
                     engine.get_stream(&def_name).and_then(|s| s.history_ttl);
-                let mut event_log = state.event_log.lock();
-                if let Some(ref mut log) = *event_log {
+                if let Some(ref log) = state.event_log {
                     let _ = log.register_stream(&def_name, history_ttl);
                 }
             }
@@ -278,8 +277,7 @@ async fn delete_pipeline(
     let mut engine = state.engine.write();
     if engine.remove_stream(&name) {
         // Also deregister from event log
-        let mut event_log = state.event_log.lock();
-        if let Some(ref mut log) = *event_log {
+        if let Some(ref log) = state.event_log {
             let _ = log.deregister_stream(&name);
         }
         (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()

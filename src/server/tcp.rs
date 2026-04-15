@@ -81,7 +81,9 @@ pub struct BackfillTracker {
 ///   write only on REGISTER (D-04).
 /// - `store`: `PLMutex` — separate from engine, metrics, throughput, latency.
 ///   Handlers that need the store acquire only this lock.
-/// - `event_log`: `PLMutex<Option<EventLog>>` — independent from store/engine.
+/// - `event_log`: `Option<Arc<EventLog>>` — set once at startup, never
+///   replaced. `EventLog` itself uses `DashMap<stream, Mutex<BufWriter>>`
+///   so different streams write in parallel (Phase 40).
 /// - `metrics`, `throughput`, `latency`: each behind their own small `PLMutex`.
 /// - `snapshot_*`, `backfill_*`: each behind their own small `PLMutex`.
 pub struct ConcurrentAppState {
@@ -93,8 +95,10 @@ pub struct ConcurrentAppState {
     /// no outer lock needed.
     pub store: StateStore,
 
-    /// Optional event log — independent lock.
-    pub event_log: PLMutex<Option<EventLog>>,
+    /// Optional event log. `Arc<EventLog>` because the log uses interior
+    /// mutability (per-stream DashMap + per-writer mutex, Phase 40). Set once
+    /// at startup, never replaced — no outer lock needed.
+    pub event_log: Option<Arc<EventLog>>,
 
     /// Operational metrics — small independent lock.
     pub metrics: PLMutex<Metrics>,
@@ -284,7 +288,7 @@ pub fn make_concurrent_state_full(
     Arc::new(ConcurrentAppState {
         engine: RwLock::new(engine),
         store,
-        event_log: PLMutex::new(event_log),
+        event_log: event_log.map(Arc::new),
         metrics: PLMutex::new(Metrics::default()),
         snapshot_path,
         snapshot_cycle: PLMutex::new(0),
@@ -1053,38 +1057,33 @@ fn handle_push_core_ex(
         }
     }
 
-    // NOW acquire event_log lock — only for the append I/O, not during state work.
-    {
-        let mut event_log = state.event_log.lock();
-        let log_payload = if event_log.is_some() {
-            make_log_payload(payload, raw_payload)
-        } else {
-            Vec::new()
-        };
-        if let Some(ref mut log) = *event_log {
-            // Primary stream
-            let _ = log.append(stream_name, &log_payload, now);
-            // Cascade targets (T-07-10)
-            for ds_name in &cascade_targets {
-                let should_log = match engine.get_stream(ds_name) {
-                    Some(d) => match &d.key_field {
-                        Some(kf) => {
-                            matches!(payload.get(kf.as_str()), Some(serde_json::Value::String(s)) if !s.is_empty())
-                        }
-                        None => true,
-                    },
-                    None => false,
-                };
-                if should_log {
-                    let _ = log.append(ds_name, &log_payload, now);
-                }
-            }
-            // Fan-out targets
-            for target_name in &fan_out_logged {
-                let _ = log.append(target_name, &log_payload, now);
+    // Phase 40: no outer lock — `EventLog` has per-stream interior locks.
+    // Different streams (primary + cascade + fan-out) all acquire only their
+    // own writer mutex, so fan-out I/O is parallel across streams.
+    if let Some(ref log) = state.event_log {
+        let log_payload = make_log_payload(payload, raw_payload);
+        // Primary stream
+        let _ = log.append(stream_name, &log_payload, now);
+        // Cascade targets (T-07-10)
+        for ds_name in &cascade_targets {
+            let should_log = match engine.get_stream(ds_name) {
+                Some(d) => match &d.key_field {
+                    Some(kf) => {
+                        matches!(payload.get(kf.as_str()), Some(serde_json::Value::String(s)) if !s.is_empty())
+                    }
+                    None => true,
+                },
+                None => false,
+            };
+            if should_log {
+                let _ = log.append(ds_name, &log_payload, now);
             }
         }
-    } // event_log lock dropped here
+        // Fan-out targets
+        for target_name in &fan_out_logged {
+            let _ = log.append(target_name, &log_payload, now);
+        }
+    }
     {
         let now_inst = std::time::Instant::now();
         let primary_key_field_for_tp = engine
@@ -1412,15 +1411,12 @@ pub fn handle_push_batch(
             }
         }
 
-        // Deferred event log append — acquire lock only for I/O.
-        {
-            let mut event_log = state.event_log.lock();
-            if let Some(ref mut log) = *event_log {
-                for (idx, ev) in batch.iter().enumerate() {
-                    if results[idx].is_ok() {
-                        let lp = make_log_payload(&ev.payload, &ev.raw_payload);
-                        let _ = log.append(stream_name, &lp, now);
-                    }
+        // Deferred event log append — per-stream writer lock inside `log`.
+        if let Some(ref log) = state.event_log {
+            for (idx, ev) in batch.iter().enumerate() {
+                if results[idx].is_ok() {
+                    let lp = make_log_payload(&ev.payload, &ev.raw_payload);
+                    let _ = log.append(stream_name, &lp, now);
                 }
             }
         }
@@ -1488,16 +1484,13 @@ pub fn handle_push_batch(
             }
         }
 
-        // Deferred event log append — acquire lock only for I/O.
-        {
-            let mut event_log = state.event_log.lock();
-            if let Some(ref mut log) = *event_log {
-                for (stream_name, indices) in &groups {
-                    for &i in indices {
-                        if results[i].is_ok() {
-                            let lp = make_log_payload(&batch[i].payload, &batch[i].raw_payload);
-                            let _ = log.append(stream_name, &lp, batch[i].now);
-                        }
+        // Deferred event log append — per-stream writer lock inside `log`.
+        if let Some(ref log) = state.event_log {
+            for (stream_name, indices) in &groups {
+                for &i in indices {
+                    if results[i].is_ok() {
+                        let lp = make_log_payload(&batch[i].payload, &batch[i].raw_payload);
+                        let _ = log.append(stream_name, &lp, batch[i].now);
                     }
                 }
             }
@@ -1825,11 +1818,8 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                 let diff = engine.register(stream_def)?;
                 // Track for event log (flow preserved from v2.0 path).
                 let history_ttl = engine.get_stream(&def_name).and_then(|s| s.history_ttl);
-                {
-                    let mut event_log = state.event_log.lock();
-                    if let Some(ref mut log) = *event_log {
-                        let _ = log.register_stream(&def_name, history_ttl);
-                    }
+                if let Some(ref log) = state.event_log {
+                    let _ = log.register_stream(&def_name, history_ttl);
                 }
                 engine.store_raw_register_json(&def_name, raw_json);
                 let diff_json = serde_json::json!({
@@ -1859,31 +1849,23 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                 let diff = engine.register(stream_def)?;
                 // Register stream with event log for persistence
                 let history_ttl = engine.get_stream(&def_name).and_then(|s| s.history_ttl);
-                {
-                    let mut event_log = state.event_log.lock();
-                    if let Some(ref mut log) = *event_log {
-                        let _ = log.register_stream(&def_name, history_ttl);
-                    }
+                if let Some(ref log) = state.event_log {
+                    let _ = log.register_stream(&def_name, history_ttl);
                 }
                 engine.store_raw_register_json(&def_name, raw_json);
 
                 // If there are features to backfill, spawn async task (SCHM-03)
                 if !diff.backfilling.is_empty() {
                     // Flush event log to ensure all events are readable
-                    {
-                        let mut event_log = state.event_log.lock();
-                        if let Some(ref mut log) = *event_log {
-                            let _ = log.fsync_all();
-                        }
+                    if let Some(ref log) = state.event_log {
+                        let _ = log.fsync_all();
                     }
                     // Read event log entries for this stream
-                    let entries = {
-                        let event_log = state.event_log.lock();
-                        event_log
-                            .as_ref()
-                            .map(|log| log.read_entries(&def_name).unwrap_or_default())
-                            .unwrap_or_default()
-                    };
+                    let entries = state
+                        .event_log
+                        .as_ref()
+                        .map(|log| log.read_entries(&def_name).unwrap_or_default())
+                        .unwrap_or_default();
                     let backfill_features = diff.backfilling.clone();
 
                     if !entries.is_empty() {
@@ -2667,11 +2649,8 @@ async fn handle_log_fetch(
     // Replica reads are relatively rare — paying a sync on each LOG_FETCH
     // is acceptable for v0 and matches the "scientist isn't calling this
     // in a tight loop" note in 35-CONTEXT.md §specifics.
-    {
-        let mut log_guard = state.event_log.lock();
-        if let Some(log) = log_guard.as_mut() {
-            let _ = log.fsync_all();
-        }
+    if let Some(ref log) = state.event_log {
+        let _ = log.fsync_all();
     }
 
     // (5) Walk each stream's log file.
@@ -2679,13 +2658,11 @@ async fn handle_log_fetch(
     use std::time::UNIX_EPOCH;
 
     for stream_name in &scope.streams {
-        // Read entries under a short lock hold.
-        let entries: Vec<crate::state::event_log::LogEntry> = {
-            let log_guard = state.event_log.lock();
-            match &*log_guard {
-                Some(log) => log.read_entries(stream_name).unwrap_or_default(),
-                None => Vec::new(),
-            }
+        // Phase 40: `read_entries` uses `&self` and opens the file fresh;
+        // no lock on `state.event_log` needed.
+        let entries: Vec<crate::state::event_log::LogEntry> = match &state.event_log {
+            Some(log) => log.read_entries(stream_name).unwrap_or_default(),
+            None => Vec::new(),
         };
 
         let kf = key_fields.get(stream_name).cloned().flatten();

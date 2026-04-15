@@ -810,15 +810,13 @@ fn push_events(
         let engine = state.engine.read();
         let _ = engine.push(stream_name, event, &state.store, t);
         drop(engine);
-        let mut event_log = state.event_log.lock();
-        if let Some(ref mut log) = *event_log {
+        if let Some(ref log) = state.event_log {
             let event_bytes = serde_json::to_vec(event).unwrap();
             let _ = log.append(stream_name, &event_bytes, t);
         }
     }
     // Flush event log
-    let mut event_log = state.event_log.lock();
-    if let Some(ref mut log) = *event_log {
+    if let Some(ref log) = state.event_log {
         let _ = log.fsync_all();
     }
 }
@@ -872,8 +870,7 @@ async fn test_backfill_replay_deterministic() {
     };
     {
         state.engine.write().register(stream1).unwrap();
-        let mut event_log = state.event_log.lock();
-        if let Some(ref mut log) = *event_log {
+        if let Some(ref log) = state.event_log {
             let _ = log.register_stream("Transactions", None);
         }
     }
@@ -939,19 +936,14 @@ async fn test_backfill_replay_deterministic() {
         drop(engine);
 
         // Spawn backfill
-        {
-            let mut event_log = state.event_log.lock();
-            if let Some(ref mut log) = *event_log {
-                let _ = log.fsync_all();
-            }
+        if let Some(ref log) = state.event_log {
+            let _ = log.fsync_all();
         }
-        let entries = {
-            let event_log = state.event_log.lock();
-            event_log
-                .as_ref()
-                .map(|log| log.read_entries("Transactions").unwrap_or_default())
-                .unwrap_or_default()
-        };
+        let entries = state
+            .event_log
+            .as_ref()
+            .map(|log| log.read_entries("Transactions").unwrap_or_default())
+            .unwrap_or_default();
         assert_eq!(entries.len(), 10);
 
         let status = Arc::new(BackfillStatus {
@@ -1022,8 +1014,7 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
     };
     {
         state.engine.write().register(stream1).unwrap();
-        let mut event_log = state.event_log.lock();
-        if let Some(ref mut log) = *event_log {
+        if let Some(ref log) = state.event_log {
             let _ = log.register_stream("Txns", None);
         }
     }
@@ -1080,19 +1071,14 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
         assert!(diff.backfilling.contains(&"count_30m".to_string()));
         drop(engine);
 
-        {
-            let mut event_log = state.event_log.lock();
-            if let Some(ref mut log) = *event_log {
-                let _ = log.fsync_all();
-            }
+        if let Some(ref log) = state.event_log {
+            let _ = log.fsync_all();
         }
-        let entries = {
-            let event_log = state.event_log.lock();
-            event_log
-                .as_ref()
-                .map(|log| log.read_entries("Txns").unwrap_or_default())
-                .unwrap_or_default()
-        };
+        let entries = state
+            .event_log
+            .as_ref()
+            .map(|log| log.read_entries("Txns").unwrap_or_default())
+            .unwrap_or_default();
         assert_eq!(entries.len(), 10);
 
         let status = Arc::new(BackfillStatus {
@@ -1286,8 +1272,7 @@ async fn test_backfill_idempotent_restart() {
     };
     {
         state.engine.write().register(stream1).unwrap();
-        let mut event_log = state.event_log.lock();
-        if let Some(ref mut log) = *event_log {
+        if let Some(ref log) = state.event_log {
             let _ = log.register_stream("Txns", None);
         }
     }
@@ -1355,19 +1340,14 @@ async fn test_backfill_idempotent_restart() {
         assert!(diff.backfilling.contains(&"sum_1h".to_string()));
         drop(engine);
 
-        {
-            let mut event_log = state.event_log.lock();
-            if let Some(ref mut log) = *event_log {
-                let _ = log.fsync_all();
-            }
+        if let Some(ref log) = state.event_log {
+            let _ = log.fsync_all();
         }
-        let entries = {
-            let event_log = state.event_log.lock();
-            event_log
-                .as_ref()
-                .map(|log| log.read_entries("Txns").unwrap_or_default())
-                .unwrap_or_default()
-        };
+        let entries = state
+            .event_log
+            .as_ref()
+            .map(|log| log.read_entries("Txns").unwrap_or_default())
+            .unwrap_or_default();
 
         let status = Arc::new(BackfillStatus {
             stream: "Txns".into(),
@@ -1519,20 +1499,17 @@ async fn test_backfill_idempotent_restart() {
                 engine2w.register(stream_def).unwrap();
             }
             drop(engine2w);
-            let mut event_log = state2.event_log.lock();
-            if let Some(ref mut log) = *event_log {
+            if let Some(ref log) = state2.event_log {
                 let _ = log.register_stream("Txns", None);
             }
         }
 
         // Read entries and spawn backfill
-        let entries = {
-            let event_log = state2.event_log.lock();
-            event_log
-                .as_ref()
-                .map(|log| log.read_entries("Txns").unwrap_or_default())
-                .unwrap_or_default()
-        };
+        let entries = state2
+            .event_log
+            .as_ref()
+            .map(|log| log.read_entries("Txns").unwrap_or_default())
+            .unwrap_or_default();
         assert!(!entries.is_empty());
 
         let status = Arc::new(BackfillStatus {

@@ -72,7 +72,7 @@ async fn start_test_server(stream_names: &[&str]) -> (u16, SharedState) {
 
     // EventLog lives in the same tmp dir; register each stream so pushes
     // are appended (v0 flow: PUSH writes both state and log).
-    let mut event_log = EventLog::new(tmp.clone()).unwrap();
+    let event_log = EventLog::new(tmp.clone()).unwrap();
     for s in stream_names {
         event_log.register_stream(s, None).unwrap();
     }
@@ -208,8 +208,7 @@ async fn push_event_binary(port: u16, stream_name: &str, user_id: &str) {
 /// subsequent `read_entries` call. Matches the pattern used by the
 /// backfill/recovery tests.
 fn flush_event_log(state: &SharedState) {
-    let mut guard = state.event_log.lock();
-    if let Some(log) = guard.as_mut() {
+    if let Some(ref log) = state.event_log {
         let _ = log.fsync_all();
     }
 }
@@ -283,8 +282,8 @@ async fn happy_path_returns_all_events_then_end() {
     // (3) from_ts = midpoint between first and last events → subset ≤ total.
     // Read entries directly to get the actual timestamps.
     let timestamps: Vec<u64> = {
-        let guard = state.event_log.lock();
-        guard
+        state
+            .event_log
             .as_ref()
             .unwrap()
             .read_entries("orders")

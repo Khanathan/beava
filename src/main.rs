@@ -490,8 +490,7 @@ fn seed_pipelines_from_file(
                 .register(stream_def)
                 .map_err(|e| format!("register v0 stream {}: {}", def_name, e))?;
             let history_ttl = engine.get_stream(&def_name).and_then(|s| s.history_ttl);
-            let mut event_log = state.event_log.lock();
-            if let Some(ref mut log) = *event_log {
+            if let Some(ref log) = state.event_log {
                 let _ = log.register_stream(&def_name, history_ttl);
             }
             def_name
@@ -516,8 +515,7 @@ fn seed_pipelines_from_file(
                 let history_ttl = engine
                     .get_stream(&name)
                     .and_then(|s| s.history_ttl);
-                let mut event_log = state.event_log.lock();
-                if let Some(ref mut log) = *event_log {
+                if let Some(ref log) = state.event_log {
                     let _ = log.register_stream(&name, history_ttl);
                 }
             }
@@ -651,8 +649,7 @@ async fn async_main() {
                             if !is_view {
                                 let history_ttl =
                                     engine.get_stream(&def_name).and_then(|s| s.history_ttl);
-                                let mut event_log = state.event_log.lock();
-                                if let Some(ref mut log) = *event_log {
+                                if let Some(ref log) = state.event_log {
                                     let _ = log.register_stream(&def_name, history_ttl);
                                 }
                             }
@@ -700,13 +697,11 @@ async fn async_main() {
 
         // Spawn backfill tasks for incomplete backfills
         for (stream_name, features) in incomplete_backfills {
-            let entries = {
-                let event_log = state.event_log.lock();
-                event_log
-                    .as_ref()
-                    .map(|log| log.read_entries(&stream_name).unwrap_or_default())
-                    .unwrap_or_default()
-            };
+            let entries = state
+                .event_log
+                .as_ref()
+                .map(|log| log.read_entries(&stream_name).unwrap_or_default())
+                .unwrap_or_default();
             if !entries.is_empty() {
                 let status = Arc::new(BackfillStatus {
                     stream: stream_name.clone(),
@@ -1077,13 +1072,9 @@ async fn async_main() {
             interval.tick().await; // Skip first immediate tick
             loop {
                 interval.tick().await;
-                let result = {
-                    let mut event_log = fsync_state.event_log.lock();
-                    if let Some(ref mut log) = *event_log {
-                        log.fsync_all()
-                    } else {
-                        Ok(())
-                    }
+                let result = match &fsync_state.event_log {
+                    Some(log) => log.fsync_all(),
+                    None => Ok(()),
                 };
                 if let Err(e) = result {
                     eprintln!("Event log fsync failed: {}", e);
@@ -1103,37 +1094,30 @@ async fn async_main() {
                 interval.tick().await;
                 let now = SystemTime::now();
                 // Get list of streams to compact
-                let streams_to_compact: Vec<String> = {
-                    let event_log = compact_state.event_log.lock();
-                    if let Some(ref log) = *event_log {
-                        log.registered_streams().map(String::from).collect()
-                    } else {
-                        vec![]
-                    }
+                let streams_to_compact: Vec<String> = match &compact_state.event_log {
+                    Some(log) => log.registered_streams(),
+                    None => vec![],
                 };
-                // Compact each stream (re-acquires lock per stream for cooperative yielding)
+                // Compact each stream (interior mutability inside `log`).
                 for stream_name in &streams_to_compact {
-                    {
-                        let mut event_log = compact_state.event_log.lock();
-                        if let Some(ref mut log) = *event_log {
-                            match log.compact_stream(stream_name, now) {
-                                Ok(removed) if removed > 0 => {
-                                    // Phase 25-02: bump per-stream compaction counter.
-                                    let mut m = compact_state.metrics.lock();
-                                    *m.history_compacted_total
-                                        .entry(stream_name.clone())
-                                        .or_insert(0) += 1;
-                                    drop(m);
-                                    eprintln!(
-                                        "Compacted {}: removed {} expired entries",
-                                        stream_name, removed
-                                    );
-                                }
-                                Err(e) => {
-                                    eprintln!("Compaction failed for {}: {}", stream_name, e);
-                                }
-                                _ => {}
+                    if let Some(ref log) = compact_state.event_log {
+                        match log.compact_stream(stream_name, now) {
+                            Ok(removed) if removed > 0 => {
+                                // Phase 25-02: bump per-stream compaction counter.
+                                let mut m = compact_state.metrics.lock();
+                                *m.history_compacted_total
+                                    .entry(stream_name.clone())
+                                    .or_insert(0) += 1;
+                                drop(m);
+                                eprintln!(
+                                    "Compacted {}: removed {} expired entries",
+                                    stream_name, removed
+                                );
                             }
+                            Err(e) => {
+                                eprintln!("Compaction failed for {}: {}", stream_name, e);
+                            }
+                            _ => {}
                         }
                     }
                     // Yield between streams for cooperative scheduling

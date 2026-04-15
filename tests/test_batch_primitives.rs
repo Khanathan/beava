@@ -88,7 +88,7 @@ mod append_many {
     #[test]
     fn empty_batch_returns_zero() {
         let tmp = TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("s1", None).unwrap();
 
         let n = log.append_many("s1", &[], ts(1000)).unwrap();
@@ -101,7 +101,7 @@ mod append_many {
     #[test]
     fn three_events_written_and_readable() {
         let tmp = TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("s1", None).unwrap();
 
         let a: &[u8] = b"payload-A";
@@ -124,7 +124,7 @@ mod append_many {
     #[test]
     fn unregistered_stream_returns_zero_not_error() {
         let tmp = TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         let payload: &[u8] = b"x";
         let events: [&[u8]; 2] = [payload, payload];
         let n = log.append_many("ghost", &events, ts(3000)).unwrap();
@@ -134,7 +134,7 @@ mod append_many {
     #[test]
     fn append_many_after_append_preserves_order() {
         let tmp = TempDir::new().unwrap();
-        let mut log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("s1", None).unwrap();
 
         log.append("s1", b"first", ts(4000)).unwrap();
