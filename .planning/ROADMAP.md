@@ -76,9 +76,13 @@ Plans:
 - [ ] 30-02-PLAN.md — `tally query` / `tally inspect` CLI subcommands in `src/bin/tally_cli.rs` (pure Rust, no Python dep); E2E pytest spinning up a real server, pushing fixture events with the existing Python SDK, asserting `Pipeline.run/get/inspect` behavior + `OutOfScopeError` + CLI subprocess coverage; extend CI to run E2E suite.
 
 ### Phase 31: Streaming mode + watch
-**Goal**: Upgrade catchup to SUBSCRIBE on the same connection; `pipe.watch(key)` diff-emits on every apply; downgrade path (drop sub, keep state).
-**Depends on**: Phase 29
-**Plans**: 0/? — not planned yet
+**Goal**: Upgrade catchup to SUBSCRIBE on the same connection; `pipe.watch(key)` diff-emits on every apply; downgrade path (drop sub, keep state). Wire `tally sync` CLI to emit NDJSON until Ctrl-C.
+**Depends on**: Phase 27 (OP_SUBSCRIBE + SubscriberRegistry), Phase 28 (client feature), Phase 29 (Session state machine), Phase 30 (PyO3 Pipeline)
+**Plans:** 2 plans
+
+Plans:
+- [ ] 31-01-PLAN.md — Client SUBSCRIBE upgrade: Session Streaming/Stopped states, OP_SUBSCRIBE on same socket after LOG_FETCH tail, bg apply thread, parking_lot::RwLock on client StateStore (streaming only), idempotent .stop(), transition-race + server-drop integration tests
+- [ ] 31-02-PLAN.md — PyO3 .watch() generator (GIL-released recv) + streaming-mode .run() + .stop() + __del__ + SubscriberDroppedError; `tally sync` CLI (NDJSON stdout, Ctrl-C → exit 130); Python E2E pytest with mid-stream push
 
 ### Phase 32: Mode switching + resume (stretch)
 **Goal**: Persist client's last-applied seq; reconnect-and-resume; on-the-fly historical → streaming upgrade.
