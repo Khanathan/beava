@@ -14,9 +14,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use tally::engine::pipeline::PipelineEngine;
-use tally::server::protocol::{
-    self, OP_GET, OP_SCAN_RESERVED, OP_SUBSCRIBE_RESERVED, STATUS_ERROR, STATUS_OK,
-};
+use tally::server::protocol::{self, OP_GET, OP_SCAN_RESERVED, STATUS_ERROR, STATUS_OK};
 use tally::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
 use tally::state::store::StateStore;
 
@@ -92,24 +90,8 @@ async fn scan_reserved_returns_error_and_keeps_connection_alive() {
     );
 }
 
-#[tokio::test]
-async fn subscribe_reserved_returns_error_and_keeps_connection_alive() {
-    let (port, _state) = start_test_server().await;
-    let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-
-    let (status, resp) = send_frame(&mut s, OP_SUBSCRIBE_RESERVED, &[]).await;
-    assert_eq!(
-        status, STATUS_ERROR,
-        "SUBSCRIBE reserved must return STATUS_ERROR"
-    );
-    let msg = String::from_utf8_lossy(&resp);
-    assert!(
-        msg.to_lowercase().contains("not implemented") || msg.contains("SUBSCRIBE"),
-        "error message should mention 'not implemented' / 'SUBSCRIBE', got: {}",
-        msg
-    );
-
-    // Connection-survival assertion: a subsequent OP_GET works.
-    let (status, _resp) = send_frame(&mut s, OP_GET, &protocol::write_string("u_probe")).await;
-    assert_eq!(status, STATUS_OK);
-}
+// Phase 27-02: OP_SUBSCRIBE (0x11) was promoted from reserved-stub to a
+// live-subscribe opcode. The old "returns NotImplemented and keeps the
+// connection alive" assertion no longer applies — SUBSCRIBE now takes
+// ownership of the connection for the lifetime of the subscription.
+// Live-subscribe coverage lives in `tests/test_replica_subscribe.rs`.

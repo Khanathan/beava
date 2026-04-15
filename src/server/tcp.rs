@@ -158,6 +158,13 @@ pub struct ConcurrentAppState {
     /// into this registry via [`crate::server::signals::SignalRegistry::record`].
     /// In-memory only; restart loses history. See `src/server/signals.rs`.
     pub signals: crate::server::signals::SharedRegistry,
+
+    /// Phase 27-02: process-wide replica-subscriber registry. Lock-free
+    /// DashMap<conn_id, ReplicaSession> — the ingest hook iterates this
+    /// registry on every successful push and the TCP dispatcher inserts /
+    /// removes entries for live `OP_SUBSCRIBE` sessions. Shared with the
+    /// pipeline engine via `PipelineEngine::install_subscribers`.
+    pub subscriber_registry: Arc<crate::server::replica::SubscriberRegistry>,
 }
 
 /// Phase 20: a single entry in the `/public/recent-events` feed.
@@ -252,6 +259,15 @@ pub fn make_concurrent_state_full(
     admin_token: Option<String>,
     public_mode: bool,
 ) -> SharedState {
+    let signals = crate::server::signals::SignalRegistry::new_default().into_shared();
+    let subscriber_registry = Arc::new(crate::server::replica::SubscriberRegistry::new(
+        signals.clone(),
+    ));
+    // Phase 27-02: wire the registry into the pipeline engine so the ingest
+    // hot path can fire `notify_subscribers` without needing a reference
+    // through the server AppState.
+    let mut engine = engine;
+    engine.install_subscribers(Arc::clone(&subscriber_registry));
     Arc::new(ConcurrentAppState {
         engine: RwLock::new(engine),
         store,
@@ -274,7 +290,8 @@ pub fn make_concurrent_state_full(
         recent_events: PLMutex::new(RecentEventsRing::new()),
         public_mode,
         eviction_tracker: Arc::new(crate::state::eviction_tracker::EvictionTracker::new()),
-        signals: crate::server::signals::SignalRegistry::new_default().into_shared(),
+        signals,
+        subscriber_registry,
     })
 }
 
@@ -656,6 +673,23 @@ async fn handle_connection(
                 writer.flush().await?;
             }
             continue;
+        }
+
+        // Phase 27-02: OP_SUBSCRIBE takes ownership of the connection for
+        // the lifetime of the subscription (per user direction §1). Any
+        // accumulated async-push errors are flushed first, then
+        // `handle_subscribe` runs the subscribe loop inline (select over
+        // notification-drain and reader-EOF). When it returns, the
+        // connection is done — we return from `handle_connection` rather
+        // than re-entering the main read loop.
+        if let Command::Subscribe {
+            admin_token,
+            scope,
+        } = cmd
+        {
+            flush_drain(&mut writer, &mut pending_drain).await?;
+            handle_subscribe(&mut reader, &mut writer, &admin_token, scope, &state).await?;
+            return Ok(());
         }
 
         // Sync dispatch path. cmd is one of Mset/Flush/other.
@@ -1825,6 +1859,13 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
         Command::SnapshotFetch { .. } => Err(TallyError::Protocol(
             "OP_SNAPSHOT_FETCH not supported on this dispatch path (mix with async pushes not allowed)".into(),
         )),
+        // Phase 27-02: same reasoning as SnapshotFetch above. Subscribe
+        // takes ownership of the connection and is dispatched at the
+        // outer loop in `handle_connection`. Landing here means the mix
+        // invariant was violated — return a structured error.
+        Command::Subscribe { .. } => Err(TallyError::Protocol(
+            "OP_SUBSCRIBE not supported on this dispatch path (connection ownership conflict)".into(),
+        )),
     }
 }
 
@@ -2267,6 +2308,125 @@ async fn handle_snapshot_fetch(
 
     // (7c) Metric bump.
     crate::server::replica::record_snapshot_bytes_sent(payload_bytes.len() as u64);
+    Ok(())
+}
+
+/// Phase 27-02: live-subscribe handler.
+///
+/// Takes ownership of the connection for the whole subscription lifetime
+/// (user direction §1). Flow:
+///
+/// 1. Admin-token gate (same shape as `handle_snapshot_fetch`). Failure
+///    emits a `safety/error` signal and a `STATUS_ERROR` frame; returns.
+/// 2. Collect known streams, run `validate_scope`. Rejection →
+///    `STATUS_ERROR` frame + return.
+/// 3. Create a bounded `mpsc::channel<ReplicaEvent>(10_000)` (user
+///    direction §A1). Register the session in
+///    `state.subscriber_registry`; the ingest hook on the pipeline
+///    engine (Task 2) now observes this subscriber.
+/// 4. `tokio::select!` in a loop between:
+///       - `rx.recv()` → encode event frame and write to the socket.
+///         Write failure = disconnect; break out.
+///       - a reader-EOF probe (`reader.fill_buf()` returning 0 bytes or
+///         erroring) → client closed the socket; break out.
+/// 5. On exit: `drop_subscriber(conn_id, "disconnect")`. The registry
+///    drop also closes the Sender, so if the loop exited via reader-EOF
+///    (not channel-closed) the residual queued events are silently
+///    discarded, which is intentional — disconnect trumps delivery.
+///
+/// This function does NOT spawn the drain task on a separate tokio task
+/// (plan action wording notwithstanding) — running it inline keeps the
+/// `BufReader` / `BufWriter` halves together without unsafe ownership
+/// juggling across tasks, and the outer `handle_connection` already runs
+/// per-connection on its own tokio task, so we inherit the isolation.
+async fn handle_subscribe(
+    reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
+    writer: &mut BufWriter<tokio::net::tcp::OwnedWriteHalf>,
+    admin_token: &str,
+    scope: protocol::Scope,
+    state: &SharedState,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // (1) Admin-token gate (same shape as snapshot-fetch; empty expected
+    // token is not a supported configuration).
+    let authed = match state.admin_token.as_deref() {
+        Some(expected) if !expected.is_empty() && expected == admin_token => true,
+        _ => false,
+    };
+    if !authed {
+        // Peer address — the OwnedReadHalf doesn't expose it; we record
+        // "unknown" for the signal and rely on operators to correlate via
+        // the signal's first_seen timestamp.
+        crate::server::signals::emit_replica_auth_failure(&state.signals, "unknown");
+        let resp = protocol::encode_response(STATUS_ERROR, b"unauthorized");
+        writer.write_all(&resp).await?;
+        writer.flush().await?;
+        return Ok(());
+    }
+
+    // (2) Known-streams + validate_scope.
+    let known: std::collections::HashSet<String> = {
+        let engine = state.engine.read();
+        engine.list_streams().map(|s| s.name.clone()).collect()
+    };
+    if let Err(e) = protocol::validate_scope(&scope, &known) {
+        let msg = format!("invalid scope: {}", e);
+        let resp = protocol::encode_response(STATUS_ERROR, msg.as_bytes());
+        writer.write_all(&resp).await?;
+        writer.flush().await?;
+        return Ok(());
+    }
+
+    // (3) Register session.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<
+        crate::server::replica::ReplicaEvent,
+    >(crate::server::replica::SUBSCRIBER_CHANNEL_CAPACITY);
+    let conn_id = state.subscriber_registry.register(scope, tx);
+
+    // (4) Drain loop. We use a tokio::select! over:
+    //   - rx.recv(): next queued event, encode + write + flush.
+    //   - reader.read_u8(): any byte from the client. SUBSCRIBE doesn't
+    //     accept any further frames, so:
+    //       Ok(_) = protocol violation → drop and close.
+    //       Err(UnexpectedEof) = clean disconnect → drop and close.
+    //       Err(other)         = network error → drop and close.
+    use tokio::io::AsyncReadExt;
+
+    loop {
+        tokio::select! {
+            biased;
+            maybe_ev = rx.recv() => {
+                match maybe_ev {
+                    Some(ev) => {
+                        let frame = protocol::encode_event_frame(ev.timestamp, &ev.payload);
+                        if writer.write_all(&frame).await.is_err() {
+                            break;
+                        }
+                        if writer.flush().await.is_err() {
+                            break;
+                        }
+                    }
+                    None => {
+                        // Registry dropped our sender (e.g. backpressure
+                        // drop on a notify). Exit the loop; the drop
+                        // counter was already bumped by drop_subscriber.
+                        return Ok(());
+                    }
+                }
+            }
+            read_result = reader.read_u8() => {
+                // Any activity from the client is a disconnect (clean EOF
+                // or a protocol violation — either way we're done).
+                let _ = read_result;
+                break;
+            }
+        }
+    }
+
+    // (5) Clean-up. Safe to call even if the session was already removed
+    // (drop_subscriber is idempotent).
+    state
+        .subscriber_registry
+        .drop_subscriber(conn_id, "disconnect");
     Ok(())
 }
 

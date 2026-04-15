@@ -406,6 +406,54 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
             ));
         }
     }
+    // -------------------------------------------------------------
+    // Phase 27-01 + 27-02: replica metric surface.
+    //   - tally_replica_snapshot_bytes_sent_total  (counter, 27-01)
+    //   - tally_replica_subscriptions_active       (gauge,   27-02)
+    //   - tally_replica_events_pushed_total{stream}(counter, 27-02)
+    //   - tally_replica_subscribers_dropped_total{reason}(counter, 27-02)
+    // -------------------------------------------------------------
+    body.push_str(
+        "# HELP tally_replica_snapshot_bytes_sent_total Total bytes written as \
+         OP_SNAPSHOT_FETCH payload-frame bodies\n\
+         # TYPE tally_replica_snapshot_bytes_sent_total counter\n",
+    );
+    body.push_str(&format!(
+        "tally_replica_snapshot_bytes_sent_total {}\n",
+        crate::server::replica::snapshot_bytes_sent_total()
+    ));
+    body.push_str(
+        "# HELP tally_replica_subscriptions_active Currently-active OP_SUBSCRIBE sessions\n\
+         # TYPE tally_replica_subscriptions_active gauge\n",
+    );
+    body.push_str(&format!(
+        "tally_replica_subscriptions_active {}\n",
+        state.subscriber_registry.active_count()
+    ));
+    body.push_str(
+        "# HELP tally_replica_events_pushed_total Events delivered over \
+         OP_SUBSCRIBE sockets, per stream\n\
+         # TYPE tally_replica_events_pushed_total counter\n",
+    );
+    for (stream, count) in crate::server::replica::events_pushed_snapshot() {
+        body.push_str(&format!(
+            "tally_replica_events_pushed_total{{stream=\"{}\"}} {}\n",
+            escape(&stream),
+            count
+        ));
+    }
+    body.push_str(
+        "# HELP tally_replica_subscribers_dropped_total OP_SUBSCRIBE subscribers \
+         dropped, labelled by reason\n\
+         # TYPE tally_replica_subscribers_dropped_total counter\n",
+    );
+    for (reason, count) in crate::server::replica::subscribers_dropped_snapshot() {
+        body.push_str(&format!(
+            "tally_replica_subscribers_dropped_total{{reason=\"{}\"}} {}\n",
+            reason, count
+        ));
+    }
+
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4")],

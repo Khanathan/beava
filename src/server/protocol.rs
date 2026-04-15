@@ -50,7 +50,39 @@ pub const OP_GET_MULTI: u8 = 0x0D;
 /// error; the connection stays open so clients can probe capabilities
 /// without tearing down their session.
 pub const OP_SCAN_RESERVED: u8 = 0x10;
-pub const OP_SUBSCRIBE_RESERVED: u8 = 0x11;
+
+/// Phase 27-02: live-subscribe opcode.
+///
+/// Request payload (mirrors `OP_SNAPSHOT_FETCH`'s shape exactly):
+///   `[u16 BE token_len][token_bytes][Scope]`
+///
+/// Admin-token is length-prefixed in-band; scope follows and is decoded
+/// by `read_scope`. The TCP handler takes ownership of the connection
+/// for the lifetime of the subscription — **no other opcodes are
+/// accepted on a socket that has sent SUBSCRIBE**. A successful
+/// subscription's response is an open-ended stream of per-event frames
+/// until the client disconnects or back-pressure drops the subscriber.
+///
+/// Per-event frame shape (one frame per delivered event — NO global seq):
+///   `[u32 BE frame_len][u8 tag=0x03][u64 BE ts_secs][u32 BE ts_nanos]
+///    [u32 BE payload_len][payload_bytes]`
+///
+/// where `payload_bytes` is the serialized event JSON the client
+/// originally pushed. `tag=0x03` (`REPLICA_FRAME_TAG_EVENT`) is chosen
+/// to disambiguate from `STATUS_ERROR=0x01` and
+/// `REPLICA_FRAME_TAG_PAYLOAD=0x02` (user direction §7: pick a
+/// non-conflicting tag for events; keep 27-01's 0x01/0x02 shapes
+/// intact).
+///
+/// Auth failure / invalid scope: a single `STATUS_ERROR` frame is
+/// emitted and the socket is closed; no registry entry is created.
+pub const OP_SUBSCRIBE: u8 = 0x11;
+
+/// Legacy alias retained for tests / clients that still reference the
+/// old name. 27-02 promoted this opcode from reserved-stub to
+/// live-subscribe; call sites should migrate to `OP_SUBSCRIBE`.
+#[deprecated(note = "use OP_SUBSCRIBE — the opcode is no longer a reserved stub")]
+pub const OP_SUBSCRIBE_RESERVED: u8 = OP_SUBSCRIBE;
 
 /// Phase 27-01: Scope-aware snapshot fetch for replica clients.
 ///
@@ -82,6 +114,11 @@ pub const OP_SNAPSHOT_FETCH: u8 = 0x12;
 // u32 BE length prefix; same framing shape as opcode/status frames).
 pub const REPLICA_FRAME_TAG_HEADER: u8 = 0x01;
 pub const REPLICA_FRAME_TAG_PAYLOAD: u8 = 0x02;
+
+/// Phase 27-02: per-event frame tag on an `OP_SUBSCRIBE` socket.
+/// Distinct from `STATUS_ERROR=0x01` and `REPLICA_FRAME_TAG_PAYLOAD=0x02`
+/// so SUBSCRIBE clients disambiguate by tag byte (user direction §7).
+pub const REPLICA_FRAME_TAG_EVENT: u8 = 0x03;
 
 // Response status codes
 pub const STATUS_OK: u8 = 0x00;
@@ -176,6 +213,13 @@ pub enum Command {
     /// STATUS_ERROR "unauthorized" unless the server also has `admin_token`
     /// set to `Some("")` (not a supported configuration).
     SnapshotFetch { admin_token: String, scope: Scope },
+    /// Phase 27-02: open a live-subscribe stream. The wire shape matches
+    /// `SnapshotFetch` — the same `[u16 token_len][token][Scope]` payload
+    /// mirrored across both replica opcodes. The handler owns the socket
+    /// for the subscription's lifetime; `handle_connection` returns after
+    /// spawning the drain task, so SUBSCRIBE cannot mix with any other
+    /// opcode on the same connection.
+    Subscribe { admin_token: String, scope: Scope },
 }
 
 /// Phase 27-01: Scope describes the subset of entities a replica client wants.
@@ -405,6 +449,34 @@ pub fn parse_frame(data: &[u8]) -> Result<(u8, &[u8]), TallyError> {
     let opcode = data[4];
     let payload = &data[5..4 + length];
     Ok((opcode, payload))
+}
+
+/// Phase 27-02: encode one `OP_SUBSCRIBE` per-event frame.
+///
+/// Wire shape (see `OP_SUBSCRIBE` doc for rationale):
+///   `[u32 BE frame_len][u8 tag=REPLICA_FRAME_TAG_EVENT]
+///    [u64 BE ts_secs][u32 BE ts_nanos]
+///    [u32 BE payload_len][payload_bytes]`
+///
+/// `timestamp` is converted via `UNIX_EPOCH`; clock-skew (SystemTime pre-
+/// epoch) emits zero for both secs and nanos, matching the snapshot-fetch
+/// header treatment. `payload` is the raw event JSON bytes — the caller
+/// is responsible for serialization.
+pub fn encode_event_frame(timestamp: std::time::SystemTime, payload: &[u8]) -> Vec<u8> {
+    let (secs, nanos) = match timestamp.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => (d.as_secs(), d.subsec_nanos()),
+        Err(_) => (0u64, 0u32),
+    };
+    // body = tag(1) + ts_secs(8) + ts_nanos(4) + payload_len(4) + payload
+    let body_len = 1 + 8 + 4 + 4 + payload.len();
+    let mut out = Vec::with_capacity(4 + body_len);
+    out.extend_from_slice(&(body_len as u32).to_be_bytes());
+    out.push(REPLICA_FRAME_TAG_EVENT);
+    out.extend_from_slice(&secs.to_be_bytes());
+    out.extend_from_slice(&nanos.to_be_bytes());
+    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    out.extend_from_slice(payload);
+    out
 }
 
 /// Encode a response: [4-byte BE length][status byte][payload].
@@ -766,9 +838,14 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
         // where a STATUS_ERROR response + connection-keep-alive is the
         // established flow for logical errors (compare to `unknown table`).
         OP_SCAN_RESERVED => Ok(Command::ReservedNotImplemented { op_name: "SCAN" }),
-        OP_SUBSCRIBE_RESERVED => Ok(Command::ReservedNotImplemented {
-            op_name: "SUBSCRIBE",
-        }),
+        OP_SUBSCRIBE => {
+            // Phase 27-02: mirrors OP_SNAPSHOT_FETCH's wire shape.
+            // `[u16 token_len][token][Scope]`. The handler enforces
+            // admin-auth and scope-validation semantically.
+            let admin_token = read_string(&mut buf)?;
+            let scope = read_scope(&mut buf)?;
+            Ok(Command::Subscribe { admin_token, scope })
+        }
         OP_SNAPSHOT_FETCH => {
             // Wire: [u16 token_len][token_bytes][scope_bytes]. See the doc
             // comment on `OP_SNAPSHOT_FETCH` for rationale.
@@ -2061,13 +2138,27 @@ mod tests {
     }
 
     #[test]
-    fn op_subscribe_reserved_parses_as_marker_variant() {
-        let cmd = parse_command(OP_SUBSCRIBE_RESERVED, &[]).unwrap();
+    fn op_subscribe_parses_token_and_scope() {
+        // Phase 27-02: OP_SUBSCRIBE was promoted from reserved-stub to a
+        // real opcode. Wire shape matches OP_SNAPSHOT_FETCH:
+        //   [u16 token_len][token][Scope]
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&write_string("tok"));
+        let scope = Scope {
+            streams: vec!["orders".into()],
+            keys: None,
+            key_prefix: None,
+            pull: "all".into(),
+        };
+        write_scope(&mut payload, &scope);
+        let cmd = parse_command(OP_SUBSCRIBE, &payload).unwrap();
         match cmd {
-            Command::ReservedNotImplemented { op_name } => {
-                assert_eq!(op_name, "SUBSCRIBE");
+            Command::Subscribe { admin_token, scope } => {
+                assert_eq!(admin_token, "tok");
+                assert_eq!(scope.streams, vec!["orders".to_string()]);
+                assert_eq!(scope.pull, "all");
             }
-            other => panic!("expected ReservedNotImplemented, got {:?}", other),
+            other => panic!("expected Subscribe, got {:?}", other),
         }
     }
 

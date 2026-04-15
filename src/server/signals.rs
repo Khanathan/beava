@@ -547,6 +547,53 @@ pub fn emit_config_recommendations(
     }
 }
 
+/// Phase 27-02: operational/warning signal when a replica subscriber is
+/// dropped because its bounded mpsc channel (cap 10_000) filled up. The
+/// drain task is not reading fast enough — back-pressure is on the
+/// subscriber's side, not the ingest path (the push never blocks).
+pub fn emit_replica_drop_backpressure(registry: &SharedRegistry, conn_id: u64) {
+    let sig = Signal::new(
+        format!("replica.drop.backpressure.{}", conn_id),
+        Severity::Warning,
+        Category::Operational,
+        "Replica subscriber dropped (backpressure)",
+        format!(
+            "Subscriber conn_id={} dropped because its 10_000-slot \
+             notification buffer filled. The client is not draining fast \
+             enough; the server does NOT block ingest on slow subscribers.",
+            conn_id
+        ),
+        serde_json::json!({
+            "conn_id": conn_id,
+            "reason": "backpressure",
+            "buffer_capacity": 10_000,
+        }),
+    );
+    registry.write().record(sig);
+}
+
+/// Phase 27-02: safety/error signal when a replica subscriber (or
+/// snapshot fetch) fails admin-token authentication. `peer` is the
+/// remote socket address as a string (or `"unknown"` if not available).
+pub fn emit_replica_auth_failure(registry: &SharedRegistry, peer: &str) {
+    let sig = Signal::new(
+        format!("replica.auth.failure.{}", peer),
+        Severity::Error,
+        Category::Safety,
+        "Replica auth failure",
+        format!(
+            "Peer {} failed admin-token check on a replica opcode \
+             (SUBSCRIBE / SNAPSHOT_FETCH).",
+            peer
+        ),
+        serde_json::json!({
+            "peer": peer,
+            "reason": "admin_token_mismatch",
+        }),
+    );
+    registry.write().record(sig);
+}
+
 /// Emit a `snapshot.failure` operational signal. Called from the
 /// snapshot-writer's error branch in `main.rs`.
 pub fn emit_snapshot_failure(registry: &SharedRegistry, err: &str) {

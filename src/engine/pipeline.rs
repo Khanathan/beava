@@ -434,6 +434,16 @@ pub struct PipelineEngine {
     /// Phase 24-04 — per-stream late-drop counter. Exported as
     /// `tally_late_events_dropped_total{stream}` via `/metrics`.
     pub late_drops: SharedLateDrops,
+
+    /// Phase 27-02 — optional handle to the process-wide subscriber
+    /// registry. Set by `install_subscribers` at server startup (see
+    /// `make_concurrent_state_full`); `None` in unit-test harnesses that
+    /// construct a bare `PipelineEngine::new()`. The ingest hot path
+    /// (`push_internal`) calls `notify_subscribers` through this handle
+    /// on every successful push — primary or cascade — so there is one
+    /// hook site regardless of dispatch path (user direction §3).
+    pub subscriber_registry:
+        Option<std::sync::Arc<crate::server::replica::SubscriberRegistry>>,
 }
 
 /// Create an operator instance from a FeatureDef (non-derive only).
@@ -667,7 +677,22 @@ impl PipelineEngine {
             downstream_map: AHashMap::new(),
             watermarks: parking_lot::RwLock::new(WatermarkTracker::new()),
             late_drops: parking_lot::RwLock::new(LateDropCounters::new()),
+            subscriber_registry: None,
         }
+    }
+
+    /// Phase 27-02: attach a `SubscriberRegistry` to this engine. Called
+    /// exactly once by `make_concurrent_state_full` during server startup
+    /// (existing test constructors that never touch the TCP server leave
+    /// this as `None` and `push_internal`'s hook becomes a zero-cost
+    /// no-op). Subsequent `OP_SUBSCRIBE` sessions are registered against
+    /// this same instance so the ingest hook can `try_send` into every
+    /// live subscriber's bounded mpsc.
+    pub fn install_subscribers(
+        &mut self,
+        registry: std::sync::Arc<crate::server::replica::SubscriberRegistry>,
+    ) {
+        self.subscriber_registry = Some(registry);
     }
 
     /// Register a stream definition. Validates derive expressions are parseable.
@@ -956,6 +981,18 @@ impl PipelineEngine {
                 }
             }
         } // stream_state borrow dropped here
+
+        // Phase 27-02: notify replica subscribers BEFORE the read_features
+        // fast-path early-return so async (OP_PUSH_ASYNC) pushes also wake
+        // live subscribers. The hook is non-blocking (`try_send` only) so
+        // it preserves the async hot-path characteristics. Hook placement
+        // is post-state-mutation (operators.push above) so we only notify
+        // on a successful append.
+        if let Some(reg) = &self.subscriber_registry {
+            if let Ok(payload_bytes) = serde_json::to_vec(event) {
+                reg.notify_subscribers(stream_name, &key, &payload_bytes, now);
+            }
+        }
 
         // 5. Collect feature values for this stream only (PUSH returns primary stream features).
         // PERF fast path: when called from the async push path (OP_PUSH_ASYNC),
