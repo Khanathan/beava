@@ -74,6 +74,16 @@ from tally._agg_ops import (
 # OperatorBase is still referenced by Plan 21-03 aggregation-spec descriptors.
 from tally._operators import OperatorBase
 
+# Phase 39-01: Python-native `tl.fork()` DX layer over the Phase 37 CLI.
+from tally._fork import (
+    fork,
+    ForkedReplica,
+    ForkError,
+    ForkValidationError,
+    ForkTimeoutError,
+    ForkSubprocessError,
+)
+
 __all__ = [
     # Types & exceptions
     "FeatureResult",
@@ -127,4 +137,11 @@ __all__ = [
     "lag",
     # Internal (used by Plan 21-03)
     "OperatorBase",
+    # Python-native fork DX (Phase 39-01)
+    "fork",
+    "ForkedReplica",
+    "ForkError",
+    "ForkValidationError",
+    "ForkTimeoutError",
+    "ForkSubprocessError",
 ]
