@@ -12,6 +12,10 @@
 use std::env;
 use std::process;
 
+use tally::client::clone::{run_clone, CloneArgs, CloneError};
+use tally::client::wire::Scope;
+use tally::client::{FrozenClient, SessionMode};
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Subcommand {
     Clone,
@@ -26,6 +30,7 @@ struct ParsedArgs {
     key_prefix: Option<String>,
     mode: String,
     token: Option<String>,
+    dump_json: bool,
 }
 
 fn print_usage() {
@@ -131,6 +136,10 @@ fn parse_args(argv: &[String]) -> Result<(Subcommand, ParsedArgs), String> {
                 parsed.token = Some(argv[i + 1].clone());
                 i += 2;
             }
+            "--dump-json" => {
+                parsed.dump_json = true;
+                i += 1;
+            }
             "-h" | "--help" => {
                 return Err("__help__".to_string());
             }
@@ -190,11 +199,116 @@ fn handle_clone(args: ParsedArgs) -> i32 {
         );
         return 2;
     }
-    println!(
-        "tally clone: not implemented yet — Phase 29 will wire the session manager + snapshot fetch + log consumer."
-    );
-    println!("(parsed) {}", format_scope(&args));
-    0
+    let remote = match args.remote.clone() {
+        Some(r) => r,
+        None => {
+            eprintln!("error: --remote is required");
+            return 2;
+        }
+    };
+    let scope = Scope {
+        streams: args.streams.clone(),
+        keys: args.keys.clone(),
+        key_prefix: args.key_prefix.clone(),
+        pull: "all".to_string(),
+    };
+    let clone_args = CloneArgs {
+        remote,
+        scope,
+        token: args.token.clone(),
+        mode: SessionMode::Historical,
+        max_attempts: 5,
+    };
+
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: failed to build tokio runtime: {}", e);
+            return 1;
+        }
+    };
+    let result = rt.block_on(run_clone(&clone_args));
+    match result {
+        Ok(frozen) => {
+            if args.dump_json {
+                emit_json_dump(&frozen);
+            } else {
+                let rfc = rfc3339(frozen.snapshot_taken_at);
+                let n = frozen.iter_entities().len();
+                println!("tally clone: ok — snapshot_taken_at={} entities={}", rfc, n);
+            }
+            0
+        }
+        Err(CloneError::StreamingNotSupported) => {
+            eprintln!("error: streaming mode not supported (Phase 31 will enable it)");
+            2
+        }
+        Err(e) => {
+            eprintln!("tally clone failed: {}", e);
+            1
+        }
+    }
+}
+
+/// Serialize `FrozenClient` state to stdout as JSON. Schema:
+/// ```json
+/// {
+///   "snapshot_taken_at": "2026-04-15T10:23:45.123Z",
+///   "scope": { "streams": [...], "keys": [...]|null, "key_prefix": null, "pull": "all" },
+///   "entities": [ {"stream": "...", "key": "...", "last_event_at_epoch_ms": 12345|null}, ... ]
+/// }
+/// ```
+/// The `value` field is intentionally minimal — we emit per-(stream, key) rows
+/// keyed by `last_event_at` rather than a full operator dump, because
+/// `SerializableEntityState` contains non-JSON-friendly postcard-serializable
+/// variants. Sufficient for Phase 28-04's in-scope/out-of-scope filter check;
+/// Phase 30's Python binding will evolve a richer dump.
+fn emit_json_dump(fc: &FrozenClient) {
+    use serde_json::json;
+    let scope = fc.scope();
+    let entities: Vec<serde_json::Value> = fc
+        .iter_entities()
+        .into_iter()
+        .map(|(stream, key, state)| {
+            // Find the matching per-stream state for last_event_at.
+            let last_ms: Option<u128> = state
+                .streams
+                .iter()
+                .find(|(sn, _)| sn == &stream)
+                .and_then(|(_, s)| s.last_event_at)
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis());
+            json!({
+                "stream": stream,
+                "key": key,
+                "last_event_at_epoch_ms": last_ms,
+            })
+        })
+        .collect();
+    let out = json!({
+        "snapshot_taken_at": rfc3339(fc.snapshot_taken_at),
+        "scope": {
+            "streams": scope.streams,
+            "keys": scope.keys,
+            "key_prefix": scope.key_prefix,
+            "pull": scope.pull,
+        },
+        "entities": entities,
+    });
+    println!("{}", serde_json::to_string(&out).unwrap_or_else(|_| "{}".into()));
+}
+
+/// Minimal RFC3339-ish formatting of a `SystemTime` without pulling in a new
+/// time crate. Output shape: `"<secs>.<nanos>s since unix epoch"` — good
+/// enough for the dev/test `--dump-json` hook; Phase 30 can upgrade.
+fn rfc3339(t: std::time::SystemTime) -> String {
+    match t.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => format!("{}.{:09}s", d.as_secs(), d.subsec_nanos()),
+        Err(_) => "pre-epoch".to_string(),
+    }
 }
 
 fn handle_sync(args: ParsedArgs) -> i32 {
@@ -241,7 +355,9 @@ mod tests {
         x.to_string()
     }
 
-    // Test 1: clone happy path.
+    // Test 1: clone happy path (parser only — handle_clone now makes a real
+    // network call, so its exit behavior is covered by the integration test
+    // `tests/integration/test_tally_clone.py`).
     #[test]
     fn clone_happy_path_parses() {
         let argv = vec![s("clone"), s("--remote"), s("foo:6400"), s("--streams"), s("Transactions,Logins")];
@@ -250,8 +366,7 @@ mod tests {
         assert_eq!(parsed.remote.as_deref(), Some("foo:6400"));
         assert_eq!(parsed.streams, vec![s("Transactions"), s("Logins")]);
         assert_eq!(parsed.mode, "historical");
-        // Handler returns 0 in historical mode.
-        assert_eq!(handle_clone(parsed), 0);
+        assert!(!parsed.dump_json);
     }
 
     // Test 2: sync happy path.
@@ -331,7 +446,25 @@ mod tests {
         assert_eq!(err, "__help__");
     }
 
-    // Test 8: unknown subcommand errors.
+    // Test 8 (new for 28-04): --dump-json parses to args.dump_json = true and
+    // is rejected when passed an extra value (it's a boolean flag).
+    #[test]
+    fn dump_json_flag_parses() {
+        let argv = vec![
+            s("clone"), s("--remote"), s("foo:6400"),
+            s("--streams"), s("Txn"),
+            s("--dump-json"),
+        ];
+        let (sub, parsed) = parse_args(&argv).expect("should parse");
+        assert_eq!(sub, Subcommand::Clone);
+        assert!(parsed.dump_json);
+        // And default is false when not passed.
+        let argv2 = vec![s("clone"), s("--remote"), s("foo:6400"), s("--streams"), s("Txn")];
+        let (_sub, parsed2) = parse_args(&argv2).unwrap();
+        assert!(!parsed2.dump_json);
+    }
+
+    // Test 9: unknown subcommand errors.
     #[test]
     fn unknown_subcommand_errors() {
         let argv = vec![s("foo")];

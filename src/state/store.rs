@@ -738,6 +738,42 @@ impl StateStore {
             .collect()
     }
 
+    /// Phase 28-04: bulk-insert aggregated entity state from a remote snapshot.
+    ///
+    /// Used by the client-side snapshot bootstrap (`tally::client::clone::run_clone`).
+    /// Does **NOT** run events through `apply_event` — the input is aggregated
+    /// state from a `BaseSnapshotState`; replaying would double-count.
+    ///
+    /// Unlike `restore_from_snapshot`, this does NOT clear existing entities.
+    /// Overlapping keys are overwritten (last write wins), matching the
+    /// single-shot historical-clone use case where the store starts empty.
+    ///
+    /// No side effects: no dirty-tracking, no listener notify, no metric bump.
+    pub fn bulk_load(&self, entities: Vec<(String, SerializableEntityState)>) {
+        for (key, state) in entities {
+            let mut streams = AHashMap::new();
+            for (stream_name, stream_state) in state.streams {
+                streams.insert(
+                    stream_name,
+                    StreamEntityState {
+                        operators: stream_state.operators,
+                        last_event_at: stream_state.last_event_at,
+                    },
+                );
+            }
+            let entity = EntityState {
+                streams,
+                static_features: state.static_features.into_iter().collect(),
+                table_rows: state
+                    .table_rows
+                    .into_iter()
+                    .map(|(k, v)| (k, TableRow::from(v)))
+                    .collect(),
+            };
+            self.entities.insert(key, entity);
+        }
+    }
+
     /// Restore state from a snapshot (v4 format). Clears existing state first.
     pub fn restore_from_snapshot(&self, entities: Vec<(String, SerializableEntityState)>) {
         self.entities.clear();
@@ -1732,6 +1768,96 @@ mod tests {
         let valid_features = ahash::AHashMap::new();
         let snapshot = store.clone_dirty_for_snapshot_with_gc(&valid_features);
         assert!(snapshot.is_empty());
+    }
+
+    // ======================== bulk_load Tests (Phase 28-04) ========================
+
+    fn _entity_with_stream(stream_name: &str, now: SystemTime) -> crate::state::snapshot::SerializableEntityState {
+        let mut op = OperatorState::Count(CountOp::new(
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+        ));
+        op.push(&serde_json::json!({}), None, now).unwrap();
+        crate::state::snapshot::SerializableEntityState {
+            streams: vec![(
+                stream_name.to_string(),
+                SerializableStreamEntityState {
+                    operators: vec![("count".to_string(), op)],
+                    last_event_at: Some(now),
+                },
+            )],
+            static_features: vec![],
+            table_rows: vec![],
+        }
+    }
+
+    #[test]
+    fn bulk_load_empty_input_is_noop() {
+        let store = StateStore::new();
+        store.bulk_load(vec![]);
+        assert_eq!(store.entity_count(), 0);
+    }
+
+    #[test]
+    fn bulk_load_single_entity_inserts_without_clearing() {
+        let store = StateStore::new();
+        let now = ts(1000);
+        // Pre-populate so we can verify bulk_load does NOT clear.
+        store.get_or_create_entity("preexisting");
+        assert_eq!(store.entity_count(), 1);
+        store.bulk_load(vec![("u_a".to_string(), _entity_with_stream("Txn", now))]);
+        assert_eq!(store.entity_count(), 2);
+        assert!(store.get_entity("u_a").is_some());
+        assert!(store.get_entity("preexisting").is_some());
+        let e = store.get_entity("u_a").unwrap();
+        assert_eq!(e.streams.get("Txn").unwrap().last_event_at, Some(now));
+    }
+
+    #[test]
+    fn bulk_load_overlapping_keys_overwrite() {
+        let store = StateStore::new();
+        let earlier = ts(1000);
+        let later = ts(2000);
+        store.bulk_load(vec![("u_a".to_string(), _entity_with_stream("Txn", earlier))]);
+        store.bulk_load(vec![("u_a".to_string(), _entity_with_stream("Txn", later))]);
+        assert_eq!(store.entity_count(), 1);
+        let e = store.get_entity("u_a").unwrap();
+        assert_eq!(e.streams.get("Txn").unwrap().last_event_at, Some(later));
+    }
+
+    #[test]
+    fn bulk_load_multi_stream_entity() {
+        let store = StateStore::new();
+        let now = ts(1000);
+        let mut e = _entity_with_stream("StreamA", now);
+        // Add a second stream to the same entity.
+        let mut op = OperatorState::Count(CountOp::new(
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+        ));
+        op.push(&serde_json::json!({}), None, now).unwrap();
+        e.streams.push((
+            "StreamB".to_string(),
+            SerializableStreamEntityState {
+                operators: vec![("count".to_string(), op)],
+                last_event_at: Some(now),
+            },
+        ));
+        store.bulk_load(vec![("u_multi".to_string(), e)]);
+        let got = store.get_entity("u_multi").unwrap();
+        assert_eq!(got.streams.len(), 2);
+        assert!(got.streams.contains_key("StreamA"));
+        assert!(got.streams.contains_key("StreamB"));
+    }
+
+    #[test]
+    fn bulk_load_does_not_mark_dirty() {
+        // Regression guard: bulk_load must NOT record dirty keys — a clone
+        // population is not a local mutation event.
+        let store = StateStore::new();
+        let now = ts(1000);
+        store.bulk_load(vec![("u_a".to_string(), _entity_with_stream("Txn", now))]);
+        assert_eq!(store.dirty_count(), 0);
     }
 
     // ======================== collect_table_row_view Tests (Phase 25-01) ========================

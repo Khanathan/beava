@@ -23,6 +23,7 @@ rust-embed = { version = "8.11", features = ["mime-guess", "debug-embed"] }
 dashmap = "6.1"
 parking_lot = "0.12"
 ordered-float = { version = "4", features = ["serde"] }
+rand = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
