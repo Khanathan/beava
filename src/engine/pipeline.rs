@@ -442,6 +442,7 @@ pub struct PipelineEngine {
     /// (`push_internal`) calls `notify_subscribers` through this handle
     /// on every successful push — primary or cascade — so there is one
     /// hook site regardless of dispatch path (user direction §3).
+    #[cfg(feature = "server")]
     pub subscriber_registry:
         Option<std::sync::Arc<crate::server::replica::SubscriberRegistry>>,
 }
@@ -677,6 +678,7 @@ impl PipelineEngine {
             downstream_map: AHashMap::new(),
             watermarks: parking_lot::RwLock::new(WatermarkTracker::new()),
             late_drops: parking_lot::RwLock::new(LateDropCounters::new()),
+            #[cfg(feature = "server")]
             subscriber_registry: None,
         }
     }
@@ -688,6 +690,7 @@ impl PipelineEngine {
     /// no-op). Subsequent `OP_SUBSCRIBE` sessions are registered against
     /// this same instance so the ingest hook can `try_send` into every
     /// live subscriber's bounded mpsc.
+    #[cfg(feature = "server")]
     pub fn install_subscribers(
         &mut self,
         registry: std::sync::Arc<crate::server::replica::SubscriberRegistry>,
@@ -988,6 +991,7 @@ impl PipelineEngine {
         // it preserves the async hot-path characteristics. Hook placement
         // is post-state-mutation (operators.push above) so we only notify
         // on a successful append.
+        #[cfg(feature = "server")]
         if let Some(reg) = &self.subscriber_registry {
             if let Ok(payload_bytes) = serde_json::to_vec(event) {
                 reg.notify_subscribers(stream_name, &key, &payload_bytes, now);

@@ -891,7 +891,7 @@ pub fn v0_source_to_stream_def(
     // Table sources → DEFAULT_TABLE_TTL (30d).
     // Stream sources → DEFAULT_STREAM_HISTORY_TTL (90d) for event-log retention.
     // The SDK may emit "forever" / "0" — those flow through unchanged.
-    use crate::server::protocol::parse_duration_str;
+    use crate::duration::parse_duration_str;
     let entity_ttl = if desc.kind == "table" {
         let s = desc
             .entity_ttl

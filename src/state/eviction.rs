@@ -129,7 +129,7 @@ pub fn evict_expired_table_rows(
     tracker: &crate::state::eviction_tracker::EvictionTracker,
     now: SystemTime,
 ) -> usize {
-    use crate::server::protocol::is_forever_ttl;
+    use crate::duration::is_forever_ttl;
     use crate::state::store::TableRowState;
 
     let mut total_evicted = 0;
