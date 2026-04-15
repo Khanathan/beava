@@ -67,6 +67,38 @@ static DROPPED_DISCONNECT: AtomicU64 = AtomicU64::new(0);
 static EVENTS_PUSHED_BY_STREAM: std::sync::OnceLock<DashMap<String, AtomicU64>> =
     std::sync::OnceLock::new();
 
+/// Phase 35-01: per-stream `tally_replica_log_entries_sent_total{stream}`
+/// counter. One increment per event frame written by `handle_log_fetch`.
+/// Same DashMap layout as `EVENTS_PUSHED_BY_STREAM`.
+static LOG_ENTRIES_SENT_BY_STREAM: std::sync::OnceLock<DashMap<String, AtomicU64>> =
+    std::sync::OnceLock::new();
+
+fn log_entries_sent_map() -> &'static DashMap<String, AtomicU64> {
+    LOG_ENTRIES_SENT_BY_STREAM.get_or_init(DashMap::new)
+}
+
+/// Phase 35-01: read snapshot of `(stream, count)` pairs for the per-stream
+/// log-entries-sent counter. Exposed for tests + `/metrics` wiring.
+pub fn log_entries_sent_snapshot() -> Vec<(String, u64)> {
+    log_entries_sent_map()
+        .iter()
+        .map(|kv| (kv.key().clone(), kv.value().load(Ordering::Relaxed)))
+        .collect()
+}
+
+/// Phase 35-01: bump the per-stream log-entries-sent counter by 1.
+/// Called once per event frame written in `handle_log_fetch`.
+pub fn bump_log_entries_sent(stream: &str) {
+    let m = log_entries_sent_map();
+    if let Some(existing) = m.get(stream) {
+        existing.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    m.entry(stream.to_owned())
+        .or_insert_with(|| AtomicU64::new(0))
+        .fetch_add(1, Ordering::Relaxed);
+}
+
 fn events_pushed_map() -> &'static DashMap<String, AtomicU64> {
     EVENTS_PUSHED_BY_STREAM.get_or_init(DashMap::new)
 }

@@ -692,6 +692,29 @@ async fn handle_connection(
             return Ok(());
         }
 
+        // Phase 35-01: OP_LOG_FETCH has a multi-frame response shape
+        // (N × event frame + one END frame), so it bypasses the
+        // STATUS_OK envelope just like SNAPSHOT_FETCH. Handle inline and
+        // continue the read loop; the handler writes all response frames
+        // itself, and on auth/validation failure emits a STATUS_ERROR
+        // envelope (no event/end frames follow).
+        if let Command::LogFetch {
+            admin_token,
+            from_ts_millis,
+            scope,
+        } = cmd
+        {
+            flush_drain(&mut writer, &mut pending_drain).await?;
+            if let Err(e) =
+                handle_log_fetch(&mut writer, &admin_token, from_ts_millis, scope, &state).await
+            {
+                let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
+                writer.write_all(&resp).await?;
+                writer.flush().await?;
+            }
+            continue;
+        }
+
         // Sync dispatch path. cmd is one of Mset/Flush/other.
         let cmd_start = std::time::Instant::now();
         let is_mset = matches!(&cmd, Command::Mset { .. });
@@ -1866,6 +1889,14 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
         Command::Subscribe { .. } => Err(TallyError::Protocol(
             "OP_SUBSCRIBE not supported on this dispatch path (connection ownership conflict)".into(),
         )),
+        // Phase 35-01: OP_LOG_FETCH is intercepted in `handle_connection`
+        // and dispatched to `handle_log_fetch`, which emits a stream of
+        // event frames followed by a terminal END frame instead of a
+        // single STATUS_OK envelope. Landing here means the outer
+        // interception was skipped — return STATUS_ERROR.
+        Command::LogFetch { .. } => Err(TallyError::Protocol(
+            "OP_LOG_FETCH not supported on this dispatch path (mix with async pushes not allowed)".into(),
+        )),
     }
 }
 
@@ -2427,6 +2458,182 @@ async fn handle_subscribe(
     state
         .subscriber_registry
         .drop_subscriber(conn_id, "disconnect");
+    Ok(())
+}
+
+/// Phase 35-01: dispatch for `OP_LOG_FETCH`.
+///
+/// Flow:
+///
+/// 1. **Admin-token gate** (same shape as `handle_snapshot_fetch` /
+///    `handle_subscribe`). Empty expected token is not a supported
+///    configuration — treat as unauthenticated. Failure emits a
+///    `safety/error` signal via `emit_replica_auth_failure` and returns
+///    `TallyError::Protocol("unauthorized")`; the caller wraps it in a
+///    STATUS_ERROR frame.
+/// 2. **Collect known streams** from `state.engine.read().list_streams()`.
+/// 3. **Validate scope** via `protocol::validate_scope` — all seven
+///    locked rejection rules from Phase 27.
+/// 4. **Walk each requested stream's log file.** For each stream in
+///    `scope.streams` (in scope-declared order — no cross-stream merge):
+///      a. Call `event_log.read_entries(stream)` under a short lock hold
+///         (the per-stream log is read end-to-end; v0 accepts the
+///         memory cost per 35-CONTEXT.md §specifics).
+///      b. For each `LogEntry`:
+///         - Gate on `entry.timestamp.duration_since(UNIX_EPOCH).as_millis()
+///           >= from_ts_millis` (inclusive; boundary duplicates
+///           acceptable per the opcode doc-comment).
+///         - Decode the payload (JSON or binary tagged, via
+///           `decode_log_payload` → `decode_event_binary` /
+///           `serde_json::from_slice`) to extract the key via the
+///           stream's `key_field`. Malformed entries are skipped silently
+///           (T-08-08 stance — same as the backfill path in `handle_backfill`).
+///         - For keyed streams, gate on `entity_matches_scope(&[stream],
+///           key, &scope)`. Keyless streams (no `key_field`) are not
+///           supported here in v0 — their entries are skipped because
+///           `entity_matches_scope` with a zero-length key + key filters
+///           is ill-defined and 27-CONTEXT locked key-bearing events
+///           only for replica delivery.
+///         - Write one `encode_log_event_frame(ts_ms, raw_payload)` frame
+///           and bump `tally_replica_log_entries_sent_total{stream}`.
+/// 5. **Terminal frame:** after all streams drained, write one
+///    `encode_log_end_frame()` (tag 0x04, empty body) so the client
+///    knows the response is complete.
+///
+/// I/O failures during writes are propagated as `TallyError::Protocol`.
+async fn handle_log_fetch(
+    writer: &mut BufWriter<tokio::net::tcp::OwnedWriteHalf>,
+    admin_token: &str,
+    from_ts_millis: u64,
+    scope: protocol::Scope,
+    state: &SharedState,
+) -> Result<(), TallyError> {
+    // (1) Admin-token gate.
+    let authed = match state.admin_token.as_deref() {
+        Some(expected) if !expected.is_empty() && expected == admin_token => true,
+        _ => false,
+    };
+    if !authed {
+        crate::server::signals::emit_replica_auth_failure(&state.signals, "unknown");
+        return Err(TallyError::Protocol("unauthorized".into()));
+    }
+
+    // (2) Known-streams lookup + per-stream key_field snapshot. We lock the
+    // engine once, snapshot the key_field for every requested stream, and
+    // drop the lock before doing any log I/O.
+    let known: std::collections::HashSet<String>;
+    let key_fields: std::collections::HashMap<String, Option<String>>;
+    {
+        let engine = state.engine.read();
+        known = engine.list_streams().map(|s| s.name.clone()).collect();
+        key_fields = scope
+            .streams
+            .iter()
+            .map(|s| {
+                let kf = engine.get_stream(s).and_then(|d| d.key_field.clone());
+                (s.clone(), kf)
+            })
+            .collect();
+    }
+
+    // (3) Validate scope.
+    if let Err(e) = protocol::validate_scope(&scope, &known) {
+        return Err(TallyError::Protocol(format!("invalid scope: {}", e)));
+    }
+
+    // (4) Flush the event-log writer before reading, so LOG_FETCH sees
+    // every durable entry the background fsync timer hasn't yet fired on.
+    // Without this, recent PUSHes can sit in the BufWriter's in-memory
+    // buffer and `read_entries` (which opens the file fresh) misses them.
+    // Replica reads are relatively rare — paying a sync on each LOG_FETCH
+    // is acceptable for v0 and matches the "scientist isn't calling this
+    // in a tight loop" note in 35-CONTEXT.md §specifics.
+    {
+        let mut log_guard = state.event_log.lock();
+        if let Some(log) = log_guard.as_mut() {
+            let _ = log.fsync_all();
+        }
+    }
+
+    // (5) Walk each stream's log file.
+    use crate::state::event_log::{decode_log_payload, LOG_FMT_BINARY, LOG_FMT_JSON};
+    use std::time::UNIX_EPOCH;
+
+    for stream_name in &scope.streams {
+        // Read entries under a short lock hold.
+        let entries: Vec<crate::state::event_log::LogEntry> = {
+            let log_guard = state.event_log.lock();
+            match &*log_guard {
+                Some(log) => log.read_entries(stream_name).unwrap_or_default(),
+                None => Vec::new(),
+            }
+        };
+
+        let kf = key_fields.get(stream_name).cloned().flatten();
+        let stream_arr = [stream_name.as_str()];
+
+        for entry in entries {
+            // Timestamp gate (inclusive).
+            let ts_ms = match entry.timestamp.duration_since(UNIX_EPOCH) {
+                Ok(d) => d.as_millis().min(u64::MAX as u128) as u64,
+                Err(_) => 0, // pre-epoch: treat as ts=0 (admits everything)
+            };
+            if ts_ms < from_ts_millis {
+                continue;
+            }
+
+            // Key extraction + scope filter. Keyless streams: skip
+            // (v0 replica contract is key-bearing events only).
+            let kf = match &kf {
+                Some(k) => k.as_str(),
+                None => continue,
+            };
+
+            let (fmt, body) = decode_log_payload(&entry.payload);
+            let event_value: serde_json::Value = match fmt {
+                LOG_FMT_BINARY => {
+                    let mut buf = body;
+                    match protocol::decode_event_binary(&mut buf) {
+                        Ok(v) => v,
+                        Err(_) => continue, // skip malformed (T-08-08)
+                    }
+                }
+                LOG_FMT_JSON => match serde_json::from_slice(body) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                },
+                _ => continue,
+            };
+
+            let key = match event_value.get(kf) {
+                Some(serde_json::Value::String(s)) if !s.is_empty() => s.as_str(),
+                _ => continue,
+            };
+
+            if !crate::server::replica::entity_matches_scope(&stream_arr, key, &scope) {
+                continue;
+            }
+
+            // Emit event frame: body = [u64 ts_ms][u32 payload_len][payload].
+            let frame = protocol::encode_log_event_frame(ts_ms, &entry.payload);
+            writer
+                .write_all(&frame)
+                .await
+                .map_err(|e| TallyError::Protocol(format!("write log-fetch event frame failed: {}", e)))?;
+            crate::server::replica::bump_log_entries_sent(stream_name);
+        }
+    }
+
+    // (6) Terminal END frame.
+    let end = protocol::encode_log_end_frame();
+    writer
+        .write_all(&end)
+        .await
+        .map_err(|e| TallyError::Protocol(format!("write log-fetch end frame failed: {}", e)))?;
+    writer
+        .flush()
+        .await
+        .map_err(|e| TallyError::Protocol(format!("flush log-fetch response failed: {}", e)))?;
     Ok(())
 }
 

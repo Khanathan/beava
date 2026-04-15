@@ -220,6 +220,22 @@ async fn create_pipeline(
     match result {
         Ok(()) => {
             engine.store_raw_register_json(&def_name, body);
+            // Phase 35-01 parity fix: mirror the TCP OP_REGISTER path and
+            // register the new stream with the event log so PUSH events to
+            // this stream persist to disk. Without this hook, HTTP-registered
+            // streams were invisible to OP_LOG_FETCH (and to any other
+            // replay/backfill consumer of the event log). This is symmetric
+            // with the TCP `handle_sync_command::OP_REGISTER` arm that has
+            // always called `log.register_stream` after a successful engine
+            // registration.
+            if !is_view {
+                let history_ttl =
+                    engine.get_stream(&def_name).and_then(|s| s.history_ttl);
+                let mut event_log = state.event_log.lock();
+                if let Some(ref mut log) = *event_log {
+                    let _ = log.register_stream(&def_name, history_ttl);
+                }
+            }
             (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
         }
         Err(e) => {

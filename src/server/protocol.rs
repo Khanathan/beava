@@ -120,6 +120,51 @@ pub const REPLICA_FRAME_TAG_PAYLOAD: u8 = 0x02;
 /// so SUBSCRIBE clients disambiguate by tag byte (user direction §7).
 pub const REPLICA_FRAME_TAG_EVENT: u8 = 0x03;
 
+/// Phase 35-01: terminal frame tag on an `OP_LOG_FETCH` response.
+///
+/// Emitted exactly once, after zero or more `REPLICA_FRAME_TAG_EVENT`
+/// frames, to signal "caught up to stream tail — no more historical
+/// entries". Body is empty (`frame_len = 1`, just the tag byte). Clients
+/// drain event frames until they see this tag, then close the socket
+/// (or, in future, switch to `OP_SUBSCRIBE` for the live tail).
+pub const REPLICA_FRAME_TAG_END: u8 = 0x04;
+
+/// Phase 35-01: scoped historical-log fetch opcode.
+///
+/// Primitive for Option M (data-scientist CDC replay). The client requests
+/// every event in the per-stream log files that (a) belongs to one of the
+/// streams declared in `scope`, (b) matches the scope's key / key_prefix
+/// filters, and (c) has `timestamp_ms >= from_ts_millis`.
+///
+/// Wire (request payload, after the frame header):
+///   `[u16 BE token_len][token_bytes][u64 BE from_ts_millis][Scope]`
+///
+/// The admin bearer token is length-prefixed in-band (same shape as 27-01
+/// snapshot-fetch / 27-02 subscribe); `from_ts_millis` is a u64 BE unix
+/// epoch milliseconds cursor, inclusive; the Scope payload that follows
+/// is decoded by `read_scope`.
+///
+/// Response on success: a stream of `REPLICA_FRAME_TAG_EVENT` (0x03)
+/// frames, one per matching entry, each body =
+///   `[u64 BE timestamp_ms][u32 BE payload_len][payload_bytes]`
+/// followed by a single `REPLICA_FRAME_TAG_END` (0x04) terminal frame
+/// with an empty body. Per-event ordering is the per-stream log file
+/// append order (i.e. ingest order for that stream). Across streams no
+/// k-way merge is performed; the server walks streams in scope-declared
+/// order and streams entries from each (caller's pipeline handles
+/// cross-stream skew via watermarks).
+///
+/// Boundary duplicate semantics: `from_ts_millis` is **inclusive**, so a
+/// client resuming at the last-seen `timestamp_ms` after an interruption
+/// will observe the boundary event a second time. Pipeline code at the
+/// caller's end handles idempotency (v0 design decision — §decisions in
+/// 35-CONTEXT.md).
+///
+/// Response on failure (auth / validation / I/O): a single standard
+/// STATUS_ERROR frame, same shape as every other TCP opcode, and no
+/// event/end frames follow.
+pub const OP_LOG_FETCH: u8 = 0x13;
+
 // Response status codes
 pub const STATUS_OK: u8 = 0x00;
 pub const STATUS_ERROR: u8 = 0x01;
@@ -220,6 +265,21 @@ pub enum Command {
     /// spawning the drain task, so SUBSCRIBE cannot mix with any other
     /// opcode on the same connection.
     Subscribe { admin_token: String, scope: Scope },
+    /// Phase 35-01: scoped historical-log fetch. Decoded by `parse_command`
+    /// from `OP_LOG_FETCH` frames. The wire shape is:
+    ///   `[u16 token_len][token][u64 BE from_ts_millis][Scope]`
+    /// so the `from_ts_millis` field sits between the token and the Scope
+    /// payload — same admin-token bracket as 27-01/27-02, plus the extra
+    /// 8-byte cursor. The handler performs admin-token check + scope
+    /// validation, then walks each requested stream's log file, emitting
+    /// one `REPLICA_FRAME_TAG_EVENT` frame per matching entry, then one
+    /// terminal `REPLICA_FRAME_TAG_END` frame. See the doc-comment on
+    /// `OP_LOG_FETCH` for boundary-duplicate semantics.
+    LogFetch {
+        admin_token: String,
+        from_ts_millis: u64,
+        scope: Scope,
+    },
 }
 
 /// Phase 27-01: Scope describes the subset of entities a replica client wants.
@@ -476,6 +536,40 @@ pub fn encode_event_frame(timestamp: std::time::SystemTime, payload: &[u8]) -> V
     out.extend_from_slice(&nanos.to_be_bytes());
     out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     out.extend_from_slice(payload);
+    out
+}
+
+/// Phase 35-01: encode one `OP_LOG_FETCH` per-event frame.
+///
+/// Wire shape (distinct from 27-02's `encode_event_frame` — LOG_FETCH
+/// emits a single `u64 timestamp_ms` cursor rather than a split
+/// secs/nanos pair, per the `from_ts_millis` cursor unit locked in
+/// 35-CONTEXT.md §decisions):
+///   `[u32 BE frame_len][u8 tag=REPLICA_FRAME_TAG_EVENT]
+///    [u64 BE timestamp_ms][u32 BE payload_len][payload_bytes]`
+///
+/// `timestamp_ms` is unix-epoch milliseconds. Clock pre-epoch ⇒ zero
+/// (matches the 27-01/27-02 header treatment). `payload` is the raw
+/// event bytes straight out of the event log (may be JSON or binary —
+/// the caller delivers it verbatim; decoding is the client's job).
+pub fn encode_log_event_frame(timestamp_ms: u64, payload: &[u8]) -> Vec<u8> {
+    // body = tag(1) + ts_ms(8) + payload_len(4) + payload
+    let body_len = 1 + 8 + 4 + payload.len();
+    let mut out = Vec::with_capacity(4 + body_len);
+    out.extend_from_slice(&(body_len as u32).to_be_bytes());
+    out.push(REPLICA_FRAME_TAG_EVENT);
+    out.extend_from_slice(&timestamp_ms.to_be_bytes());
+    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
+/// Phase 35-01: encode the terminal "caught up to tail" frame for an
+/// `OP_LOG_FETCH` response. Body is empty, frame_len = 1 (just the tag).
+pub fn encode_log_end_frame() -> Vec<u8> {
+    let mut out = Vec::with_capacity(5);
+    out.extend_from_slice(&1u32.to_be_bytes());
+    out.push(REPLICA_FRAME_TAG_END);
     out
 }
 
@@ -852,6 +946,28 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
             let admin_token = read_string(&mut buf)?;
             let scope = read_scope(&mut buf)?;
             Ok(Command::SnapshotFetch { admin_token, scope })
+        }
+        OP_LOG_FETCH => {
+            // Phase 35-01 wire shape:
+            //   [u16 token_len][token][u64 BE from_ts_millis][scope_bytes]
+            // Same admin-token bracket as 27-01/27-02, plus an 8-byte
+            // cursor sitting between the token and the Scope.
+            let admin_token = read_string(&mut buf)?;
+            if buf.len() < 8 {
+                return Err(TallyError::Protocol(
+                    "LOG_FETCH truncated: need 8 bytes for from_ts_millis".into(),
+                ));
+            }
+            let from_ts_millis = u64::from_be_bytes([
+                buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+            ]);
+            buf = &buf[8..];
+            let scope = read_scope(&mut buf)?;
+            Ok(Command::LogFetch {
+                admin_token,
+                from_ts_millis,
+                scope,
+            })
         }
         _ => Err(TallyError::Protocol(format!(
             "unknown opcode: 0x{:02x}",
@@ -2091,6 +2207,129 @@ mod tests {
             }
             other => panic!("expected ReservedNotImplemented, got {:?}", other),
         }
+    }
+
+    // -------- Phase 35-01: OP_LOG_FETCH parse + encode tests -------- //
+
+    #[test]
+    fn op_log_fetch_parses_token_ts_and_scope() {
+        // Wire: [u16 token_len][token][u64 BE from_ts_millis][Scope]
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&write_string("admin-tok"));
+        let from_ts: u64 = 1_700_000_000_000;
+        payload.extend_from_slice(&from_ts.to_be_bytes());
+        let scope = Scope {
+            streams: vec!["orders".into(), "clicks".into()],
+            keys: None,
+            key_prefix: Some("u_".into()),
+            pull: "all".into(),
+        };
+        write_scope(&mut payload, &scope);
+
+        let cmd = parse_command(OP_LOG_FETCH, &payload).unwrap();
+        match cmd {
+            Command::LogFetch {
+                admin_token,
+                from_ts_millis,
+                scope,
+            } => {
+                assert_eq!(admin_token, "admin-tok");
+                assert_eq!(from_ts_millis, from_ts);
+                assert_eq!(scope.streams, vec!["orders".to_string(), "clicks".into()]);
+                assert_eq!(scope.key_prefix.as_deref(), Some("u_"));
+                assert_eq!(scope.pull, "all");
+            }
+            other => panic!("expected LogFetch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn op_log_fetch_roundtrip_ts_zero() {
+        // Boundary: from_ts_millis=0 is valid (= replay everything).
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&write_string(""));
+        payload.extend_from_slice(&0u64.to_be_bytes());
+        let scope = Scope {
+            streams: vec!["s".into()],
+            keys: Some(vec!["k1".into()]),
+            key_prefix: None,
+            pull: "all".into(),
+        };
+        write_scope(&mut payload, &scope);
+        let cmd = parse_command(OP_LOG_FETCH, &payload).unwrap();
+        match cmd {
+            Command::LogFetch {
+                admin_token,
+                from_ts_millis,
+                scope,
+            } => {
+                assert_eq!(admin_token, "");
+                assert_eq!(from_ts_millis, 0);
+                assert_eq!(scope.keys.as_deref(), Some(&["k1".to_string()][..]));
+            }
+            other => panic!("expected LogFetch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn op_log_fetch_rejects_truncated_cursor() {
+        // token present, but only 4 bytes of cursor (need 8).
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&write_string("t"));
+        payload.extend_from_slice(&[0u8; 4]);
+        let err = parse_command(OP_LOG_FETCH, &payload).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("from_ts_millis") || msg.contains("truncated"),
+            "expected truncation error, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn op_log_fetch_rejects_truncated_scope() {
+        // Full token + cursor present, but scope bytes cut off entirely.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&write_string("t"));
+        payload.extend_from_slice(&0u64.to_be_bytes());
+        // no scope bytes follow — read_scope must error on the u16 streams-count.
+        assert!(parse_command(OP_LOG_FETCH, &payload).is_err());
+    }
+
+    #[test]
+    fn encode_log_event_frame_wire_shape() {
+        let out = encode_log_event_frame(0x0102_0304_0506_0708, b"abc");
+        // [u32 frame_len = 1 + 8 + 4 + 3 = 16]
+        assert_eq!(&out[..4], &16u32.to_be_bytes());
+        assert_eq!(out[4], REPLICA_FRAME_TAG_EVENT);
+        assert_eq!(&out[5..13], &0x0102_0304_0506_0708u64.to_be_bytes());
+        assert_eq!(&out[13..17], &3u32.to_be_bytes());
+        assert_eq!(&out[17..], b"abc");
+    }
+
+    #[test]
+    fn encode_log_event_frame_empty_payload() {
+        let out = encode_log_event_frame(42, b"");
+        // body_len = 1 + 8 + 4 + 0 = 13
+        assert_eq!(&out[..4], &13u32.to_be_bytes());
+        assert_eq!(out[4], REPLICA_FRAME_TAG_EVENT);
+        assert_eq!(out.len(), 4 + 13);
+    }
+
+    #[test]
+    fn encode_log_end_frame_wire_shape() {
+        let out = encode_log_end_frame();
+        // [u32 frame_len = 1][u8 tag=0x04], total 5 bytes.
+        assert_eq!(out.len(), 5);
+        assert_eq!(&out[..4], &1u32.to_be_bytes());
+        assert_eq!(out[4], REPLICA_FRAME_TAG_END);
+    }
+
+    #[test]
+    fn unknown_opcode_still_errors_after_log_fetch_added() {
+        // Regression: adding 0x13 must not accidentally accept 0x14+.
+        assert!(parse_command(0x14, &[]).is_err());
+        assert!(parse_command(0xFE, &[]).is_err());
     }
 
     #[test]

@@ -37,6 +37,35 @@ pub const REPLICA_FRAME_TAG_HEADER: u8 = 0x01;
 /// Response payload frame tag. MUST equal `crate::server::protocol::REPLICA_FRAME_TAG_PAYLOAD`.
 pub const REPLICA_FRAME_TAG_PAYLOAD: u8 = 0x02;
 
+/// Phase 27-02: per-event frame tag on an `OP_SUBSCRIBE` socket.
+/// Also reused by Phase 35-01 `OP_LOG_FETCH` to carry historical events
+/// (with a distinct body layout — single `u64 timestamp_ms` cursor).
+/// MUST equal `crate::server::protocol::REPLICA_FRAME_TAG_EVENT`.
+pub const REPLICA_FRAME_TAG_EVENT: u8 = 0x03;
+
+/// Phase 35-01: terminal "caught up to tail" frame for `OP_LOG_FETCH`
+/// responses. Emitted exactly once after the event stream; body is empty
+/// (frame_len = 1, just the tag byte). MUST equal
+/// `crate::server::protocol::REPLICA_FRAME_TAG_END`.
+pub const REPLICA_FRAME_TAG_END: u8 = 0x04;
+
+/// Phase 35-01: scoped historical-log fetch opcode.
+///
+/// Request payload shape:
+///   `[u16 BE token_len][token][u64 BE from_ts_millis][Scope bytes]`
+///
+/// Response: zero or more event frames `[u32 frame_len][u8 tag=0x03]
+/// [u64 BE timestamp_ms][u32 BE payload_len][payload]`, then a single
+/// END frame `[u32 frame_len=1][u8 tag=0x04]`.
+///
+/// Mirrored here for client-side wire parity; no client helper consumes
+/// it in this phase (v0 data-scientist path uses a Python asyncio script
+/// that hand-rolls the frames — see `tests/integration/`). Future Rust
+/// clients can build on this const + `Scope` + `write_scope`.
+///
+/// MUST equal `crate::server::protocol::OP_LOG_FETCH`.
+pub const OP_LOG_FETCH: u8 = 0x13;
+
 /// Structural replica of the Phase 27 `Scope`.
 ///
 /// Wire layout (big-endian, mirrors `server::protocol::write_scope`):
@@ -106,6 +135,10 @@ const _: () = {
     assert!(OP_SNAPSHOT_FETCH == crate::server::protocol::OP_SNAPSHOT_FETCH);
     assert!(REPLICA_FRAME_TAG_HEADER == crate::server::protocol::REPLICA_FRAME_TAG_HEADER);
     assert!(REPLICA_FRAME_TAG_PAYLOAD == crate::server::protocol::REPLICA_FRAME_TAG_PAYLOAD);
+    // Phase 35-01: mirror-consts parity check.
+    assert!(REPLICA_FRAME_TAG_EVENT == crate::server::protocol::REPLICA_FRAME_TAG_EVENT);
+    assert!(REPLICA_FRAME_TAG_END == crate::server::protocol::REPLICA_FRAME_TAG_END);
+    assert!(OP_LOG_FETCH == crate::server::protocol::OP_LOG_FETCH);
 };
 
 #[cfg(test)]
