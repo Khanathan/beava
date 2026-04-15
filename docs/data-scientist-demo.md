@@ -45,40 +45,47 @@ Product surface:
 
 ## Path A — one-liner Python (recommended)
 
+Uses the real fraud pipeline from `benchmark/fraud-pipeline/bench_fraud.py` — 5 entity
+tables, 47 features across four window tiers (30m / 1h / 24h / 7d), derived risk
+signals. The scientist imports it rather than re-authoring a toy.
+
 ```python
+import sys
+sys.path.insert(0, "benchmark/fraud-pipeline")
+import bench_fraud as bf   # RawTransactions + 5 table pipelines
 import tally as tl
 
-@tl.stream
-class Transactions:
-    user_id: str
-    amount: float
-
-# Scientist's custom pipeline — not what prod computes
-def _summary(t: Transactions) -> tl.Table:
-    return t.group_by("user_id").agg(
-        count=tl.count(window="1h"),
-        total=tl.sum("amount", window="1h"),
-    )
-_summary.__name__ = "txn_summary"
-TxnSummary = tl.table(key="user_id")(_summary)
-
-# Spawn a scoped local replica, register the scientist's pipeline, start streaming.
+# Spawn a scoped local replica, register prod's fraud pipeline, start streaming.
 with tl.fork(
     remote="prod.tally.internal:6400",
-    streams=[Transactions],
-    keys=["u1", "u2", "u3"],           # scope to three users
-    since="2026-03-01T00:00:00Z",      # backfill from this wall-clock
-    token="prod-admin-token",          # or set TALLY_REPLICA_TOKEN env
-    pipelines=[TxnSummary],
+    streams=[bf.RawTransactions],
+    key_prefix=["user_fraud_"],          # scope to the four injected fraud users
+    since="2026-04-15T00:00:00Z",        # backfill from this wall-clock
+    token="prod-admin-token",            # or set TALLY_REPLICA_TOKEN env
+    pipelines=[
+        bf.UserTransactions,             # 25 features: velocity, stddev, geo, etc.
+        bf.UserFailedTxns,               # 4 features: card-testing signal
+        bf.MerchantActivity,             # 8 features: merchant risk
+        bf.DeviceActivity,               # 5 features: device fingerprint
+        bf.IPActivity,                   # 5 features: IP fan-out
+    ],
 ) as fork:
     # Fork is now running on localhost:7400 (by default).
     # Historical backfill has completed. Live tail is active.
-    print(fork.get(TxnSummary, key="u1"))  # {"count": 3, "total": 60.0}
-    print(fork.inspect())                   # {"Transactions": 3}
+    print(fork.get(bf.UserTransactions, key="user_fraud_001"))
+    # → {"tx_count_1h": 20, "unique_merchants_1h": 20, "velocity_spike": 15.2,
+    #    "merchant_diversity_1h": 1.0, "country_hop_flag": False, ...}
+    print(fork.inspect())   # {"RawTransactions": <event count in scope>}
 # On exit, the fork shuts down cleanly.
 ```
 
 The `with` block handles subprocess lifecycle, port allocation, `/debug/ready` polling, and teardown.
+
+> Operators exercised by this pipeline: `count`, `sum`, `avg`, `min`, `max`, `stddev`,
+> `count_distinct` (HLL), `last`, `filter` (`.filter(tl.col("status") == "failed")`),
+> `group_by`, `with_columns` (derived risk signals like `velocity_spike`,
+> `merchant_diversity_1h`, `country_hop_flag`). See `docs/operators.md` for the full
+> operator reference.
 
 ---
 
@@ -162,6 +169,83 @@ with tl.fork(
 **Scope:** extractions honour the same `--keys` / `--key-prefix` filter the fork uses. Keys outside scope are not captured. Keys in scope with no events yet at `extract_at[i]` are skipped (consistent with "missing key → None" elsewhere in the API).
 
 **Memory:** `N extractions × K keys × F features`. For the typical scientist workflow (N≤10, K≤100, F<20) this is trivial. Scope aggressively if you need hundreds of checkpoints × thousands of keys.
+
+---
+
+## Fraud demo — end-to-end flow
+
+`benchmark/fraud-pipeline/fraud_demo.py` drives a realistic mixed stream against
+a local Tally server: ~50 eps of Zipfian benign traffic for 60s, with four fraud
+archetypes injected at scheduled moments against dedicated user IDs. It prints
+the wall-clock timestamp of each burst so the scientist can snapshot features at
+exactly the moment each fraud fired.
+
+```bash
+# Terminal 1 — local "prod"
+export TALLY_ADMIN_TOKEN=dev-admin-token
+./target/release/tally serve --http-port 6400 --tcp-port 6401 \
+                             --data-dir /tmp/tally-prod
+
+# Terminal 2 — generator
+python3 benchmark/fraud-pipeline/fraud_demo.py
+# ...
+# FRAUD_TIMESTAMPS — paste into tl.fork(extract_at=[...])
+# [
+#   {"archetype": "card_testing",       "user_id": "user_fraud_001", "fired_at": "2026-04-15T17:02:15.312Z"},
+#   {"archetype": "velocity_burst",     "user_id": "user_fraud_002", "fired_at": "2026-04-15T17:02:25.488Z"},
+#   {"archetype": "geo_hop",            "user_id": "user_fraud_003", "fired_at": "2026-04-15T17:02:40.611Z"},
+#   {"archetype": "high_value_anomaly", "user_id": "user_fraud_004", "fired_at": "2026-04-15T17:02:50.702Z"}
+# ]
+```
+
+Archetypes injected:
+
+| Archetype | User | Signal the pipeline should surface |
+|---|---|---|
+| `card_testing` | `user_fraud_001` | `failed_count_30m` spike, `merchant_diversity_1h ≈ 1.0`, `unique_merchants_1h` ≫ avg |
+| `velocity_burst` | `user_fraud_002` | `velocity_spike` ≫ 1, `tx_count_1h` ≫ 24h-normalized rate |
+| `geo_hop` | `user_fraud_003` | `unique_countries_24h > 3`, `country_hop_flag = True` |
+| `high_value_anomaly` | `user_fraud_004` | `amount_vs_avg` ≫ 1, `high_value_ratio` ≫ 1, `tx_stddev_24h` jumps |
+
+Then — the scientist's ML-training-style snapshot:
+
+```python
+import json, sys
+sys.path.insert(0, "benchmark/fraud-pipeline")
+import bench_fraud as bf
+import tally as tl
+
+# Captured by fraud_demo.py stdout.
+fraud_events = json.loads(open("/tmp/fraud_timestamps.json").read())
+extract_at   = [f["fired_at"]  for f in fraud_events]
+fraud_keys   = [f["user_id"]   for f in fraud_events]
+
+with tl.fork(
+    remote="127.0.0.1:6401",                  # TCP port (HTTP is 6400)
+    streams=[bf.RawTransactions],
+    keys=fraud_keys,
+    since="2026-04-15T00:00:00Z",
+    token="dev-admin-token",
+    pipelines=[
+        bf.UserTransactions, bf.UserFailedTxns,
+        bf.MerchantActivity, bf.DeviceActivity, bf.IPActivity,
+    ],
+    extract_at=extract_at,
+) as fork:
+    history = fork.extract_history()
+    for fe in fraud_events:
+        snap = history[fe["fired_at"]].get(fe["user_id"], {})
+        print(fe["archetype"], "→",
+              {k: snap[k] for k in
+               ("tx_count_1h", "velocity_spike", "unique_merchants_1h",
+                "merchant_diversity_1h", "failed_count_30m",
+                "unique_countries_24h", "country_hop_flag",
+                "amount_vs_avg", "high_value_ratio")
+               if k in snap})
+```
+
+Each row is the **feature vector a fraud-detection model would see at decision
+time** — exactly what you'd want as labels for offline training.
 
 ---
 
