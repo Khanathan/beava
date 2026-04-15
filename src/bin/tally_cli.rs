@@ -1,14 +1,17 @@
-//! tally_cli — client CLI for scoped local replicas. Subcommands: clone, sync.
+//! tally_cli — client CLI for scoped local replicas. Subcommands: clone, sync,
+//! query, inspect.
 //!
-//! Phase 28-02: stubs only. Argument parsing is complete for the full Phase 29
-//! flag surface (`--remote`, `--streams`, `--keys | --key-prefix`, `--mode`,
-//! `--token`). Both subcommand handlers print a "not implemented yet" message
-//! and exit 0 (success-for-a-stub). `--mode streaming` is the one rejection
-//! path — it exits 2 and points at Phase 31. No network code.
+//! Phase 28-02: `clone` + `sync` argument parsing.
+//! Phase 28-04: `clone` wired to `run_clone` (real network round-trip).
+//! Phase 30-02: `query` + `inspect` subcommands. Both build on the same
+//! `run_clone` bootstrap the `Pipeline` PyO3 class uses (one-shot historical
+//! snapshot fetch) — so every stanza the CLI surfaces is identical to the
+//! Python surface. Pure Rust, zero Python dependency.
 //!
 //! Hand-rolled arg parsing (no `clap` dependency). Style matches
-//! `src/bin/tally_suggest_config.rs`.
+//! `src/bin/tally_suggest_config.rs` and Plan 28-02's existing subcommands.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::process;
 
@@ -20,6 +23,8 @@ use tally::client::{FrozenClient, SessionMode};
 enum Subcommand {
     Clone,
     Sync,
+    Query,
+    Inspect,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
@@ -31,6 +36,10 @@ struct ParsedArgs {
     mode: String,
     token: Option<String>,
     dump_json: bool,
+    /// Plan 30-02: `tally query` lookup target.
+    lookup_stream: Option<String>,
+    /// Plan 30-02: `tally query` lookup key.
+    lookup_key: Option<String>,
 }
 
 fn print_usage() {
@@ -40,20 +49,26 @@ fn print_usage() {
          subcommands:\n\
            clone    Clone a scoped local replica from a tally server.\n\
            sync     Resume / keep a local replica in sync with the server.\n\
+           query    One-shot historical pipeline run + single-key lookup.\n\
+           inspect  One-shot historical pipeline run + per-stream key counts.\n\
          \n\
          flags:\n\
            --remote <host:port>        Server address (required).\n\
-           --streams <name>[,name...]  Streams to clone (required for clone).\n\
+           --streams <name>[,name...]  Streams to clone (required for clone/query/inspect).\n\
            --keys <key>[,key...]       Key allow-list (mutually exclusive with --key-prefix).\n\
            --key-prefix <prefix>       Key prefix scope (mutually exclusive with --keys).\n\
            --mode historical|streaming Default: historical. streaming is Phase 31.\n\
            --token <token>             Admin token (overrides TALLY_TOKEN env var).\n\
+           --key <key>                 Lookup key (required for `query`).\n\
+           --stream <name>             Lookup stream (required for `query`).\n\
+           --dump-json                 (clone) Emit the full FrozenClient state as JSON.\n\
            -h, --help                  Show this message.\n\
          \n\
          environment:\n\
            TALLY_TOKEN                 Admin token, used if --token not passed.\n\
          \n\
-         Phase 28 status: clone/sync are stubs; Phase 29 wires the real session."
+         Phase 30-02: `query` and `inspect` wrap `run_clone` + `FrozenClient`;\n\
+         `sync` remains a Phase 29 stub."
     );
 }
 
@@ -66,8 +81,13 @@ fn parse_args(argv: &[String]) -> Result<(Subcommand, ParsedArgs), String> {
     let sub = match argv[0].as_str() {
         "clone" => Subcommand::Clone,
         "sync" => Subcommand::Sync,
+        "query" => Subcommand::Query,
+        "inspect" => Subcommand::Inspect,
         "-h" | "--help" => return Err("__help__".to_string()),
-        other => return Err(format!("unknown subcommand: `{}` (expected `clone` or `sync`)", other)),
+        other => return Err(format!(
+            "unknown subcommand: `{}` (expected `clone`, `sync`, `query`, or `inspect`)",
+            other
+        )),
     };
 
     let mut parsed = ParsedArgs {
@@ -140,6 +160,20 @@ fn parse_args(argv: &[String]) -> Result<(Subcommand, ParsedArgs), String> {
                 parsed.dump_json = true;
                 i += 1;
             }
+            "--key" => {
+                if i + 1 >= argv.len() {
+                    return Err("--key requires a value".to_string());
+                }
+                parsed.lookup_key = Some(argv[i + 1].clone());
+                i += 2;
+            }
+            "--stream" => {
+                if i + 1 >= argv.len() {
+                    return Err("--stream requires a value".to_string());
+                }
+                parsed.lookup_stream = Some(argv[i + 1].clone());
+                i += 2;
+            }
             "-h" | "--help" => {
                 return Err("__help__".to_string());
             }
@@ -156,8 +190,26 @@ fn parse_args(argv: &[String]) -> Result<(Subcommand, ParsedArgs), String> {
     if parsed.remote.is_none() {
         return Err("--remote <host:port> is required".to_string());
     }
-    if matches!(sub, Subcommand::Clone) && parsed.streams.is_empty() {
-        return Err("--streams is required for `clone`".to_string());
+    if matches!(sub, Subcommand::Clone | Subcommand::Query | Subcommand::Inspect)
+        && parsed.streams.is_empty()
+    {
+        return Err(format!(
+            "--streams is required for `{}`",
+            match sub {
+                Subcommand::Clone => "clone",
+                Subcommand::Query => "query",
+                Subcommand::Inspect => "inspect",
+                _ => unreachable!(),
+            }
+        ));
+    }
+    if matches!(sub, Subcommand::Query) {
+        if parsed.lookup_key.is_none() {
+            return Err("--key is required for `query`".to_string());
+        }
+        if parsed.lookup_stream.is_none() {
+            return Err("--stream is required for `query`".to_string());
+        }
     }
 
     Ok((sub, parsed))
@@ -311,6 +363,119 @@ fn rfc3339(t: std::time::SystemTime) -> String {
     }
 }
 
+/// Plan 30-02: shared helper — run `run_clone` in a current-thread tokio runtime,
+/// returning a populated `FrozenClient`. Returns (exit_code, Err) on failure
+/// so callers can translate into their own stderr + exit mapping.
+fn run_clone_blocking(args: &ParsedArgs) -> Result<FrozenClient, (i32, String)> {
+    if args.mode == "streaming" {
+        return Err((
+            2,
+            "--mode streaming is not supported yet (Phase 31 will enable streaming mode)"
+                .to_string(),
+        ));
+    }
+    let remote = args
+        .remote
+        .clone()
+        .ok_or_else(|| (2, "--remote is required".to_string()))?;
+    let scope = Scope {
+        streams: args.streams.clone(),
+        keys: args.keys.clone(),
+        key_prefix: args.key_prefix.clone(),
+        pull: "all".to_string(),
+    };
+    let clone_args = CloneArgs {
+        remote,
+        scope,
+        token: args.token.clone(),
+        mode: SessionMode::Historical,
+        max_attempts: 5,
+    };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| (1, format!("failed to build tokio runtime: {}", e)))?;
+    match rt.block_on(run_clone(&clone_args)) {
+        Ok(frozen) => Ok(frozen),
+        Err(CloneError::StreamingNotSupported) => {
+            Err((2, "streaming mode not supported (Phase 31 will enable it)".to_string()))
+        }
+        Err(e) => Err((1, format!("{}", e))),
+    }
+}
+
+/// Plan 30-02: `tally query`. Runs a historical one-shot replica fetch,
+/// then looks up `(lookup_stream, lookup_key)` on the resulting
+/// `FrozenClient`. JSON-prints the entity state on stdout (or `null` for
+/// in-scope-but-absent), or exits non-zero with stderr containing the literal
+/// "OutOfScope" for a scope-violating lookup (T-30-07 mitigation).
+fn handle_query(args: ParsedArgs) -> i32 {
+    let frozen = match run_clone_blocking(&args) {
+        Ok(fc) => fc,
+        Err((code, msg)) => {
+            eprintln!("tally query failed: {}", msg);
+            return code;
+        }
+    };
+    let lookup_stream = args.lookup_stream.as_deref().unwrap_or("");
+    let lookup_key = args.lookup_key.as_deref().unwrap_or("");
+    match frozen.get(lookup_stream, lookup_key) {
+        Ok(None) => {
+            println!("null");
+            0
+        }
+        Ok(Some(state)) => match serde_json::to_string(&state) {
+            Ok(s) => {
+                println!("{}", s);
+                0
+            }
+            Err(e) => {
+                eprintln!("tally query: failed to serialize state: {}", e);
+                1
+            }
+        },
+        Err(err) => {
+            // The literal "OutOfScope" is load-bearing: tests assert on it.
+            eprintln!("error: OutOfScopeError: {}", err);
+            2
+        }
+    }
+}
+
+/// Plan 30-02: `tally inspect`. Runs a historical one-shot replica fetch,
+/// then prints `{stream_name: key_count}` as JSON on stdout. Mirrors
+/// `Pipeline.inspect()` in the PyO3 extension. Streams in scope with zero
+/// loaded keys still surface with a count of 0.
+fn handle_inspect(args: ParsedArgs) -> i32 {
+    let frozen = match run_clone_blocking(&args) {
+        Ok(fc) => fc,
+        Err((code, msg)) => {
+            eprintln!("tally inspect failed: {}", msg);
+            return code;
+        }
+    };
+    // BTreeMap so the JSON output has deterministic key ordering. Tests compare
+    // via `json.loads(...) == {...}` (order-agnostic) but deterministic output
+    // also makes CI log diffs stable.
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for (stream, _key, _state) in frozen.iter_entities() {
+        *counts.entry(stream).or_insert(0) += 1;
+    }
+    for s in &frozen.scope().streams {
+        counts.entry(s.clone()).or_insert(0);
+    }
+    match serde_json::to_string(&counts) {
+        Ok(s) => {
+            println!("{}", s);
+            0
+        }
+        Err(e) => {
+            eprintln!("tally inspect: failed to serialize counts: {}", e);
+            1
+        }
+    }
+}
+
 fn handle_sync(args: ParsedArgs) -> i32 {
     if args.mode == "streaming" {
         eprintln!(
@@ -332,6 +497,8 @@ fn main() {
             let code = match sub {
                 Subcommand::Clone => handle_clone(parsed),
                 Subcommand::Sync => handle_sync(parsed),
+                Subcommand::Query => handle_query(parsed),
+                Subcommand::Inspect => handle_inspect(parsed),
             };
             process::exit(code);
         }
@@ -470,5 +637,139 @@ mod tests {
         let argv = vec![s("foo")];
         let err = parse_args(&argv).unwrap_err();
         assert!(err.contains("unknown subcommand"), "got: {}", err);
+    }
+
+    // --- Plan 30-02 tests ---
+
+    // Test 10: `query` happy path parses all new flags.
+    #[test]
+    fn query_happy_path_parses() {
+        let argv = vec![
+            s("query"),
+            s("--remote"), s("foo:6400"),
+            s("--streams"), s("Transactions"),
+            s("--keys"), s("u1,u2"),
+            s("--key"), s("u1"),
+            s("--stream"), s("Transactions"),
+        ];
+        let (sub, parsed) = parse_args(&argv).expect("should parse");
+        assert_eq!(sub, Subcommand::Query);
+        assert_eq!(parsed.remote.as_deref(), Some("foo:6400"));
+        assert_eq!(parsed.streams, vec![s("Transactions")]);
+        assert_eq!(parsed.keys, Some(vec![s("u1"), s("u2")]));
+        assert_eq!(parsed.lookup_key.as_deref(), Some("u1"));
+        assert_eq!(parsed.lookup_stream.as_deref(), Some("Transactions"));
+    }
+
+    // Test 11: `query` requires --key and --stream.
+    #[test]
+    fn query_requires_key_and_stream() {
+        // Missing both.
+        let argv = vec![
+            s("query"),
+            s("--remote"), s("foo:6400"),
+            s("--streams"), s("T"),
+        ];
+        let err = parse_args(&argv).unwrap_err();
+        assert!(err.contains("--key is required"), "got: {}", err);
+
+        // Missing --stream.
+        let argv = vec![
+            s("query"),
+            s("--remote"), s("foo:6400"),
+            s("--streams"), s("T"),
+            s("--key"), s("u1"),
+        ];
+        let err = parse_args(&argv).unwrap_err();
+        assert!(err.contains("--stream is required"), "got: {}", err);
+    }
+
+    // Test 12: `inspect` happy path — no --key/--stream needed.
+    #[test]
+    fn inspect_happy_path_parses() {
+        let argv = vec![
+            s("inspect"),
+            s("--remote"), s("foo:6400"),
+            s("--streams"), s("A,B"),
+            s("--keys"), s("u1,u2"),
+        ];
+        let (sub, parsed) = parse_args(&argv).expect("should parse");
+        assert_eq!(sub, Subcommand::Inspect);
+        assert_eq!(parsed.streams, vec![s("A"), s("B")]);
+        assert_eq!(parsed.keys, Some(vec![s("u1"), s("u2")]));
+        assert!(parsed.lookup_key.is_none());
+        assert!(parsed.lookup_stream.is_none());
+    }
+
+    // Test 13: `inspect` + `query` both need --streams.
+    #[test]
+    fn query_and_inspect_require_streams() {
+        for subcmd in ["query", "inspect"] {
+            let argv = vec![
+                s(subcmd),
+                s("--remote"), s("foo:6400"),
+            ];
+            let err = parse_args(&argv).unwrap_err();
+            assert!(
+                err.contains("--streams is required"),
+                "[{}] got: {}",
+                subcmd,
+                err
+            );
+        }
+    }
+
+    // Test 14: `query` with --mode streaming is parser-accepted but
+    // handler-rejected (matches clone's behaviour).
+    #[test]
+    fn query_streaming_mode_parser_accepted() {
+        let argv = vec![
+            s("query"),
+            s("--remote"), s("foo:6400"),
+            s("--streams"), s("T"),
+            s("--key"), s("u1"),
+            s("--stream"), s("T"),
+            s("--mode"), s("streaming"),
+        ];
+        let (_sub, parsed) = parse_args(&argv).expect("parser accepts streaming");
+        assert_eq!(parsed.mode, "streaming");
+        // Handler short-circuits to exit 2.
+        assert_eq!(handle_query(parsed.clone()), 2);
+        assert_eq!(handle_inspect(parsed), 2);
+    }
+
+    // Test 15: unknown-subcommand error message now mentions query + inspect.
+    #[test]
+    fn unknown_subcommand_lists_all_four() {
+        let argv = vec![s("frobulate")];
+        let err = parse_args(&argv).unwrap_err();
+        assert!(err.contains("clone"), "got: {}", err);
+        assert!(err.contains("sync"), "got: {}", err);
+        assert!(err.contains("query"), "got: {}", err);
+        assert!(err.contains("inspect"), "got: {}", err);
+    }
+
+    // Test 16: token flag still flows through for query + inspect.
+    #[test]
+    fn query_inspect_carry_token() {
+        let argv = vec![
+            s("query"),
+            s("--remote"), s("foo:6400"),
+            s("--streams"), s("T"),
+            s("--key"), s("u1"),
+            s("--stream"), s("T"),
+            s("--token"), s("secret"),
+        ];
+        let (_sub, parsed) = parse_args(&argv).unwrap();
+        assert_eq!(parsed.token.as_deref(), Some("secret"));
+
+        let argv = vec![
+            s("inspect"),
+            s("--remote"), s("foo:6400"),
+            s("--streams"), s("T"),
+            s("--token"), s("secret"),
+        ];
+        let (_sub, parsed) = parse_args(&argv).unwrap();
+        assert_eq!(parsed.token.as_deref(), Some("secret"));
     }
 }
