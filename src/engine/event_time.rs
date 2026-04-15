@@ -228,8 +228,8 @@ impl Default for WatermarkTracker {
 impl WatermarkTracker {
     pub fn new() -> Self {
         Self {
-            observed_max: DashMap::with_shard_amount(crate::state::store::STATE_SHARD_AMOUNT),
-            last_event_time: DashMap::with_shard_amount(crate::state::store::STATE_SHARD_AMOUNT),
+            observed_max: DashMap::new(),
+            last_event_time: DashMap::new(),
         }
     }
 
@@ -374,7 +374,7 @@ impl Default for LateDropCounters {
 impl LateDropCounters {
     pub fn new() -> Self {
         Self {
-            per_stream: DashMap::with_shard_amount(crate::state::store::STATE_SHARD_AMOUNT),
+            per_stream: DashMap::new(),
         }
     }
 

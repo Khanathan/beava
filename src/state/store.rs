@@ -197,17 +197,10 @@ impl std::fmt::Debug for StateStore {
     }
 }
 
-/// Phase 43+: DashMap shard count tuned for 8-worker-thread server deployments.
-/// Default DashMap picks `num_cpus * 4` rounded to power of 2 (=256 on a 48-CPU
-/// host), which is more shards than necessary and bloats memory + cache footprint
-/// when only 8 worker threads are active. 16 shards = 2 shards per worker → low
-/// contention probability under 8-way concurrency, better cache locality.
-pub const STATE_SHARD_AMOUNT: usize = 16;
-
 impl Default for StateStore {
     fn default() -> Self {
         Self {
-            entities: DashMap::with_shard_amount(STATE_SHARD_AMOUNT),
+            entities: DashMap::new(),
             dirty_keys: parking_lot::Mutex::new(AHashSet::new()),
             deleted_keys: parking_lot::Mutex::new(AHashSet::new()),
         }
@@ -942,7 +935,7 @@ impl StreamStore {
     /// Create an empty StreamStore.
     pub fn new() -> Self {
         Self {
-            entities: DashMap::with_shard_amount(STATE_SHARD_AMOUNT),
+            entities: DashMap::new(),
             dirty_keys: parking_lot::Mutex::new(AHashSet::new()),
             deleted_keys: parking_lot::Mutex::new(AHashSet::new()),
         }
