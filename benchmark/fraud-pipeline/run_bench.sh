@@ -24,9 +24,9 @@ if CPUS=$(sysctl -n hw.ncpu 2>/dev/null); then :
 elif CPUS=$(nproc 2>/dev/null); then :
 else CPUS=4; fi
 
-# Fixed client fan-out; server gets all cores.
-CLIENTS=8
-THREADS="$CPUS"
+# One client per core; server also gets all cores. They time-share.
+CLIENTS="${CLIENTS:-$CPUS}"
+THREADS="${THREADS:-$CPUS}"
 
 cd "$REPO"
 
@@ -137,6 +137,26 @@ print()
 print(f"  Wall time:  {wall:.2f}s")
 print(f"  Aggregate:  {total / wall:,.0f} events/sec")
 print(f"  Per event:  {wall / total * 1e6:.1f} µs")
+
+# Runtime phase profile — averages across clients. 'ingest' is the
+# client-side wall from register-return → flush-return; the per-phase
+# rows show where that wall went.
+def _avg(key):
+    vals = [r[key] for r in rows if key in r]
+    return sum(vals) / len(vals) if vals else 0.0
+
+if rows and "t_push" in rows[0]:
+    print()
+    print("  --- Runtime profile (avg across clients) ---")
+    print(f"    connect    : {_avg('t_connect')*1000:>7.1f} ms")
+    print(f"    register   : {_avg('t_register')*1000:>7.1f} ms")
+    print(f"    gen events : {_avg('t_gen')*1000:>7.1f} ms  (client-side, pre-push)")
+    print(f"    push loop  : {_avg('t_push')*1000:>7.1f} ms")
+    print(f"    flush      : {_avg('t_flush')*1000:>7.1f} ms")
+    print(f"    batch p50/p95/p99 (ms): "
+          f"{_avg('batch_p50_ms'):.2f} / "
+          f"{_avg('batch_p95_ms'):.2f} / "
+          f"{_avg('batch_p99_ms'):.2f}")
 
 time.sleep(0.3)
 print()

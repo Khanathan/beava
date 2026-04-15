@@ -170,24 +170,48 @@ def main() -> None:
     random.seed(args.proc_id * 7919 + 17)
 
     pipelines = SIMPLE_PIPELINES if args.mode == "simple" else COMPLEX_PIPELINES
+
+    t0 = time.monotonic()
     app = tl.App(args.host)
+    t_connect = time.monotonic()
     app.register(*pipelines)
+    t_register = time.monotonic()
 
     events = [_event() for _ in range(args.events)]
-    start = time.monotonic()
+    t_gen = time.monotonic()
+
     sent = 0
+    batch_latencies: list[float] = []
     while sent < args.events:
         chunk = events[sent:sent + args.batch]
+        bs = time.monotonic()
         app.push_many(Transactions, chunk)
+        batch_latencies.append(time.monotonic() - bs)
         sent += len(chunk)
+    t_push = time.monotonic()
+
     app.flush()
-    elapsed = time.monotonic() - start
+    t_flush = time.monotonic()
     app.close()
+
+    batch_latencies.sort()
+    n = len(batch_latencies) or 1
+    p50 = batch_latencies[n // 2]
+    p95 = batch_latencies[min(int(n * 0.95), n - 1)]
+    p99 = batch_latencies[min(int(n * 0.99), n - 1)]
 
     print(json.dumps({
         "proc_id": args.proc_id,
         "events": args.events,
-        "elapsed": elapsed,
+        "elapsed": t_flush - t_register,          # ingest wall-clock
+        "t_connect":  t_connect  - t0,
+        "t_register": t_register - t_connect,
+        "t_gen":      t_gen      - t_register,
+        "t_push":     t_push     - t_gen,
+        "t_flush":    t_flush    - t_push,
+        "batch_p50_ms": p50 * 1000,
+        "batch_p95_ms": p95 * 1000,
+        "batch_p99_ms": p99 * 1000,
     }))
 
 

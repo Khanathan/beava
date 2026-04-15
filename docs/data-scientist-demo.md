@@ -258,54 +258,72 @@ against a fresh server between runs, and prints a sample feature vector +
 memory footprint.
 
 Key design points:
-- **Server** is pinned to `TALLY_WORKER_THREADS = host CPU count` (all cores).
-- **Clients** are **8 independent `python3` OS processes** spawned via shell
-  `&` — not `multiprocessing.Pool`. Each runs in its own interpreter with no
-  shared GIL and no fork-pool scheduling overhead.
-- Each client writes a single JSON result line to stdout; the shell
-  aggregates wall-clock EPS across all 8.
+- **Server** runs with `TALLY_WORKER_THREADS = host CPU count` (all cores).
+  DashMap shard count is DashMap's default (`num_cpus × 4`, power-of-2), so
+  the server auto-sizes to the host.
+- **Clients** default to `CPU count` independent `python3` OS processes
+  spawned via shell `&` — not `multiprocessing.Pool`. Each runs in its own
+  interpreter with no shared GIL and no fork-pool scheduling overhead.
+- Each client writes a JSON result line to stdout including per-phase
+  timings; the shell aggregates wall-clock EPS **and** prints an averaged
+  runtime profile.
 
 ```bash
 ./benchmark/fraud-pipeline/run_bench.sh                # defaults
 EVENTS=1000000 ./benchmark/fraud-pipeline/run_bench.sh # bigger run
+CLIENTS=16 ./benchmark/fraud-pipeline/run_bench.sh     # override fan-out
 ```
 
-Sample output on a 10-core M-series Mac (200k events, 8 clients, 10 server threads):
+Sample output on a 10-core M-series Mac (200k events, 10 clients, 10 server threads):
 
 ```
-==> Host CPUs: 10  |  server threads: 10  |  client procs: 8  |  events: 200000
+==> Host CPUs: 10  |  server threads: 10  |  client procs: 10  |  events: 200000
 
 === SIMPLE pipeline benchmark ===
-  [client-0..7]  each 25,000 events in 0.14-0.33s
-  Wall time:  0.63s
-  Aggregate:  315,088 events/sec   (3.2 µs/event)
+  [client-0..9]  each 20,000 events in 0.36-0.40s
+  Wall time:  0.60s
+  Aggregate:  331,313 events/sec   (3.0 µs/event)
+
+  Runtime profile (avg across clients):
+    register   :   5.5 ms
+    gen events :  76.3 ms  (client-side)
+    push loop  : 187.2 ms
+    flush      : 100.0 ms
+    batch p50 / p95 / p99:  4.94 / 31.92 / 31.92 ms
 
   Sample features (key=user_000001):
-    tx_count_1h: 30,774
-    tx_sum_1h:   3,159,342.01
-  Memory: 11.1 MB across 8,081 entities (~1.4 KB/entity)
+    tx_count_1h: 30,906    tx_sum_1h: 3,133,529.41
+  Memory: 11.1 MB across 8,078 entities (~1.4 KB/entity)
 
 === COMPLEX pipeline benchmark ===
-  [client-0..7]  each 25,000 events in 0.57-2.00s
-  Wall time:  2.26s
-  Aggregate:  88,376 events/sec    (11.3 µs/event)
+  [client-0..9]  each 20,000 events in ~1.9s
+  Wall time:  2.13s
+  Aggregate:  93,956 events/sec    (10.6 µs/event)
+
+  Runtime profile (avg across clients):
+    register   :    6.7 ms
+    gen events :   79.5 ms
+    push loop  : 1197.6 ms
+    flush      :  507.0 ms
+    batch p50 / p95 / p99:  4.43 / 484.65 / 484.65 ms
 
   Sample features (key=user_000001):
-    tx_count_30m/1h/24h/7d:  30,774
-    tx_sum_1h:               3,159,342.01
-    tx_avg_24h:              102.66
-    tx_max_24h:              14,896.15
-    tx_stddev_24h:           298.58
-    unique_merchants_1h:     ~1,656 (HLL estimate)
-    unique_devices_24h:      ~2,803 (HLL estimate)
+    tx_count_30m/1h/24h/7d:  30,906
+    tx_sum_1h:               3,133,529.41
+    tx_avg_24h:              101.39
+    tx_max_24h:              14,112.44
+    tx_stddev_24h:           295.78
+    unique_merchants_1h:     ~1,678 (HLL estimate)
+    unique_devices_24h:      ~2,747 (HLL estimate)
     unique_countries_24h:    10
-    last_country: BR  |  last_merchant: merch_000001
-  Memory: 4.8 GB across 21,783 entities (~233 KB/entity)
+  Memory: 4.8 GB across 21,793 entities (~232 KB/entity)
 ```
 
-The ~3.6× throughput gap and ~160× per-entity memory gap (1.4 KB → 233 KB) both
-come from the HLL sketches, stddev moment state, and per-window ring buffers
-declared in the complex pipeline.
+The ~3.5× throughput gap and ~160× per-entity memory gap come from the HLL
+sketches, stddev moment state, and per-window ring buffers in the complex
+pipeline. The push-loop + flush dominance tells you where to invest: batch
+tail latency (p99 ~485 ms on complex) is server-side aggregate work, not
+client-side overhead.
 
 ---
 
