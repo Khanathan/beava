@@ -1,6 +1,7 @@
 # Phase 28: Client engine embedding - Context
 
 **Gathered:** 2026-04-14
+**Revised:** 2026-04-15 (Option K — Phase 29 folded in as plan 28-04)
 **Status:** Ready for planning
 **Mode:** Interactive discuss (user directive: "easiest for v0 and demo")
 
@@ -50,10 +51,25 @@ Make the engine runnable in a no-listener client context, and stub the `tally` C
 - `OutOfScopeError` type — shared. Actual rejection logic is in Phase 29's query surface; defined as a type here so later phases import it.
 
 ### Non-goals this phase
-- No network code in the CLI subcommands yet — subcommands are empty shells.
-- No mode state machine (Phase 29).
-- No event replay loop (Phase 29).
+- No `.watch()` streaming surface (Phase 31 only).
 - No Python binding (Phase 30).
+
+### Option-K update — Phase 29 folded in as plan 28-04
+
+Under Option K (snapshot-only historical clone, no LOG_FETCH, no catchup), the original Phase 29 scope collapses to "fetch snapshot, deserialize into `StateStore`". That's one atomic plan — not a whole phase. So: **Phase 29 is removed from the roadmap** and its remaining real work becomes Phase 28's fourth plan.
+
+**28-04 scope:**
+- Replace the Phase 28-02 `tally clone` stub with a real implementation.
+- Open TCP socket → admin-token handshake → send `OP_SNAPSHOT_FETCH{scope}` with Phase 27's wire codec (imported from the shared module Phase 27 introduces).
+- Receive `{snapshot_taken_at, filtered_snapshot_bytes}`; `postcard::from_bytes::<BaseSnapshotState>(bytes)`.
+- Write entities directly into the client `StateStore` (same struct shape; direct copy or use Phase 28-03's `apply_event`-free bulk-load helper — whichever is simpler).
+- `OutOfScopeError` raised at `client.get(key)` time (check the declared scope).
+- Exponential backoff reconnect (1s → 30s, ±20% jitter, 5 attempts) on handshake/fetch failure.
+- E2E integration test in `tests/integration/test_tally_clone.py`: spin up a real server, push fixture events via existing Python SDK, run `tally clone` in a subprocess, assert `.get()` returns expected values across historical + out-of-scope cases.
+
+**No mode state machine** — historical clone is one-shot: connect, fetch, populate, disconnect, exit. Streaming is Phase 31's concern.
+
+**No LOG_FETCH, no catchup** — Option K removes these entirely from v0.
 
 </decisions>
 
