@@ -8,15 +8,15 @@ progress:
   total_phases: 8
   completed_phases: 3
   total_plans: 13
-  completed_plans: 10
-  percent: 77
+  completed_plans: 11
+  percent: 85
 ---
 
 # Project State
 
 **Current Milestone:** v0 — Local Replica leg (Phases 27-34)
-**Active Phase:** 27 — Server-side replica endpoints (scope-aware) — not planned yet
-**Last Updated:** 2026-04-14 (v2.1 Launch engineering closed; v0 extended to include local-replica phases 27-34)
+**Active Phase:** 30 — Python Pipeline API (PyO3 + CLI + E2E) — **Plan 30-02 complete** (CLI subcommands `query`/`inspect` + 9 E2E tests landed; 30-01 already complete)
+**Last Updated:** 2026-04-14 (Plan 30-02 landed: `tally query`/`inspect` pure-Rust CLI + E2E pytest suite wiring the PyO3 Pipeline against a live server)
 
 ## Milestone Status
 

@@ -34,7 +34,7 @@ Full design discussion: `.planning/phases/27-server-replica-endpoints/27-CONTEXT
 
 - [x] **Phase 27: Server-side replica endpoints (2 opcodes)** — `OP_SNAPSHOT_FETCH{scope}` (0x12) + `OP_SUBSCRIBE{scope}` (0x11). In-memory filter of `BaseSnapshotState`; `SubscriberRegistry` with DashMap + 10k bounded queue; ingest-path notify hook; admin-token auth; response-header `snapshot_taken_at`. No LOG_FETCH. Per-subscriber order only. (completed 2026-04-15)
 - [x] **Phase 28: Client engine embedding + historical clone** — feature-flag `client`/`server` on main crate; `tally_cli` bin with `clone`/`sync` subcommands; `src/client/` module with real `Session`, `OutOfScopeError`, and historical-mode snapshot fetch. `tally clone` ships in this phase (plan 28-04). `tally sync` stubs. (completed 2026-04-15)
-- [ ] **Phase 30: Python Pipeline API + local query surface** — PyO3/maturin `tally.Pipeline(...).run()/.get()/.inspect()`; typed error hierarchy; `tally query` / `tally inspect` CLI.
+- [x] **Phase 30: Python Pipeline API + local query surface** — PyO3/maturin `tally.Pipeline(...).run()/.get()/.inspect()`; typed error hierarchy; `tally query` / `tally inspect` CLI. (completed 2026-04-15)
 - [ ] **Phase 31: Streaming mode + watch** — subscribe-first buffered-replay client dance; bg apply thread + RwLock on client StateStore; PyO3 `.watch()` generator; `tally sync` NDJSON CLI.
 - [ ] **Phase 32: Resume + reconnect (stretch)** — persist last-applied timestamp per scope; on `SubscriberDroppedError`, reconnect and resume.
 - [ ] **Phase 33: Upstream backfill sources (stretch)** — `source="s3://..."` / `source="snowflake://..."` instead of `remote=`; reuses Phase 22 `BackfillSource` trait.
@@ -72,9 +72,9 @@ Full design discussion: `.planning/phases/27-server-replica-endpoints/27-CONTEXT
 ### Phase 30: Python Pipeline API + local query surface
 **Goal**: Ship `tally.Pipeline(remote=..., streams=..., keys?=..., mode="historical").run(); .get(key, stream=...); .inspect()` via PyO3/maturin (Linux x86_64 wheel, Python >=3.10), plus `tally query` / `tally inspect` CLI subcommands. Typed error hierarchy (TallyError + OutOfScopeError / ClientConnectError / HandshakeError / ReplicaStateError), `.pyi` stubs, E2E pytest, CI wheel-build job.
 **Depends on**: Phase 28-04 (real client `Session` + `StateStore`)
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 - [x] 30-01-PLAN.md — `python-native/` cdylib crate + maturin pyproject; PyO3 `Pipeline` class with `__init__`/`.run()` (GIL-releasing)/`.get()`/`.inspect()`; typed exceptions; `.pyi` stubs; unit tests + CI wheel job
-- [ ] 30-02-PLAN.md — `tally query` / `tally inspect` CLI subcommands (pure Rust); E2E pytest spinning up a real server, seeding events via existing Python SDK, asserting `Pipeline.run/get/inspect` + `OutOfScopeError` + CLI coverage
+- [x] 30-02-PLAN.md — `tally query` / `tally inspect` CLI subcommands (pure Rust); E2E pytest spinning up a real server, seeding events via existing Python SDK, asserting `Pipeline.run/get/inspect` + `OutOfScopeError` + CLI coverage
 
 ### Phase 31: Streaming mode + watch
 **Goal**: Subscribe-first buffered-replay client dance (open SUBSCRIBE socket, buffer, fetch snapshot via SNAPSHOT_FETCH, apply snapshot, drop events with `timestamp ≤ snapshot_taken_at`, apply rest, continue live). PyO3 `.watch(key, stream)` generator yielding `{timestamp, event, value}`. `tally sync` CLI emitting NDJSON until Ctrl-C.
@@ -113,7 +113,7 @@ Full design discussion: `.planning/phases/27-server-replica-endpoints/27-CONTEXT
 | 26. Test migration, bench, docs, demo | v0 | 4/4 | Complete | 2026-04-14 |
 | 27. Server-side replica endpoints (Option K) | v0 | 2/2 | Complete   | 2026-04-15 |
 | 28. Client engine embedding + historical clone | v0 | 4/4 | Complete   | 2026-04-15 |
-| 30. Python Pipeline API + local query surface | v0 | 1/2 | In Progress|  |
+| 30. Python Pipeline API + local query surface | v0 | 2/2 | Complete   | 2026-04-15 |
 | 31. Streaming mode + watch (Option K) | v0 | 1/2 | 31-02 planned; 31-01 needs re-plan | — |
 | 32. Resume + reconnect (stretch) | v0 | 0/? | Not planned | — |
 | 33. Upstream backfill sources (stretch) | v0 | 0/? | Not planned | — |
