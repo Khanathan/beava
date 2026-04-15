@@ -258,57 +258,54 @@ against a fresh server between runs, and prints a sample feature vector +
 memory footprint.
 
 Key design points:
-- Detects CPU count (`sysctl -n hw.ncpu` on macOS, `nproc` on Linux) and
-  splits cores between server worker threads and client processes
-  (default: half each).
-- Spawns **N independent `python3` OS processes** in parallel via shell `&`,
-  not `multiprocessing.Pool` — so each client runs in its own interpreter
-  with no shared GIL and no fork-pool scheduling overhead.
+- **Server** is pinned to `TALLY_WORKER_THREADS = host CPU count` (all cores).
+- **Clients** are **8 independent `python3` OS processes** spawned via shell
+  `&` — not `multiprocessing.Pool`. Each runs in its own interpreter with no
+  shared GIL and no fork-pool scheduling overhead.
 - Each client writes a single JSON result line to stdout; the shell
-  aggregates wall-clock EPS across all N.
+  aggregates wall-clock EPS across all 8.
 
 ```bash
-./benchmark/fraud-pipeline/run_bench.sh                   # autosize
-EVENTS=500000 ./benchmark/fraud-pipeline/run_bench.sh     # bigger run
-CLIENTS=8 THREADS=8 ./benchmark/fraud-pipeline/run_bench.sh  # override
+./benchmark/fraud-pipeline/run_bench.sh                # defaults
+EVENTS=1000000 ./benchmark/fraud-pipeline/run_bench.sh # bigger run
 ```
 
-Sample output on a 10-core M-series Mac (100k events, 5 clients, 5 threads):
+Sample output on a 10-core M-series Mac (200k events, 8 clients, 10 server threads):
 
 ```
-==> Host CPUs: 10  |  server threads: 5  |  client procs: 5  |  events: 100000
+==> Host CPUs: 10  |  server threads: 10  |  client procs: 8  |  events: 200000
 
 === SIMPLE pipeline benchmark ===
-  [client-0..4]  each 20,000 events in ~0.17s => ~115k eps
-  Wall time:  0.38s
-  Aggregate:  265,860 events/sec   (3.8 µs/event)
+  [client-0..7]  each 25,000 events in 0.14-0.33s
+  Wall time:  0.63s
+  Aggregate:  315,088 events/sec   (3.2 µs/event)
 
   Sample features (key=user_000001):
-    tx_count_1h: 15303
-    tx_sum_1h:   1,571,636.25
-  Memory: 8.7 MB across 6,343 entities (~1.4 KB/entity)
+    tx_count_1h: 30,774
+    tx_sum_1h:   3,159,342.01
+  Memory: 11.1 MB across 8,081 entities (~1.4 KB/entity)
 
 === COMPLEX pipeline benchmark ===
-  [client-0..4]  each 20,000 events in ~1.16s => ~17k eps
-  Wall time:  1.36s
-  Aggregate:  73,670 events/sec    (13.6 µs/event)
+  [client-0..7]  each 25,000 events in 0.57-2.00s
+  Wall time:  2.26s
+  Aggregate:  88,376 events/sec    (11.3 µs/event)
 
   Sample features (key=user_000001):
-    tx_count_30m/1h/24h/7d:  15,303
-    tx_sum_1h:               1,571,636.25
-    tx_avg_24h:              102.70
-    tx_max_24h:              12,926.80
-    tx_stddev_24h:           294.24
-    unique_merchants_1h:     ~1,318 (HLL estimate)
-    unique_devices_24h:      ~1,909 (HLL estimate)
+    tx_count_30m/1h/24h/7d:  30,774
+    tx_sum_1h:               3,159,342.01
+    tx_avg_24h:              102.66
+    tx_max_24h:              14,896.15
+    tx_stddev_24h:           298.58
+    unique_merchants_1h:     ~1,656 (HLL estimate)
+    unique_devices_24h:      ~2,803 (HLL estimate)
     unique_countries_24h:    10
     last_country: BR  |  last_merchant: merch_000001
-  Memory: 3.9 GB across 18,211 entities (~222 KB/entity)
+  Memory: 4.8 GB across 21,783 entities (~233 KB/entity)
 ```
 
-The ~3.6× throughput difference (simple → complex) and the per-entity memory
-gap (1.4 KB → 222 KB) both come from the additional HLL sketches, stddev
-moment state, and per-window ring buffers declared in the complex pipeline.
+The ~3.6× throughput gap and ~160× per-entity memory gap (1.4 KB → 233 KB) both
+come from the HLL sketches, stddev moment state, and per-window ring buffers
+declared in the complex pipeline.
 
 ---
 

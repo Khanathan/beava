@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Clone-and-run throughput benchmark.
 #
-# Auto-detects host CPU count, sizes worker threads and client processes
-# accordingly, runs the SIMPLE (2 features) and COMPLEX (40+ features, HLL,
-# stddev, multi-window) pipelines back-to-back against a fresh Tally server,
-# and prints throughput + a sample feature vector + memory usage.
+# Spins up 8 independent python3 client processes that push events in
+# parallel to a Rust Tally server configured with worker threads equal to
+# the host CPU count. Runs the SIMPLE (2 features) and COMPLEX (40+
+# features, HLL, stddev, multi-window) pipelines back-to-back against a
+# fresh server, and prints throughput + a sample feature vector + memory.
 #
 # Usage:
-#   ./benchmark/fraud-pipeline/run_bench.sh              # autosize
-#   EVENTS=1000000 ./benchmark/fraud-pipeline/run_bench.sh
-#   CLIENTS=8 THREADS=8 ./benchmark/fraud-pipeline/run_bench.sh
+#   ./benchmark/fraud-pipeline/run_bench.sh                # defaults
+#   EVENTS=1000000 ./benchmark/fraud-pipeline/run_bench.sh # bigger run
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -24,9 +24,9 @@ if CPUS=$(sysctl -n hw.ncpu 2>/dev/null); then :
 elif CPUS=$(nproc 2>/dev/null); then :
 else CPUS=4; fi
 
-# Thread sizing — split between server and clients so neither starves.
-THREADS="${THREADS:-$(( CPUS / 2 > 0 ? CPUS / 2 : 1 ))}"
-CLIENTS="${CLIENTS:-$(( CPUS / 2 > 0 ? CPUS / 2 : 1 ))}"
+# Fixed client fan-out; server gets all cores.
+CLIENTS=8
+THREADS="$CPUS"
 
 cd "$REPO"
 
