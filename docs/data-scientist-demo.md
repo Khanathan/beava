@@ -233,6 +233,25 @@ If you're scripting around the fork, poll `GET http://127.0.0.1:<port>/debug/rea
 ### 12. Python SDK must match fork's Tally version
 If `pip install tally` gives a newer SDK than the fork binary, you may hit wire-protocol mismatches. Pin both versions to the same release; both are versioned in the same repo.
 
+### 13. Replay does NOT apply prod's late-event gate (yet)
+
+Prod's `handle_push_batch` drops events where `event_time < watermark` (per-stream gate, Phase 24 late-event handling). The dropped events are still **logged** — they just don't reach operator state.
+
+The replica's `replica_ingest` path **does not apply this gate**. It processes every event LOG_FETCH returns — including ones prod late-dropped. Consequences:
+
+| Operator kind | Behavior |
+|---|---|
+| Commutative aggregates (count, sum, avg, HLL, top-k) | Replica can be ≥ prod by however many late events existed in the window. Usually tiny. |
+| Order-sensitive ops (first, last, ema, lag) | Can produce different values than prod if the log contains out-of-order arrivals. |
+
+**Not a data-loss issue** — the replica is MORE complete than prod. But it IS a parity issue if you're training a model against prod-matched features. A dedicated follow-up (Phase 45 candidate) adds a watermark gate to `replica_ingest` and bumps the replica-side `late_drops` counter, giving bit-for-bit parity with prod for any operator semantics.
+
+Edge case: starting replay mid-history (`--since T_MID`) means the replica's watermark starts at zero. Events near the T_MID boundary that prod late-dropped will be applied by the replica until its watermark catches up to prod's T_MID watermark. For `--since` values near or before the earliest event (i.e. "replay from the beginning"), this edge vanishes.
+
+### 14. `extract_at` semantics relative to watermark
+
+Because the replica doesn't late-drop, snapshots at `extract_at[i]` reflect "every event in the log with `ts <= extract_at[i]` has been applied" — including any events prod considered late. For commutative aggregates this matches what the scientist expects intuitively ("give me the full count as of T"). For order-sensitive ops the same caveat as #13 applies.
+
 ---
 
 ## Troubleshooting
