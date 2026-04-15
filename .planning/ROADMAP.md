@@ -67,9 +67,13 @@ Plans:
 **Plans**: 0/? — not planned yet
 
 ### Phase 30: Python Pipeline API + local query surface
-**Goal**: `tally.Pipeline(...)` class via PyO3 or subprocess bridge; `.run() / .get() / .inspect()` methods; CLI `tally query` / `tally inspect`.
+**Goal**: Ship `tally.Pipeline(remote=..., streams=..., keys?=..., mode="historical").run(); .get(key, stream=...); .inspect()` via PyO3/maturin (Linux x86_64 wheel, Python >=3.10), plus `tally query` / `tally inspect` CLI subcommands wrapping the same Rust Session + StateStore primitives. Typed error hierarchy (TallyError + OutOfScopeError / ClientConnectError / HandshakeError / ReplicaStateError), hand-written .pyi stubs, E2E pytest against a real server, CI wheel-build job.
 **Depends on**: Phase 29
-**Plans**: 0/? — not planned yet
+**Plans:** 2 plans
+
+Plans:
+- [ ] 30-01-PLAN.md — New `python-native/` cdylib crate + maturin pyproject; PyO3 `Pipeline` class with `__init__`/`.run()` (releasing GIL)/`.get()`/`.inspect()`; typed exception hierarchy; `.pyi` stubs; unit tests for construction validation + error mapping; CI job building the wheel and running unit tests.
+- [ ] 30-02-PLAN.md — `tally query` / `tally inspect` CLI subcommands in `src/bin/tally_cli.rs` (pure Rust, no Python dep); E2E pytest spinning up a real server, pushing fixture events with the existing Python SDK, asserting `Pipeline.run/get/inspect` behavior + `OutOfScopeError` + CLI subprocess coverage; extend CI to run E2E suite.
 
 ### Phase 31: Streaming mode + watch
 **Goal**: Upgrade catchup to SUBSCRIBE on the same connection; `pipe.watch(key)` diff-emits on every apply; downgrade path (drop sub, keep state).
@@ -107,7 +111,7 @@ Plans:
 | 27. Server-side replica endpoints | v0 | 0/? | Not planned | — |
 | 28. Client engine embedding | v0 | 0/? | Not planned | — |
 | 29. Session manager + log consumer (historical) | v0 | 0/? | Not planned | — |
-| 30. Python Pipeline API + local query surface | v0 | 0/? | Not planned | — |
+| 30. Python Pipeline API + local query surface | v0 | 0/2 | Planned | — |
 | 31. Streaming mode + watch | v0 | 0/? | Not planned | — |
 | 32. Mode switching + resume (stretch) | v0 | 0/? | Not planned | — |
 | 33. Upstream backfill sources (stretch) | v0 | 0/? | Not planned | — |
