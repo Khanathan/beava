@@ -207,7 +207,7 @@ fn parse_iso8601(s: &str) -> Option<SystemTime> {
 /// rather than the derived watermark is intentional: it keeps the
 /// data model monotone (max is easier to reason about than a derived
 /// quantity that could regress under underflow).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct WatermarkTracker {
     /// `max(event_time observed)` per stream, stored as nanoseconds since
     /// UNIX_EPOCH in an `AtomicU64` for lock-free `fetch_max` updates.
@@ -219,9 +219,18 @@ pub struct WatermarkTracker {
     last_event_time: DashMap<String, AtomicU64>,
 }
 
+impl Default for WatermarkTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WatermarkTracker {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            observed_max: DashMap::with_shard_amount(crate::state::store::STATE_SHARD_AMOUNT),
+            last_event_time: DashMap::with_shard_amount(crate::state::store::STATE_SHARD_AMOUNT),
+        }
     }
 
     /// Record an event_time observation for `stream`. Updates the
@@ -351,14 +360,22 @@ impl WatermarkTracker {
 
 /// Counter of late-event drops per stream. Exported via the existing
 /// `/metrics` endpoint as `tally_late_events_dropped_total{stream="..."}`.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct LateDropCounters {
     per_stream: DashMap<String, AtomicU64>,
 }
 
+impl Default for LateDropCounters {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LateDropCounters {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            per_stream: DashMap::with_shard_amount(crate::state::store::STATE_SHARD_AMOUNT),
+        }
     }
 
     /// Lock-free increment via DashMap entry + AtomicU64 fetch_add.

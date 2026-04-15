@@ -219,8 +219,8 @@ impl EventLog {
         fs::create_dir_all(&log_dir)?;
         Ok(Self {
             log_dir,
-            writers: DashMap::new(),
-            history_ttls: DashMap::new(),
+            writers: DashMap::with_shard_amount(crate::state::store::STATE_SHARD_AMOUNT),
+            history_ttls: DashMap::with_shard_amount(crate::state::store::STATE_SHARD_AMOUNT),
         })
     }
 
