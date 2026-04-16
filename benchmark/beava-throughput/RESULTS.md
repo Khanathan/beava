@@ -218,9 +218,9 @@ cd /data/home/tally && cargo build --release
 
 # 2. Start server with data on /tmp to avoid /data fs fill
 mkdir -p /tmp/tally-bench
-TALLY_DATA_DIR=/tmp/tally-bench \
-  TALLY_SNAPSHOT_PATH=/tmp/tally-bench/tally.snapshot \
-  TALLY_FULL_SNAPSHOT_INTERVAL=999999 \
+BEAVA_DATA_DIR=/tmp/tally-bench \
+  BEAVA_SNAPSHOT_PATH=/tmp/tally-bench/tally.snapshot \
+  BEAVA_FULL_SNAPSHOT_INTERVAL=999999 \
   ./target/release/tally > /tmp/tally-bench.log 2>&1 &
 
 # 3. Run a benchmark
@@ -309,7 +309,7 @@ Raw run JSONs: `benchmark/tally-throughput/results/20260411-15*.json`
 
 **Build:** `cargo build --release` on `179d799` (Phase 12 Wave 2 coalescer landed + Wave 3 bench harness)
 **Hardware:** Intel(R) Xeon(R) 6975P-C, 48 cores, 371 GiB RAM (tally binary pinned to single tokio current_thread runtime — 1 core used)
-**Runtime:** default release build, single tally instance, TALLY_DATA_DIR=/tmp/tally-bench
+**Runtime:** default release build, single tally instance, BEAVA_DATA_DIR=/tmp/tally-bench
 **Baseline references:** v1.2 numbers from the Phase 11 perf matrix (138k small / 142k medium / 128k large async single-client, sync p99 87-90µs)
 
 ### 6-scenario matrix gate (D-17, D-18)
@@ -423,7 +423,7 @@ Overall: **FAIL.**
 
 **Build:** `cargo build --release` on `f559f1d` (post-fix: handle_push_batch allocation reduction, select! bypass, bench stride sampling)
 **Hardware:** Same as Phase 12 initial run (Intel Xeon 6975P-C, 48 cores, 371 GiB RAM, single tokio current_thread)
-**Runtime:** default release build, single tally instance, TALLY_DATA_DIR=/tmp/tally-bench
+**Runtime:** default release build, single tally instance, BEAVA_DATA_DIR=/tmp/tally-bench
 **Methodology:** 5-run median, 200k events per run (matching v1.2 baseline methodology)
 
 ### What was wrong

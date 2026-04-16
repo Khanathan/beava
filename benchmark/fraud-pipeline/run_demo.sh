@@ -12,7 +12,7 @@ BIN="$REPO/target/release/tally"
 DATA_DIR="${DATA_DIR:-/tmp/tally-fraud-demo}"
 TCP_PORT="${TCP_PORT:-6400}"
 HTTP_PORT="${HTTP_PORT:-6401}"
-TOKEN="${TALLY_ADMIN_TOKEN:-dev-admin-token}"
+TOKEN="${BEAVA_ADMIN_TOKEN:-dev-admin-token}"
 DURATION="${DURATION:-60}"
 
 cd "$REPO"
@@ -29,7 +29,7 @@ rm -rf "$DATA_DIR"
 # 3. Start the server in the background. Trap ensures cleanup on any exit.
 LOG="$(mktemp -t tally-demo.XXXXXX.log)"
 echo "==> Starting tally server (log: $LOG)"
-TALLY_ADMIN_TOKEN="$TOKEN" "$BIN" serve \
+BEAVA_ADMIN_TOKEN="$TOKEN" "$BIN" serve \
   --http-port "$HTTP_PORT" \
   --tcp-port "$TCP_PORT" \
   --data-dir "$DATA_DIR" \

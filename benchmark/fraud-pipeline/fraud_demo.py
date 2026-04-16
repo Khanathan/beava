@@ -9,7 +9,7 @@ fraud burst is printed at the end as a JSON block — scientists paste these int
 
 Usage:
     # Terminal 1 — start "prod":
-    TALLY_ADMIN_TOKEN=dev-admin-token ./target/release/tally serve \\
+    BEAVA_ADMIN_TOKEN=dev-admin-token ./target/release/tally serve \\
         --http-port 6400 --tcp-port 6401 --data-dir /tmp/tally-prod
 
     # Terminal 2 — run the demo:

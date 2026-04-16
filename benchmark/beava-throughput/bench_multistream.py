@@ -4,7 +4,7 @@
 Registers N independent source streams and pushes events round-robin across
 them from C client threads. The whole point is to prove that the per-stream
 event-log writer locks (Phase 40 refactor of `EventLog`) actually let pushes
-to different streams progress in parallel under high `TALLY_WORKER_THREADS`.
+to different streams progress in parallel under high `BEAVA_WORKER_THREADS`.
 
 Before Phase 40 every PUSH serialized through one global mutex, so throughput
 capped at whatever a single writer thread could sustain no matter how many

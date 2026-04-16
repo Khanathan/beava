@@ -42,7 +42,7 @@ grep-matched stack frames inside `push_batch` handler for one worker over
 
 Initial research hypothesized an async WAL could recover ~30% (kernel
 inode-serialization theory). **A/B test falsified it**: a temporary
-`TALLY_WAL_DISABLED=1` toggle that skips the `append_many` calls entirely
+`BEAVA_WAL_DISABLED=1` toggle that skips the `append_many` calls entirely
 gave **276k vs 272k eps — within noise**.
 
 Conclusion: at 320k eps the `O_APPEND` + `write(2)` path is already cheap
@@ -214,7 +214,7 @@ Prints live EPS every 2s + per-phase runtime profile.
 For profiling:
 ```bash
 # Start server manually
-TALLY_ADMIN_TOKEN=dev-admin-token TALLY_WORKER_THREADS=10 \
+BEAVA_ADMIN_TOKEN=dev-admin-token BEAVA_WORKER_THREADS=10 \
   ./target/release/tally serve --http-port 6401 --tcp-port 6400 &
 SPID=$(pgrep -f "target/release/tally serve" | tail -1)
 

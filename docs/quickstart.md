@@ -141,7 +141,7 @@ curl http://localhost:6401/debug/topology | python -m json.tool
 Something is using port 6400 or 6401. Either stop it or change Tally's port:
 
 ```bash
-TALLY_TCP_PORT=7400 TALLY_HTTP_PORT=7401 ./target/release/tally
+BEAVA_TCP_PORT=7400 BEAVA_HTTP_PORT=7401 ./target/release/tally
 ```
 
 ### `cargo build` fails
@@ -167,7 +167,7 @@ curl http://localhost:6401/health
 If no response, start the server. If it's on a different port, pass it explicitly:
 
 ```python
-app = tl.App("localhost:7400")  # match TALLY_TCP_PORT
+app = tl.App("localhost:7400")  # match BEAVA_TCP_PORT
 ```
 
 ### `pip install -e .` fails

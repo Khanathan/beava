@@ -83,21 +83,21 @@ Tally is configured through environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TALLY_TCP_PORT` | `6400` | TCP protocol port |
-| `TALLY_HTTP_PORT` | `6401` | HTTP management API port |
-| `TALLY_WORKER_THREADS` | `4` | Tokio worker threads |
-| `TALLY_SNAPSHOT` | `true` | Enable periodic snapshots to disk |
-| `TALLY_SNAPSHOT_PATH` | `tally.snapshot` | Path prefix for snapshot files |
-| `TALLY_EVENT_LOG` | `true` | Enable append-only event log (WAL) |
-| `TALLY_DATA_DIR` | `.` | Base directory. Event log files are written to `{TALLY_DATA_DIR}/events/`. |
+| `BEAVA_TCP_PORT` | `6400` | TCP protocol port |
+| `BEAVA_HTTP_PORT` | `6401` | HTTP management API port |
+| `BEAVA_WORKER_THREADS` | `4` | Tokio worker threads |
+| `BEAVA_SNAPSHOT` | `true` | Enable periodic snapshots to disk |
+| `BEAVA_SNAPSHOT_PATH` | `tally.snapshot` | Path prefix for snapshot files |
+| `BEAVA_EVENT_LOG` | `true` | Enable append-only event log (WAL) |
+| `BEAVA_DATA_DIR` | `.` | Base directory. Event log files are written to `{BEAVA_DATA_DIR}/events/`. |
 
 Example:
 
 ```bash
-TALLY_TCP_PORT=7000 \
-TALLY_HTTP_PORT=7001 \
-TALLY_SNAPSHOT_PATH=/var/lib/tally/tally.snapshot \
-TALLY_DATA_DIR=/var/lib/tally \
+BEAVA_TCP_PORT=7000 \
+BEAVA_HTTP_PORT=7001 \
+BEAVA_SNAPSHOT_PATH=/var/lib/tally/tally.snapshot \
+BEAVA_DATA_DIR=/var/lib/tally \
 ./target/release/tally
 ```
 
@@ -105,8 +105,8 @@ For Docker, these are set in `docker-compose.yml` to point into the `/data` moun
 
 ```yaml
 environment:
-  - TALLY_SNAPSHOT_PATH=/data/tally.snapshot
-  - TALLY_DATA_DIR=/data
+  - BEAVA_SNAPSHOT_PATH=/data/tally.snapshot
+  - BEAVA_DATA_DIR=/data
 ```
 
 ## Verifying the Installation

@@ -10,9 +10,9 @@ All responses are JSON unless otherwise noted. The API is built with Axum and ru
 
 | Environment Variable | Default | Description |
 |---|---|---|
-| `TALLY_HTTP_PORT` | `6401` | Port the HTTP management API listens on |
+| `BEAVA_HTTP_PORT` | `6401` | Port the HTTP management API listens on |
 
-The server binds to `0.0.0.0:${TALLY_HTTP_PORT}`.
+The server binds to `0.0.0.0:${BEAVA_HTTP_PORT}`.
 
 ---
 

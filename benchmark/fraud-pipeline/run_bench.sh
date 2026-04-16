@@ -20,7 +20,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN="$REPO/target/release/tally"
 BENCH="$REPO/benchmark/fraud-pipeline/bench.py"
-TOKEN="${TALLY_ADMIN_TOKEN:-dev-admin-token}"
+TOKEN="${BEAVA_ADMIN_TOKEN:-dev-admin-token}"
 TCP_PORT="${TCP_PORT:-6400}"
 HTTP_PORT="${HTTP_PORT:-6401}"
 MODE="${MODE:-complex}"
@@ -57,7 +57,7 @@ rm -rf "$REPO/events"
 echo "==> MODE=$MODE  CPUS=$CPUS  warmup=${WARMUP}s  measure=${MEASURE}s"
 echo "    users=$USERS  merchants=$MERCHANTS  devices=$DEVICES  ips=$IPS  zipf=$ZIPF"
 SRV_LOG="$(mktemp -t tally-bench.XXXXXX.log)"
-TALLY_ADMIN_TOKEN="$TOKEN" TALLY_WORKER_THREADS="$CPUS" \
+BEAVA_ADMIN_TOKEN="$TOKEN" BEAVA_WORKER_THREADS="$CPUS" \
   "$BIN" serve --http-port "$HTTP_PORT" --tcp-port "$TCP_PORT" \
   > "$SRV_LOG" 2>&1 &
 SERVER_PID=$!

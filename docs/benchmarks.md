@@ -1,6 +1,6 @@
 # Tally Benchmarks
 
-Measured on a host with 48 CPUs / 371 GB RAM, with the server pinned to 8 CPUs (`taskset -pc 0-7`) to simulate an 8-core production box. `TALLY_WORKER_THREADS=8`. Release build.
+Measured on a host with 48 CPUs / 371 GB RAM, with the server pinned to 8 CPUs (`taskset -pc 0-7`) to simulate an 8-core production box. `BEAVA_WORKER_THREADS=8`. Release build.
 
 ## Pipeline shapes
 
@@ -77,10 +77,10 @@ cargo build --release --bin tally
 
 # 2. Start server pinned to 8 CPUs
 rm -rf /tmp/tally-bench-data && mkdir -p /tmp/tally-bench-data
-TALLY_DATA_DIR=/tmp/tally-bench-data \
-  TALLY_TCP_PORT=6400 TALLY_HTTP_PORT=6401 \
-  TALLY_ADMIN_TOKEN=bench \
-  TALLY_WORKER_THREADS=8 \
+BEAVA_DATA_DIR=/tmp/tally-bench-data \
+  BEAVA_TCP_PORT=6400 BEAVA_HTTP_PORT=6401 \
+  BEAVA_ADMIN_TOKEN=bench \
+  BEAVA_WORKER_THREADS=8 \
   target/release/tally &
 SERVER_PID=$!
 taskset -pc 0-7 $SERVER_PID

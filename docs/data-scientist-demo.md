@@ -37,7 +37,7 @@ Product surface:
 ## Prerequisites
 
 - Production Tally running and reachable (TCP port 6400 by default).
-- Admin token to the production server (`TALLY_ADMIN_TOKEN`).
+- Admin token to the production server (`BEAVA_ADMIN_TOKEN`).
 - Scientist's laptop: Linux x86_64, Rust toolchain if building from source, or a pre-built `tally` binary.
 - Python 3.10+ with the Tally SDK installed (`pip install -e ./python` from the repo, or `pip install tally` once published).
 
@@ -61,7 +61,7 @@ with tl.fork(
     streams=[bf.RawTransactions],
     key_prefix=["user_fraud_"],          # scope to the four injected fraud users
     since="2026-04-15T00:00:00Z",        # backfill from this wall-clock
-    token="prod-admin-token",            # or set TALLY_REPLICA_TOKEN env
+    token="prod-admin-token",            # or set BEAVA_REPLICA_TOKEN env
     pipelines=[
         bf.UserTransactions,             # 25 features: velocity, stddev, geo, etc.
         bf.UserFailedTxns,               # 4 features: card-testing signal
@@ -182,7 +182,7 @@ exactly the moment each fraud fired.
 
 ```bash
 # Terminal 1 — local "prod"
-export TALLY_ADMIN_TOKEN=dev-admin-token
+export BEAVA_ADMIN_TOKEN=dev-admin-token
 ./target/release/tally serve --http-port 6400 --tcp-port 6401 \
                              --data-dir /tmp/tally-prod
 
@@ -258,7 +258,7 @@ against a fresh server between runs, and prints a sample feature vector +
 memory footprint.
 
 Key design points:
-- **Server** runs with `TALLY_WORKER_THREADS = host CPU count` (all cores).
+- **Server** runs with `BEAVA_WORKER_THREADS = host CPU count` (all cores).
   DashMap shard count is DashMap's default (`num_cpus × 4`, power-of-2), so
   the server auto-sizes to the host.
 - **Clients** default to `CPU count` independent `python3` OS processes

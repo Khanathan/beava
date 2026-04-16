@@ -40,7 +40,7 @@ From your laptop (not the VM):
 bash deploy/smoke.sh https://demo.tally.dev
 
 # Full smoke — 6 invariants including replay + crash-recovery
-export TALLY_SSH_HOST=root@demo.tally.dev
+export BEAVA_SSH_HOST=root@demo.tally.dev
 bash deploy/smoke.sh https://demo.tally.dev --with-replay
 ```
 
@@ -50,7 +50,7 @@ The 6 invariants:
 2. `/public/stats` returns all 6 required fields
 3. Admin endpoints return 403 or 404 (never 200)
 4. Replay across loopback hits the events/sec floor (when `--with-replay`)
-5. `systemctl restart tally` is followed by `keys_total` within 10% of pre-restart (when `TALLY_SSH_HOST` is set)
+5. `systemctl restart tally` is followed by `keys_total` within 10% of pre-restart (when `BEAVA_SSH_HOST` is set)
 6. **TCP 6400 is unreachable on the public IP** (`! nc -z -w 2 $PUBLIC_HOST 6400`) — the critical public-surface assertion
 
 ## File layout on the VM
@@ -96,7 +96,7 @@ ssh root@demo.tally.dev <<'EOF'
 NEW=$(openssl rand -hex 32)
 install -m 600 -o tally -g tally /dev/null /etc/tally/admin.token
 printf '%s\n' "$NEW" > /etc/tally/admin.token
-printf 'TALLY_ADMIN_TOKEN=%s\n' "$NEW" > /etc/tally/admin.token.env
+printf 'BEAVA_ADMIN_TOKEN=%s\n' "$NEW" > /etc/tally/admin.token.env
 chmod 600 /etc/tally/admin.token.env /etc/tally/admin.token
 chown tally:tally /etc/tally/admin.token.env /etc/tally/admin.token
 systemctl restart tally
@@ -120,6 +120,6 @@ curl -X POST http://127.0.0.1:6401/snapshot
 - **Unattended-upgrades disabled** during the 5-day demo window to prevent a reboot
   mid-run. Re-enable with `systemctl enable --now unattended-upgrades` after sign-off.
 - **Admin routes are unreachable from the internet by design.** There is no "break
-  glass" web UI. Use SSH + loopback. If that is inconvenient, set `TALLY_ADMIN_TOKEN`
+  glass" web UI. Use SSH + loopback. If that is inconvenient, set `BEAVA_ADMIN_TOKEN`
   in the Caddyfile `@admin` block to proxy with bearer auth — not recommended for
   the public launch window.

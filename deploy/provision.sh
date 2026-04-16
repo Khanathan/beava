@@ -9,7 +9,7 @@
 #     ACME challenge will fail otherwise).
 #   - The Tally release binary must be present as ./tally in the same directory as
 #     this script (scp it alongside tally.service and Caddyfile before running).
-#   - Optionally: export TALLY_ADMIN_TOKEN before running; if unset, a 32-byte hex
+#   - Optionally: export BEAVA_ADMIN_TOKEN before running; if unset, a 32-byte hex
 #     token is generated with `openssl rand -hex 32` and printed at the end.
 #
 # What it does:
@@ -26,7 +26,7 @@
 set -euo pipefail
 
 DOMAIN="${1:?usage: provision.sh <domain>}"
-ADMIN_TOKEN="${TALLY_ADMIN_TOKEN:-$(openssl rand -hex 32)}"
+ADMIN_TOKEN="${BEAVA_ADMIN_TOKEN:-$(openssl rand -hex 32)}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -64,7 +64,7 @@ echo "==> Writing admin token"
 install -d -m 0750 -o tally -g tally /etc/tally
 umask 077
 # systemd EnvironmentFile format
-printf 'TALLY_ADMIN_TOKEN=%s\n' "${ADMIN_TOKEN}" > /etc/tally/admin.token.env
+printf 'BEAVA_ADMIN_TOKEN=%s\n' "${ADMIN_TOKEN}" > /etc/tally/admin.token.env
 chown tally:tally /etc/tally/admin.token.env
 chmod 0600 /etc/tally/admin.token.env
 # Plain token for operator-side access (cat over ssh)

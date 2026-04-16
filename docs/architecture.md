@@ -367,7 +367,7 @@ A `snapshot_in_progress` atomic flag prevents overlapping writes.
 
 The event log (`src/state/event_log.rs`) provides per-stream append-only files for backfill replay.
 
-- **Format**: per-stream files in `$TALLY_DATA_DIR/events/`, each entry is a `LogEntry` (timestamp + payload bytes)
+- **Format**: per-stream files in `$BEAVA_DATA_DIR/events/`, each entry is a `LogEntry` (timestamp + payload bytes)
 - **Write path**: `BufWriter::write_all` (~100-300ns memcpy), never fsyncs on the hot path
 - **Fsync**: background timer every 1 second (Redis `everysec` pattern)
 - **Compaction**: background timer every 60 seconds removes entries older than `history_ttl` (default: 72 hours)
@@ -402,17 +402,17 @@ All configuration is via environment variables. No config files.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TALLY_TCP_PORT` | `6400` | TCP protocol port (hot path) |
-| `TALLY_HTTP_PORT` | `6401` | HTTP management API port |
-| `TALLY_SNAPSHOT_PATH` | `tally.snapshot` | Base path for snapshot files |
-| `TALLY_DATA_DIR` | `.` | Directory for event log files (`$DIR/events/`) |
-| `TALLY_TTL_MULTIPLIER` | `2` | Entity TTL = multiplier x largest window duration |
-| `TALLY_WORKER_THREADS` | `4` | Tokio runtime worker threads |
-| `TALLY_FULL_SNAPSHOT_INTERVAL` | `10` | Cycles between full base snapshots (at 30s/cycle = ~5min) |
-| `TALLY_EVENT_LOG` | `true` | Enable/disable event log (`false` or `0` to disable) |
-| `TALLY_SNAPSHOT` | `true` | Enable/disable snapshots (`false` or `0` to disable) |
+| `BEAVA_TCP_PORT` | `6400` | TCP protocol port (hot path) |
+| `BEAVA_HTTP_PORT` | `6401` | HTTP management API port |
+| `BEAVA_SNAPSHOT_PATH` | `tally.snapshot` | Base path for snapshot files |
+| `BEAVA_DATA_DIR` | `.` | Directory for event log files (`$DIR/events/`) |
+| `BEAVA_TTL_MULTIPLIER` | `2` | Entity TTL = multiplier x largest window duration |
+| `BEAVA_WORKER_THREADS` | `4` | Tokio runtime worker threads |
+| `BEAVA_FULL_SNAPSHOT_INTERVAL` | `10` | Cycles between full base snapshots (at 30s/cycle = ~5min) |
+| `BEAVA_EVENT_LOG` | `true` | Enable/disable event log (`false` or `0` to disable) |
+| `BEAVA_SNAPSHOT` | `true` | Enable/disable snapshots (`false` or `0` to disable) |
 
-Setting both `TALLY_EVENT_LOG=false` and `TALLY_SNAPSHOT=false` runs in ephemeral mode -- all state is lost on restart.
+Setting both `BEAVA_EVENT_LOG=false` and `BEAVA_SNAPSHOT=false` runs in ephemeral mode -- all state is lost on restart.
 
 ## Key Source Files
 

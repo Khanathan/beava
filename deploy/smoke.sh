@@ -4,7 +4,7 @@
 # Usage:
 #   bash deploy/smoke.sh https://demo.tally.dev
 #   bash deploy/smoke.sh https://demo.tally.dev --with-replay      # also runs replay eps check
-#   TALLY_SSH_HOST=root@demo.tally.dev bash deploy/smoke.sh https://demo.tally.dev --with-replay
+#   BEAVA_SSH_HOST=root@demo.tally.dev bash deploy/smoke.sh https://demo.tally.dev --with-replay
 #
 # Invariants (exit 0 only if ALL pass):
 #   1. /health returns {"status":"ok"}
@@ -13,10 +13,10 @@
 #   4. /metrics exposes tally_events_total, tally_current_eps, tally_push_latency_p99_seconds,
 #      tally_late_events_dropped_total (Phase 24-04 watermark drops; HELP line required,
 #      per-stream series only present once a stream is registered)
-#   5. Crash-recovery: restart service, keys_total restored within 10% in 15s (needs TALLY_SSH_HOST)
+#   5. Crash-recovery: restart service, keys_total restored within 10% in 15s (needs BEAVA_SSH_HOST)
 #   6. TCP 6400 MUST NOT be reachable on the public interface (the CRITICAL invariant)
 #
-# Replay eps floor (invariant 4.5, gated by --with-replay + TALLY_SSH_HOST):
+# Replay eps floor (invariant 4.5, gated by --with-replay + BEAVA_SSH_HOST):
 #   On-VM replay via SSH. Binary TCP (port 6400) is loopback-only, so the
 #   replay driver has to run ON the VM itself.
 set -uo pipefail
@@ -125,27 +125,27 @@ check "metrics exposes tally_events_total / eps / p99 / late-drops" "
 # 5. Replay eps floor (gated by --with-replay)
 # -----------------------------------------------------------------------------
 if [[ "${MODE}" == "--with-replay" ]]; then
-	if [[ -n "${TALLY_SSH_HOST:-}" ]]; then
+	if [[ -n "${BEAVA_SSH_HOST:-}" ]]; then
 		check "replay eps floor (>= 500k on VM)" "
-			out=\$(ssh -o StrictHostKeyChecking=accept-new \"\${TALLY_SSH_HOST}\" \
+			out=\$(ssh -o StrictHostKeyChecking=accept-new \"\${BEAVA_SSH_HOST}\" \
 				'cd /opt/tally 2>/dev/null || cd /root && python3 benchmark/replay/replay_30d.py \
 				 --events 1000000 --workers 4 --host 127.0.0.1 --port 6400 --no-warmup' 2>&1) || exit 1
 			eps=\$(echo \"\$out\" | grep -oE 'events_per_sec=[0-9.]+' | head -1 | cut -d= -f2 | cut -d. -f1)
 			[[ -n \"\$eps\" && \"\$eps\" -ge 500000 ]]
 		"
 	else
-		yellow "[SKIP] replay eps floor (set TALLY_SSH_HOST to enable)"
+		yellow "[SKIP] replay eps floor (set BEAVA_SSH_HOST to enable)"
 	fi
 fi
 
 # -----------------------------------------------------------------------------
-# 6. Crash-recovery (gated by TALLY_SSH_HOST — needs to restart the service)
+# 6. Crash-recovery (gated by BEAVA_SSH_HOST — needs to restart the service)
 # -----------------------------------------------------------------------------
-if [[ -n "${TALLY_SSH_HOST:-}" ]]; then
+if [[ -n "${BEAVA_SSH_HOST:-}" ]]; then
 	check "crash recovery: keys_total within 10% after restart" "
 		before=\$(curl -fsS --max-time 10 '${BASE}/public/stats' | grep -oE '\"keys_total\":[0-9]+' | cut -d: -f2)
 		[[ -n \"\$before\" ]] || exit 1
-		ssh -o StrictHostKeyChecking=accept-new \"\${TALLY_SSH_HOST}\" 'sudo systemctl restart tally' || exit 1
+		ssh -o StrictHostKeyChecking=accept-new \"\${BEAVA_SSH_HOST}\" 'sudo systemctl restart tally' || exit 1
 		# Wait up to 15s for the service to come back and snapshot to load.
 		for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
 			after=\$(curl -fsS --max-time 5 '${BASE}/public/stats' 2>/dev/null | grep -oE '\"keys_total\":[0-9]+' | cut -d: -f2)
@@ -158,7 +158,7 @@ if [[ -n "${TALLY_SSH_HOST:-}" ]]; then
 		[[ \"\$after\" -ge \"\$threshold\" ]]
 	"
 else
-	yellow "[SKIP] crash-recovery (set TALLY_SSH_HOST to enable)"
+	yellow "[SKIP] crash-recovery (set BEAVA_SSH_HOST to enable)"
 fi
 
 # -----------------------------------------------------------------------------
@@ -169,8 +169,8 @@ fi
 # -----------------------------------------------------------------------------
 if [[ "$LOCAL_MODE" -eq 1 ]]; then
 	# Local: listener must be UP so the replay CLI can connect. Honors
-	# TALLY_LOCAL_TCP_PORT env override; defaults to the standard 6400.
-	LOCAL_TCP_PORT="${TALLY_LOCAL_TCP_PORT:-6400}"
+	# BEAVA_LOCAL_TCP_PORT env override; defaults to the standard 6400.
+	LOCAL_TCP_PORT="${BEAVA_LOCAL_TCP_PORT:-6400}"
 	if command -v nc >/dev/null 2>&1; then
 		check "TCP ${LOCAL_TCP_PORT} listening on loopback (local mode)" "nc -z -w 2 127.0.0.1 ${LOCAL_TCP_PORT}"
 	else

@@ -18,7 +18,7 @@ ExecStart=/usr/local/bin/tally \
   --http-port 6401 \
   --snapshot-dir /var/lib/tally
 Environment=RUST_LOG=info
-# /etc/tally/admin.token.env contains TALLY_ADMIN_TOKEN=<hex> (mode 600, owner tally:tally)
+# /etc/tally/admin.token.env contains BEAVA_ADMIN_TOKEN=<hex> (mode 600, owner tally:tally)
 EnvironmentFile=/etc/tally/admin.token.env
 Restart=always
 RestartSec=5

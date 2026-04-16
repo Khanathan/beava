@@ -16,7 +16,7 @@ cd /data/home/tally
 export PATH="/data/home/.cargo/bin:$PATH"
 cargo build --release
 ./target/release/tally &
-TALLY_PID=$!
+BEAVA_PID=$!
 sleep 1
 
 # 2. Run the benchmark
@@ -24,11 +24,11 @@ cd benchmark/tally-throughput
 python3 bench.py --events 100000 --clients 1 --pipeline medium
 
 # 3. Profile with perf (run while bench is executing)
-perf record -F 997 -g -p $TALLY_PID -- sleep 10
+perf record -F 997 -g -p $BEAVA_PID -- sleep 10
 perf report --stdio | head -50
 
 # 4. Clean up
-kill $TALLY_PID
+kill $BEAVA_PID
 rm -f /data/home/tally/tally.snapshot.*
 ```
 

@@ -99,7 +99,7 @@ The skill walks you through the 5 things that matter: picking the right
 operators, sizing memory before you push data, projecting capacity against
 real cloud instance prices, and debugging a running server via its
 `/debug/memory`, `/debug/key/{id}`, and `/debug/topology` endpoints. Point it
-at a cluster with `export TALLY_URL=https://...` and `TALLY_TOKEN=...`.
+at a cluster with `export BEAVA_URL=https://...` and `BEAVA_TOKEN=...`.
 
 ### Define a pipeline and push events
 
@@ -232,11 +232,11 @@ See [full comparison](docs/comparison.md) for a deeper analysis.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TALLY_TCP_PORT` | `6400` | Binary protocol port |
-| `TALLY_HTTP_PORT` | `6401` | HTTP management port |
-| `TALLY_WORKER_THREADS` | `4` | Tokio worker threads |
-| `TALLY_SNAPSHOT` | `true` | Periodic snapshots to disk |
-| `TALLY_EVENT_LOG` | `true` | Append-only event log for replay |
+| `BEAVA_TCP_PORT` | `6400` | Binary protocol port |
+| `BEAVA_HTTP_PORT` | `6401` | HTTP management port |
+| `BEAVA_WORKER_THREADS` | `4` | Tokio worker threads |
+| `BEAVA_SNAPSHOT` | `true` | Periodic snapshots to disk |
+| `BEAVA_EVENT_LOG` | `true` | Append-only event log for replay |
 
 ## Claude Code
 
