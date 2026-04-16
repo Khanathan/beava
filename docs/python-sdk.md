@@ -847,7 +847,7 @@ before reading features to ensure errors from prior pushes are raised.
 ## Real-World Example: Fraud Detection Pipeline
 
 This example models a mid-size fintech with 5 entity types and 47 features across
-multiple window tiers. Adapted from `benchmark/fraud-pipeline/bench_fraud.py`.
+multiple window tiers. Adapted from `benchmark/fraud-pipeline/bench.py`.
 
 ### Pipeline definition
 

@@ -47,7 +47,7 @@ All windowed operators use a generic `RingBuffer<T>` with lazy expiration. A 1h 
 - 7.6 KB per entity
 - Sub-100us p99
 
-Benchmark in the repo: `benchmark/fraud-pipeline/bench_fraud.py`
+Benchmark in the repo: `benchmark/fraud-pipeline/bench.py`
 
 **What I'd do differently**
 
@@ -173,7 +173,7 @@ Define pipelines, push events, read results. 16 operators (counts, sums, HLL dis
 | p99 latency | < 100 us |
 | Sustained | 29M events, no degradation |
 
-These are benchmark numbers. Run the script yourself: `benchmark/fraud-pipeline/bench_fraud.py`
+These are benchmark numbers. Run the script yourself: `benchmark/fraud-pipeline/bench.py`
 
 **Where Tally is the wrong answer**
 

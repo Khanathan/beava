@@ -23,10 +23,10 @@ timestamp (Phase 8 SCHM-03 backfill semantics): replaying 30 days of
 pre-stamped events into ~30 seconds of wall-clock time produces the same
 feature values as would accumulate in real time.
 
-**Why not import benchmark/beava-throughput/bench.py?** That module has
+**Why not import benchmark/fraud-pipeline/bench.py?** That module has
 import-time side effects (argparse, path hacks, etc.). Copying the shape
 constants here is simpler and lets the generator run standalone. The
-canonical fraud-event shape source is `benchmark/beava-throughput/bench.py`
+canonical fraud-event shape source is `benchmark/fraud-pipeline/bench.py`
 `make_event` — keep the keys in sync if that schema evolves.
 """
 

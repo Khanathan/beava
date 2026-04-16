@@ -708,7 +708,7 @@ mod e2e {
     //      floor; this is the primary defense in cargo-test mode)
     // The tight ±5% bench gate — sync p99 in [82.6, 91.4]µs under
     // release-build multi-core saturation — lives in
-    // benchmark/beava-throughput/bench.py and is evaluated by `--mode mixed`.
+    // benchmark/fraud-pipeline/bench.py and is evaluated by `--mode mixed`.
     #[tokio::test]
     async fn mixed_workload_sync_p99() {
         let (addr, _state) = spawn_server().await;

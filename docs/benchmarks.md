@@ -1,4 +1,8 @@
-# Beava Benchmarks
+# Beava Benchmarks (historical)
+
+> **For the current benchmark, see `benchmark/README.md` and `benchmark/fraud-pipeline/bench.py`.**
+> The numbers below are from earlier scaling work; the scripts now live under
+> `benchmark/fraud-pipeline/results/archive/pre-rename-throughput/`.
 
 Measured on a host with 48 CPUs / 371 GB RAM, with the server pinned to 8 CPUs (`taskset -pc 0-7`) to simulate an 8-core production box. `BEAVA_WORKER_THREADS=8`. Release build.
 
@@ -16,7 +20,7 @@ All three are 1 source → 1 aggregation. No joins or enrichment.
 
 ## Single-stream async throughput (single-event PUSH)
 
-`python3 benchmark/beava-throughput/bench_v0.py --matrix --events 30000`
+`python3 benchmark/fraud-pipeline/results/archive/pre-rename-throughput/bench_v0.py --matrix --events 30000`
 
 Driver uses `app.push()` (OP_PUSH_ASYNC, fire-and-forget) in a `ThreadPoolExecutor` of N client threads within one Python process. Final `flush()` before measuring wall time.
 
@@ -102,11 +106,11 @@ bv.App("127.0.0.1:6400", timeout=30.0).register(RawTxns, Transactions)
 PY
 
 # 4. Run the matrix (1 process, threaded — GIL-bound)
-python3 benchmark/beava-throughput/bench_v0.py --matrix --events 30000
+python3 benchmark/fraud-pipeline/results/archive/pre-rename-throughput/bench_v0.py --matrix --events 30000
 
 # 5. Run the real-scaling bench (8 processes)
 for i in 0 1 2 3 4 5 6 7; do
-  python3 benchmark/beava-throughput/push_batched.py 127.0.0.1:6400 300000 $i 1000 &
+  python3 benchmark/fraud-pipeline/results/archive/pre-rename-throughput/bench_multistream.py 127.0.0.1:6400 300000 $i 1000 &
 done; wait
 ```
 

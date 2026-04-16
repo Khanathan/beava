@@ -45,7 +45,7 @@ Product surface:
 
 ## Path A — one-liner Python (recommended)
 
-Uses the real fraud pipeline from `benchmark/fraud-pipeline/bench_fraud.py` — 5 entity
+Uses the real fraud pipeline from `benchmark/fraud-pipeline/bench.py` — 5 entity
 tables, 47 features across four window tiers (30m / 1h / 24h / 7d), derived risk
 signals. The scientist imports it rather than re-authoring a toy.
 

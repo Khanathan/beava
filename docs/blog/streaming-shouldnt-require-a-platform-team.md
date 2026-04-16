@@ -147,7 +147,7 @@ I'm writing this section out in full because I'd rather you know before you pick
 
 ## Performance
 
-Benchmarks live in the repo under `benchmark/beava-throughput/bench_v0.py`. The nine-cell matrix — small / medium / large pipelines × 1 / 4 / 8 concurrent clients — is the pre-launch regression gate; v0 sign-off requires every cell within 5% of the v2.0 baseline captured in `.planning/phases/22-stream-aggregation-engine/BASELINE.json`.
+Benchmarks live in the repo under `benchmark/fraud-pipeline/bench.py` (current) with historical scaling scripts archived at `benchmark/fraud-pipeline/results/archive/pre-rename-throughput/`. The nine-cell matrix — small / medium / large pipelines × 1 / 4 / 8 concurrent clients — is the pre-launch regression gate; v0 sign-off requires every cell within 5% of the v2.0 baseline captured in `.planning/phases/22-stream-aggregation-engine/BASELINE.json`.
 
 Headline number, sourced from the worst 1-client cell of `MATRIX-V0-FINAL.json` (so the quote is honest rather than cherry-picked):
 

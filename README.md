@@ -196,7 +196,7 @@ Why this fast: everything is in memory on one node. No network hops between
 services, no serialization to RocksDB, no GC pauses. A single `HashMap::get`
 costs ~0.1 us. A Flink RocksDB state access costs 5-15 us.
 
-See [`benchmark/fraud-pipeline/bench_fraud.py`](benchmark/fraud-pipeline/bench_fraud.py) for the full benchmark. Run it yourself.
+See [`benchmark/fraud-pipeline/bench.py`](benchmark/fraud-pipeline/bench.py) for the full benchmark, or `bash benchmark/fraud-pipeline/run_bench.sh` for a one-command run.
 
 ## Comparison
 
@@ -326,7 +326,7 @@ cd python && python -m pytest tests/ -q   # Python SDK tests
 - [Streaming Shouldn't Require a Platform Team](docs/blog/streaming-shouldnt-require-a-platform-team.md) -- why we built Beava and the tradeoffs we chose
 - [Beava vs Flink+Kafka+Redis](docs/comparison.md) -- full cost and complexity comparison
 - [TCP Protocol Spec](docs/protocol.md) -- build a client in any language
-- [Fraud Detection Benchmark](benchmark/fraud-pipeline/bench_fraud.py) -- 47-feature pipeline, run it yourself
+- [Fraud Detection Benchmark](benchmark/fraud-pipeline/bench.py) -- 47-feature pipeline, run it yourself
 
 ## License
 

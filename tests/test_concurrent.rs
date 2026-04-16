@@ -671,7 +671,7 @@ async fn set_mset_concurrent_with_push() {
 /// across concurrent connections.
 ///
 /// Benchmark gate (run manually):
-///   python3 benchmark/beava-throughput/bench.py --matrix --clients 8
+///   python3 benchmark/fraud-pipeline/bench.py --matrix --clients 8
 ///   Must pass within -5% of 1.1M eps baseline (C-1 gate)
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn test_enriched_concurrent_clients() {
