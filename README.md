@@ -18,7 +18,7 @@ Replaces Postgres triggers + Redis counters + the cron job that heals drift. Sam
 ```bash
 curl -L beava.dev/install | sh
 beava serve --data ./beava.db
-# 42 MB binary. ~40 MB RSS at idle. ~200 MB per 1M keyed entities.
+# Single Rust binary, in-memory state, WAL + snapshot on local disk.
 ```
 
 ```ini
@@ -65,7 +65,7 @@ If you already run Kafka + Flink + Redis, the comparison table below is the appl
 
 ## Key properties
 
-- **Single binary** — 42 MB · ~40 MB RSS idle · ~200 MB per 1M keyed entities · one port · one data dir
+- **Single binary** — one process, one port, one data directory; deploy under systemd (see [deploy/beava.service](deploy/beava.service))
 - **No separate message broker** — push events directly over TCP
 - **Synchronous and atomic writes** — every operator across every pipeline stage updates in one pass
 - **Sub-microsecond state access** — all state in RAM (~0.1µs `HashMap::get`)
@@ -112,7 +112,7 @@ Sources → Beava → Sinks. Beava is the online state; your existing batch/stor
 
 **Sources:** Segment webhooks · Kafka topic consumer · Snowflake CDC stream · direct SDK push · replay from Parquet/JSONL.
 
-**Sinks:** HTTP GET from your model server (Vertex, SageMaker, TorchServe, custom) · Parquet export for offline training parity (`bv export`) · webhook fan-out.
+**Sinks:** HTTP GET from your model server (Vertex, SageMaker, TorchServe, custom) · Parquet export for offline training parity (roadmap) · webhook fan-out.
 
 If your offline features live in dbt on Snowflake, Beava is the online mirror — same aggregations, microsecond reads, training/serving parity via the same Python decorators.
 
@@ -137,9 +137,8 @@ Teams already running Flink or Kafka well — those are excellent systems, keep 
 | Separate message broker | Yes (Kafka) | No — direct TCP push |
 | State access (hot path) | Heap state: <1µs · RocksDB fallback: 5-15µs | In-process RAM: ~0.1µs |
 | Durability model | Replicated Kafka log + Flink checkpoints | SSD WAL fsync before client ack + periodic snapshot · single-node today, HA is Cloud |
-| Hot-key contention p99 | Configurable via state backend | 180µs @ 8 writers · 480µs @ 32 · 1.2ms @ 64 · [contention curve](benchmark/contention.md) |
 | Deploy | Kubernetes + Helm + operators | Single binary under systemd |
-| Ops surface | 0.5-1.0 FTE cluster ops | Prometheus `/metrics`, JSON logs, `/health` · [RUNBOOK.md](deploy/RUNBOOK.md) |
+| Ops surface | 0.5-1.0 FTE cluster ops | Prometheus `/metrics`, JSON logs, `/health` |
 | Time to first feature | Weeks | Minutes |
 
 See [`docs/comparison.md`](docs/comparison.md) for deeper analysis.
@@ -149,20 +148,26 @@ See [`docs/comparison.md`](docs/comparison.md) for deeper analysis.
 A Python `with` block that gives you a scoped replica of live production state. Define a new feature inside it, see the value it would produce from real production history, close the context, production never sees your reads.
 
 ```python
-with bv.fork("beava-prod.internal", scope={"user_id": "u123"}) as fork:
-    @fork.table(key="user_id")
-    def UserActivityV2(c: Click) -> bv.Table:
-        return c.group_by("user_id").agg(
-            clicks_10m = bv.count(window="10m"),
-            clicks_30m = bv.count(window="30m"),     # new
-        )
-    print(fork.get("u123").clicks_30m)   # computed from real prod history
+# Define your new table definition with the usual decorator
+@bv.table(key="user_id")
+def UserActivityV2(c: Click) -> bv.Table:
+    return c.group_by("user_id").agg(
+        clicks_10m = bv.count(window="10m"),
+        clicks_30m = bv.count(window="30m"),     # new
+    )
 
-# Happy with the number? Ship it:
-#   bv deploy user_activity_v2.py
+# Fork against prod, scoped to specific streams + keys, pass your
+# candidate pipeline — fork materializes it against live prod state.
+with bv.fork(
+    remote="beava-prod.internal:6400",
+    streams=[Click],
+    keys=["u123"],
+    pipelines=[UserActivityV2],
+) as fork:
+    print(fork.get(UserActivityV2, key="u123"))   # real prod history
 ```
 
-**Offline/online parity receipt:** the number you see in the fork is byte-for-byte what the online server will return after you deploy this definition. There is no separate offline path — the same operators process the fork's scoped replica as process live push, by construction. See [SEMANTICS.md § fork-parity](SEMANTICS.md) for the proof sketch.
+**Offline/online parity:** the same operators process events in fork and in live push. See [SEMANTICS.md](SEMANTICS.md) for the consistency model.
 
 What fork doesn't fix: feature-logic bugs that depend on timing (late events, out-of-order windows).
 
@@ -198,29 +203,29 @@ Aggregations served from memory, no cache invalidation.
 
 | Metric | 16-core Hetzner AX52 | 10-core M-series laptop |
 |--------|---|---|
-| Throughput (sustained) | 544K events/sec | 314K events/sec |
+| Throughput (sustained) | 544K events/sec (Phase 42 cited, Hetzner bench not yet re-committed) | 314K events/sec (committed in `results/baseline/`) |
 | Memory per entity | ~8 KB | ~8 KB |
-| p99 reads — single-client | <100µs | ~3ms batched |
+| p99 reads — 8-client batched (measured) | — | ~3ms batched (1000-event batches) |
 | p99 reads — 8-client contention | ~180µs server-side | (hot-key bound) |
-| Sustained load | 29M events, zero degradation | 60s × 8 clients, no drift |
+| Sustained load (committed baseline) | — | 60s × 8 clients, no drift |
 
-HdrHistogram, 256B payload, 1M-key cardinality, coordinated-omission corrected. Full methodology: [`benchmark/README.md`](benchmark/README.md).
+Per-entity memory varies widely by operator mix — the complex pipeline in the laptop baseline measured ~616 KB/entity (several HLL sketches per key); simpler pipelines run an order of magnitude less. Full methodology + the batch-p99-vs-per-event caveat: [`benchmark/README.md`](benchmark/README.md).
 
 ## Failure modes
 
-**Every push fsynced to WAL before client ack.** Worst-case data loss on crash: ~1 second (group-commit window). Recovery: ~30s per 10M events on NVMe ([reproducer](benchmark/recovery.md)).
+**Every push fsynced to WAL before client ack.** Worst-case data loss on crash: ~1 second (group-commit window, tunable via `BEAVA_FULL_SNAPSHOT_INTERVAL`). Recovery on restart = load snapshot + replay WAL tail; we haven't published a reproducer for recovery time yet.
 
-**At RAM ceiling.** Beava rejects new writes with `STATUS_SERVER_BUSY`. Python SDK retries (default: 5 retries, 50ms initial, 2× factor, cap 1s). Committed state preserved — no disk spill.
+**At RAM ceiling.** `BEAVA_MEMORY_LIMIT_MB` is a fail-loud cap — committed state is preserved but new writes stop until you resize. There is no disk spill today.
 
-**Process crash, mid-window.** WAL replay on restart; at-least-once. For exactly-once counters, dedup via `event_id` — per-key LRU Bloom filter, 64 B/key, 5-min window (tunable). Target FPR 0.1% at 544K eps sustained (~163M events per window).
+**Process crash, mid-window.** WAL replay on restart; delivery is at-least-once. Server-side `event_id` dedup is on the roadmap (see python/beava/_client.py); today, idempotency is the client's responsibility.
 
-**fsync + snapshot stalls.** p99 ingest lag during snapshot stays <20ms at 500K eps on NVMe. Cloud-standard gp3 degrades ~2×; plan headroom. Alert on `beava_fsync_stall_seconds > 2s` sustained 5m.
+**fsync + snapshot stalls.** Group-commit batches push fsyncs; the snapshot loop runs every 5 min on `spawn_blocking` so ingest isn't synchronously blocked. Quantified latency under snapshot load is not yet benchmarked — planning headroom is the operator's call.
 
 **Single node, no HA today.** No primary/replica, no automated failover. For redundancy: run a cold standby and periodically snapshot to it, or accept the ~30s restart window. Automated HA failover is on the Cloud roadmap (Q4 2026).
 
-**Hot-key contention.** 180µs @ 8 writers · 480µs @ 32 · 1.2ms @ 64 on one key. Shard (`user_id + hour_bucket`) or debounce beyond.
+**Hot-key contention.** Concurrent writers on a single key contend on per-key locks. The laptop baseline ran 8 clients against 10K keys (Zipfian) — contended p99 is visibly worse than single-client. Shard hot keys (e.g. `user_id + hour_bucket`) or debounce if this matters for your workload.
 
-**Observability.** Prometheus at `/metrics`, JSON logs to stdout, `/health` for orchestrators. [RUNBOOK.md](deploy/RUNBOOK.md) lists the 5 metrics that should page.
+**Observability.** Prometheus at `/metrics`, structured JSON logs to stdout, `/health` for orchestrators. Sample Caddyfile + systemd unit in [deploy/](deploy/).
 
 ## Security baseline (self-hosted, today)
 
@@ -236,7 +241,7 @@ Roadmap: built-in TLS on ingest (v1.x), mTLS + RBAC + audit log (v1.0), AES-256 
 - Pre-launch OSS. API will move between v0.x releases.
 - No SOC2, HIPAA, PCI today (Cloud, Q4 2026 target).
 - Single region. No cross-region replication.
-- Working set must fit in RAM. Modern instances reach 1.5 TB+.
+- Working set must fit in RAM. Capacity scales with available memory; actual per-entity cost depends heavily on the operator mix (HLL sketches are the big line item).
 - Single node, no HA today. Automated failover is Cloud.
 - At-least-once delivery. Dedup via `event_id` for exactly-once counters.
 - No embedding generation today. On roadmap if demand is there.
@@ -245,11 +250,11 @@ Roadmap: built-in TLS on ingest (v1.x), mTLS + RBAC + audit log (v1.0), AES-256 
 
 Beava is a solo-maintainer project today. Commit cadence and contributor stats are public on GitHub.
 
-**Dated commitment:** second committer with merge rights by end of Q3 2026. If that date passes without a second committer, a scheduled GitHub Action commits `abandoned.md` to the repo automatically. You have full fork rights under Apache 2.0 + no CLA with no legal friction.
+**Maintainer status:** bringing on a second committer is a goal — no committed timeline today (see [MAINTAINERS.md](MAINTAINERS.md) and [GOVERNANCE.md](GOVERNANCE.md) for the actual disclosure). Apache 2.0 + no CLA means if the project stalls, you can fork everything with no legal friction — that is the real contingency.
 
 **Lock-in exit ramp:**
 - On-disk event log is a documented format (see [SEMANTICS.md](SEMANTICS.md))
-- `bv export` dumps state to Parquet for training-data reuse or migration (roadmap v0.2)
+- Parquet state export for training-data reuse or migration (roadmap)
 - All 16 operators are open specifications — reimplementable in another engine
 
 Full disclosure: [MAINTAINERS.md](MAINTAINERS.md) · [GOVERNANCE.md](GOVERNANCE.md).

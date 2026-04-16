@@ -28,17 +28,25 @@ Closes the "staging data says 47.3, prod says 50.1, you burn two days"
 bug.
 
 ```python
-with bv.fork("beava-prod.internal", scope={"user_id": "u123"}):
-    print(OnboardingSignals.get("u123").clicks_10m)
+with bv.fork(
+    remote="beava-prod.internal:6400",
+    streams=[UserEvent],
+    keys=["u123"],
+    pipelines=[OnboardingSignals],
+) as fork:
+    print(fork.get(OnboardingSignals, key="u123"))
 ```
 
 Numbers (47-feature fraud pipeline, reproducible):
 - 544K eps sustained on 16-core Hetzner AX52
 - 314K eps on 10-core M-series laptop (baseline committed in repo)
-- p99 <100µs single-client reads, HdrHistogram, 256B payload, 1M-key
-  cardinality, coordinated-omission corrected
-- Contention curve: 180µs @ 8 writers · 480µs @ 32 · 1.2ms @ 64 on
-  one key (shard or debounce beyond)
+- Single-client p99 reads are well under the 10ms SLA most online
+  inference paths care about (exact single-client numbers not
+  committed in the baseline — the laptop baseline ran 8 clients;
+  rerunning with CLIENTS=1 is one command)
+- Hot-key contention under 8-client load shows visibly worse tail
+  latency than single-client — shard hot keys or debounce if that
+  matters for your workload
 
 Reproduce in 70 seconds: `bash benchmark/fraud-pipeline/run_bench.sh`.
 Full methodology + the "batch-p99 vs per-event-p99" caveat is in
@@ -46,10 +54,11 @@ Full methodology + the "batch-p99 vs per-event-p99" caveat is in
 
 Failure modes documented up front:
 - WAL fsync before client ack (~1s worst-case data loss on crash).
-- RAM ceiling returns STATUS_SERVER_BUSY; SDK retries with exponential
-  backoff by default.
-- At-least-once delivery with event_id Bloom-filter dedup (per-key LRU,
-  64 B/key, 5-min window, target FPR 0.1%).
+- At RAM ceiling: BEAVA_MEMORY_LIMIT_MB is a fail-loud cap — committed
+  state preserved, new writes stop until you resize. No disk spill.
+- At-least-once delivery today. Server-side event_id dedup is on the
+  roadmap (see python/beava/_client.py); idempotency is the client's
+  responsibility for now.
 - Single node, no HA today. No primary/replica, no automated failover.
   Automated HA is on the Cloud roadmap (Q4 2026).
 - fsync/snapshot stalls: p99 ingest lag during snapshot stays <20ms on
@@ -57,10 +66,10 @@ Failure modes documented up front:
 - Observability: Prometheus `/metrics`, JSON logs, `/health`, RUNBOOK.md.
 
 Honest about scope: pre-launch OSS, single region, working set must
-fit in RAM (modern instances reach 1.5 TB+). No SOC2/HIPAA today —
-Beava Cloud Q4 2026. Solo-maintainer; dated commitment to second
-committer by Q3 2026 or a scheduled GitHub Action commits
-`abandoned.md` and you fork under Apache 2.0 + no CLA.
+fit in RAM (per-entity cost varies with operator mix). No SOC2/HIPAA
+today — Beava Cloud Q4 2026. Solo-maintainer; bringing on a second
+committer is a goal, no committed timeline — Apache 2.0 + no CLA means
+if the project stalls you can fork everything with no legal friction.
 
 If you already run Flink well, keep running Flink — Beava isn't trying
 to displace working infrastructure. Beava exists for teams who haven't
