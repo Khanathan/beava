@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tally._types_core import FieldSpec
+from beava._types_core import FieldSpec
 
 
 def _schema_to_fields_dict(schema: dict[str, FieldSpec]) -> dict[str, Any]:
@@ -53,8 +53,8 @@ def _schema_to_fields_dict(schema: dict[str, FieldSpec]) -> dict[str, Any]:
 
 def _compile_source(descriptor: Any) -> dict[str, Any]:
     """StreamSource / TableSource."""
-    from tally._stream import StreamSource
-    from tally._table import TableSource
+    from beava._stream import StreamSource
+    from beava._table import TableSource
 
     d: dict[str, Any] = {
         "name": descriptor._name,
@@ -108,8 +108,8 @@ def _compile_aggregation(descriptor: Any) -> dict[str, Any]:
 def _compile_join(descriptor: Any) -> dict[str, Any]:
     """Stream/Table derivation wrapping a JoinSpec."""
     spec = descriptor._join_spec
-    from tally._stream import StreamDerivation
-    from tally._table import TableDerivation
+    from beava._stream import StreamDerivation
+    from beava._table import TableDerivation
 
     kind = "stream" if isinstance(descriptor, StreamDerivation) else "table"
     d: dict[str, Any] = {
@@ -147,8 +147,8 @@ def _compile_union(descriptor: Any) -> dict[str, Any]:
 
 def _compile_op_chain(descriptor: Any) -> dict[str, Any]:
     """StreamDerivation / TableDerivation carrying only stateless _ops."""
-    from tally._stream import StreamDerivation
-    from tally._table import TableDerivation
+    from beava._stream import StreamDerivation
+    from beava._table import TableDerivation
 
     kind = "stream" if isinstance(descriptor, StreamDerivation) else "table"
     d: dict[str, Any] = {
@@ -184,8 +184,8 @@ def compile_to_register_json(descriptor: Any) -> dict[str, Any]:
       * Stateless-chain derivation → op-chain payload.
       * Source (Stream/Table) → source payload.
     """
-    from tally._stream import StreamSource, StreamDerivation
-    from tally._table import TableSource, TableDerivation
+    from beava._stream import StreamSource, StreamDerivation
+    from beava._table import TableSource, TableDerivation
 
     if isinstance(descriptor, (StreamSource, TableSource)):
         return _compile_source(descriptor)

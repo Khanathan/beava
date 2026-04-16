@@ -2,7 +2,7 @@
 
 Each descriptor is a pure-Python spec object — no execution. Phase 22 wires
 these into the Rust engine via the REGISTER JSON ``aggregation.features[]``
-payload (see :mod:`tally._serialize`).
+payload (see :mod:`beava._serialize`).
 
 Each subclass declares:
 
@@ -17,8 +17,8 @@ Each subclass declares:
   * ``to_json(name)`` — emits the engine JSON fragment that Phase 22 consumes.
 
 The lowercase module-level aliases (``count``, ``sum``, …) are re-exported on
-the public ``tally`` namespace by :mod:`tally.__init__`. Collisions with
-Python builtins are intentional — ``tl.sum`` is a spec constructor, not the
+the public ``beava`` namespace by :mod:`beava.__init__`. Collisions with
+Python builtins are intentional — ``bv.sum`` is a spec constructor, not the
 builtin.
 """
 
@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from tally._types_core import FieldSpec
+from beava._types_core import FieldSpec
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +126,7 @@ class AggOp:
         if self.field is None:
             return
         if self.field not in schema:
-            from tally._schema_v0 import schema_mismatch_error
+            from beava._schema_v0 import schema_mismatch_error
             raise TypeError(
                 schema_mismatch_error(self.field, schema, op_name)
             )
@@ -530,15 +530,15 @@ class _Lag(AggOp):
 
 
 # ---------------------------------------------------------------------------
-# Public lowercase aliases (tl.count, tl.sum, …)
+# Public lowercase aliases (bv.count, bv.sum, …)
 # ---------------------------------------------------------------------------
 
 
 count = _Count
-sum = _Sum  # shadows builtins.sum at module scope — accessed as tl.sum
+sum = _Sum  # shadows builtins.sum at module scope — accessed as bv.sum
 avg = _Avg
-min = _Min  # shadows builtins.min — accessed as tl.min
-max = _Max  # shadows builtins.max — accessed as tl.max
+min = _Min  # shadows builtins.min — accessed as bv.min
+max = _Max  # shadows builtins.max — accessed as bv.max
 variance = _Variance
 stddev = _Stddev
 percentile = _Percentile

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tally._types_core import (
+from beava._types_core import (
     MISSING,
     Field,
     FieldSpec,
@@ -12,7 +12,7 @@ from tally._types_core import (
     _FieldMarker,
     _OptionalSpec,
 )
-from tally._schema_v0 import (
+from beava._schema_v0 import (
     extract_schema,
     schema_mismatch_error,
     suggest,

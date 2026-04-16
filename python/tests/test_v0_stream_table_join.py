@@ -1,6 +1,6 @@
 """Phase 23-01 Task 3 — Stream↔Table join TCP round-trip.
 
-End-to-end pytest cases against the live tally_server fixture:
+End-to-end pytest cases against the live beava_server fixture:
 
   1. ``test_stream_table_enrich_tcp_roundtrip`` — register Clicks +
      UserProfile + Enriched + an aggregation downstream of Enriched, SET
@@ -20,25 +20,25 @@ from __future__ import annotations
 
 import pytest
 
-import tally as tl
+import beava as bv
 
 
 def test_stream_table_enrich_tcp_roundtrip(app):
-    @tl.stream
+    @bv.stream
     class Clicks:
         user_id: str
         page: str
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class UserProfile:
         user_id: str
         country: str
 
     Enriched = Clicks.join(UserProfile, on="user_id", type="left")
 
-    @tl.table(key="user_id")
-    def EnrichedAgg(enriched: Enriched) -> tl.Table:
-        return enriched.group_by("user_id").agg(n=tl.count(window="1h"))
+    @bv.table(key="user_id")
+    def EnrichedAgg(enriched: Enriched) -> bv.Table:
+        return enriched.group_by("user_id").agg(n=bv.count(window="1h"))
 
     app.register(Clicks, UserProfile, Enriched, EnrichedAgg)
 
@@ -59,13 +59,13 @@ def test_stream_table_enrich_tcp_roundtrip(app):
 
 
 def test_stream_table_enrich_composite_key_tcp(app):
-    @tl.stream
+    @bv.stream
     class CompClicks:
         user_id: str
         region: str
         page: str
 
-    @tl.table(key=["user_id", "region"])
+    @bv.table(key=["user_id", "region"])
     class CompProfile:
         user_id: str
         region: str
@@ -73,9 +73,9 @@ def test_stream_table_enrich_composite_key_tcp(app):
 
     EnrichedC = CompClicks.join(CompProfile, on=["user_id", "region"], type="left")
 
-    @tl.table(key=["user_id", "region"])
-    def CompAgg(enriched: EnrichedC) -> tl.Table:
-        return enriched.group_by("user_id", "region").agg(n=tl.count(window="1h"))
+    @bv.table(key=["user_id", "region"])
+    def CompAgg(enriched: EnrichedC) -> bv.Table:
+        return enriched.group_by("user_id", "region").agg(n=bv.count(window="1h"))
 
     app.register(CompClicks, CompProfile, EnrichedC, CompAgg)
 
@@ -101,11 +101,11 @@ def test_stream_table_outer_rejected_at_register():
     ``tests/test_join_stream_table.rs::enrich_rejects_outer``).
     """
 
-    @tl.stream
+    @bv.stream
     class L:
         k: str
 
-    @tl.table(key="k")
+    @bv.table(key="k")
     class R:
         k: str
         v: str

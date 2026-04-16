@@ -1,7 +1,7 @@
-"""Tests for tally._types: FeatureResult and exception hierarchy."""
+"""Tests for beava._types: FeatureResult and exception hierarchy."""
 
 import pytest
-from tally._types import FeatureResult, TallyError, ConnectionError, ProtocolError
+from beava._types import FeatureResult, BeavaError, ConnectionError, ProtocolError
 
 
 # ---------------------------------------------------------------------------
@@ -84,16 +84,16 @@ class TestFeatureResultConversions:
 
 
 class TestExceptionHierarchy:
-    def test_tally_error_is_exception(self):
-        assert issubclass(TallyError, Exception)
+    def test_beava_error_is_exception(self):
+        assert issubclass(BeavaError, Exception)
 
-    def test_connection_error_is_tally_error(self):
-        assert issubclass(ConnectionError, TallyError)
-        assert isinstance(ConnectionError("x"), TallyError)
+    def test_connection_error_is_beava_error(self):
+        assert issubclass(ConnectionError, BeavaError)
+        assert isinstance(ConnectionError("x"), BeavaError)
 
-    def test_protocol_error_is_tally_error(self):
-        assert issubclass(ProtocolError, TallyError)
-        assert isinstance(ProtocolError("x"), TallyError)
+    def test_protocol_error_is_beava_error(self):
+        assert issubclass(ProtocolError, BeavaError)
+        assert isinstance(ProtocolError("x"), BeavaError)
 
     def test_connection_error_message(self):
         e = ConnectionError("server closed")

@@ -1,4 +1,4 @@
-"""Binary protocol encoding/decoding for the Tally wire format.
+"""Binary protocol encoding/decoding for the Beava wire format.
 
 Matches the Rust server's protocol.rs byte-for-byte:
 - Frame: [4-byte BE u32 length][opcode][payload]  (length = 1 + len(payload))
@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import struct
 
-from tally._types import ProtocolError
+from beava._types import ProtocolError
 
 # ---------------------------------------------------------------------------
 # Constants

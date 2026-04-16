@@ -1,4 +1,4 @@
-"""Byte-level conformance tests for tally._protocol.
+"""Byte-level conformance tests for beava._protocol.
 
 Every test verifies exact byte sequences that match the Rust server's
 protocol.rs encoding. This ensures Python SDK and Rust server are
@@ -10,7 +10,7 @@ import struct
 
 import pytest
 
-from tally._protocol import (
+from beava._protocol import (
     OP_PUSH,
     OP_GET,
     OP_SET,
@@ -37,7 +37,7 @@ from tally._protocol import (
     encode_register,
     parse_response,
 )
-from tally._types import ProtocolError
+from beava._types import ProtocolError
 
 
 # ---------------------------------------------------------------------------

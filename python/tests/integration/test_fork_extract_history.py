@@ -1,7 +1,7 @@
-"""Phase 44-01: E2E test — ``tl.fork(extract_at=[...])`` + ``fork.extract_history()``.
+"""Phase 44-01: E2E test — ``bv.fork(extract_at=[...])`` + ``fork.extract_history()``.
 
 Flow:
-  1. Boot a prod ``tally`` server on a free port.
+  1. Boot a prod ``beava`` server on a free port.
   2. Push 5 events to ``Transactions`` at spaced-out wall-clock timestamps:
         u1 +~1s (amount=10), u2 +~2s (amount=5),
         u1 +~5s (amount=20), u2 +~8s (amount=15),
@@ -29,11 +29,11 @@ from pathlib import Path
 
 import pytest
 
-import tally as tl
+import beava as bv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-RELEASE_BIN = PROJECT_ROOT / "target" / "release" / "tally"
-DEBUG_BIN = PROJECT_ROOT / "target" / "debug" / "tally"
+RELEASE_BIN = PROJECT_ROOT / "target" / "release" / "beava"
+DEBUG_BIN = PROJECT_ROOT / "target" / "debug" / "beava"
 ADMIN_TOKEN = "test-admin"
 
 
@@ -58,7 +58,7 @@ def _wait_for_tcp(host: str, port: int, timeout: float = 20.0) -> None:
                 return
         except OSError:
             time.sleep(0.1)
-    raise RuntimeError(f"tally did not become ready on {host}:{port}")
+    raise RuntimeError(f"beava did not become ready on {host}:{port}")
 
 
 def _iso_z(ms: int) -> str:
@@ -74,20 +74,20 @@ def _iso_z(ms: int) -> str:
 def prod_server():
     binary = _pick_binary()
     if binary is None:
-        pytest.skip("tally binary not built; run `cargo build` to enable")
+        pytest.skip("beava binary not built; run `cargo build` to enable")
 
     prod_tcp = _find_free_port()
     prod_http = _find_free_port()
     tmp = tempfile.TemporaryDirectory()
     env = os.environ.copy()
     env.update(
-        TALLY_TCP_PORT=str(prod_tcp),
-        TALLY_HTTP_PORT=str(prod_http),
-        TALLY_ADMIN_TOKEN=ADMIN_TOKEN,
-        TALLY_SNAPSHOT_PATH=str(Path(tmp.name) / "tally.snapshot"),
-        TALLY_SNAPSHOT="1",
-        TALLY_EVENT_LOG="1",
-        TALLY_DATA_DIR=tmp.name,
+        BEAVA_TCP_PORT=str(prod_tcp),
+        BEAVA_HTTP_PORT=str(prod_http),
+        BEAVA_ADMIN_TOKEN=ADMIN_TOKEN,
+        BEAVA_SNAPSHOT_PATH=str(Path(tmp.name) / "beava.snapshot"),
+        BEAVA_SNAPSHOT="1",
+        BEAVA_EVENT_LOG="1",
+        BEAVA_DATA_DIR=tmp.name,
     )
     proc = subprocess.Popen(
         [str(binary)],
@@ -115,18 +115,18 @@ def test_extract_history_three_checkpoints(prod_server, run_idx):
     prod_tcp, _prod_http, binary_path = prod_server
 
     # ---- Scientist pipelines ---------------------------------------------
-    @tl.stream
+    @bv.stream
     class Transactions:
         user_id: str
         amount: float
 
-    def _summary(t: Transactions) -> tl.Table:
+    def _summary(t: Transactions) -> bv.Table:
         return t.group_by("user_id").agg(
-            count=tl.count(window="1h"),
-            total=tl.sum("amount", window="1h"),
+            count=bv.count(window="1h"),
+            total=bv.sum("amount", window="1h"),
         )
     _summary.__name__ = "txn_summary"
-    TxnSummary = tl.table(key="user_id")(_summary)
+    TxnSummary = bv.table(key="user_id")(_summary)
 
     # Inject key_field for prod registration (same trick as test_fork_python_api).
     _orig_to_register = Transactions._to_register_json
@@ -150,7 +150,7 @@ def test_extract_history_three_checkpoints(prod_server, run_idx):
     # the gaps. With ~800ms gaps, the 100ms-scale wall-clock skew between
     # Python time.time() and the server's SystemTime::now() at ingest is
     # well within bounds.
-    prod = tl.App(f"127.0.0.1:{prod_tcp}")
+    prod = bv.App(f"127.0.0.1:{prod_tcp}")
     push_times_ms: list[int] = []
 
     try:
@@ -233,7 +233,7 @@ def test_extract_history_three_checkpoints(prod_server, run_idx):
         except OSError:
             fork_http = _find_free_port()
 
-    with tl.fork(
+    with bv.fork(
         remote=f"127.0.0.1:{prod_tcp}",
         streams=[Transactions],
         keys=["u1", "u2"],

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tally._types_core import MISSING, FieldSpec
+from beava._types_core import MISSING, FieldSpec
 
 
 def _type_name(t: type) -> str:

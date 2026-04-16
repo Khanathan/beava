@@ -1,13 +1,13 @@
 """Schema primitives for the v0 SDK.
 
 Provides:
-  - ``Optional[T]``: a Tally-owned nullable marker (distinct from ``typing.Optional``).
+  - ``Optional[T]``: a Beava-owned nullable marker (distinct from ``typing.Optional``).
   - ``Field(desc=..., default=...)``: per-field metadata attached as a class-attribute value.
   - ``FieldSpec``: normalized schema entry consumed by Stream/Table descriptors.
   - ``MISSING``: sentinel distinguishing "no default" from "default is None".
 
-``typing.Optional[T]`` is *not* used because it's ambiguous in the Tally schema
-model — we want users to explicitly opt into nullability via ``tl.Optional``.
+``typing.Optional[T]`` is *not* used because it's ambiguous in the Beava schema
+model — we want users to explicitly opt into nullability via ``bv.Optional``.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ MISSING = _Missing()
 
 
 class _OptionalSpec:
-    """Wraps a Python type to mark it nullable in a Tally schema.
+    """Wraps a Python type to mark it nullable in a Beava schema.
 
     Produced by ``Optional[T]``. ``_OptionalSpec(_OptionalSpec(T))`` collapses
     to ``_OptionalSpec(T)`` so nesting is idempotent.
@@ -69,7 +69,7 @@ class _OptionalMarker:
         return _OptionalSpec(inner)
 
     def __repr__(self) -> str:  # pragma: no cover
-        return "tally.Optional"
+        return "beava.Optional"
 
 
 Optional = _OptionalMarker()

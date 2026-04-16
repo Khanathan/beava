@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from tally._operators import (
+from beava._operators import (
     Avg,
     Count,
     Derive,

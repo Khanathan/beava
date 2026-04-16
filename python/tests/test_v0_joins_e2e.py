@@ -1,9 +1,9 @@
 """Phase 23-03 Task 2 — End-to-end Python SDK TCP tests for all 3 join shapes.
 
-Runs against the session-scoped ``tally_server`` fixture from conftest.py.
+Runs against the session-scoped ``beava_server`` fixture from conftest.py.
 Each test drives REGISTER / SET / PUSH / GET via the Python SDK over the
 live TCP protocol, asserting the engine correctly consumes the REGISTER
-payload emitted by ``python/tally/_serialize.py`` and produces the right
+payload emitted by ``python/beava/_serialize.py`` and produces the right
 downstream effects.
 
   1. ``test_stream_stream_join_tcp``  — Orders.join(Payments, within=30s).
@@ -23,18 +23,18 @@ import time
 
 import pytest
 
-import tally as tl
+import beava as bv
 
 
 def test_stream_stream_join_tcp(app):
     """Stream↔Stream windowed join fed into a downstream count aggregation."""
 
-    @tl.stream
+    @bv.stream
     class Orders:
         user_id: str
         order_id: str
 
-    @tl.stream
+    @bv.stream
     class Payments:
         user_id: str
         order_id: str
@@ -44,9 +44,9 @@ def test_stream_stream_join_tcp(app):
         Payments, on=["user_id", "order_id"], within="30s", type="inner"
     )
 
-    @tl.table(key="user_id")
-    def OPAgg(op: OrderPayment) -> tl.Table:
-        return op.group_by("user_id").agg(matched=tl.count(window="1h"))
+    @bv.table(key="user_id")
+    def OPAgg(op: OrderPayment) -> bv.Table:
+        return op.group_by("user_id").agg(matched=bv.count(window="1h"))
 
     app.register(Orders, Payments, OrderPayment, OPAgg)
 
@@ -71,21 +71,21 @@ def test_stream_stream_join_tcp(app):
 def test_stream_table_enrich_tcp(app):
     """Stream↔Table enrichment feeds downstream aggregation (23-01 regression)."""
 
-    @tl.stream
+    @bv.stream
     class ClicksE2E:
         user_id: str
         page: str
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class UserProfileE2E:
         user_id: str
         country: str
 
     EnrichedE2E = ClicksE2E.join(UserProfileE2E, on="user_id", type="inner")
 
-    @tl.table(key="country")
-    def ByCountryE2E(e: EnrichedE2E) -> tl.Table:
-        return e.group_by("country").agg(n=tl.count(window="1h"))
+    @bv.table(key="country")
+    def ByCountryE2E(e: EnrichedE2E) -> bv.Table:
+        return e.group_by("country").agg(n=bv.count(window="1h"))
 
     app.register(ClicksE2E, UserProfileE2E, EnrichedE2E, ByCountryE2E)
 
@@ -106,12 +106,12 @@ def test_stream_table_enrich_tcp(app):
 def test_table_table_join_tcp(app):
     """Table↔Table register + SET smoke (v0 Known Stub: see module docstring)."""
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class TProfile:
         user_id: str
         country: str
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class TRisk:
         user_id: str
         score: int

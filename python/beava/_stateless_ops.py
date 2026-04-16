@@ -21,9 +21,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from tally._col import _ExprAST
-from tally._schema_v0 import schema_mismatch_error
-from tally._types_core import FieldSpec
+from beava._col import _ExprAST
+from beava._schema_v0 import schema_mismatch_error
+from beava._types_core import FieldSpec
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ def _infer_expr_type(expr: _ExprAST, schema: dict[str, FieldSpec]) -> type:
       - Anything else falls back to ``object``.
     """
     # Local imports to avoid cycles in module setup.
-    from tally._col import _BinOp, _Call, _Field, _Literal, _UnaryOp, _BareIdent
+    from beava._col import _BinOp, _Call, _Field, _Literal, _UnaryOp, _BareIdent
 
     if isinstance(expr, _Field):
         spec = schema.get(expr.name)
@@ -139,12 +139,12 @@ class StatelessOpsMixin:
         """Keep rows where ``expr`` evaluates truthy. Schema unchanged."""
         if isinstance(expr, str):
             raise TypeError(
-                "filter() requires a tl.col expression, not a string; "
-                "use tl.col('x') > 5"
+                "filter() requires a bv.col expression, not a string; "
+                "use bv.col('x') > 5"
             )
         if not isinstance(expr, _ExprAST):
             raise TypeError(
-                f"filter() requires a tl.col expression, got "
+                f"filter() requires a bv.col expression, got "
                 f"{type(expr).__name__}"
             )
         _validate_fields_or_raise(
@@ -234,7 +234,7 @@ class StatelessOpsMixin:
 
     # --- .with_columns ---
     def with_columns(self, **derivations: _ExprAST) -> "StatelessOpsMixin":
-        """Add / replace derived fields. Values must be tl.col expressions."""
+        """Add / replace derived fields. Values must be bv.col expressions."""
         if not derivations:
             raise TypeError("with_columns() requires at least one name=expr pair")
 
@@ -243,7 +243,7 @@ class StatelessOpsMixin:
         for name, expr in derivations.items():
             if not isinstance(expr, _ExprAST):
                 raise TypeError(
-                    f"with_columns({name}=...) requires a tl.col expression, "
+                    f"with_columns({name}=...) requires a bv.col expression, "
                     f"got {type(expr).__name__}"
                 )
             all_refs.update(expr.referenced_fields())

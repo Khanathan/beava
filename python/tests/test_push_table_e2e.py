@@ -1,22 +1,22 @@
 """Phase 24-02 Task 2 — End-to-end Python SDK tests for OP_PUSH_TABLE /
 OP_DELETE_TABLE and the merged GET view.
 
-Runs against the session-scoped ``tally_server`` fixture in conftest.py.
+Runs against the session-scoped ``beava_server`` fixture in conftest.py.
 """
 
 from __future__ import annotations
 
 import pytest
 
-import tally as tl
-from tally._protocol import (
+import beava as bv
+from beava._protocol import (
     OP_DELETE_TABLE,
     OP_PUSH_TABLE,
     encode_delete_table,
     encode_push_table,
     encode_string,
 )
-from tally._types import ProtocolError
+from beava._types import ProtocolError
 
 
 # ---------------------------------------------------------------------------
@@ -48,14 +48,14 @@ def test_encode_delete_table_wire_format():
 
 
 # ---------------------------------------------------------------------------
-# End-to-end tests — use session-scoped tally_server fixture.
+# End-to-end tests — use session-scoped beava_server fixture.
 # ---------------------------------------------------------------------------
 
 
 def test_push_delete_get_roundtrip(app):
     """Push a row, GET sees flattened Table.field; delete, GET filters it."""
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class E2EProfile:
         user_id: str
         country: str
@@ -80,12 +80,12 @@ def test_push_delete_get_roundtrip(app):
 def test_push_stream_vs_push_table_disambiguation(app):
     """Same App can push to a Stream (2-arg) and a Table (3-arg) without crossing wires."""
 
-    @tl.stream
+    @bv.stream
     class E2EClicks:
         user_id: str
         page: str
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class E2EBuyers:
         user_id: str
         plan: str
@@ -106,7 +106,7 @@ def test_push_stream_vs_push_table_disambiguation(app):
 def test_push_table_unknown_table_raises_protocol_error(app):
     """Pushing a Table that was not registered surfaces a ProtocolError."""
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class NotRegisteredTable:
         user_id: str
         x: int
@@ -121,7 +121,7 @@ def test_push_table_unknown_table_raises_protocol_error(app):
 def test_delete_unknown_table_raises_protocol_error(app):
     """``app.delete`` on an unregistered Table raises ProtocolError."""
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class AlsoNotRegistered:
         user_id: str
         x: int
@@ -134,11 +134,11 @@ def test_delete_unknown_table_raises_protocol_error(app):
 def test_push_table_bad_arity_type_error(app):
     """3-arg Stream or 2-arg Table raises TypeError before any wire I/O."""
 
-    @tl.stream
+    @bv.stream
     class E2EBadArityStream:
         user_id: str
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class E2EBadArityTable:
         user_id: str
         x: int

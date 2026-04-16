@@ -14,7 +14,7 @@ from __future__ import annotations
 import typing
 from typing import Any
 
-from tally._types_core import (
+from beava._types_core import (
     MISSING,
     FieldSpec,
     Optional as _OptionalMarker_instance,
@@ -63,14 +63,14 @@ def extract_schema(cls: type) -> dict[str, FieldSpec]:
             continue
         if callable(attr_val) and not isinstance(attr_val, _FieldMarker):
             raise TypeError(
-                f"@tl.stream classes declare schema only — found method "
+                f"@bv.stream classes declare schema only — found method "
                 f"{attr_name!r} on {cls.__name__!r}; move derivations to a "
-                f"@tl.stream function"
+                f"@bv.stream function"
             )
 
-    # Pull type hints honouring the tally Optional marker. We deliberately
+    # Pull type hints honouring the beava Optional marker. We deliberately
     # avoid typing.get_type_hints because it resolves typing.Optional to
-    # Union[T, None] which we don't want to conflate with tl.Optional.
+    # Union[T, None] which we don't want to conflate with bv.Optional.
     raw_annotations: dict[str, Any] = {}
     for base in reversed(cls.__mro__):
         raw_annotations.update(getattr(base, "__annotations__", {}))

@@ -1,11 +1,11 @@
-"""Phase 39-01: Python-native E2E test for ``tl.fork()``.
+"""Phase 39-01: Python-native E2E test for ``bv.fork()``.
 
 Mirrors ``tests/integration/test_fork_demo.py`` but entirely in Python —
 the scientist authors pipelines as Python decorators, calls
-``tl.fork(...)``, queries features, pushes more events to prod, and
+``bv.fork(...)``, queries features, pushes more events to prod, and
 asserts the live tail lands.
 
-Skipped cleanly if the ``tally`` binary hasn't been built.
+Skipped cleanly if the ``beava`` binary hasn't been built.
 """
 
 from __future__ import annotations
@@ -19,11 +19,11 @@ from pathlib import Path
 
 import pytest
 
-import tally as tl
+import beava as bv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-RELEASE_BIN = PROJECT_ROOT / "target" / "release" / "tally"
-DEBUG_BIN = PROJECT_ROOT / "target" / "debug" / "tally"
+RELEASE_BIN = PROJECT_ROOT / "target" / "release" / "beava"
+DEBUG_BIN = PROJECT_ROOT / "target" / "debug" / "beava"
 ADMIN_TOKEN = "prod-admin-token"
 
 
@@ -48,28 +48,28 @@ def _wait_for_tcp(host: str, port: int, timeout: float = 20.0) -> None:
                 return
         except OSError:
             time.sleep(0.1)
-    raise RuntimeError(f"tally did not become ready on {host}:{port}")
+    raise RuntimeError(f"beava did not become ready on {host}:{port}")
 
 
 @pytest.fixture
 def prod_server():
-    """Start a standalone prod tally instance. Yields ``(tcp_port, http_port)``."""
+    """Start a standalone prod beava instance. Yields ``(tcp_port, http_port)``."""
     binary = _pick_binary()
     if binary is None:
-        pytest.skip("tally binary not built; run `cargo build` to enable this test")
+        pytest.skip("beava binary not built; run `cargo build` to enable this test")
 
     prod_tcp = _find_free_port()
     prod_http = _find_free_port()
     tmp = tempfile.TemporaryDirectory()
     env = os.environ.copy()
     env.update(
-        TALLY_TCP_PORT=str(prod_tcp),
-        TALLY_HTTP_PORT=str(prod_http),
-        TALLY_ADMIN_TOKEN=ADMIN_TOKEN,
-        TALLY_SNAPSHOT_PATH=str(Path(tmp.name) / "tally.snapshot"),
-        TALLY_SNAPSHOT="1",
-        TALLY_EVENT_LOG="1",
-        TALLY_DATA_DIR=tmp.name,
+        BEAVA_TCP_PORT=str(prod_tcp),
+        BEAVA_HTTP_PORT=str(prod_http),
+        BEAVA_ADMIN_TOKEN=ADMIN_TOKEN,
+        BEAVA_SNAPSHOT_PATH=str(Path(tmp.name) / "beava.snapshot"),
+        BEAVA_SNAPSHOT="1",
+        BEAVA_EVENT_LOG="1",
+        BEAVA_DATA_DIR=tmp.name,
     )
     proc = subprocess.Popen(
         [str(binary)],
@@ -94,30 +94,30 @@ def prod_server():
 def test_scientist_fork_workflow_pure_python(prod_server):
     """The canonical Option-M demo, authored entirely in Python.
 
-    No ``tally fork`` shell command, no hand-written JSON — the scientist
-    uses ``@tl.stream`` / ``@tl.table`` decorators and ``tl.fork(...)``.
+    No ``beava fork`` shell command, no hand-written JSON — the scientist
+    uses ``@bv.stream`` / ``@bv.table`` decorators and ``bv.fork(...)``.
     """
     prod_tcp, _prod_http, binary_path = prod_server
 
     # ---- Scientist authors pipelines in pure Python ----------------------
-    @tl.stream
+    @bv.stream
     class Transactions:
         user_id: str
         amount: float
 
-    def _summary(t: Transactions) -> tl.Table:
+    def _summary(t: Transactions) -> bv.Table:
         return t.group_by("user_id").agg(
-            count=tl.count(window="1h"),
-            total=tl.sum("amount", window="1h"),
+            count=bv.count(window="1h"),
+            total=bv.sum("amount", window="1h"),
         )
     _summary.__name__ = "txn_summary"
-    TxnSummary = tl.table(key="user_id")(_summary)
+    TxnSummary = bv.table(key="user_id")(_summary)
 
     # ---- Seed prod with the same stream + pipeline so events can land ----
     # Prod needs the Transactions stream to declare `key_field="user_id"` so
     # the server-side OP_LOG_FETCH handler emits events during catchup — the
     # v0 replica contract is "key-bearing events only" (src/server/tcp.rs::
-    # handle_log_fetch skips keyless streams). The @tl.stream decorator
+    # handle_log_fetch skips keyless streams). The @bv.stream decorator
     # treats sources as semantically keyless, so we inject key_field into
     # the REGISTER JSON for the prod-side registration only. The fork
     # receives a matching keyed shape via its `pipelines=[TxnSummary]`
@@ -138,7 +138,7 @@ def test_scientist_fork_workflow_pure_python(prod_server):
     Transactions._to_register_json = _types.MethodType(_keyed_register_json, Transactions)
     Transactions._collect_registrations = _types.MethodType(_keyed_collect, Transactions)
 
-    prod = tl.App(f"127.0.0.1:{prod_tcp}")
+    prod = bv.App(f"127.0.0.1:{prod_tcp}")
     try:
         prod.register(Transactions, TxnSummary)
         for user, amount in [
@@ -156,8 +156,8 @@ def test_scientist_fork_workflow_pure_python(prod_server):
     finally:
         prod.close()
 
-    # ---- tl.fork: scientist command ------------------------------------
-    # `tally fork --local-port P` binds HTTP on P and TCP on P+1. Pick a
+    # ---- bv.fork: scientist command ------------------------------------
+    # `beava fork --local-port P` binds HTTP on P and TCP on P+1. Pick a
     # pair where both are free; retry a few times to dodge transient races.
     fork_http = _find_free_port()
     for _ in range(10):
@@ -168,7 +168,7 @@ def test_scientist_fork_workflow_pure_python(prod_server):
         except OSError:
             fork_http = _find_free_port()
 
-    with tl.fork(
+    with bv.fork(
         remote=f"127.0.0.1:{prod_tcp}",
         streams=[Transactions],
         keys=["u1", "u2"],
@@ -201,7 +201,7 @@ def test_scientist_fork_workflow_pure_python(prod_server):
         assert abs(float(u2["total"]) - 20.0) < 1e-6, u2
 
         # ---- Live tail: push more events to prod, fork should follow ----
-        prod2 = tl.App(f"127.0.0.1:{prod_tcp}")
+        prod2 = bv.App(f"127.0.0.1:{prod_tcp}")
         try:
             prod2.push_sync(Transactions, {"user_id": "u1", "amount": 100.0})
             # u3 is out of scope — fork was started with keys=[u1,u2].
@@ -234,5 +234,5 @@ def test_scientist_fork_workflow_pure_python(prod_server):
 
     # Context manager exited — subprocess and temp files cleaned up.
     # `fork` is stopped; a subsequent query should raise.
-    with pytest.raises(tl.ForkError):
+    with pytest.raises(bv.ForkError):
         fork.get(TxnSummary, key="u1")

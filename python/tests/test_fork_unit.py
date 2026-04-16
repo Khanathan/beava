@@ -1,4 +1,4 @@
-"""Phase 39-01: unit tests for `tally.fork` — no subprocess, no network.
+"""Phase 39-01: unit tests for `beava.fork` — no subprocess, no network.
 
 Covers:
   * Validation happy + every error path.
@@ -24,8 +24,8 @@ from unittest import mock
 
 import pytest
 
-import tally as tl
-from tally import _fork as _fork_mod
+import beava as bv
+from beava import _fork as _fork_mod
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ from tally import _fork as _fork_mod
 
 @pytest.fixture
 def transactions_stream():
-    @tl.stream
+    @bv.stream
     class Transactions:
         user_id: str
         amount: float
@@ -46,20 +46,20 @@ def transactions_stream():
 def txn_summary_table(transactions_stream):
     T = transactions_stream
 
-    def _body(t: T) -> tl.Table:
+    def _body(t: T) -> bv.Table:
         return t.group_by("user_id").agg(
-            count=tl.count(window="1h"),
-            total=tl.sum("amount", window="1h"),
+            count=bv.count(window="1h"),
+            total=bv.sum("amount", window="1h"),
         )
 
     _body.__name__ = "txn_summary"
-    return tl.table(key="user_id")(_body)
+    return bv.table(key="user_id")(_body)
 
 
 @pytest.fixture
 def fake_binary(tmp_path):
     """A do-nothing executable to satisfy ``_resolve_binary``."""
-    p = tmp_path / "tally"
+    p = tmp_path / "beava"
     p.write_text("#!/bin/sh\nexit 0\n")
     p.chmod(0o755)
     return p
@@ -85,7 +85,7 @@ class TestValidation:
         assert token == "t"
 
     def test_empty_streams_rejected(self):
-        with pytest.raises(tl.ForkValidationError, match="non-empty"):
+        with pytest.raises(bv.ForkValidationError, match="non-empty"):
             _fork_mod._validate_fork_args(
                 remote="127.0.0.1:6400",
                 streams=[],
@@ -97,7 +97,7 @@ class TestValidation:
             )
 
     def test_bad_remote_rejected(self, transactions_stream):
-        with pytest.raises(tl.ForkValidationError, match="HOST:PORT"):
+        with pytest.raises(bv.ForkValidationError, match="HOST:PORT"):
             _fork_mod._validate_fork_args(
                 remote="no-port",
                 streams=[transactions_stream],
@@ -109,7 +109,7 @@ class TestValidation:
             )
 
     def test_non_stream_rejected(self):
-        with pytest.raises(tl.ForkValidationError, match="@tl.stream"):
+        with pytest.raises(bv.ForkValidationError, match="@bv.stream"):
             _fork_mod._validate_fork_args(
                 remote="h:1",
                 streams=["Transactions"],
@@ -121,7 +121,7 @@ class TestValidation:
             )
 
     def test_duplicate_stream_rejected(self, transactions_stream):
-        with pytest.raises(tl.ForkValidationError, match="duplicate"):
+        with pytest.raises(bv.ForkValidationError, match="duplicate"):
             _fork_mod._validate_fork_args(
                 remote="h:1",
                 streams=[transactions_stream, transactions_stream],
@@ -133,7 +133,7 @@ class TestValidation:
             )
 
     def test_keys_and_key_prefix_mutex(self, transactions_stream):
-        with pytest.raises(tl.ForkValidationError, match="mutually exclusive"):
+        with pytest.raises(bv.ForkValidationError, match="mutually exclusive"):
             _fork_mod._validate_fork_args(
                 remote="h:1",
                 streams=[transactions_stream],
@@ -145,7 +145,7 @@ class TestValidation:
             )
 
     def test_empty_keys_rejected(self, transactions_stream):
-        with pytest.raises(tl.ForkValidationError, match="non-empty"):
+        with pytest.raises(bv.ForkValidationError, match="non-empty"):
             _fork_mod._validate_fork_args(
                 remote="h:1",
                 streams=[transactions_stream],
@@ -159,7 +159,7 @@ class TestValidation:
     def test_pipelines_must_be_registerable(self, transactions_stream):
         class Bogus:
             pass
-        with pytest.raises(tl.ForkValidationError, match="registerable"):
+        with pytest.raises(bv.ForkValidationError, match="registerable"):
             _fork_mod._validate_fork_args(
                 remote="h:1",
                 streams=[transactions_stream],
@@ -171,8 +171,8 @@ class TestValidation:
             )
 
     def test_missing_token_raises(self, transactions_stream, monkeypatch):
-        monkeypatch.delenv("TALLY_REPLICA_TOKEN", raising=False)
-        with pytest.raises(tl.ForkValidationError, match="token required"):
+        monkeypatch.delenv("BEAVA_REPLICA_TOKEN", raising=False)
+        with pytest.raises(bv.ForkValidationError, match="token required"):
             _fork_mod._validate_fork_args(
                 remote="h:1",
                 streams=[transactions_stream],
@@ -184,7 +184,7 @@ class TestValidation:
             )
 
     def test_token_from_env(self, transactions_stream, monkeypatch):
-        monkeypatch.setenv("TALLY_REPLICA_TOKEN", "from-env")
+        monkeypatch.setenv("BEAVA_REPLICA_TOKEN", "from-env")
         _names, token = _fork_mod._validate_fork_args(
             remote="h:1",
             streams=[transactions_stream],
@@ -197,7 +197,7 @@ class TestValidation:
         assert token == "from-env"
 
     def test_bad_timeout(self, transactions_stream):
-        with pytest.raises(tl.ForkValidationError, match="ready_timeout"):
+        with pytest.raises(bv.ForkValidationError, match="ready_timeout"):
             _fork_mod._validate_fork_args(
                 remote="h:1",
                 streams=[transactions_stream],
@@ -278,7 +278,7 @@ class TestBinaryResolution:
         assert _fork_mod._resolve_binary(str(fake_binary)) == str(fake_binary)
 
     def test_missing_path_rejected(self, tmp_path):
-        with pytest.raises(tl.ForkValidationError):
+        with pytest.raises(bv.ForkValidationError):
             _fork_mod._resolve_binary(str(tmp_path / "does-not-exist"))
 
 
@@ -409,7 +409,7 @@ class TestReadyPolling:
         )
         # Pick a port nothing is listening on.
         port = _fork_mod._pick_free_port()
-        with pytest.raises(tl.ForkTimeoutError) as exc:
+        with pytest.raises(bv.ForkTimeoutError) as exc:
             _fork_mod._poll_ready(port, 0.5, _AliveProc(), stderr_log)
         msg = str(exc.value)
         assert "did not return 200" in msg
@@ -426,7 +426,7 @@ class TestReadyPolling:
             def poll(self):
                 return 2
         port = _fork_mod._pick_free_port()
-        with pytest.raises(tl.ForkSubprocessError, match="exited early"):
+        with pytest.raises(bv.ForkSubprocessError, match="exited early"):
             _fork_mod._poll_ready(port, 2.0, Exited(), stderr_log)
 
 
@@ -461,7 +461,7 @@ class TestForkSpawnMocked:
         monkeypatch.setattr(_fork_mod.subprocess, "Popen", FakePopen)
         monkeypatch.setattr(_fork_mod, "_poll_ready", lambda *a, **kw: None)
 
-        replica = tl.fork(
+        replica = bv.fork(
             remote="prod.example:6400",
             streams=[transactions_stream],
             keys=["u1", "u2"],
@@ -521,7 +521,7 @@ class TestForkSpawnMocked:
         monkeypatch.setattr(_fork_mod, "_poll_ready", lambda *a, **kw: None)
 
         from datetime import datetime, timezone
-        replica = tl.fork(
+        replica = bv.fork(
             remote="h:1",
             streams=[transactions_stream],
             token="t",
@@ -546,14 +546,14 @@ class TestForkSpawnMocked:
 
     def test_extract_at_rejects_bad_entry(self, transactions_stream, fake_binary):
         """Phase 44-01: invalid entry types raise ForkValidationError."""
-        with pytest.raises(tl.ForkValidationError, match="extract_at"):
+        with pytest.raises(bv.ForkValidationError, match="extract_at"):
             # float is not accepted.
             _fork_mod._format_extract_at([1.5])
 
-        with pytest.raises(tl.ForkValidationError, match="extract_at"):
+        with pytest.raises(bv.ForkValidationError, match="extract_at"):
             _fork_mod._format_extract_at([True])  # bool is explicitly rejected
 
-        with pytest.raises(tl.ForkValidationError, match="non-empty"):
+        with pytest.raises(bv.ForkValidationError, match="non-empty"):
             _fork_mod._format_extract_at([])
 
     def test_extract_history_parses_response(self, monkeypatch, tmp_path):
@@ -630,7 +630,7 @@ class TestForkSpawnMocked:
         monkeypatch.setattr(_fork_mod.subprocess, "Popen", FakePopen)
         monkeypatch.setattr(_fork_mod, "_poll_ready", lambda *a, **kw: None)
 
-        replica = tl.fork(
+        replica = bv.fork(
             remote="h:1",
             streams=[transactions_stream],
             key_prefix="user-",

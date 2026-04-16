@@ -1,12 +1,12 @@
-"""``@tl.stream`` decorator + Stream / StreamSource / StreamDerivation runtime types.
+"""``@bv.stream`` decorator + Stream / StreamSource / StreamDerivation runtime types.
 
 Plan 21-01 shipped the class form. Plan 21-02 adds:
   * :class:`StatelessOpsMixin` on :class:`Stream` — gives every Stream the 8
     per-row ops (filter / map / select / drop / rename / with_columns /
     cast / fillna).
   * :class:`StreamDerivation` — the descriptor returned by stateless ops and
-    by function-form ``@tl.stream def X(...) -> Stream:`` definitions.
-  * Function-form decorator dispatch — when ``@tl.stream`` is applied to a
+    by function-form ``@bv.stream def X(...) -> Stream:`` definitions.
+  * Function-form decorator dispatch — when ``@bv.stream`` is applied to a
     function rather than a class, the function is invoked once at registration
     with placeholder upstream instances (cloned from the parameter-annotated
     classes) and its return value becomes the descriptor.
@@ -20,12 +20,12 @@ from types import FunctionType
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover
-    from tally._aggregation import GroupBy
+    from beava._aggregation import GroupBy
 
-from tally._describe import format_describe
-from tally._schema_v0 import extract_schema
-from tally._stateless_ops import StatelessOpsMixin
-from tally._types_core import FieldSpec
+from beava._describe import format_describe
+from beava._schema_v0 import extract_schema
+from beava._stateless_ops import StatelessOpsMixin
+from beava._types_core import FieldSpec
 
 
 class Stream(StatelessOpsMixin):
@@ -37,10 +37,10 @@ class Stream(StatelessOpsMixin):
     the chain.
     """
 
-    # Phase 24-02: Dispatch marker used by :meth:`tally.App.push` to route
+    # Phase 24-02: Dispatch marker used by :meth:`beava.App.push` to route
     # between the Stream fire-and-forget path and the Table push-through
     # path. Every Stream subclass inherits this attribute.
-    _tally_kind: str = "stream"
+    _beava_kind: str = "stream"
 
     def _derive(
         self,
@@ -60,10 +60,10 @@ class Stream(StatelessOpsMixin):
     def group_by(self, *keys: str) -> "GroupBy":
         """Begin a Stream→Table aggregation. Terminal call: ``.agg(**features)``.
 
-        See :mod:`tally._aggregation`. Execution lands in Phase 22; the SDK
+        See :mod:`beava._aggregation`. Execution lands in Phase 22; the SDK
         infers and exposes the output Table's schema at registration time.
         """
-        from tally._aggregation import GroupBy
+        from beava._aggregation import GroupBy
         return GroupBy(self, keys)
 
     def join(
@@ -76,9 +76,9 @@ class Stream(StatelessOpsMixin):
     ) -> "Stream":
         """Join this Stream against a Stream (windowed) or Table (enrichment).
 
-        See :mod:`tally._join`. Execution lands in Phase 23.
+        See :mod:`beava._join`. Execution lands in Phase 23.
         """
-        from tally._join import stream_join
+        from beava._join import stream_join
         return stream_join(self, other, on=on, within=within, type_=type)
 
 
@@ -87,7 +87,7 @@ class StreamSource(Stream):
 
     Carries the declared schema plus stream-level options (``history_ttl``
     for Phase 25 watermark/retention work). Exposes the App-register compat
-    protocol (``_tally_stream_name``, ``_compile``, ``_to_register_json``,
+    protocol (``_beava_stream_name``, ``_compile``, ``_to_register_json``,
     ``_collect_registrations``).
     """
 
@@ -118,19 +118,19 @@ class StreamSource(Stream):
 
     # --- App.register compat ---
     @property
-    def _tally_stream_name(self) -> str:
+    def _beava_stream_name(self) -> str:
         return self._name
 
     def _compile(self) -> dict[str, Any]:
         """Compile to a RegisterRequest JSON dict (keyless stream source)."""
-        from tally._serialize import compile_to_register_json
+        from beava._serialize import compile_to_register_json
         return compile_to_register_json(self)
 
     def _to_register_json(self) -> dict[str, Any]:
         return self._compile()
 
     def _collect_registrations(self) -> list[dict[str, Any]]:
-        from tally._serialize import collect_registrations
+        from beava._serialize import collect_registrations
         return collect_registrations(self)
 
     def __repr__(self) -> str:
@@ -142,9 +142,9 @@ class StreamDerivation(Stream):
 
     Equivalent for three wire-surface cases:
 
-      * Intermediate view inside a ``@tl.stream def ...`` body — returned by
+      * Intermediate view inside a ``@bv.stream def ...`` body — returned by
         any stateless op applied to an upstream Stream.
-      * The top-level descriptor produced by ``@tl.stream def X(...) -> Stream:``
+      * The top-level descriptor produced by ``@bv.stream def X(...) -> Stream:``
         — has ``_name = func.__name__`` and ``_upstreams`` set by the decorator.
       * A chain-head returned by composition on an already-named derivation.
 
@@ -184,11 +184,11 @@ class StreamDerivation(Stream):
 
     # --- App.register compat ---
     @property
-    def _tally_stream_name(self) -> str:
+    def _beava_stream_name(self) -> str:
         return self._name
 
     def _compile(self) -> dict[str, Any]:
-        from tally._serialize import compile_to_register_json
+        from beava._serialize import compile_to_register_json
         return compile_to_register_json(self)
 
     def _to_register_json(self) -> dict[str, Any]:
@@ -197,7 +197,7 @@ class StreamDerivation(Stream):
     def _collect_registrations(self) -> list[dict[str, Any]]:
         """Transitive REGISTER walk via the serializer (handles agg/join/union
         upstream dispatch uniformly)."""
-        from tally._serialize import collect_registrations
+        from beava._serialize import collect_registrations
         return collect_registrations(self)
 
     def __repr__(self) -> str:
@@ -205,7 +205,7 @@ class StreamDerivation(Stream):
 
 
 # ---------------------------------------------------------------------------
-# @tl.stream decorator
+# @bv.stream decorator
 # ---------------------------------------------------------------------------
 
 
@@ -263,13 +263,13 @@ def _build_stream_derivation_from_func(
 
     if "return" not in hints:
         raise TypeError(
-            f"@tl.stream function {func.__name__!r} must declare a "
+            f"@bv.stream function {func.__name__!r} must declare a "
             f"return type annotation (``-> Stream``)"
         )
     ret = hints["return"]
     if not (isinstance(ret, type) and issubclass(ret, Stream)):
         raise TypeError(
-            f"@tl.stream function {func.__name__!r} must return Stream; "
+            f"@bv.stream function {func.__name__!r} must return Stream; "
             f"annotation was {ret!r}"
         )
 
@@ -283,7 +283,7 @@ def _build_stream_derivation_from_func(
 
     # Resolve parameter annotations. We require each parameter to be
     # annotated with a descriptor — either a Stream/Table instance (the
-    # source object produced by @tl.stream class X) or a descriptor class.
+    # source object produced by @bv.stream class X) or a descriptor class.
     upstreams: list[Any] = []
     for p in params:
         if p.name not in hints:
@@ -327,7 +327,7 @@ def _build_stream_derivation_from_func(
 def stream(cls: type | FunctionType | None = None, *, history_ttl: str | None = None):  # noqa: D401
     # Phase 25-02: validate history_ttl client-side (server also validates).
     if history_ttl is not None:
-        from tally._table import _validate_duration_str
+        from beava._table import _validate_duration_str
         _validate_duration_str(history_ttl, field="history_ttl")
     return _stream_impl(cls, history_ttl=history_ttl)
 
@@ -337,20 +337,20 @@ def _stream_impl(cls: type | FunctionType | None = None, *, history_ttl: str | N
 
     Class form::
 
-        @tl.stream
+        @bv.stream
         class Clicks:
             user_id: str
             url: str
 
-        @tl.stream(history_ttl="90d")
+        @bv.stream(history_ttl="90d")
         class Logins:
             user_id: str
 
     Function form (Plan 21-02)::
 
-        @tl.stream
-        def Checkouts(clicks: Clicks) -> tl.Stream:
-            return clicks.filter(tl.col('page') == '/checkout')
+        @bv.stream
+        def Checkouts(clicks: Clicks) -> bv.Stream:
+            return clicks.filter(bv.col('page') == '/checkout')
 
     The function body is invoked *once* at registration time with the
     upstream descriptors themselves, to infer the output schema. Derivation
@@ -371,7 +371,7 @@ def _stream_impl(cls: type | FunctionType | None = None, *, history_ttl: str | N
                 history_ttl=history_ttl,
             )
         raise TypeError(
-            f"@tl.stream must be applied to a class or function, got "
+            f"@bv.stream must be applied to a class or function, got "
             f"{type(target).__name__}"
         )
 

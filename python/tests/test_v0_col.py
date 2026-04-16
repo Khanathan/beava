@@ -1,10 +1,10 @@
-"""Unit tests for the ``tl.col`` expression DSL."""
+"""Unit tests for the ``bv.col`` expression DSL."""
 
 from __future__ import annotations
 
 import pytest
 
-from tally._col import Col, col
+from beava._col import Col, col
 
 
 class TestArithmetic:

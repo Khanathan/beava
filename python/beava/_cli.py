@@ -1,4 +1,4 @@
-"""Plan 25-03: ``tally`` CLI entry point.
+"""Plan 25-03: ``beava`` CLI entry point.
 
 A thin HTTP client over the admin-gated ``/debug/config-recommendations``
 endpoint that pretty-prints recommendations grouped by decorator target,
@@ -8,7 +8,7 @@ source.
 Installed as a console script via ``pyproject.toml``::
 
     [project.scripts]
-    tally = "tally._cli:main"
+    beava = "beava._cli:main"
 
 Uses only the Python standard library (argparse, urllib, json, sys) —
 no third-party dependencies so the CLI works anywhere the SDK does.
@@ -86,7 +86,7 @@ def _format_confidence(conf: Any) -> str:
 
 
 def cmd_suggest_config(args: argparse.Namespace) -> int:
-    """Handler for ``tally suggest-config``."""
+    """Handler for ``beava suggest-config``."""
     try:
         data = _fetch_recommendations(
             host=args.host,
@@ -96,25 +96,25 @@ def cmd_suggest_config(args: argparse.Namespace) -> int:
         )
     except urllib.error.HTTPError as e:
         print(
-            f"tally: HTTP {e.code} from {args.host}:{args.port}: {e.reason}",
+            f"beava: HTTP {e.code} from {args.host}:{args.port}: {e.reason}",
             file=sys.stderr,
         )
         return 1
     except urllib.error.URLError as e:
         print(
-            f"tally: could not reach {args.host}:{args.port}: {e.reason}",
+            f"beava: could not reach {args.host}:{args.port}: {e.reason}",
             file=sys.stderr,
         )
         return 1
     except (ConnectionError, OSError) as e:
         print(
-            f"tally: could not reach {args.host}:{args.port}: {e}",
+            f"beava: could not reach {args.host}:{args.port}: {e}",
             file=sys.stderr,
         )
         return 1
     except json.JSONDecodeError as e:
         print(
-            f"tally: malformed JSON from server: {e}",
+            f"beava: malformed JSON from server: {e}",
             file=sys.stderr,
         )
         return 1
@@ -154,13 +154,13 @@ def cmd_suggest_config(args: argparse.Namespace) -> int:
 def _read_bundled_skill() -> str:
     """Return the bundled SKILL.md text shipped inside the wheel.
 
-    The file lives at ``tally/_skill/SKILL.md`` inside the installed package
-    (force-included by hatchling from ``.agents/skills/tally/SKILL.md`` at
+    The file lives at ``beava/_skill/SKILL.md`` inside the installed package
+    (force-included by hatchling from ``.agents/skills/beava/SKILL.md`` at
     build time). Raises FileNotFoundError if the wheel was built without the
     skill bundle (e.g. editable install from a stripped checkout).
     """
     return (
-        _resource_files("tally").joinpath("_skill/SKILL.md").read_text(encoding="utf-8")
+        _resource_files("beava").joinpath("_skill/SKILL.md").read_text(encoding="utf-8")
     )
 
 
@@ -173,14 +173,14 @@ def _find_git_root(start: Path) -> Optional[Path]:
 
 
 def cmd_install_skill(args: argparse.Namespace) -> int:
-    """Handler for ``tally install-skill``."""
+    """Handler for ``beava install-skill``."""
     try:
         content = _read_bundled_skill()
     except FileNotFoundError:
         print(
-            "tally: bundled SKILL.md not found in package. Reinstall with "
-            "`pip install --upgrade tally`, or check that the build included "
-            "the .agents/skills/tally/SKILL.md bundle.",
+            "beava: bundled SKILL.md not found in package. Reinstall with "
+            "`pip install --upgrade beava`, or check that the build included "
+            "the .agents/skills/beava/SKILL.md bundle.",
             file=sys.stderr,
         )
         return 1
@@ -189,21 +189,21 @@ def cmd_install_skill(args: argparse.Namespace) -> int:
         root = _find_git_root(Path.cwd())
         if root is None:
             print(
-                "tally: --repo requires running inside a git repo; no .git "
+                "beava: --repo requires running inside a git repo; no .git "
                 "found walking up from the current directory.",
                 file=sys.stderr,
             )
             return 1
-        dest_dir = root / ".agents" / "skills" / "tally"
+        dest_dir = root / ".agents" / "skills" / "beava"
         scope = f"repo ({root})"
     else:
-        dest_dir = Path.home() / ".agents" / "skills" / "tally"
+        dest_dir = Path.home() / ".agents" / "skills" / "beava"
         scope = "user ($HOME)"
 
     dest = dest_dir / "SKILL.md"
     if dest.exists() and not args.force:
         print(
-            f"tally: {dest} already exists. Use --force to overwrite.",
+            f"beava: {dest} already exists. Use --force to overwrite.",
             file=sys.stderr,
         )
         return 1
@@ -217,7 +217,7 @@ def cmd_install_skill(args: argparse.Namespace) -> int:
     claude_link_msg = ""
     if not args.repo:
         claude_dir = Path.home() / ".claude" / "skills"
-        claude_link = claude_dir / "tally"
+        claude_link = claude_dir / "beava"
         try:
             claude_dir.mkdir(parents=True, exist_ok=True)
             if claude_link.is_symlink() or claude_link.exists():
@@ -243,16 +243,16 @@ def cmd_install_skill(args: argparse.Namespace) -> int:
         except OSError as e:
             claude_link_msg = f"  (could not set up Claude back-compat link: {e})"
 
-    print(f"Installed Tally skill [{scope}] at {dest}")
+    print(f"Installed Beava skill [{scope}] at {dest}")
     if claude_link_msg:
         print(claude_link_msg)
     print()
     print("Try it:")
-    print("  Claude Code:  /tally")
-    print("  Cursor:       @tally   (Agent mode, or just describe the task)")
-    print("  Codex CLI:    /skills tally")
+    print("  Claude Code:  /beava")
+    print("  Cursor:       @beava   (Agent mode, or just describe the task)")
+    print("  Codex CLI:    /skills beava")
     print()
-    print("Run `/tally` with no args for a guided walk-through, or jump to a")
+    print("Run `/beava` with no args for a guided walk-through, or jump to a")
     print("specific mode: feature | debug | plan | estimate | bench | tune.")
     return 0
 
@@ -264,8 +264,8 @@ def cmd_install_skill(args: argparse.Namespace) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="tally",
-        description="Tally operator CLI — manage and inspect a running server.",
+        prog="beava",
+        description="Beava operator CLI — manage and inspect a running server.",
     )
     sub = p.add_subparsers(dest="cmd", required=True, metavar="<command>")
 
@@ -304,13 +304,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sk = sub.add_parser(
         "install-skill",
-        help="Install the Tally AI-editor skill for Claude Code, Cursor, and Codex.",
+        help="Install the Beava AI-editor skill for Claude Code, Cursor, and Codex.",
         description=(
-            "Copy the bundled SKILL.md to ~/.agents/skills/tally/ (user-level, "
-            "default) or ./.agents/skills/tally/ in the current git repo "
+            "Copy the bundled SKILL.md to ~/.agents/skills/beava/ (user-level, "
+            "default) or ./.agents/skills/beava/ in the current git repo "
             "(--repo). User-level installs also create a back-compat "
-            "~/.claude/skills/tally symlink. After install, type `/tally` in "
-            "Claude Code or `@tally` in Cursor Agent mode."
+            "~/.claude/skills/beava symlink. After install, type `/beava` in "
+            "Claude Code or `@beava` in Cursor Agent mode."
         ),
     )
     sk.add_argument(

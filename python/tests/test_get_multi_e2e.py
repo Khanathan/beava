@@ -1,20 +1,20 @@
 """Phase 25-01 Task 3 — Python SDK end-to-end tests for ``app.get_multi``.
 
-Runs against the session-scoped ``tally_server`` fixture in conftest.py.
+Runs against the session-scoped ``beava_server`` fixture in conftest.py.
 """
 
 from __future__ import annotations
 
 import pytest
 
-import tally as tl
-from tally._protocol import (
+import beava as bv
+from beava._protocol import (
     GET_MULTI_MAX_TABLES,
     OP_GET_MULTI,
     encode_get_multi,
     encode_string,
 )
-from tally._types import ProtocolError
+from beava._types import ProtocolError
 
 
 # ---------------------------------------------------------------------------
@@ -71,17 +71,17 @@ def test_encode_get_multi_matches_multiple_prefixed_strings():
 def test_get_multi_three_tables(app):
     """Push to three Tables; get_multi returns a FeatureResult per table."""
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class GM3Profile:
         user_id: str
         country: str
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class GM3Risk:
         user_id: str
         score: int
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class GM3Sub:
         user_id: str
         plan: str
@@ -105,17 +105,17 @@ def test_get_multi_three_tables(app):
 def test_get_multi_null_collapse(app):
     """Table never pushed for this key collapses to ``None`` — not raise."""
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class GMNCAlpha:
         user_id: str
         a: int
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class GMNCBeta:
         user_id: str
         b: int
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class GMNCGamma:
         user_id: str
         g: int
@@ -135,12 +135,12 @@ def test_get_multi_null_collapse(app):
 def test_get_multi_after_delete(app):
     """Tombstoned row collapses to ``None`` in the response."""
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class GMADProfile:
         user_id: str
         country: str
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class GMADRisk:
         user_id: str
         score: int
@@ -166,7 +166,7 @@ def test_get_multi_empty_list_rejects(app):
 def test_get_multi_non_table_rejects(app):
     """Passing a Stream or arbitrary object raises TypeError before wire I/O."""
 
-    @tl.stream
+    @bv.stream
     class GMNTClicks:
         user_id: str
         page: str
@@ -186,14 +186,14 @@ def test_get_multi_non_table_rejects(app):
 def test_get_multi_unknown_table_surfaces_server_error(app):
     """Unregistered table name → ProtocolError surfaced from server STATUS_ERROR."""
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class GMURegistered:
         user_id: str
         x: int
 
     # Do NOT register a sibling; build one only for the client call so it
-    # has a _tally_stream_name the server has never seen.
-    @tl.table(key="user_id")
+    # has a _beava_stream_name the server has never seen.
+    @bv.table(key="user_id")
     class GMUGhost:
         user_id: str
         x: int
@@ -208,7 +208,7 @@ def test_get_multi_unknown_table_surfaces_server_error(app):
 def test_get_multi_composite_key(app):
     """Dict-form key is \\x1f-joined; server sees the flat string."""
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class GMCKProfile:
         user_id: str
         country: str

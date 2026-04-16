@@ -1,6 +1,6 @@
 """Phase 24-04 Task 3: end-to-end watermark semantics from the Python SDK.
 
-Runs against the session-scoped ``tally_server`` fixture; drives REGISTER
+Runs against the session-scoped ``beava_server`` fixture; drives REGISTER
 and PUSH through the SDK with `_event_time` on the event payload and
 asserts on the server-side watermark / late-drop behaviour via the admin
 HTTP endpoints (`/metrics`, `/debug/streams/:name`).
@@ -20,7 +20,7 @@ import urllib.request
 import urllib.error
 import uuid
 
-import tally as tl
+import beava as bv
 
 
 # ---------------------------------------------------------------------------
@@ -49,9 +49,9 @@ def _unique_name(prefix: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_event_time_populated_by_user_lands_in_correct_bucket(app, tally_server):
+def test_event_time_populated_by_user_lands_in_correct_bucket(app, beava_server):
     """Push 3 events OOO within 5s and verify all 3 count in a 1h window."""
-    _host, _tcp, http_port = tally_server
+    _host, _tcp, http_port = beava_server
 
     stream_name = _unique_name("WmClicks_")
     agg_name = _unique_name("WmClicksAgg_")
@@ -62,14 +62,14 @@ def test_event_time_populated_by_user_lands_in_correct_bucket(app, tally_server)
         (),
         {"__annotations__": {"user_id": str}},
     )
-    stream_cls = tl.stream(stream_cls)
+    stream_cls = bv.stream(stream_cls)
 
     # Table-with-aggregation via the function-form.
-    def _agg(s: stream_cls) -> tl.Table:
-        return s.group_by("user_id").agg(clicks_1h=tl.count(window="1h"))
+    def _agg(s: stream_cls) -> bv.Table:
+        return s.group_by("user_id").agg(clicks_1h=bv.count(window="1h"))
 
     _agg.__name__ = agg_name
-    Agg = tl.table(key="user_id")(_agg)
+    Agg = bv.table(key="user_id")(_agg)
 
     app.register(stream_cls, Agg)
 
@@ -89,9 +89,9 @@ def test_event_time_populated_by_user_lands_in_correct_bucket(app, tally_server)
     assert row.get("clicks_1h") == 3, f"expected clicks_1h=3, got {row!r}"
 
 
-def test_event_time_absent_uses_wall_clock(app, tally_server):
+def test_event_time_absent_uses_wall_clock(app, beava_server):
     """Events without `_event_time` flow normally and never trigger late-drop."""
-    _host, _tcp, http_port = tally_server
+    _host, _tcp, http_port = beava_server
 
     stream_name = _unique_name("WmNoEt_")
     agg_name = _unique_name("WmNoEtAgg_")
@@ -101,13 +101,13 @@ def test_event_time_absent_uses_wall_clock(app, tally_server):
         (),
         {"__annotations__": {"user_id": str}},
     )
-    stream_cls = tl.stream(stream_cls)
+    stream_cls = bv.stream(stream_cls)
 
-    def _agg(s: stream_cls) -> tl.Table:
-        return s.group_by("user_id").agg(n=tl.count(window="1h"))
+    def _agg(s: stream_cls) -> bv.Table:
+        return s.group_by("user_id").agg(n=bv.count(window="1h"))
 
     _agg.__name__ = agg_name
-    Agg = tl.table(key="user_id")(_agg)
+    Agg = bv.table(key="user_id")(_agg)
 
     app.register(stream_cls, Agg)
 
@@ -125,9 +125,9 @@ def test_event_time_absent_uses_wall_clock(app, tally_server):
     assert '"late_events_dropped":0' in body.replace(" ", ""), body
 
 
-def test_late_event_increments_counter(app, tally_server):
+def test_late_event_increments_counter(app, beava_server):
     """Push t=now then t=now-10s (> 5s late) → late-drop counter bumps."""
-    _host, _tcp, http_port = tally_server
+    _host, _tcp, http_port = beava_server
 
     stream_name = _unique_name("WmLate_")
 
@@ -138,17 +138,17 @@ def test_late_event_increments_counter(app, tally_server):
         (),
         {"__annotations__": {"user_id": str}},
     )
-    stream_cls = tl.stream(stream_cls)
+    stream_cls = bv.stream(stream_cls)
 
     # Need an aggregation on it so REGISTER keeps the stream alive as a
     # source. Minimal agg to anchor the stream.
     agg_name = _unique_name("WmLateAgg_")
 
-    def _agg(s: stream_cls) -> tl.Table:
-        return s.group_by("user_id").agg(n=tl.count(window="1h"))
+    def _agg(s: stream_cls) -> bv.Table:
+        return s.group_by("user_id").agg(n=bv.count(window="1h"))
 
     _agg.__name__ = agg_name
-    Agg = tl.table(key="user_id")(_agg)
+    Agg = bv.table(key="user_id")(_agg)
     app.register(stream_cls, Agg)
 
     t0 = int(time.time())
@@ -162,7 +162,7 @@ def test_late_event_increments_counter(app, tally_server):
     # Check /metrics for the counter.
     status, body = _http_get(http_port, "/metrics")
     assert status == 200, f"metrics HTTP status: {status}"
-    needle = f'tally_late_events_dropped_total{{stream="{stream_name}"}} 1'
+    needle = f'beava_late_events_dropped_total{{stream="{stream_name}"}} 1'
     assert needle in body, (
         f"expected `{needle}` in /metrics body; got:\n"
         + "\n".join(
@@ -171,9 +171,9 @@ def test_late_event_increments_counter(app, tally_server):
     )
 
 
-def test_debug_streams_endpoint_shows_watermark(app, tally_server):
+def test_debug_streams_endpoint_shows_watermark(app, beava_server):
     """GET /debug/streams/:name returns the per-stream watermark JSON."""
-    _host, _tcp, http_port = tally_server
+    _host, _tcp, http_port = beava_server
 
     stream_name = _unique_name("WmDbg_")
     agg_name = _unique_name("WmDbgAgg_")
@@ -183,13 +183,13 @@ def test_debug_streams_endpoint_shows_watermark(app, tally_server):
         (),
         {"__annotations__": {"user_id": str}},
     )
-    stream_cls = tl.stream(stream_cls)
+    stream_cls = bv.stream(stream_cls)
 
-    def _agg(s: stream_cls) -> tl.Table:
-        return s.group_by("user_id").agg(n=tl.count(window="1h"))
+    def _agg(s: stream_cls) -> bv.Table:
+        return s.group_by("user_id").agg(n=bv.count(window="1h"))
 
     _agg.__name__ = agg_name
-    Agg = tl.table(key="user_id")(_agg)
+    Agg = bv.table(key="user_id")(_agg)
     app.register(stream_cls, Agg)
 
     t0 = int(time.time())

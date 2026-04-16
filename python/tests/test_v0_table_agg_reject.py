@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-import tally as tl
+import beava as bv
 
 
 def test_table_group_by_raises_exact_message():
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class Users:
         user_id: str
         name: str
@@ -25,7 +25,7 @@ def test_table_group_by_raises_exact_message():
 
 
 def test_table_group_by_rejected_for_any_key():
-    @tl.table(key=["account_id", "region"])
+    @bv.table(key=["account_id", "region"])
     class Accounts:
         account_id: str
         region: str

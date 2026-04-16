@@ -1,17 +1,17 @@
-"""Tests for @tl.stream and @tl.table class-form decorators + .describe()."""
+"""Tests for @bv.stream and @bv.table class-form decorators + .describe()."""
 
 from __future__ import annotations
 
 import pytest
 
-from tally._col import col  # noqa: F401  (sanity — confirms chain imports)
-from tally._stream import Stream, StreamSource, stream
-from tally._table import Table, TableSource, table
-from tally._types_core import Field, Optional
+from beava._col import col  # noqa: F401  (sanity — confirms chain imports)
+from beava._stream import Stream, StreamSource, stream
+from beava._table import Table, TableSource, table
+from beava._types_core import Field, Optional
 
 
 # ---------------------------------------------------------------------------
-# @tl.stream class form
+# @bv.stream class form
 # ---------------------------------------------------------------------------
 
 
@@ -24,7 +24,7 @@ class TestStreamDecorator:
 
         assert isinstance(Clicks, StreamSource)
         assert isinstance(Clicks, Stream)
-        assert Clicks._tally_stream_name == "Clicks"
+        assert Clicks._beava_stream_name == "Clicks"
 
     def test_describe_shape(self):
         @stream
@@ -116,7 +116,7 @@ class TestStreamDecorator:
 
 
 # ---------------------------------------------------------------------------
-# @tl.table class form
+# @bv.table class form
 # ---------------------------------------------------------------------------
 
 

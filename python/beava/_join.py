@@ -24,12 +24,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from tally._schema_v0 import schema_mismatch_error
-from tally._types_core import FieldSpec
+from beava._schema_v0 import schema_mismatch_error
+from beava._types_core import FieldSpec
 
 if TYPE_CHECKING:  # pragma: no cover
-    from tally._stream import Stream, StreamDerivation
-    from tally._table import Table, TableDerivation
+    from beava._stream import Stream, StreamDerivation
+    from beava._table import Table, TableDerivation
 
 
 _ALLOWED_JOIN_TYPES = {"inner", "left"}
@@ -166,8 +166,8 @@ def stream_join(
     type_: str,
 ) -> "Stream":
     """Join from the Stream side. Dispatches on ``other`` being Stream or Table."""
-    from tally._stream import Stream, StreamDerivation
-    from tally._table import Table
+    from beava._stream import Stream, StreamDerivation
+    from beava._table import Table
 
     on_keys = _normalize_on(on)
     type_ = _check_join_type(type_)
@@ -239,7 +239,7 @@ def table_join(
     Enforces ``on`` matches both tables' full key lists (set-equal) — partial
     keys are deferred past v0.
     """
-    from tally._table import Table, TableDerivation
+    from beava._table import Table, TableDerivation
 
     on_keys = _normalize_on(on)
     type_ = _check_join_type(type_)

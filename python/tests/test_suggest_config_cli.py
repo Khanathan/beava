@@ -1,6 +1,6 @@
-"""Plan 25-03 Task 4: tests for the ``tally suggest-config`` CLI.
+"""Plan 25-03 Task 4: tests for the ``beava suggest-config`` CLI.
 
-These tests exercise ``tally._cli.main`` directly with ``urllib.request.urlopen``
+These tests exercise ``beava._cli.main`` directly with ``urllib.request.urlopen``
 monkeypatched, so they do not require a running server.
 """
 
@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tally import _cli
+from beava import _cli
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +41,7 @@ def _mock_urlopen(payload):
     def _fake(req, *args, **kwargs):
         return _FakeResp(body)
 
-    with patch("tally._cli.urllib.request.urlopen", side_effect=_fake) as m:
+    with patch("beava._cli.urllib.request.urlopen", side_effect=_fake) as m:
         yield m
 
 
@@ -50,7 +50,7 @@ def _mock_urlopen_error(exc):
     def _fake(req, *args, **kwargs):
         raise exc
 
-    with patch("tally._cli.urllib.request.urlopen", side_effect=_fake) as m:
+    with patch("beava._cli.urllib.request.urlopen", side_effect=_fake) as m:
         yield m
 
 
@@ -77,7 +77,7 @@ def test_suggest_config_groups_by_decorator_target(capsys):
                 "confidence": 0.72,
                 "reason": "12% reinit rate",
                 "evidence": {},
-                "copy_paste": '@tl.table(key="user_id", ttl="60d")',
+                "copy_paste": '@bv.table(key="user_id", ttl="60d")',
             },
             {
                 "knob": "UserProfile.history_ttl",
@@ -86,7 +86,7 @@ def test_suggest_config_groups_by_decorator_target(capsys):
                 "confidence": 1.0,
                 "reason": "downstream",
                 "evidence": {},
-                "copy_paste": '@tl.stream(history_ttl="60d")',
+                "copy_paste": '@bv.stream(history_ttl="60d")',
             },
             {
                 "knob": "Clicks.history_ttl",
@@ -95,7 +95,7 @@ def test_suggest_config_groups_by_decorator_target(capsys):
                 "confidence": 1.0,
                 "reason": "downstream",
                 "evidence": {},
-                "copy_paste": '@tl.stream(history_ttl="180d")',
+                "copy_paste": '@bv.stream(history_ttl="180d")',
             },
         ]
     }
@@ -121,7 +121,7 @@ def test_suggest_config_prints_copy_paste_line(capsys):
                 "confidence": 0.9,
                 "reason": "test",
                 "evidence": {},
-                "copy_paste": '@tl.table(key="user_id", ttl="60d")',
+                "copy_paste": '@bv.table(key="user_id", ttl="60d")',
             }
         ]
     }
@@ -129,7 +129,7 @@ def test_suggest_config_prints_copy_paste_line(capsys):
         rc = _cli.main(["suggest-config"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "@tl.table(" in out
+    assert "@bv.table(" in out
     assert 'ttl="60d"' in out
     # Confidence is rendered with two decimals.
     assert "confidence=0.90" in out
@@ -153,7 +153,7 @@ def test_suggest_config_honours_host_and_port_flags():
         captured["url"] = req.full_url
         return _FakeResp(b'{"recommendations": []}')
 
-    with patch("tally._cli.urllib.request.urlopen", side_effect=_fake):
+    with patch("beava._cli.urllib.request.urlopen", side_effect=_fake):
         rc = _cli.main(
             ["suggest-config", "--host", "otherhost", "--port", "7777"]
         )
@@ -168,7 +168,7 @@ def test_suggest_config_adds_bearer_token_header():
         captured["auth"] = req.headers.get("Authorization")
         return _FakeResp(b'{"recommendations": []}')
 
-    with patch("tally._cli.urllib.request.urlopen", side_effect=_fake):
+    with patch("beava._cli.urllib.request.urlopen", side_effect=_fake):
         rc = _cli.main(["suggest-config", "--token", "sekret"])
     assert rc == 0
     assert captured["auth"] == "Bearer sekret"

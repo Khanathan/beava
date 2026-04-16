@@ -1,11 +1,11 @@
-"""Operator descriptor classes for the Tally declarative DSL.
+"""Operator descriptor classes for the Beava declarative DSL.
 
 Each operator stores its configuration and serializes to a JSON dict matching
 the Rust ``FeatureDefRequest`` schema (see ``src/server/protocol.rs``).
 
-Public API (re-exported from ``tally.__init__`` as lowercase aliases)::
+Public API (re-exported from ``beava.__init__`` as lowercase aliases)::
 
-    import tally as st
+    import beava as st
     st.count(window="30m")
     st.sum("amount", window="1h")
     st.derive("failed / total")

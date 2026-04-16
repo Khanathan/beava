@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-import tally as tl
-from tally._serialize import compile_to_register_json, collect_registrations
+import beava as bv
+from beava._serialize import compile_to_register_json, collect_registrations
 
 
 # ---------------------------------------------------------------------------
@@ -15,7 +15,7 @@ from tally._serialize import compile_to_register_json, collect_registrations
 
 class TestSourcePayloads:
     def test_stream_source(self):
-        @tl.stream
+        @bv.stream
         class Clicks:
             user_id: str
             url: str
@@ -32,7 +32,7 @@ class TestSourcePayloads:
         }
 
     def test_stream_source_with_history_ttl(self):
-        @tl.stream(history_ttl="30d")
+        @bv.stream(history_ttl="30d")
         class Logins:
             user_id: str
 
@@ -40,7 +40,7 @@ class TestSourcePayloads:
         assert j["history_ttl"] == "30d"
 
     def test_table_source_single_key(self):
-        @tl.table(key="user_id", ttl="7d")
+        @bv.table(key="user_id", ttl="7d")
         class Users:
             user_id: str
             name: str
@@ -53,7 +53,7 @@ class TestSourcePayloads:
         assert "key_fields" not in j
 
     def test_table_source_composite_key(self):
-        @tl.table(key=["account_id", "region"])
+        @bv.table(key=["account_id", "region"])
         class Accounts:
             account_id: str
             region: str
@@ -71,15 +71,15 @@ class TestSourcePayloads:
 
 class TestOpChainDerivations:
     def test_stream_filter_select(self):
-        @tl.stream
+        @bv.stream
         class Clicks:
             user_id: str
             page: str
             amount: float
 
-        @tl.stream
-        def Checkouts(clicks: Clicks) -> tl.Stream:
-            return clicks.filter(tl.col("page") == "/checkout").select(
+        @bv.stream
+        def Checkouts(clicks: Clicks) -> bv.Stream:
+            return clicks.filter(bv.col("page") == "/checkout").select(
                 "user_id", "amount"
             )
 
@@ -101,16 +101,16 @@ class TestOpChainDerivations:
 
 class TestAggregationPayload:
     def test_groupby_sum_count(self):
-        @tl.stream
+        @bv.stream
         class Clicks:
             user_id: str
             amount: float
 
-        @tl.table(key="user_id")
-        def UserSpend(clicks: Clicks) -> tl.Table:
+        @bv.table(key="user_id")
+        def UserSpend(clicks: Clicks) -> bv.Table:
             return clicks.group_by("user_id").agg(
-                n=tl.count(window="1h"),
-                total=tl.sum("amount", window="1h"),
+                n=bv.count(window="1h"),
+                total=bv.sum("amount", window="1h"),
             )
 
         j = compile_to_register_json(UserSpend)
@@ -131,15 +131,15 @@ class TestAggregationPayload:
         assert feats[1]["supports_retraction"] is True
 
     def test_percentile_feature_emits_hybrid_params(self):
-        @tl.stream
+        @bv.stream
         class Req:
             endpoint: str
             latency_ms: float
 
-        @tl.table(key="endpoint")
-        def EndpointP95(req: Req) -> tl.Table:
+        @bv.table(key="endpoint")
+        def EndpointP95(req: Req) -> bv.Table:
             return req.group_by("endpoint").agg(
-                p95=tl.percentile("latency_ms", 0.95, window="5m"),
+                p95=bv.percentile("latency_ms", 0.95, window="5m"),
             )
 
         j = compile_to_register_json(EndpointP95)
@@ -157,18 +157,18 @@ class TestAggregationPayload:
 
 class TestJoinPayload:
     def test_stream_stream_join(self):
-        @tl.stream
+        @bv.stream
         class Orders:
             order_id: str
             amount: float
 
-        @tl.stream
+        @bv.stream
         class Payments:
             order_id: str
             method: str
 
-        @tl.stream
-        def OP(orders: Orders, payments: Payments) -> tl.Stream:
+        @bv.stream
+        def OP(orders: Orders, payments: Payments) -> bv.Stream:
             return orders.join(payments, on="order_id", within="30m")
 
         j = compile_to_register_json(OP)
@@ -181,18 +181,18 @@ class TestJoinPayload:
         assert "Payments" in j["depends_on"]
 
     def test_table_table_join(self):
-        @tl.table(key="user_id")
+        @bv.table(key="user_id")
         class UserA:
             user_id: str
             name: str
 
-        @tl.table(key="user_id")
+        @bv.table(key="user_id")
         class UserB:
             user_id: str
             email: str
 
-        @tl.table(key="user_id")
-        def UserJoined(a: UserA, b: UserB) -> tl.Table:
+        @bv.table(key="user_id")
+        def UserJoined(a: UserA, b: UserB) -> bv.Table:
             return a.join(b, on="user_id")
 
         j = compile_to_register_json(UserJoined)
@@ -209,19 +209,19 @@ class TestJoinPayload:
 
 class TestUnionPayload:
     def test_union_two_streams(self):
-        @tl.stream
+        @bv.stream
         class A:
             k: str
             v: int
 
-        @tl.stream
+        @bv.stream
         class B:
             k: str
             v: int
 
-        @tl.stream
-        def AB(a: A, b: B) -> tl.Stream:
-            return tl.union(a, b)
+        @bv.stream
+        def AB(a: A, b: B) -> bv.Stream:
+            return bv.union(a, b)
 
         j = compile_to_register_json(AB)
         assert j["kind"] == "stream"
@@ -236,21 +236,21 @@ class TestUnionPayload:
 
 class TestCollectRegistrations:
     def test_end_to_end_pipeline_topological_order(self):
-        @tl.stream
+        @bv.stream
         class Clicks:
             user_id: str
             page: str
             amount: float
 
-        @tl.stream
-        def Checkouts(clicks: Clicks) -> tl.Stream:
-            return clicks.filter(tl.col("page") == "/checkout")
+        @bv.stream
+        def Checkouts(clicks: Clicks) -> bv.Stream:
+            return clicks.filter(bv.col("page") == "/checkout")
 
-        @tl.table(key="user_id")
-        def UserSpend(co: Checkouts) -> tl.Table:
+        @bv.table(key="user_id")
+        def UserSpend(co: Checkouts) -> bv.Table:
             return co.group_by("user_id").agg(
-                n=tl.count(window="1h"),
-                total=tl.sum("amount", window="1h"),
+                n=bv.count(window="1h"),
+                total=bv.sum("amount", window="1h"),
             )
 
         regs = collect_registrations(UserSpend)
@@ -260,22 +260,22 @@ class TestCollectRegistrations:
         assert regs[-1]["aggregation"]["features"][0]["type"] == "count"
 
     def test_dedupe_shared_upstream(self):
-        @tl.stream
+        @bv.stream
         class S:
             user_id: str
             amount: float
 
-        @tl.stream
-        def A(s: S) -> tl.Stream:
-            return s.filter(tl.col("amount") > 0)
+        @bv.stream
+        def A(s: S) -> bv.Stream:
+            return s.filter(bv.col("amount") > 0)
 
-        @tl.stream
-        def B(s: S) -> tl.Stream:
-            return s.filter(tl.col("amount") < 100)
+        @bv.stream
+        def B(s: S) -> bv.Stream:
+            return s.filter(bv.col("amount") < 100)
 
-        @tl.stream
-        def Combined(a: A, b: B) -> tl.Stream:
-            return tl.union(a, b)
+        @bv.stream
+        def Combined(a: A, b: B) -> bv.Stream:
+            return bv.union(a, b)
 
         regs = collect_registrations(Combined)
         names = [r["name"] for r in regs]
@@ -294,22 +294,22 @@ class TestCollectRegistrations:
 
 
 def test_validate_empty_for_canonical_pipeline():
-    @tl.stream
+    @bv.stream
     class Clicks:
         user_id: str
         page: str
         amount: float
 
-    @tl.stream
-    def Checkouts(clicks: Clicks) -> tl.Stream:
-        return clicks.filter(tl.col("page") == "/checkout")
+    @bv.stream
+    def Checkouts(clicks: Clicks) -> bv.Stream:
+        return clicks.filter(bv.col("page") == "/checkout")
 
-    @tl.table(key="user_id")
-    def UserSpend(co: Checkouts) -> tl.Table:
+    @bv.table(key="user_id")
+    def UserSpend(co: Checkouts) -> bv.Table:
         return co.group_by("user_id").agg(
-            n=tl.count(window="1h"),
-            total=tl.sum("amount", window="1h"),
+            n=bv.count(window="1h"),
+            total=bv.sum("amount", window="1h"),
         )
 
-    errors = tl.validate(Clicks, Checkouts, UserSpend)
+    errors = bv.validate(Clicks, Checkouts, UserSpend)
     assert errors == []

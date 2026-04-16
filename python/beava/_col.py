@@ -1,6 +1,6 @@
-"""``tl.col`` expression DSL.
+"""``bv.col`` expression DSL.
 
-``tl.col("x") + tl.col("y") > 100`` captures an expression AST via Python
+``bv.col("x") + bv.col("y") > 100`` captures an expression AST via Python
 operator overloading and serialises to the grammar already parsed by the
 Rust engine (``src/engine/expression.rs``).
 
@@ -168,7 +168,7 @@ class _Literal(_ExprAST):
         if isinstance(v, str):
             escaped = v.replace("\\", "\\\\").replace("'", "\\'")
             return f"'{escaped}'"
-        raise TypeError(f"unsupported literal type in tl.col expression: {type(v).__name__}")
+        raise TypeError(f"unsupported literal type in bv.col expression: {type(v).__name__}")
 
     def _collect_fields(self, out: set[str]) -> None:
         return None
@@ -239,7 +239,7 @@ def col(name: str) -> _ExprAST:
     ``col("Stream.amount")`` — qualified field access (for cross-stream derive).
     """
     if not isinstance(name, str) or not name:
-        raise TypeError("tl.col(name) requires a non-empty string")
+        raise TypeError("bv.col(name) requires a non-empty string")
     return _Field(name)
 
 

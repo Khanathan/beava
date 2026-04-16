@@ -3,7 +3,7 @@
 Given a collection of Stream/Table descriptors (sources + derivations),
 :func:`build_dag` produces a :class:`DAG` whose edges point from each node
 to its parameter-declared upstreams. The input to a derivation is captured
-at registration time as ``_upstreams`` (set by ``@tl.stream`` / ``@tl.table``
+at registration time as ``_upstreams`` (set by ``@bv.stream`` / ``@bv.table``
 function-form decorators); we trust that list and just resolve names.
 
 :class:`DAG.topological_order` uses Kahn's algorithm; on failure it traces

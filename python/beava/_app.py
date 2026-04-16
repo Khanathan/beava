@@ -3,9 +3,9 @@ and DSL layer into the user-facing API.
 
 Usage::
 
-    import tally as tl
+    import beava as bv
 
-    app = tl.App("localhost:6400")
+    app = bv.App("localhost:6400")
     app.register(Transactions)
     features = app.push(Transactions, {"user_id": "u1", "amount": 50.0})
     print(features.tx_count_1h)
@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import json
 
-from tally._client import TallyClient
-from tally._protocol import (
+from beava._client import BeavaClient
+from beava._protocol import (
     OP_DELETE_TABLE,
     OP_FLUSH,
     OP_GET,
@@ -41,13 +41,13 @@ from tally._protocol import (
     encode_register,
     encode_set,
 )
-from tally._types import FeatureResult, ProtocolError
+from beava._types import FeatureResult, ProtocolError
 
 
 class App:
-    """Tally application client.
+    """Beava application client.
 
-    Connects to a running Tally server and exposes ``register``, ``push``,
+    Connects to a running Beava server and exposes ``register``, ``push``,
     ``get``, ``set``, and ``mset`` methods for pipeline management and
     feature operations.
 
@@ -58,7 +58,7 @@ class App:
 
     def __init__(self, address: str, *, timeout: float = 5.0) -> None:
         host, port = self._parse_address(address)
-        self._client = TallyClient(host, port, timeout=timeout)
+        self._client = BeavaClient(host, port, timeout=timeout)
         self._batch_id_counter: int = 0
 
     @staticmethod
@@ -87,7 +87,7 @@ class App:
         """Register one or more pipeline definitions with the server.
 
         Accepts v0 Stream/Table descriptors. Before sending anything, runs
-        :func:`tally._validate_v0.validate` on the full descriptor set — if
+        :func:`beava._validate_v0.validate` on the full descriptor set — if
         any validation errors surface, raises the first one (with a tail
         count in the message) and sends no REGISTER frames.
 
@@ -95,8 +95,8 @@ class App:
         ``_collect_registrations()`` on each descriptor, dedupes REGISTER
         frames by ``name``, and forwards each to the server.
         """
-        from tally._dag import build_dag
-        from tally._validate_v0 import ValidationError, validate
+        from beava._dag import build_dag
+        from beava._validate_v0 import ValidationError, validate
 
         self._client.drain_errors_nonblock()
 
@@ -110,7 +110,7 @@ class App:
                     path=head.path,
                     message=(
                         f"{head.message}\n\n…and {len(errors) - 1} more "
-                        f"validation errors — call tally.validate() to see all"
+                        f"validation errors — call beava.validate() to see all"
                     ),
                 )
             raise head
@@ -138,11 +138,11 @@ class App:
     def validate(self, *descriptors) -> list:
         """Run local validation without any TCP contact.
 
-        Returns a list of :class:`tally.ValidationError` (empty on success).
+        Returns a list of :class:`beava.ValidationError` (empty on success).
         Useful in tests to assert a pipeline is valid without catching
         exceptions from :meth:`register`.
         """
-        from tally._validate_v0 import validate as _v
+        from beava._validate_v0 import validate as _v
         return _v(*descriptors)
 
     # ------------------------------------------------------------------
@@ -152,7 +152,7 @@ class App:
     def push(self, source, *args) -> None:
         """Push to a Stream or a Table.
 
-        This method dispatches on the descriptor's ``_tally_kind`` marker:
+        This method dispatches on the descriptor's ``_beava_kind`` marker:
 
         * **Stream form** — ``app.push(stream_class, event)``. Fire-and-forget
           over ``OP_PUSH_ASYNC``. Returns immediately; errors from this push
@@ -170,16 +170,16 @@ class App:
           the payload is rejected.
 
         Args:
-            source: The pipeline definition. A :class:`tally.Stream` subclass
-                (``_tally_kind == "stream"``) selects the Stream form;
-                a :class:`tally.Table` descriptor (``_tally_kind == "table"``)
+            source: The pipeline definition. A :class:`beava.Stream` subclass
+                (``_beava_kind == "stream"``) selects the Stream form;
+                a :class:`beava.Table` descriptor (``_beava_kind == "table"``)
                 selects the Table form.
             *args: For the Stream form, ``(event: dict,)``. For the Table
                 form, ``(key: str, fields: dict)``.
         """
         self._client.drain_errors_nonblock()
-        kind = getattr(source, "_tally_kind", "stream")
-        name = source._tally_stream_name
+        kind = getattr(source, "_beava_kind", "stream")
+        name = source._beava_stream_name
         if kind == "table":
             # push(table, key, fields) — synchronous push-through.
             if len(args) != 2:
@@ -218,11 +218,11 @@ class App:
         Raises :class:`ProtocolError` if the Table is not registered.
 
         Args:
-            table: The Table descriptor (``_tally_kind == "table"``).
+            table: The Table descriptor (``_beava_kind == "table"``).
             key: The entity key of the row to tombstone.
         """
         self._client.drain_errors_nonblock()
-        name = table._tally_stream_name
+        name = table._beava_stream_name
         payload = encode_delete_table(name, key)
         self._send(OP_DELETE_TABLE, payload)
 
@@ -246,7 +246,7 @@ class App:
                     (server hard cap H-7).
         """
         self._client.drain_errors_nonblock()
-        stream_name = stream_class._tally_stream_name
+        stream_name = stream_class._beava_stream_name
         batch_id = self._next_batch_id()
         payload = encode_push_batch(stream_name, events, batch_id)
         self._client.send_frame_no_recv(OP_PUSH_BATCH, payload)
@@ -259,7 +259,7 @@ class App:
         encoder for the request payload.
         """
         self._client.drain_errors_nonblock()
-        stream_name = stream_class._tally_stream_name
+        stream_name = stream_class._beava_stream_name
         payload = encode_push_binary(stream_name, event)
         resp = self._send(OP_PUSH, payload)
         data = json.loads(resp) if resp else {}
@@ -301,7 +301,7 @@ class App:
         the wire per the v0 null-collapse contract).
 
         Args:
-            tables: Non-empty list of Table descriptors (``_tally_kind ==
+            tables: Non-empty list of Table descriptors (``_beava_kind ==
                 "table"``). Passing a Stream descriptor or an arbitrary
                 object raises :class:`TypeError` BEFORE any wire I/O.
                 Passing an empty list raises :class:`ValueError`.
@@ -332,14 +332,14 @@ class App:
 
         names: list[str] = []
         for t in tables:
-            kind = getattr(t, "_tally_kind", None)
+            kind = getattr(t, "_beava_kind", None)
             if kind != "table":
                 raise TypeError(
-                    f"get_multi expects Table descriptors (_tally_kind == 'table'); "
-                    f"got {t!r} with _tally_kind={kind!r}"
+                    f"get_multi expects Table descriptors (_beava_kind == 'table'); "
+                    f"got {t!r} with _beava_kind={kind!r}"
                 )
             # Resolve the registered name via the same accessor push/delete use.
-            names.append(t._tally_stream_name)
+            names.append(t._beava_stream_name)
 
         # Composite key: dict → \x1f-join of its values (v0-restructure-spec §6.2).
         if isinstance(key, dict):

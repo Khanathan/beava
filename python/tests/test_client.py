@@ -1,4 +1,4 @@
-"""Tests for TallyClient TCP connection, frame I/O, auto-reconnect, and timeout."""
+"""Tests for BeavaClient TCP connection, frame I/O, auto-reconnect, and timeout."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ import time
 
 import pytest
 
-from tally._client import TallyClient
-from tally._protocol import MAX_FRAME_SIZE, STATUS_OK, STATUS_ERROR, encode_frame
-from tally._types import ConnectionError, ProtocolError
+from beava._client import BeavaClient
+from beava._protocol import MAX_FRAME_SIZE, STATUS_OK, STATUS_ERROR, encode_frame
+from beava._types import ConnectionError, ProtocolError
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ def _recv_frame(conn: socket.socket) -> tuple[int, bytes]:
 # ---------------------------------------------------------------------------
 
 
-class TestTallyClientConnect:
+class TestBeavaClientConnect:
     """send_command connects lazily and returns correct status and payload."""
 
     def test_send_command_returns_status_and_payload(self):
@@ -109,7 +109,7 @@ class TestTallyClientConnect:
             conn.sendall(_make_response_frame(STATUS_OK, response_payload))
 
         port, done = _start_mock_server(handler)
-        client = TallyClient("127.0.0.1", port)
+        client = BeavaClient("127.0.0.1", port)
         try:
             status, payload = client.send_command(0x01, b"test-payload")
             assert status == STATUS_OK
@@ -119,8 +119,8 @@ class TestTallyClientConnect:
             done.wait(timeout=2.0)
 
     def test_lazy_connect_no_socket_until_first_command(self):
-        """TallyClient does NOT connect until send_command is called."""
-        client = TallyClient("127.0.0.1", 9999)
+        """BeavaClient does NOT connect until send_command is called."""
+        client = BeavaClient("127.0.0.1", 9999)
         assert client._sock is None
         client.close()
 
@@ -140,7 +140,7 @@ class TestAutoReconnect:
             # Server closes connection after first response.
 
         port, done = _start_mock_server(handler, accept_count=2)
-        client = TallyClient("127.0.0.1", port)
+        client = BeavaClient("127.0.0.1", port)
         try:
             # First command succeeds.
             status1, _ = client.send_command(0x01, b"first")
@@ -166,7 +166,7 @@ class TestAutoReconnect:
             conn.sendall(_make_response_frame(STATUS_OK, response_payload))
 
         port, done = _start_mock_server(handler, accept_count=2)
-        client = TallyClient("127.0.0.1", port)
+        client = BeavaClient("127.0.0.1", port)
         try:
             status1, _ = client.send_command(0x01, b"first")
             assert status1 == STATUS_OK
@@ -191,7 +191,7 @@ class TestTimeout:
             conn.sendall(_make_response_frame(STATUS_OK, b"ok"))
 
         port, done = _start_mock_server(handler)
-        client = TallyClient("127.0.0.1", port, timeout=2.0)
+        client = BeavaClient("127.0.0.1", port, timeout=2.0)
         try:
             client.send_command(0x01, b"check-timeout")
             assert client._sock is not None
@@ -206,7 +206,7 @@ class TestTimeout:
             conn.sendall(_make_response_frame(STATUS_OK, b"ok"))
 
         port, done = _start_mock_server(handler)
-        client = TallyClient("127.0.0.1", port)
+        client = BeavaClient("127.0.0.1", port)
         try:
             client.send_command(0x01, b"check-default")
             assert client._sock.gettimeout() == 5.0
@@ -224,7 +224,7 @@ class TestRecvExact:
             conn.close()
 
         port, done = _start_mock_server(handler)
-        client = TallyClient("127.0.0.1", port)
+        client = BeavaClient("127.0.0.1", port)
         try:
             client._connect()
             with pytest.raises(ConnectionError, match="server closed connection"):
@@ -246,7 +246,7 @@ class TestOversizedFrame:
             # Don't bother sending body -- client should reject after reading length.
 
         port, done = _start_mock_server(handler)
-        client = TallyClient("127.0.0.1", port)
+        client = BeavaClient("127.0.0.1", port)
         try:
             with pytest.raises(ProtocolError, match="too large"):
                 client.send_command(0x01, b"trigger-oversize")
@@ -264,7 +264,7 @@ class TestContextManager:
             conn.sendall(_make_response_frame(STATUS_OK, b"ok"))
 
         port, done = _start_mock_server(handler)
-        with TallyClient("127.0.0.1", port) as client:
+        with BeavaClient("127.0.0.1", port) as client:
             client.send_command(0x01, b"ctx")
             assert client._sock is not None
 
@@ -283,7 +283,7 @@ class TestPhase11ClientPrimitives:
 
     def test_drain_errors_nonblock_sock_none(self):
         """Drain is a no-op when the socket has never been opened."""
-        client = TallyClient("127.0.0.1", 9999)
+        client = BeavaClient("127.0.0.1", 9999)
         assert client._sock is None
         client.drain_errors_nonblock()
         # must NOT trigger a connect
@@ -291,7 +291,7 @@ class TestPhase11ClientPrimitives:
 
     def test_drain_errors_nonblock_pending_error(self):
         """A stored pending error is raised and cleared on next drain."""
-        client = TallyClient("127.0.0.1", 9999)
+        client = BeavaClient("127.0.0.1", 9999)
         client._pending_error = ProtocolError("previous")
         with pytest.raises(ProtocolError, match="previous"):
             client.drain_errors_nonblock()
@@ -301,7 +301,7 @@ class TestPhase11ClientPrimitives:
         """Drain on a connected socket with nothing readable is a silent no-op."""
         a, b = socket.socketpair()
         try:
-            client = TallyClient("", 0)
+            client = BeavaClient("", 0)
             client._sock = a
             client.drain_errors_nonblock()  # no data on b side
         finally:
@@ -312,7 +312,7 @@ class TestPhase11ClientPrimitives:
         """A STATUS_OK frame (stray ACK) is silently consumed."""
         a, b = socket.socketpair()
         try:
-            client = TallyClient("", 0)
+            client = BeavaClient("", 0)
             client._sock = a
             ok_frame = _make_response_frame(STATUS_OK, b"")
             b.sendall(ok_frame)
@@ -326,7 +326,7 @@ class TestPhase11ClientPrimitives:
         """A STATUS_ERROR frame is raised as ProtocolError with the message."""
         a, b = socket.socketpair()
         try:
-            client = TallyClient("", 0)
+            client = BeavaClient("", 0)
             client._sock = a
             err_frame = _make_response_frame(STATUS_ERROR, b"boom")
             b.sendall(err_frame)
@@ -341,7 +341,7 @@ class TestPhase11ClientPrimitives:
         """send_frame_no_recv writes a full frame and does NOT read."""
         a, b = socket.socketpair()
         try:
-            client = TallyClient("", 0)
+            client = BeavaClient("", 0)
             client._sock = a
             client.send_frame_no_recv(0x07, b"xyz")
             expected = encode_frame(0x07, b"xyz")
@@ -357,7 +357,7 @@ class TestPhase11ClientPrimitives:
         """Ensure send_frame_no_recv returns immediately without reading a response."""
         a, b = socket.socketpair()
         try:
-            client = TallyClient("", 0)
+            client = BeavaClient("", 0)
             client._sock = a
             # No response ever sent from b; this must still return.
             start = time.perf_counter()
@@ -388,7 +388,7 @@ class TestPhase11DrainCorrectness:
         """
         a, b = socket.socketpair()
         try:
-            client = TallyClient("", 0)
+            client = BeavaClient("", 0)
             client._sock = a
             frames = (
                 _make_response_frame(STATUS_ERROR, b"err-1")
@@ -417,7 +417,7 @@ class TestPhase11DrainCorrectness:
         """
         a, b = socket.socketpair()
         try:
-            client = TallyClient("", 0)
+            client = BeavaClient("", 0)
             client._sock = a
             # Craft: header says 20-byte body, only 10 bytes sent.
             header = struct.pack(">I", 20)
@@ -455,7 +455,7 @@ class TestPhase11DrainCorrectness:
         """
         a, b = socket.socketpair()
         try:
-            client = TallyClient("", 0)
+            client = BeavaClient("", 0)
             client._sock = a
             # Queue a stale async error on the socket.
             b.sendall(_make_response_frame(STATUS_ERROR, b"async-boom"))
@@ -484,7 +484,7 @@ class TestPhase11DrainCorrectness:
         """
         a, b = socket.socketpair()
         try:
-            client = TallyClient("", 0)
+            client = BeavaClient("", 0)
             client._sock = a
             # Warm up.
             client.drain_errors_nonblock()

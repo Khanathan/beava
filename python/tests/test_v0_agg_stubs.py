@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-import tally as tl
-from tally._agg_ops import ALL_AGG_OPS, AggOp
-from tally._aggregation import AggregationSpec
+import beava as bv
+from beava._agg_ops import ALL_AGG_OPS, AggOp
+from beava._aggregation import AggregationSpec
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +33,7 @@ def test_sixteen_operators_registered():
 
 
 def test_count_basic():
-    op = tl.count(window="30m")
+    op = bv.count(window="30m")
     assert isinstance(op, AggOp)
     assert op.supports_retraction is True
     assert op.requires_window is True
@@ -46,14 +46,14 @@ def test_count_basic():
 
 
 def test_count_with_where_and_bucket():
-    op = tl.count(window="1h", where="status == 'failed'", bucket="1m")
+    op = bv.count(window="1h", where="status == 'failed'", bucket="1m")
     j = op.to_json("fails")
     assert j["where"] == "status == 'failed'"
     assert j["bucket"] == "1m"
 
 
 def test_sum_sets_field():
-    op = tl.sum("amount", window="1h")
+    op = bv.sum("amount", window="1h")
     assert op.supports_retraction is True
     j = op.to_json("total")
     assert j["type"] == "sum"
@@ -63,9 +63,9 @@ def test_sum_sets_field():
 
 def test_avg_and_variance_and_stddev():
     for ctor, label, retr in (
-        (tl.avg, "avg", True),
-        (tl.variance, "variance", True),
-        (tl.stddev, "stddev", True),
+        (bv.avg, "avg", True),
+        (bv.variance, "variance", True),
+        (bv.stddev, "stddev", True),
     ):
         op = ctor("amount", window="1h")
         assert op.supports_retraction is retr
@@ -74,7 +74,7 @@ def test_avg_and_variance_and_stddev():
 
 
 def test_min_max_not_retractable():
-    for ctor, label in ((tl.min, "min"), (tl.max, "max")):
+    for ctor, label in ((bv.min, "min"), (bv.max, "max")):
         op = ctor("amount", window="1h")
         assert op.supports_retraction is False
         j = op.to_json("x")
@@ -83,7 +83,7 @@ def test_min_max_not_retractable():
 
 
 def test_percentile_defaults_and_params():
-    op = tl.percentile("latency_ms", 0.95, window="5m")
+    op = bv.percentile("latency_ms", 0.95, window="5m")
     assert op.supports_retraction is False
     assert op.quantile == 0.95
     assert op.hybrid_params == {"exact_threshold": 256, "hybrid_alpha": 0.01}
@@ -95,7 +95,7 @@ def test_percentile_defaults_and_params():
 
 
 def test_count_distinct_defaults():
-    op = tl.count_distinct("merchant_id", window="24h")
+    op = bv.count_distinct("merchant_id", window="24h")
     assert op.supports_retraction is False
     assert op.hybrid_params == {"exact_threshold": 1024, "hybrid_precision": 14}
     j = op.to_json("uniq")
@@ -105,7 +105,7 @@ def test_count_distinct_defaults():
 
 
 def test_top_k_defaults():
-    op = tl.top_k("merchant_id", 10, window="1h")
+    op = bv.top_k("merchant_id", 10, window="1h")
     assert op.supports_retraction is False
     assert op.k == 10
     assert op.hybrid_params == {
@@ -119,7 +119,7 @@ def test_top_k_defaults():
 
 
 def test_first_last_no_window():
-    for ctor, label in ((tl.first, "first"), (tl.last, "last")):
+    for ctor, label in ((bv.first, "first"), (bv.last, "last")):
         op = ctor("country")
         assert op.requires_window is False
         assert op.supports_retraction is False
@@ -130,7 +130,7 @@ def test_first_last_no_window():
 
 
 def test_first_n_last_n():
-    for ctor, label in ((tl.first_n, "first_n"), (tl.last_n, "last_n")):
+    for ctor, label in ((bv.first_n, "first_n"), (bv.last_n, "last_n")):
         op = ctor("amount", 5)
         assert op.requires_window is False
         assert op.n == 5
@@ -140,7 +140,7 @@ def test_first_n_last_n():
 
 
 def test_ema():
-    op = tl.ema("amount", half_life="1h")
+    op = bv.ema("amount", half_life="1h")
     assert op.requires_window is False
     assert op.half_life == "1h"
     j = op.to_json("x")
@@ -149,7 +149,7 @@ def test_ema():
 
 
 def test_lag():
-    op = tl.lag("amount", 3)
+    op = bv.lag("amount", 3)
     assert op.requires_window is False
     assert op.n == 3
     j = op.to_json("x")
@@ -164,43 +164,43 @@ def test_lag():
 
 def test_count_missing_window_raises():
     with pytest.raises(TypeError):
-        tl.count()  # window= required kw-only
+        bv.count()  # window= required kw-only
 
 
 def test_sum_requires_field():
     with pytest.raises(TypeError):
-        tl.sum("", window="1h")
+        bv.sum("", window="1h")
 
 
 def test_percentile_quantile_out_of_range():
     with pytest.raises(ValueError, match=r"quantile must be in"):
-        tl.percentile("x", 1.5, window="1h")
+        bv.percentile("x", 1.5, window="1h")
     with pytest.raises(ValueError, match=r"quantile must be in"):
-        tl.percentile("x", -0.1, window="1h")
+        bv.percentile("x", -0.1, window="1h")
 
 
 def test_first_n_negative_n():
     with pytest.raises(ValueError, match=r"n must be a positive int"):
-        tl.first_n("amount", 0)
+        bv.first_n("amount", 0)
     with pytest.raises(ValueError, match=r"n must be a positive int"):
-        tl.last_n("amount", -1)
+        bv.last_n("amount", -1)
     with pytest.raises(ValueError, match=r"n must be a positive int"):
-        tl.lag("amount", 0)
+        bv.lag("amount", 0)
 
 
 def test_top_k_bad_k():
     with pytest.raises(ValueError, match=r"k must be a positive int"):
-        tl.top_k("merchant_id", 0, window="1h")
+        bv.top_k("merchant_id", 0, window="1h")
 
 
 def test_ema_bad_half_life():
     with pytest.raises(ValueError, match=r"half_life must be a duration"):
-        tl.ema("amount", "not a window")
+        bv.ema("amount", "not a window")
 
 
 def test_count_bad_window_format():
     with pytest.raises(ValueError, match=r"window must be a duration"):
-        tl.count(window="forever")
+        bv.count(window="forever")
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +209,7 @@ def test_count_bad_window_format():
 
 
 def _build_stream():
-    @tl.stream
+    @bv.stream
     class Transactions:
         user_id: str
         amount: float
@@ -221,11 +221,11 @@ def _build_stream():
 def test_groupby_agg_builds_table_with_inferred_schema():
     Transactions = _build_stream()
     t = Transactions.group_by("user_id").agg(
-        n=tl.count(window="1h"),
-        total=tl.sum("amount", window="1h"),
+        n=bv.count(window="1h"),
+        total=bv.sum("amount", window="1h"),
     )
     # Result is a TableDerivation
-    assert isinstance(t, tl.TableDerivation)
+    assert isinstance(t, bv.TableDerivation)
     assert t._key == ["user_id"]
     # describe() exposes the inferred schema
     d = t.describe()
@@ -241,13 +241,13 @@ def test_groupby_agg_builds_table_with_inferred_schema():
 
 
 def test_groupby_agg_min_max_preserve_input_type():
-    @tl.stream
+    @bv.stream
     class S:
         k: str
         v: int
     t = S.group_by("k").agg(
-        lo=tl.min("v", window="1h"),
-        hi=tl.max("v", window="1h"),
+        lo=bv.min("v", window="1h"),
+        hi=bv.max("v", window="1h"),
     )
     assert t._schema["lo"].py_type is int
     assert t._schema["hi"].py_type is int
@@ -267,7 +267,7 @@ def test_groupby_requires_at_least_one_key():
 
 def test_agg_requires_aggop_values():
     Transactions = _build_stream()
-    with pytest.raises(TypeError, match=r"requires a tally aggregation operator"):
+    with pytest.raises(TypeError, match=r"requires a beava aggregation operator"):
         Transactions.group_by("user_id").agg(total=42)
 
 
@@ -275,7 +275,7 @@ def test_agg_field_not_in_schema():
     Transactions = _build_stream()
     with pytest.raises(TypeError, match=r"not in Transactions"):
         Transactions.group_by("user_id").agg(
-            total=tl.sum("not_a_field", window="1h"),
+            total=bv.sum("not_a_field", window="1h"),
         )
 
 
@@ -283,7 +283,7 @@ def test_agg_feature_name_collides_with_key():
     Transactions = _build_stream()
     with pytest.raises(TypeError, match=r"collides with group key"):
         Transactions.group_by("user_id").agg(
-            user_id=tl.count(window="1h"),
+            user_id=bv.count(window="1h"),
         )
 
 
@@ -301,7 +301,7 @@ def test_agg_empty_features_raises():
 def test_agg_spec_compile_raises_phase_22():
     Transactions = _build_stream()
     t = Transactions.group_by("user_id").agg(
-        n=tl.count(window="1h"),
+        n=bv.count(window="1h"),
     )
     spec = t._agg_spec
     assert isinstance(spec, AggregationSpec)
@@ -312,8 +312,8 @@ def test_agg_spec_compile_raises_phase_22():
 def test_agg_spec_to_feature_list_shape():
     Transactions = _build_stream()
     t = Transactions.group_by("user_id").agg(
-        n=tl.count(window="1h"),
-        total=tl.sum("amount", window="1h"),
+        n=bv.count(window="1h"),
+        total=bv.sum("amount", window="1h"),
     )
     feats = t._agg_spec._to_feature_list()
     assert len(feats) == 2

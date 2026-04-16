@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tally._dag import CycleError, MissingDependency, build_dag
+from beava._dag import CycleError, MissingDependency, build_dag
 
 
 class ValidationError(Exception):

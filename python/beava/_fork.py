@@ -1,24 +1,24 @@
-"""Phase 39-01: ``tl.fork()`` — Python-native DX for scoped local replicas.
+"""Phase 39-01: ``bv.fork()`` — Python-native DX for scoped local replicas.
 
 The scientist workflow is::
 
-    import tally as tl
+    import beava as bv
 
-    @tl.stream
+    @bv.stream
     class Transactions:
         user_id: str
         amount: float
 
-    def _summary(t: Transactions) -> tl.Table:
+    def _summary(t: Transactions) -> bv.Table:
         return t.group_by("user_id").agg(
-            count=tl.count(window="1h"),
-            total=tl.sum("amount", window="1h"),
+            count=bv.count(window="1h"),
+            total=bv.sum("amount", window="1h"),
         )
     _summary.__name__ = "txn_summary"
-    TxnSummary = tl.table(key="user_id")(_summary)
+    TxnSummary = bv.table(key="user_id")(_summary)
 
-    with tl.fork(
-        remote="prod.tally.dev:6400",
+    with bv.fork(
+        remote="prod.beava.dev:6400",
         streams=[Transactions],
         keys=["u1", "u2"],
         token="replica-token",
@@ -26,10 +26,10 @@ The scientist workflow is::
     ) as fork:
         print(fork.get(TxnSummary, key="u1"))
 
-This module is a *pure-Python* wrapper over the Phase 37 ``tally fork``
+This module is a *pure-Python* wrapper over the Phase 37 ``beava fork``
 CLI. It does not add any Rust surface: it serialises the scientist's
 pipelines to a REGISTER JSON file (same bytes ``App.register`` would
-send), spawns the ``tally fork`` subprocess with ``--pipeline-file``,
+send), spawns the ``beava fork`` subprocess with ``--pipeline-file``,
 polls ``/debug/ready``, and exposes a small query helper.
 
 Error hierarchy:
@@ -65,7 +65,7 @@ from typing import Any
 
 
 class ForkError(Exception):
-    """Base class for all :func:`tally.fork` failures."""
+    """Base class for all :func:`beava.fork` failures."""
 
 
 class ForkValidationError(ForkError):
@@ -112,13 +112,13 @@ def _validate_fork_args(
                 f"streams contains duplicate descriptor {s!r}"
             )
         seen.add(id(s))
-        # A StreamSource (class-form @tl.stream) has _tally_kind == 'stream'
-        # and _tally_stream_name; reject anything that doesn't quack.
-        kind = getattr(s, "_tally_kind", None)
-        name = getattr(s, "_tally_stream_name", None)
+        # A StreamSource (class-form @bv.stream) has _beava_kind == 'stream'
+        # and _beava_stream_name; reject anything that doesn't quack.
+        kind = getattr(s, "_beava_kind", None)
+        name = getattr(s, "_beava_stream_name", None)
         if kind != "stream" or not isinstance(name, str) or not name:
             raise ForkValidationError(
-                f"streams[?] must be a @tl.stream descriptor; "
+                f"streams[?] must be a @bv.stream descriptor; "
                 f"got {s!r} (kind={kind!r})"
             )
         if not hasattr(s, "_to_register_json"):
@@ -158,10 +158,10 @@ def _validate_fork_args(
                     f"(needs _to_register_json())"
                 )
 
-    resolved_token = token or os.environ.get("TALLY_REPLICA_TOKEN")
+    resolved_token = token or os.environ.get("BEAVA_REPLICA_TOKEN")
     if not resolved_token:
         raise ForkValidationError(
-            "token required: pass token=... or set TALLY_REPLICA_TOKEN env"
+            "token required: pass token=... or set BEAVA_REPLICA_TOKEN env"
         )
 
     if not isinstance(ready_timeout, (int, float)) or ready_timeout <= 0:
@@ -220,7 +220,7 @@ def _build_register_bundle(
 
 def _write_seed_file(bundle: list[dict[str, Any]]) -> Path:
     """Write the REGISTER bundle to a named temp file and return its path."""
-    fd, path = tempfile.mkstemp(prefix="tally-fork-seed-", suffix=".json")
+    fd, path = tempfile.mkstemp(prefix="beava-fork-seed-", suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(bundle, f)
@@ -241,7 +241,7 @@ def _write_seed_file(bundle: list[dict[str, Any]]) -> Path:
 def _pick_free_port() -> int:
     """Bind to 127.0.0.1:0, grab the OS-assigned port, close.
 
-    Races with other allocators — acceptable for demo/dev. The ``tally
+    Races with other allocators — acceptable for demo/dev. The ``beava
     fork`` CLI takes both HTTP on ``local_port`` and TCP on
     ``local_port + 1``; we probe P+1 opportunistically up to 10 tries.
     """
@@ -265,10 +265,10 @@ def _pick_free_port() -> int:
 
 
 class ForkedReplica:
-    """Handle to a running ``tally fork`` subprocess.
+    """Handle to a running ``beava fork`` subprocess.
 
-    Construct via :func:`tally.fork`. Supports context-manager semantics
-    (``with tl.fork(...) as f:``) which guarantees :meth:`stop` fires.
+    Construct via :func:`beava.fork`. Supports context-manager semantics
+    (``with bv.fork(...) as f:``) which guarantees :meth:`stop` fires.
     """
 
     def __init__(
@@ -319,7 +319,7 @@ class ForkedReplica:
     # ------------------------------------------------------------------
 
     def _resolve_name(self, pipeline_or_stream: Any) -> str:
-        name = getattr(pipeline_or_stream, "_tally_stream_name", None)
+        name = getattr(pipeline_or_stream, "_beava_stream_name", None)
         if isinstance(name, str) and name:
             return name
         # Raw string support.
@@ -327,7 +327,7 @@ class ForkedReplica:
             return pipeline_or_stream
         raise ForkValidationError(
             f"can't resolve feature name from {pipeline_or_stream!r}; "
-            f"pass a @tl.stream / @tl.table descriptor or a name string"
+            f"pass a @bv.stream / @bv.table descriptor or a name string"
         )
 
     def get(
@@ -340,9 +340,9 @@ class ForkedReplica:
 
         ``pipeline_or_stream`` selects which feature-name subset to return:
 
-        * A ``@tl.table`` descriptor → returns just that table's feature
+        * A ``@bv.table`` descriptor → returns just that table's feature
           fields (e.g. ``{"count": 3, "total": 60.0}``).
-        * A ``@tl.stream`` descriptor or a string → returns the full
+        * A ``@bv.stream`` descriptor or a string → returns the full
           ``computed_features`` map for the key (the ``v0`` key-space is
           flat so there's no stream-scoped subset to filter to).
 
@@ -370,11 +370,11 @@ class ForkedReplica:
         if not isinstance(features, dict) or not features:
             return None
 
-        # If the caller passed a @tl.table descriptor, return only the fields
+        # If the caller passed a @bv.table descriptor, return only the fields
         # declared in that table's schema (so scientists get exactly the
-        # columns they authored). For @tl.stream or raw string, return the
+        # columns they authored). For @bv.stream or raw string, return the
         # full dict — the v0 key-space is flat.
-        kind = getattr(pipeline_or_stream, "_tally_kind", None)
+        kind = getattr(pipeline_or_stream, "_beava_kind", None)
         if kind == "table":
             schema = getattr(pipeline_or_stream, "_schema", None)
             key_fields = getattr(pipeline_or_stream, "_key", None) or []
@@ -413,7 +413,7 @@ class ForkedReplica:
 
         Example::
 
-            with tl.fork(..., extract_at=[t1, t2, t3]) as fork:
+            with bv.fork(..., extract_at=[t1, t2, t3]) as fork:
                 history = fork.extract_history()
                 # {"2026-03-01T10:00:00Z": {"u1": {"count": 1, "total": 10.0}},
                 #  "2026-03-15T10:00:00Z": {...}, ...}
@@ -468,7 +468,7 @@ class ForkedReplica:
         if rc is not None:
             tail = _tail_log(self._stderr_log, 20)
             raise ForkSubprocessError(
-                f"tally fork subprocess exited (code {rc}); "
+                f"beava fork subprocess exited (code {rc}); "
                 f"stderr tail:\n{tail}"
             )
 
@@ -539,7 +539,7 @@ def _tail_log(path: Path | None, n: int = 50) -> str:
 
 
 def _resolve_binary(binary_path: str | None) -> str:
-    """Find the ``tally`` binary. ``binary_path`` takes precedence, else PATH."""
+    """Find the ``beava`` binary. ``binary_path`` takes precedence, else PATH."""
     if binary_path is not None:
         p = Path(binary_path)
         if not p.exists():
@@ -547,25 +547,25 @@ def _resolve_binary(binary_path: str | None) -> str:
                 f"binary_path {binary_path!r} does not exist"
             )
         return str(p)
-    found = shutil.which("tally")
+    found = shutil.which("beava")
     if found:
         return found
     # Last resort: look at the workspace target dir (useful during dev).
     here = Path(__file__).resolve()
     for cand in (
-        here.parents[2] / "target" / "release" / "tally",
-        here.parents[2] / "target" / "debug" / "tally",
+        here.parents[2] / "target" / "release" / "beava",
+        here.parents[2] / "target" / "debug" / "beava",
     ):
         if cand.exists():
             return str(cand)
     raise ForkValidationError(
-        "couldn't find a `tally` binary on PATH. Set binary_path=... or "
+        "couldn't find a `beava` binary on PATH. Set binary_path=... or "
         "build the workspace (`cargo build --release`)."
     )
 
 
 def _format_since(since: str | int) -> str:
-    """``tally fork --since`` takes ISO-8601 UTC or u64 ms. Accept either."""
+    """``beava fork --since`` takes ISO-8601 UTC or u64 ms. Accept either."""
     if isinstance(since, (int,)):
         return str(since)
     if isinstance(since, str) and since:
@@ -631,7 +631,7 @@ def _poll_ready(
         if rc is not None:
             tail = _tail_log(stderr_log)
             raise ForkSubprocessError(
-                f"tally fork exited early (code {rc}) before /debug/ready "
+                f"beava fork exited early (code {rc}) before /debug/ready "
                 f"became reachable.\nstderr tail:\n{tail}"
             )
         try:
@@ -646,7 +646,7 @@ def _poll_ready(
 
     tail = _tail_log(stderr_log)
     raise ForkTimeoutError(
-        f"tally fork /debug/ready did not return 200 on :{local_port} "
+        f"beava fork /debug/ready did not return 200 on :{local_port} "
         f"within {ready_timeout}s (last error: {last_err}).\n"
         f"stderr tail:\n{tail}"
     )
@@ -672,18 +672,18 @@ def fork(
     ready_timeout: float = 30.0,
     env: dict[str, str] | None = None,
 ) -> ForkedReplica:
-    """Spawn a scoped local replica of a remote Tally cluster.
+    """Spawn a scoped local replica of a remote Beava cluster.
 
     See module docstring for the full scientist workflow.
 
     Args:
         remote: Upstream cluster as ``"HOST:PORT"``.
-        streams: Non-empty list of ``@tl.stream`` class descriptors to replicate.
+        streams: Non-empty list of ``@bv.stream`` class descriptors to replicate.
         keys: Exact keys to replicate. Mutex with ``key_prefix``.
         key_prefix: Prefix filter. Mutex with ``keys``.
         since: ISO-8601 UTC string or u64 millisecond epoch. Default: epoch 0.
-        token: Replica admin token. Falls back to ``TALLY_REPLICA_TOKEN`` env.
-        pipelines: Optional ``@tl.table`` / derivation descriptors to register
+        token: Replica admin token. Falls back to ``BEAVA_REPLICA_TOKEN`` env.
+        pipelines: Optional ``@bv.table`` / derivation descriptors to register
             on the fork (via the ``--pipeline-file`` seed). Transitive upstream
             streams are also auto-registered via ``_collect_registrations``.
         extract_at: Phase 44-01. Optional list of extraction timestamps
@@ -693,7 +693,7 @@ def fork(
             after catchup. Default: ``None`` (no historical extraction).
         local_port: HTTP port for the fork (also uses TCP on port + 1).
             Auto-allocated if None.
-        binary_path: Path to the ``tally`` binary. Defaults to ``tally`` on PATH.
+        binary_path: Path to the ``beava`` binary. Defaults to ``beava`` on PATH.
         ready_timeout: Seconds to wait for ``/debug/ready`` before failing.
         env: Extra env vars for the subprocess (merged onto ``os.environ``).
 
@@ -724,12 +724,12 @@ def fork(
     # stdout / stderr log files — caller can read via ForkedReplica.log_path.
     stdout_log = Path(
         tempfile.NamedTemporaryFile(
-            prefix="tally-fork-stdout-", suffix=".log", delete=False
+            prefix="beava-fork-stdout-", suffix=".log", delete=False
         ).name
     )
     stderr_log = Path(
         tempfile.NamedTemporaryFile(
-            prefix="tally-fork-stderr-", suffix=".log", delete=False
+            prefix="beava-fork-stderr-", suffix=".log", delete=False
         ).name
     )
 
@@ -750,14 +750,14 @@ def fork(
         argv += ["--pipeline-file", str(seed_file)]
     if extract_at is not None:
         # Phase 44-01: accept datetime/int/str entries; serialise to the
-        # comma-separated wire format the `tally fork --extract-at` flag
+        # comma-separated wire format the `beava fork --extract-at` flag
         # (and the underlying `--replica-extract-at` flag) consume.
         argv += ["--extract-at", _format_extract_at(extract_at)]
 
     sub_env = os.environ.copy()
     # Admin-token must be set so the fork's /debug/* routes accept the
     # same bearer token the scientist used above.
-    sub_env.setdefault("TALLY_ADMIN_TOKEN", resolved_token)
+    sub_env.setdefault("BEAVA_ADMIN_TOKEN", resolved_token)
     if env is not None:
         sub_env.update(env)
 

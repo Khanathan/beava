@@ -1,7 +1,7 @@
 """Tests for function-form decorators and DAG discovery.
 
 Covers:
-  * ``@tl.stream def X(a: A, b: B) -> Stream`` and ``@tl.table def ...``
+  * ``@bv.stream def X(a: A, b: B) -> Stream`` and ``@bv.table def ...``
   * Upstream discovery from parameter type hints (no ``depends_on=`` kwarg)
   * Return-type annotation enforcement
   * ``build_dag`` adjacency + topological order
@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import pytest
 
-from tally._col import col
-from tally._dag import CycleError, MissingDependency, build_dag
-from tally._stream import Stream, StreamDerivation, StreamSource, stream
-from tally._table import Table, TableDerivation, TableSource, table
+from beava._col import col
+from beava._dag import CycleError, MissingDependency, build_dag
+from beava._stream import Stream, StreamDerivation, StreamSource, stream
+from beava._table import Table, TableDerivation, TableSource, table
 
 
 # ---------------------------------------------------------------------------

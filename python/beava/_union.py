@@ -1,4 +1,4 @@
-"""``tl.union(*streams)`` stub — Plan 21-03.
+"""``bv.union(*streams)`` stub — Plan 21-03.
 
 Validates field-by-field schema compatibility at registration; execution
 lands in Phase 22. Compatibility is strict in v0: fields must match by
@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from tally._types_core import FieldSpec
+from beava._types_core import FieldSpec
 
 if TYPE_CHECKING:  # pragma: no cover
-    from tally._stream import Stream, StreamDerivation
+    from beava._stream import Stream, StreamDerivation
 
 
 class UnionSpec:
@@ -49,7 +49,7 @@ def _check_compatible(left: Any, right: Any) -> None:
         only_l = sorted(lset - rset)
         only_r = sorted(rset - lset)
         raise TypeError(
-            f"tl.union: schemas differ between {left._name!r} and "
+            f"bv.union: schemas differ between {left._name!r} and "
             f"{right._name!r}. "
             f"{'Only in ' + left._name + ': ' + repr(only_l) + '. ' if only_l else ''}"
             f"{'Only in ' + right._name + ': ' + repr(only_r) + '. ' if only_r else ''}"
@@ -64,7 +64,7 @@ def _check_compatible(left: Any, right: Any) -> None:
         rs = rschema[fname]
         if ls.py_type is not rs.py_type or ls.optional != rs.optional:
             raise TypeError(
-                f"tl.union: field {fname!r} type mismatch between "
+                f"bv.union: field {fname!r} type mismatch between "
                 f"{left._name!r} and {right._name!r}: "
                 f"{ls.py_type.__name__}{'?' if ls.optional else ''} vs "
                 f"{rs.py_type.__name__}{'?' if rs.optional else ''}. "
@@ -82,16 +82,16 @@ def union(*streams: Any) -> Any:
     same Python types, same optional flags). Execution ships in Phase 22;
     schema validation runs at registration.
     """
-    from tally._stream import Stream, StreamDerivation
+    from beava._stream import Stream, StreamDerivation
 
     if len(streams) < 2:
         raise TypeError(
-            f"tl.union requires 2 or more Streams; got {len(streams)}"
+            f"bv.union requires 2 or more Streams; got {len(streams)}"
         )
     for s in streams:
         if not isinstance(s, Stream):
             raise TypeError(
-                f"tl.union arguments must be Streams; got {type(s).__name__}"
+                f"bv.union arguments must be Streams; got {type(s).__name__}"
             )
 
     first = streams[0]

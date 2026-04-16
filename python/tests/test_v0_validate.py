@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-import tally as tl
-from tally._col import col
-from tally._stream import Stream, stream
-from tally._table import Table, table
-from tally._validate_v0 import ValidationError, validate
+import beava as bv
+from beava._col import col
+from beava._stream import Stream, stream
+from beava._table import Table, table
+from beava._validate_v0 import ValidationError, validate
 
 
 # ---------------------------------------------------------------------------
@@ -138,10 +138,10 @@ class TestValidationErrorShape:
         assert "[" in str(e) and "]" in str(e)
 
     def test_validation_error_exported(self):
-        assert tl.ValidationError is ValidationError
+        assert bv.ValidationError is ValidationError
 
     def test_validate_exported(self):
-        assert tl.validate is validate
+        assert bv.validate is validate
 
 
 # ---------------------------------------------------------------------------
@@ -157,13 +157,13 @@ class _MockClient:
         return None
 
     def send_command(self, opcode: int, payload: bytes):
-        from tally._protocol import STATUS_OK
+        from beava._protocol import STATUS_OK
         self.sent.append((opcode, payload))
         return STATUS_OK, b""
 
 
-def _mock_app() -> tuple[tl.App, _MockClient]:
-    app = tl.App.__new__(tl.App)
+def _mock_app() -> tuple[bv.App, _MockClient]:
+    app = bv.App.__new__(bv.App)
     mock = _MockClient()
     app._client = mock
     return app, mock

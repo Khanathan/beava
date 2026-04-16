@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-import tally as tl
-from tally._join import JoinSpec
-from tally._union import UnionSpec
+import beava as bv
+from beava._join import JoinSpec
+from beava._union import UnionSpec
 
 
 # ---------------------------------------------------------------------------
@@ -15,13 +15,13 @@ from tally._union import UnionSpec
 
 
 def _build_two_streams():
-    @tl.stream
+    @bv.stream
     class Orders:
         order_id: str
         user_id: str
         amount: float
 
-    @tl.stream
+    @bv.stream
     class Payments:
         order_id: str
         method: str
@@ -31,12 +31,12 @@ def _build_two_streams():
 
 
 def _build_stream_and_table():
-    @tl.stream
+    @bv.stream
     class Clicks:
         user_id: str
         url: str
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class Users:
         user_id: str
         name: str
@@ -45,12 +45,12 @@ def _build_stream_and_table():
 
 
 def _build_two_tables():
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class UserA:
         user_id: str
         name: str
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class UserB:
         user_id: str
         email: str
@@ -68,7 +68,7 @@ class TestStreamStreamJoin:
     def test_happy_path_returns_stream(self):
         Orders, Payments = _build_two_streams()
         joined = Orders.join(Payments, on="order_id", within="30m")
-        assert isinstance(joined, tl.Stream)
+        assert isinstance(joined, bv.Stream)
         d = joined.describe()
         assert d["kind"] == "stream"
         names = list(d["fields"].keys())
@@ -122,7 +122,7 @@ class TestStreamTableJoin:
     def test_happy_path_returns_stream(self):
         Clicks, Users = _build_stream_and_table()
         enriched = Clicks.join(Users, on="user_id")
-        assert isinstance(enriched, tl.Stream)
+        assert isinstance(enriched, bv.Stream)
         assert "user_id" in enriched._schema
         assert "url" in enriched._schema
         assert "name" in enriched._schema
@@ -152,7 +152,7 @@ class TestTableTableJoin:
     def test_happy_path_returns_table(self):
         UserA, UserB = _build_two_tables()
         joined = UserA.join(UserB, on="user_id")
-        assert isinstance(joined, tl.Table)
+        assert isinstance(joined, bv.Table)
         # Full-key match; output key preserved.
         assert joined._key == ["user_id"]
         # Collision suffix on 'name'.
@@ -161,13 +161,13 @@ class TestTableTableJoin:
         assert "email" in joined._schema
 
     def test_partial_key_rejected(self):
-        @tl.table(key=["user_id", "region"])
+        @bv.table(key=["user_id", "region"])
         class A:
             user_id: str
             region: str
             name: str
 
-        @tl.table(key=["user_id", "region"])
+        @bv.table(key=["user_id", "region"])
         class B:
             user_id: str
             region: str
@@ -184,7 +184,7 @@ class TestTableTableJoin:
     def test_non_table_right_side_rejected(self):
         UserA, _ = _build_two_tables()
 
-        @tl.stream
+        @bv.stream
         class S:
             user_id: str
             url: str
@@ -200,106 +200,106 @@ class TestTableTableJoin:
 
 
 # ---------------------------------------------------------------------------
-# tl.union
+# bv.union
 # ---------------------------------------------------------------------------
 
 
 class TestUnion:
     def test_happy_path_two_streams(self):
-        @tl.stream
+        @bv.stream
         class A:
             user_id: str
             amount: float
 
-        @tl.stream
+        @bv.stream
         class B:
             user_id: str
             amount: float
 
-        u = tl.union(A, B)
-        assert isinstance(u, tl.Stream)
+        u = bv.union(A, B)
+        assert isinstance(u, bv.Stream)
         d = u.describe()
         assert list(d["fields"].keys()) == ["user_id", "amount"]
 
     def test_happy_path_three_streams(self):
-        @tl.stream
+        @bv.stream
         class A:
             k: str
             v: int
 
-        @tl.stream
+        @bv.stream
         class B:
             k: str
             v: int
 
-        @tl.stream
+        @bv.stream
         class C:
             k: str
             v: int
 
-        u = tl.union(A, B, C)
+        u = bv.union(A, B, C)
         assert u._union_spec.sources == [A, B, C]
 
     def test_schema_mismatch_on_field_name(self):
-        @tl.stream
+        @bv.stream
         class A:
             user_id: str
             amount: float
 
-        @tl.stream
+        @bv.stream
         class B:
             user_id: str
             value: float
 
         with pytest.raises(TypeError, match=r"schemas differ"):
-            tl.union(A, B)
+            bv.union(A, B)
 
     def test_schema_mismatch_on_type(self):
-        @tl.stream
+        @bv.stream
         class A:
             k: str
             v: int
 
-        @tl.stream
+        @bv.stream
         class B:
             k: str
             v: float
 
         with pytest.raises(TypeError, match=r"type mismatch"):
-            tl.union(A, B)
+            bv.union(A, B)
 
     def test_requires_at_least_two(self):
-        @tl.stream
+        @bv.stream
         class A:
             k: str
 
         with pytest.raises(TypeError, match=r"requires 2 or more"):
-            tl.union(A)
+            bv.union(A)
 
     def test_non_stream_arg_rejected(self):
-        @tl.stream
+        @bv.stream
         class A:
             k: str
 
-        @tl.table(key="k")
+        @bv.table(key="k")
         class T:
             k: str
 
         with pytest.raises(TypeError, match=r"arguments must be Streams"):
-            tl.union(A, T)
+            bv.union(A, T)
 
     def test_compile_raises_phase_22(self):
-        @tl.stream
+        @bv.stream
         class A:
             k: str
             v: int
 
-        @tl.stream
+        @bv.stream
         class B:
             k: str
             v: int
 
-        u = tl.union(A, B)
+        u = bv.union(A, B)
         with pytest.raises(NotImplementedError, match=r"ships in Phase 22"):
             u._union_spec._compile_for_server()
 
@@ -310,9 +310,9 @@ class TestUnion:
 
 
 def test_public_exports():
-    assert callable(tl.union)
-    assert callable(tl.count)
-    assert callable(tl.sum)
+    assert callable(bv.union)
+    assert callable(bv.count)
+    assert callable(bv.sum)
     # Instantiating a couple of them:
-    assert isinstance(tl.count(window="1h"), object)
-    assert isinstance(tl.first("x"), object)
+    assert isinstance(bv.count(window="1h"), object)
+    assert isinstance(bv.first("x"), object)

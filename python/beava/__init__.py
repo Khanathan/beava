@@ -1,35 +1,35 @@
-"""Tally Python SDK — public surface.
+"""Beava Python SDK — public surface.
 
 v0 declarative API:
 
-    import tally as tl
+    import beava as bv
 
-    @tl.stream
+    @bv.stream
     class Clicks:
         user_id: str
         url: str
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class Users:
         user_id: str
         name: str
 
-    tl.col("amount") > 100     # expression DSL
+    bv.col("amount") > 100     # expression DSL
 
 The pre-v0 class-decorator surface (source / dataset decorators and
 the schema / feature-bundle types that backed them) was removed in
 Plan 21-01; aggregation and join operators return in Plans 21-02 and
-21-03 in function form on top of ``@tl.stream`` / ``@tl.table``.
+21-03 in function form on top of ``@bv.stream`` / ``@bv.table``.
 """
 
-from tally._types import FeatureResult, ConnectionError, ProtocolError, TallyError
+from beava._types import FeatureResult, ConnectionError, ProtocolError, BeavaError
 
-# Phase 38-01 mothball: the `tally._native` PyO3 extension (Plan 30-01) is
-# gone. Scientists now run the scoped replica via `tally fork` (Phase 37)
-# and talk to it through the pure-Python `tally.App` over HTTP/TCP — no
+# Phase 38-01 mothball: the `beava._native` PyO3 extension (Plan 30-01) is
+# gone. Scientists now run the scoped replica via `beava fork` (Phase 37)
+# and talk to it through the pure-Python `beava.App` over HTTP/TCP — no
 # native extension required.
-from tally._app import App
-from tally._protocol import (
+from beava._app import App
+from beava._protocol import (
     OP_PUSH,
     OP_GET,
     OP_SET,
@@ -42,17 +42,17 @@ from tally._protocol import (
 )
 
 # v0 public surface
-from tally._types_core import Optional, Field
-from tally._col import col
-from tally._stream import stream, Stream, StreamSource, StreamDerivation
-from tally._table import table, Table, TableSource, TableDerivation
-from tally._validate_v0 import validate, ValidationError
+from beava._types_core import Optional, Field
+from beava._col import col
+from beava._stream import stream, Stream, StreamSource, StreamDerivation
+from beava._table import table, Table, TableSource, TableDerivation
+from beava._validate_v0 import validate, ValidationError
 
-# Plan 21-03: tl.union stub.
-from tally._union import union
+# Plan 21-03: bv.union stub.
+from beava._union import union
 
 # Plan 21-03: aggregation operator descriptors.
-from tally._agg_ops import (
+from beava._agg_ops import (
     count,
     sum,
     avg,
@@ -72,10 +72,10 @@ from tally._agg_ops import (
 )
 
 # OperatorBase is still referenced by Plan 21-03 aggregation-spec descriptors.
-from tally._operators import OperatorBase
+from beava._operators import OperatorBase
 
-# Phase 39-01: Python-native `tl.fork()` DX layer over the Phase 37 CLI.
-from tally._fork import (
+# Phase 39-01: Python-native `bv.fork()` DX layer over the Phase 37 CLI.
+from beava._fork import (
     fork,
     ForkedReplica,
     ForkError,
@@ -87,7 +87,7 @@ from tally._fork import (
 __all__ = [
     # Types & exceptions
     "FeatureResult",
-    "TallyError",
+    "BeavaError",
     "ConnectionError",
     "ProtocolError",
     # App

@@ -3,30 +3,30 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "tally"
+name = "beava"
 version = "0.1.0"
 requires-python = ">=3.10"
-description = "Python SDK for Tally real-time feature server"
+description = "Python SDK for Beava real-time feature server"
 
 [project.scripts]
-# Plan 25-03: stdlib-only operator CLI. Backs `tally suggest-config`,
+# Plan 25-03: stdlib-only operator CLI. Backs `beava suggest-config`,
 # which pretty-prints /debug/config-recommendations output grouped by
-# decorator target. Also ships `tally install-skill` which installs the
-# AI-editor skill to ~/.agents/skills/tally so Claude Code, Cursor, Codex,
+# decorator target. Also ships `beava install-skill` which installs the
+# AI-editor skill to ~/.agents/skills/beava so Claude Code, Cursor, Codex,
 # and other agents can discover it.
-tally = "tally._cli:main"
+beava = "beava._cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["tally"]
+packages = ["beava"]
 
-# Bundle the agent skill into the wheel at `tally/_skill/SKILL.md` so
-# `tally install-skill` can copy it out at runtime via importlib.resources.
-# Source of truth lives at repo-root `.agents/skills/tally/SKILL.md`.
+# Bundle the agent skill into the wheel at `beava/_skill/SKILL.md` so
+# `beava install-skill` can copy it out at runtime via importlib.resources.
+# Source of truth lives at repo-root `.agents/skills/beava/SKILL.md`.
 [tool.hatch.build.targets.wheel.force-include]
-"../.agents/skills/tally/SKILL.md" = "tally/_skill/SKILL.md"
+"../.agents/skills/beava/SKILL.md" = "beava/_skill/SKILL.md"
 
 [tool.hatch.build.targets.sdist.force-include]
-"../.agents/skills/tally/SKILL.md" = "tally/_skill/SKILL.md"
+"../.agents/skills/beava/SKILL.md" = "beava/_skill/SKILL.md"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

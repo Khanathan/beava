@@ -1,21 +1,21 @@
-"""Core types for the Tally Python SDK.
+"""Core types for the Beava Python SDK.
 
 FeatureResult: attribute-access wrapper for feature maps returned by the server.
-Exception hierarchy: TallyError > ConnectionError, ProtocolError.
+Exception hierarchy: BeavaError > ConnectionError, ProtocolError.
 """
 
 from __future__ import annotations
 
 
-class TallyError(Exception):
-    """Base exception for all Tally SDK errors."""
+class BeavaError(Exception):
+    """Base exception for all Beava SDK errors."""
 
 
-class ConnectionError(TallyError):  # noqa: A001 -- intentionally shadows builtin
-    """Raised when the TCP connection to the Tally server fails."""
+class ConnectionError(BeavaError):  # noqa: A001 -- intentionally shadows builtin
+    """Raised when the TCP connection to the Beava server fails."""
 
 
-class ProtocolError(TallyError):
+class ProtocolError(BeavaError):
     """Raised when a protocol-level error occurs (bad frame, server error status)."""
 
 

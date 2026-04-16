@@ -1,17 +1,17 @@
-"""TCP client for communicating with the Tally server.
+"""TCP client for communicating with the Beava server.
 
 Manages a persistent TCP connection with lazy connect, auto-reconnect on
 server disconnect, frame-level send/receive, and configurable timeout.
 
 Usage::
 
-    client = TallyClient("127.0.0.1", 6400, timeout=5.0)
+    client = BeavaClient("127.0.0.1", 6400, timeout=5.0)
     status, payload = client.send_command(OP_PUSH, encoded_payload)
     client.close()
 
 Or as a context manager::
 
-    with TallyClient("127.0.0.1", 6400) as client:
+    with BeavaClient("127.0.0.1", 6400) as client:
         status, payload = client.send_command(OP_PUSH, encoded_payload)
 """
 
@@ -21,12 +21,12 @@ import select
 import socket
 import struct
 
-from tally._protocol import MAX_FRAME_SIZE, STATUS_ERROR, encode_frame
-from tally._types import ConnectionError, ProtocolError
+from beava._protocol import MAX_FRAME_SIZE, STATUS_ERROR, encode_frame
+from beava._types import ConnectionError, ProtocolError
 
 
-class TallyClient:
-    """Low-level TCP client for the Tally binary protocol.
+class BeavaClient:
+    """Low-level TCP client for the Beava binary protocol.
 
     Connects lazily on first ``send_command`` call. Auto-reconnects
     transparently if the server closes the connection.
@@ -352,7 +352,7 @@ class TallyClient:
                 pass
             self._sock = None
 
-    def __enter__(self) -> TallyClient:
+    def __enter__(self) -> BeavaClient:
         return self
 
     def __exit__(self, *args: object) -> None:

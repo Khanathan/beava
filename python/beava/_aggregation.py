@@ -5,17 +5,17 @@ Plan 21-03: SDK-level schema inference only. Execution is Phase 22.
 Contract:
   * ``Stream.group_by(*keys)`` returns a :class:`GroupBy` builder; validates
     every key against the upstream schema.
-  * ``GroupBy.agg(**features)`` returns a :class:`~tally._table.TableDerivation`
+  * ``GroupBy.agg(**features)`` returns a :class:`~beava._table.TableDerivation`
     wrapping an :class:`AggregationSpec`. The Table's key is the grouping
     keys; its schema is the group keys ∪ each feature's inferred output type.
   * ``Table.group_by(...)`` raises the v0 rejection message (see
-    :mod:`tally._table`). Table-input aggregation ships in v0.1.
+    :mod:`beava._table`). Table-input aggregation ships in v0.1.
 
 The ``AggregationSpec.compile_for_server()`` path raises
 ``NotImplementedError("stream aggregation ships in Phase 22")`` — Phase 22
 wires the Rust side. The ``AggregationSpec._to_feature_list()`` method
 produces the ``features: [...]`` list that Phase 22's REGISTER handler will
-consume via :mod:`tally._serialize`.
+consume via :mod:`beava._serialize`.
 """
 
 from __future__ import annotations
@@ -23,13 +23,13 @@ from __future__ import annotations
 import hashlib
 from typing import TYPE_CHECKING, Any
 
-from tally._agg_ops import AggOp
-from tally._schema_v0 import schema_mismatch_error
-from tally._types_core import FieldSpec
+from beava._agg_ops import AggOp
+from beava._schema_v0 import schema_mismatch_error
+from beava._types_core import FieldSpec
 
 if TYPE_CHECKING:  # pragma: no cover
-    from tally._stream import Stream
-    from tally._table import TableDerivation
+    from beava._stream import Stream
+    from beava._table import TableDerivation
 
 
 def _short_hash(*parts: str) -> str:
@@ -43,7 +43,7 @@ class AggregationSpec:
     Held by a :class:`TableDerivation` as ``_agg_spec``. Exposes:
 
       * ``_compile_for_server()`` — raises ``NotImplementedError`` pointing at
-        Phase 22. Used by :mod:`tally._serialize` to assert that the stub is
+        Phase 22. Used by :mod:`beava._serialize` to assert that the stub is
         never silently bypassed.
       * ``_to_feature_list()`` — serializes the ``features`` to a list of
         JSON dicts (one per user-assigned name). Consumed by the REGISTER
@@ -104,11 +104,11 @@ class GroupBy:
         """Produce a TableDerivation with the aggregated schema.
 
         Each kwarg's name becomes an output column. Values must be AggOp
-        instances (``tl.count(...)``, ``tl.sum(...)``, ...). Field references
+        instances (``bv.count(...)``, ``bv.sum(...)``, ...). Field references
         inside each op are validated against the upstream schema here so
         users see surgical errors at registration — not at run time.
         """
-        from tally._table import TableDerivation  # local to break cycle
+        from beava._table import TableDerivation  # local to break cycle
 
         if not features:
             raise TypeError(
@@ -120,8 +120,8 @@ class GroupBy:
         for feat_name, op in features.items():
             if not isinstance(op, AggOp):
                 raise TypeError(
-                    f"agg({feat_name}=...) requires a tally aggregation "
-                    f"operator (tl.count/tl.sum/...); got {type(op).__name__}"
+                    f"agg({feat_name}=...) requires a beava aggregation "
+                    f"operator (bv.count/bv.sum/...); got {type(op).__name__}"
                 )
             # Window requirement
             if op.requires_window and op.window is None:

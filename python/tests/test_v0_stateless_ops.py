@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from tally._col import col
-from tally._stream import Stream, StreamSource, stream
-from tally._table import Table, TableSource, table
+from beava._col import col
+from beava._stream import Stream, StreamSource, stream
+from beava._table import Table, TableSource, table
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ class TestFilter:
         with pytest.raises(TypeError) as ei:
             src.filter("amount > 100")
         msg = str(ei.value)
-        assert "tl.col" in msg
+        assert "bv.col" in msg
         assert "string" in msg
 
     @pytest.mark.parametrize("factory,outer", _PARAMS)
@@ -286,7 +286,7 @@ class TestFillna:
     @pytest.mark.parametrize("factory,outer", _PARAMS)
     def test_fillna_clears_optional(self, factory, outer):
         # Start with a source that has an optional field
-        from tally._types_core import Optional
+        from beava._types_core import Optional
         if outer is Stream:
             @stream
             class S:

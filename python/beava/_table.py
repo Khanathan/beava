@@ -1,9 +1,9 @@
-"""``@tl.table`` decorator + Table / TableSource / TableDerivation runtime types.
+"""``@bv.table`` decorator + Table / TableSource / TableDerivation runtime types.
 
 Plan 21-01 shipped the class form. Plan 21-02 adds:
   * :class:`StatelessOpsMixin` on :class:`Table` — stateless ops on Tables.
   * :class:`TableDerivation` — returned by ops + function-form derivations.
-  * Function-form ``@tl.table(key=...) def X(...) -> Table:`` — the function
+  * Function-form ``@bv.table(key=...) def X(...) -> Table:`` — the function
     is invoked once at registration with upstream descriptors; the returned
     Table is renamed to the function name and its upstreams captured.
 """
@@ -15,10 +15,10 @@ import typing
 from types import FunctionType
 from typing import Any
 
-from tally._describe import format_describe
-from tally._schema_v0 import extract_schema, schema_mismatch_error
-from tally._stateless_ops import StatelessOpsMixin
-from tally._types_core import FieldSpec
+from beava._describe import format_describe
+from beava._schema_v0 import extract_schema, schema_mismatch_error
+from beava._stateless_ops import StatelessOpsMixin
+from beava._types_core import FieldSpec
 
 
 # Phase 25-02: client-side duration-string validator. Mirrors the server's
@@ -71,10 +71,10 @@ class Table(StatelessOpsMixin):
     ``_derive`` cascades key-field renames through the derivation chain.
     """
 
-    # Phase 24-02: Dispatch marker used by :meth:`tally.App.push` and
-    # :meth:`tally.App.delete` to route into the OP_PUSH_TABLE /
+    # Phase 24-02: Dispatch marker used by :meth:`beava.App.push` and
+    # :meth:`beava.App.delete` to route into the OP_PUSH_TABLE /
     # OP_DELETE_TABLE wire opcodes. Every Table subclass inherits it.
-    _tally_kind: str = "table"
+    _beava_kind: str = "table"
 
     _key: list[str]
 
@@ -128,7 +128,7 @@ class Table(StatelessOpsMixin):
                 "within is only valid for Stream↔Stream windowed joins"
             )
         # Dispatch based on other's type.
-        from tally._join import table_join
+        from beava._join import table_join
         # Import Table lazily here to avoid a self-import; isinstance check
         # on the local Table class works fine.
         if not isinstance(other, Table):
@@ -177,19 +177,19 @@ class TableSource(Table):
 
     # --- App.register compat ---
     @property
-    def _tally_stream_name(self) -> str:
+    def _beava_stream_name(self) -> str:
         return self._name
 
     def _compile(self) -> dict[str, Any]:
         """Compile to a RegisterRequest JSON dict via the shared serializer."""
-        from tally._serialize import compile_to_register_json
+        from beava._serialize import compile_to_register_json
         return compile_to_register_json(self)
 
     def _to_register_json(self) -> dict[str, Any]:
         return self._compile()
 
     def _collect_registrations(self) -> list[dict[str, Any]]:
-        from tally._serialize import collect_registrations
+        from beava._serialize import collect_registrations
         return collect_registrations(self)
 
     def __repr__(self) -> str:
@@ -197,7 +197,7 @@ class TableSource(Table):
 
 
 class TableDerivation(Table):
-    """A Table produced by stateless ops or by ``@tl.table def ... -> Table``.
+    """A Table produced by stateless ops or by ``@bv.table def ... -> Table``.
 
     Carries the key list (which may have been rewritten by ``.rename``), the
     linear op chain, and the parameter-declared upstreams for DAG build.
@@ -239,18 +239,18 @@ class TableDerivation(Table):
         )
 
     @property
-    def _tally_stream_name(self) -> str:
+    def _beava_stream_name(self) -> str:
         return self._name
 
     def _compile(self) -> dict[str, Any]:
-        from tally._serialize import compile_to_register_json
+        from beava._serialize import compile_to_register_json
         return compile_to_register_json(self)
 
     def _to_register_json(self) -> dict[str, Any]:
         return self._compile()
 
     def _collect_registrations(self) -> list[dict[str, Any]]:
-        from tally._serialize import collect_registrations
+        from beava._serialize import collect_registrations
         return collect_registrations(self)
 
     def __repr__(self) -> str:
@@ -273,18 +273,18 @@ def _build_table_derivation_from_func(
     mode: str,
 ) -> TableDerivation:
     """Invoke a derivation function once to build its TableDerivation."""
-    from tally._stream import _resolve_func_hints
+    from beava._stream import _resolve_func_hints
     hints = _resolve_func_hints(func)
 
     if "return" not in hints:
         raise TypeError(
-            f"@tl.table function {func.__name__!r} must declare a "
+            f"@bv.table function {func.__name__!r} must declare a "
             f"return type annotation (``-> Table``)"
         )
     ret = hints["return"]
     if not (isinstance(ret, type) and issubclass(ret, Table)):
         raise TypeError(
-            f"@tl.table function {func.__name__!r} must return Table; "
+            f"@bv.table function {func.__name__!r} must return Table; "
             f"annotation was {ret!r}"
         )
 
@@ -320,7 +320,7 @@ def _build_table_derivation_from_func(
         # Enforce declared key matches the derivation's current key list.
         if list(result_key) != list(key_list):
             raise TypeError(
-                f"@tl.table(key={key_list!r}) function {func.__name__!r} "
+                f"@bv.table(key={key_list!r}) function {func.__name__!r} "
                 f"returned a Table with key {list(result_key)!r}; rename or "
                 f"project so the output key matches the declared key"
             )
@@ -335,7 +335,7 @@ def _build_table_derivation_from_func(
     # result is a TableSource — wrap as a passthrough TableDerivation.
     if list(result_key) != list(key_list):
         raise TypeError(
-            f"@tl.table(key={key_list!r}) function {func.__name__!r} "
+            f"@bv.table(key={key_list!r}) function {func.__name__!r} "
             f"returned a Table with key {list(result_key)!r}"
         )
     return TableDerivation(
@@ -363,19 +363,19 @@ def table(
 
     Class form::
 
-        @tl.table(key="user_id")
+        @bv.table(key="user_id")
         class Users:
             user_id: str
             name: str
 
     Function form (Plan 21-02)::
 
-        @tl.table(key="user_id")
-        def UserLast(clicks: Clicks) -> tl.Table:
+        @bv.table(key="user_id")
+        def UserLast(clicks: Clicks) -> bv.Table:
             return clicks  # until aggregation lands in 21-03
     """
     if key is None:
-        raise TypeError("@tl.table requires key=... (str or list[str])")
+        raise TypeError("@bv.table requires key=... (str or list[str])")
 
     # Phase 25-02: validate ttl string client-side. Mirrors the server's
     # parse_duration_str: ms/s/m/h/d + "forever"/"0" sentinels.
@@ -388,10 +388,10 @@ def table(
         key_list = list(key)
     else:
         raise TypeError(
-            f"@tl.table key must be str or list[str], got {type(key).__name__}"
+            f"@bv.table key must be str or list[str], got {type(key).__name__}"
         )
     if not key_list:
-        raise TypeError("@tl.table key must not be empty")
+        raise TypeError("@bv.table key must not be empty")
 
     if mode == "changelog":
         raise NotImplementedError(
@@ -399,7 +399,7 @@ def table(
         )
     if mode not in ("append",):
         raise ValueError(
-            f"@tl.table mode must be 'append' or 'changelog', got {mode!r}"
+            f"@bv.table mode must be 'append' or 'changelog', got {mode!r}"
         )
 
     def _wrap(target: Any) -> Table:
@@ -422,7 +422,7 @@ def table(
                 ttl=ttl,
             )
         raise TypeError(
-            f"@tl.table must be applied to a class or function, got "
+            f"@bv.table must be applied to a class or function, got "
             f"{type(target).__name__}"
         )
 

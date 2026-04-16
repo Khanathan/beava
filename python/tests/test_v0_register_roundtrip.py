@@ -1,7 +1,7 @@
 """Phase 22-01 round-trip contract test.
 
 Asserts that for every AggOp descriptor, the JSON emitted by
-``tally._serialize.compile_to_register_json`` contains exactly the fields
+``beava._serialize.compile_to_register_json`` contains exactly the fields
 that the Rust-side ``V0RegisterPayload`` parser and ``build_operator``
 dispatch consume.
 
@@ -31,9 +31,9 @@ import json
 
 import pytest
 
-import tally as tl
-from tally._agg_ops import ALL_AGG_OPS
-from tally._serialize import compile_to_register_json, collect_registrations
+import beava as bv
+from beava._agg_ops import ALL_AGG_OPS
+from beava._serialize import compile_to_register_json, collect_registrations
 
 
 # ---------------------------------------------------------------------------
@@ -119,16 +119,16 @@ def test_canonical_pipeline_emits_valid_aggregation_payload():
     expects; if the shape drifts, the cross-language contract breaks.
     """
 
-    @tl.stream
+    @bv.stream
     class Clicks:
         user_id: str
         amount: float
 
-    @tl.table(key="user_id")
-    def UserSpend(clicks: Clicks) -> tl.Table:
+    @bv.table(key="user_id")
+    def UserSpend(clicks: Clicks) -> bv.Table:
         return clicks.group_by("user_id").agg(
-            n=tl.count(window="1h"),
-            total=tl.sum("amount", window="1h"),
+            n=bv.count(window="1h"),
+            total=bv.sum("amount", window="1h"),
         )
 
     frames = collect_registrations(UserSpend)
@@ -163,7 +163,7 @@ def test_canonical_pipeline_emits_valid_aggregation_payload():
 
 
 def test_pipeline_with_all_sixteen_aggops_serializes():
-    @tl.stream
+    @bv.stream
     class Events:
         user_id: str
         amount: float
@@ -172,25 +172,25 @@ def test_pipeline_with_all_sixteen_aggops_serializes():
         country: str
         latency: float
 
-    @tl.table(key="user_id")
-    def UserMetrics(events: Events) -> tl.Table:
+    @bv.table(key="user_id")
+    def UserMetrics(events: Events) -> bv.Table:
         return events.group_by("user_id").agg(
-            a=tl.count(window="1h"),
-            b=tl.sum("amount", window="1h"),
-            c=tl.avg("amount", window="1h"),
-            d=tl.min("amount", window="1h"),
-            e=tl.max("amount", window="1h"),
-            f=tl.variance("amount", window="1h"),
-            g=tl.stddev("amount", window="1h"),
-            h=tl.percentile("latency", 0.95, window="1h"),
-            i=tl.count_distinct("session_id", window="1h"),
-            j=tl.top_k("merchant_id", 5, window="1h"),
-            k=tl.first("country"),
-            last_c=tl.last("country"),
-            m=tl.first_n("country", 3),
-            n=tl.last_n("country", 3),
-            o=tl.ema("amount", "30m"),
-            p=tl.lag("amount", 2),
+            a=bv.count(window="1h"),
+            b=bv.sum("amount", window="1h"),
+            c=bv.avg("amount", window="1h"),
+            d=bv.min("amount", window="1h"),
+            e=bv.max("amount", window="1h"),
+            f=bv.variance("amount", window="1h"),
+            g=bv.stddev("amount", window="1h"),
+            h=bv.percentile("latency", 0.95, window="1h"),
+            i=bv.count_distinct("session_id", window="1h"),
+            j=bv.top_k("merchant_id", 5, window="1h"),
+            k=bv.first("country"),
+            last_c=bv.last("country"),
+            m=bv.first_n("country", 3),
+            n=bv.last_n("country", 3),
+            o=bv.ema("amount", "30m"),
+            p=bv.lag("amount", 2),
         )
 
     frames = collect_registrations(UserMetrics)
@@ -219,16 +219,16 @@ def test_full_tcp_roundtrip_register_push_get(app):
     aggregation. PUSH on the source stream cascades into the target table
     keyed by ``user_id``; GET returns the computed features.
     """
-    @tl.stream
+    @bv.stream
     class Transactions:
         user_id: str
         amount: float
 
-    @tl.table(key="user_id")
-    def UserSpend(txs: Transactions) -> tl.Table:
+    @bv.table(key="user_id")
+    def UserSpend(txs: Transactions) -> bv.Table:
         return txs.group_by("user_id").agg(
-            n=tl.count(window="1h"),
-            total=tl.sum("amount", window="1h"),
+            n=bv.count(window="1h"),
+            total=bv.sum("amount", window="1h"),
         )
 
     app.register(Transactions, UserSpend)

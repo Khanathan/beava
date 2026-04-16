@@ -1,14 +1,14 @@
-"""Pytest fixtures for Tally integration tests.
+"""Pytest fixtures for Beava integration tests.
 
-Provides a ``tally_server`` session-scoped fixture that:
-1. Builds the Tally binary via ``cargo build``
+Provides a ``beava_server`` session-scoped fixture that:
+1. Builds the Beava binary via ``cargo build``
 2. Finds two free TCP ports for test isolation
-3. Starts the server subprocess with TALLY_TCP_PORT / TALLY_HTTP_PORT env vars
+3. Starts the server subprocess with BEAVA_TCP_PORT / BEAVA_HTTP_PORT env vars
 4. Waits for server readiness (TCP connect with retries, max 10s)
 5. Yields ``(host, tcp_port, http_port)``
 6. Kills the server on teardown (SIGTERM then SIGKILL)
 
-Also provides an ``app`` fixture returning a connected ``tally.App`` instance.
+Also provides an ``app`` fixture returning a connected ``beava.App`` instance.
 """
 
 from __future__ import annotations
@@ -21,14 +21,14 @@ import time
 
 import pytest
 
-import tally as tl
+import beava as bv
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-_BINARY_PATH = os.path.join(_PROJECT_ROOT, "target", "debug", "tally")
+_BINARY_PATH = os.path.join(_PROJECT_ROOT, "target", "debug", "beava")
 
 
 def _find_free_port() -> int:
@@ -48,7 +48,7 @@ def _wait_for_tcp(host: str, port: int, timeout: float = 10.0) -> None:
         except OSError:
             time.sleep(0.1)
     raise RuntimeError(
-        f"Tally server did not become ready on {host}:{port} within {timeout}s"
+        f"Beava server did not become ready on {host}:{port} within {timeout}s"
     )
 
 
@@ -58,8 +58,8 @@ def _wait_for_tcp(host: str, port: int, timeout: float = 10.0) -> None:
 
 
 @pytest.fixture(scope="session")
-def tally_server():
-    """Build and start a Tally server, yield ``(host, tcp_port, http_port)``.
+def beava_server():
+    """Build and start a Beava server, yield ``(host, tcp_port, http_port)``.
 
     Session-scoped: one server instance shared across all integration tests.
     """
@@ -84,8 +84,8 @@ def tally_server():
 
     # 3. Start the server subprocess
     env = os.environ.copy()
-    env["TALLY_TCP_PORT"] = str(tcp_port)
-    env["TALLY_HTTP_PORT"] = str(http_port)
+    env["BEAVA_TCP_PORT"] = str(tcp_port)
+    env["BEAVA_HTTP_PORT"] = str(http_port)
 
     proc = subprocess.Popen(
         [_BINARY_PATH],
@@ -109,9 +109,9 @@ def tally_server():
 
 
 @pytest.fixture(scope="session")
-def app(tally_server):
-    """Return a ``tally.App`` connected to the test server."""
-    host, tcp_port, _http_port = tally_server
-    application = tl.App(f"{host}:{tcp_port}")
+def app(beava_server):
+    """Return a ``beava.App`` connected to the test server."""
+    host, tcp_port, _http_port = beava_server
+    application = bv.App(f"{host}:{tcp_port}")
     yield application
     application.close()
