@@ -137,6 +137,15 @@ COMPLEX_PIPELINES = [
 COUNTRIES = ["US", "GB", "DE", "FR", "JP", "BR", "IN", "NG", "CN", "AU"]
 STATUSES = ["success"] * 8 + ["failed"] * 2
 
+# Entity-cardinality knobs, injected from CLI so callers can sweep skew without
+# editing code. The defaults preserve the original behavior (10K users, 2K
+# merchants, etc.) so existing runs stay reproducible.
+_USERS = 10_000
+_MERCHANTS = 2_000
+_DEVICES = 5_000
+_IPS = 8_000
+_ALPHA = 1.2
+
 
 def _zipf_id(prefix: str, n: int, alpha: float = 1.2) -> str:
     u = random.random()
@@ -147,10 +156,10 @@ def _zipf_id(prefix: str, n: int, alpha: float = 1.2) -> str:
 
 def _event() -> dict:
     return {
-        "user_id":     _zipf_id("user_",  10000),
-        "merchant_id": _zipf_id("merch_", 2000),
-        "device_id":   _zipf_id("dev_",   5000),
-        "ip_address":  _zipf_id("ip_",    8000),
+        "user_id":     _zipf_id("user_",  _USERS,     _ALPHA),
+        "merchant_id": _zipf_id("merch_", _MERCHANTS, _ALPHA),
+        "device_id":   _zipf_id("dev_",   _DEVICES,   _ALPHA),
+        "ip_address":  _zipf_id("ip_",    _IPS,       _ALPHA),
         "amount":      round(random.lognormvariate(3.5, 1.5), 2),
         "country":     random.choice(COUNTRIES),
         "status":      random.choice(STATUSES),
@@ -164,6 +173,10 @@ def _emit(obj: dict) -> None:
 
 
 def main() -> None:
+    # `global` must appear before any reference to these names — argparse
+    # default=_USERS below is a reference, so we hoist the declaration here.
+    global _USERS, _MERCHANTS, _DEVICES, _IPS, _ALPHA
+
     p = argparse.ArgumentParser()
     p.add_argument("--mode", choices=["simple", "complex"], required=True)
     p.add_argument("--duration", type=float, required=True, help="Seconds to push events")
@@ -171,7 +184,18 @@ def main() -> None:
     p.add_argument("--host", default="localhost:6400")
     p.add_argument("--batch", type=int, default=1000)
     p.add_argument("--checkpoint", type=float, default=2.0, help="Seconds between checkpoint lines")
+    p.add_argument("--users", type=int, default=_USERS, help="User ID cardinality")
+    p.add_argument("--merchants", type=int, default=_MERCHANTS, help="Merchant ID cardinality")
+    p.add_argument("--devices", type=int, default=_DEVICES, help="Device ID cardinality")
+    p.add_argument("--ips", type=int, default=_IPS, help="IP address cardinality")
+    p.add_argument("--zipf-alpha", type=float, default=_ALPHA,
+                   help="Zipfian α — 1.0 ≈ uniform, 1.2 = realistic skew, 2.0 = heavy head")
     args = p.parse_args()
+
+    # Install the per-process cardinality/skew so `_event()` sees them.
+    _USERS, _MERCHANTS = args.users, args.merchants
+    _DEVICES, _IPS = args.devices, args.ips
+    _ALPHA = args.zipf_alpha
 
     random.seed(args.proc_id * 7919 + 17)
 

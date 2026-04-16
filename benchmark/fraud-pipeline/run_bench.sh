@@ -26,6 +26,13 @@ HTTP_PORT="${HTTP_PORT:-6401}"
 MODE="${MODE:-complex}"
 WARMUP="${WARMUP:-5}"
 MEASURE="${MEASURE:-15}"
+# Entity-cardinality knobs. Raise these to reduce DashMap shard contention on
+# hot Zipfian keys, or lower them to stress-test the hot-key path.
+USERS="${USERS:-10000}"
+MERCHANTS="${MERCHANTS:-2000}"
+DEVICES="${DEVICES:-5000}"
+IPS="${IPS:-8000}"
+ZIPF="${ZIPF:-1.2}"
 
 # Detect host CPUs.
 if   _c=$(sysctl -n hw.ncpu 2>/dev/null); then CPUS_HOST=$_c
@@ -48,6 +55,7 @@ sleep 1
 rm -rf "$REPO/events"
 
 echo "==> MODE=$MODE  CPUS=$CPUS  warmup=${WARMUP}s  measure=${MEASURE}s"
+echo "    users=$USERS  merchants=$MERCHANTS  devices=$DEVICES  ips=$IPS  zipf=$ZIPF"
 SRV_LOG="$(mktemp -t tally-bench.XXXXXX.log)"
 TALLY_ADMIN_TOKEN="$TOKEN" TALLY_WORKER_THREADS="$CPUS" \
   "$BIN" serve --http-port "$HTTP_PORT" --tcp-port "$TCP_PORT" \
@@ -75,7 +83,11 @@ spawn_clients() {
   CLIENT_PIDS=()
   for i in $(seq 0 $((CPUS - 1))); do
     python3 "$BENCH" --mode "$MODE" --duration "$dur" --proc-id "$i" \
-      --host "localhost:$TCP_PORT" > "$TMPDIR/$tag-$i.jsonl" 2>&1 &
+      --host "localhost:$TCP_PORT" \
+      --users "$USERS" --merchants "$MERCHANTS" \
+      --devices "$DEVICES" --ips "$IPS" \
+      --zipf-alpha "$ZIPF" \
+      > "$TMPDIR/$tag-$i.jsonl" 2>&1 &
     CLIENT_PIDS+=($!)
   done
 }
@@ -175,8 +187,37 @@ try:
     per = b / ents if ents else 0
     print()
     print(f"    Memory:     {b / 1024 / 1024:.1f} MB across {ents:,} entities  ({per:,.0f} B/entity)")
-except Exception:
-    pass
+
+    # Per-stream and per-operator-type breakdown. Sorted hottest-first so the
+    # eye lands on where the bytes actually are.
+    streams = sorted(
+        (s for s in mem.get("per_stream", []) if s.get("estimated_bytes", 0) > 0),
+        key=lambda s: s["estimated_bytes"], reverse=True,
+    )
+    for s in streams:
+        sb = s["estimated_bytes"]; sk = s.get("key_count", 0)
+        print(f"\n    [{s['name']}]  {sb / 1024 / 1024:6.1f} MB  "
+              f"{sk:,} keys  ({s.get('per_entity_avg_bytes', 0):,} B/key)")
+        ops = sorted(s.get("operator_breakdown", []),
+                     key=lambda o: o["total_bytes"], reverse=True)
+        for op in ops:
+            share = 100 * op["total_bytes"] / sb if sb else 0
+            print(f"        {op['type']:<18} {op['total_bytes'] / 1024 / 1024:6.1f} MB  "
+                  f"({share:5.1f}%)  n={op['count']:,}")
+
+        # Top 5 individual features by total_bytes — useful when one window
+        # size or one HLL is dominating the stream.
+        feats = sorted(s.get("features", []),
+                       key=lambda f: f["total_bytes"], reverse=True)[:5]
+        if feats:
+            print(f"        Top features:")
+            for f in feats:
+                avg = f.get("avg_bytes_per_key", 0)
+                buckets = f" buckets={f['num_buckets']}" if f.get("num_buckets") else ""
+                print(f"          {f['name']:<28} {f['total_bytes'] / 1024 / 1024:5.1f} MB"
+                      f"  ({avg:,} B/key{buckets})  [{f['operator_type']}]")
+except Exception as e:
+    print(f"    (memory breakdown unavailable: {e})")
 PY
 
 rm -rf "$TMPDIR"

@@ -78,6 +78,29 @@ cargo build --release
 cd python && pip install -e .
 ```
 
+### AI editor skill (Claude Code / Cursor / Codex)
+
+Tally ships a skill that teaches modern AI editors how to build, debug, and
+capacity-plan Tally pipelines — with real numbers from `/debug/*`, not
+hand-wavey advice. Install it once:
+
+```bash
+tally install-skill          # user-level: ~/.agents/skills/tally/
+tally install-skill --repo   # or: ./.agents/skills/tally/ in the current repo
+```
+
+Then in your editor:
+
+- **Claude Code:** `/tally` (no args for the guided walk-through, or `/tally feature`, `/tally debug`, `/tally plan`, `/tally estimate`).
+- **Cursor** (Agent mode, ⌘L): `@tally` or describe the task — *"add a velocity feature at 10M users scale"*, *"why is tally at prod.example.com using 40 GB"*.
+- **Codex CLI:** `/skills tally`.
+
+The skill walks you through the 5 things that matter: picking the right
+operators, sizing memory before you push data, projecting capacity against
+real cloud instance prices, and debugging a running server via its
+`/debug/memory`, `/debug/key/{id}`, and `/debug/topology` endpoints. Point it
+at a cluster with `export TALLY_URL=https://...` and `TALLY_TOKEN=...`.
+
 ### Define a pipeline and push events
 
 ```python

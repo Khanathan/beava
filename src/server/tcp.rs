@@ -1449,17 +1449,20 @@ pub fn handle_push_batch(
             }
         }
 
-        // Per-event dirty marking — avoids intermediate Vec<String>.
+        // Batched dirty marking: one `dirty_keys` mutex acquisition per
+        // batch instead of per event. Simple pipelines have sub-µs per-event
+        // compute, so a global lock taken N times per batch dominated CPU
+        // under concurrent clients (throughput flat past ~4 processes).
         if let Some(kf) = key_field {
-            for (idx, ev) in batch.iter().enumerate() {
-                if results[idx].is_ok() {
-                    if let Some(serde_json::Value::String(key_val)) = ev.payload.get(kf) {
-                        if !key_val.is_empty() {
-                            store.mark_dirty(key_val);
-                        }
-                    }
+            store.mark_dirty_many(batch.iter().enumerate().filter_map(|(idx, ev)| {
+                if results[idx].is_err() {
+                    return None;
                 }
-            }
+                match ev.payload.get(kf) {
+                    Some(serde_json::Value::String(k)) if !k.is_empty() => Some(k.as_str()),
+                    _ => None,
+                }
+            }));
         }
 
         // Deferred event log append. Phase 42: batch into a single
@@ -1527,17 +1530,18 @@ pub fn handle_push_batch(
                 }
             }
 
-            // Per-event dirty marking (avoids Vec<String> allocation).
+            // Batched dirty marking: one mutex acquisition per stream group
+            // instead of per event (see single-stream branch for rationale).
             if let Some(kf) = key_field {
-                for &i in indices {
-                    if results[i].is_ok() {
-                        if let Some(serde_json::Value::String(key_val)) = batch[i].payload.get(kf) {
-                            if !key_val.is_empty() {
-                                store.mark_dirty(key_val);
-                            }
-                        }
+                store.mark_dirty_many(indices.iter().filter_map(|&i| {
+                    if results[i].is_err() {
+                        return None;
                     }
-                }
+                    match batch[i].payload.get(kf) {
+                        Some(serde_json::Value::String(k)) if !k.is_empty() => Some(k.as_str()),
+                        _ => None,
+                    }
+                }));
             }
         }
 

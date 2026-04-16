@@ -180,7 +180,11 @@ impl EntityState {
 pub struct StateStore {
     entities: DashMap<EntityKey, EntityState>,
     /// Keys modified since last snapshot clear (mutation-touched).
-    dirty_keys: parking_lot::Mutex<AHashSet<EntityKey>>,
+    /// `RwLock` because Zipfian traffic means ~99% of `mark_dirty` calls hit
+    /// keys that are already dirty — those take a parallel shared read lock
+    /// and skip the String allocation. Only genuinely new keys escalate to
+    /// the write lock, so concurrent PUSH handlers almost never serialize.
+    dirty_keys: parking_lot::RwLock<AHashSet<EntityKey>>,
     /// Keys evicted/deleted since last snapshot clear. Populated by eviction
     /// and explicit deletes; consumed by delta snapshot serialization.
     deleted_keys: parking_lot::Mutex<AHashSet<EntityKey>>,
@@ -191,7 +195,7 @@ impl std::fmt::Debug for StateStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StateStore")
             .field("entity_count", &self.entities.len())
-            .field("dirty_count", &self.dirty_keys.lock().len())
+            .field("dirty_count", &self.dirty_keys.read().len())
             .field("deleted_count", &self.deleted_keys.lock().len())
             .finish()
     }
@@ -201,7 +205,7 @@ impl Default for StateStore {
     fn default() -> Self {
         Self {
             entities: DashMap::new(),
-            dirty_keys: parking_lot::Mutex::new(AHashSet::new()),
+            dirty_keys: parking_lot::RwLock::new(AHashSet::new()),
             deleted_keys: parking_lot::Mutex::new(AHashSet::new()),
         }
     }
@@ -520,7 +524,13 @@ impl StateStore {
     /// Mark an entity key as dirty (mutated since the last snapshot clear).
     /// Idempotent -- repeated calls leave the dirty set unchanged.
     pub fn mark_dirty(&self, key: &str) {
-        self.dirty_keys.lock().insert(key.to_string());
+        // Read-lock first: Zipfian skew means most calls hit a key that's
+        // already dirty, which can be served by a shared lock without
+        // allocating. Only escalate to a write lock when the key is new.
+        if self.dirty_keys.read().contains(key) {
+            return;
+        }
+        self.dirty_keys.write().insert(key.to_string());
     }
 
     /// Batch-mark entity keys as dirty. Idempotent. O(n) inserts into the
@@ -531,14 +541,27 @@ impl StateStore {
     ///
     /// Used by Phase 12's `handle_push_batch` to amortize the per-event
     /// dirty-mark cost: one call per stream group instead of one per event.
-    pub fn mark_dirty_many<I, S>(&self, keys: I)
+    pub fn mark_dirty_many<'a, I>(&self, keys: I)
     where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
+        I: IntoIterator<Item = &'a str>,
     {
-        self.dirty_keys
-            .lock()
-            .extend(keys.into_iter().map(Into::into));
+        // Two-phase dedup: first pass under a shared read lock skips keys
+        // already in the set (the Zipfian-common case), allocating a `String`
+        // only for the truly-new ones. Second pass takes the write lock once
+        // to extend the set with those new keys. Combined with the caller's
+        // per-batch call (one invocation per PUSH batch), this keeps the
+        // write lock cold under sustained load.
+        let new_keys: Vec<String> = {
+            let r = self.dirty_keys.read();
+            keys.into_iter()
+                .filter(|k| !r.contains(*k))
+                .map(str::to_string)
+                .collect()
+        };
+        if new_keys.is_empty() {
+            return;
+        }
+        self.dirty_keys.write().extend(new_keys);
     }
 
     /// Mark an entity key as deleted since the last snapshot clear. A deleted
@@ -546,12 +569,12 @@ impl StateStore {
     /// in the next delta's `changed_entities` (avoids ambiguity).
     pub fn mark_deleted(&self, key: &str) {
         self.deleted_keys.lock().insert(key.to_string());
-        self.dirty_keys.lock().remove(key);
+        self.dirty_keys.write().remove(key);
     }
 
     /// Clear the dirty set. Called after a successful snapshot write.
     pub fn clear_dirty(&self) {
-        self.dirty_keys.lock().clear();
+        self.dirty_keys.write().clear();
     }
 
     /// Drain the deleted key set into a Vec. Leaves the set empty.
@@ -561,13 +584,13 @@ impl StateStore {
 
     /// Number of keys currently marked dirty.
     pub fn dirty_count(&self) -> usize {
-        self.dirty_keys.lock().len()
+        self.dirty_keys.read().len()
     }
 
     /// Read-only view of the dirty key set (clone). Primarily for tests and debug APIs.
     #[cfg(test)]
     pub(crate) fn dirty_keys(&self) -> AHashSet<EntityKey> {
-        self.dirty_keys.lock().clone()
+        self.dirty_keys.read().clone()
     }
 
     /// Clone only dirty entities for a delta snapshot, applying the same lazy
@@ -579,7 +602,7 @@ impl StateStore {
         &self,
         valid_features: &AHashMap<String, Vec<String>>,
     ) -> Vec<(String, SerializableEntityState)> {
-        let dirty = self.dirty_keys.lock();
+        let dirty = self.dirty_keys.read();
         self.entities
             .iter()
             .filter(|entry| dirty.contains(entry.key().as_str()))
@@ -989,7 +1012,7 @@ impl StateStore {
         }
 
         // Distribute dirty/deleted keys to per-stream stores
-        let dirty = self.dirty_keys.lock();
+        let dirty = self.dirty_keys.read();
         for key in dirty.iter() {
             for entry in stream_stores.iter() {
                 if entry.value().entities.contains_key(key) {
@@ -1009,7 +1032,7 @@ impl StateStore {
         static_store: &DashMap<String, AHashMap<String, StaticFeature>>,
     ) -> Self {
         let entities: DashMap<EntityKey, EntityState> = DashMap::new();
-        let dirty_keys = AHashSet::new();
+        let mut dirty_keys: AHashSet<EntityKey> = AHashSet::new();
         let deleted_keys = AHashSet::new();
 
         // Collect stream entity state from each StreamStore
@@ -1033,7 +1056,6 @@ impl StateStore {
         }
 
         // Collect dirty/deleted in a second pass (avoid holding DashMap guards simultaneously)
-        let mut dirty_keys = dirty_keys;
         let mut deleted_keys = deleted_keys;
         for entry in stream_stores.iter() {
             let store = entry.value();
@@ -1055,7 +1077,7 @@ impl StateStore {
 
         StateStore {
             entities,
-            dirty_keys: parking_lot::Mutex::new(dirty_keys),
+            dirty_keys: parking_lot::RwLock::new(dirty_keys),
             deleted_keys: parking_lot::Mutex::new(deleted_keys),
         }
     }
