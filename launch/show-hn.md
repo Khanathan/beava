@@ -45,15 +45,13 @@ Full methodology + the "batch-p99 vs per-event-p99" caveat is in
 `benchmark/README.md`.
 
 Failure modes documented up front:
-- WAL fsync before client ack (~1s worst-case data loss on primary
-  crash). Async replica ack NOT required before client ack.
+- WAL fsync before client ack (~1s worst-case data loss on crash).
 - RAM ceiling returns STATUS_SERVER_BUSY; SDK retries with exponential
   backoff by default.
 - At-least-once delivery with event_id Bloom-filter dedup (per-key LRU,
   64 B/key, 5-min window, target FPR 0.1%).
-- Primary/replica async log-shipping. Replica lag typically <100ms at
-  544K eps; **RPO bound ≈ replica lag**. Manual `bv failover --promote`
-  ~2 min RTO.
+- Single node, no HA today. No primary/replica, no automated failover.
+  Automated HA is on the Cloud roadmap (Q4 2026).
 - fsync/snapshot stalls: p99 ingest lag during snapshot stays <20ms on
   NVMe; gp3 degrades ~2×.
 - Observability: Prometheus `/metrics`, JSON logs, `/health`, RUNBOOK.md.

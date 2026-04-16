@@ -92,7 +92,7 @@ WantedBy=multi-user.target
     <div class="door"><span class="icon">📦</span><div class="body"><span class="label">Single binary</span>42 MB · ~40 MB RSS idle · ~200 MB per 1M keyed entities · one port · one data dir</div></div>
     <div class="door"><span class="icon">⚡</span><div class="body"><span class="label">544K eps sustained</span>16c Hetzner · 314K eps on 10c M-series · <a href="https://github.com/petrpan26/beava/blob/main/benchmark/README.md">benchmark/README.md</a></div></div>
     <div class="door"><span class="icon">⏱️</span><div class="body"><span class="label">p99 &lt;100µs single-client · 180µs 8-client</span>HdrHistogram, 256B payload, 1M-key cardinality, coordinated-omission corrected</div></div>
-    <div class="door"><span class="icon">💾</span><div class="body"><span class="label">WAL fsync before client ack</span>snapshot every 5 min · primary/replica async log-shipping · <a href="https://github.com/petrpan26/beava/blob/main/SEMANTICS.md">SEMANTICS.md</a></div></div>
+    <div class="door"><span class="icon">💾</span><div class="body"><span class="label">WAL fsync before client ack</span>snapshot every 5 min · single-node today, HA is Cloud · <a href="https://github.com/petrpan26/beava/blob/main/SEMANTICS.md">SEMANTICS.md</a></div></div>
     <div class="door"><span class="icon">🦀</span><div class="body"><span class="label">Rust, zero <code>unsafe</code> outside 4 libc FFI blocks</span>write/fdatasync/fsync in <code>event_log.rs</code>, ~15 LoC · <a href="https://github.com/petrpan26/beava/blob/main/UNSAFE.md">UNSAFE.md</a></div></div>
     <div class="door"><span class="icon">📜</span><div class="body"><span class="label">Apache 2.0, no CLA</span>Documented on-disk log format · <a href="https://github.com/petrpan26/beava/blob/main/GOVERNANCE.md">GOVERNANCE.md</a></div></div>
   </div>
@@ -142,7 +142,7 @@ WantedBy=multi-user.target
       <tr><td>Systems to deploy</td><td>5-8</td><td>1</td></tr>
       <tr><td>Separate message broker</td><td>Yes (Kafka)</td><td>No — direct TCP push</td></tr>
       <tr><td>State access (hot path)</td><td>Heap state: &lt;1µs · RocksDB fallback: 5-15µs when state exceeds heap</td><td>In-process RAM: ~0.1µs single-core lookup</td></tr>
-      <tr><td>Durability model</td><td>Replicated Kafka log + Flink checkpoints</td><td>SSD WAL fsync + snapshot + primary/replica; manual failover today</td></tr>
+      <tr><td>Durability model</td><td>Replicated Kafka log + Flink checkpoints</td><td>SSD WAL fsync before client ack + periodic snapshot · single-node today, HA is Cloud</td></tr>
       <tr><td>Hot-key contention p99</td><td>Configurable via state backend</td><td>~180µs at 8 concurrent writers; shard the key for higher fanout</td></tr>
       <tr><td>Deploy</td><td>Kubernetes + Helm + operators</td><td>Single binary under systemd</td></tr>
       <tr><td>Ops surface</td><td>0.5-1.0 FTE cluster ops</td><td>Prometheus <code>/metrics</code>, JSON logs, <code>/health</code></td></tr>
@@ -248,11 +248,11 @@ WantedBy=multi-user.target
   <p>Engineer-honest scope. If you're going to put this in your on-call path, these are the scenarios you need to know.</p>
 
   <ul>
-    <li><strong>Every push fsynced to WAL before client ack.</strong> Async replica ack is not required before client ack. Worst-case data loss on primary crash with no failover: ~1 second (group-commit window). Recovery: ~30s per 10M events on NVMe (<a href="https://github.com/petrpan26/beava/blob/main/benchmark/recovery.md">reproducer</a>).</li>
+    <li><strong>Every push fsynced to WAL before client ack.</strong> Worst-case data loss on crash: ~1 second (group-commit window). Recovery: ~30s per 10M events on NVMe (<a href="https://github.com/petrpan26/beava/blob/main/benchmark/recovery.md">reproducer</a>).</li>
     <li><strong>At RAM ceiling.</strong> Beava rejects new writes with <code>STATUS_SERVER_BUSY</code>. Python SDK retries (default: 5 retries, 50ms initial, 2× factor, cap 1s). Committed state preserved — no disk spill.</li>
     <li><strong>Process crash, mid-window.</strong> WAL replay on restart; at-least-once. For exactly-once counters, dedup via <code>event_id</code> — per-key LRU Bloom filter, 64 B/key, 5-min window (tunable). Target FPR 0.1% at 544K eps (~163M events/window).</li>
     <li><strong>fsync + snapshot stalls.</strong> p99 ingest lag during snapshot stays &lt;20ms at 500K eps on NVMe. gp3 degrades ~2×. Alert on <code>beava_fsync_stall_seconds &gt; 2s</code> sustained 5m.</li>
-    <li><strong>Primary/replica.</strong> Async WAL log-shipping. Typical replica lag &lt;100ms at 544K eps. <strong>RPO bound ≈ replica lag</strong> (committed-on-primary-but-not-shipped data is lost on promotion). Manual <code>bv failover --promote</code> ~2 min RTO — see <a href="https://github.com/petrpan26/beava/blob/main/deploy/RUNBOOK.md">RUNBOOK</a>.</li>
+    <li><strong>Single node, no HA today.</strong> No primary/replica, no automated failover. For redundancy: run a cold standby and periodically snapshot to it, or accept the ~30s restart window. Automated HA is on the Cloud roadmap (Q4 2026).</li>
     <li><strong>Hot-key contention.</strong> 180µs @ 8 writers · 480µs @ 32 · 1.2ms @ 64. Shard (<code>user_id + hour_bucket</code>) or debounce beyond.</li>
     <li><strong>Observability.</strong> Prometheus at <code>/metrics</code>, JSON logs to stdout, <code>/health</code> for orchestrators. <a href="https://github.com/petrpan26/beava/blob/main/deploy/RUNBOOK.md">RUNBOOK.md</a> lists the 5 metrics that should page.</li>
   </ul>
@@ -292,7 +292,7 @@ WantedBy=multi-user.target
     <li>No SOC2, HIPAA, PCI today (Cloud, Q4 2026).</li>
     <li>Single region. No cross-region replication.</li>
     <li>Working set must fit in RAM. Modern instances reach 1.5 TB+.</li>
-    <li>Primary/replica with manual failover. Automated HA is Cloud.</li>
+    <li>Single node, no HA today. Automated failover is Cloud.</li>
     <li>At-least-once delivery. Dedup via <code>event_id</code> for exactly-once counters.</li>
     <li>No embedding generation today. On roadmap if demand is there.</li>
   </ul>

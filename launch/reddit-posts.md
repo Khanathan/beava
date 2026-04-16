@@ -293,10 +293,10 @@ Other: ~8 KB/entity, p99 <100µs single-client reads, ~180µs p99 at
 
 **Failure modes (what we disclose up front)**
 
-- WAL fsync before **client** ack (async replica ack not required before client ack); ~1s worst-case data loss on primary crash; ~30s recovery per 10M events on NVMe
+- WAL fsync before client ack; ~1s worst-case data loss on crash; ~30s recovery per 10M events on NVMe
 - At RAM ceiling: rejects new writes with STATUS_SERVER_BUSY; SDK retries with exponential backoff (default 5 retries, 50ms initial, 2× factor, cap 1s)
 - Process crash mid-window: at-least-once replay; dedup via `event_id` (per-key LRU Bloom filter, 64 B/key, 5-min window, target FPR 0.1%)
-- Primary/replica async log-shipping: typical replica lag <100ms at 544K eps; **RPO bound ≈ replica lag**; `bv failover --promote` ~2 min manual RTO
+- Single node, no HA today. No primary/replica, no automated failover — on the Cloud roadmap (Q4 2026)
 - fsync/snapshot stalls: p99 ingest lag stays <20ms at 500K eps on NVMe; gp3 degrades ~2×
 - Hot-key contention: shard or debounce beyond ~8 concurrent writers on one key
 

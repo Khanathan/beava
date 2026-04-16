@@ -70,7 +70,7 @@ If you already run Kafka + Flink + Redis, the comparison table below is the appl
 - **Synchronous and atomic writes** — every operator across every pipeline stage updates in one pass
 - **Sub-microsecond state access** — all state in RAM (~0.1µs `HashMap::get`)
 - **16 operators** — count, sum, avg, min, max, stddev, percentile, distinct_count (adaptive HLL++), last, first, lag, ema, last_n, exact_min, exact_max, derive
-- **Durable** — WAL fsync before client ack, snapshot every 5 min, primary/replica async log-shipping
+- **Durable** — WAL fsync before client ack, snapshot every 5 min. Single-node today; HA is Cloud.
 - **Rust, zero `unsafe` outside 4 libc FFI blocks** (write/fdatasync/fsync in `src/state/event_log.rs`, ~15 LoC total, audited) — see [UNSAFE.md](UNSAFE.md)
 
 ## Quick Start
@@ -136,7 +136,7 @@ Teams already running Flink or Kafka well — those are excellent systems, keep 
 | Systems to deploy | 5-8 | 1 |
 | Separate message broker | Yes (Kafka) | No — direct TCP push |
 | State access (hot path) | Heap state: <1µs · RocksDB fallback: 5-15µs | In-process RAM: ~0.1µs |
-| Durability model | Replicated Kafka log + Flink checkpoints | SSD WAL fsync before client ack + snapshot + async log-shipping replica |
+| Durability model | Replicated Kafka log + Flink checkpoints | SSD WAL fsync before client ack + periodic snapshot · single-node today, HA is Cloud |
 | Hot-key contention p99 | Configurable via state backend | 180µs @ 8 writers · 480µs @ 32 · 1.2ms @ 64 · [contention curve](benchmark/contention.md) |
 | Deploy | Kubernetes + Helm + operators | Single binary under systemd |
 | Ops surface | 0.5-1.0 FTE cluster ops | Prometheus `/metrics`, JSON logs, `/health` · [RUNBOOK.md](deploy/RUNBOOK.md) |
@@ -208,7 +208,7 @@ HdrHistogram, 256B payload, 1M-key cardinality, coordinated-omission corrected. 
 
 ## Failure modes
 
-**Every push fsynced to WAL before client ack.** Async replica ack is not required before client ack. Worst-case data loss on primary crash with no failover: ~1 second (group-commit window). Recovery: ~30s per 10M events on NVMe ([reproducer](benchmark/recovery.md)).
+**Every push fsynced to WAL before client ack.** Worst-case data loss on crash: ~1 second (group-commit window). Recovery: ~30s per 10M events on NVMe ([reproducer](benchmark/recovery.md)).
 
 **At RAM ceiling.** Beava rejects new writes with `STATUS_SERVER_BUSY`. Python SDK retries (default: 5 retries, 50ms initial, 2× factor, cap 1s). Committed state preserved — no disk spill.
 
@@ -216,7 +216,7 @@ HdrHistogram, 256B payload, 1M-key cardinality, coordinated-omission corrected. 
 
 **fsync + snapshot stalls.** p99 ingest lag during snapshot stays <20ms at 500K eps on NVMe. Cloud-standard gp3 degrades ~2×; plan headroom. Alert on `beava_fsync_stall_seconds > 2s` sustained 5m.
 
-**Primary/replica.** Async WAL log-shipping. Typical replica lag <100ms at 544K eps. **RPO bound ≈ replica lag** (committed-on-primary-but-not-shipped data is lost on promotion). Manual `bv failover --promote` ~2 min RTO — see [deploy/RUNBOOK.md](deploy/RUNBOOK.md).
+**Single node, no HA today.** No primary/replica, no automated failover. For redundancy: run a cold standby and periodically snapshot to it, or accept the ~30s restart window. Automated HA failover is on the Cloud roadmap (Q4 2026).
 
 **Hot-key contention.** 180µs @ 8 writers · 480µs @ 32 · 1.2ms @ 64 on one key. Shard (`user_id + hour_bucket`) or debounce beyond.
 
@@ -237,7 +237,7 @@ Roadmap: built-in TLS on ingest (v1.x), mTLS + RBAC + audit log (v1.0), AES-256 
 - No SOC2, HIPAA, PCI today (Cloud, Q4 2026 target).
 - Single region. No cross-region replication.
 - Working set must fit in RAM. Modern instances reach 1.5 TB+.
-- Primary/replica with manual failover. Automated HA is Cloud.
+- Single node, no HA today. Automated failover is Cloud.
 - At-least-once delivery. Dedup via `event_id` for exactly-once counters.
 - No embedding generation today. On roadmap if demand is there.
 
