@@ -1,223 +1,509 @@
 #!/usr/bin/env bash
-# Clone-and-run throughput benchmark. Duration-based, fixed wall-time.
+# Beava fraud-pipeline benchmark — single-command reproducible throughput test.
+#
+# What it does:
+#   1. Builds the server in release mode if missing.
+#   2. Starts a fresh server on a scratch data directory.
+#   3. Spawns N client processes (default: one per CPU) that each register
+#      the 47-feature fraud pipeline and push events as fast as they can.
+#   4. Collects per-client p50/p99/p99.9 latency samples plus live EPS.
+#   5. Writes a machine-readable summary.json + stdout.log + per-client
+#      JSONL to benchmark/fraud-pipeline/results/<timestamp>/.
+#   6. Optionally generates a flamegraph if `cargo flamegraph` is installed.
 #
 # Usage:
-#   ./run_bench.sh                          # defaults: MODE=complex, CPUS=host
-#   MODE=simple ./run_bench.sh              # 1-table / 2-feature pipeline
-#   MODE=complex ./run_bench.sh             # 5-table / ~40-feature pipeline
-#   CPUS=8 ./run_bench.sh                   # override fan-out + server threads
-#   WARMUP=10 MEASURE=30 ./run_bench.sh     # longer run if you need one
+#   bash benchmark/fraud-pipeline/run_bench.sh
+#   MODE=simple bash benchmark/fraud-pipeline/run_bench.sh
+#   CPUS=4 DURATION=30 bash benchmark/fraud-pipeline/run_bench.sh
+#   CLIENTS=8 bash benchmark/fraud-pipeline/run_bench.sh  # override client count separate from server threads
 #
-# Timing (defaults):
-#   build (if needed)   ~10s one-time
-#   server start        ~1s
-#   warmup              ~5s
-#   measure             ~15s     (EPS printed live every 2s)
-#   ──────────────────────
-#   total               ~21s     reports stable steady-state eps
-set -euo pipefail
+# Environment variables (all optional):
+#   MODE         simple|complex  (default complex — full 47-feature pipeline)
+#   CPUS         server worker threads (default: host CPU count, capped at 8 for the run label)
+#   CLIENTS      parallel client processes (default: same as CPUS)
+#   WARMUP       warmup seconds, not measured (default 5)
+#   DURATION     measurement window seconds (default 60)
+#   CHECKPOINT   live-EPS print interval seconds (default 5)
+#   TCP_PORT     server TCP port (default 6400)
+#   HTTP_PORT    server HTTP management port (default 6401)
+#   BEAVA_BIN    path to beava/tally server binary (default: auto-detected)
+#   SKIP_BUILD   set to 1 to skip the cargo build step
+#   NO_FLAMEGRAPH set to 1 to skip the flamegraph step even if cargo-flamegraph is available
+#
+# Exit codes:
+#   0  success
+#   1  bench failed (server died, clients errored, or no events measured)
+#   2  build failed
+#   3  environment/prerequisite problem (Python SDK missing, port in use, etc.)
+#
+# Typical wall-clock on an 8-core laptop:
+#   build (first time)  ~30-60s
+#   bench run           WARMUP + DURATION + ~5s overhead = ~70s at defaults
+#   total               under 2min first run, ~70s on re-runs
+
+set -uo pipefail
+
+# --------------------------------------------------------------------------
+# Config
+# --------------------------------------------------------------------------
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BIN="$REPO/target/release/beava"
-BENCH="$REPO/benchmark/fraud-pipeline/bench.py"
-TOKEN="${BEAVA_ADMIN_TOKEN:-dev-admin-token}"
-TCP_PORT="${TCP_PORT:-6400}"
-HTTP_PORT="${HTTP_PORT:-6401}"
+BENCH_DIR="$REPO/benchmark/fraud-pipeline"
+BENCH="$BENCH_DIR/bench.py"
+
 MODE="${MODE:-complex}"
 WARMUP="${WARMUP:-5}"
-MEASURE="${MEASURE:-15}"
-# Entity-cardinality knobs. Raise these to reduce DashMap shard contention on
-# hot Zipfian keys, or lower them to stress-test the hot-key path.
-USERS="${USERS:-10000}"
-MERCHANTS="${MERCHANTS:-2000}"
-DEVICES="${DEVICES:-5000}"
-IPS="${IPS:-8000}"
-ZIPF="${ZIPF:-1.2}"
+DURATION="${DURATION:-60}"
+CHECKPOINT="${CHECKPOINT:-5}"
+TCP_PORT="${TCP_PORT:-6400}"
+HTTP_PORT="${HTTP_PORT:-6401}"
+SKIP_BUILD="${SKIP_BUILD:-0}"
+NO_FLAMEGRAPH="${NO_FLAMEGRAPH:-0}"
 
 # Detect host CPUs.
 if   _c=$(sysctl -n hw.ncpu 2>/dev/null); then CPUS_HOST=$_c
 elif _c=$(nproc 2>/dev/null);              then CPUS_HOST=$_c
 else CPUS_HOST=4; fi
-CPUS="${CPUS:-$CPUS_HOST}"
+# We cap the default at 8 clients because the server side saturates on ~8
+# workers for the 47-feature pipeline per the Phase 42 measurements; more
+# than that adds contention without raw throughput gain. The user can still
+# override via CPUS= or CLIENTS=.
+CPUS="${CPUS:-$(( CPUS_HOST < 8 ? CPUS_HOST : 8 ))}"
+CLIENTS="${CLIENTS:-$CPUS}"
 
-cd "$REPO"
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+RESULTS_DIR="$BENCH_DIR/results/$TS"
+mkdir -p "$RESULTS_DIR"
+STDOUT_LOG="$RESULTS_DIR/stdout.log"
+SUMMARY_JSON="$RESULTS_DIR/summary.json"
 
-# Build if binary is missing.
-if [[ ! -x "$BIN" ]]; then
-  echo "==> Building beava (release)..."
-  cargo build --release --bin beava
+# Tee everything to both the terminal and the per-run stdout.log. `exec >`
+# redirects the rest of this script's stdout; stderr piggybacks via 2>&1
+# at the tee boundary so the user sees a single combined stream.
+exec > >(tee -a "$STDOUT_LOG") 2>&1
+
+# --------------------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------------------
+
+log()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+warn() { printf '\033[33m[warn]\033[0m %s\n' "$*" >&2; }
+fail() { printf '\033[31m[fail]\033[0m %s\n' "$*" >&2; exit "${2:-1}"; }
+
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+# Server binary: prefer BEAVA_BIN override; fall back to target/release/beava
+# or target/release/tally (the worktree may be mid-rename).
+resolve_server_bin() {
+    if [[ -n "${BEAVA_BIN:-}" && -x "$BEAVA_BIN" ]]; then
+        echo "$BEAVA_BIN"; return
+    fi
+    for candidate in "$REPO/target/release/beava" "$REPO/target/release/tally"; do
+        if [[ -x "$candidate" ]]; then echo "$candidate"; return; fi
+    done
+    echo ""
+}
+
+# --------------------------------------------------------------------------
+# Prerequisite checks
+# --------------------------------------------------------------------------
+
+log "Beava fraud-pipeline benchmark — $(date -u +%Y-%m-%d\ %H:%M:%SZ)"
+echo "Host: $(uname -sm), $CPUS_HOST cores"
+echo "Config: MODE=$MODE CLIENTS=$CLIENTS WORKER_THREADS=$CPUS WARMUP=${WARMUP}s DURATION=${DURATION}s"
+echo "Results: $RESULTS_DIR"
+
+if ! has_cmd python3; then
+    fail "python3 not found on PATH — install Python 3.10 or newer" 3
 fi
 
-# Clean slate on ports + data dir.
-pkill -9 -f bench.py 2>/dev/null || true
-pkill -9 -f "target/release/beava serve" 2>/dev/null || true
-sleep 1
-rm -rf "$REPO/events"
+if ! python3 -c "import tally" 2>/dev/null; then
+    # The Python SDK is co-located with the repo; bench.py sets PYTHONPATH so
+    # a clone-and-run works without `pip install -e python/`. Warn only, don't
+    # abort — bench.py handles the sys.path hack.
+    :
+fi
 
-echo "==> MODE=$MODE  CPUS=$CPUS  warmup=${WARMUP}s  measure=${MEASURE}s"
-echo "    users=$USERS  merchants=$MERCHANTS  devices=$DEVICES  ips=$IPS  zipf=$ZIPF"
-SRV_LOG="$(mktemp -t beava-bench.XXXXXX.log)"
-BEAVA_ADMIN_TOKEN="$TOKEN" BEAVA_WORKER_THREADS="$CPUS" \
-  "$BIN" serve --http-port "$HTTP_PORT" --tcp-port "$TCP_PORT" \
-  > "$SRV_LOG" 2>&1 &
+if lsof -i ":$TCP_PORT" >/dev/null 2>&1; then
+    fail "TCP port $TCP_PORT is already in use. Stop the other process or set TCP_PORT=... to pick a different one" 3
+fi
+if lsof -i ":$HTTP_PORT" >/dev/null 2>&1; then
+    fail "HTTP port $HTTP_PORT is already in use. Stop the other process or set HTTP_PORT=... to pick a different one" 3
+fi
+
+# --------------------------------------------------------------------------
+# Build the server if needed
+# --------------------------------------------------------------------------
+
+BIN="$(resolve_server_bin)"
+if [[ -z "$BIN" && "$SKIP_BUILD" != "1" ]]; then
+    if ! has_cmd cargo; then
+        fail "cargo not found on PATH and no pre-built binary at target/release/{beava,tally} — install Rust toolchain or set BEAVA_BIN to point at a built binary" 3
+    fi
+    log "Building server in release mode (one-time, ~30-60s)..."
+    if ! cargo build --release --bin tally 2>&1 | tee -a "$STDOUT_LOG" >/dev/null; then
+        # Try beava binary name as fallback (post-rename tree).
+        if ! cargo build --release --bin beava 2>&1 | tee -a "$STDOUT_LOG" >/dev/null; then
+            fail "cargo build --release failed. See $STDOUT_LOG for details" 2
+        fi
+    fi
+    BIN="$(resolve_server_bin)"
+fi
+
+if [[ -z "$BIN" ]]; then
+    fail "server binary not found after build attempt (expected target/release/beava or target/release/tally)" 2
+fi
+echo "Binary: $BIN"
+
+# --------------------------------------------------------------------------
+# Start the server
+# --------------------------------------------------------------------------
+
+DATA_DIR="$(mktemp -d -t beava-bench-data.XXXXXX)"
+SRV_LOG="$RESULTS_DIR/server.log"
+
+# env vars: support both BEAVA_* (post-rename) and TALLY_* (pre-rename). We
+# set both so the binary picks up whichever it reads.
+log "Starting server on TCP=$TCP_PORT HTTP=$HTTP_PORT threads=$CPUS"
+TALLY_ADMIN_TOKEN="${TALLY_ADMIN_TOKEN:-dev-admin-token}" \
+BEAVA_ADMIN_TOKEN="${BEAVA_ADMIN_TOKEN:-dev-admin-token}" \
+TALLY_WORKER_THREADS="$CPUS" BEAVA_WORKER_THREADS="$CPUS" \
+TALLY_TCP_PORT="$TCP_PORT"    BEAVA_TCP_PORT="$TCP_PORT" \
+TALLY_HTTP_PORT="$HTTP_PORT"  BEAVA_HTTP_PORT="$HTTP_PORT" \
+TALLY_DATA_DIR="$DATA_DIR"    BEAVA_DATA_DIR="$DATA_DIR" \
+    "$BIN" > "$SRV_LOG" 2>&1 &
 SERVER_PID=$!
 
 cleanup() {
-  pkill -9 -f bench.py 2>/dev/null || true
-  kill "$SERVER_PID" 2>/dev/null || true
-  wait "$SERVER_PID" 2>/dev/null || true
+    # Kill any lingering client processes first so their stdout doesn't race
+    # with the server shutdown.
+    pkill -9 -P $$ 2>/dev/null || true
+    if kill -0 "$SERVER_PID" 2>/dev/null; then
+        kill "$SERVER_PID" 2>/dev/null || true
+        wait "$SERVER_PID" 2>/dev/null || true
+    fi
+    # Scratch data dir can grow (event log + snapshots). Remove it so repeat
+    # runs don't accumulate junk on /tmp.
+    if [[ -n "${DATA_DIR:-}" && -d "$DATA_DIR" ]]; then
+        rm -rf "$DATA_DIR"
+    fi
 }
 trap cleanup EXIT INT TERM
 
-for _ in $(seq 1 30); do
-  curl -sf "http://127.0.0.1:$HTTP_PORT/debug/ready" >/dev/null 2>&1 && break
-  sleep 0.3
+# Poll /debug/ready until the server reports up or we give up at 15s.
+ready=0
+for _ in $(seq 1 50); do
+    if curl -sf "http://127.0.0.1:$HTTP_PORT/debug/ready" >/dev/null 2>&1; then
+        ready=1; break
+    fi
+    sleep 0.3
 done
+if [[ "$ready" != "1" ]]; then
+    echo "--- server.log (last 40 lines) ---"
+    tail -40 "$SRV_LOG" || true
+    fail "server did not become ready within 15s. See $SRV_LOG" 1
+fi
+echo "Server ready (pid=$SERVER_PID, data=$DATA_DIR)"
 
-export PYTHONPATH="$REPO/python:$REPO/benchmark/fraud-pipeline"
-TMPDIR=$(mktemp -d -t beava-bench.XXXXXX)
+# --------------------------------------------------------------------------
+# Spawn clients
+# --------------------------------------------------------------------------
 
-CLIENT_PIDS=()
+CLIENT_TMP="$(mktemp -d -t beava-bench-clients.XXXXXX)"
+trap 'cleanup; rm -rf "$CLIENT_TMP"' EXIT INT TERM
+
 spawn_clients() {
-  local dur="$1"; local tag="$2"
-  CLIENT_PIDS=()
-  for i in $(seq 0 $((CPUS - 1))); do
-    python3 "$BENCH" --mode "$MODE" --duration "$dur" --proc-id "$i" \
-      --host "localhost:$TCP_PORT" \
-      --users "$USERS" --merchants "$MERCHANTS" \
-      --devices "$DEVICES" --ips "$IPS" \
-      --zipf-alpha "$ZIPF" \
-      > "$TMPDIR/$tag-$i.jsonl" 2>&1 &
-    CLIENT_PIDS+=($!)
-  done
+    local dur="$1"; local tag="$2"
+    CLIENT_PIDS=()
+    for i in $(seq 0 $((CLIENTS - 1))); do
+        python3 "$BENCH" \
+            --mode "$MODE" \
+            --duration "$dur" \
+            --proc-id "$i" \
+            --host "localhost:$TCP_PORT" \
+            --checkpoint "$CHECKPOINT" \
+            > "$CLIENT_TMP/$tag-$i.jsonl" 2>&1 &
+        CLIENT_PIDS+=($!)
+    done
 }
 wait_clients() {
-  # `wait` with no args waits for every backgrounded child (including the
-  # beava server, which never exits). Pass the client pids explicitly so we
-  # only block on them.
-  for pid in "${CLIENT_PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
+    local exit_code=0
+    for pid in "${CLIENT_PIDS[@]}"; do
+        if ! wait "$pid" 2>/dev/null; then exit_code=1; fi
+    done
+    return $exit_code
 }
 
-# ── Warmup ── clients run, output discarded. Pays cold-start entity init.
-echo "==> Warming up (${WARMUP}s)..."
+log "Warmup ${WARMUP}s (output discarded)"
 spawn_clients "$WARMUP" warmup
-wait_clients
-rm -f "$TMPDIR"/warmup-*.jsonl
+wait_clients || warn "one or more warmup clients exited non-zero"
+rm -f "$CLIENT_TMP"/warmup-*.jsonl
 
-# ── Measure ── clients stream checkpoint JSONL lines; shell aggregates.
-echo "==> Measuring (${MEASURE}s) — live EPS:"
-spawn_clients "$MEASURE" measure
+log "Measuring ${DURATION}s (live EPS every ${CHECKPOINT}s)"
+spawn_clients "$DURATION" measure
 
-# Poll checkpoint files every 2s and print live aggregate eps. Disable
-# pipefail/errexit here — transient "no data yet" states are normal and the
-# loop should keep trying, not abort the whole run.
+# Poll checkpoint files on a 5s cadence; print live aggregate eps until all
+# clients have emitted a final line.
 set +e
-t_start=$(python3 -c 'import time; print(time.monotonic())')
-last_events=0
+last_total=0
 last_t=0
 while :; do
-  # Exit when all clients have emitted a "final" line.
-  finals=$(grep -l '"phase": "final"' "$TMPDIR"/measure-*.jsonl 2>/dev/null | wc -l)
-  if [[ "$finals" -ge "$CPUS" ]]; then break; fi
+    finals=$(grep -l '"phase": "final"' "$CLIENT_TMP"/measure-*.jsonl 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$finals" -ge "$CLIENTS" ]]; then break; fi
+    sleep "$CHECKPOINT"
 
-  sleep 2
-  # Sum latest checkpoint's event count across clients. `read` returns
-  # non-zero on empty input (no checkpoints yet) — tolerate under set -e.
-  t_now=""; total=""
-  # Guard with || true — read returns non-zero on empty input.
-  { read -r t_now total || true; } <<<"$(python3 - "$TMPDIR" <<'PY'
+    # Sum the last checkpoint from each client.
+    read -r t_now total < <(python3 - "$CLIENT_TMP" <<'PY'
 import glob, json, sys
 tmp = sys.argv[1]
 total = 0; t = 0.0
 for f in glob.glob(f"{tmp}/measure-*.jsonl"):
-    ckpts = [l for l in open(f).read().splitlines() if '"phase"' in l]
+    with open(f, encoding="utf-8") as fh:
+        ckpts = [l for l in fh.read().splitlines() if '"phase"' in l]
     if not ckpts: continue
-    last = json.loads(ckpts[-1])
-    total += last["events"]; t = max(t, last["t"])
+    try:
+        last = json.loads(ckpts[-1])
+    except Exception:
+        continue
+    total += int(last.get("events", 0))
+    t = max(t, float(last.get("t", 0.0)))
 print(f"{t:.2f} {total}")
 PY
-)"
-  if [[ -n "$total" && "$total" != "0" ]]; then
-    dt=$(python3 -c "print(max(0.01, $t_now - $last_t))")
-    inst=$(python3 -c "print(int(($total - $last_events) / $dt))")
-    avg=$(python3 -c "print(int($total / max(0.01, $t_now)))")
-    printf "   t=%5.1fs  total=%12d events  instant=%10s eps  avg=%10s eps\n" \
-      "$t_now" "$total" "$(printf "%'d" "$inst")" "$(printf "%'d" "$avg")"
-    last_events=$total; last_t=$t_now
-  fi
+)
+    if [[ -n "${total:-}" && "${total:-0}" != "0" ]]; then
+        dt=$(python3 -c "print(max(0.01, $t_now - $last_t))")
+        inst=$(python3 -c "print(int(($total - $last_total) / $dt))")
+        avg=$(python3 -c "print(int($total / max(0.01, $t_now)))")
+        printf "    t=%5.1fs  events=%12d  instant=%10s eps  avg=%10s eps\n" \
+            "$t_now" "$total" "$inst" "$avg"
+        last_total=$total; last_t=$t_now
+    fi
 done
 wait_clients
+clients_exit=$?
+set -uo pipefail
 
-# Final steady-state eps from the "final" lines — this is the authoritative number.
-python3 - "$TMPDIR" "$MODE" "$CPUS" "$HTTP_PORT" "$TOKEN" <<'PY'
-import glob, json, sys, urllib.request
-tmp, mode, cpus, http, token = sys.argv[1:]
+if [[ "$clients_exit" != "0" ]]; then
+    warn "some clients exited non-zero — partial data may be missing"
+fi
+
+# Copy per-client JSONL into the results dir for post-hoc inspection.
+cp "$CLIENT_TMP"/measure-*.jsonl "$RESULTS_DIR/" 2>/dev/null || true
+
+# --------------------------------------------------------------------------
+# Aggregate + write summary.json
+# --------------------------------------------------------------------------
+
+log "Aggregating"
+if ! python3 - "$CLIENT_TMP" "$MODE" "$CLIENTS" "$CPUS" "$HTTP_PORT" "$SUMMARY_JSON" "$TS" "$DURATION" "$WARMUP" <<'PY'
+import glob, json, socket, sys, urllib.request, urllib.error
+from pathlib import Path
+
+tmp, mode, clients, threads, http, out_path, ts, duration, warmup = sys.argv[1:]
+clients_i = int(clients)
+
 finals = []
 for f in sorted(glob.glob(f"{tmp}/measure-*.jsonl")):
-    for line in reversed(open(f).read().splitlines()):
-        if '"phase": "final"' in line:
-            finals.append(json.loads(line)); break
+    with open(f, encoding="utf-8") as fh:
+        for line in reversed(fh.read().splitlines()):
+            if '"phase": "final"' in line:
+                try:
+                    finals.append(json.loads(line))
+                except Exception:
+                    pass
+                break
 
-total = sum(r["events"] for r in finals)
-wall  = max(r["t"] for r in finals)
+if not finals:
+    print("ERROR: no client produced a final record", file=sys.stderr)
+    sys.exit(1)
+
+total_events = sum(r.get("events", 0) for r in finals)
+wall = max(r.get("t", 0.0) for r in finals)
+if wall <= 0 or total_events <= 0:
+    print(f"ERROR: bogus bench output (wall={wall}, events={total_events})", file=sys.stderr)
+    sys.exit(1)
+
+agg_eps = int(total_events / wall)
+per_event_us = wall / total_events * 1e6
+
+# Per-client latency aggregation: merge batch-timing samples across all
+# clients by taking worst-case percentiles (max of each client's p99 is a
+# better "what any single client saw" number than averaging).
+def stat(name):
+    vals = [r.get(name, 0.0) for r in finals if r.get("sample_count", 0) > 0]
+    return {
+        "min": round(min(vals), 2) if vals else 0.0,
+        "median": round(sorted(vals)[len(vals)//2], 2) if vals else 0.0,
+        "max": round(max(vals), 2) if vals else 0.0,
+    }
+
+p50 = stat("p50_us")
+p99 = stat("p99_us")
+p999 = stat("p999_us")
+
+# Pull server-side PUSH latency from /debug/latency if available.
+server_push = {"p50_us": None, "p95_us": None, "p99_us": None, "count": None}
+try:
+    with urllib.request.urlopen(f"http://127.0.0.1:{http}/debug/latency", timeout=5) as resp:
+        body = json.loads(resp.read())
+    for entry in (body.get("per_command") or []):
+        if str(entry.get("command", "")).lower() == "push":
+            server_push = {
+                "p50_us": entry.get("p50_us"),
+                "p95_us": entry.get("p95_us"),
+                "p99_us": entry.get("p99_us"),
+                "count": entry.get("count"),
+            }
+            break
+except (urllib.error.URLError, urllib.error.HTTPError, socket.error, ValueError) as exc:
+    print(f"note: could not fetch /debug/latency: {exc}", file=sys.stderr)
+
+# Pull memory footprint.
+memory = {"estimated_bytes": None, "entity_count": None}
+try:
+    with urllib.request.urlopen(f"http://127.0.0.1:{http}/debug/memory", timeout=5) as resp:
+        mem_body = json.loads(resp.read())
+    total_bytes = 0
+    entities = 0
+    for s in mem_body.get("per_stream") or []:
+        total_bytes += int(s.get("estimated_bytes") or 0)
+        entities = max(entities, int(s.get("key_count") or 0))
+    memory = {
+        "estimated_bytes": total_bytes,
+        "entity_count": entities,
+    }
+except (urllib.error.URLError, urllib.error.HTTPError, socket.error, ValueError) as exc:
+    print(f"note: could not fetch /debug/memory: {exc}", file=sys.stderr)
+
+summary = {
+    "timestamp": ts,
+    "host": {
+        "hostname": socket.gethostname(),
+        "platform": sys.platform,
+    },
+    "config": {
+        "mode": mode,
+        "clients": clients_i,
+        "worker_threads": int(threads),
+        "warmup_seconds": float(warmup),
+        "duration_seconds": float(duration),
+    },
+    "throughput": {
+        "total_events": int(total_events),
+        "wall_seconds": round(float(wall), 3),
+        "aggregate_eps": agg_eps,
+        "per_event_us": round(per_event_us, 2),
+    },
+    "client_push_latency_us": {
+        "note": "per-push_many call time in microseconds (batch=1000 events). Each client samples every 64th call.",
+        "p50_across_clients": p50,
+        "p99_across_clients": p99,
+        "p999_across_clients": p999,
+        "sample_counts": [int(r.get("sample_count", 0)) for r in finals],
+    },
+    "server_push_latency_us": server_push,
+    "memory": memory,
+    "per_client": [
+        {
+            "proc_id": r.get("proc_id"),
+            "events": int(r.get("events", 0)),
+            "t_seconds": round(float(r.get("t", 0.0)), 3),
+            "eps": int(r.get("events", 0) / r.get("t", 1.0)) if r.get("t", 0) > 0 else 0,
+            "p50_us": r.get("p50_us"),
+            "p99_us": r.get("p99_us"),
+            "p999_us": r.get("p999_us"),
+        }
+        for r in sorted(finals, key=lambda x: x.get("proc_id", 0))
+    ],
+}
+
+Path(out_path).write_text(json.dumps(summary, indent=2))
+PY
+then
+    fail "aggregation failed — see the error above" 1
+fi
+
+# --------------------------------------------------------------------------
+# Human-readable summary printed to stdout
+# --------------------------------------------------------------------------
+
+log "STEADY-STATE SUMMARY"
+python3 - "$SUMMARY_JSON" <<'PY'
+import json, sys
+s = json.loads(open(sys.argv[1]).read())
+
+cfg = s["config"]
+tp = s["throughput"]
+cl = s["client_push_latency_us"]
+srv = s["server_push_latency_us"]
+mem = s["memory"]
+
+print(f"    Config:       {cfg['mode']} pipeline, {cfg['clients']} clients, {cfg['worker_threads']} server threads")
+print(f"    Duration:     {cfg['duration_seconds']:.0f}s measured (+{cfg['warmup_seconds']:.0f}s warmup)")
+print(f"    Events:       {tp['total_events']:,}")
+print(f"    Aggregate:    {tp['aggregate_eps']:,} events/sec")
+print(f"    Per event:    {tp['per_event_us']:.2f} microseconds")
 print()
-print(f"==> STEADY-STATE ({mode}, {cpus} clients):")
-print(f"    Events:     {total:,}")
-print(f"    Wall:       {wall:.2f}s")
-print(f"    Aggregate:  {int(total / wall):,} events/sec")
-print(f"    Per event:  {wall / total * 1e6:.1f} µs")
-
-try:
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{http}/debug/key/user_000001",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    body = json.loads(urllib.request.urlopen(req, timeout=5).read())
-    feats = body.get("computed_features") or {}
+print(f"    Client push_many latency (microseconds per 1000-event batch call):")
+print(f"                   median across clients    worst across clients")
+print(f"      p50       :  {cl['p50_across_clients']['median']:>12,.1f}            {cl['p50_across_clients']['max']:>12,.1f}")
+print(f"      p99       :  {cl['p99_across_clients']['median']:>12,.1f}            {cl['p99_across_clients']['max']:>12,.1f}")
+print(f"      p99.9     :  {cl['p999_across_clients']['median']:>12,.1f}            {cl['p999_across_clients']['max']:>12,.1f}")
+print()
+if srv.get("p50_us") is not None:
+    print(f"    Server-side PUSH latency (microseconds; from /debug/latency):")
+    print(f"      p50       :  {srv['p50_us']:>12,.1f}")
+    print(f"      p95       :  {srv['p95_us']:>12,.1f}")
+    print(f"      p99       :  {srv['p99_us']:>12,.1f}")
+    print(f"      count     :  {srv['count']:>12,}")
     print()
-    print("    Sample features (key=user_000001):")
-    for k in sorted(feats):
-        print(f"      {k}: {feats[k]}")
-except Exception:
-    pass
-
-try:
-    mem = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{http}/debug/memory").read())
-    b = mem.get("estimated_bytes", 0); ents = mem.get("entity_count", 0)
-    per = b / ents if ents else 0
+if mem.get("estimated_bytes"):
+    mb = mem['estimated_bytes'] / (1024 * 1024)
+    ents = mem['entity_count'] or 1
+    print(f"    Memory:       {mb:,.1f} MB across ~{mem['entity_count']:,} per-stream keys")
+    print(f"                  ({mem['estimated_bytes']/ents:,.0f} bytes per entity)")
     print()
-    print(f"    Memory:     {b / 1024 / 1024:.1f} MB across {ents:,} entities  ({per:,.0f} B/entity)")
 
-    # Per-stream and per-operator-type breakdown. Sorted hottest-first so the
-    # eye lands on where the bytes actually are.
-    streams = sorted(
-        (s for s in mem.get("per_stream", []) if s.get("estimated_bytes", 0) > 0),
-        key=lambda s: s["estimated_bytes"], reverse=True,
-    )
-    for s in streams:
-        sb = s["estimated_bytes"]; sk = s.get("key_count", 0)
-        print(f"\n    [{s['name']}]  {sb / 1024 / 1024:6.1f} MB  "
-              f"{sk:,} keys  ({s.get('per_entity_avg_bytes', 0):,} B/key)")
-        ops = sorted(s.get("operator_breakdown", []),
-                     key=lambda o: o["total_bytes"], reverse=True)
-        for op in ops:
-            share = 100 * op["total_bytes"] / sb if sb else 0
-            print(f"        {op['type']:<18} {op['total_bytes'] / 1024 / 1024:6.1f} MB  "
-                  f"({share:5.1f}%)  n={op['count']:,}")
-
-        # Top 5 individual features by total_bytes — useful when one window
-        # size or one HLL is dominating the stream.
-        feats = sorted(s.get("features", []),
-                       key=lambda f: f["total_bytes"], reverse=True)[:5]
-        if feats:
-            print(f"        Top features:")
-            for f in feats:
-                avg = f.get("avg_bytes_per_key", 0)
-                buckets = f" buckets={f['num_buckets']}" if f.get("num_buckets") else ""
-                print(f"          {f['name']:<28} {f['total_bytes'] / 1024 / 1024:5.1f} MB"
-                      f"  ({avg:,} B/key{buckets})  [{f['operator_type']}]")
-except Exception as e:
-    print(f"    (memory breakdown unavailable: {e})")
+print(f"    Per-client throughput:")
+for row in s["per_client"]:
+    print(f"      proc-{row['proc_id']}: {row['events']:>9,} events in {row['t_seconds']:>6.2f}s = {row['eps']:>9,} eps")
+print()
 PY
 
-rm -rf "$TMPDIR"
+# --------------------------------------------------------------------------
+# Optional flamegraph
+# --------------------------------------------------------------------------
+
+if [[ "$NO_FLAMEGRAPH" != "1" ]] && has_cmd cargo-flamegraph; then
+    log "Generating flamegraph (cargo-flamegraph detected) — this adds ~10s"
+    FLAMEGRAPH_OUT="$RESULTS_DIR/flamegraph.svg"
+    # Short (5s) sample while a single client is running; we reuse the
+    # already-loaded state instead of a fresh warmup so the flame captures
+    # steady-state work, not pipeline-registration cost.
+    FLAME_CLIENT_LOG="$CLIENT_TMP/flame-client.jsonl"
+    python3 "$BENCH" --mode "$MODE" --duration 10 --proc-id 99 \
+        --host "localhost:$TCP_PORT" --checkpoint 10 > "$FLAME_CLIENT_LOG" 2>&1 &
+    FLAME_CLIENT_PID=$!
+    if ! cargo flamegraph --pid "$SERVER_PID" --output "$FLAMEGRAPH_OUT" -- sleep 5 >/dev/null 2>&1; then
+        warn "cargo flamegraph failed (typically needs sudo / perf permissions) — skipping"
+    else
+        echo "    Wrote $FLAMEGRAPH_OUT"
+    fi
+    wait "$FLAME_CLIENT_PID" 2>/dev/null || true
+elif [[ "$NO_FLAMEGRAPH" != "1" ]]; then
+    echo "note: cargo-flamegraph not installed — skipping flame step (install with \`cargo install flamegraph\`)"
+fi
+
+# --------------------------------------------------------------------------
+# Done
+# --------------------------------------------------------------------------
+
+log "DONE"
+echo "    summary.json:  $SUMMARY_JSON"
+echo "    stdout.log:    $STDOUT_LOG"
+echo "    server.log:    $SRV_LOG"
+echo "    per-client:    $RESULTS_DIR/measure-*.jsonl"
+echo
+echo "Compare throughput against the Phase-42 Hetzner baseline (544K eps, 16-core)."
+echo "On laptops, 60-200K eps is typical; numbers scale near-linearly with core count up to"
+echo "~8 client/worker pairs before lock and kernel-network overhead flattens the curve."

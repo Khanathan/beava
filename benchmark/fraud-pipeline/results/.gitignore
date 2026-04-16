@@ -1,0 +1,4 @@
+# Each developer's bench run writes to results/<ISO-timestamp>/ — we commit
+# only the curated `baseline/` snapshot and the `archive/` of pre-rename
+# artifacts. Timestamped per-run dirs are local-only.
+20*

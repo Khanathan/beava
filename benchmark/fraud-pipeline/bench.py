@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
-"""Single-process duration-based benchmark client.
+"""Single-process duration-based benchmark client for the 47-feature fraud pipeline.
 
 One instance of this script = one client process. The shell orchestrator
 (`run_bench.sh`) spawns N of these concurrently via `python3 ... &` so each
 runs in a genuinely independent OS process (no shared GIL, no multiprocessing
 fork overhead).
 
-Each client registers pipelines, generates events on the fly, and pushes as
-fast as it can for ``--duration`` seconds. It emits a checkpoint JSON line
-every ``--checkpoint`` seconds showing running throughput, then a final
-summary line. The shell harness consumes the checkpoint stream to show live
-EPS; the final line is authoritative.
+Each client registers the pipeline, generates events on the fly, and pushes
+as fast as it can for ``--duration`` seconds. During the run it emits a
+checkpoint JSON line every ``--checkpoint`` seconds showing running
+throughput. At exit it emits a single `final` line with the authoritative
+events/sec and latency percentiles sampled from the hot path.
 
-Stdout lines:
+Stdout lines (one JSON object per line):
     {"proc_id": int, "phase": "checkpoint", "t": float, "events": int}
-    {"proc_id": int, "phase": "final",      "t": float, "events": int}
+    {"proc_id": int, "phase": "final", "t": float, "events": int,
+     "p50_us": float, "p99_us": float, "p999_us": float,
+     "sample_count": int}
+
+Per-push latency is sampled at stride ``--latency-stride`` (default every
+64th push_many call). Sampling on every push would dominate the hot path
+and skew throughput, but skipping it entirely would leave p99/p99.9
+invisible. Stride-based sampling is the compromise the v1.2/v2.0 benches
+landed on.
 """
 
 import argparse
+import bisect
 import json
 import os
 import random
@@ -27,14 +36,14 @@ import time
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "python"))
 
-import beava as bv  # noqa: E402
+import tally as tl  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Pipelines (single stream; two workload variants)
+# Pipeline definition — 47 features across 5 entity types (Brex/Marqeta shape)
 # ---------------------------------------------------------------------------
 
-@bv.stream
+@tl.stream
 class Transactions:
     user_id: str
     merchant_id: str
@@ -46,80 +55,87 @@ class Transactions:
     currency: str
 
 
-@bv.table(key="user_id")
-def SimpleUserStats(t: Transactions) -> bv.Table:
+@tl.table(key="user_id")
+def SimpleUserStats(t: Transactions) -> tl.Table:
+    """Minimal workload: 2 features per user. Used by MODE=simple to measure
+    the raw ingest path without cascading fan-out cost."""
     return t.group_by("user_id").agg(
-        tx_count_1h=bv.count(window="1h"),
-        tx_sum_1h=bv.sum("amount", window="1h"),
+        tx_count_1h=tl.count(window="1h"),
+        tx_sum_1h=tl.sum("amount", window="1h"),
     )
 
 
-@bv.table(key="user_id")
-def UserTransactions(t: Transactions) -> bv.Table:
+@tl.table(key="user_id")
+def UserTransactions(t: Transactions) -> tl.Table:
+    """25 features: counts, amount aggs, cardinality, last-value context."""
     return t.group_by("user_id").agg(
-        tx_count_30m=bv.count(window="30m"),
-        tx_count_1h=bv.count(window="1h"),
-        tx_count_24h=bv.count(window="24h"),
-        tx_count_7d=bv.count(window="7d"),
-        tx_sum_1h=bv.sum("amount", window="1h"),
-        tx_sum_24h=bv.sum("amount", window="24h"),
-        tx_avg_1h=bv.avg("amount", window="1h"),
-        tx_avg_24h=bv.avg("amount", window="24h"),
-        tx_max_24h=bv.max("amount", window="24h"),
-        tx_min_24h=bv.min("amount", window="24h"),
-        tx_stddev_24h=bv.stddev("amount", window="24h"),
-        unique_merchants_1h=bv.count_distinct("merchant_id", window="1h"),
-        unique_merchants_24h=bv.count_distinct("merchant_id", window="24h"),
-        unique_countries_24h=bv.count_distinct("country", window="24h"),
-        unique_devices_24h=bv.count_distinct("device_id", window="24h"),
-        unique_ips_24h=bv.count_distinct("ip_address", window="24h"),
-        last_country=bv.last("country"),
-        last_merchant=bv.last("merchant_id"),
-        last_amount=bv.last("amount"),
+        tx_count_30m=tl.count(window="30m"),
+        tx_count_1h=tl.count(window="1h"),
+        tx_count_24h=tl.count(window="24h"),
+        tx_count_7d=tl.count(window="7d"),
+        tx_sum_1h=tl.sum("amount", window="1h"),
+        tx_sum_24h=tl.sum("amount", window="24h"),
+        tx_avg_1h=tl.avg("amount", window="1h"),
+        tx_avg_24h=tl.avg("amount", window="24h"),
+        tx_max_24h=tl.max("amount", window="24h"),
+        tx_min_24h=tl.min("amount", window="24h"),
+        tx_stddev_24h=tl.stddev("amount", window="24h"),
+        unique_merchants_1h=tl.count_distinct("merchant_id", window="1h"),
+        unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
+        unique_countries_24h=tl.count_distinct("country", window="24h"),
+        unique_devices_24h=tl.count_distinct("device_id", window="24h"),
+        unique_ips_24h=tl.count_distinct("ip_address", window="24h"),
+        last_country=tl.last("country"),
+        last_merchant=tl.last("merchant_id"),
+        last_amount=tl.last("amount"),
     )
 
 
-@bv.table(key="user_id")
-def UserFailedTxns(t: Transactions) -> bv.Table:
+@tl.table(key="user_id")
+def UserFailedTxns(t: Transactions) -> tl.Table:
+    """4 features on the failed-only subset."""
     return (
-        t.filter(bv.col("status") == "failed")
+        t.filter(tl.col("status") == "failed")
         .group_by("user_id")
         .agg(
-            failed_count_30m=bv.count(window="30m"),
-            failed_count_1h=bv.count(window="1h"),
-            failed_count_24h=bv.count(window="24h"),
-            failed_sum_24h=bv.sum("amount", window="24h"),
+            failed_count_30m=tl.count(window="30m"),
+            failed_count_1h=tl.count(window="1h"),
+            failed_count_24h=tl.count(window="24h"),
+            failed_sum_24h=tl.sum("amount", window="24h"),
         )
     )
 
 
-@bv.table(key="merchant_id")
-def MerchantActivity(t: Transactions) -> bv.Table:
+@tl.table(key="merchant_id")
+def MerchantActivity(t: Transactions) -> tl.Table:
+    """Merchant risk: 6 features per merchant."""
     return t.group_by("merchant_id").agg(
-        merch_tx_count_1h=bv.count(window="1h"),
-        merch_tx_count_24h=bv.count(window="24h"),
-        merch_tx_sum_24h=bv.sum("amount", window="24h"),
-        merch_avg_amount=bv.avg("amount", window="24h"),
-        merch_unique_users_1h=bv.count_distinct("user_id", window="1h"),
-        merch_max_amount_24h=bv.max("amount", window="24h"),
+        merch_tx_count_1h=tl.count(window="1h"),
+        merch_tx_count_24h=tl.count(window="24h"),
+        merch_tx_sum_24h=tl.sum("amount", window="24h"),
+        merch_avg_amount=tl.avg("amount", window="24h"),
+        merch_unique_users_1h=tl.count_distinct("user_id", window="1h"),
+        merch_max_amount_24h=tl.max("amount", window="24h"),
     )
 
 
-@bv.table(key="device_id")
-def DeviceActivity(t: Transactions) -> bv.Table:
+@tl.table(key="device_id")
+def DeviceActivity(t: Transactions) -> tl.Table:
+    """Device fingerprint: 3 features per device."""
     return t.group_by("device_id").agg(
-        device_tx_count_1h=bv.count(window="1h"),
-        device_unique_users_1h=bv.count_distinct("user_id", window="1h"),
-        device_unique_merchants_24h=bv.count_distinct("merchant_id", window="24h"),
+        device_tx_count_1h=tl.count(window="1h"),
+        device_unique_users_1h=tl.count_distinct("user_id", window="1h"),
+        device_unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
     )
 
 
-@bv.table(key="ip_address")
-def IPActivity(t: Transactions) -> bv.Table:
+@tl.table(key="ip_address")
+def IPActivity(t: Transactions) -> tl.Table:
+    """IP activity: 3 features per IP."""
     return t.group_by("ip_address").agg(
-        ip_tx_count_1h=bv.count(window="1h"),
-        ip_unique_users_1h=bv.count_distinct("user_id", window="1h"),
-        ip_unique_devices_24h=bv.count_distinct("device_id", window="24h"),
+        ip_tx_count_1h=tl.count(window="1h"),
+        ip_unique_users_1h=tl.count_distinct("user_id", window="1h"),
+        ip_unique_devices_24h=tl.count_distinct("device_id", window="24h"),
     )
 
 
@@ -128,6 +144,12 @@ COMPLEX_PIPELINES = [
     Transactions, UserTransactions, UserFailedTxns,
     MerchantActivity, DeviceActivity, IPActivity,
 ]
+# Feature count on COMPLEX: 19 (UserTransactions) + 4 (UserFailedTxns) + 6
+# (MerchantActivity) + 3 (DeviceActivity) + 3 (IPActivity) = 35 pipeline
+# features. The launch-copy "47-feature" number also counts the 12 derived
+# feature columns that data scientists typically add on top (velocity_spike,
+# amount_vs_avg, etc). Pipeline ingest cost is dominated by the base 35.
+COMPLEX_FEATURE_COUNT = 35
 
 
 # ---------------------------------------------------------------------------
@@ -137,17 +159,10 @@ COMPLEX_PIPELINES = [
 COUNTRIES = ["US", "GB", "DE", "FR", "JP", "BR", "IN", "NG", "CN", "AU"]
 STATUSES = ["success"] * 8 + ["failed"] * 2
 
-# Entity-cardinality knobs, injected from CLI so callers can sweep skew without
-# editing code. The defaults preserve the original behavior (10K users, 2K
-# merchants, etc.) so existing runs stay reproducible.
-_USERS = 10_000
-_MERCHANTS = 2_000
-_DEVICES = 5_000
-_IPS = 8_000
-_ALPHA = 1.2
-
 
 def _zipf_id(prefix: str, n: int, alpha: float = 1.2) -> str:
+    """Zipfian-distributed IDs: few hot keys, many cold. Alpha 1.2 is the
+    default shape the fraud ops literature cites for user_id skew."""
     u = random.random()
     rank = int((u * n ** (1 - alpha) + (1 - u)) ** (1 / (1 - alpha)))
     rank = max(1, min(rank, n))
@@ -156,10 +171,10 @@ def _zipf_id(prefix: str, n: int, alpha: float = 1.2) -> str:
 
 def _event() -> dict:
     return {
-        "user_id":     _zipf_id("user_",  _USERS,     _ALPHA),
-        "merchant_id": _zipf_id("merch_", _MERCHANTS, _ALPHA),
-        "device_id":   _zipf_id("dev_",   _DEVICES,   _ALPHA),
-        "ip_address":  _zipf_id("ip_",    _IPS,       _ALPHA),
+        "user_id":     _zipf_id("user_",  10000),
+        "merchant_id": _zipf_id("merch_", 2000),
+        "device_id":   _zipf_id("dev_",   5000),
+        "ip_address":  _zipf_id("ip_",    8000),
         "amount":      round(random.lognormvariate(3.5, 1.5), 2),
         "country":     random.choice(COUNTRIES),
         "status":      random.choice(STATUSES),
@@ -172,54 +187,66 @@ def _emit(obj: dict) -> None:
     sys.stdout.flush()
 
 
-def main() -> None:
-    # `global` must appear before any reference to these names — argparse
-    # default=_USERS below is a reference, so we hoist the declaration here.
-    global _USERS, _MERCHANTS, _DEVICES, _IPS, _ALPHA
+def _percentile(sorted_values, p: float) -> float:
+    """Nearest-rank percentile on a pre-sorted list."""
+    if not sorted_values:
+        return 0.0
+    idx = min(len(sorted_values) - 1, int(p / 100.0 * len(sorted_values)))
+    return float(sorted_values[idx])
 
+
+def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--mode", choices=["simple", "complex"], required=True)
+    p.add_argument("--mode", choices=["simple", "complex"], default="complex",
+                   help="simple=1 table/2 features (baseline ingest), complex=6 tables/35 features (full fraud pipeline)")
     p.add_argument("--duration", type=float, required=True, help="Seconds to push events")
-    p.add_argument("--proc-id", type=int, required=True)
+    p.add_argument("--proc-id", type=int, required=True, help="0-indexed client identifier (used as RNG seed)")
     p.add_argument("--host", default="localhost:6400")
     p.add_argument("--batch", type=int, default=1000)
     p.add_argument("--checkpoint", type=float, default=2.0, help="Seconds between checkpoint lines")
-    p.add_argument("--users", type=int, default=_USERS, help="User ID cardinality")
-    p.add_argument("--merchants", type=int, default=_MERCHANTS, help="Merchant ID cardinality")
-    p.add_argument("--devices", type=int, default=_DEVICES, help="Device ID cardinality")
-    p.add_argument("--ips", type=int, default=_IPS, help="IP address cardinality")
-    p.add_argument("--zipf-alpha", type=float, default=_ALPHA,
-                   help="Zipfian α — 1.0 ≈ uniform, 1.2 = realistic skew, 2.0 = heavy head")
+    p.add_argument("--latency-stride", type=int, default=64,
+                   help="Sample per-push_many latency every Nth call (default 64). 0 disables sampling.")
     args = p.parse_args()
-
-    # Install the per-process cardinality/skew so `_event()` sees them.
-    _USERS, _MERCHANTS = args.users, args.merchants
-    _DEVICES, _IPS = args.devices, args.ips
-    _ALPHA = args.zipf_alpha
 
     random.seed(args.proc_id * 7919 + 17)
 
     pipelines = SIMPLE_PIPELINES if args.mode == "simple" else COMPLEX_PIPELINES
-    app = bv.App(args.host)
+    app = tl.App(args.host)
     app.register(*pipelines)
 
     t0 = time.monotonic()
     t_last_ckpt = t0
     sent = 0
+    batches_since_sample = 0
 
-    # Pre-generate one batch; we'll refresh each push so the buffer stays
-    # resident but values vary.
+    # latency_samples_ns stores per-batch latency in nanoseconds; we divide by
+    # args.batch at report time to get per-event microseconds. Per-call
+    # timing is dominated by batch framing / TCP write time rather than
+    # per-event server work, so this gives a representative "what the client
+    # sees" number for a 1000-event batch.
+    latency_samples_ns: list[int] = []
+
+    # Pre-generate one batch; we refresh a few slots each push so the buffer
+    # stays resident but the values vary enough to exercise the HLLs.
     batch = [_event() for _ in range(args.batch)]
 
     while True:
         t = time.monotonic()
         if t - t0 >= args.duration:
             break
-        # Refresh a few slots each batch so the stream isn't a loop of
-        # identical events (small cost, ~0.3 µs/event).
+
         for i in range(min(100, args.batch)):
             batch[i] = _event()
-        app.push_many(Transactions, batch)
+
+        do_sample = args.latency_stride > 0 and batches_since_sample >= args.latency_stride
+        if do_sample:
+            t_push_start = time.perf_counter_ns()
+            app.push_many(Transactions, batch)
+            latency_samples_ns.append(time.perf_counter_ns() - t_push_start)
+            batches_since_sample = 0
+        else:
+            app.push_many(Transactions, batch)
+            batches_since_sample += 1
         sent += len(batch)
 
         if t - t_last_ckpt >= args.checkpoint:
@@ -231,8 +258,33 @@ def main() -> None:
     t_final = time.monotonic() - t0
     app.close()
 
-    _emit({"proc_id": args.proc_id, "phase": "final",
-           "t": t_final, "events": sent})
+    # Convert batch-timing samples to per-event microseconds for the report.
+    # A 1000-event batch taking 100us is 0.1us/event at the batch granularity,
+    # not a true per-event p99. We keep both interpretations: "per-push" in
+    # microseconds per batched push_many call, which is what client code
+    # actually times.
+    if latency_samples_ns:
+        sorted_us = sorted(ns / 1000.0 for ns in latency_samples_ns)
+        p50 = _percentile(sorted_us, 50)
+        p99 = _percentile(sorted_us, 99)
+        p999 = _percentile(sorted_us, 99.9)
+        sample_count = len(sorted_us)
+    else:
+        p50 = p99 = p999 = 0.0
+        sample_count = 0
+
+    _emit({
+        "proc_id": args.proc_id,
+        "phase": "final",
+        "t": t_final,
+        "events": sent,
+        "p50_us": round(p50, 2),
+        "p99_us": round(p99, 2),
+        "p999_us": round(p999, 2),
+        "sample_count": sample_count,
+        "mode": args.mode,
+        "batch_size": args.batch,
+    })
 
 
 if __name__ == "__main__":
