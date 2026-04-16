@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Beava — the one-binary feature server</title>
+<meta name="description" content="Beava is a single-binary, Python-authored feature server. Backfill, fork a scoped replica of prod, ship — same code laptop to production. Apache 2.0.">
+<meta property="og:title" content="Beava — the one-binary feature server">
+<meta property="og:description" content="bv.fork(): scoped replica of live prod state for feature iteration. Closes the staging-data skew axis. Apache 2.0, one binary, runs anywhere.">
+<meta property="og:image" content="/assets/branding.png">
+<meta property="og:url" content="https://beava.dev/">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" href="/assets/branding.png">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header class="site-header">
+  <nav class="nav">
+    <a class="brand" href="/">
+      <img src="/assets/branding.png" alt="Beava">
+      <span class="brand-name">Beava</span>
+    </a>
+    <div class="nav-links">
+      <a href="#fork">fork()</a>
+      <a href="#quickstart">Quickstart</a>
+      <a href="#capacity">Capacity</a>
+      <a href="#cloud">Cloud</a>
+      <a class="cta" href="https://github.com/petrpan26/beava">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<main>
+<div class="layout">
+<div>
+
+<section class="hero">
+  <h1>Beava — the one-binary feature server.</h1>
+
+  <p class="lede">So what breaks when you write a real-time feature today?</p>
+
+  <p>You write Python. Someone rewrites it in Scala. Three sprints later it ships and the values don't match your offline work. You debug via Slack pings. Your PM is angry. You are angry (with yourself, with platform, with streaming, a little with yourself again).</p>
+
+  <p class="pitch">Beava is the loop that doesn't do that.</p>
+
+<pre><code><span class="k">import</span> <span class="n">beava</span> <span class="k">as</span> <span class="n">bv</span>
+
+<span class="k">with</span> <span class="n">bv</span>.<span class="f">fork</span>(<span class="s">"beava-prod.internal"</span>, <span class="n">scope</span>=<span class="o">{</span><span class="s">"user_id"</span>: <span class="s">"u123"</span><span class="o">}</span>):
+    <span class="c"># Scoped copy of live prod state. Iterate against real bytes.</span>
+    <span class="c"># Close the context → prod is untouched.</span>
+    <span class="f">print</span>(<span class="n">OnboardingSignals</span>.<span class="f">get</span>(<span class="s">"u123"</span>).<span class="n">clicks_10m</span>)
+</code></pre>
+
+  <div class="video-placeholder" id="hero-gif">
+    <strong>▶ 12-sec GIF coming soon</strong>
+    <code>bv.fork()</code> closing the 50.1-vs-47.3 skew bug in one iteration.
+    <br><br>
+    <small>(Replace this block with <code>&lt;video autoplay muted loop playsinline&gt;</code> once the recording lands.)</small>
+  </div>
+
+  <p>One file. <code>@bv.stream</code>, <code>@bv.table</code>, <code>bv.replay()</code>, <code>bv.fork()</code>. Backfill against history, fork a scoped replica of prod, ship — same code all the way through. No Scala rewrite. No handoff (we've all been there).</p>
+</section>
+
+<section>
+  <h2>Five doors</h2>
+  <div class="doors">
+    <div class="door">
+      <span class="icon">🎮</span>
+      <div class="body"><span class="label"><a href="/tutorial">Never touched a feature store?</a></span>10-minute tutorial. Synthetic data, no server. Feel the primitive before you need it.</div>
+    </div>
+    <div class="door">
+      <span class="icon">📦</span>
+      <div class="body"><span class="label"><a href="#quickstart">Engineer?</a></span><code>curl -sSL beava.dev/install | sh</code> — or <code>docker compose up</code>.</div>
+    </div>
+    <div class="door">
+      <span class="icon">💬</span>
+      <div class="body"><span class="label"><a href="https://github.com/petrpan26/beava/discussions">Have a question?</a></span>GitHub Discussion. I answer in thread.</div>
+    </div>
+    <div class="door">
+      <span class="icon">🤝</span>
+      <div class="body"><span class="label"><a href="#design-partner">Running prod real-time?</a></span>2 design-partner slots this quarter. 90 days, direct Slack channel.</div>
+    </div>
+    <div class="door">
+      <span class="icon">🏢</span>
+      <div class="body"><span class="label"><a href="#cloud">Regulated team?</a></span>Cloud waitlist. SOC2 Type II + HIPAA BAA, targeting Q4 2026.</div>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<section id="fork">
+  <h2>So what is <code>bv.fork()</code>?</h2>
+
+  <p>It's basically a <code>with</code> block that spawns a local replica of live prod state, scoped to whatever keys you care about. You iterate features against REAL production bytes — not stale staging data — then close the context and prod doesn't care.</p>
+
+  <p>That's it. That's the primitive.</p>
+
+  <p>Every other feature store makes you pick between <em>stale staging</em> (your test says 47.3, prod says 50.1, you burn two days) or <em>poke at prod and pray</em> (no isolation, your PM is angry again). Beava's third option is the whole reason I built this thing.</p>
+
+  <p>Does it solve all skew? No. <strong>It closes the staging-data skew axis.</strong> Feature-logic drift between replay and live push is still on you — if you forgot to handle late events, fork won't save you. But the "my test data is lying to me" axis, the one that actually burns two days of debugging, is gone.</p>
+
+  <h3>Fork semantics FAQ</h3>
+
+  <dl class="faq">
+    <dt>What does "scoped replica" mean technically?</dt>
+    <dd>When you enter <code>bv.fork(host, scope=filter)</code>, Beava opens a TCP connection to the prod server and requests a snapshot of all state matching the scope filter. That snapshot lives in a local in-memory replica. You compute against it; prod never sees your reads.</dd>
+
+    <dt>What about writes during the context?</dt>
+    <dd>You choose. Default is <strong>snapshot isolation</strong> — replica is frozen at entry, prod writes don't propagate. Pass <code>tail=True</code> for <strong>streaming replication</strong> — replica catches CDC updates from prod as they land. Snapshot for reproducibility; tail for realism.</dd>
+
+    <dt>My DAG has transitive keys. What does scope pull?</dt>
+    <dd>Beava walks the feature DAG and pulls every upstream dependency of the scoped keys. If <code>OnboardingSignals(user_id=u123)</code> reads from a stream filtered by a different column, the replica pulls what the DAG needs. If transitive scope exceeds a configurable budget, Beava errors rather than silently under-fetching (I got burned by this once — loud is better than quiet).</dd>
+
+    <dt>PII / data governance?</dt>
+    <dd>Scope filter is enforced server-side before data leaves prod. The prod server can require a scoped access token; the token's claims gate which keys a client can request. Audit log at <code>/debug/audit</code>. Full enterprise RBAC ships in Cloud.</dd>
+
+    <dt>Can a fork write back to prod?</dt>
+    <dd>No. Forks are read-only replicas; closing the context destroys local state. To ship a feature change, you commit the pipeline definition and <code>beava deploy</code> through your normal path.</dd>
+  </dl>
+</section>
+
+<hr>
+
+<section id="quickstart">
+  <h2>Zero to serving features</h2>
+
+<pre><code><span class="c"># One command:</span>
+curl -sSL beava.dev/install | sh
+
+<span class="c"># Or from source (if you don't trust one-liners — fair):</span>
+git clone github.com/petrpan26/beava <span class="o">&amp;&amp;</span> <span class="k">cd</span> beava <span class="o">&amp;&amp;</span> docker compose up -d
+
+<span class="c"># Then:</span>
+curl -X POST localhost:6400/pipelines -d @examples/fraud.json
+curl -X POST localhost:6400/push -d <span class="s">'{"user_id":"u1","amount":50}'</span>
+curl localhost:6400/get/u1
+</code></pre>
+
+  <p>Your first feature is live. No signup, no credit card, no YAML.</p>
+</section>
+
+<hr>
+
+<section>
+  <h2>Why Beava exists</h2>
+
+  <p><strong>The feature loop.</strong> You write a feature in Python on your laptop. You backfill against 30 days of history. You fork a scoped replica of prod, verify values match. You ship. Same file, laptop to production. Four primitives — <code>@bv.stream</code>, <code>@bv.table</code>, <code>bv.replay()</code>, <code>bv.fork()</code> — one lifecycle, one person owning the whole thing.</p>
+
+  <p><strong>One binary, any box.</strong> Beava is a single Rust binary. In-memory state. Append-only event log (group-commit fsync before ack). Binary TCP protocol or curl — your choice. Runs on a MacBook, a VPS, a Hetzner box, a k8s pod. Same binary, same config, same mental model.</p>
+
+  <p><strong>Scoped for the 99%.</strong> Teams under 1M events/sec with working sets under 128 GB. That's the long tail of real-time ML workloads — the shops where the ops cost of distributed streaming exceeds the business value of real-time. If you're past 1M eps with a platform team that actually knows Flink, you probably want Tecton or Chronon. Beava is the shortest path for everyone else.</p>
+</section>
+
+<section>
+  <h2>How Beava fits the landscape</h2>
+  <p>Feast, Tecton, Chronon — excellent feature platforms, all assuming Kafka/Flink substrate. Materialize and RisingWave — incremental SQL engines with different ergonomics. Beava is <strong>single-node first, Python-authored, scope-honest for teams where the ops cost of distributed streaming exceeds the business value.</strong> Different tools for different slopes of the scale curve.</p>
+</section>
+
+<hr>
+
+<section>
+  <h2>Demo — what you actually see</h2>
+  <ul>
+    <li><strong>12-sec GIF (inline above):</strong> <code>bv.fork()</code> closing a skew bug in one loop</li>
+    <li><strong>90-sec video</strong> (<a href="/demo">beava.dev/demo</a>): three-command quickstart, fork, shipped feature</li>
+    <li><strong>Asciinema terminal</strong> (inline): the exact command flow, pause-and-copy</li>
+    <li><strong>6-min canonical walkthrough:</strong> linked from the demo page for the curious</li>
+  </ul>
+</section>
+
+<hr>
+
+<section id="capacity">
+  <h2>Capacity</h2>
+  <p>Benchmark: 47-feature fraud pipeline. Hardware: Hetzner AX-class, 16c/128GB/NVMe. Reproduce: <code>bash benchmark/fraud-pipeline/run_bench.sh</code>. Raw output + flamegraph: <code>benchmark/fraud-pipeline/results/</code>.</p>
+
+  <div class="tablewrap">
+  <table>
+    <thead>
+      <tr><th>Workload</th><th>RAM</th><th>SSD</th><th>CPU</th><th>p99 1c</th><th>p99 8c</th><th>Cold-replay</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>1M entities × 40 features</td><td>~8 GB</td><td>50 GB</td><td>4c</td><td>~15µs</td><td>~180µs</td><td>~30s</td></tr>
+      <tr><td>10M entities × 40 features</td><td>~80 GB</td><td>500 GB</td><td>16c</td><td>~40µs</td><td>~1.6ms</td><td>~5min</td></tr>
+      <tr><td>100M entities × 40 features</td><td colspan="6">&gt;128 GB — talk to me, partner</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p><strong>Throughput ceiling:</strong> 544K eps sustained (8-proc, 8-stream).</p>
+
+  <div class="callout">
+    <strong>On p99 at 8 clients:</strong> concurrent hot-key writes contend on operator state. Single-client stays sub-50µs to 10M entities. If you have hot keys, shard or debounce them (Beava will not pretend contention isn't real). Full histogram at <code>/debug/latency</code>.
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <h2>💾 Durability, recovery, semantics</h2>
+  <ul>
+    <li><strong>Event log</strong> — fsync'd before ack, group-commit batched. Worst-case data loss: ~1s.</li>
+    <li><strong>Snapshots</strong> — every 5 min (tunable). Boot = load snapshot + replay log (~30s / 10M events).</li>
+    <li><strong>Replica</strong> — CDC from primary; manual promotion on primary death. Auto-failover is Cloud.</li>
+    <li><strong>OOM safety</strong> — fails loud at <code>BEAVA_MEMORY_LIMIT_MB</code>. Resize the box, restart. No silent corruption.</li>
+    <li><strong>Delivery</strong> — at-least-once with client retry. Exactly-once counters via <code>event_id</code> dedup.</li>
+  </ul>
+  <p>Full semantics doc: <a href="https://github.com/petrpan26/beava/blob/main/SEMANTICS.md">SEMANTICS.md</a>.</p>
+</section>
+
+<hr>
+
+<section>
+  <h2>What's in scope today</h2>
+
+  <p><strong>Shipping now (Apache 2.0, perpetual):</strong></p>
+  <ul>
+    <li>Rust server core (ingest, state, event log, snapshots)</li>
+    <li>16 operators (count, sum, avg, stddev, percentile, HLL distinct, ema, lag, …)</li>
+    <li>Python SDK (<code>@bv.stream</code>, <code>@bv.table</code>, <code>bv.replay()</code>, <code>bv.fork()</code>)</li>
+    <li>Binary TCP protocol + spec</li>
+    <li>Debug endpoints (<code>/debug/memory</code>, <code>/debug/key</code>, <code>/debug/topology</code>, <code>/debug/latency</code>)</li>
+    <li>Primary/replica replication + manual failover</li>
+    <li>Claude Code / Cursor / Codex skill</li>
+  </ul>
+</section>
+
+<section id="cloud">
+  <h2>Beava Cloud — Q4 2026 target</h2>
+  <ul>
+    <li>Managed hosting, auto-HA, multi-region</li>
+    <li><strong>SOC2 Type II</strong> + <strong>HIPAA BAA</strong></li>
+    <li>RBAC + SSO + SCIM + audit logs</li>
+  </ul>
+
+  <p>Cloud adds. Never subtracts from OSS. That's the promise, in writing (<a href="https://github.com/petrpan26/beava/blob/main/GOVERNANCE.md">GOVERNANCE.md</a>).</p>
+
+  <div class="waitlist">
+    <h3>Cloud waitlist</h3>
+    <p>Tell me your shape. I'll reply within 48 hours.</p>
+    <form action="mailto:hoang@beava.dev" method="post" enctype="text/plain">
+      <div class="form-row">
+        <input type="email" name="email" placeholder="you@company.com" required>
+        <input type="text" name="company" placeholder="Company">
+      </div>
+      <div class="form-row">
+        <select name="size">
+          <option value="">Team size</option>
+          <option>1–10</option>
+          <option>10–50</option>
+          <option>50–200</option>
+          <option>200+</option>
+        </select>
+        <select name="eps">
+          <option value="">Rough events/sec</option>
+          <option>&lt;1K</option>
+          <option>1K–10K</option>
+          <option>10K–100K</option>
+          <option>100K–1M</option>
+          <option>1M+</option>
+        </select>
+        <button type="submit">Join waitlist</button>
+      </div>
+      <div class="form-help">Compliance needs (SOC2/HIPAA/PCI) — mention in the email body.</div>
+    </form>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <h2>What people ship with Beava</h2>
+  <p>Real-time fraud scoring · session features (last-N-click) · rate limits with sliding windows · recsys freshness · gaming leaderboards · real-time dashboards · AI agent context.</p>
+</section>
+
+<section>
+  <h2>Honest limits</h2>
+  <ul>
+    <li>Pre-launch OSS. API stabilizing; minor breakage between v0.x releases.</li>
+    <li>No SOC2, HIPAA, PCI today (Cloud, Q4 2026).</li>
+    <li>Single region. No cross-region replication.</li>
+    <li>Working set must fit in RAM. 128 GB box = ~10M keyed entities.</li>
+    <li>Primary/replica ships. Automated HA failover is Cloud.</li>
+    <li>At-least-once delivery. Dedup via <code>event_id</code> for exactly-once counters.</li>
+    <li>No embedding generation today. On roadmap if demand is there.</li>
+  </ul>
+  <p>If any of those is a hard stop for you — save the link, star the repo, come back when Cloud ships.</p>
+</section>
+
+<hr>
+
+<section id="design-partner">
+  <h2>Design partners — 2 slots this quarter</h2>
+
+  <p><strong>Profile:</strong> 10K–500K events/sec in production · Python-centric ML team · Currently on Postgres-trigger-plus-cron, a home-grown real-time mess, or eval-purgatory · No SOC2-today requirement · Willing to run Beava on infra you own.</p>
+
+  <p><strong>What you get:</strong> ~10 hours/week of my time for 90 days. Direct Slack channel. 30-day commitment on any blocker. Public credit or total silence — your call.</p>
+
+  <p><strong>What I want:</strong> honest post-mortems at day 30/60/90. Pipeline shape (private fine). One-page agreement in the repo.</p>
+
+  <div class="callout warn">
+    <strong>Skin in the game, both sides:</strong> if I don't have 2 signed partners by end of Q2, I pause the marketing and reassess what I built.
+  </div>
+
+  <p style="margin-top:1.5rem"><a class="cta" href="mailto:hoang@beava.dev?subject=Design%20partner%20interest" style="background:var(--ink);color:var(--bg);padding:0.6rem 1.2rem;border-radius:6px;display:inline-block;border:0;font-weight:600">Email me your pipeline shape →</a></p>
+</section>
+
+<hr>
+
+<section>
+  <h2>Small print</h2>
+  <p>One maintainer today. Hiring a second committer for September 2026 — funded, remote, second-hire equity. Apache 2.0 means if I disappear, you can fork. Design-partner agreement includes a 90-day notice clause.</p>
+  <p>Built by Hoang Phan. Previously: Faire, Viggle, Fennel.</p>
+</section>
+
+</div>
+
+<aside class="sidebar">
+  <h3>🔧 Hiring</h3>
+  <p>Senior Rust + ML Engineer as second committer, September 2026, funded. Fully remote. <a href="mailto:hoang@beava.dev?subject=Beava%20second%20committer">Email me</a>.</p>
+
+  <h3>🛡️ Unsafe audit</h3>
+  <p>Zero <code>unsafe</code> outside FFI in the hot path. <a href="https://github.com/petrpan26/beava/blob/main/UNSAFE.md">UNSAFE.md</a>.</p>
+
+  <h3>🦫 Benchmark</h3>
+  <p>544K eps sustained on 16c Hetzner.</p>
+  <p>Reproduce:</p>
+  <pre style="font-size:0.78em;padding:0.7rem;margin:0.4rem 0 0"><code>bash benchmark/<br>fraud-pipeline/<br>run_bench.sh</code></pre>
+
+  <h3>📜 Governance</h3>
+  <p>Apache 2.0 perpetual. <a href="https://github.com/petrpan26/beava/blob/main/GOVERNANCE.md">GOVERNANCE.md</a>.</p>
+</aside>
+
+</div>
+</main>
+
+<footer>
+  <div class="footer-links">
+    <a href="https://github.com/petrpan26/beava">GitHub</a>
+    <a href="https://github.com/petrpan26/beava/discussions">Discussions</a>
+    <a href="https://github.com/petrpan26/beava/blob/main/SEMANTICS.md">Semantics</a>
+    <a href="https://github.com/petrpan26/beava/blob/main/GOVERNANCE.md">Governance</a>
+    <a href="/blog">Blog</a>
+  </div>
+  <p>Beava — Apache 2.0 · Built by <a href="https://hoangphan.dev">Hoang Phan</a></p>
+</footer>
+
+</body>
+</html>

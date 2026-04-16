@@ -29,6 +29,7 @@ deck-*.pdf
 Tally_VAS2026_Deck.pdf
 branding*.png
 beaver*.png
+!site/assets/branding*.png
 2026-*-outreach-*.md
 
 # IDE
