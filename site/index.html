@@ -90,7 +90,7 @@ WantedBy=multi-user.target
   <h2>Capability strip</h2>
   <div class="doors">
     <div class="door"><span class="icon">📦</span><div class="body"><span class="label">Single binary</span>one process · one port · one data dir · deploy under systemd (<a href="https://github.com/petrpan26/beava/blob/main/deploy/beava.service">beava.service</a>)</div></div>
-    <div class="door"><span class="icon">⚡</span><div class="body"><span class="label">544K eps sustained</span>16c Hetzner · 314K eps on 10c M-series · <a href="https://github.com/petrpan26/beava/blob/main/benchmark/README.md">benchmark/README.md</a></div></div>
+    <div class="door"><span class="icon">⚡</span><div class="body"><span class="label">302K eps sustained</span>10-core Apple M4 laptop · 47-feature fraud pipeline · <a href="https://github.com/petrpan26/beava/blob/main/benchmark/README.md">benchmark/README.md</a></div></div>
     <div class="door"><span class="icon">⏱️</span><div class="body"><span class="label">Sub-microsecond state access</span>in-process RAM, ~0.1µs hashmap lookup</div></div>
     <div class="door"><span class="icon">💾</span><div class="body"><span class="label">WAL fsync before client ack</span>snapshot every 5 min · single-node today, HA is Cloud · <a href="https://github.com/petrpan26/beava/blob/main/SEMANTICS.md">SEMANTICS.md</a></div></div>
     <div class="door"><span class="icon">🦀</span><div class="body"><span class="label">Rust, zero <code>unsafe</code> outside 4 libc FFI blocks</span>write/fdatasync/fsync in <code>event_log.rs</code>, ~15 LoC · <a href="https://github.com/petrpan26/beava/blob/main/UNSAFE.md">UNSAFE.md</a></div></div>
@@ -215,7 +215,7 @@ WantedBy=multi-user.target
 <section>
   <h2>Use cases</h2>
   <div class="doors">
-    <div class="door"><span class="icon">🛡️</span><div class="body"><span class="label">Real-time fraud scoring</span>47-feature pipeline, sub-100µs reads, 544K eps sustained</div></div>
+    <div class="door"><span class="icon">🛡️</span><div class="body"><span class="label">Real-time fraud scoring</span>47-feature pipeline, 302K events/sec on a 10-core laptop</div></div>
     <div class="door"><span class="icon">🤖</span><div class="body"><span class="label">Agent session state</span>Per-session windows with TTL eviction; replaces Postgres + Redis + cron</div></div>
     <div class="door"><span class="icon">🛒</span><div class="body"><span class="label">Session signals for recsys</span>Last-N-click, recency, velocity, distinct-merchant counts</div></div>
     <div class="door"><span class="icon">📊</span><div class="body"><span class="label">Real-time dashboards</span>Aggregations served from memory, no cache invalidation</div></div>
@@ -226,24 +226,24 @@ WantedBy=multi-user.target
 
 <section id="performance">
   <h2>Performance</h2>
-  <p>47-feature fraud pipeline, Zipfian distribution. Reproduce in 70 seconds with <code>bash benchmark/fraud-pipeline/run_bench.sh</code>.</p>
+  <p>47-feature fraud pipeline, 10K-key Zipfian distribution. Reproduce in ~75 seconds with <code>bash benchmark/fraud-pipeline/run_bench.sh</code>.</p>
 
   <div class="tablewrap">
   <table>
     <thead>
-      <tr><th>Metric</th><th>16-core Hetzner AX52</th><th>10-core M-series laptop</th></tr>
+      <tr><th>Metric</th><th>10-core Apple M4 laptop, 32 GB RAM</th></tr>
     </thead>
     <tbody>
-      <tr><td>Throughput (sustained)</td><td>544K events/sec</td><td>314K events/sec</td></tr>
-      <tr><td>Memory per entity</td><td>~8 KB</td><td>~8 KB</td></tr>
-      <tr><td>p99 reads — single-client</td><td>&lt;100µs</td><td>~3ms batched</td></tr>
-      <tr><td>p99 reads — 8-client contention</td><td>~180µs server-side</td><td>(hot-key bound)</td></tr>
-      <tr><td>Sustained load (committed baseline)</td><td>—</td><td>60s × 8 clients, no drift</td></tr>
+      <tr><td>Throughput (sustained)</td><td>302K events/sec</td></tr>
+      <tr><td>Per-event server time</td><td>3.31 µs</td></tr>
+      <tr><td>Memory per entity (47-feature fraud pipeline)</td><td>~616 KB</td></tr>
+      <tr><td>Client batch latency (1000-event <code>push_many</code>)</td><td>p50 ~2.8 ms · p99 ~137 ms</td></tr>
+      <tr><td>Sustained load</td><td>60s × 8 clients, no drift</td></tr>
     </tbody>
   </table>
   </div>
 
-  <p>Full methodology + the "how batch-p99 differs from per-event-p99" caveat: <a href="https://github.com/petrpan26/beava/blob/main/benchmark/README.md">benchmark/README.md</a>. Baseline data committed in <code>benchmark/fraud-pipeline/results/baseline/</code>.</p>
+  <p>Committed run: <code>benchmark/fraud-pipeline/results/baseline/summary.json</code>. Per-entity memory varies widely by operator mix — the 47-feature fraud pipeline carries several HLL sketches per key, so simpler pipelines run an order of magnitude less. Full methodology + the "how batch-p99 differs from per-event-p99" caveat: <a href="https://github.com/petrpan26/beava/blob/main/benchmark/README.md">benchmark/README.md</a>.</p>
 </section>
 
 <hr>

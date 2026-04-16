@@ -36,14 +36,14 @@ import time
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "..", "..", "python"))
 
-import tally as tl  # noqa: E402
+import beava as bv  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
 # Pipeline definition — 47 features across 5 entity types (Brex/Marqeta shape)
 # ---------------------------------------------------------------------------
 
-@tl.stream
+@bv.stream
 class Transactions:
     user_id: str
     merchant_id: str
@@ -55,87 +55,87 @@ class Transactions:
     currency: str
 
 
-@tl.table(key="user_id")
-def SimpleUserStats(t: Transactions) -> tl.Table:
+@bv.table(key="user_id")
+def SimpleUserStats(t: Transactions) -> bv.Table:
     """Minimal workload: 2 features per user. Used by MODE=simple to measure
     the raw ingest path without cascading fan-out cost."""
     return t.group_by("user_id").agg(
-        tx_count_1h=tl.count(window="1h"),
-        tx_sum_1h=tl.sum("amount", window="1h"),
+        tx_count_1h=bv.count(window="1h"),
+        tx_sum_1h=bv.sum("amount", window="1h"),
     )
 
 
-@tl.table(key="user_id")
-def UserTransactions(t: Transactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(t: Transactions) -> bv.Table:
     """25 features: counts, amount aggs, cardinality, last-value context."""
     return t.group_by("user_id").agg(
-        tx_count_30m=tl.count(window="30m"),
-        tx_count_1h=tl.count(window="1h"),
-        tx_count_24h=tl.count(window="24h"),
-        tx_count_7d=tl.count(window="7d"),
-        tx_sum_1h=tl.sum("amount", window="1h"),
-        tx_sum_24h=tl.sum("amount", window="24h"),
-        tx_avg_1h=tl.avg("amount", window="1h"),
-        tx_avg_24h=tl.avg("amount", window="24h"),
-        tx_max_24h=tl.max("amount", window="24h"),
-        tx_min_24h=tl.min("amount", window="24h"),
-        tx_stddev_24h=tl.stddev("amount", window="24h"),
-        unique_merchants_1h=tl.count_distinct("merchant_id", window="1h"),
-        unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
-        unique_countries_24h=tl.count_distinct("country", window="24h"),
-        unique_devices_24h=tl.count_distinct("device_id", window="24h"),
-        unique_ips_24h=tl.count_distinct("ip_address", window="24h"),
-        last_country=tl.last("country"),
-        last_merchant=tl.last("merchant_id"),
-        last_amount=tl.last("amount"),
+        tx_count_30m=bv.count(window="30m"),
+        tx_count_1h=bv.count(window="1h"),
+        tx_count_24h=bv.count(window="24h"),
+        tx_count_7d=bv.count(window="7d"),
+        tx_sum_1h=bv.sum("amount", window="1h"),
+        tx_sum_24h=bv.sum("amount", window="24h"),
+        tx_avg_1h=bv.avg("amount", window="1h"),
+        tx_avg_24h=bv.avg("amount", window="24h"),
+        tx_max_24h=bv.max("amount", window="24h"),
+        tx_min_24h=bv.min("amount", window="24h"),
+        tx_stddev_24h=bv.stddev("amount", window="24h"),
+        unique_merchants_1h=bv.count_distinct("merchant_id", window="1h"),
+        unique_merchants_24h=bv.count_distinct("merchant_id", window="24h"),
+        unique_countries_24h=bv.count_distinct("country", window="24h"),
+        unique_devices_24h=bv.count_distinct("device_id", window="24h"),
+        unique_ips_24h=bv.count_distinct("ip_address", window="24h"),
+        last_country=bv.last("country"),
+        last_merchant=bv.last("merchant_id"),
+        last_amount=bv.last("amount"),
     )
 
 
-@tl.table(key="user_id")
-def UserFailedTxns(t: Transactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserFailedTxns(t: Transactions) -> bv.Table:
     """4 features on the failed-only subset."""
     return (
-        t.filter(tl.col("status") == "failed")
+        t.filter(bv.col("status") == "failed")
         .group_by("user_id")
         .agg(
-            failed_count_30m=tl.count(window="30m"),
-            failed_count_1h=tl.count(window="1h"),
-            failed_count_24h=tl.count(window="24h"),
-            failed_sum_24h=tl.sum("amount", window="24h"),
+            failed_count_30m=bv.count(window="30m"),
+            failed_count_1h=bv.count(window="1h"),
+            failed_count_24h=bv.count(window="24h"),
+            failed_sum_24h=bv.sum("amount", window="24h"),
         )
     )
 
 
-@tl.table(key="merchant_id")
-def MerchantActivity(t: Transactions) -> tl.Table:
+@bv.table(key="merchant_id")
+def MerchantActivity(t: Transactions) -> bv.Table:
     """Merchant risk: 6 features per merchant."""
     return t.group_by("merchant_id").agg(
-        merch_tx_count_1h=tl.count(window="1h"),
-        merch_tx_count_24h=tl.count(window="24h"),
-        merch_tx_sum_24h=tl.sum("amount", window="24h"),
-        merch_avg_amount=tl.avg("amount", window="24h"),
-        merch_unique_users_1h=tl.count_distinct("user_id", window="1h"),
-        merch_max_amount_24h=tl.max("amount", window="24h"),
+        merch_tx_count_1h=bv.count(window="1h"),
+        merch_tx_count_24h=bv.count(window="24h"),
+        merch_tx_sum_24h=bv.sum("amount", window="24h"),
+        merch_avg_amount=bv.avg("amount", window="24h"),
+        merch_unique_users_1h=bv.count_distinct("user_id", window="1h"),
+        merch_max_amount_24h=bv.max("amount", window="24h"),
     )
 
 
-@tl.table(key="device_id")
-def DeviceActivity(t: Transactions) -> tl.Table:
+@bv.table(key="device_id")
+def DeviceActivity(t: Transactions) -> bv.Table:
     """Device fingerprint: 3 features per device."""
     return t.group_by("device_id").agg(
-        device_tx_count_1h=tl.count(window="1h"),
-        device_unique_users_1h=tl.count_distinct("user_id", window="1h"),
-        device_unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
+        device_tx_count_1h=bv.count(window="1h"),
+        device_unique_users_1h=bv.count_distinct("user_id", window="1h"),
+        device_unique_merchants_24h=bv.count_distinct("merchant_id", window="24h"),
     )
 
 
-@tl.table(key="ip_address")
-def IPActivity(t: Transactions) -> tl.Table:
+@bv.table(key="ip_address")
+def IPActivity(t: Transactions) -> bv.Table:
     """IP activity: 3 features per IP."""
     return t.group_by("ip_address").agg(
-        ip_tx_count_1h=tl.count(window="1h"),
-        ip_unique_users_1h=tl.count_distinct("user_id", window="1h"),
-        ip_unique_devices_24h=tl.count_distinct("device_id", window="24h"),
+        ip_tx_count_1h=bv.count(window="1h"),
+        ip_unique_users_1h=bv.count_distinct("user_id", window="1h"),
+        ip_unique_devices_24h=bv.count_distinct("device_id", window="24h"),
     )
 
 
@@ -211,7 +211,7 @@ def main() -> None:
     random.seed(args.proc_id * 7919 + 17)
 
     pipelines = SIMPLE_PIPELINES if args.mode == "simple" else COMPLEX_PIPELINES
-    app = tl.App(args.host)
+    app = bv.App(args.host)
     app.register(*pipelines)
 
     t0 = time.monotonic()

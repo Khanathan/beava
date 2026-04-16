@@ -1,5 +1,5 @@
 {
-  "timestamp": "20260416T201605Z",
+  "timestamp": "20260416T235105Z",
   "host": {
     "hostname": "Hoangs-MacBook-Pro.local",
     "platform": "darwin"
@@ -9,40 +9,40 @@
     "clients": 8,
     "worker_threads": 8,
     "warmup_seconds": 5.0,
-    "duration_seconds": 20.0
+    "duration_seconds": 60.0
   },
   "throughput": {
-    "total_events": 6382000,
-    "wall_seconds": 20.342,
-    "aggregate_eps": 313737,
-    "per_event_us": 3.19
+    "total_events": 19003000,
+    "wall_seconds": 62.868,
+    "aggregate_eps": 302267,
+    "per_event_us": 3.31
   },
   "client_push_latency_us": {
     "note": "per-push_many call time in microseconds (batch=1000 events). Each client samples every 64th call.",
     "p50_across_clients": {
-      "min": 2447.17,
-      "median": 3348.88,
-      "max": 4282.29
+      "min": 2240.12,
+      "median": 2824.17,
+      "max": 3031.71
     },
     "p99_across_clients": {
-      "min": 95965.79,
-      "median": 108616.29,
-      "max": 124826.0
+      "min": 99585.88,
+      "median": 137233.12,
+      "max": 252122.92
     },
     "p999_across_clients": {
-      "min": 95965.79,
-      "median": 108616.29,
-      "max": 124826.0
+      "min": 99585.88,
+      "median": 137233.12,
+      "max": 252122.92
     },
     "sample_counts": [
-      11,
-      11,
-      12,
-      13,
-      12,
-      12,
-      12,
-      12
+      38,
+      36,
+      37,
+      37,
+      37,
+      35,
+      36,
+      33
     ]
   },
   "server_push_latency_us": {
@@ -52,81 +52,81 @@
     "count": 0
   },
   "memory": {
-    "estimated_bytes": 6038422956,
-    "entity_count": 9799
+    "estimated_bytes": 6162260560,
+    "entity_count": 9998
   },
   "per_client": [
     {
       "proc_id": 0,
-      "events": 743000,
-      "t_seconds": 20.217,
-      "eps": 36752,
-      "p50_us": 2853.83,
-      "p99_us": 95965.79,
-      "p999_us": 95965.79
+      "events": 2487000,
+      "t_seconds": 60.468,
+      "eps": 41129,
+      "p50_us": 2260.62,
+      "p99_us": 137233.12,
+      "p999_us": 137233.12
     },
     {
       "proc_id": 1,
-      "events": 772000,
-      "t_seconds": 20.321,
-      "eps": 37990,
-      "p50_us": 2643.25,
-      "p99_us": 108616.29,
-      "p999_us": 108616.29
+      "events": 2363000,
+      "t_seconds": 60.337,
+      "eps": 39163,
+      "p50_us": 2824.17,
+      "p99_us": 134945.96,
+      "p999_us": 134945.96
     },
     {
       "proc_id": 2,
-      "events": 810000,
-      "t_seconds": 20.264,
-      "eps": 39972,
-      "p50_us": 3348.88,
-      "p99_us": 124213.75,
-      "p999_us": 124213.75
+      "events": 2442000,
+      "t_seconds": 60.271,
+      "eps": 40516,
+      "p50_us": 3010.79,
+      "p99_us": 99585.88,
+      "p999_us": 99585.88
     },
     {
       "proc_id": 3,
-      "events": 861000,
-      "t_seconds": 20.342,
-      "eps": 42326,
-      "p50_us": 2447.17,
-      "p99_us": 124826.0,
-      "p999_us": 124826.0
+      "events": 2421000,
+      "t_seconds": 60.231,
+      "eps": 40195,
+      "p50_us": 3031.71,
+      "p99_us": 102801.46,
+      "p999_us": 102801.46
     },
     {
       "proc_id": 4,
-      "events": 799000,
-      "t_seconds": 20.214,
-      "eps": 39527,
-      "p50_us": 3957.42,
-      "p99_us": 101616.46,
-      "p999_us": 101616.46
+      "events": 2418000,
+      "t_seconds": 60.243,
+      "eps": 40137,
+      "p50_us": 2319.88,
+      "p99_us": 252122.92,
+      "p999_us": 252122.92
     },
     {
       "proc_id": 5,
-      "events": 795000,
-      "t_seconds": 20.211,
-      "eps": 39334,
-      "p50_us": 4282.29,
-      "p99_us": 104420.46,
-      "p999_us": 104420.46
+      "events": 2316000,
+      "t_seconds": 60.401,
+      "eps": 38343,
+      "p50_us": 2240.12,
+      "p99_us": 145271.0,
+      "p999_us": 145271.0
     },
     {
       "proc_id": 6,
-      "events": 802000,
-      "t_seconds": 20.226,
-      "eps": 39651,
-      "p50_us": 4079.17,
-      "p99_us": 115051.67,
-      "p999_us": 115051.67
+      "events": 2364000,
+      "t_seconds": 60.39,
+      "eps": 39145,
+      "p50_us": 2829.46,
+      "p99_us": 101597.0,
+      "p999_us": 101597.0
     },
     {
       "proc_id": 7,
-      "events": 800000,
-      "t_seconds": 20.213,
-      "eps": 39578,
-      "p50_us": 2680.71,
-      "p99_us": 105407.58,
-      "p999_us": 105407.58
+      "events": 2192000,
+      "t_seconds": 62.868,
+      "eps": 34866,
+      "p50_us": 2319.38,
+      "p99_us": 189411.46,
+      "p999_us": 189411.46
     }
   ]
 }

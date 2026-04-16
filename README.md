@@ -174,7 +174,7 @@ What fork doesn't fix: feature-logic bugs that depend on timing (late events, ou
 ## Use cases
 
 ### Real-time fraud scoring
-47-feature pipeline, sub-100µs single-client reads, 544K eps sustained. See [examples/fraud/](examples/fraud/).
+47-feature pipeline, 302K events/sec sustained on a 10-core Apple M4 laptop. See [examples/fraud/](examples/fraud/).
 
 ### Agent session state, with TTL
 
@@ -199,17 +199,17 @@ Aggregations served from memory, no cache invalidation.
 
 ## Performance
 
-47-feature fraud pipeline, Zipfian distribution. Reproduce in 70 seconds with `bash benchmark/fraud-pipeline/run_bench.sh`.
+47-feature fraud pipeline, 10K-key Zipfian distribution. Reproduce in ~75 seconds with `bash benchmark/fraud-pipeline/run_bench.sh`.
 
-| Metric | 16-core Hetzner AX52 | 10-core M-series laptop |
-|--------|---|---|
-| Throughput (sustained) | 544K events/sec (Phase 42 cited, Hetzner bench not yet re-committed) | 314K events/sec (committed in `results/baseline/`) |
-| Memory per entity | ~8 KB | ~8 KB |
-| p99 reads — 8-client batched (measured) | — | ~3ms batched (1000-event batches) |
-| p99 reads — 8-client contention | ~180µs server-side | (hot-key bound) |
-| Sustained load (committed baseline) | — | 60s × 8 clients, no drift |
+| Metric | 10-core Apple M4 laptop, 32 GB RAM |
+|--------|---|
+| Throughput (sustained) | 302K events/sec |
+| Per-event server time | 3.31 µs |
+| Memory per entity (47-feature fraud pipeline) | ~616 KB |
+| Client batch latency (1000-event `push_many`) | p50 ~2.8 ms · p99 ~137 ms |
+| Sustained load | 60s × 8 clients, no drift |
 
-Per-entity memory varies widely by operator mix — the complex pipeline in the laptop baseline measured ~616 KB/entity (several HLL sketches per key); simpler pipelines run an order of magnitude less. Full methodology + the batch-p99-vs-per-event caveat: [`benchmark/README.md`](benchmark/README.md).
+Committed run: [`benchmark/fraud-pipeline/results/baseline/summary.json`](benchmark/fraud-pipeline/results/baseline/summary.json). Per-entity memory varies widely by operator mix — the 47-feature fraud pipeline carries several HLL sketches per key, so simpler pipelines run an order of magnitude less. Full methodology + the batch-p99-vs-per-event caveat: [`benchmark/README.md`](benchmark/README.md).
 
 ## Failure modes
 
