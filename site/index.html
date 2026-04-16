@@ -93,7 +93,7 @@ WantedBy=multi-user.target
     <div class="door"><span class="icon">⚡</span><div class="body"><span class="label">544K eps sustained</span>16c Hetzner · 314K eps on 10c M-series · <a href="https://github.com/petrpan26/beava/blob/main/benchmark/README.md">benchmark/README.md</a></div></div>
     <div class="door"><span class="icon">⏱️</span><div class="body"><span class="label">p99 &lt;100µs single-client · 180µs 8-client</span>HdrHistogram, 256B payload, 1M-key cardinality, coordinated-omission corrected</div></div>
     <div class="door"><span class="icon">💾</span><div class="body"><span class="label">WAL fsync before client ack</span>snapshot every 5 min · primary/replica async log-shipping · <a href="https://github.com/petrpan26/beava/blob/main/SEMANTICS.md">SEMANTICS.md</a></div></div>
-    <div class="door"><span class="icon">🦀</span><div class="body"><span class="label">Rust, zero <code>unsafe</code> outside mmap/io_uring FFI</span>~40 LoC, audited · <a href="https://github.com/petrpan26/beava/blob/main/UNSAFE.md">UNSAFE.md</a></div></div>
+    <div class="door"><span class="icon">🦀</span><div class="body"><span class="label">Rust, zero <code>unsafe</code> outside 4 libc FFI blocks</span>write/fdatasync/fsync in <code>event_log.rs</code>, ~15 LoC · <a href="https://github.com/petrpan26/beava/blob/main/UNSAFE.md">UNSAFE.md</a></div></div>
     <div class="door"><span class="icon">📜</span><div class="body"><span class="label">Apache 2.0, no CLA</span>Documented on-disk log format · <a href="https://github.com/petrpan26/beava/blob/main/GOVERNANCE.md">GOVERNANCE.md</a></div></div>
   </div>
 </section>

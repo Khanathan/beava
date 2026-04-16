@@ -71,7 +71,7 @@ If you already run Kafka + Flink + Redis, the comparison table below is the appl
 - **Sub-microsecond state access** — all state in RAM (~0.1µs `HashMap::get`)
 - **16 operators** — count, sum, avg, min, max, stddev, percentile, distinct_count (adaptive HLL++), last, first, lag, ema, last_n, exact_min, exact_max, derive
 - **Durable** — WAL fsync before client ack, snapshot every 5 min, primary/replica async log-shipping
-- **Rust, zero `unsafe` outside mmap/io_uring FFI** (~40 LoC, audited) — see [UNSAFE.md](UNSAFE.md)
+- **Rust, zero `unsafe` outside 4 libc FFI blocks** (write/fdatasync/fsync in `src/state/event_log.rs`, ~15 LoC total, audited) — see [UNSAFE.md](UNSAFE.md)
 
 ## Quick Start
 
