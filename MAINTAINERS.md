@@ -12,21 +12,23 @@ Hoang makes every call on merges, releases, and the roadmap. See
 [GOVERNANCE.md](GOVERNANCE.md) for the full decision model and bus-factor
 acknowledgment.
 
-## Planned maintainer addition
+## Bus factor of 1, disclosed up front
 
-**Second committer:** Senior Rust + ML Engineer, **targeted September
-2026**, funded.
+Today Beava has one maintainer (me). Bringing on a second committer is
+the goal but I don't have a committed timeline. The actual contingency
+is the license: Apache 2.0, no CLA. If I disappear, the codebase,
+server, SDK, and debug endpoints can be forked by anyone, with no legal
+or licensing obstacle.
 
-When this person joins:
+That's not a substitute for a second committer — it's the honest answer
+about the risk you're taking on by depending on Beava today. Two design
+partner agreements include a 90-day notice clause for exactly this
+reason.
 
-- They are added to this file.
-- They get commit and merge rights, matching Hoang's.
-- They share review load on all non-trivial PRs.
-- Release-cutting and version-tagging rotate between the two.
-
-The role is being hired in parallel with the open-source launch. If you
-are a senior Rust engineer with streaming or ML-platform experience and
-are interested, contact Hoang directly.
+If you are a senior Rust engineer with streaming or ML-platform
+experience and would consider being a second committer down the line,
+I'd love to hear from you (no role open today, but the conversation is
+worth having early).
 
 ## How to become a maintainer
 

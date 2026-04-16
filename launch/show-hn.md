@@ -24,12 +24,13 @@ over TCP, read results in microseconds. The tradeoff: bounded by RAM on
 one machine (modern instances go up to 2-4 TB). For most fraud detection
 and ML feature workloads, that's enough.
 
-The part I'm proudest of is `bv.fork()` — a Python `with` block that
-spawns a local replica of live prod state, scoped to whatever keys you
-name. You iterate features against REAL production bytes (not stale
-staging data), then close the context and prod doesn't care. Closes the
-staging-data skew axis: the bug where your test says 47.3 and prod says
-50.1 and you burn two days finding the difference.
+The piece I've been trying to get right for years is `bv.fork()` — a
+Python `with` block that spawns a local replica of live prod state,
+scoped to whatever keys you name. You iterate features against REAL
+production bytes (not stale staging data), then close the context and
+prod doesn't care. Closes the staging-data skew axis: the bug where
+your test says 47.3 and prod says 50.1 and you burn two days finding
+the difference.
 
 ```python
 import beava as bv
@@ -46,12 +47,18 @@ yourself: `bash benchmark/fraud-pipeline/run_bench.sh`.
 
 Not distributed. SQL, session windows, and event-time semantics are on
 the roadmap, not in v0. If you need distributed exactly-once across
-regions, use Flink. If you've been putting off real-time features
-because the infrastructure felt too heavy — this might be worth 5
-minutes.
+regions, Flink is the right tool. If your team already runs Flink well,
+keep running Flink — Beava isn't trying to displace that. Beava is for
+teams who haven't built that platform yet and are putting off real-time
+features because the infrastructure felt too heavy. If that sounds like
+your shop, this might be worth 5 minutes.
 
-Apache 2.0. Two design partner slots open this quarter (90 days, direct
-Slack channel). Feedback welcome — especially adversarial reads on the
-fork semantics (SEMANTICS.md is grounded in source pointers).
+Bus factor of 1, disclosed up front. Sole maintainer today. Apache 2.0
++ no CLA — if I disappear, the codebase, server, SDK, and debug
+endpoints can be forked by anyone. (Honest about the risk.)
+
+Two design partner slots open this quarter (90 days, direct Slack
+channel). Feedback welcome — especially adversarial reads on the fork
+semantics (SEMANTICS.md is grounded in source pointers).
 
 Blog post with the long-form story: https://beava.dev/blog

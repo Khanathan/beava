@@ -12,7 +12,7 @@ We pledge to make participation in the Beava community a respectful and welcomin
 
 If you observe or experience behavior inconsistent with this code, report it to **hoang at beava.dev** (the current sole maintainer — see `MAINTAINERS.md`). Reports are handled confidentially.
 
-Once a second committer joins (targeted September 2026 per `MAINTAINERS.md`), reporting channels and handling procedures will be updated accordingly.
+If a second committer joins down the line (see `MAINTAINERS.md` — bus factor of 1 today, no committed timeline), reporting channels and handling procedures will be updated accordingly.
 
 ## Scope
 

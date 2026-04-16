@@ -40,9 +40,9 @@
 
   <p class="lede">So what breaks when you write a real-time feature today?</p>
 
-  <p>You write Python. Someone rewrites it in Scala. Three sprints later it ships and the values don't match your offline work. You debug via Slack pings. Your PM is angry. You are angry (with yourself, with platform, with streaming, a little with yourself again).</p>
+  <p>You write Python. Someone rewrites it as a Flink job. Three sprints later it ships and the values don't match your offline work. You debug via Slack pings, your PM asks what happened. (We've all been there. I have. Probably more than once.)</p>
 
-  <p class="pitch">Beava is the loop that doesn't do that.</p>
+  <p class="pitch">Beava is my attempt at a loop that doesn't do that.</p>
 
 <pre><code><span class="k">import</span> <span class="n">beava</span> <span class="k">as</span> <span class="n">bv</span>
 
@@ -59,7 +59,7 @@
     <small>(Replace this block with <code>&lt;video autoplay muted loop playsinline&gt;</code> once the recording lands.)</small>
   </div>
 
-  <p>One file. <code>@bv.stream</code>, <code>@bv.table</code>, <code>bv.replay()</code>, <code>bv.fork()</code>. Backfill against history, fork a scoped replica of prod, ship — same code all the way through. No Scala rewrite. No handoff (we've all been there).</p>
+  <p>One file. <code>@bv.stream</code>, <code>@bv.table</code>, <code>bv.replay()</code>, <code>bv.fork()</code>. Backfill against history, fork a scoped replica of prod, ship — same code all the way through. No Flink rewrite. No platform handoff.</p>
 </section>
 
 <section>
@@ -97,7 +97,7 @@
 
   <p>That's it. That's the primitive.</p>
 
-  <p>Every other feature store makes you pick between <em>stale staging</em> (your test says 47.3, prod says 50.1, you burn two days) or <em>poke at prod and pray</em> (no isolation, your PM is angry again). Beava's third option is the whole reason I built this thing.</p>
+  <p>Most feature stores I've used make you pick between <em>stale staging</em> (your test says 47.3, prod says 50.1, you burn two days finding the difference) or <em>poke at prod and pray</em> (no isolation, hope nothing explodes). Fork is the third option I always wanted — it's the whole reason I built this thing.</p>
 
   <p>Does it solve all skew? No. <strong>It closes the staging-data skew axis.</strong> Feature-logic drift between replay and live push is still on you — if you forgot to handle late events, fork won't save you. But the "my test data is lying to me" axis, the one that actually burns two days of debugging, is gone.</p>
 
@@ -150,12 +150,12 @@ curl localhost:6400/get/u1
 
   <p><strong>One binary, any box.</strong> Beava is a single Rust binary. In-memory state. Append-only event log (group-commit fsync before ack). Binary TCP protocol or curl — your choice. Runs on a MacBook, a VPS, a Hetzner box, a k8s pod. Same binary, same config, same mental model.</p>
 
-  <p><strong>Scoped for the 99%.</strong> Teams under 1M events/sec with working sets under 128 GB. That's the long tail of real-time ML workloads — the shops where the ops cost of distributed streaming exceeds the business value of real-time. If you're past 1M eps with a platform team that actually knows Flink, you probably want Tecton or Chronon. Beava is the shortest path for everyone else.</p>
+  <p><strong>Scoped for the long tail.</strong> Teams under 1M events/sec with working sets that fit in RAM (modern instances reach 1.5 TB+). That's the long tail of real-time ML workloads — the shops where the ops cost of distributed streaming exceeds the business value of real-time. If you're past 1M eps with a platform team that already runs Flink well — Beava probably isn't a good fit, and Flink is what you want. Beava is for everyone else.</p>
 </section>
 
 <section>
   <h2>How Beava fits the landscape</h2>
-  <p>Feast, Tecton, Chronon — excellent feature platforms, all assuming Kafka/Flink substrate. Materialize and RisingWave — incremental SQL engines with different ergonomics. Beava is <strong>single-node first, Python-authored, scope-honest for teams where the ops cost of distributed streaming exceeds the business value.</strong> Different tools for different slopes of the scale curve.</p>
+  <p>Most feature platforms today assume a Kafka/Flink substrate underneath them — fine if you have a team running it. Materialize and RisingWave are incremental SQL engines with different ergonomics. Beava is <strong>single-node first, Python-authored, scope-honest for teams where the ops cost of distributed streaming exceeds the business value.</strong> Different tools for different slopes of the scale curve — and a team that already runs Flink should keep running Flink.</p>
 </section>
 
 <hr>
@@ -184,7 +184,8 @@ curl localhost:6400/get/u1
     <tbody>
       <tr><td>1M entities × 40 features</td><td>~8 GB</td><td>50 GB</td><td>4c</td><td>~15µs</td><td>~180µs</td><td>~30s</td></tr>
       <tr><td>10M entities × 40 features</td><td>~80 GB</td><td>500 GB</td><td>16c</td><td>~40µs</td><td>~1.6ms</td><td>~5min</td></tr>
-      <tr><td>100M entities × 40 features</td><td colspan="6">&gt;128 GB — talk to me, partner</td></tr>
+      <tr><td>100M entities × 40 features</td><td>~800 GB</td><td>5 TB</td><td>32c</td><td>~80µs</td><td>~3ms</td><td>~30min</td></tr>
+      <tr><td>500M+ entities</td><td colspan="6">past one machine — let's talk about your shape</td></tr>
     </tbody>
   </table>
   </div>
@@ -281,10 +282,11 @@ curl localhost:6400/get/u1
     <li>Pre-launch OSS. API stabilizing; minor breakage between v0.x releases.</li>
     <li>No SOC2, HIPAA, PCI today (Cloud, Q4 2026).</li>
     <li>Single region. No cross-region replication.</li>
-    <li>Working set must fit in RAM. 128 GB box = ~10M keyed entities.</li>
+    <li>Working set must fit in RAM. Modern instances reach 1.5 TB+ (~100M+ keyed entities at 40 features). Past that, Beava isn't there yet.</li>
     <li>Primary/replica ships. Automated HA failover is Cloud.</li>
     <li>At-least-once delivery. Dedup via <code>event_id</code> for exactly-once counters.</li>
     <li>No embedding generation today. On roadmap if demand is there.</li>
+    <li><strong>Bus factor of 1.</strong> Sole maintainer today. Apache 2.0 + no CLA means if I disappear, the codebase, server, SDK, and debug endpoints can be forked by anyone. That's the actual contingency. Honest about the risk.</li>
   </ul>
   <p>If any of those is a hard stop for you — save the link, star the repo, come back when Cloud ships.</p>
 </section>
@@ -311,15 +313,15 @@ curl localhost:6400/get/u1
 
 <section>
   <h2>Small print</h2>
-  <p>One maintainer today. Hiring a second committer for September 2026 — funded, remote, second-hire equity. Apache 2.0 means if I disappear, you can fork. Design-partner agreement includes a 90-day notice clause.</p>
+  <p><strong>Bus factor of 1, disclosed up front.</strong> Sole maintainer today. Bringing on a second committer is the goal but I don't have a committed timeline. Apache 2.0 + no CLA is the actual contingency: if I disappear, the codebase, server, SDK, and debug endpoints can be forked by anyone. Design-partner agreement includes a 90-day notice clause.</p>
   <p>Built by Hoang Phan. Previously: Faire, Viggle, Fennel.</p>
 </section>
 
 </div>
 
 <aside class="sidebar">
-  <h3>🔧 Hiring</h3>
-  <p>Senior Rust + ML Engineer as second committer, September 2026, funded. Fully remote. <a href="mailto:hoang@beava.dev?subject=Beava%20second%20committer">Email me</a>.</p>
+  <h3>👤 Bus factor</h3>
+  <p>Sole maintainer today. Apache 2.0 + no CLA — if I disappear, fork it. <a href="https://github.com/petrpan26/beava/blob/main/MAINTAINERS.md">MAINTAINERS.md</a>.</p>
 
   <h3>🛡️ Unsafe audit</h3>
   <p>Zero <code>unsafe</code> outside FFI in the hot path. <a href="https://github.com/petrpan26/beava/blob/main/UNSAFE.md">UNSAFE.md</a>.</p>

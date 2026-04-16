@@ -97,8 +97,10 @@ Reproduce: `bash benchmark/fraud-pipeline/run_bench.sh`
 
 Apache 2.0. ~22K lines of Rust + ~2.3K lines of Python SDK.
 [UNSAFE.md](https://github.com/petrpan26/beava/blob/main/UNSAFE.md) audits
-the 4 unsafe blocks (all libc FFI in `event_log.rs`). Feedback on the
-concurrency model or the ring buffer design welcome.
+the 4 unsafe blocks (all libc FFI in `event_log.rs`). Bus factor of 1
+disclosed up front — sole maintainer today, Apache 2.0 + no CLA is the
+contingency. Feedback on the concurrency model or the ring buffer design
+welcome.
 
 https://github.com/petrpan26/beava
 
@@ -218,6 +220,10 @@ Apache 2.0. Two design partner slots open this quarter — 10 hrs/week of
 my time for 90 days, direct Slack channel. Profile + agreement on the
 landing page.
 
+Bus factor of 1, disclosed up front. Sole maintainer today. Apache 2.0
++ no CLA means if I disappear, you can fork everything. (Honest about
+the risk.)
+
 https://github.com/petrpan26/beava
 
 Longer story: [Streaming Shouldn't Require a Platform Team](https://github.com/petrpan26/beava/blob/main/docs/blog/streaming-shouldnt-require-a-platform-team.md)
@@ -285,7 +291,8 @@ no degradation. Reproduce yourself: `bash benchmark/fraud-pipeline/run_bench.sh`
 - You need exactly-once distributed processing across regions.
 - You need the Kafka connector ecosystem (JDBC sinks, S3 sources, etc.)
 - You already have a working Flink stack and the ops cost is
-  acceptable. Don't rip out working infrastructure.
+  acceptable. Don't rip out working infrastructure — Flink's the right
+  tool there.
 - You need event-time watermarks with late-arrival handling (on the
   roadmap, not in v0).
 - You need SOC2, HIPAA, or PCI today. Beava Cloud, Q4 2026 target.
@@ -303,6 +310,9 @@ no degradation. Reproduce yourself: `bash benchmark/fraud-pipeline/run_bench.sh`
 The full story: [Streaming Shouldn't Require a Platform Team](https://github.com/petrpan26/beava/blob/main/docs/blog/streaming-shouldnt-require-a-platform-team.md)
 
 Apache 2.0: https://github.com/petrpan26/beava
+
+Bus factor of 1 disclosed up front — sole maintainer today, Apache 2.0
++ no CLA is the contingency.
 
 Happy to answer questions about the architecture, the benchmarks, or
 where this fits relative to tools you're already running.

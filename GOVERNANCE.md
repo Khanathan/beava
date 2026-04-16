@@ -16,10 +16,18 @@ intended fallback. There is no succession plan encoded in the repo
 besides "it is Apache 2.0 and the code is on GitHub." That is enough for
 a project at this stage; it will not be enough at v1.0 scale.
 
-## Commitment to a second committer
+## Bus factor of 1 — disclosed up front
 
-We plan to hire a **Senior Rust + ML engineer** with commit rights by
-**September 2026**. Funding is secured. Once they join:
+Beava has one maintainer (Hoang) today. Bringing on a second committer
+is a goal — there's no committed timeline behind it.
+
+The honest contingency is the license: Apache 2.0 with no CLA. If Hoang
+disappears, the codebase, server, SDK, debug endpoints, and Claude
+skill can be forked by anyone, with no legal or licensing obstacle.
+That's not a substitute for a second committer; it's the actual
+disclosure of what you're depending on if you build on Beava today.
+
+When a second committer does join:
 
 - They share review load on all non-trivial PRs.
 - They have unilateral merge authority on bug-fix and documentation
@@ -28,9 +36,7 @@ We plan to hire a **Senior Rust + ML engineer** with commit rights by
 - Architecture decisions require alignment between the two maintainers;
   Hoang retains tie-break until a third maintainer joins.
 
-This timeline is a commitment, not a roadmap bullet. If we miss it, that's
-on us, and we'll update this document to reflect whatever the real
-situation is.
+This document will be updated when that happens — not before.
 
 ## What stays Apache 2.0 forever
 
@@ -138,7 +144,7 @@ responsibility, not ours.
 - Approval is a single maintainer's `Approve` + green CI. No
   multi-maintainer sign-off required.
 
-**From September 2026 (two maintainers):**
+**Once a second committer joins (two maintainers — no committed timeline today):**
 
 - Hoang and the second committer share review load.
 - Either maintainer can merge bug fixes and documentation.

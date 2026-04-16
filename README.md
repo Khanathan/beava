@@ -13,13 +13,12 @@
 
 So what breaks when you write a real-time feature today ?
 
-You write Python. Someone rewrites it in Scala. Three sprints later it
-ships and the values don't match your offline work. You debug via Slack
-pings to someone who doesn't own the business context. Your PM is angry.
-You are angry (with yourself, with platform, with streaming, a little
-with yourself again).
+You write Python. Someone rewrites it as a Flink job. Three sprints
+later it ships and the values don't match your offline work. You debug
+via Slack pings, your PM asks what happened. (We've all been there. I
+have. Probably more than once.)
 
-**Beava is the loop that doesn't do that.**
+**Beava is my attempt at a loop that doesn't do that.**
 
 ```python
 import beava as bv
@@ -32,7 +31,7 @@ with bv.fork("beava-prod.internal", scope={"user_id": "u123"}):
 
 One file. `@bv.stream`, `@bv.table`, `bv.replay()`, `bv.fork()`. Backfill
 against history. Fork a scoped replica of prod. Ship. Same code laptop
-to production. No Scala rewrite, no handoff (we've all been there).
+to production. No Flink rewrite, no platform handoff.
 
 - [So what is Beava ?](#so-what-is-beava-)
 - [Quick Start](#quick-start-60-seconds)
@@ -57,10 +56,11 @@ The four primitives are the whole API:
 - `bv.replay()` — backfill against historical events
 - `bv.fork()` — scoped replica of live prod state for feature iteration
 
-That last one is the part I'm proudest of. Every other feature store
-makes you pick between *stale staging* (your test says 47.3, prod says
-50.1, you burn two days) or *poke at prod and pray* (no isolation, your
-PM is angry again). Fork is the third option.
+That last one is the piece I've been trying to get right for years.
+Most feature stores I've used make you pick between *stale staging*
+(your test says 47.3, prod says 50.1, you burn two days finding the
+difference) or *poke at prod and pray* (no isolation, hope nothing
+explodes). Fork is the third option I always wanted.
 
 **Use cases:** real-time fraud scoring · ML feature serving · session
 features (last-N-click) · rate limits with sliding windows · recsys
@@ -285,11 +285,13 @@ of work on one node.
 | Ops burden | Check the dashboard | 0.5-1.0 FTE |
 | Infra cost (50K eps) | ~$400/mo (one node) | $3-5K/mo |
 
-Beava is for the 99% of use cases that fit on a single node. If you
-need distributed exactly-once processing, multi-TB state, or the Kafka
-connector ecosystem, use Flink. Flink and Kafka are excellent systems
-built by smart people. Beava exists because most teams don't need that
-complexity.
+Beava is aimed at use cases that fit on a single node — which is
+honestly most of them. If you need distributed exactly-once processing
+across regions, multi-TB state, or the Kafka connector ecosystem, Flink
+is the right tool. Flink and Kafka are excellent systems built by smart
+people, and a team that already runs them well shouldn't switch. Beava
+exists for the long tail of teams who don't have that platform team —
+not as a replacement for the ones who do.
 
 See [full comparison](docs/comparison.md) for the deeper analysis.
 
@@ -298,10 +300,16 @@ See [full comparison](docs/comparison.md) for the deeper analysis.
 - Pre-launch OSS. API stabilizing — minor breakage between v0.x releases.
 - No SOC2, HIPAA, or PCI today. (Beava Cloud, Q4 2026 target.)
 - Single region. No cross-region replication.
-- Working set must fit in RAM. 128 GB box ≈ 10M keyed entities.
+- Working set must fit in RAM. Modern instances go to 1.5 TB+
+  (~100M+ keyed entities at 40 features). Past that, Beava isn't there
+  yet.
 - Primary/replica ships. Automated HA failover is Cloud.
 - At-least-once delivery. Dedup via `event_id` for exactly-once counters.
 - No embedding generation today. On roadmap if anyone wants it enough.
+- **Bus factor of 1.** Sole maintainer today. Apache 2.0 + no CLA means
+  if I disappear, the codebase, server, SDK, and debug endpoints can be
+  forked by anyone. That's the actual contingency. Honest about the
+  risk.
 
 If any of those is a hard stop for you — star the repo, come back when
 Cloud ships the compliance tier.
@@ -316,7 +324,7 @@ Cloud ships the compliance tier.
 - [Fork Semantics](SEMANTICS.md) — consistency model, dedup, watermarks
 - [Comparison](docs/comparison.md) — Beava vs Flink+Kafka+Redis: cost, complexity, performance
 - [Governance](GOVERNANCE.md) — Apache 2.0 perpetuity, Cloud line-drawing, trademark posture
-- [Maintainers](MAINTAINERS.md) — sole maintainer today, hiring a second committer (Sept 2026)
+- [Maintainers](MAINTAINERS.md) — sole maintainer today, bus factor disclosed
 - [Unsafe Audit](UNSAFE.md) — every unsafe block, line by line
 
 ## Architecture
