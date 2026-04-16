@@ -108,8 +108,8 @@ fn test_config_emitter_dedupes_across_polls() {
         copy_paste: "@tl.table(key=\"user_id\", ttl=\"60d\")".into(),
     };
     // Simulate three polling cycles.
-    emit_config_recommendations(&state.signals, &[rec.clone()]);
-    emit_config_recommendations(&state.signals, &[rec.clone()]);
+    emit_config_recommendations(&state.signals, std::slice::from_ref(&rec));
+    emit_config_recommendations(&state.signals, std::slice::from_ref(&rec));
     emit_config_recommendations(&state.signals, &[rec]);
 
     let reg = state.signals.read();
