@@ -11,7 +11,6 @@ Exposes:
 
 from __future__ import annotations
 
-import typing
 from typing import Any
 
 from beava._types_core import (

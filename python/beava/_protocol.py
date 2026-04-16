@@ -231,7 +231,6 @@ def encode_push_batch(stream_name: str, events, batch_id: int) -> bytes:
     u16_pack = _U16.pack
     i64_pack = _I64.pack
     f64_pack = _F64.pack
-    u32_pack = _U32.pack
     u32_pack_into = _U32.pack_into
     _PLACEHOLDER = b'\x00\x00\x00\x00'
     for event in events:
@@ -354,35 +353,6 @@ def encode_push_table(table_name: str, key: str, fields: dict) -> bytes:
         + encode_string(key)
         + json.dumps(fields).encode("utf-8")
     )
-
-
-def encode_get_multi(table_names: list[str], key: str) -> bytes:
-    """Encode an OP_GET_MULTI payload (Phase 25-01).
-
-    Wire format: ``[u16 count][count × u16-string table_name][u16-string key]``.
-
-    Raises :class:`ProtocolError` if ``table_names`` is empty, exceeds the
-    server-side 256 cardinality guard, or carries a single name longer
-    than ``u16::MAX`` bytes.
-    """
-    if not table_names:
-        raise ProtocolError("GET_MULTI requires at least one table_name")
-    if len(table_names) > 256:
-        raise ProtocolError(
-            f"GET_MULTI table_names count exceeds 256: got {len(table_names)}"
-        )
-    parts = bytearray()
-    parts.extend(_U16.pack(len(table_names)))
-    for name in table_names:
-        name_bytes = name.encode("utf-8")
-        _check_u16_len(f"table_name {name!r}", name_bytes)
-        parts.extend(_U16.pack(len(name_bytes)))
-        parts.extend(name_bytes)
-    key_bytes = key.encode("utf-8")
-    _check_u16_len("key", key_bytes)
-    parts.extend(_U16.pack(len(key_bytes)))
-    parts.extend(key_bytes)
-    return bytes(parts)
 
 
 def encode_get_multi(table_names: list[str], key: str) -> bytes:

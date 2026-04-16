@@ -11,7 +11,6 @@ Plan 21-01 shipped the class form. Plan 21-02 adds:
 from __future__ import annotations
 
 import inspect
-import typing
 from types import FunctionType
 from typing import Any
 
