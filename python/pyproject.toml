@@ -6,7 +6,27 @@ build-backend = "hatchling.build"
 name = "beava"
 version = "0.1.0"
 requires-python = ">=3.10"
-description = "Python SDK for Beava real-time feature server"
+description = "Python SDK for Beava: real-time feature server with composable streaming pipelines."
+readme = "../README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Hoang Phan", email = "phan.minhhoang2606@gmail.com" }]
+keywords = ["streaming", "real-time", "feature-store", "rust", "python"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://beava.dev"
+Repository = "https://github.com/petrpan26/beava"
+Issues = "https://github.com/petrpan26/beava/issues"
 
 [project.scripts]
 # Plan 25-03: stdlib-only operator CLI. Backs `beava suggest-config`,
