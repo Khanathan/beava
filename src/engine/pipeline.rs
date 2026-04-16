@@ -355,6 +355,7 @@ impl Projection {
 
 /// A stream definition: a named stream with a key field and a list of named features.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct StreamDefinition {
     pub name: String,
     /// Key field for entity extraction. None = keyless stream (raw event ingestion).
@@ -391,24 +392,6 @@ pub struct StreamDefinition {
     pub max_keys: Option<u64>,
 }
 
-impl Default for StreamDefinition {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            key_field: None,
-            group_by_keys: None,
-            features: Vec::new(),
-            depends_on: None,
-            filter: None,
-            entity_ttl: None,
-            history_ttl: None,
-            projection: None,
-            ephemeral: None,
-            pipeline_ttl: None,
-            max_keys: None,
-        }
-    }
-}
 
 /// The pipeline engine. Holds registered stream definitions and coordinates
 /// the push-through flow.
@@ -1578,10 +1561,7 @@ impl PipelineEngine {
                     .propagate_stateless(stream_name, stream_in_order);
                 // Compose the right-side lookup key from the effective event.
                 let right_key =
-                    match crate::engine::register::encode_group_by(&on_keys, &effective_event) {
-                        Ok(k) => k,
-                        Err(e) => return Err(e),
-                    };
+                    crate::engine::register::encode_group_by(&on_keys, &effective_event)?;
                 // Point-in-time lookup of the right table's current row.
                 // We snapshot the static_features map (direct SET writes) —
                 // Stream↔Table enrichment reads only overwrite-mode Table

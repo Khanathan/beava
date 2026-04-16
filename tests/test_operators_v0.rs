@@ -123,7 +123,7 @@ fn test_min_bucket_granular() {
         FeatureValue::Float(3.0)
     );
     // After expiry of bucket 0, min should become 3.0 (only remaining bucket).
-    let later = t0 + Duration::from_secs(3 * 60);
+    let _later = t0 + Duration::from_secs(3 * 60);
     // Advance past the whole window: all buckets expire → Missing.
     let far = t0 + Duration::from_secs(10 * 60);
     assert_eq!(op.read(far), FeatureValue::Missing);

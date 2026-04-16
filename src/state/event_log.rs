@@ -90,7 +90,7 @@ impl LockFreeStreamLog {
     pub fn open(path: &Path, stream_name: String) -> io::Result<Self> {
         let file = File::options()
             .create(true)
-            .write(true)
+            
             .append(true)
             .open(path)?;
         Ok(Self {

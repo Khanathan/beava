@@ -1182,7 +1182,7 @@ fn handle_push_core_ex(
     let sample_n = state
         .latency_sample_counter
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if sample_n % LATENCY_SAMPLE_STRIDE == 0 {
+    if sample_n.is_multiple_of(LATENCY_SAMPLE_STRIDE) {
         let mut latency = state.latency.lock();
         latency.record_push(stream_name, push_us, std::time::Instant::now());
         if latency.slow_queries_would_accept(crate::server::latency::CommandKind::Push, push_us) {

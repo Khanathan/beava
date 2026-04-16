@@ -46,8 +46,8 @@ fn poll_signal_sources(state: &SharedState) {
     //    Threshold: 1 drop/sec default (placeholder SLO per CONTEXT).
     let drops: Vec<(String, u64)> = {
         let engine = state.engine.read();
-        let snap = engine.late_drops.snapshot();
-        snap
+        
+        engine.late_drops.snapshot()
     };
     signals::emit_late_drop_signals(&state.signals, &drops, now, 1.0);
 
@@ -111,11 +111,7 @@ fn main() {
             .find_map(|(i, a)| {
                 if a == "--local-port" {
                     args.get(i + 3).cloned()
-                } else if let Some(rest) = a.strip_prefix("--local-port=") {
-                    Some(rest.to_string())
-                } else {
-                    None
-                }
+                } else { a.strip_prefix("--local-port=").map(|rest| rest.to_string()) }
             })
             .unwrap_or_else(|| "7400".into());
         // `--local-port` is the scientist-facing HTTP port (tl.Client,
