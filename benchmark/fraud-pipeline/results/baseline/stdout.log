@@ -1,0 +1,62 @@
+
+[1m==> Beava fraud-pipeline benchmark — 2026-04-16 20:16:05Z[0m
+Host: Darwin arm64, 10 cores
+Config: MODE=complex CLIENTS=8 WORKER_THREADS=8 WARMUP=5s DURATION=20s
+Results: /Users/petrpan26/work/tally/.claude/worktrees/agent-a6317817/benchmark/fraud-pipeline/results/20260416T201605Z
+Binary: /Users/petrpan26/work/tally/.claude/worktrees/agent-a6317817/target/release/tally
+
+[1m==> Starting server on TCP=6400 HTTP=6401 threads=8[0m
+Server ready (pid=89471, data=/var/folders/m2/s1yp9jkj11b68p2mgcr3thw80000gn/T/beava-bench-data.XXXXXX.1vtyyO4IVN)
+
+[1m==> Warmup 5s (output discarded)[0m
+
+[1m==> Measuring 20s (live EPS every 5s)[0m
+    t=  5.1s  events=     1596000  instant=    314173 eps  avg=    314173 eps
+    t= 10.1s  events=     3174000  instant=    311857 eps  avg=    313017 eps
+    t= 15.2s  events=     4779000  instant=    316568 eps  avg=    314201 eps
+    t= 20.3s  events=     6382000  instant=    312475 eps  avg=    313765 eps
+
+[1m==> Aggregating[0m
+
+[1m==> STEADY-STATE SUMMARY[0m
+    Config:       complex pipeline, 8 clients, 8 server threads
+    Duration:     20s measured (+5s warmup)
+    Events:       6,382,000
+    Aggregate:    313,737 events/sec
+    Per event:    3.19 microseconds
+
+    Client push_many latency (microseconds per 1000-event batch call):
+                   median across clients    worst across clients
+      p50       :       3,348.9                 4,282.3
+      p99       :     108,616.3               124,826.0
+      p99.9     :     108,616.3               124,826.0
+
+    Server-side PUSH latency (microseconds; from /debug/latency):
+      p50       :           0.0
+      p95       :           0.0
+      p99       :           0.0
+      count     :             0
+
+    Memory:       5,758.7 MB across ~9,799 per-stream keys
+                  (616,228 bytes per entity)
+
+    Per-client throughput:
+      proc-0:   743,000 events in  20.22s =    36,752 eps
+      proc-1:   772,000 events in  20.32s =    37,990 eps
+      proc-2:   810,000 events in  20.26s =    39,972 eps
+      proc-3:   861,000 events in  20.34s =    42,326 eps
+      proc-4:   799,000 events in  20.21s =    39,527 eps
+      proc-5:   795,000 events in  20.21s =    39,334 eps
+      proc-6:   802,000 events in  20.23s =    39,651 eps
+      proc-7:   800,000 events in  20.21s =    39,578 eps
+
+
+[1m==> DONE[0m
+    summary.json:  /Users/petrpan26/work/tally/.claude/worktrees/agent-a6317817/benchmark/fraud-pipeline/results/20260416T201605Z/summary.json
+    stdout.log:    /Users/petrpan26/work/tally/.claude/worktrees/agent-a6317817/benchmark/fraud-pipeline/results/20260416T201605Z/stdout.log
+    server.log:    /Users/petrpan26/work/tally/.claude/worktrees/agent-a6317817/benchmark/fraud-pipeline/results/20260416T201605Z/server.log
+    per-client:    /Users/petrpan26/work/tally/.claude/worktrees/agent-a6317817/benchmark/fraud-pipeline/results/20260416T201605Z/measure-*.jsonl
+
+Compare throughput against the Phase-42 Hetzner baseline (544K eps, 16-core).
+On laptops, 60-200K eps is typical; numbers scale near-linearly with core count up to
+~8 client/worker pairs before lock and kernel-network overhead flattens the curve.
