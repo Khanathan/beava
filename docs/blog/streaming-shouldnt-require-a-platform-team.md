@@ -31,32 +31,32 @@ The tradeoff is real: you're bounded by the RAM on one machine. But durability i
 
 ## What v0 ships
 
-[Tally](https://github.com/petrpan26/tally) is a single Rust binary. Define pipelines, push events over TCP, read results from memory.
+[Beava](https://github.com/petrpan26/beava) is a single Rust binary. Define pipelines, push events over TCP, read results from memory.
 
 The surface in v0 is deliberately small. Two types. One query model. One event-time story. Everything else is either built on those primitives or explicitly deferred.
 
 **Two types.** A `Stream` is an append-only log of events keyed by a field you choose. A `Table` is keyed current-state you upsert into directly, or derive from one or more Streams by writing a function. Class-form decorators declare sources; function-form decorators declare derivations. The DAG is auto-discovered from the function's parameter types — there's no separate topology file.
 
-**DataFrame-parity operators.** `filter`, `map`, `select`, `drop`, `rename`, `with_columns`, `cast`, `fillna`, `group_by().agg()`, `join`, `union`. If you've written pandas or Polars, the shape is already familiar. Expressions are built with `tl.col("field")` and the usual arithmetic / comparison / boolean surface.
+**DataFrame-parity operators.** `filter`, `map`, `select`, `drop`, `rename`, `with_columns`, `cast`, `fillna`, `group_by().agg()`, `join`, `union`. If you've written pandas or Polars, the shape is already familiar. Expressions are built with `bv.col("field")` and the usual arithmetic / comparison / boolean surface.
 
 **Aggregation catalog.** `count`, `sum`, `avg`, `variance`, `stddev`, `min`, `max`, `first`, `last`, `first_n`, `last_n`, `ema`, `lag` as exact operators, plus three hybrid-sketch operators: `percentile` (UDDSketch with a configurable exact → approximate transition), `count_distinct` (exact-set → HLL at cardinality cap), and `top_k` (Count-Min Sketch plus a heap of candidates). The hybrids start exact and switch to the sketch when they outgrow the memory budget — you see a one-time α-drift when that boundary is crossed, documented per-operator, rather than a permanent approximation tax.
 
 **Joins.** Stream↔Stream windowed (inner and left) with a `within=` duration. Stream↔Table enrichment: every PUSH to the Stream looks up the current Table row for its join key and emits an enriched event. Table↔Table same-key joins for merging current-state records across entities.
 
-**Event time.** Events carry an optional timestamp in a reserved `_event.timestamp` field; operators bucket by event time, not wall-clock arrival time. A fixed 5-second watermark admits late events up to that bound; beyond it they're rejected with an incrementing `tally_late_events_dropped_total{stream}` counter. Tunable lateness ships post-v0.
+**Event time.** Events carry an optional timestamp in a reserved `_event.timestamp` field; operators bucket by event time, not wall-clock arrival time. A fixed 5-second watermark admits late events up to that bound; beyond it they're rejected with an incrementing `beava_late_events_dropped_total{stream}` counter. Tunable lateness ships post-v0.
 
 **Query surface.** `GET key` returns every feature for that key across every Stream and Table. `MGET` batches across keys. `GET_MULTI` batches across Tables in one round trip with null-collapse — if a key is missing in a Table, that Table's columns come back as `null` rather than failing the whole read.
 
 **TTLs.** Tables default to 30-day retention, Stream history to 90 days, tombstones to a 7-day grace window. All configurable per-entity.
 
-**Observability.** `/metrics` exposes the Prometheus surface: `tally_events_total`, `tally_current_eps`, `tally_push_latency_p99_seconds`, `tally_late_events_dropped_total{stream}`, memory, keys, snapshot counters. `/debug/warnings` is a unified feed of anything the server wants to flag — hot keys, rising late-drop rates, config smells. A `tally suggest-config` CLI reads live server state and tells you what to change.
+**Observability.** `/metrics` exposes the Prometheus surface: `beava_events_total`, `beava_current_eps`, `beava_push_latency_p99_seconds`, `beava_late_events_dropped_total{stream}`, memory, keys, snapshot counters. `/debug/warnings` is a unified feed of anything the server wants to flag — hot keys, rising late-drop rates, config smells. A `beava suggest-config` CLI reads live server state and tells you what to change.
 
 Here's what a fraud pipeline looks like:
 
 ```python
-import tally as tl
+import beava as bv
 
-@tl.stream
+@bv.stream
 class RawTxns:
     user_id: str
     merchant_id: str
@@ -64,22 +64,22 @@ class RawTxns:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserFeatures(raw: RawTxns) -> tl.Table:
+@bv.table(key="user_id")
+def UserFeatures(raw: RawTxns) -> bv.Table:
     return raw.group_by("user_id").agg(
-        tx_count_1h=tl.count(window="1h"),
-        tx_sum_1h=tl.sum("amount", window="1h"),
-        avg_amount_1h=tl.avg("amount", window="1h"),
-        max_amount_24h=tl.max("amount", window="24h"),
-        failed_count_30m=tl.count(window="30m", where="status == 'failed'"),
-        unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
+        tx_count_1h=bv.count(window="1h"),
+        tx_sum_1h=bv.sum("amount", window="1h"),
+        avg_amount_1h=bv.avg("amount", window="1h"),
+        max_amount_24h=bv.max("amount", window="24h"),
+        failed_count_30m=bv.count(window="30m", where="status == 'failed'"),
+        unique_merchants_24h=bv.count_distinct("merchant_id", window="24h"),
     )
 ```
 
 Register it, push events, read features:
 
 ```python
-app = tl.App("localhost:6400")
+app = bv.App("localhost:6400")
 app.register(RawTxns, UserFeatures)
 
 app.push(RawTxns, {
@@ -97,26 +97,26 @@ features = app.get("u123")
 Enriching a Stream from a Table:
 
 ```python
-@tl.table(key="merchant_id")
+@bv.table(key="merchant_id")
 class Merchants:
     merchant_id: str
     risk_band: str
     chargeback_rate_30d: float
 
-@tl.stream
-def EnrichedTxns(raw: RawTxns, merchants: Merchants) -> tl.Stream:
+@bv.stream
+def EnrichedTxns(raw: RawTxns, merchants: Merchants) -> bv.Stream:
     return raw.join(merchants, on="merchant_id", how="left")
 ```
 
 Percentiles and heavy hitters, using the hybrid sketches:
 
 ```python
-@tl.table(key="user_id")
-def LatencyFeatures(raw: RawTxns) -> tl.Table:
+@bv.table(key="user_id")
+def LatencyFeatures(raw: RawTxns) -> bv.Table:
     return raw.group_by("user_id").agg(
-        p50_amount_1h=tl.percentile("amount", q=0.50, window="1h"),
-        p99_amount_1h=tl.percentile("amount", q=0.99, window="1h"),
-        top_merchants_24h=tl.top_k("merchant_id", k=10, window="24h"),
+        p50_amount_1h=bv.percentile("amount", q=0.50, window="1h"),
+        p99_amount_1h=bv.percentile("amount", q=0.99, window="1h"),
+        top_merchants_24h=bv.top_k("merchant_id", k=10, window="24h"),
     )
 ```
 
@@ -147,13 +147,13 @@ I'm writing this section out in full because I'd rather you know before you pick
 
 ## Performance
 
-Benchmarks live in the repo under `benchmark/tally-throughput/bench_v0.py`. The nine-cell matrix — small / medium / large pipelines × 1 / 4 / 8 concurrent clients — is the pre-launch regression gate; v0 sign-off requires every cell within 5% of the v2.0 baseline captured in `.planning/phases/22-stream-aggregation-engine/BASELINE.json`.
+Benchmarks live in the repo under `benchmark/beava-throughput/bench_v0.py`. The nine-cell matrix — small / medium / large pipelines × 1 / 4 / 8 concurrent clients — is the pre-launch regression gate; v0 sign-off requires every cell within 5% of the v2.0 baseline captured in `.planning/phases/22-stream-aggregation-engine/BASELINE.json`.
 
 Headline number, sourced from the worst 1-client cell of `MATRIX-V0-FINAL.json` (so the quote is honest rather than cherry-picked):
 
 **`small_1c`: 109,518 events/sec sustained, 6.13 µs p50, 9.55 µs p99 push latency** (7-run median, 30,000 events per run; regression vs v2.0 baseline: −4.84%).
 
-Box: Intel Xeon 6975P-C, 48 vCPU (24 cores / 2 threads), 380 GiB RAM, KVM guest on Debian 13, built with `cargo build --release --bin tally`. The full matrix:
+Box: Intel Xeon 6975P-C, 48 vCPU (24 cores / 2 threads), 380 GiB RAM, KVM guest on Debian 13, built with `cargo build --release --bin beava`. The full matrix:
 
 | Cell        |   eps_median |  p50 µs |  p99 µs | Δ% vs BASELINE |
 |-------------|-------------:|--------:|--------:|---------------:|
@@ -181,57 +181,57 @@ The production launch will replay thirty million synthetic fraud-shaped events t
 
 ## How this fits in the landscape
 
-Tally is a real-time feature server. The closest adjacent tools each solve a different-shaped problem; it's worth being explicit about where we overlap and where we don't.
+Beava is a real-time feature server. The closest adjacent tools each solve a different-shaped problem; it's worth being explicit about where we overlap and where we don't.
 
-**Flink.** Flink is the reference implementation for distributed event-time streaming: proper watermarks, side outputs for late data, exactly-once state with RocksDB checkpoints, SQL, CEP, rich window semantics including sessions. The cost is operational: a JobManager, TaskManagers, checkpoint storage, and a team that understands them. Flink wins for large-scale, multi-team, durability-critical workloads. Tally doesn't try to replace Flink there — v0 runs a single binary with a 5-second watermark and no CEP. Where Tally wins is the small-team case: you get event-time correctness inside the watermark, a DataFrame API, and one process to operate.
+**Flink.** Flink is the reference implementation for distributed event-time streaming: proper watermarks, side outputs for late data, exactly-once state with RocksDB checkpoints, SQL, CEP, rich window semantics including sessions. The cost is operational: a JobManager, TaskManagers, checkpoint storage, and a team that understands them. Flink wins for large-scale, multi-team, durability-critical workloads. Beava doesn't try to replace Flink there — v0 runs a single binary with a 5-second watermark and no CEP. Where Beava wins is the small-team case: you get event-time correctness inside the watermark, a DataFrame API, and one process to operate.
 
-**ksqlDB.** ksqlDB is SQL on top of Kafka Streams: great if you're already invested in the Kafka ecosystem, weak if you aren't. It inherits Kafka's operational model (brokers, topics, consumer groups) and its retraction semantics (late events update emitted results inside the grace period, drop after). Tally's surface is a Python DataFrame API rather than SQL, and the storage layer is the process itself rather than Kafka — no broker to run, no grace-period tuning beyond the 5-second watermark.
+**ksqlDB.** ksqlDB is SQL on top of Kafka Streams: great if you're already invested in the Kafka ecosystem, weak if you aren't. It inherits Kafka's operational model (brokers, topics, consumer groups) and its retraction semantics (late events update emitted results inside the grace period, drop after). Beava's surface is a Python DataFrame API rather than SQL, and the storage layer is the process itself rather than Kafka — no broker to run, no grace-period tuning beyond the 5-second watermark.
 
-**Materialize.** Materialize is a standing-view SQL database with strong incremental-view-maintenance semantics: everything is retraction-native via differential dataflow, updates propagate correctly through multi-hop views, and the consistency story is genuinely state-of-the-art. It's also a full distributed database (coordinator, workers, a persistent storage layer). Tally overlaps on "incremental views of streaming data" but picks a much smaller point in the design space: single process, in-memory, a subset of retraction semantics (single-hop propagation in v0, multi-hop in v0.1), and a DataFrame API rather than SQL. If you need the full retraction-correct SQL surface, use Materialize. If you need something you can run in a Docker container and forget about, use Tally.
+**Materialize.** Materialize is a standing-view SQL database with strong incremental-view-maintenance semantics: everything is retraction-native via differential dataflow, updates propagate correctly through multi-hop views, and the consistency story is genuinely state-of-the-art. It's also a full distributed database (coordinator, workers, a persistent storage layer). Beava overlaps on "incremental views of streaming data" but picks a much smaller point in the design space: single process, in-memory, a subset of retraction semantics (single-hop propagation in v0, multi-hop in v0.1), and a DataFrame API rather than SQL. If you need the full retraction-correct SQL surface, use Materialize. If you need something you can run in a Docker container and forget about, use Beava.
 
-**Fennel.** Fennel pioneered the function-form `@dataset` decorator pattern that Tally v0 borrows heavily from. Fennel's focus is managed feature infrastructure: a hosted service that ingests from your sources, runs your Python transforms on Spark/Rust, and serves features with lineage tracking. Tally is self-hosted, single-binary, and trades lineage + managed infrastructure for simplicity. (Disclosure: I worked at Fennel. Databricks acquired Fennel in 2025, which was part of the context behind Tally.)
+**Fennel.** Fennel pioneered the function-form `@dataset` decorator pattern that Beava v0 borrows heavily from. Fennel's focus is managed feature infrastructure: a hosted service that ingests from your sources, runs your Python transforms on Spark/Rust, and serves features with lineage tracking. Beava is self-hosted, single-binary, and trades lineage + managed infrastructure for simplicity. (Disclosure: I worked at Fennel. Databricks acquired Fennel in 2025, which was part of the context behind Beava.)
 
 None of these are bad systems. They're just shaped for different problems. If you were going to run one of them without a platform team, you'd probably pick the wrong one.
 
 ## Who this is for
 
-Tally is for teams that want real-time compute without the infrastructure commitment. If you can run a binary and write a few lines of Python, you can have real-time features in five minutes. It's not a Flink replacement for a 500-person data org; it's a tool for the 20-person startup that deferred "real-time" because the setup felt too heavy.
+Beava is for teams that want real-time compute without the infrastructure commitment. If you can run a binary and write a few lines of Python, you can have real-time features in five minutes. It's not a Flink replacement for a 500-person data org; it's a tool for the 20-person startup that deferred "real-time" because the setup felt too heavy.
 
 ## Try it
 
 Apache 2.0. One binary.
 
 ```bash
-git clone https://github.com/petrpan26/tally.git
-cd tally
-cargo build --release --bin tally
-target/release/tally &
+git clone https://github.com/petrpan26/beava.git
+cd beava
+cargo build --release --bin beava
+target/release/beava &
 
 cd python && pip install -e .
 python3 - <<'PY'
-import tally as tl
+import beava as bv
 
-@tl.stream
+@bv.stream
 class Clicks:
     user_id: str
     url: str
 
-@tl.table(key="user_id")
-def ClickFeatures(c: Clicks) -> tl.Table:
+@bv.table(key="user_id")
+def ClickFeatures(c: Clicks) -> bv.Table:
     return c.group_by("user_id").agg(
-        clicks_1h=tl.count(window="1h"),
-        last_url=tl.last("url"),
+        clicks_1h=bv.count(window="1h"),
+        last_url=bv.last("url"),
     )
 
-app = tl.App("localhost:6400")
+app = bv.App("localhost:6400")
 app.register(Clicks, ClickFeatures)
 app.push(Clicks, {"user_id": "u1", "url": "/home"})
 print(app.get("u1"))
 PY
 ```
 
-Live demo at **{{DEMO_URL}}**. If you use [Claude Code](https://claude.ai/claude-code), the repo ships with a `/tally` skill that walks through pipeline design, capacity planning, and live diagnostics against your own server.
+Live demo at **{{DEMO_URL}}**. If you use [Claude Code](https://claude.ai/claude-code), the repo ships with a `/beava` skill that walks through pipeline design, capacity planning, and live diagnostics against your own server.
 
-[GitHub](https://github.com/petrpan26/tally) · [Architecture](https://github.com/petrpan26/tally/blob/main/docs/architecture.md) · [Operators](https://github.com/petrpan26/tally/blob/main/docs/operators.md) · [Python SDK](https://github.com/petrpan26/tally/blob/main/docs/python-sdk.md)
+[GitHub](https://github.com/petrpan26/beava) · [Architecture](https://github.com/petrpan26/beava/blob/main/docs/architecture.md) · [Operators](https://github.com/petrpan26/beava/blob/main/docs/operators.md) · [Python SDK](https://github.com/petrpan26/beava/blob/main/docs/python-sdk.md)
 
 I'd appreciate feedback on the design, the API, or the benchmarks.

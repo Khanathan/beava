@@ -1,8 +1,8 @@
-# Tally Architecture
+# Beava Architecture
 
 ## Overview
 
-Tally is a real-time feature server that ingests events over a custom binary TCP protocol, computes stateful streaming features (windowed aggregations, derived expressions, cross-stream cascades), and serves them with sub-millisecond latency. It ships as a single Rust binary with zero external dependencies -- no Kafka, no Flink, no cluster. Push an event, get updated features back in the same response. All state lives in memory, with periodic snapshots and an append-only event log for crash recovery.
+Beava is a real-time feature server that ingests events over a custom binary TCP protocol, computes stateful streaming features (windowed aggregations, derived expressions, cross-stream cascades), and serves them with sub-millisecond latency. It ships as a single Rust binary with zero external dependencies -- no Kafka, no Flink, no cluster. Push an event, get updated features back in the same response. All state lives in memory, with periodic snapshots and an append-only event log for crash recovery.
 
 ## System Architecture
 
@@ -219,7 +219,7 @@ Features from `SET`/`MSET` commands bypass the pipeline engine entirely and land
 
 ## Operators
 
-Tally implements 16 streaming operators, all defined as variants of `FeatureDef` (pipeline registration) and `OperatorState` (runtime state). Each implements the `Operator` trait with `push()` and `read()` methods.
+Beava implements 16 streaming operators, all defined as variants of `FeatureDef` (pipeline registration) and `OperatorState` (runtime state). Each implements the `Operator` trait with `push()` and `read()` methods.
 
 | Operator | Description | State |
 |----------|-------------|-------|
@@ -404,7 +404,7 @@ All configuration is via environment variables. No config files.
 |----------|---------|-------------|
 | `BEAVA_TCP_PORT` | `6400` | TCP protocol port (hot path) |
 | `BEAVA_HTTP_PORT` | `6401` | HTTP management API port |
-| `BEAVA_SNAPSHOT_PATH` | `tally.snapshot` | Base path for snapshot files |
+| `BEAVA_SNAPSHOT_PATH` | `beava.snapshot` | Base path for snapshot files |
 | `BEAVA_DATA_DIR` | `.` | Directory for event log files (`$DIR/events/`) |
 | `BEAVA_TTL_MULTIPLIER` | `2` | Entity TTL = multiplier x largest window duration |
 | `BEAVA_WORKER_THREADS` | `4` | Tokio runtime worker threads |

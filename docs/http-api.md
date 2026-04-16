@@ -1,8 +1,8 @@
-# Tally HTTP Management API Reference
+# Beava HTTP Management API Reference
 
 ## Overview
 
-Tally exposes a secondary HTTP API on port **6401** for management, monitoring, and debugging. This API is separate from the primary binary TCP protocol on port 6400 that handles the hot path (PUSH, GET, SET, MSET). The HTTP API is not designed for high-throughput event ingestion -- use the TCP protocol for that.
+Beava exposes a secondary HTTP API on port **6401** for management, monitoring, and debugging. This API is separate from the primary binary TCP protocol on port 6400 that handles the hot path (PUSH, GET, SET, MSET). The HTTP API is not designed for high-throughput event ingestion -- use the TCP protocol for that.
 
 All responses are JSON unless otherwise noted. The API is built with Axum and runs on its own Tokio listener.
 
@@ -49,36 +49,36 @@ Prometheus-compatible metrics in text exposition format. Suitable for scraping b
 **Response** (Content-Type: `text/plain; version=0.0.4`)
 
 ```
-# HELP tally_keys_total Number of entity keys in memory
-# TYPE tally_keys_total gauge
-tally_keys_total 14523
-# HELP tally_events_total Total events processed
-# TYPE tally_events_total counter
-tally_events_total 892041
-# HELP tally_push_latency_seconds Last observed PUSH latency
-# TYPE tally_push_latency_seconds gauge
-tally_push_latency_seconds 0.000042
-# HELP tally_snapshot_duration_seconds Last snapshot write duration
-# TYPE tally_snapshot_duration_seconds gauge
-tally_snapshot_duration_seconds 0.312
-# HELP tally_memory_bytes Estimated memory usage
-# TYPE tally_memory_bytes gauge
-tally_memory_bytes 29741056
-# HELP tally_snapshots_skipped_total Snapshot cycles skipped due to in-progress write
-# TYPE tally_snapshots_skipped_total counter
-tally_snapshots_skipped_total 0
+# HELP beava_keys_total Number of entity keys in memory
+# TYPE beava_keys_total gauge
+beava_keys_total 14523
+# HELP beava_events_total Total events processed
+# TYPE beava_events_total counter
+beava_events_total 892041
+# HELP beava_push_latency_seconds Last observed PUSH latency
+# TYPE beava_push_latency_seconds gauge
+beava_push_latency_seconds 0.000042
+# HELP beava_snapshot_duration_seconds Last snapshot write duration
+# TYPE beava_snapshot_duration_seconds gauge
+beava_snapshot_duration_seconds 0.312
+# HELP beava_memory_bytes Estimated memory usage
+# TYPE beava_memory_bytes gauge
+beava_memory_bytes 29741056
+# HELP beava_snapshots_skipped_total Snapshot cycles skipped due to in-progress write
+# TYPE beava_snapshots_skipped_total counter
+beava_snapshots_skipped_total 0
 ```
 
 **Metrics Reference**
 
 | Metric | Type | Description |
 |---|---|---|
-| `tally_keys_total` | gauge | Number of entity keys currently in the in-memory store |
-| `tally_events_total` | counter | Total events processed since server start |
-| `tally_push_latency_seconds` | gauge | Last observed PUSH command latency |
-| `tally_snapshot_duration_seconds` | gauge | Duration of the most recent snapshot write |
-| `tally_memory_bytes` | gauge | Estimated memory usage (~2KB per entity key) |
-| `tally_snapshots_skipped_total` | counter | Snapshot cycles skipped because a previous write was still in progress |
+| `beava_keys_total` | gauge | Number of entity keys currently in the in-memory store |
+| `beava_events_total` | counter | Total events processed since server start |
+| `beava_push_latency_seconds` | gauge | Last observed PUSH command latency |
+| `beava_snapshot_duration_seconds` | gauge | Duration of the most recent snapshot write |
+| `beava_memory_bytes` | gauge | Estimated memory usage (~2KB per entity key) |
+| `beava_snapshots_skipped_total` | counter | Snapshot cycles skipped because a previous write was still in progress |
 
 **Status Codes**
 
@@ -626,7 +626,7 @@ The debug endpoints are designed for troubleshooting production issues. Here is 
 
 ### Inspecting a Specific Entity
 
-Use `GET /debug/key/:key` to see everything Tally knows about an entity:
+Use `GET /debug/key/:key` to see everything Beava knows about an entity:
 
 ```bash
 curl -s http://localhost:6401/debug/key/u123 | jq .
@@ -664,7 +664,7 @@ curl -s http://localhost:6401/debug/topology | jq .
 **What to look for:**
 
 - **`edges`** -- Cascade edges show stream-to-stream dependencies. Lookup edges show which streams a view reads from. Missing edges may indicate a misconfigured pipeline.
-- **`topo_order`** -- The execution order Tally uses when processing events. Streams earlier in this list are evaluated first. If a derive expression references a stream that appears later, the value may be stale by one event.
+- **`topo_order`** -- The execution order Beava uses when processing events. Streams earlier in this list are evaluated first. If a derive expression references a stream that appears later, the value may be stale by one event.
 - **`operators`** -- Per-node operator details including window sizes, fields, filter expressions, and derive formulas. Useful for verifying that the Python SDK serialized the pipeline correctly.
 
 ### Monitoring Throughput
@@ -707,4 +707,4 @@ curl -s -X POST "http://localhost:6401/snapshot?wait=true&timeout_ms=10000" | jq
 
 - **`duration_ms`** -- If this is growing over time, the state store is getting larger. Consider TTL eviction settings.
 - **`bytes`** -- Snapshot size on disk. Monitor for unexpected growth.
-- **409 Conflict** -- A snapshot is already in progress. Check `tally_snapshots_skipped_total` in `/metrics` to see if periodic snapshots are being skipped due to slow writes.
+- **409 Conflict** -- A snapshot is already in progress. Check `beava_snapshots_skipped_total` in `/metrics` to see if periodic snapshots are being skipped due to slow writes.

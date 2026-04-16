@@ -46,9 +46,9 @@ jobs:
       - name: Prepare release artifact
         run: |
           mkdir -p release
-          cp target/release/tally release/tally-linux-x86_64
-          chmod +x release/tally-linux-x86_64
-          sha256sum release/tally-linux-x86_64 > release/tally-linux-x86_64.sha256
+          cp target/release/beava release/beava-linux-x86_64
+          chmod +x release/beava-linux-x86_64
+          sha256sum release/beava-linux-x86_64 > release/beava-linux-x86_64.sha256
 
       - name: Extract changelog from tag
         id: changelog
@@ -75,10 +75,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.changelog.outputs.tag }}
-          name: Tally ${{ steps.changelog.outputs.tag }}
+          name: Beava ${{ steps.changelog.outputs.tag }}
           body_path: /tmp/changelog.txt
           files: |
-            release/tally-linux-x86_64
-            release/tally-linux-x86_64.sha256
+            release/beava-linux-x86_64
+            release/beava-linux-x86_64.sha256
           draft: false
           prerelease: ${{ contains(steps.changelog.outputs.tag, '-rc') || contains(steps.changelog.outputs.tag, '-beta') || contains(steps.changelog.outputs.tag, '-alpha') }}

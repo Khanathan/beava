@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Tally Demo — WPM Typing Test (keystroke-level)
+"""Beava Demo — WPM Typing Test (keystroke-level)
 
-Every keystroke fires an event to Tally. Real-time features computed:
+Every keystroke fires an event to Beava. Real-time features computed:
 WPM, accuracy, keystroke rate, max gap between keys, error streaks.
 """
 
@@ -13,11 +13,11 @@ import time
 
 sys.path.insert(0, "python")
 
-import tally as tl
+import beava as bv
 
-# -- Tally v0 Pipeline: one event per keystroke --------------------
+# -- Beava v0 Pipeline: one event per keystroke --------------------
 
-@tl.stream
+@bv.stream
 class RawKeystrokes:
     """Raw keystroke events from the typing test."""
     user_id: str
@@ -28,26 +28,26 @@ class RawKeystrokes:
     position: int
 
 
-@tl.table(key="user_id")
-def KeystrokeFeatures(ks: RawKeystrokes) -> tl.Table:
+@bv.table(key="user_id")
+def KeystrokeFeatures(ks: RawKeystrokes) -> bv.Table:
     # Two filtered sub-streams so the correct/error counts only see
     # their respective events. v0's count(where=...) was replaced by
     # explicit .filter(col) before .group_by(...).agg(...).
-    correct = ks.filter(tl.col("correct") == 1)
-    errors = ks.filter(tl.col("correct") == 0)
+    correct = ks.filter(bv.col("correct") == 1)
+    errors = ks.filter(bv.col("correct") == 0)
     return (
         ks.group_by("user_id")
         .agg(
-            keys_total=tl.count(window="1h"),
-            keys_1m=tl.count(window="1m"),
-            avg_gap_ms=tl.avg("gap_ms", window="1m"),
-            max_gap_ms=tl.max("gap_ms", window="1m"),
+            keys_total=bv.count(window="1h"),
+            keys_1m=bv.count(window="1m"),
+            avg_gap_ms=bv.avg("gap_ms", window="1m"),
+            max_gap_ms=bv.max("gap_ms", window="1m"),
         )
-        .join(correct.group_by("user_id").agg(correct_1m=tl.count(window="1m")), on="user_id", type="left")
-        .join(errors.group_by("user_id").agg(errors_1m=tl.count(window="1m")), on="user_id", type="left")
+        .join(correct.group_by("user_id").agg(correct_1m=bv.count(window="1m")), on="user_id", type="left")
+        .join(errors.group_by("user_id").agg(errors_1m=bv.count(window="1m")), on="user_id", type="left")
         .with_columns(
-            accuracy=tl.col("correct_1m") / tl.col("keys_1m") * 100,
-            wpm=tl.col("keys_1m") / 5,  # standard: 1 word = 5 chars
+            accuracy=bv.col("correct_1m") / bv.col("keys_1m") * 100,
+            wpm=bv.col("keys_1m") / 5,  # standard: 1 word = 5 chars
         )
     )
 
@@ -97,7 +97,7 @@ def render_line(target, typed_chars):
     return "".join(out)
 
 def render_stats(f, elapsed_sec):
-    """Build stats line from Tally features."""
+    """Build stats line from Beava features."""
     wpm = f.wpm or 0
     # Scale for short sessions
     if elapsed_sec < 60 and elapsed_sec > 0:
@@ -123,10 +123,10 @@ def render_stats(f, elapsed_sec):
 
 def main():
     print(f"\n{BOLD}  TALLY WPM DEMO{RESET}")
-    print(f"  {GRAY}Every keystroke -> Tally event -> live features{RESET}")
+    print(f"  {GRAY}Every keystroke -> Beava event -> live features{RESET}")
     print(f"  {GRAY}Ctrl+C to quit | Backspace to correct{RESET}\n")
 
-    app = tl.App("localhost:6400")
+    app = bv.App("localhost:6400")
     app.register(RawKeystrokes, KeystrokeFeatures)
 
     user_id = "demo_user"
@@ -178,7 +178,7 @@ def main():
 
                 elapsed = now - start_time
 
-                # Push keystroke event to Tally
+                # Push keystroke event to Beava
                 features = app.push_sync(RawKeystrokes, {
                     "user_id": user_id,
                     "char": ch,

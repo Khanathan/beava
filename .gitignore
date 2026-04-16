@@ -12,13 +12,13 @@ dist/
 build/
 *.whl
 
-# Tally-specific
+# Beava-specific
 .planning/
 .thoughts/
 deck/
 *.snapshot*
 events/
-tally.snapshot*
+beava.snapshot*
 
 # IDE
 .vscode/
@@ -38,11 +38,11 @@ benchmark/**/results/
 .DS_Store
 Thumbs.db
 
-# Claude Code: ignore everything except the shipped /tally skill
+# Claude Code: ignore everything except the shipped /beava skill
 .claude/*
 !.claude/skills/
 .claude/skills/*
-!.claude/skills/tally/
+!.claude/skills/beava/
 
 # MCP server config (personal, points to local gbrain instance)
 .mcp.json

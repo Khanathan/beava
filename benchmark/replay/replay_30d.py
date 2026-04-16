@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""30-day deterministic replay benchmark for Tally (v0 SDK port).
+"""30-day deterministic replay benchmark for Beava (v0 SDK port).
 
 Synthesizes a user-specified number of fraud events (default: 30M) spread
-over a 30-day timestamp window, replays them into a running Tally instance
+over a 30-day timestamp window, replays them into a running Beava instance
 using multi-process ``push_many(batch_size=1000)`` workers, and prints a
 single compact report to stdout:
 
@@ -20,7 +20,7 @@ Dual purpose:
    headline number for the v2.1 launch. The seed is pinned to 42 so
    anyone running on the same hardware gets a reproducible result.
 
-2. **Backfill tool** — point ``--host/--port`` at your own Tally instance
+2. **Backfill tool** — point ``--host/--port`` at your own Beava instance
    and the same CLI will replay deterministic synthetic traffic, or
    (with ``--input path.jsonl``) your own captured event log. Events use
    event-time bucketing (Phase 8 SCHM-03) so a 30-day window replayed in
@@ -28,8 +28,8 @@ Dual purpose:
    have computed streaming in real time.
 
 Plan 26-03 port notes:
-- Pre-v0 decorator classes have been replaced by tl.stream + function-form
-  tl.table(key=...) returning raw.group_by(key).agg(...). See _build_pipeline().
+- Pre-v0 decorator classes have been replaced by bv.stream + function-form
+  bv.table(key=...) returning raw.group_by(key).agg(...). See _build_pipeline().
 - The pre-v0 derive() helper is not part of the v0 aggregation catalog —
   the failure_rate feature is therefore omitted from the pipeline definition
   here (computed downstream in the demo UI or at read time by the caller).
@@ -70,7 +70,7 @@ for _p in (_PROJECT_ROOT, os.path.join(_PROJECT_ROOT, "python")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import tally as tl  # noqa: E402
+import beava as bv  # noqa: E402
 
 from benchmark.replay.generator import generate  # noqa: E402
 
@@ -80,7 +80,7 @@ from benchmark.replay.generator import generate  # noqa: E402
 # ---------------------------------------------------------------------------
 
 def _build_pipeline():
-    """Define the replay pipeline using the v0 SDK (``@tl.stream`` + ``@tl.table``).
+    """Define the replay pipeline using the v0 SDK (``@bv.stream`` + ``@bv.table``).
 
     Built inside a function so (a) decorators only run when we need them
     and (b) multiprocessing workers can rebuild an equivalent definition
@@ -92,7 +92,7 @@ def _build_pipeline():
         the Stream class the replay driver pushes events into.
     """
 
-    @tl.stream
+    @bv.stream
     class RawTxns:
         user_id: str
         merchant_id: str
@@ -101,14 +101,14 @@ def _build_pipeline():
         country: str
         ts: int
 
-    @tl.table(key="user_id")
-    def UserFeatures(raw: RawTxns) -> tl.Table:
+    @bv.table(key="user_id")
+    def UserFeatures(raw: RawTxns) -> bv.Table:
         return raw.group_by("user_id").agg(
-            tx_count_1h=tl.count(window="1h"),
-            tx_sum_1h=tl.sum("amount", window="1h"),
-            avg_amount_1h=tl.avg("amount", window="1h"),
-            max_amount_24h=tl.max("amount", window="24h"),
-            failed_count_30m=tl.count(window="30m", where="status == 'failed'"),
+            tx_count_1h=bv.count(window="1h"),
+            tx_sum_1h=bv.sum("amount", window="1h"),
+            avg_amount_1h=bv.avg("amount", window="1h"),
+            max_amount_24h=bv.max("amount", window="24h"),
+            failed_count_30m=bv.count(window="30m", where="status == 'failed'"),
         )
 
     return [RawTxns, UserFeatures], RawTxns
@@ -124,9 +124,9 @@ def _worker(
     port: int,
     batch_size: int,
 ) -> Tuple[int, Optional[str]]:
-    """Push ``events`` to Tally in chunks of ``batch_size`` and flush.
+    """Push ``events`` to Beava in chunks of ``batch_size`` and flush.
 
-    Creates its own ``tl.App`` connection (TCP sockets don't cross the
+    Creates its own ``bv.App`` connection (TCP sockets don't cross the
     fork boundary cleanly, and multiplexing one socket across workers
     serializes the hot path — which is exactly what we're trying to avoid).
 
@@ -136,10 +136,10 @@ def _worker(
     """
     try:
         # Worker must re-declare the same pipeline so stream_class has a
-        # valid `_tally_stream_name` attribute. This does NOT re-register
+        # valid `_beava_stream_name` attribute. This does NOT re-register
         # on the server — main() already did that once before spawning.
         (_, raw_txns) = _build_pipeline()
-        app = tl.App(f"{host}:{port}", timeout=60.0)
+        app = bv.App(f"{host}:{port}", timeout=60.0)
 
         batches_sent = 0
         for i in range(0, len(events), batch_size):
@@ -218,12 +218,12 @@ def _extract_push_latency(latency_json: Optional[dict]) -> Tuple[float, float]:
 
 
 def _extract_keys_total(metrics_text: Optional[str]) -> int:
-    """Parse `tally_keys_total <N>` out of the /metrics Prometheus body."""
+    """Parse `beava_keys_total <N>` out of the /metrics Prometheus body."""
     if not metrics_text:
         return 0
     for line in metrics_text.splitlines():
         line = line.strip()
-        if line.startswith("tally_keys_total "):
+        if line.startswith("beava_keys_total "):
             try:
                 return int(line.split()[1])
             except (IndexError, ValueError):
@@ -273,7 +273,7 @@ def _load_events(args) -> List[dict]:
 def _parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Deterministic 30-day replay benchmark for Tally. Doubles as a "
+            "Deterministic 30-day replay benchmark for Beava. Doubles as a "
             "historical-backfill tool — see README for --input usage."
         ),
     )
@@ -284,11 +284,11 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=1000,
                    help="Events per push_many call (default: 1000)")
     p.add_argument("--host", default="localhost",
-                   help="Tally TCP host (default: localhost)")
+                   help="Beava TCP host (default: localhost)")
     p.add_argument("--port", type=int, default=6400,
-                   help="Tally TCP port (default: 6400)")
+                   help="Beava TCP port (default: 6400)")
     p.add_argument("--mgmt-port", type=int, default=6401,
-                   help="Tally HTTP management port for post-run report queries (default: 6401)")
+                   help="Beava HTTP management port for post-run report queries (default: 6401)")
     p.add_argument("--days", type=int, default=30,
                    help="Timestamp window width in days (default: 30)")
     p.add_argument("--seed", type=int, default=42,
@@ -332,11 +332,11 @@ def main(argv=None) -> int:
     # Register pipelines on the server (one-shot, from main process).
     streams, _raw_txns = _build_pipeline()
     try:
-        app = tl.App(f"{args.host}:{args.port}", timeout=30.0)
+        app = bv.App(f"{args.host}:{args.port}", timeout=30.0)
         app.register(*streams)
         app.close()
     except Exception as exc:  # noqa: BLE001
-        print(f"ERROR: could not connect to Tally at {args.host}:{args.port}: {exc}",
+        print(f"ERROR: could not connect to Beava at {args.host}:{args.port}: {exc}",
               file=sys.stderr)
         return 2
 
@@ -344,7 +344,7 @@ def main(argv=None) -> int:
     # (e.g. by deploy/smoke.sh or by 26-03's full-stack smoke). Exit clean.
     if args.register_only:
         print(f"registered pipelines on {args.host}:{args.port}: "
-              f"{[getattr(s, '_tally_stream_name', getattr(s, '__name__', '?')) for s in streams]}")
+              f"{[getattr(s, '_beava_stream_name', getattr(s, '__name__', '?')) for s in streams]}")
         return 0
 
     # Optional warmup — not timed, discarded.
@@ -408,7 +408,7 @@ def main(argv=None) -> int:
         "keys_total": keys_total,
         "final_state_mb": final_state_mb,
     }
-    print("=== Tally 30-day Replay Report ===")
+    print("=== Beava 30-day Replay Report ===")
     for k, v in report.items():
         print(f"{k}={v}")
 

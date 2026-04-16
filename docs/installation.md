@@ -11,17 +11,17 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 Clone and build:
 
 ```bash
-git clone https://github.com/petrpan26/tally.git
-cd tally
+git clone https://github.com/petrpan26/beava.git
+cd beava
 cargo build --release
 ```
 
-The binary is at `./target/release/tally`.
+The binary is at `./target/release/beava`.
 
 Start the server:
 
 ```bash
-./target/release/tally
+./target/release/beava
 ```
 
 ### System dependencies
@@ -43,8 +43,8 @@ brew install openssl@3
 A Dockerfile and `docker-compose.yml` ship with the repo. No Rust toolchain required.
 
 ```bash
-git clone https://github.com/petrpan26/tally.git
-cd tally
+git clone https://github.com/petrpan26/beava.git
+cd beava
 docker compose up -d
 ```
 
@@ -74,12 +74,12 @@ The SDK has no external dependencies beyond the Python standard library.
 Verify:
 
 ```bash
-python -c "import tally; print('SDK ready')"
+python -c "import beava; print('SDK ready')"
 ```
 
 ## Configuration
 
-Tally is configured through environment variables:
+Beava is configured through environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -87,7 +87,7 @@ Tally is configured through environment variables:
 | `BEAVA_HTTP_PORT` | `6401` | HTTP management API port |
 | `BEAVA_WORKER_THREADS` | `4` | Tokio worker threads |
 | `BEAVA_SNAPSHOT` | `true` | Enable periodic snapshots to disk |
-| `BEAVA_SNAPSHOT_PATH` | `tally.snapshot` | Path prefix for snapshot files |
+| `BEAVA_SNAPSHOT_PATH` | `beava.snapshot` | Path prefix for snapshot files |
 | `BEAVA_EVENT_LOG` | `true` | Enable append-only event log (WAL) |
 | `BEAVA_DATA_DIR` | `.` | Base directory. Event log files are written to `{BEAVA_DATA_DIR}/events/`. |
 
@@ -96,16 +96,16 @@ Example:
 ```bash
 BEAVA_TCP_PORT=7000 \
 BEAVA_HTTP_PORT=7001 \
-BEAVA_SNAPSHOT_PATH=/var/lib/tally/tally.snapshot \
-BEAVA_DATA_DIR=/var/lib/tally \
-./target/release/tally
+BEAVA_SNAPSHOT_PATH=/var/lib/beava/beava.snapshot \
+BEAVA_DATA_DIR=/var/lib/beava \
+./target/release/beava
 ```
 
 For Docker, these are set in `docker-compose.yml` to point into the `/data` mount:
 
 ```yaml
 environment:
-  - BEAVA_SNAPSHOT_PATH=/data/tally.snapshot
+  - BEAVA_SNAPSHOT_PATH=/data/beava.snapshot
   - BEAVA_DATA_DIR=/data
 ```
 
@@ -132,9 +132,9 @@ curl http://localhost:6401/pipelines
 Verify the Python SDK can connect:
 
 ```python
-import tally as tl
+import beava as bv
 
-app = tl.App("localhost:6400")
+app = bv.App("localhost:6400")
 # If this returns without error, the connection is working
 app.close()
 ```

@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 # Path hack so the bench can run without installing the SDK
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'python'))
 
-import tally as tl  # noqa: E402
+import beava as bv  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -42,8 +42,8 @@ import tally as tl  # noqa: E402
 # ---------------------------------------------------------------------------
 
 def make_stream_classes(n_streams):
-    """Return a list of N distinct @tl.stream classes + their matching
-    @tl.table aggregations. Each stream has the same small shape as
+    """Return a list of N distinct @bv.stream classes + their matching
+    @bv.table aggregations. Each stream has the same small shape as
     bench_v0's `define_small` so results are comparable.
 
     The decorators stamp metadata keyed on the class/function name, so
@@ -57,16 +57,16 @@ def make_stream_classes(n_streams):
         agg_name = f'BenchMultiAgg{idx}'
         ns = {'tl': tl, 'str': str, 'float': float}
         exec(
-            f"@tl.stream\n"
+            f"@bv.stream\n"
             f"class {stream_name}:\n"
             f"    user_id: str\n"
             f"    amount: float\n"
             f"\n"
-            f"@tl.table(key='user_id')\n"
-            f"def {agg_name}(raw: {stream_name}) -> tl.Table:\n"
+            f"@bv.table(key='user_id')\n"
+            f"def {agg_name}(raw: {stream_name}) -> bv.Table:\n"
             f"    return raw.group_by('user_id').agg(\n"
-            f"        tx_count_1h=tl.count(window='1h'),\n"
-            f"        tx_sum_1h=tl.sum('amount', window='1h'),\n"
+            f"        tx_count_1h=bv.count(window='1h'),\n"
+            f"        tx_sum_1h=bv.sum('amount', window='1h'),\n"
             f"    )\n",
             ns,
         )
@@ -97,7 +97,7 @@ def make_event(i, user_pool=1000):
 
 def run_client(stream_cls, events_per_client, client_id,
                warmup=1000, sample_latency=False, host='localhost:6400'):
-    app = tl.App(host, timeout=30.0)
+    app = bv.App(host, timeout=30.0)
     for i in range(warmup):
         app.push(stream_cls, make_event(i + client_id * 1_000_000))
     app.flush()
@@ -134,7 +134,7 @@ def percentile(values, p):
 def run_scenario(n_streams, n_clients, events_per_client,
                  host='localhost:6400', sample_latency=True, quiet=False):
     streams, aggs = make_stream_classes(n_streams)
-    app = tl.App(host, timeout=30.0)
+    app = bv.App(host, timeout=30.0)
     app.register(*streams, *aggs)
 
     # Warmup ping for every stream (so the server pre-creates writers +

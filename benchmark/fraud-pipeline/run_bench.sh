@@ -18,7 +18,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BIN="$REPO/target/release/tally"
+BIN="$REPO/target/release/beava"
 BENCH="$REPO/benchmark/fraud-pipeline/bench.py"
 TOKEN="${BEAVA_ADMIN_TOKEN:-dev-admin-token}"
 TCP_PORT="${TCP_PORT:-6400}"
@@ -44,19 +44,19 @@ cd "$REPO"
 
 # Build if binary is missing.
 if [[ ! -x "$BIN" ]]; then
-  echo "==> Building tally (release)..."
-  cargo build --release --bin tally
+  echo "==> Building beava (release)..."
+  cargo build --release --bin beava
 fi
 
 # Clean slate on ports + data dir.
 pkill -9 -f bench.py 2>/dev/null || true
-pkill -9 -f "target/release/tally serve" 2>/dev/null || true
+pkill -9 -f "target/release/beava serve" 2>/dev/null || true
 sleep 1
 rm -rf "$REPO/events"
 
 echo "==> MODE=$MODE  CPUS=$CPUS  warmup=${WARMUP}s  measure=${MEASURE}s"
 echo "    users=$USERS  merchants=$MERCHANTS  devices=$DEVICES  ips=$IPS  zipf=$ZIPF"
-SRV_LOG="$(mktemp -t tally-bench.XXXXXX.log)"
+SRV_LOG="$(mktemp -t beava-bench.XXXXXX.log)"
 BEAVA_ADMIN_TOKEN="$TOKEN" BEAVA_WORKER_THREADS="$CPUS" \
   "$BIN" serve --http-port "$HTTP_PORT" --tcp-port "$TCP_PORT" \
   > "$SRV_LOG" 2>&1 &
@@ -75,7 +75,7 @@ for _ in $(seq 1 30); do
 done
 
 export PYTHONPATH="$REPO/python:$REPO/benchmark/fraud-pipeline"
-TMPDIR=$(mktemp -d -t tally-bench.XXXXXX)
+TMPDIR=$(mktemp -d -t beava-bench.XXXXXX)
 
 CLIENT_PIDS=()
 spawn_clients() {
@@ -93,7 +93,7 @@ spawn_clients() {
 }
 wait_clients() {
   # `wait` with no args waits for every backgrounded child (including the
-  # tally server, which never exits). Pass the client pids explicitly so we
+  # beava server, which never exits). Pass the client pids explicitly so we
   # only block on them.
   for pid in "${CLIENT_PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
 }

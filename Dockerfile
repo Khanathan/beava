@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs && \
     cargo build --release && \
-    rm -rf src target/release/tally target/release/deps/tally*
+    rm -rf src target/release/beava target/release/deps/beava*
 
 # Now copy the real source and rebuild. Only this layer rebuilds on
 # source changes.
@@ -30,17 +30,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user for running Tally
-RUN useradd -r -s /bin/false -u 1001 tally && \
-    mkdir -p /data && chown tally:tally /data
+# Create non-root user for running Beava
+RUN useradd -r -s /bin/false -u 1001 beava && \
+    mkdir -p /data && chown beava:beava /data
 
 WORKDIR /app
 
-COPY --from=builder /build/target/release/tally .
-RUN chown tally:tally /app/tally && chmod +x /app/tally
+COPY --from=builder /build/target/release/beava .
+RUN chown beava:beava /app/beava && chmod +x /app/beava
 
-USER tally
+USER beava
 
 EXPOSE 6400 6401
 
-CMD ["./tally"]
+CMD ["./beava"]

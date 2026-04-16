@@ -1,15 +1,15 @@
 # 30-day replay benchmark
 
-A deterministic, multi-process replay CLI for Tally. Synthesizes 30 days of
+A deterministic, multi-process replay CLI for Beava. Synthesizes 30 days of
 fraud-shaped events, replays them into a running instance as fast as possible,
 and prints a compact wall-clock report.
 
 This tool has **two purposes**:
 
 1. **Launch benchmark.** Produces the headline number for the v2.1 launch
-   blog post — "Tally replayed 30 days in `X` seconds". The generator seed
+   blog post — "Beava replayed 30 days in `X` seconds". The generator seed
    is pinned to `42` so the number is reproducible on identical hardware.
-2. **Historical backfill tool.** Point `--host/--port` at your own Tally
+2. **Historical backfill tool.** Point `--host/--port` at your own Beava
    and pipe in a JSONL trace via `--input` to replay real historical
    events. Window operators bucket on event time (Phase 8 SCHM-03), so
    30 days of pre-stamped events replayed in 30 seconds of wall-clock
@@ -63,8 +63,8 @@ for the benchmark — change them and you are measuring a different workload.
 | `--events N` | `30000000` | Event count |
 | `--workers W` | `8` | Parallel worker processes |
 | `--batch-size B` | `1000` | Events per `push_many` call |
-| `--host` | `localhost` | Tally TCP host |
-| `--port` | `6400` | Tally TCP port |
+| `--host` | `localhost` | Beava TCP host |
+| `--port` | `6400` | Beava TCP port |
 | `--mgmt-port` | `6401` | Management HTTP port (used for post-run p50/p99 and keys_total) |
 | `--days` | `30` | Width of the timestamp window |
 | `--seed` | `42` | Generator RNG seed (do not change for launch runs) |
@@ -91,6 +91,6 @@ failure-rate distribution) live at
 Python's GIL caps single-process SDK-side encoding at ~540k eps (per
 Phase 19 benchmarking). To saturate the server's ingest path at 1M+ eps
 we need true parallelism — hence `multiprocessing.Pool` with per-worker
-`tl.App` connections. Each shard is disjoint by `hash(user_id) % workers`,
+`bv.App` connections. Each shard is disjoint by `hash(user_id) % workers`,
 minimizing cross-shard contention on the server's per-stream DashMap locks
 (Phase 14). See `_shard_events` in `replay_30d.py` for the hashing logic.

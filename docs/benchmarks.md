@@ -1,4 +1,4 @@
-# Tally Benchmarks
+# Beava Benchmarks
 
 Measured on a host with 48 CPUs / 371 GB RAM, with the server pinned to 8 CPUs (`taskset -pc 0-7`) to simulate an 8-core production box. `BEAVA_WORKER_THREADS=8`. Release build.
 
@@ -16,7 +16,7 @@ All three are 1 source → 1 aggregation. No joins or enrichment.
 
 ## Single-stream async throughput (single-event PUSH)
 
-`python3 benchmark/tally-throughput/bench_v0.py --matrix --events 30000`
+`python3 benchmark/beava-throughput/bench_v0.py --matrix --events 30000`
 
 Driver uses `app.push()` (OP_PUSH_ASYNC, fire-and-forget) in a `ThreadPoolExecutor` of N client threads within one Python process. Final `flush()` before measuring wall time.
 
@@ -73,15 +73,15 @@ Watermark `fetch_max` removing the per-event exclusive lock was the single bigge
 
 ```bash
 # 1. Build release binary
-cargo build --release --bin tally
+cargo build --release --bin beava
 
 # 2. Start server pinned to 8 CPUs
-rm -rf /tmp/tally-bench-data && mkdir -p /tmp/tally-bench-data
-BEAVA_DATA_DIR=/tmp/tally-bench-data \
+rm -rf /tmp/beava-bench-data && mkdir -p /tmp/beava-bench-data
+BEAVA_DATA_DIR=/tmp/beava-bench-data \
   BEAVA_TCP_PORT=6400 BEAVA_HTTP_PORT=6401 \
   BEAVA_ADMIN_TOKEN=bench \
   BEAVA_WORKER_THREADS=8 \
-  target/release/tally &
+  target/release/beava &
 SERVER_PID=$!
 taskset -pc 0-7 $SERVER_PID
 sleep 2 && curl -s http://127.0.0.1:6401/debug/ready
@@ -89,42 +89,42 @@ sleep 2 && curl -s http://127.0.0.1:6401/debug/ready
 # 3. Pre-register stream (don't rely on the bench doing it under contention)
 python3 - <<'PY'
 import sys; sys.path.insert(0, 'python')
-import tally as tl
-@tl.stream
+import beava as bv
+@bv.stream
 class RawTxns:
     user_id: str
     amount: float
-@tl.table(key="user_id")
-def Transactions(raw: RawTxns) -> tl.Table:
+@bv.table(key="user_id")
+def Transactions(raw: RawTxns) -> bv.Table:
     return raw.group_by("user_id").agg(
-        c=tl.count(window="1h"), s=tl.sum("amount", window="1h"))
-tl.App("127.0.0.1:6400", timeout=30.0).register(RawTxns, Transactions)
+        c=bv.count(window="1h"), s=bv.sum("amount", window="1h"))
+bv.App("127.0.0.1:6400", timeout=30.0).register(RawTxns, Transactions)
 PY
 
 # 4. Run the matrix (1 process, threaded — GIL-bound)
-python3 benchmark/tally-throughput/bench_v0.py --matrix --events 30000
+python3 benchmark/beava-throughput/bench_v0.py --matrix --events 30000
 
 # 5. Run the real-scaling bench (8 processes)
 for i in 0 1 2 3 4 5 6 7; do
-  python3 benchmark/tally-throughput/push_batched.py 127.0.0.1:6400 300000 $i 1000 &
+  python3 benchmark/beava-throughput/push_batched.py 127.0.0.1:6400 300000 $i 1000 &
 done; wait
 ```
 
 ## Interpreting results — pitfalls
 
-- **GIL-bound numbers don't reflect server capacity.** If you run `bench_v0.py --clients 8`, you're measuring Python thread contention, not Tally. Multi-process benches are the only way to expose real server-side scaling.
+- **GIL-bound numbers don't reflect server capacity.** If you run `bench_v0.py --clients 8`, you're measuring Python thread contention, not Beava. Multi-process benches are the only way to expose real server-side scaling.
 - **Batched vs single-event matters enormously.** Batched amortizes ~7 µs → ~0.3 µs of Python per event. On the server, a batched OP_PUSH_BATCH does one log append + N operator applies. The ratio of batch-size-to-per-event-work determines whether you're measuring disk/log throughput, operator work, or Python overhead.
 - **Shared-stream vs distinct-stream.** Phase 40 introduced per-stream log-file locks. Phase 42 made log append lock-free (O_APPEND). Post-43 both cases scale comparably, but on distinct streams you get file-handle parallelism the kernel can exploit at the inode layer.
 - **Watermark + late-drop was the bottleneck people miss.** Even after log and metrics are lock-free, every PUSH updates per-stream watermarks. If this is a `write()` lock, every producer serializes on it. Phase 43 fixed this with atomic `fetch_max` on per-stream `AtomicU64`.
 - **DashMap shard count defaults to `num_cpus() * 4` rounded up to power of 2.** On a 48-CPU host that's 256 shards per DashMap regardless of how many workers you pin the server to. The `STATE_SHARD_AMOUNT = 16` constant matches 8-worker deployments better; memory footprint drops without adding contention.
-- **Ordering in the log is not deterministic across concurrent producers.** Tally's correctness model is event-time + watermark (Phase 24), so arrival-order in the log doesn't affect operator output. Clients that need strict ordering should stamp `_event_time` explicitly.
+- **Ordering in the log is not deterministic across concurrent producers.** Beava's correctness model is event-time + watermark (Phase 24), so arrival-order in the log doesn't affect operator output. Clients that need strict ordering should stamp `_event_time` explicitly.
 
 ## When the benchmark is misleading
 
 - **You run on a laptop without CPU pinning:** tokio runtime and Python driver compete for the same cores, numbers drop by ~30%. Always pin the server.
 - **First run of the benchmark after startup:** cold caches, JIT-like warmup on tokio's task scheduler. Discard the first run.
 - **Snapshot runs mid-benchmark:** a snapshot takes `engine.read()` for ~300 ms on even a small state. That shows up as a plateau in the middle of the run. Either wait for a snapshot cycle to complete before benching, or disable snapshots via config for pure throughput measurements.
-- **Replica mode:** `tally serve --replica-from` rejects local PUSH. Don't bench against a replica.
+- **Replica mode:** `beava serve --replica-from` rejects local PUSH. Don't bench against a replica.
 
 ## What's next for perf
 

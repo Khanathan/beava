@@ -1,12 +1,12 @@
-# Tally Deploy — Single-VM Launch Demo
+# Beava Deploy — Single-VM Launch Demo
 
-This directory contains everything needed to run the Tally public read-only demo on a $5/mo Hetzner CX22 (or equivalent 1-2 vCPU / 4 GB RAM Debian 12 box).
+This directory contains everything needed to run the Beava public read-only demo on a $5/mo Hetzner CX22 (or equivalent 1-2 vCPU / 4 GB RAM Debian 12 box).
 
 ## Artefacts
 
 | File | Role |
 |------|------|
-| `tally.service` | systemd unit (`Restart=always`, `StateDirectory=tally`, `--tcp-bind 127.0.0.1`) |
+| `beava.service` | systemd unit (`Restart=always`, `StateDirectory=beava`, `--tcp-bind 127.0.0.1`) |
 | `Caddyfile` | TLS + reverse proxy fronting `127.0.0.1:6401`, blocks admin paths at the edge |
 | `provision.sh` | One-shot Debian 12 bootstrap (idempotent) |
 | `smoke.sh` | Post-deploy sanity — 6 invariants |
@@ -18,15 +18,15 @@ On a fresh Hetzner CX22 with Debian 12:
 ```bash
 # 0. On your laptop — build the Linux binary and SCP everything
 cargo build --release --target x86_64-unknown-linux-gnu
-scp target/x86_64-unknown-linux-gnu/release/tally \
-    deploy/tally.service deploy/Caddyfile deploy/provision.sh \
+scp target/x86_64-unknown-linux-gnu/release/beava \
+    deploy/beava.service deploy/Caddyfile deploy/provision.sh \
     root@$VM_IP:/root/
 
 # 1. Verify DNS is propagated FIRST (Let's Encrypt will reject otherwise)
-dig +short demo.tally.dev   # should print the VM's IPv4
+dig +short demo.beava.dev   # should print the VM's IPv4
 
 # 2. Run the provisioner
-ssh root@$VM_IP 'cd /root && sudo bash provision.sh demo.tally.dev'
+ssh root@$VM_IP 'cd /root && sudo bash provision.sh demo.beava.dev'
 ```
 
 Expected runtime: ~90 seconds. Prints the admin token on success.
@@ -37,11 +37,11 @@ From your laptop (not the VM):
 
 ```bash
 # Light smoke — 4 invariants that run without SSH access
-bash deploy/smoke.sh https://demo.tally.dev
+bash deploy/smoke.sh https://demo.beava.dev
 
 # Full smoke — 6 invariants including replay + crash-recovery
-export BEAVA_SSH_HOST=root@demo.tally.dev
-bash deploy/smoke.sh https://demo.tally.dev --with-replay
+export BEAVA_SSH_HOST=root@demo.beava.dev
+bash deploy/smoke.sh https://demo.beava.dev --with-replay
 ```
 
 The 6 invariants:
@@ -50,18 +50,18 @@ The 6 invariants:
 2. `/public/stats` returns all 6 required fields
 3. Admin endpoints return 403 or 404 (never 200)
 4. Replay across loopback hits the events/sec floor (when `--with-replay`)
-5. `systemctl restart tally` is followed by `keys_total` within 10% of pre-restart (when `BEAVA_SSH_HOST` is set)
+5. `systemctl restart beava` is followed by `keys_total` within 10% of pre-restart (when `BEAVA_SSH_HOST` is set)
 6. **TCP 6400 is unreachable on the public IP** (`! nc -z -w 2 $PUBLIC_HOST 6400`) — the critical public-surface assertion
 
 ## File layout on the VM
 
 ```
-/usr/local/bin/tally                         # binary
-/etc/systemd/system/tally.service            # unit
-/etc/tally/admin.token         (600 tally:tally)  # plain hex, for operator eyes
-/etc/tally/admin.token.env     (600 tally:tally)  # systemd EnvironmentFile
+/usr/local/bin/beava                         # binary
+/etc/systemd/system/beava.service            # unit
+/etc/beava/admin.token         (600 beava:beava)  # plain hex, for operator eyes
+/etc/beava/admin.token.env     (600 beava:beava)  # systemd EnvironmentFile
 /etc/caddy/Caddyfile                         # domain-substituted
-/var/lib/tally/                              # snapshots, event log (StateDirectory=tally)
+/var/lib/beava/                              # snapshots, event log (StateDirectory=beava)
 ```
 
 ## Admin access
@@ -74,7 +74,7 @@ Admin routes (`/pipelines`, `/snapshot`, `/debug/*`) are:
 The only supported way to reach them is an SSH tunnel + loopback:
 
 ```bash
-ssh -L 6401:127.0.0.1:6401 root@demo.tally.dev
+ssh -L 6401:127.0.0.1:6401 root@demo.beava.dev
 # In another terminal on your laptop:
 curl http://127.0.0.1:6401/debug/memory
 curl -X POST http://127.0.0.1:6401/snapshot     # force snapshot
@@ -85,28 +85,28 @@ Loopback bypasses both Caddy and the bearer-token gate (see `src/server/auth.rs:
 ## Tailing logs
 
 ```bash
-ssh root@demo.tally.dev 'journalctl -u tally -f'
-ssh root@demo.tally.dev 'journalctl -u caddy -f'
+ssh root@demo.beava.dev 'journalctl -u beava -f'
+ssh root@demo.beava.dev 'journalctl -u caddy -f'
 ```
 
 ## Rolling the admin token
 
 ```bash
-ssh root@demo.tally.dev <<'EOF'
+ssh root@demo.beava.dev <<'EOF'
 NEW=$(openssl rand -hex 32)
-install -m 600 -o tally -g tally /dev/null /etc/tally/admin.token
-printf '%s\n' "$NEW" > /etc/tally/admin.token
-printf 'BEAVA_ADMIN_TOKEN=%s\n' "$NEW" > /etc/tally/admin.token.env
-chmod 600 /etc/tally/admin.token.env /etc/tally/admin.token
-chown tally:tally /etc/tally/admin.token.env /etc/tally/admin.token
-systemctl restart tally
+install -m 600 -o beava -g beava /dev/null /etc/beava/admin.token
+printf '%s\n' "$NEW" > /etc/beava/admin.token
+printf 'BEAVA_ADMIN_TOKEN=%s\n' "$NEW" > /etc/beava/admin.token.env
+chmod 600 /etc/beava/admin.token.env /etc/beava/admin.token
+chown beava:beava /etc/beava/admin.token.env /etc/beava/admin.token
+systemctl restart beava
 EOF
 ```
 
 ## Manual snapshot
 
 ```bash
-ssh -L 6401:127.0.0.1:6401 root@demo.tally.dev -N &
+ssh -L 6401:127.0.0.1:6401 root@demo.beava.dev -N &
 curl -X POST http://127.0.0.1:6401/snapshot
 ```
 

@@ -1,4 +1,4 @@
-# Tally vs Flink + Kafka + Redis
+# Beava vs Flink + Kafka + Redis
 
 ## The Problem
 
@@ -16,62 +16,62 @@ That is 18-25 nodes, 5-8 distinct systems, each with its own failure modes, conf
 
 Most teams running this stack are computing fewer than 100 features at fewer than 100K events per second. They do not need horizontal scalability across dozens of nodes. They need the features to be correct, fast, and easy to change.
 
-That is what Tally is for.
+That is what Beava is for.
 
 ## Side-by-Side: The Same Pipeline, Different Stacks
 
 The benchmark pipeline: a fraud detection system for a mid-size fintech. 5 entity types (user, merchant, device, IP, card), 47 features across 4 window tiers (30m, 1h, 24h, 7d), cross-key lookups, derived signals.
 
-### Tally: ~60 Lines of Python
+### Beava: ~60 Lines of Python
 
 ```python
-import tally as tl
+import beava as bv
 
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
     amount: float
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(txs: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(txs: RawTransactions) -> bv.Table:
     return (
         txs.group_by("user_id")
         .agg(
-            tx_count_30m=tl.count(window="30m"),
-            tx_count_1h=tl.count(window="1h"),
-            tx_count_24h=tl.count(window="24h"),
-            tx_sum_1h=tl.sum("amount", window="1h"),
-            tx_avg_24h=tl.avg("amount", window="24h"),
-            tx_max_24h=tl.max("amount", window="24h"),
-            unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
-            unique_countries_24h=tl.count_distinct("country", window="24h"),
-            last_country=tl.last("country"),
-            last_amount=tl.last("amount"),
+            tx_count_30m=bv.count(window="30m"),
+            tx_count_1h=bv.count(window="1h"),
+            tx_count_24h=bv.count(window="24h"),
+            tx_sum_1h=bv.sum("amount", window="1h"),
+            tx_avg_24h=bv.avg("amount", window="24h"),
+            tx_max_24h=bv.max("amount", window="24h"),
+            unique_merchants_24h=bv.count_distinct("merchant_id", window="24h"),
+            unique_countries_24h=bv.count_distinct("country", window="24h"),
+            last_country=bv.last("country"),
+            last_amount=bv.last("amount"),
         )
         .with_columns(
-            velocity_spike=(tl.col("tx_count_1h") / 1) / (tl.col("tx_count_24h") / 24),
-            amount_vs_avg=tl.col("last_amount") / tl.col("tx_avg_24h"),
+            velocity_spike=(bv.col("tx_count_1h") / 1) / (bv.col("tx_count_24h") / 24),
+            amount_vs_avg=bv.col("last_amount") / bv.col("tx_avg_24h"),
         )
     )
 
-@tl.table(key="merchant_id")
-def MerchantActivity(txs: RawTransactions) -> tl.Table:
+@bv.table(key="merchant_id")
+def MerchantActivity(txs: RawTransactions) -> bv.Table:
     return txs.group_by("merchant_id").agg(
-        merch_tx_count_24h=tl.count(window="24h"),
-        merch_unique_users_24h=tl.count_distinct("user_id", window="24h"),
-        merch_avg_amount=tl.avg("amount", window="24h"),
+        merch_tx_count_24h=bv.count(window="24h"),
+        merch_unique_users_24h=bv.count_distinct("user_id", window="24h"),
+        merch_avg_amount=bv.avg("amount", window="24h"),
     )
 
 # ... similar for DeviceActivity, IPActivity, UserFailedTxns
 
-app = tl.App("localhost:6400")
+app = bv.App("localhost:6400")
 app.register(RawTransactions, UserTransactions, MerchantActivity, ...)
 features = app.push(RawTransactions, event)  # features returned synchronously
 ```
 
-Infrastructure: 1 binary, 1 node. Start with `./tally` or `docker compose up`.
+Infrastructure: 1 binary, 1 node. Start with `./beava` or `docker compose up`.
 
 ### Flink + Kafka + Redis: ~400+ Lines of Java, YAML, and Glue
 
@@ -107,7 +107,7 @@ Flink stores operator state in RocksDB (the recommended production state backend
 
 Each RocksDB access costs 5-15 microseconds. A single event that updates 10 features pays this cost 10 times.
 
-Tally stores state in a Rust `HashMap`. Each access is a pointer dereference. Cost: 0.1-0.2 microseconds. No serialization, no deserialization, no LSM compaction, no write amplification.
+Beava stores state in a Rust `HashMap`. Each access is a pointer dereference. Cost: 0.1-0.2 microseconds. No serialization, no deserialization, no LSM compaction, no write amplification.
 
 ### The GC Cliff
 
@@ -123,9 +123,9 @@ A Java `HashMap<String, Double>` entry consumes roughly 80-120 bytes of overhead
 
 ## Cost Comparison
 
-These estimates are based on Tally's measured performance (430-510K events/sec on a 48-core Xeon) and typical Flink+Kafka+Redis deployments at equivalent throughput. Cloud costs use on-demand pricing; reserved instances reduce both columns proportionally.
+These estimates are based on Beava's measured performance (430-510K events/sec on a 48-core Xeon) and typical Flink+Kafka+Redis deployments at equivalent throughput. Cloud costs use on-demand pricing; reserved instances reduce both columns proportionally.
 
-| Scale | Tally | Flink + Kafka + Redis |
+| Scale | Beava | Flink + Kafka + Redis |
 |-------|-------|-----------------------|
 | 10K eps, 100K entities | 1 node (4 vCPU, 16 GB), ~$120/mo | Kafka (3 small brokers) + Flink (JM + 2 TM) + Redis: 6-8 nodes, ~$800-1,500/mo |
 | 50K eps, 1M entities | 1 node (8 vCPU, 64 GB), ~$400/mo | Kafka (3 brokers) + Flink (JM + 3 TM) + Redis (cluster): 10-12 nodes, ~$3,000-5,000/mo |
@@ -134,19 +134,19 @@ These estimates are based on Tally's measured performance (430-510K events/sec o
 
 **Important caveats:**
 
-- Tally is a single-process server today. It scales vertically on one machine. If your workload exceeds what one large instance can handle, Tally is not the right tool yet.
-- The Flink stack costs include ops overhead that Tally eliminates, but they also buy you things Tally does not provide: multi-node fault tolerance, exactly-once semantics across distributed state, and a mature ecosystem of connectors.
-- At the 500K eps tier, Tally's numbers are based on benchmarks, not production deployments at that scale. Treat them as indicative.
+- Beava is a single-process server today. It scales vertically on one machine. If your workload exceeds what one large instance can handle, Beava is not the right tool yet.
+- The Flink stack costs include ops overhead that Beava eliminates, but they also buy you things Beava does not provide: multi-node fault tolerance, exactly-once semantics across distributed state, and a mature ecosystem of connectors.
+- At the 500K eps tier, Beava's numbers are based on benchmarks, not production deployments at that scale. Treat them as indicative.
 
-## What Tally Does NOT Replace
+## What Beava Does NOT Replace
 
-Be clear-eyed about this. Tally is not a general-purpose distributed streaming engine. It does not replace Flink or Kafka for workloads that genuinely need their capabilities:
+Be clear-eyed about this. Beava is not a general-purpose distributed streaming engine. It does not replace Flink or Kafka for workloads that genuinely need their capabilities:
 
-- **Multi-TB state** -- Tally holds all state in memory on one machine. If your state exceeds what fits in RAM on the largest available instance (384 GB-768 GB), you need a distributed state backend.
-- **Exactly-once distributed processing** -- Tally provides crash recovery via snapshots and event log replay, but it is not a distributed system with exactly-once guarantees across nodes.
+- **Multi-TB state** -- Beava holds all state in memory on one machine. If your state exceeds what fits in RAM on the largest available instance (384 GB-768 GB), you need a distributed state backend.
+- **Exactly-once distributed processing** -- Beava provides crash recovery via snapshots and event log replay, but it is not a distributed system with exactly-once guarantees across nodes.
 - **Complex event processing** -- Temporal pattern matching, session windows with custom gap logic, event-time watermarks with late-arrival handling. Flink's event-time processing model is genuinely sophisticated and hard to replicate.
-- **Connector ecosystem** -- Flink has connectors for hundreds of sources and sinks. Tally has a TCP protocol and an HTTP API.
-- **Multi-tenant, multi-job deployments** -- Flink is designed to run hundreds of independent jobs on a shared cluster. Tally runs one pipeline per process.
+- **Connector ecosystem** -- Flink has connectors for hundreds of sources and sinks. Beava has a TCP protocol and an HTTP API.
+- **Multi-tenant, multi-job deployments** -- Flink is designed to run hundreds of independent jobs on a shared cluster. Beava runs one pipeline per process.
 
 If you are processing 1M+ events/sec, managing 100+ TB of state, or running dozens of independent streaming jobs, use Flink. It is an excellent system built by smart people for exactly those problems.
 
@@ -154,27 +154,27 @@ If you are processing 1M+ events/sec, managing 100+ TB of state, or running doze
 
 ### RisingWave
 
-Streaming database with Postgres wire protocol and SQL interface. Distributed, cloud-native, built in Rust. RisingWave is aiming to be the full streaming database -- SQL queries over streaming data with materialized views. Tally is narrower: it computes features for keyed entities, not arbitrary SQL. If you want SQL over streams, RisingWave is a strong choice. If you want a feature server with minimal ops, Tally is simpler to operate.
+Streaming database with Postgres wire protocol and SQL interface. Distributed, cloud-native, built in Rust. RisingWave is aiming to be the full streaming database -- SQL queries over streaming data with materialized views. Beava is narrower: it computes features for keyed entities, not arbitrary SQL. If you want SQL over streams, RisingWave is a strong choice. If you want a feature server with minimal ops, Beava is simpler to operate.
 
 ### Arroyo
 
-Rust-based stream processor with SQL support, designed as a Flink alternative. Cloud-native, supports exactly-once. Arroyo is closer to Flink's model (distributed processing, connectors, checkpointing) reimplemented in Rust for better performance. Tally is not a stream processor -- it is a feature server. Different abstraction level, different use case.
+Rust-based stream processor with SQL support, designed as a Flink alternative. Cloud-native, supports exactly-once. Arroyo is closer to Flink's model (distributed processing, connectors, checkpointing) reimplemented in Rust for better performance. Beava is not a stream processor -- it is a feature server. Different abstraction level, different use case.
 
 ### Materialize
 
-Streaming SQL database built on Timely Dataflow. Excellent for incremental view maintenance over streaming data. More powerful query model than Tally, but also more complex to operate and reason about. If your features are naturally expressed as SQL views over event streams, Materialize is worth evaluating.
+Streaming SQL database built on Timely Dataflow. Excellent for incremental view maintenance over streaming data. More powerful query model than Beava, but also more complex to operate and reason about. If your features are naturally expressed as SQL views over event streams, Materialize is worth evaluating.
 
 ### Feast
 
-Open-source feature store focused on the offline/online feature serving split. Feast manages feature definitions, offline computation (via Spark/BigQuery), and online serving (via Redis/DynamoDB). Tally is complementary: it computes real-time features that Feast does not handle natively. Some teams use Feast for batch features and a real-time engine for streaming features.
+Open-source feature store focused on the offline/online feature serving split. Feast manages feature definitions, offline computation (via Spark/BigQuery), and online serving (via Redis/DynamoDB). Beava is complementary: it computes real-time features that Feast does not handle natively. Some teams use Feast for batch features and a real-time engine for streaming features.
 
 ### Tecton
 
-Managed feature platform (recently acquired by Databricks). Full lifecycle: feature definitions, batch/streaming/real-time computation, serving, monitoring. Enterprise product with enterprise pricing. Tally covers a slice of what Tecton does (real-time feature computation and serving) at a fraction of the complexity and cost, but does not provide the full platform experience.
+Managed feature platform (recently acquired by Databricks). Full lifecycle: feature definitions, batch/streaming/real-time computation, serving, monitoring. Enterprise product with enterprise pricing. Beava covers a slice of what Tecton does (real-time feature computation and serving) at a fraction of the complexity and cost, but does not provide the full platform experience.
 
-## When to Choose Tally
+## When to Choose Beava
 
-Choose Tally when:
+Choose Beava when:
 
 - You need real-time features (windowed counts, sums, averages, distinct counts, derived signals) served at sub-millisecond latency
 - Your event volume fits on one machine (up to ~500K events/sec sustained)

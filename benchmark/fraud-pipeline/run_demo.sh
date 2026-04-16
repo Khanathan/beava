@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Clone-and-run fraud demo. Builds (if needed), starts a local Tally,
+# Clone-and-run fraud demo. Builds (if needed), starts a local Beava,
 # runs fraud_demo.py, and tears down on exit.
 #
 # Usage:
@@ -8,8 +8,8 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BIN="$REPO/target/release/tally"
-DATA_DIR="${DATA_DIR:-/tmp/tally-fraud-demo}"
+BIN="$REPO/target/release/beava"
+DATA_DIR="${DATA_DIR:-/tmp/beava-fraud-demo}"
 TCP_PORT="${TCP_PORT:-6400}"
 HTTP_PORT="${HTTP_PORT:-6401}"
 TOKEN="${BEAVA_ADMIN_TOKEN:-dev-admin-token}"
@@ -19,16 +19,16 @@ cd "$REPO"
 
 # 1. Build the server if the binary is missing.
 if [[ ! -x "$BIN" ]]; then
-  echo "==> Building tally (release)..."
-  cargo build --release --bin tally
+  echo "==> Building beava (release)..."
+  cargo build --release --bin beava
 fi
 
 # 2. Fresh data dir.
 rm -rf "$DATA_DIR"
 
 # 3. Start the server in the background. Trap ensures cleanup on any exit.
-LOG="$(mktemp -t tally-demo.XXXXXX.log)"
-echo "==> Starting tally server (log: $LOG)"
+LOG="$(mktemp -t beava-demo.XXXXXX.log)"
+echo "==> Starting beava server (log: $LOG)"
 BEAVA_ADMIN_TOKEN="$TOKEN" "$BIN" serve \
   --http-port "$HTTP_PORT" \
   --tcp-port "$TCP_PORT" \
@@ -38,7 +38,7 @@ SERVER_PID=$!
 
 cleanup() {
   echo
-  echo "==> Stopping tally server (pid $SERVER_PID)"
+  echo "==> Stopping beava server (pid $SERVER_PID)"
   kill "$SERVER_PID" 2>/dev/null || true
   wait "$SERVER_PID" 2>/dev/null || true
 }

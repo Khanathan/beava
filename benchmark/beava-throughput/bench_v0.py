@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Tally v0 throughput benchmark — sync/async PUSH over the v0 SDK.
+"""Beava v0 throughput benchmark — sync/async PUSH over the v0 SDK.
 
 Mirrors the v2.0 bench.py 9-cell matrix (small/medium/large x 1c/4c/8c) but
-drives the v0 `@tl.stream` + `@tl.table(key=...)` + `group_by().agg(...)` API
+drives the v0 `@bv.stream` + `@bv.table(key=...)` + `group_by().agg(...)` API
 so it runs against the post-Phase-21 server. Plan 22-04 Step 5 gate:
 no cell regresses > 5% from `.planning/phases/22-stream-aggregation-engine/BASELINE.json`.
 
@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 # Path hack so the bench can run without installing the SDK
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'python'))
 
-import tally as tl  # noqa: E402
+import beava as bv  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -34,19 +34,19 @@ import tally as tl  # noqa: E402
 
 def define_small():
     """1 source stream + 1 keyed aggregation, 5 features."""
-    @tl.stream
+    @bv.stream
     class RawTxns:
         user_id: str
         amount: float
 
-    @tl.table(key="user_id")
-    def Transactions(raw: RawTxns) -> tl.Table:
+    @bv.table(key="user_id")
+    def Transactions(raw: RawTxns) -> bv.Table:
         return raw.group_by("user_id").agg(
-            tx_count_1h=tl.count(window='1h'),
-            tx_sum_1h=tl.sum('amount', window='1h'),
-            avg_amount_1h=tl.avg('amount', window='1h'),
-            max_amount_24h=tl.max('amount', window='24h'),
-            min_amount_24h=tl.min('amount', window='24h'),
+            tx_count_1h=bv.count(window='1h'),
+            tx_sum_1h=bv.sum('amount', window='1h'),
+            avg_amount_1h=bv.avg('amount', window='1h'),
+            max_amount_24h=bv.max('amount', window='24h'),
+            min_amount_24h=bv.min('amount', window='24h'),
         )
 
     return [RawTxns, Transactions], RawTxns
@@ -54,20 +54,20 @@ def define_small():
 
 def define_medium():
     """1 source + 1 user-keyed aggregation with a where-filtered count."""
-    @tl.stream
+    @bv.stream
     class RawTxns:
         user_id: str
         amount: float
         status: str
 
-    @tl.table(key="user_id")
-    def Transactions(raw: RawTxns) -> tl.Table:
+    @bv.table(key="user_id")
+    def Transactions(raw: RawTxns) -> bv.Table:
         return raw.group_by("user_id").agg(
-            tx_count_1h=tl.count(window='1h'),
-            tx_sum_1h=tl.sum('amount', window='1h'),
-            avg_amount_1h=tl.avg('amount', window='1h'),
-            max_amount_24h=tl.max('amount', window='24h'),
-            failed_count_30m=tl.count(window='30m', where="status == 'failed'"),
+            tx_count_1h=bv.count(window='1h'),
+            tx_sum_1h=bv.sum('amount', window='1h'),
+            avg_amount_1h=bv.avg('amount', window='1h'),
+            max_amount_24h=bv.max('amount', window='24h'),
+            failed_count_30m=bv.count(window='30m', where="status == 'failed'"),
         )
 
     return [RawTxns, Transactions], RawTxns
@@ -75,23 +75,23 @@ def define_medium():
 
 def define_large():
     """1 source + user-keyed aggregation with 7 features including count_distinct."""
-    @tl.stream
+    @bv.stream
     class RawTxns:
         user_id: str
         merchant_id: str
         amount: float
         status: str
 
-    @tl.table(key="user_id")
-    def Transactions(raw: RawTxns) -> tl.Table:
+    @bv.table(key="user_id")
+    def Transactions(raw: RawTxns) -> bv.Table:
         return raw.group_by("user_id").agg(
-            tx_count_1h=tl.count(window='1h'),
-            tx_sum_1h=tl.sum('amount', window='1h'),
-            avg_amount_1h=tl.avg('amount', window='1h'),
-            max_amount_24h=tl.max('amount', window='24h'),
-            min_amount_24h=tl.min('amount', window='24h'),
-            failed_count_30m=tl.count(window='30m', where="status == 'failed'"),
-            unique_merchants_24h=tl.count_distinct('merchant_id', window='24h'),
+            tx_count_1h=bv.count(window='1h'),
+            tx_sum_1h=bv.sum('amount', window='1h'),
+            avg_amount_1h=bv.avg('amount', window='1h'),
+            max_amount_24h=bv.max('amount', window='24h'),
+            min_amount_24h=bv.min('amount', window='24h'),
+            failed_count_30m=bv.count(window='30m', where="status == 'failed'"),
+            unique_merchants_24h=bv.count_distinct('merchant_id', window='24h'),
         )
 
     return [RawTxns, Transactions], RawTxns
@@ -104,12 +104,12 @@ def define_join_small():
     `_event_time` that spans the within window so ~50% probe into the
     opposite side match. See bench_v0.run_benchmark generator seed.
     """
-    @tl.stream
+    @bv.stream
     class BenchOrders:
         user_id: str
         order_id: str
 
-    @tl.stream
+    @bv.stream
     class BenchPayments:
         user_id: str
         order_id: str
@@ -119,9 +119,9 @@ def define_join_small():
         BenchPayments, on=["user_id", "order_id"], within="30s", type="inner"
     )
 
-    @tl.table(key="user_id")
-    def BenchJoinAgg(j: Joined) -> tl.Table:
-        return j.group_by("user_id").agg(matched=tl.count(window='1h'))
+    @bv.table(key="user_id")
+    def BenchJoinAgg(j: Joined) -> bv.Table:
+        return j.group_by("user_id").agg(matched=bv.count(window='1h'))
 
     return [BenchOrders, BenchPayments, Joined, BenchJoinAgg], BenchOrders
 
@@ -132,21 +132,21 @@ def define_enrich_small():
     Primary push target is BenchClicks. BenchProfile is pre-populated
     before the benchmark loop (via a warmup pass).
     """
-    @tl.stream
+    @bv.stream
     class BenchClicks:
         user_id: str
         page: str
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class BenchProfile:
         user_id: str
         country: str
 
     Enriched = BenchClicks.join(BenchProfile, on="user_id", type="left")
 
-    @tl.table(key="country")
-    def BenchEnrichAgg(e: Enriched) -> tl.Table:
-        return e.group_by("country").agg(n=tl.count(window='1h'))
+    @bv.table(key="country")
+    def BenchEnrichAgg(e: Enriched) -> bv.Table:
+        return e.group_by("country").agg(n=bv.count(window='1h'))
 
     return [BenchClicks, BenchProfile, Enriched, BenchEnrichAgg], BenchClicks
 
@@ -167,19 +167,19 @@ def define_late_events_small():
     read-gate + the RingBuffer's event-time bucket-routing logic on
     the hot PUSH path, relative to `small_1c`.
     """
-    @tl.stream
+    @bv.stream
     class LateEvtTxns:
         user_id: str
         amount: float
 
-    @tl.table(key="user_id")
-    def LateEvtAgg(raw: LateEvtTxns) -> tl.Table:
+    @bv.table(key="user_id")
+    def LateEvtAgg(raw: LateEvtTxns) -> bv.Table:
         return raw.group_by("user_id").agg(
-            tx_count_1h=tl.count(window='1h'),
-            tx_sum_1h=tl.sum('amount', window='1h'),
-            avg_amount_1h=tl.avg('amount', window='1h'),
-            max_amount_24h=tl.max('amount', window='24h'),
-            min_amount_24h=tl.min('amount', window='24h'),
+            tx_count_1h=bv.count(window='1h'),
+            tx_sum_1h=bv.sum('amount', window='1h'),
+            avg_amount_1h=bv.avg('amount', window='1h'),
+            max_amount_24h=bv.max('amount', window='24h'),
+            min_amount_24h=bv.min('amount', window='24h'),
         )
 
     return [LateEvtTxns, LateEvtAgg], LateEvtTxns
@@ -192,12 +192,12 @@ def define_tombstone_cascade_small():
     fires `cascade_table_upsert`, which re-reads both sides and re-
     materialises the inner-join output row (or tombstones it).
     """
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class TsProfile:
         user_id: str
         country: str
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class TsRisk:
         user_id: str
         score: int
@@ -216,12 +216,12 @@ def define_tt_join_real_small():
     path for the TT-join migration (plan 24-03). Compares against the
     Phase 23 marker-shim cost as a sanity check in SUMMARY.md.
     """
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class TtA:
         user_id: str
         x: int
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class TtB:
         user_id: str
         y: int
@@ -238,21 +238,21 @@ def define_enrich_with_wm_small():
     the watermark parse + the `event_time()` builtin relative to the
     non-watermarked enrichment cell.
     """
-    @tl.stream
+    @bv.stream
     class WmClicks:
         user_id: str
         page: str
 
-    @tl.table(key="user_id")
+    @bv.table(key="user_id")
     class WmProfile:
         user_id: str
         country: str
 
     WmEnriched = WmClicks.join(WmProfile, on="user_id", type="left")
 
-    @tl.table(key="country")
-    def WmEnrichAgg(e: WmEnriched) -> tl.Table:
-        return e.group_by("country").agg(n=tl.count(window='1h'))
+    @bv.table(key="country")
+    def WmEnrichAgg(e: WmEnriched) -> bv.Table:
+        return e.group_by("country").agg(n=bv.count(window='1h'))
 
     return [WmClicks, WmProfile, WmEnriched, WmEnrichAgg], WmClicks
 
@@ -313,7 +313,7 @@ def make_event_with_et(i, arrival_ms, late_ratio=0.0, late_offset_ms=4000,
 
 def run_async_client(primary_cls, events_per_client, client_id, warmup=1000,
                      sample_latency=False, host='localhost:6400'):
-    app = tl.App(host, timeout=30.0)
+    app = bv.App(host, timeout=30.0)
     for i in range(warmup):
         app.push(primary_cls, make_event(i + client_id * 1_000_000))
     app.flush()
@@ -346,7 +346,7 @@ def run_event_time_client(primary_cls, events_per_client, client_id,
     late-but-in-window for a fixed fraction). Used by the `late_events_small`
     and `enrich_with_wm_small` characterization cells.
     """
-    app = tl.App(host, timeout=30.0)
+    app = bv.App(host, timeout=30.0)
     base_ms = int(time.time() * 1000)
     for i in range(warmup):
         # Warmup uses non-late events only (watermarks want monotone advance).
@@ -391,7 +391,7 @@ def run_table_push_client(primary_table, events_per_client, client_id,
     * `delete_ratio=0.0` → all events are upserts.
     * `delete_ratio=0.01` → 1% of events are `app.delete(Table, key)`.
     """
-    app = tl.App(host, timeout=30.0)
+    app = bv.App(host, timeout=30.0)
     # Warmup upserts only (delete-without-prior-upsert is legal but uninteresting).
     for i in range(warmup):
         key = f'user_{(i + client_id * 1_000_000) % user_pool}'
@@ -440,8 +440,8 @@ def _seed_right_table_for_enrich(pipeline_name, app, streams):
         # Right side is a table named *Profile with a country column.
         profile_tbl = None
         for s in streams:
-            name = getattr(s, '_tally_stream_name', None) or getattr(s, '__name__', '')
-            if 'Profile' in name and getattr(s, '_tally_kind', None) == 'table':
+            name = getattr(s, '_beava_stream_name', None) or getattr(s, '__name__', '')
+            if 'Profile' in name and getattr(s, '_beava_kind', None) == 'table':
                 profile_tbl = s
                 break
         if profile_tbl is not None:
@@ -452,7 +452,7 @@ def _seed_right_table_for_enrich(pipeline_name, app, streams):
         # Seed TtB for every user so the inner-join has something to match.
         ttb = None
         for s in streams:
-            name = getattr(s, '_tally_stream_name', None) or getattr(s, '__name__', '')
+            name = getattr(s, '_beava_stream_name', None) or getattr(s, '__name__', '')
             if name == 'TtB':
                 ttb = s
                 break
@@ -463,7 +463,7 @@ def _seed_right_table_for_enrich(pipeline_name, app, streams):
         # Seed TsRisk so the TT-cascade has a Live right side to merge with.
         tsrisk = None
         for s in streams:
-            name = getattr(s, '_tally_stream_name', None) or getattr(s, '__name__', '')
+            name = getattr(s, '_beava_stream_name', None) or getattr(s, '__name__', '')
             if name == 'TsRisk':
                 tsrisk = s
                 break
@@ -483,7 +483,7 @@ def percentile(values, p):
 def run_benchmark(pipeline_name, clients, events_per_client, host='localhost:6400',
                   sample_latency=True, quiet=True):
     streams, primary = PIPELINES[pipeline_name]()
-    app = tl.App(host, timeout=30.0)
+    app = bv.App(host, timeout=30.0)
     app.register(*streams)
 
     custom = _CUSTOM_RUNNER.get(pipeline_name)

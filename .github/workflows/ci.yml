@@ -65,7 +65,7 @@ jobs:
           restore-keys: |
             rust-${{ runner.os }}-
 
-      - name: Build Tally binary (needed by integration tests)
+      - name: Build Beava binary (needed by integration tests)
         run: cargo build
 
       - uses: actions/setup-python@v5
@@ -81,6 +81,6 @@ jobs:
         run: cd python && python -m pytest tests/ -x -q
 
   # Phase 38-01 mothball: `python-native` job removed — the PyO3 extension
-  # and `tally._native` module were deleted along with the Option K
+  # and `beava._native` module were deleted along with the Option K
   # embedded-client path. Scientists use the pure-Python SDK against a
-  # scoped local replica launched with `tally fork` (Phase 37).
+  # scoped local replica launched with `beava fork` (Phase 37).

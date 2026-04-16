@@ -1,6 +1,6 @@
 # Quick Start
 
-Get Tally running and push your first event in under 5 minutes.
+Get Beava running and push your first event in under 5 minutes.
 
 ## Prerequisites
 
@@ -16,21 +16,21 @@ Plus:
 ### Option A: Docker
 
 ```bash
-git clone https://github.com/petrpan26/tally.git
-cd tally
+git clone https://github.com/petrpan26/beava.git
+cd beava
 docker compose up -d
 ```
 
 ### Option B: From source
 
 ```bash
-git clone https://github.com/petrpan26/tally.git
-cd tally
+git clone https://github.com/petrpan26/beava.git
+cd beava
 cargo build --release
-./target/release/tally &
+./target/release/beava &
 ```
 
-Either path starts Tally on TCP port 6400 (protocol) and HTTP port 6401 (management).
+Either path starts Beava on TCP port 6400 (protocol) and HTTP port 6401 (management).
 
 Verify it is running:
 
@@ -46,7 +46,7 @@ Expected output:
 
 ## 2. Install the Python SDK
 
-From the repo root (`cd tally` if you're not already there):
+From the repo root (`cd beava` if you're not already there):
 
 ```bash
 cd python
@@ -57,7 +57,7 @@ cd ..
 Verify:
 
 ```bash
-python -c "import tally; print('SDK ready')"
+python -c "import beava; print('SDK ready')"
 ```
 
 ## 3. Define a Pipeline
@@ -65,27 +65,27 @@ python -c "import tally; print('SDK ready')"
 Create a file called `demo.py` at the repo root:
 
 ```python
-import tally as tl
+import beava as bv
 
 # Declare an event stream
-@tl.stream
+@bv.stream
 class Transactions:
     user_id: str
     amount: float
     merchant_id: str
 
 # Define a keyed table with features
-@tl.table(key="user_id")
-def UserFeatures(txs: Transactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserFeatures(txs: Transactions) -> bv.Table:
     return txs.group_by("user_id").agg(
-        tx_count_1h=tl.count(window="1h"),
-        tx_sum_1h=tl.sum("amount", window="1h"),
-        avg_amount_24h=tl.avg("amount", window="24h"),
-        unique_merchants=tl.count_distinct("merchant_id", window="24h"),
+        tx_count_1h=bv.count(window="1h"),
+        tx_sum_1h=bv.sum("amount", window="1h"),
+        avg_amount_24h=bv.avg("amount", window="24h"),
+        unique_merchants=bv.count_distinct("merchant_id", window="24h"),
     )
 
 # Connect and register
-app = tl.App("localhost:6400")
+app = bv.App("localhost:6400")
 app.register(Transactions, UserFeatures)
 
 # Push events (fire-and-forget, fast)
@@ -121,7 +121,7 @@ Push more events and watch the counts and sums update.
 
 ## 5. Inspect What's Happening
 
-Tally ships with a management API for debugging:
+Beava ships with a management API for debugging:
 
 ```bash
 # Memory usage breakdown
@@ -138,10 +138,10 @@ curl http://localhost:6401/debug/topology | python -m json.tool
 
 ### Server won't start: "address already in use"
 
-Something is using port 6400 or 6401. Either stop it or change Tally's port:
+Something is using port 6400 or 6401. Either stop it or change Beava's port:
 
 ```bash
-BEAVA_TCP_PORT=7400 BEAVA_HTTP_PORT=7401 ./target/release/tally
+BEAVA_TCP_PORT=7400 BEAVA_HTTP_PORT=7401 ./target/release/beava
 ```
 
 ### `cargo build` fails
@@ -167,7 +167,7 @@ curl http://localhost:6401/health
 If no response, start the server. If it's on a different port, pass it explicitly:
 
 ```python
-app = tl.App("localhost:7400")  # match BEAVA_TCP_PORT
+app = bv.App("localhost:7400")  # match BEAVA_TCP_PORT
 ```
 
 ### `pip install -e .` fails
@@ -175,7 +175,7 @@ app = tl.App("localhost:7400")  # match BEAVA_TCP_PORT
 Make sure you're in the `python/` subdirectory, not the repo root:
 
 ```bash
-pwd              # should end in .../tally/python
+pwd              # should end in .../beava/python
 ls pyproject.toml   # should exist
 ```
 
@@ -183,5 +183,5 @@ ls pyproject.toml   # should exist
 
 - **[Python SDK Guide](python-sdk.md)** -- Full API reference: sources, datasets, cascades, projections, and validation.
 - **[Operators Reference](operators.md)** -- All 16 built-in operators with parameters, window behavior, and examples.
-- **[Architecture](architecture.md)** -- How Tally works under the hood.
-- **`/tally` Claude Code skill** -- Type `/tally` in [Claude Code](https://claude.ai/claude-code) for a guided setup with pipeline generation, realistic test data, and capacity planning.
+- **[Architecture](architecture.md)** -- How Beava works under the hood.
+- **`/beava` Claude Code skill** -- Type `/beava` in [Claude Code](https://claude.ai/claude-code) for a guided setup with pipeline generation, realistic test data, and capacity planning.

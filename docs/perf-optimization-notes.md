@@ -215,8 +215,8 @@ For profiling:
 ```bash
 # Start server manually
 BEAVA_ADMIN_TOKEN=dev-admin-token BEAVA_WORKER_THREADS=10 \
-  ./target/release/tally serve --http-port 6401 --tcp-port 6400 &
-SPID=$(pgrep -f "target/release/tally serve" | tail -1)
+  ./target/release/beava serve --http-port 6401 --tcp-port 6400 &
+SPID=$(pgrep -f "target/release/beava serve" | tail -1)
 
 # Kick off clients
 for i in $(seq 0 9); do

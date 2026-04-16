@@ -1,6 +1,6 @@
-# Tally Python SDK
+# Beava Python SDK
 
-The Tally Python SDK is a thin client for the Tally real-time feature server. You define
+The Beava Python SDK is a thin client for the Beava real-time feature server. You define
 pipelines in Python, register them with the server, push events, and read computed features.
 Python never touches the hot path -- all computation happens server-side in Rust.
 
@@ -20,26 +20,26 @@ There are no external dependencies. The SDK uses only the Python standard librar
 ## Quick Start
 
 ```python
-import tally as tl
+import beava as bv
 
 # 1. Declare an event source
-@tl.stream
+@bv.stream
 class Transactions:
     user_id: str
     amount: float
     merchant_id: str
 
 # 2. Define a dataset with features
-@tl.table(key="user_id")
-def UserFeatures(tra: Transactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserFeatures(tra: Transactions) -> bv.Table:
     return tra.group_by("user_id").agg(
-        tx_count_1h=tl.count(window="1h"),
-        tx_sum_1h=tl.sum("amount", window="1h"),
-        avg_amount_1h=tl.avg("amount", window="1h"),
+        tx_count_1h=bv.count(window="1h"),
+        tx_sum_1h=bv.sum("amount", window="1h"),
+        avg_amount_1h=bv.avg("amount", window="1h"),
     )
-    # v0: add .with_columns(velocity=<tl.col expression for "tx_count_1h / (tx_sum_1h + 1)">) to the table above
+    # v0: add .with_columns(velocity=<bv.col expression for "tx_count_1h / (tx_sum_1h + 1)">) to the table above
 # 3. Connect and register
-app = tl.App("localhost:6400")
+app = bv.App("localhost:6400")
 app.register(UserFeatures)  # registers Transactions automatically
 
 # 4. Push an event
@@ -61,10 +61,10 @@ A **source** is an event stream entry point. Events flow in through sources and 
 datasets. Sources themselves do not compute features -- they declare where raw events enter
 the pipeline.
 
-Use the `@tl.stream` decorator:
+Use the `@bv.stream` decorator:
 
 ```python
-@tl.stream
+@bv.stream
 class Transactions:
     user_id: str
     amount: float
@@ -76,7 +76,7 @@ class Transactions:
 You can pass optional parameters to control TTL behavior:
 
 ```python
-@tl.stream(entity_ttl="5m", history_ttl="72h")
+@bv.stream(entity_ttl="5m", history_ttl="72h")
 class Transactions:
     user_id: str
     amount: float
@@ -89,12 +89,12 @@ class Transactions:
 
 ### Typed event schemas
 
-For pipeline validation, declare the event schema directly on the `@tl.stream` class:
+For pipeline validation, declare the event schema directly on the `@bv.stream` class:
 
 ```python
-# v0 streams are plain @tl.stream-decorated classes with type-annotated fields
+# v0 streams are plain @bv.stream-decorated classes with type-annotated fields
 
-@tl.stream
+@bv.stream
 class Transactions:
     user_id: str
     amount: float
@@ -102,7 +102,7 @@ class Transactions:
     status: str
 ```
 
-This enables `tl.validate()` to check that operator field references match the event schema
+This enables `bv.validate()` to check that operator field references match the event schema
 before you register with the server.
 
 ## Defining Datasets
@@ -111,24 +111,24 @@ A **dataset** is a keyed aggregation pipeline. It depends on one or more sources
 datasets), groups events by a key field, and computes features using operators.
 
 ```python
-@tl.table(key="user_id")
-def UserMetrics(tra: Transactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserMetrics(tra: Transactions) -> bv.Table:
     return tra.group_by("user_id").agg(
-        tx_count_1h=tl.count(window="1h"),
-        tx_sum_1h=tl.sum("amount", window="1h"),
+        tx_count_1h=bv.count(window="1h"),
+        tx_sum_1h=bv.sum("amount", window="1h"),
     )
 ```
 
 ### The `group_by().agg()` pattern
 
-Every dataset declares a `features` attribute using `tl.group_by("key_field").agg(...)`.
+Every dataset declares a `features` attribute using `bv.group_by("key_field").agg(...)`.
 This tells the server which event field to use as the entity key and which aggregations
 to maintain.
 
 ```python
-features = tl.group_by("user_id").agg(
-    feature_name=tl.operator(...),
-    another_feature=tl.operator(...),
+features = bv.group_by("user_id").agg(
+    feature_name=bv.operator(...),
+    another_feature=bv.operator(...),
 )
 ```
 
@@ -137,13 +137,13 @@ features = tl.group_by("user_id").agg(
 Add derived features as class attributes alongside `features`:
 
 ```python
-@tl.table(key="user_id")
-def UserMetrics(tra: Transactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserMetrics(tra: Transactions) -> bv.Table:
     return tra.group_by("user_id").agg(
-        tx_count_1h=tl.count(window="1h"),
-        tx_count_24h=tl.count(window="24h"),
+        tx_count_1h=bv.count(window="1h"),
+        tx_count_24h=bv.count(window="24h"),
     )
-    # v0: add .with_columns(velocity_spike=<tl.col expression for "(tx_count_1h / 1) / (tx_count_24h / 24)">) to the table above
+    # v0: add .with_columns(velocity_spike=<bv.col expression for "(tx_count_1h / 1) / (tx_count_24h / 24)">) to the table above
 ```
 
 ### Cascading datasets
@@ -151,46 +151,46 @@ def UserMetrics(tra: Transactions) -> tl.Table:
 A dataset can depend on another dataset, enabling multi-stage pipelines:
 
 ```python
-@tl.stream
+@bv.stream
 class RawEvents:
     user_id: str
     amount: float
     merchant_id: str
 
-@tl.table(key="user_id")
-def UserTxns(raw: RawEvents) -> tl.Table:
+@bv.table(key="user_id")
+def UserTxns(raw: RawEvents) -> bv.Table:
     return raw.group_by("user_id").agg(
-        tx_count_1h=tl.count(window="1h"),
+        tx_count_1h=bv.count(window="1h"),
     )
 
-@tl.table(key="merchant_id")
-def MerchantTxns(raw: RawEvents) -> tl.Table:
+@bv.table(key="merchant_id")
+def MerchantTxns(raw: RawEvents) -> bv.Table:
     return raw.group_by("merchant_id").agg(
-        merch_tx_count_1h=tl.count(window="1h"),
+        merch_tx_count_1h=bv.count(window="1h"),
     )
 ```
 
 ### Union sources
 
-Combine multiple sources into a single dataset input with `tl.union()`:
+Combine multiple sources into a single dataset input with `bv.union()`:
 
 ```python
-@tl.stream
+@bv.stream
 class CardPayments:
     user_id: str
     amount: float
     merchant_id: str
 
-@tl.stream
+@bv.stream
 class BankTransfers:
     user_id: str
     amount: float
     merchant_id: str
 
-@tl.table(key="user_id")
-def AllTransactions(src: tl.union(CardPayments, BankTransfers)) -> tl.Table:
+@bv.table(key="user_id")
+def AllTransactions(src: bv.union(CardPayments, BankTransfers)) -> bv.Table:
     return src.group_by("user_id").agg(
-        total_count_1h=tl.count(window="1h"),
+        total_count_1h=bv.count(window="1h"),
     )
 ```
 
@@ -205,16 +205,16 @@ def AllTransactions(src: tl.union(CardPayments, BankTransfers)) -> tl.Table:
 
 ## Operators
 
-All operators are available as `tl.<name>(...)`. Window durations are strings like
+All operators are available as `bv.<name>(...)`. Window durations are strings like
 `"30m"`, `"1h"`, `"24h"`, `"7d"`.
 
-### tl.count
+### bv.count
 
 Count events in a sliding window.
 
 ```python
-tx_count_1h = tl.count(window="1h")
-failed_count = tl.count(window="30m")  # v0: filter on the source stream before group_by
+tx_count_1h = bv.count(window="1h")
+failed_count = bv.count(window="30m")  # v0: filter on the source stream before group_by
 ```
 
 **Parameters:**
@@ -225,12 +225,12 @@ failed_count = tl.count(window="30m")  # v0: filter on the source stream before 
 | `where`  | `str \| None`  | No       | Filter expression. Only matching events count.    |
 | `bucket` | `str \| None`  | No       | Bucket granularity (e.g. `"1m"`).                 |
 
-### tl.sum
+### bv.sum
 
 Sum a numeric field in a sliding window.
 
 ```python
-tx_sum_1h = tl.sum("amount", window="1h")
+tx_sum_1h = bv.sum("amount", window="1h")
 ```
 
 **Parameters:**
@@ -242,22 +242,22 @@ tx_sum_1h = tl.sum("amount", window="1h")
 | `optional` | `bool`         | No       | Skip events where field is missing.          |
 | `bucket`   | `str \| None`  | No       | Bucket granularity.                          |
 
-### tl.avg
+### bv.avg
 
 Average a numeric field in a sliding window.
 
 ```python
-avg_amount = tl.avg("amount", window="24h")
+avg_amount = bv.avg("amount", window="24h")
 ```
 
-**Parameters:** Same as `tl.sum`.
+**Parameters:** Same as `bv.sum`.
 
-### tl.min
+### bv.min
 
 Minimum value in a sliding window (bucketed approximation).
 
 ```python
-min_amount = tl.min("amount", window="24h")
+min_amount = bv.min("amount", window="24h")
 ```
 
 **Parameters:**
@@ -268,43 +268,43 @@ min_amount = tl.min("amount", window="24h")
 | `window` | `str`          | Yes      | Window duration.               |
 | `bucket` | `str \| None`  | No       | Bucket granularity.            |
 
-### tl.max
+### bv.max
 
 Maximum value in a sliding window (bucketed approximation).
 
 ```python
-max_amount = tl.max("amount", window="24h")
+max_amount = bv.max("amount", window="24h")
 ```
 
-**Parameters:** Same as `tl.min`.
+**Parameters:** Same as `bv.min`.
 
-### tl.exact_min
+### bv.exact_min
 
-Exact minimum in a sliding window (BTreeMap-based, retractable). More memory than `tl.min`
+Exact minimum in a sliding window (BTreeMap-based, retractable). More memory than `bv.min`
 but always accurate.
 
 ```python
-exact_min_amount = tl.exact_min("amount", window="24h")
+exact_min_amount = bv.exact_min("amount", window="24h")
 ```
 
-**Parameters:** Same as `tl.min`.
+**Parameters:** Same as `bv.min`.
 
-### tl.exact_max
+### bv.exact_max
 
 Exact maximum in a sliding window (BTreeMap-based, retractable).
 
 ```python
-exact_max_amount = tl.exact_max("amount", window="24h")
+exact_max_amount = bv.exact_max("amount", window="24h")
 ```
 
-**Parameters:** Same as `tl.min`.
+**Parameters:** Same as `bv.min`.
 
-### tl.stddev
+### bv.stddev
 
 Standard deviation of a numeric field in a sliding window.
 
 ```python
-amount_stddev = tl.stddev("amount", window="24h")
+amount_stddev = bv.stddev("amount", window="24h")
 ```
 
 **Parameters:**
@@ -317,13 +317,13 @@ amount_stddev = tl.stddev("amount", window="24h")
 | `where`    | `str \| None`  | No       | Filter expression.                           |
 | `bucket`   | `str \| None`  | No       | Bucket granularity.                          |
 
-### tl.percentile
+### bv.percentile
 
 Percentile of a numeric field in a sliding window.
 
 ```python
-p95_amount = tl.percentile("amount", 0.95, window="24h")
-p50_amount = tl.percentile("amount", 0.50, window="1h")
+p95_amount = bv.percentile("amount", 0.95, window="24h")
+p50_amount = bv.percentile("amount", 0.50, window="1h")
 ```
 
 **Parameters:**
@@ -337,12 +337,12 @@ p50_amount = tl.percentile("amount", 0.50, window="1h")
 | `where`    | `str \| None`  | No       | Filter expression.                              |
 | `bucket`   | `str \| None`  | No       | Bucket granularity.                             |
 
-### tl.count_distinct
+### bv.count_distinct
 
 Approximate unique count using HyperLogLog. Fixed ~12KB memory per key.
 
 ```python
-unique_merchants = tl.count_distinct("merchant_id", window="24h")
+unique_merchants = bv.count_distinct("merchant_id", window="24h")
 ```
 
 **Parameters:**
@@ -353,13 +353,13 @@ unique_merchants = tl.count_distinct("merchant_id", window="24h")
 | `window` | `str`          | Yes      | Window duration.               |
 | `bucket` | `str \| None`  | No       | Bucket granularity.            |
 
-### tl.last
+### bv.last
 
 Most recent value of a field. No window -- always tracks the latest value.
 
 ```python
-last_country = tl.last("country")
-last_merchant = tl.last("merchant_id")
+last_country = bv.last("country")
+last_merchant = bv.last("merchant_id")
 ```
 
 **Parameters:**
@@ -368,12 +368,12 @@ last_merchant = tl.last("merchant_id")
 |---------|-------|----------|--------------------------------|
 | `field` | `str` | Yes      | Event field (positional).      |
 
-### tl.first
+### bv.first
 
 First value ever seen for a field. Once set, never overwrites.
 
 ```python
-first_country = tl.first("country")
+first_country = bv.first("country")
 ```
 
 **Parameters:**
@@ -383,13 +383,13 @@ first_country = tl.first("country")
 | `field`    | `str`  | Yes      | Event field (positional).                |
 | `optional` | `bool` | No       | Skip if field missing on first event.    |
 
-### tl.lag
+### bv.lag
 
 Return the value from N events ago (event-count based, no window).
 
 ```python
-prev_amount = tl.lag("amount", n=1)
-two_ago_amount = tl.lag("amount", n=2)
+prev_amount = bv.lag("amount", n=1)
+two_ago_amount = bv.lag("amount", n=2)
 ```
 
 **Parameters:**
@@ -400,12 +400,12 @@ two_ago_amount = tl.lag("amount", n=2)
 | `n`        | `int`  | Yes      | Number of events to lag by.              |
 | `optional` | `bool` | No       | Skip events where field is missing.      |
 
-### tl.ema
+### bv.ema
 
 Exponential moving average with time-based decay. No window -- decays continuously.
 
 ```python
-ema_amount = tl.ema("amount", half_life="30m")
+ema_amount = bv.ema("amount", half_life="30m")
 ```
 
 **Parameters:**
@@ -416,12 +416,12 @@ ema_amount = tl.ema("amount", half_life="30m")
 | `half_life` | `str`          | Yes      | Decay half-life duration (e.g. `"30m"`).     |
 | `optional`  | `bool`         | No       | Skip events where field is missing.          |
 
-### tl.last_n
+### bv.last_n
 
 Store the last N values of a field as a JSON array.
 
 ```python
-recent_amounts = tl.last_n("amount", n=5)
+recent_amounts = bv.last_n("amount", n=5)
 ```
 
 **Parameters:**
@@ -432,13 +432,13 @@ recent_amounts = tl.last_n("amount", n=5)
 | `n`        | `int`  | Yes      | Number of recent values to keep.         |
 | `optional` | `bool` | No       | Skip events where field is missing.      |
 
-### tl.derive
+### bv.derive
 
 Expression computed over other features. Evaluated on read, stores no state.
 
 ```python
-# v0: add .with_columns(failure_rate=<tl.col expression for "failed_count_1h / tx_count_1h">) to the table above
-# v0: add .with_columns(is_suspicious=<tl.col expression for "tx_count_1h > 10 and unique_countries_24h > 3">) to the table above
+# v0: add .with_columns(failure_rate=<bv.col expression for "failed_count_1h / tx_count_1h">) to the table above
+# v0: add .with_columns(is_suspicious=<bv.col expression for "tx_count_1h > 10 and unique_countries_24h > 3">) to the table above
 ```
 
 **Parameters:**
@@ -449,12 +449,12 @@ Expression computed over other features. Evaluated on read, stores no state.
 
 See [Derived Features](#derived-features-1) for expression syntax details.
 
-### tl.lookup
+### bv.lookup
 
 Cross-key feature reference. Looks up a feature value from a different entity's state.
 
 ```python
-merchant_risk = tl.lookup("MerchantActivity.chargeback_count_24h", on="merchant_id")
+merchant_risk = bv.lookup("MerchantActivity.chargeback_count_24h", on="merchant_id")
 ```
 
 **Parameters:**
@@ -474,13 +474,13 @@ Most operators accept these additional keyword arguments:
 
 ## Derived Features
 
-The `tl.derive()` expression language supports:
+The `bv.derive()` expression language supports:
 
 ### Arithmetic
 
 ```python
-tl.derive("tx_sum_1h / tx_count_1h")
-tl.derive("(tx_count_1h / 1) / (tx_count_24h / 24)")
+bv.derive("tx_sum_1h / tx_count_1h")
+bv.derive("(tx_count_1h / 1) / (tx_count_24h / 24)")
 ```
 
 Operators: `+`, `-`, `*`, `/`
@@ -488,8 +488,8 @@ Operators: `+`, `-`, `*`, `/`
 ### Comparison
 
 ```python
-tl.derive("tx_count_1h > 10")
-tl.derive("amount_vs_avg >= 3.0")
+bv.derive("tx_count_1h > 10")
+bv.derive("amount_vs_avg >= 3.0")
 ```
 
 Operators: `>`, `<`, `>=`, `<=`, `==`, `!=`
@@ -497,9 +497,9 @@ Operators: `>`, `<`, `>=`, `<=`, `==`, `!=`
 ### Boolean logic
 
 ```python
-tl.derive("tx_count_1h > 10 and unique_countries_24h > 3")
-tl.derive("is_flagged or velocity_spike > 5")
-tl.derive("not is_verified")
+bv.derive("tx_count_1h > 10 and unique_countries_24h > 3")
+bv.derive("is_flagged or velocity_spike > 5")
+bv.derive("not is_verified")
 ```
 
 Operators: `and`, `or`, `not`
@@ -507,9 +507,9 @@ Operators: `and`, `or`, `not`
 ### Builtins
 
 ```python
-tl.derive("abs(amount_deviation)")
-tl.derive("min(tx_count_1h, 100)")
-tl.derive("max(velocity_spike, 0)")
+bv.derive("abs(amount_deviation)")
+bv.derive("min(tx_count_1h, 100)")
+bv.derive("max(velocity_spike, 0)")
 ```
 
 Available: `abs()`, `min()`, `max()`, `now()`
@@ -522,17 +522,17 @@ Available: `abs()`, `min()`, `max()`, `now()`
 
 ## Filtering
 
-Use the `filter=` parameter on `@tl.table` to only process events matching a condition.
-The filter expression uses the same syntax as `tl.derive()`.
+Use the `filter=` parameter on `@bv.table` to only process events matching a condition.
+The filter expression uses the same syntax as `bv.derive()`.
 
 ```python
-@tl.table(key="user_id")
-def FailedTransactions(tra: Transactions) -> tl.Table:
+@bv.table(key="user_id")
+def FailedTransactions(tra: Transactions) -> bv.Table:
     # v0: decorator-level filter= replaced by an explicit .filter() on the stream.
-    return tra.filter(tl.col("status") == "failed").group_by("user_id").agg(
-        failed_count_30m=tl.count(window="30m"),
-        failed_count_1h=tl.count(window="1h"),
-        failed_sum_24h=tl.sum("amount", window="24h"),
+    return tra.filter(bv.col("status") == "failed").group_by("user_id").agg(
+        failed_count_30m=bv.count(window="30m"),
+        failed_count_1h=bv.count(window="1h"),
+        failed_sum_24h=bv.sum("amount", window="24h"),
     )
 ```
 
@@ -541,9 +541,9 @@ Events where `status != 'failed'` are silently dropped before reaching the opera
 You can also use `where=` on individual operators for per-feature filtering:
 
 ```python
-features = tl.group_by("user_id").agg(
-    total_count=tl.count(window="1h"),
-    failed_count=tl.count(window="1h")  # v0: filter on the source stream before group_by,
+features = bv.group_by("user_id").agg(
+    total_count=bv.count(window="1h"),
+    failed_count=bv.count(window="1h")  # v0: filter on the source stream before group_by,
 )
 ```
 
@@ -556,12 +556,12 @@ Control which features appear in responses with `.select()` and `.drop()`.
 Only include the named features:
 
 ```python
-@tl.table(key="user_id")
-def UserMetrics(tra: Transactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserMetrics(tra: Transactions) -> bv.Table:
     return tra.group_by("user_id").agg(
-        tx_count_1h=tl.count(window="1h"),
-        tx_sum_1h=tl.sum("amount", window="1h"),
-        tx_avg_1h=tl.avg("amount", window="1h"),
+        tx_count_1h=bv.count(window="1h"),
+        tx_sum_1h=bv.sum("amount", window="1h"),
+        tx_avg_1h=bv.avg("amount", window="1h"),
     )
 
 # Only tx_count_1h and tx_avg_1h will appear in responses
@@ -583,11 +583,11 @@ Both methods return a new `DatasetDef` -- the original is unchanged.
 
 ### App(address, timeout=5.0)
 
-Create a client connection to a Tally server.
+Create a client connection to a Beava server.
 
 ```python
-app = tl.App("localhost:6400")
-app = tl.App("10.0.0.5:6400", timeout=10.0)
+app = bv.App("localhost:6400")
+app = bv.App("10.0.0.5:6400", timeout=10.0)
 ```
 
 The address format is `"host:port"`. If you omit the port, it defaults to 6400.
@@ -595,7 +595,7 @@ The address format is `"host:port"`. If you omit the port, it defaults to 6400.
 The `App` class supports the context manager protocol:
 
 ```python
-with tl.App("localhost:6400") as app:
+with bv.App("localhost:6400") as app:
     app.register(MyDataset)
     app.push(MySource, {"key": "val"})
     app.flush()
@@ -755,13 +755,13 @@ or `KeyError` (dictionary access).
 
 ## Pipeline Validation
 
-Use `tl.validate()` to check pipeline definitions for errors before registering with
+Use `bv.validate()` to check pipeline definitions for errors before registering with
 the server. Validation runs entirely in Python -- no server connection needed.
 
 ```python
-from tally import validate, ValidationError
+from beava import validate, ValidationError
 
-errors = tl.validate(Transactions, UserMetrics, MerchantMetrics)
+errors = bv.validate(Transactions, UserMetrics, MerchantMetrics)
 if errors:
     for e in errors:
         print(f"[{e.kind}] {e.path}: {e.message}")
@@ -771,7 +771,7 @@ if errors:
 
 - **Cycles:** Circular dependencies in the dataset graph.
 - **Missing dependencies:** A dataset depends on a source or dataset not in the provided definitions.
-- **Type mismatches:** An operator references a field name not found in the upstream `@tl.stream` class annotations.
+- **Type mismatches:** An operator references a field name not found in the upstream `@bv.stream` class annotations.
 
 ### ValidationError
 
@@ -786,12 +786,12 @@ Each error has three attributes:
 ### Example: catching a field mismatch
 
 ```python
-class TxnEvent:  # @tl.stream declared above; v0 streams are plain annotated classes
+class TxnEvent:  # @bv.stream declared above; v0 streams are plain annotated classes
     user_id: str = Field()
     amount: float = Field()
 
-# v0: schema is defined directly via @tl.stream annotations.
-@tl.stream
+# v0: schema is defined directly via @bv.stream annotations.
+@bv.stream
 class Transactions:
     user_id: str = Field()
     amount: float = Field()
@@ -799,13 +799,13 @@ class Transactions:
     status: str = Field()
     # (schema TxnEvent inlined)
 
-@tl.table(key="user_id")
-def UserMetrics(tra: Transactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserMetrics(tra: Transactions) -> bv.Table:
     return tra.group_by("user_id").agg(
-        total=tl.sum("price", window="1h"),  # "price" not in TxnEvent
+        total=bv.sum("price", window="1h"),  # "price" not in TxnEvent
     )
 
-errors = tl.validate(Transactions, UserMetrics)
+errors = bv.validate(Transactions, UserMetrics)
 # [ValidationError(kind='type_mismatch',
 #   path='UserMetrics.total',
 #   message="operator references field 'price' not found in upstream stream schema ...")]
@@ -813,26 +813,26 @@ errors = tl.validate(Transactions, UserMetrics)
 
 ## Error Handling
 
-All SDK exceptions inherit from `TallyError`.
+All SDK exceptions inherit from `BeavaError`.
 
 ```python
-from tally import TallyError, ConnectionError, ProtocolError
+from beava import BeavaError, ConnectionError, ProtocolError
 ```
 
 | Exception         | When it is raised                                          |
 |-------------------|------------------------------------------------------------|
-| `TallyError`      | Base class for all Tally SDK errors.                       |
+| `BeavaError`      | Base class for all Beava SDK errors.                       |
 | `ConnectionError` | TCP connection to the server failed or was lost.           |
 | `ProtocolError`   | Protocol-level error: bad frame, server returned an error. |
 
 ### Example
 
 ```python
-import tally as tl
-from tally import ConnectionError, ProtocolError
+import beava as bv
+from beava import ConnectionError, ProtocolError
 
 try:
-    app = tl.App("localhost:6400")
+    app = bv.App("localhost:6400")
     app.register(MyDataset)
 except ConnectionError as e:
     print(f"Cannot reach server: {e}")
@@ -852,11 +852,11 @@ multiple window tiers. Adapted from `benchmark/fraud-pipeline/bench_fraud.py`.
 ### Pipeline definition
 
 ```python
-import tally as tl
+import beava as bv
 
 # --- Event source ---
 
-@tl.stream
+@bv.stream
 class RawTransactions:
     """Raw payment events with user_id, merchant_id, device_id, ip_address."""
     user_id: str
@@ -865,89 +865,89 @@ class RawTransactions:
 
 # --- Entity 1: User transaction behavior (25 features) ---
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
         # Volume across window tiers
-        tx_count_30m=tl.count(window="30m"),
-        tx_count_1h=tl.count(window="1h"),
-        tx_count_24h=tl.count(window="24h"),
-        tx_count_7d=tl.count(window="7d"),
+        tx_count_30m=bv.count(window="30m"),
+        tx_count_1h=bv.count(window="1h"),
+        tx_count_24h=bv.count(window="24h"),
+        tx_count_7d=bv.count(window="7d"),
         # Amount aggregations
-        tx_sum_1h=tl.sum("amount", window="1h"),
-        tx_sum_24h=tl.sum("amount", window="24h"),
-        tx_avg_1h=tl.avg("amount", window="1h"),
-        tx_avg_24h=tl.avg("amount", window="24h"),
-        tx_max_24h=tl.max("amount", window="24h"),
-        tx_min_24h=tl.min("amount", window="24h"),
-        tx_stddev_24h=tl.stddev("amount", window="24h"),
+        tx_sum_1h=bv.sum("amount", window="1h"),
+        tx_sum_24h=bv.sum("amount", window="24h"),
+        tx_avg_1h=bv.avg("amount", window="1h"),
+        tx_avg_24h=bv.avg("amount", window="24h"),
+        tx_max_24h=bv.max("amount", window="24h"),
+        tx_min_24h=bv.min("amount", window="24h"),
+        tx_stddev_24h=bv.stddev("amount", window="24h"),
         # Cardinality
-        unique_merchants_1h=tl.count_distinct("merchant_id", window="1h"),
-        unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
-        unique_countries_24h=tl.count_distinct("country", window="24h"),
-        unique_devices_24h=tl.count_distinct("device_id", window="24h"),
-        unique_ips_24h=tl.count_distinct("ip_address", window="24h"),
+        unique_merchants_1h=bv.count_distinct("merchant_id", window="1h"),
+        unique_merchants_24h=bv.count_distinct("merchant_id", window="24h"),
+        unique_countries_24h=bv.count_distinct("country", window="24h"),
+        unique_devices_24h=bv.count_distinct("device_id", window="24h"),
+        unique_ips_24h=bv.count_distinct("ip_address", window="24h"),
         # Context
-        last_country=tl.last("country"),
-        last_merchant=tl.last("merchant_id"),
-        last_amount=tl.last("amount"),
+        last_country=bv.last("country"),
+        last_merchant=bv.last("merchant_id"),
+        last_amount=bv.last("amount"),
     )
     # Derived signals
-    # v0: add .with_columns(velocity_spike=<tl.col expression for "(tx_count_1h / 1) / (tx_count_24h / 24)">) to the table above
-    # v0: add .with_columns(amount_vs_avg=<tl.col expression for "last_amount / tx_avg_24h">) to the table above
-    # v0: add .with_columns(spend_acceleration=<tl.col expression for "tx_sum_1h / (tx_sum_24h / 24)">) to the table above
-    # v0: add .with_columns(high_value_ratio=<tl.col expression for "tx_max_24h / tx_avg_24h">) to the table above
-    # v0: add .with_columns(merchant_diversity_1h=<tl.col expression for "unique_merchants_1h / tx_count_1h">) to the table above
-    # v0: add .with_columns(country_hop_flag=<tl.col expression for "unique_countries_24h > 3">) to the table above
+    # v0: add .with_columns(velocity_spike=<bv.col expression for "(tx_count_1h / 1) / (tx_count_24h / 24)">) to the table above
+    # v0: add .with_columns(amount_vs_avg=<bv.col expression for "last_amount / tx_avg_24h">) to the table above
+    # v0: add .with_columns(spend_acceleration=<bv.col expression for "tx_sum_1h / (tx_sum_24h / 24)">) to the table above
+    # v0: add .with_columns(high_value_ratio=<bv.col expression for "tx_max_24h / tx_avg_24h">) to the table above
+    # v0: add .with_columns(merchant_diversity_1h=<bv.col expression for "unique_merchants_1h / tx_count_1h">) to the table above
+    # v0: add .with_columns(country_hop_flag=<bv.col expression for "unique_countries_24h > 3">) to the table above
 # --- Entity 2: Failed transactions (4 features) ---
 
-@tl.table(key="user_id")
-def UserFailedTxns(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserFailedTxns(raw: RawTransactions) -> bv.Table:
     # v0: decorator-level filter= replaced by an explicit .filter() on the stream.
-    return raw.filter(tl.col("status") == "failed").group_by("user_id").agg(
-        failed_count_30m=tl.count(window="30m"),
-        failed_count_1h=tl.count(window="1h"),
-        failed_count_24h=tl.count(window="24h"),
-        failed_sum_24h=tl.sum("amount", window="24h"),
+    return raw.filter(bv.col("status") == "failed").group_by("user_id").agg(
+        failed_count_30m=bv.count(window="30m"),
+        failed_count_1h=bv.count(window="1h"),
+        failed_count_24h=bv.count(window="24h"),
+        failed_sum_24h=bv.sum("amount", window="24h"),
     )
 
 # --- Entity 3: Merchant risk profile (8 features) ---
 
-@tl.table(key="merchant_id")
-def MerchantActivity(raw: RawTransactions) -> tl.Table:
+@bv.table(key="merchant_id")
+def MerchantActivity(raw: RawTransactions) -> bv.Table:
     return raw.group_by("merchant_id").agg(
-        merch_tx_count_1h=tl.count(window="1h"),
-        merch_tx_count_24h=tl.count(window="24h"),
-        merch_tx_sum_24h=tl.sum("amount", window="24h"),
-        merch_avg_amount=tl.avg("amount", window="24h"),
-        merch_unique_users_1h=tl.count_distinct("user_id", window="1h"),
-        merch_unique_users_24h=tl.count_distinct("user_id", window="24h"),
-        merch_max_amount_24h=tl.max("amount", window="24h"),
-        merch_stddev_24h=tl.stddev("amount", window="24h"),
+        merch_tx_count_1h=bv.count(window="1h"),
+        merch_tx_count_24h=bv.count(window="24h"),
+        merch_tx_sum_24h=bv.sum("amount", window="24h"),
+        merch_avg_amount=bv.avg("amount", window="24h"),
+        merch_unique_users_1h=bv.count_distinct("user_id", window="1h"),
+        merch_unique_users_24h=bv.count_distinct("user_id", window="24h"),
+        merch_max_amount_24h=bv.max("amount", window="24h"),
+        merch_stddev_24h=bv.stddev("amount", window="24h"),
     )
 
 # --- Entity 4: Device fingerprint (5 features) ---
 
-@tl.table(key="device_id")
-def DeviceActivity(raw: RawTransactions) -> tl.Table:
+@bv.table(key="device_id")
+def DeviceActivity(raw: RawTransactions) -> bv.Table:
     return raw.group_by("device_id").agg(
-        device_tx_count_1h=tl.count(window="1h"),
-        device_tx_count_24h=tl.count(window="24h"),
-        device_unique_users_1h=tl.count_distinct("user_id", window="1h"),
-        device_unique_users_24h=tl.count_distinct("user_id", window="24h"),
-        device_unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
+        device_tx_count_1h=bv.count(window="1h"),
+        device_tx_count_24h=bv.count(window="24h"),
+        device_unique_users_1h=bv.count_distinct("user_id", window="1h"),
+        device_unique_users_24h=bv.count_distinct("user_id", window="24h"),
+        device_unique_merchants_24h=bv.count_distinct("merchant_id", window="24h"),
     )
 
 # --- Entity 5: IP address activity (5 features) ---
 
-@tl.table(key="ip_address")
-def IPActivity(raw: RawTransactions) -> tl.Table:
+@bv.table(key="ip_address")
+def IPActivity(raw: RawTransactions) -> bv.Table:
     return raw.group_by("ip_address").agg(
-        ip_tx_count_1h=tl.count(window="1h"),
-        ip_tx_count_24h=tl.count(window="24h"),
-        ip_unique_users_1h=tl.count_distinct("user_id", window="1h"),
-        ip_unique_users_24h=tl.count_distinct("user_id", window="24h"),
-        ip_unique_devices_24h=tl.count_distinct("device_id", window="24h"),
+        ip_tx_count_1h=bv.count(window="1h"),
+        ip_tx_count_24h=bv.count(window="24h"),
+        ip_unique_users_1h=bv.count_distinct("user_id", window="1h"),
+        ip_unique_users_24h=bv.count_distinct("user_id", window="24h"),
+        ip_unique_devices_24h=bv.count_distinct("device_id", window="24h"),
     )
 ```
 
@@ -963,7 +963,7 @@ ALL_DATASETS = [
     IPActivity,
 ]
 
-app = tl.App("localhost:6400")
+app = bv.App("localhost:6400")
 app.register(*ALL_DATASETS)
 
 # Push events -- a single event fans out to all datasets that share its keys

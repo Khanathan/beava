@@ -1,6 +1,6 @@
-# Tally Operator Reference
+# Beava Operator Reference
 
-Complete reference for all 16 operators in the Tally real-time feature server.
+Complete reference for all 16 operators in the Beava real-time feature server.
 
 ---
 
@@ -40,9 +40,9 @@ Count events in a sliding window.
 **Python constructor:**
 
 ```python
-tl.count(window="1h")
-tl.count(window="30m")  # v0: use .filter(tl.col(...) == ...) on the stream instead of where=
-tl.count(window="24h", bucket="15m")
+bv.count(window="1h")
+bv.count(window="30m")  # v0: use .filter(bv.col(...) == ...) on the stream instead of where=
+bv.count(window="24h", bucket="15m")
 ```
 
 **Parameters:**
@@ -71,9 +71,9 @@ Uses a `RingBuffer<u64>` with `num_buckets = ceil(window / bucket)`. Each bucket
 **Example:**
 
 ```python
-import tally as tl
+import beava as bv
 
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -81,13 +81,13 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        tx_count_30m=tl.count(window="30m"),
-        tx_count_1h=tl.count(window="1h"),
-        tx_count_24h=tl.count(window="24h"),
-        failed_30m=tl.count(window="30m")  # v0: use .filter(tl.col(...) == ...) on the stream instead of where=
+        tx_count_30m=bv.count(window="30m"),
+        tx_count_1h=bv.count(window="1h"),
+        tx_count_24h=bv.count(window="24h"),
+        failed_30m=bv.count(window="30m")  # v0: use .filter(bv.col(...) == ...) on the stream instead of where=
     )
 ```
 
@@ -100,8 +100,8 @@ Sum a numeric field in a sliding window.
 **Python constructor:**
 
 ```python
-tl.sum("amount", window="1h")
-tl.sum("amount", window="24h", optional=True)
+bv.sum("amount", window="1h")
+bv.sum("amount", window="24h", optional=True)
 ```
 
 **Parameters:**
@@ -131,7 +131,7 @@ Uses two parallel ring buffers: `RingBuffer<f64>` for the running sum and `RingB
 **Example:**
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -139,11 +139,11 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        tx_sum_1h=tl.sum("amount", window="1h"),
-        tx_sum_24h=tl.sum("amount", window="24h"),
+        tx_sum_1h=bv.sum("amount", window="1h"),
+        tx_sum_24h=bv.sum("amount", window="24h"),
     )
 ```
 
@@ -156,8 +156,8 @@ Average a numeric field in a sliding window.
 **Python constructor:**
 
 ```python
-tl.avg("amount", window="1h")
-tl.avg("amount", window="24h", optional=True)
+bv.avg("amount", window="1h")
+bv.avg("amount", window="24h", optional=True)
 ```
 
 **Parameters:**
@@ -187,7 +187,7 @@ Uses two parallel ring buffers: `RingBuffer<u64>` for count and `RingBuffer<f64>
 **Example:**
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -195,11 +195,11 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        avg_amount_1h=tl.avg("amount", window="1h"),
-        avg_amount_24h=tl.avg("amount", window="24h"),
+        avg_amount_1h=bv.avg("amount", window="1h"),
+        avg_amount_24h=bv.avg("amount", window="24h"),
     )
 ```
 
@@ -212,8 +212,8 @@ Minimum value of a numeric field in a sliding window (bucketed approximation).
 **Python constructor:**
 
 ```python
-tl.min("amount", window="1h")
-tl.min("amount", window="24h", bucket="15m")
+bv.min("amount", window="1h")
+bv.min("amount", window="24h", bucket="15m")
 ```
 
 **Parameters:**
@@ -244,7 +244,7 @@ Uses `RingBuffer<MinBucket>` where each bucket defaults to `+INFINITY`. On push,
 **Example:**
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -252,10 +252,10 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        min_amount_24h=tl.min("amount", window="24h"),
+        min_amount_24h=bv.min("amount", window="24h"),
     )
 ```
 
@@ -268,8 +268,8 @@ Maximum value of a numeric field in a sliding window (bucketed approximation).
 **Python constructor:**
 
 ```python
-tl.max("amount", window="1h")
-tl.max("amount", window="24h", bucket="15m")
+bv.max("amount", window="1h")
+bv.max("amount", window="24h", bucket="15m")
 ```
 
 **Parameters:**
@@ -300,7 +300,7 @@ Uses `RingBuffer<MaxBucket>` where each bucket defaults to `-INFINITY`. On push,
 **Example:**
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -308,10 +308,10 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        max_amount_24h=tl.max("amount", window="24h"),
+        max_amount_24h=bv.max("amount", window="24h"),
     )
 ```
 
@@ -324,9 +324,9 @@ Standard deviation of a numeric field in a sliding window.
 **Python constructor:**
 
 ```python
-tl.stddev("amount", window="1h")
-tl.stddev("amount", window="24h", optional=True)
-tl.stddev("amount", window="1h")  # v0: filter on the source stream, not on the op
+bv.stddev("amount", window="1h")
+bv.stddev("amount", window="24h", optional=True)
+bv.stddev("amount", window="1h")  # v0: filter on the source stream, not on the op
 ```
 
 **Parameters:**
@@ -357,7 +357,7 @@ Uses `RingBuffer<StddevBucket>` where each `StddevBucket` holds `{count: u64, su
 **Example:**
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -365,13 +365,13 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        amount_stddev_1h=tl.stddev("amount", window="1h"),
-        avg_amount_1h=tl.avg("amount", window="1h"),
+        amount_stddev_1h=bv.stddev("amount", window="1h"),
+        avg_amount_1h=bv.avg("amount", window="1h"),
     )
-    # v0: append .with_columns(amount_vs_norm=<tl.col expression for "((_event.amount - avg_amount_1h) / amount_stddev_1h)">) to the table pipeline above
+    # v0: append .with_columns(amount_vs_norm=<bv.col expression for "((_event.amount - avg_amount_1h) / amount_stddev_1h)">) to the table pipeline above
 ```
 
 ---
@@ -383,9 +383,9 @@ Percentile estimation of a numeric field in a sliding window.
 **Python constructor:**
 
 ```python
-tl.percentile("amount", 0.95, window="1h")
-tl.percentile("latency_ms", 0.50, window="30m", optional=True)
-tl.percentile("amount", 0.99, window="24h")  # v0: filter on the source stream, not on the op
+bv.percentile("amount", 0.95, window="1h")
+bv.percentile("latency_ms", 0.50, window="30m", optional=True)
+bv.percentile("amount", 0.99, window="24h")  # v0: filter on the source stream, not on the op
 ```
 
 **Parameters:**
@@ -417,7 +417,7 @@ Uses `RingBuffer<PercentileBucket>` where each bucket holds a `Vec<f64>` of all 
 **Example:**
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -425,12 +425,12 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        p50_amount_1h=tl.percentile("amount", 0.50, window="1h"),
-        p95_amount_1h=tl.percentile("amount", 0.95, window="1h"),
-        p99_amount_1h=tl.percentile("amount", 0.99, window="1h"),
+        p50_amount_1h=bv.percentile("amount", 0.50, window="1h"),
+        p95_amount_1h=bv.percentile("amount", 0.95, window="1h"),
+        p99_amount_1h=bv.percentile("amount", 0.99, window="1h"),
     )
 ```
 
@@ -443,8 +443,8 @@ Approximate unique count of a field in a sliding window using adaptive HLL++.
 **Python constructor:**
 
 ```python
-tl.count_distinct("merchant_id", window="24h")
-tl.count_distinct("ip_address", window="1h", bucket="5m")
+bv.count_distinct("merchant_id", window="24h")
+bv.count_distinct("ip_address", window="1h", bucket="5m")
 ```
 
 **Parameters:**
@@ -488,7 +488,7 @@ Most fraud use cases (user sees ~5-20 merchants/hour) stay in the exact or hash 
 **Example:**
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -496,11 +496,11 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
-        unique_countries_1h=tl.count_distinct("country", window="1h"),
+        unique_merchants_24h=bv.count_distinct("merchant_id", window="24h"),
+        unique_countries_1h=bv.count_distinct("country", window="1h"),
     )
 ```
 
@@ -513,8 +513,8 @@ Exact retractable minimum in a sliding window.
 **Python constructor:**
 
 ```python
-tl.exact_min("amount", window="1h")
-tl.exact_min("amount", window="24h", bucket="15m")
+bv.exact_min("amount", window="1h")
+bv.exact_min("amount", window="24h", bucket="15m")
 ```
 
 **Parameters:**
@@ -545,7 +545,7 @@ Uses `RingBuffer<ValBucket>` where each bucket stores a `Vec<f64>` of all values
 **Example:**
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -553,10 +553,10 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        exact_min_amount_1h=tl.exact_min("amount", window="1h"),
+        exact_min_amount_1h=bv.exact_min("amount", window="1h"),
     )
 ```
 
@@ -569,8 +569,8 @@ Exact retractable maximum in a sliding window.
 **Python constructor:**
 
 ```python
-tl.exact_max("amount", window="1h")
-tl.exact_max("amount", window="24h", bucket="15m")
+bv.exact_max("amount", window="1h")
+bv.exact_max("amount", window="24h", bucket="15m")
 ```
 
 **Parameters:**
@@ -599,7 +599,7 @@ Same as `exact_min`: `O(total_events_in_window * ~40 bytes)`.
 **Example:**
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -607,10 +607,10 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        exact_max_amount_1h=tl.exact_max("amount", window="1h"),
+        exact_max_amount_1h=bv.exact_max("amount", window="1h"),
     )
 ```
 
@@ -627,8 +627,8 @@ Most recent value of a field.
 **Python constructor:**
 
 ```python
-tl.last("country")
-tl.last("merchant_id")
+bv.last("country")
+bv.last("merchant_id")
 ```
 
 **Parameters:**
@@ -657,7 +657,7 @@ None. Single value + timestamp. O(1) state.
 **Example:**
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -665,12 +665,12 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        last_country=tl.last("country"),
-        last_merchant=tl.last("merchant_id"),
-        last_amount=tl.last("amount"),
+        last_country=bv.last("country"),
+        last_merchant=bv.last("merchant_id"),
+        last_amount=bv.last("amount"),
     )
 ```
 
@@ -683,8 +683,8 @@ First value ever seen for a field.
 **Python constructor:**
 
 ```python
-tl.first("signup_source")
-tl.first("country", optional=True)
+bv.first("signup_source")
+bv.first("country", optional=True)
 ```
 
 **Parameters:**
@@ -712,7 +712,7 @@ None. Single value + timestamp. O(1) state. After the first value is stored, `pu
 **Example:**
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -720,11 +720,11 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        first_country=tl.first("country"),
-        signup_source=tl.first("source"),
+        first_country=bv.first("country"),
+        signup_source=bv.first("source"),
     )
 ```
 
@@ -737,8 +737,8 @@ Previous Nth value of a field (event-count-based).
 **Python constructor:**
 
 ```python
-tl.lag("amount", n=1)
-tl.lag("country", n=3, optional=True)
+bv.lag("amount", n=1)
+bv.lag("country", n=3, optional=True)
 ```
 
 **Parameters:**
@@ -767,7 +767,7 @@ None. Event-count-based, not time-based. The lag is measured in number of events
 **Example:**
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -775,13 +775,13 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        prev_amount=tl.lag("amount", n=1),
-        prev_country=tl.lag("country", n=1),
+        prev_amount=bv.lag("amount", n=1),
+        prev_country=bv.lag("country", n=1),
     )
-    # v0: append .with_columns(amount_change=<tl.col expression for "_event.amount - prev_amount">) to the table pipeline above
+    # v0: append .with_columns(amount_change=<bv.col expression for "_event.amount - prev_amount">) to the table pipeline above
 ```
 
 ---
@@ -793,8 +793,8 @@ Last N values of a field as a JSON array.
 **Python constructor:**
 
 ```python
-tl.last_n("amount", n=5)
-tl.last_n("merchant_id", n=10, optional=True)
+bv.last_n("amount", n=5)
+bv.last_n("merchant_id", n=10, optional=True)
 ```
 
 **Parameters:**
@@ -825,7 +825,7 @@ None. Event-count-based using a `VecDeque` of capacity N.
 **Example:**
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -833,11 +833,11 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        last_5_amounts=tl.last_n("amount", n=5),
-        last_10_merchants=tl.last_n("merchant_id", n=10),
+        last_5_amounts=bv.last_n("amount", n=5),
+        last_10_merchants=bv.last_n("merchant_id", n=10),
     )
 ```
 
@@ -850,8 +850,8 @@ Exponential moving average with time-based decay.
 **Python constructor:**
 
 ```python
-tl.ema("amount", half_life="30m")
-tl.ema("latency_ms", half_life="1h", optional=True)
+bv.ema("amount", half_life="30m")
+bv.ema("latency_ms", half_life="1h", optional=True)
 ```
 
 **Parameters:**
@@ -887,7 +887,7 @@ None. O(1) state -- just the current EMA value, the last event timestamp, and th
 **Example:**
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -895,13 +895,13 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        ema_amount_30m=tl.ema("amount", half_life="30m"),
-        ema_amount_4h=tl.ema("amount", half_life="4h"),
+        ema_amount_30m=bv.ema("amount", half_life="30m"),
+        ema_amount_4h=bv.ema("amount", half_life="4h"),
     )
-    # v0: append .with_columns(ema_divergence=<tl.col expression for "ema_amount_30m / ema_amount_4h">) to the table pipeline above
+    # v0: append .with_columns(ema_divergence=<bv.col expression for "ema_amount_30m / ema_amount_4h">) to the table pipeline above
 ```
 
 ---
@@ -915,9 +915,9 @@ Expression computed over other features. No state, evaluated on read.
 **Python constructor:**
 
 ```python
-tl.derive("failed_tx_30m / tx_count_30m")
-tl.derive("_event.amount / avg_amount_1h")
-tl.derive("tx_count_1h > 10 and login_count_1h < 2")
+bv.derive("failed_tx_30m / tx_count_30m")
+bv.derive("_event.amount / avg_amount_1h")
+bv.derive("tx_count_1h > 10 and login_count_1h < 2")
 ```
 
 **Parameters:**
@@ -951,7 +951,7 @@ None. O(1) -- no state, computed on read.
 **Example:**
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -959,20 +959,20 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def UserTransactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        tx_count_30m=tl.count(window="30m"),
-        tx_count_1h=tl.count(window="1h"),
-        tx_count_24h=tl.count(window="24h"),
-        failed_tx_30m=tl.count(window="30m")  # v0: use .filter(tl.col(...) == ...) on the stream instead of where=
-        avg_amount_1h=tl.avg("amount", window="1h"),
+        tx_count_30m=bv.count(window="30m"),
+        tx_count_1h=bv.count(window="1h"),
+        tx_count_24h=bv.count(window="24h"),
+        failed_tx_30m=bv.count(window="30m")  # v0: use .filter(bv.col(...) == ...) on the stream instead of where=
+        avg_amount_1h=bv.avg("amount", window="1h"),
     )
 
     # Derived features
-    # v0: append .with_columns(failure_rate=<tl.col expression for "failed_tx_30m / tx_count_30m">) to the table pipeline above
-    # v0: append .with_columns(velocity_spike=<tl.col expression for "(tx_count_1h / 1) / (tx_count_24h / 24)">) to the table pipeline above
-    # v0: append .with_columns(amount_vs_avg=<tl.col expression for "_event.amount / avg_amount_1h">) to the table pipeline above
+    # v0: append .with_columns(failure_rate=<bv.col expression for "failed_tx_30m / tx_count_30m">) to the table pipeline above
+    # v0: append .with_columns(velocity_spike=<bv.col expression for "(tx_count_1h / 1) / (tx_count_24h / 24)">) to the table pipeline above
+    # v0: append .with_columns(amount_vs_avg=<bv.col expression for "_event.amount / avg_amount_1h">) to the table pipeline above
 ```
 
 ---
@@ -980,7 +980,7 @@ def UserTransactions(raw: RawTransactions) -> tl.Table:
 ## Filtering events before aggregation
 
 The pre-v0 decorator-level `where=` parameter was removed. In v0, filtering
-happens on the stream with `.filter(tl.col(...) == value)` before
+happens on the stream with `.filter(bv.col(...) == value)` before
 `.group_by(...).agg(...)`. To get per-feature filtering, define a table that
 filters a sub-stream and either merge it into the main table or join the
 sub-aggregation back.
@@ -989,18 +989,18 @@ sub-aggregation back.
 
 ```python
 # Equality
-txs.filter(tl.col("status") == "failed").group_by("user_id").agg(
-    failed_count=tl.count(window="30m"),
+txs.filter(bv.col("status") == "failed").group_by("user_id").agg(
+    failed_count=bv.count(window="30m"),
 )
 
 # Comparison
-txs.filter(tl.col("amount") > 100).group_by("user_id").agg(
-    big_tx_count=tl.count(window="1h"),
+txs.filter(bv.col("amount") > 100).group_by("user_id").agg(
+    big_tx_count=bv.count(window="1h"),
 )
 
 # Boolean logic
-txs.filter((tl.col("status") == "success") & (tl.col("amount") > 50)).group_by("user_id").agg(
-    good_count=tl.count(window="1h"),
+txs.filter((bv.col("status") == "success") & (bv.col("amount") > 50)).group_by("user_id").agg(
+    good_count=bv.count(window="1h"),
 )
 ```
 
@@ -1022,7 +1022,7 @@ All windowed operators use a **bucketed ring buffer** (`RingBuffer<T>`) that div
 
 3. **On read**: The ring buffer advances to the current time (expiring stale buckets), then aggregates across all remaining buckets.
 
-4. **Lazy expiration**: There are no background timers. Stale buckets are zeroed only when `advance_to()` is called during a push or read. This is safe in Tally's single-threaded design.
+4. **Lazy expiration**: There are no background timers. Stale buckets are zeroed only when `advance_to()` is called during a push or read. This is safe in Beava's single-threaded design.
 
 ### Bucket granularity tradeoff
 
@@ -1053,10 +1053,10 @@ The `derive` operator supports referencing features from other streams using the
 
 ### Within a view
 
-Views (`@tl.view`) are the primary mechanism for cross-stream references:
+Views (`@bv.view`) are the primary mechanism for cross-stream references:
 
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -1064,7 +1064,7 @@ class RawTransactions:
     status: str
     country: str
 
-@tl.stream
+@bv.stream
 class RawLogins:
     user_id: str
     merchant_id: str
@@ -1072,22 +1072,22 @@ class RawLogins:
     status: str
     country: str
 
-@tl.table(key="user_id")
-def Transactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def Transactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        tx_count_1h=tl.count(window="1h"),
+        tx_count_1h=bv.count(window="1h"),
     )
 
-@tl.table(key="user_id")
-def Logins(raw: RawLogins) -> tl.Table:
+@bv.table(key="user_id")
+def Logins(raw: RawLogins) -> bv.Table:
     return raw.group_by("user_id").agg(
-        login_count_1h=tl.count(window="1h"),
+        login_count_1h=bv.count(window="1h"),
     )
 
-@tl.view(key="user_id")
+@bv.view(key="user_id")
 class UserRisk:
-    # v0: append .with_columns(tx_to_login_ratio=<tl.col expression for "Transactions.tx_count_1h / Logins.login_count_1h">) to the table pipeline above
-    # v0: append .with_columns(is_suspicious=<tl.col expression for "Transactions.tx_count_1h > 10 and Logins.login_count_1h < 2">) to the table pipeline above
+    # v0: append .with_columns(tx_to_login_ratio=<bv.col expression for "Transactions.tx_count_1h / Logins.login_count_1h">) to the table pipeline above
+    # v0: append .with_columns(is_suspicious=<bv.col expression for "Transactions.tx_count_1h > 10 and Logins.login_count_1h < 2">) to the table pipeline above
 ```
 
 ### Event field access
@@ -1095,15 +1095,15 @@ class UserRisk:
 Use `_event.field_name` in derive expressions to reference raw fields from the current event:
 
 ```python
-# v0: append .with_columns(amount_vs_avg=<tl.col expression for "_event.amount / avg_amount_1h">) to the table pipeline above
+# v0: append .with_columns(amount_vs_avg=<bv.col expression for "_event.amount / avg_amount_1h">) to the table pipeline above
 ```
 
 ### Cross-key lookups
 
-Use `tl.lookup()` to reference features from a different entity key:
+Use `bv.lookup()` to reference features from a different entity key:
 
 ```python
-@tl.stream
+@bv.stream
 class RawMerchantEvents:
     user_id: str
     merchant_id: str
@@ -1111,15 +1111,15 @@ class RawMerchantEvents:
     status: str
     country: str
 
-@tl.table(key="merchant_id")
-def MerchantActivity(raw: RawMerchantEvents) -> tl.Table:
+@bv.table(key="merchant_id")
+def MerchantActivity(raw: RawMerchantEvents) -> bv.Table:
     return raw.group_by("merchant_id").agg(
-        chargeback_count_24h=tl.count(window="24h")  # v0: use .filter(tl.col(...) == ...) on the stream instead of where=
+        chargeback_count_24h=bv.count(window="24h")  # v0: use .filter(bv.col(...) == ...) on the stream instead of where=
     )
 
-@tl.view(key="user_id")
+@bv.view(key="user_id")
 class FraudSignals:
-    merchant_chargebacks = tl.lookup(
+    merchant_chargebacks = bv.lookup(
         "MerchantActivity.chargeback_count_24h",
         on="merchant_id"
     )

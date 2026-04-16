@@ -1,5 +1,5 @@
 services:
-  tally:
+  beava:
     build: .
     ports:
       - "6400:6400"
@@ -10,7 +10,7 @@ services:
       - BEAVA_TCP_PORT=6400
       - BEAVA_HTTP_PORT=6401
       - BEAVA_SNAPSHOT=true
-      - BEAVA_SNAPSHOT_PATH=/data/tally.snapshot
+      - BEAVA_SNAPSHOT_PATH=/data/beava.snapshot
       - BEAVA_EVENT_LOG=true
       - BEAVA_DATA_DIR=/data
     restart: unless-stopped

@@ -1,13 +1,13 @@
-# Tally public demo — TLS + reverse-proxy in front of the HTTP management API on 127.0.0.1:6401.
-# The `demo.tally.dev` placeholder is rewritten by deploy/provision.sh to the real domain.
+# Beava public demo — TLS + reverse-proxy in front of the HTTP management API on 127.0.0.1:6401.
+# The `demo.beava.dev` placeholder is rewritten by deploy/provision.sh to the real domain.
 #
 # Defense in depth:
-#   1. `--tcp-bind 127.0.0.1` in tally.service keeps the raw TCP protocol (port 6400) off the public iface.
+#   1. `--tcp-bind 127.0.0.1` in beava.service keeps the raw TCP protocol (port 6400) off the public iface.
 #   2. `ufw deny 6400/tcp, 6401/tcp` in provision.sh blocks any stray binds at the kernel.
 #   3. The admin middleware in src/server/auth.rs requires loopback or bearer token.
 #   4. This Caddyfile additionally 404s admin paths at the edge so scanners can't even probe.
 
-demo.tally.dev {
+demo.beava.dev {
 	encode gzip
 
 	header {
@@ -39,7 +39,7 @@ demo.tally.dev {
 		respond "Not found" 404
 	}
 
-	# Everything else forwards to the Tally HTTP management API on loopback:
+	# Everything else forwards to the Beava HTTP management API on loopback:
 	#   /           — demo page (served in --public-mode)
 	#   /health     — liveness probe
 	#   /metrics    — Prometheus aggregates

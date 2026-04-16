@@ -1,6 +1,6 @@
 ---
 name: Bug Report
-about: Report a bug in Tally
+about: Report a bug in Beava
 title: "[Bug] "
 labels: bug
 assignees: ''
@@ -26,7 +26,7 @@ What actually happened?
 
 ## Environment
 
-- Tally version:
+- Beava version:
 - OS:
 - Python version (if using SDK):
 - How installed (cargo, binary, source):

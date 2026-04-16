@@ -18,15 +18,15 @@ Event schema (6 fields, stable)::
     }
 
 The returned list is sorted ascending by ``ts``. Time-ordering matters
-because the Tally server's sliding-window operators bucket on the event
+because the Beava server's sliding-window operators bucket on the event
 timestamp (Phase 8 SCHM-03 backfill semantics): replaying 30 days of
 pre-stamped events into ~30 seconds of wall-clock time produces the same
 feature values as would accumulate in real time.
 
-**Why not import benchmark/tally-throughput/bench.py?** That module has
+**Why not import benchmark/beava-throughput/bench.py?** That module has
 import-time side effects (argparse, path hacks, etc.). Copying the shape
 constants here is simpler and lets the generator run standalone. The
-canonical fraud-event shape source is `benchmark/tally-throughput/bench.py`
+canonical fraud-event shape source is `benchmark/beava-throughput/bench.py`
 `make_event` — keep the keys in sync if that schema evolves.
 """
 
@@ -133,12 +133,12 @@ def _cli(argv=None) -> int:
     p = argparse.ArgumentParser(
         description="Deterministic fraud-event generator. "
                     "Invoked with --register-only, registers the replay pipelines "
-                    "on a running Tally server and exits."
+                    "on a running Beava server and exits."
     )
     p.add_argument("--register-only", action="store_true", default=False,
-                   help="Register pipelines on the Tally server and exit.")
+                   help="Register pipelines on the Beava server and exit.")
     p.add_argument("--target", default=None,
-                   help="host:port of the Tally server (alias for --host/--port).")
+                   help="host:port of the Beava server (alias for --host/--port).")
     p.add_argument("--host", default="localhost")
     p.add_argument("--port", type=int, default=6400)
     p.add_argument("--preview", type=int, default=0,

@@ -1,9 +1,9 @@
-# Tally Baseline Throughput Benchmark — Results
+# Beava Baseline Throughput Benchmark — Results
 
 **Date:** 2026-04-11
 **Build:** `cargo build --release` against git HEAD (Phase 10.2 shipped, v1.1 complete)
 **Hardware:** Linux container, overlay FS, Python 3 SDK
-**Tally config:** single-threaded tokio (`current_thread`), global `Arc<Mutex<AppState>>`, binary frame + JSON payload, event log + snapshots on `/tmp`
+**Beava config:** single-threaded tokio (`current_thread`), global `Arc<Mutex<AppState>>`, binary frame + JSON payload, event log + snapshots on `/tmp`
 
 ## TL;DR
 
@@ -18,7 +18,7 @@ Three load-bearing findings, in priority order:
 
 **1. Single-threaded core collapses under concurrent clients.** Going from 1 → 4 clients on the same pipeline takes server-side p50 from **6.2us → 788us** — a **127x regression**. Throughput drops from 17.5k/s to 1.17k/s. This is not lock contention cost (critical section is ~6us); it's tokio's `current_thread` runtime serializing every connection's work onto one OS thread, and Python clients queueing up in the ingress buffer. Multi-threaded tokio + fine-grained locks are necessary for any concurrent workload.
 
-**2. HLL distinct_count is ~150x more expensive than non-HLL operators.** Large pipeline server-side p50 = **932us** vs medium = **6.2us**. Two `distinct_count` features × 2 HLL estimate computations per push × ~4us each = 8us of HLL work, but the actual cost is 150x that because HLL `count()` scans 16384 registers with `powi()` every read. The rest of the pipeline (cascade through 3 streams) adds ~100us. The 150x ratio matches FINDINGS §"Big Tally" prediction almost exactly.
+**2. HLL distinct_count is ~150x more expensive than non-HLL operators.** Large pipeline server-side p50 = **932us** vs medium = **6.2us**. Two `distinct_count` features × 2 HLL estimate computations per push × ~4us each = 8us of HLL work, but the actual cost is 150x that because HLL `count()` scans 16384 registers with `powi()` every read. The rest of the pipeline (cascade through 3 streams) adds ~100us. The 150x ratio matches FINDINGS §"Big Beava" prediction almost exactly.
 
 **3. Python SDK round-trip is ~41us of overhead per push on the medium pipeline** (client p50=48us, server p50=6us). Most of the visible latency a Python user sees is NOT in the Rust core. Binary wire protocol (FINDINGS Priority 1) addresses part of this (JSON parse/serialize), fire-and-forget PUSH (Priority 2) addresses the response write path. Together they can close most of the 41us gap.
 
@@ -28,21 +28,21 @@ Three load-bearing findings, in priority order:
 
 Pipeline:
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     amount: float
     merchant_id: str
     status: str
 
-@tl.table(key="user_id")
-def Transactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def Transactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        tx_count_1h=tl.count(window='1h'),
-        tx_sum_1h=tl.sum('amount', window='1h'),
-        avg_amount_1h=tl.avg('amount', window='1h'),
-        max_amount_24h=tl.max('amount', window='24h'),
-        min_amount_24h=tl.min('amount', window='24h'),
+        tx_count_1h=bv.count(window='1h'),
+        tx_sum_1h=bv.sum('amount', window='1h'),
+        avg_amount_1h=bv.avg('amount', window='1h'),
+        max_amount_24h=bv.max('amount', window='24h'),
+        min_amount_24h=bv.min('amount', window='24h'),
     )
 ```
 
@@ -54,32 +54,32 @@ def Transactions(raw: RawTransactions) -> tl.Table:
 
 Pipeline:
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     amount: float
     merchant_id: str
     status: str
 
-@tl.table(key="user_id")
-def Transactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def Transactions(raw: RawTransactions) -> bv.Table:
     return raw.group_by("user_id").agg(
-        tx_count_1h=tl.count(window='1h'),
-        tx_sum_1h=tl.sum('amount', window='1h'),
-        avg_amount_1h=tl.avg('amount', window='1h'),
-        max_amount_24h=tl.max('amount', window='24h'),
-        failed_count_30m=tl.count(window='30m')  # v0: filter on the stream before group_by,
+        tx_count_1h=bv.count(window='1h'),
+        tx_sum_1h=bv.sum('amount', window='1h'),
+        avg_amount_1h=bv.avg('amount', window='1h'),
+        max_amount_24h=bv.max('amount', window='24h'),
+        failed_count_30m=bv.count(window='30m')  # v0: filter on the stream before group_by,
     )
     # v0: append .with_columns(failure_rate=<col-expr for "failed_count_30m / tx_count_1h">) to the table pipeline
-@tl.table(key="merchant_id")
-def MerchantActivity(raw: RawTransactions) -> tl.Table:
+@bv.table(key="merchant_id")
+def MerchantActivity(raw: RawTransactions) -> bv.Table:
     return raw.group_by("merchant_id").agg(
-        merchant_tx_count=tl.count(window='1h'),
-        merchant_sum=tl.sum('amount', window='1h'),
+        merchant_tx_count=bv.count(window='1h'),
+        merchant_sum=bv.sum('amount', window='1h'),
     )
 
-@tl.table(key="user_id")
-def UserRisk(tra: Transactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserRisk(tra: Transactions) -> bv.Table:
     return tra.group_by("user_id").agg()
     # v0: append .with_columns(is_high_volume=<col-expr for "Transactions.tx_count_1h > 10">) to the table pipeline
 ```
@@ -104,29 +104,29 @@ This is the single-threaded-core failure mode. Each of the 4 Python threads open
 
 Pipeline:
 ```python
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     amount: float
     merchant_id: str
     status: str
 
-@tl.table(key="user_id")
-def Transactions(raw: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def Transactions(raw: RawTransactions) -> bv.Table:
     # 5 regular features + count_distinct('merchant_id', window='24h') + derive
     ...
-@tl.table(key="merchant_id")
-def MerchantActivity(raw: RawTransactions) -> tl.Table:
+@bv.table(key="merchant_id")
+def MerchantActivity(raw: RawTransactions) -> bv.Table:
     # 3 features including count_distinct('user_id', window='24h')
     return raw.group_by("merchant_id").agg(...)
-@tl.table(key="device_id")
-def DeviceActivity(raw: RawTransactions) -> tl.Table:
+@bv.table(key="device_id")
+def DeviceActivity(raw: RawTransactions) -> bv.Table:
     # 2 features including count_distinct('user_id', window='1h')
     return raw.group_by("device_id").agg(...)
-@tl.table(key="user_id")
-def UserRisk(src: Transactions) -> tl.Table: ...
-@tl.table(key="user_id")
-def UserSummary(src: Transactions) -> tl.Table: ...
+@bv.table(key="user_id")
+def UserRisk(src: Transactions) -> bv.Table: ...
+@bv.table(key="user_id")
+def UserSummary(src: Transactions) -> bv.Table: ...
 ```
 
 **1 client, 20,000 events:**
@@ -149,7 +149,7 @@ FINDINGS predicted (on macOS loopback, synthetic Rust benchmark):
 
 Our numbers are 1-3 orders of magnitude lower than FINDINGS. Reasons:
 
-1. **Round-trip vs fire-and-forget** — FINDINGS' 8M/sec for medium was fire-and-forget; our numbers are all round-trip (current Tally doesn't support fire-and-forget). This alone explains ~30x based on FINDINGS.
+1. **Round-trip vs fire-and-forget** — FINDINGS' 8M/sec for medium was fire-and-forget; our numbers are all round-trip (current Beava doesn't support fire-and-forget). This alone explains ~30x based on FINDINGS.
 2. **Python SDK overhead** — FINDINGS used native Rust benchmark clients. Python's ~41us per-push overhead caps throughput at ~24k/sec per client even if the server were instant.
 3. **JSON wire payload** — FINDINGS' binary benchmark cut JSON cost to zero; we're still paying serde_json on every PUSH.
 4. **Single-thread runtime** — FINDINGS' 8M/sec used multi-thread tokio + sharded state; we're on `current_thread` + global mutex.
@@ -214,25 +214,25 @@ See `results/*.json`:
 
 ```bash
 # 1. Build release
-cd /data/home/tally && cargo build --release
+cd /data/home/beava && cargo build --release
 
 # 2. Start server with data on /tmp to avoid /data fs fill
-mkdir -p /tmp/tally-bench
-BEAVA_DATA_DIR=/tmp/tally-bench \
-  BEAVA_SNAPSHOT_PATH=/tmp/tally-bench/tally.snapshot \
+mkdir -p /tmp/beava-bench
+BEAVA_DATA_DIR=/tmp/beava-bench \
+  BEAVA_SNAPSHOT_PATH=/tmp/beava-bench/beava.snapshot \
   BEAVA_FULL_SNAPSHOT_INTERVAL=999999 \
-  ./target/release/tally > /tmp/tally-bench.log 2>&1 &
+  ./target/release/beava > /tmp/beava-bench.log 2>&1 &
 
 # 3. Run a benchmark
-cd benchmark/tally-throughput
+cd benchmark/beava-throughput
 python3 bench.py --events 50000 --clients 1 --pipeline medium
 
 # 4. Capture in-process latency from Phase 10.2 endpoint
 curl -s http://localhost:6401/debug/latency | python3 -m json.tool
 
 # 5. Tear down
-pkill -9 -f release/tally
-rm -rf /tmp/tally-bench /tmp/tally-bench.log
+pkill -9 -f release/beava
+rm -rf /tmp/beava-bench /tmp/beava-bench.log
 ```
 
 ## Phase 11 — Fire-and-Forget PUSH + Binary Wire Protocol
@@ -250,7 +250,7 @@ rm -rf /tmp/tally-bench /tmp/tally-bench.log
 
 **Sync regression:** 18.8k eps vs 17.5k v1.1 baseline — a small improvement from PERF-02 binary encoder. Sync p99 = 94us, within the 100us PUSH budget. No regression.
 
-Raw: `benchmark/tally-throughput/results/11-gate.json`
+Raw: `benchmark/beava-throughput/results/11-gate.json`
 
 ## Phase 11 — Post-verification perf matrix (multi-pipeline, multi-entity)
 
@@ -296,20 +296,20 @@ Raw: `benchmark/tally-throughput/results/11-gate.json`
 ### Headroom and bottleneck analysis
 
 - **Server is the bottleneck.** On large async, 128k eps at 66–70% of 1 core → ~7µs per push of server CPU work. HLL inserts + operator bookkeeping dominate residual cost.
-- **1 core × 47 idle.** `nproc` reports 48; Tally uses 1 (tokio current_thread). v2 key-partitioned multi-threading is the path to the 1M target.
+- **1 core × 47 idle.** `nproc` reports 48; Beava uses 1 (tokio current_thread). v2 key-partitioned multi-threading is the path to the 1M target.
 - **Sync is RTT-bound.** ~50µs round-trip on localhost yields ~20k eps per connection regardless of pipeline complexity. Pipelining (multi in-flight per conn) or multi-client are the only unlocks.
 
 ### Phase 11 gate result
 
 **PASS — all pipeline sizes hit the 100k floor on async single-client.** The original 166k gate on medium was the measurement from the `--no-transition` execute run; after the HLL read-skip, small/medium are ~140k and large is ~128k, all well above the 100k minimum. The 1M ceiling is a v2 goal and intentionally out of scope for the single-threaded v1.2 milestone.
 
-Raw run JSONs: `benchmark/tally-throughput/results/20260411-15*.json`
+Raw run JSONs: `benchmark/beava-throughput/results/20260411-15*.json`
 
 ## Phase 12: Server-side async push coalescing — 2026-04-11
 
 **Build:** `cargo build --release` on `179d799` (Phase 12 Wave 2 coalescer landed + Wave 3 bench harness)
-**Hardware:** Intel(R) Xeon(R) 6975P-C, 48 cores, 371 GiB RAM (tally binary pinned to single tokio current_thread runtime — 1 core used)
-**Runtime:** default release build, single tally instance, BEAVA_DATA_DIR=/tmp/tally-bench
+**Hardware:** Intel(R) Xeon(R) 6975P-C, 48 cores, 371 GiB RAM (beava binary pinned to single tokio current_thread runtime — 1 core used)
+**Runtime:** default release build, single beava instance, BEAVA_DATA_DIR=/tmp/beava-bench
 **Baseline references:** v1.2 numbers from the Phase 11 perf matrix (138k small / 142k medium / 128k large async single-client, sync p99 87-90µs)
 
 ### 6-scenario matrix gate (D-17, D-18)
@@ -415,15 +415,15 @@ Overall: **FAIL.**
 
 ### Raw result files
 
-- matrix: `benchmark/tally-throughput/results/20260411-233305-matrix-1c.json`
-- 4-client: `benchmark/tally-throughput/results/20260411-233330-medium-4c-async.json`
-- mixed: `benchmark/tally-throughput/results/20260411-233350-medium-mixed.json`
+- matrix: `benchmark/beava-throughput/results/20260411-233305-matrix-1c.json`
+- 4-client: `benchmark/beava-throughput/results/20260411-233330-medium-4c-async.json`
+- mixed: `benchmark/beava-throughput/results/20260411-233350-medium-mixed.json`
 
 ## Phase 12: D-20 gate fix — 2026-04-12
 
 **Build:** `cargo build --release` on `f559f1d` (post-fix: handle_push_batch allocation reduction, select! bypass, bench stride sampling)
 **Hardware:** Same as Phase 12 initial run (Intel Xeon 6975P-C, 48 cores, 371 GiB RAM, single tokio current_thread)
-**Runtime:** default release build, single tally instance, BEAVA_DATA_DIR=/tmp/tally-bench
+**Runtime:** default release build, single beava instance, BEAVA_DATA_DIR=/tmp/beava-bench
 **Methodology:** 5-run median, 200k events per run (matching v1.2 baseline methodology)
 
 ### What was wrong
@@ -494,7 +494,7 @@ The Phase 12 gate (12-03) measured 124.7k eps and declared D-20 FAIL. Root cause
 **Build:** `cargo build --release` on `v1.3-concurrency` branch (Plans 14-01 + 14-02 landed)
 **Architecture:** ConcurrentAppState with per-field locks (RwLock<PipelineEngine> + PLMutex<StateStore> + 8 independent small locks). DashMap added but StateStore retained behind PLMutex (Plan 14-01 deviation).
 **Runtime:** tokio `current_thread` (unchanged from Phase 12). Single OS thread.
-**Hardware:** Intel(R) Xeon(R) 6975P-C, 48 cores, 371 GiB RAM (tally binary uses 1 core)
+**Hardware:** Intel(R) Xeon(R) 6975P-C, 48 cores, 371 GiB RAM (beava binary uses 1 core)
 **Methodology:** 3-run median per scenario
 
 ### Multi-client throughput (the key metric)
@@ -539,5 +539,5 @@ To realize the concurrency benefit of per-field locks, the runtime must be switc
 
 ### Raw result files
 
-- `benchmark/tally-throughput/results/14-concurrency-results.json` — aggregated results
-- `benchmark/tally-throughput/results/20260412-04*` — individual run JSONs
+- `benchmark/beava-throughput/results/14-concurrency-results.json` — aggregated results
+- `benchmark/beava-throughput/results/20260412-04*` — individual run JSONs

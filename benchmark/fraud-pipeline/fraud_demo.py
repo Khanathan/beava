@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Fraud demo generator — benign baseline + injected fraud archetypes.
 
-Pushes a realistic mixed stream to a local Tally server (default localhost:6400)
+Pushes a realistic mixed stream to a local Beava server (default localhost:6400)
 for ~60s wall-clock. Benign traffic runs continuously; four fraud archetypes fire
 at scheduled moments against dedicated user IDs. The wall-clock timestamp of each
 fraud burst is printed at the end as a JSON block — scientists paste these into
-`tl.fork(extract_at=[...])` to snapshot features at the moment of each fraud.
+`bv.fork(extract_at=[...])` to snapshot features at the moment of each fraud.
 
 Usage:
     # Terminal 1 — start "prod":
-    BEAVA_ADMIN_TOKEN=dev-admin-token ./target/release/tally serve \\
-        --http-port 6400 --tcp-port 6401 --data-dir /tmp/tally-prod
+    BEAVA_ADMIN_TOKEN=dev-admin-token ./target/release/beava serve \\
+        --http-port 6400 --tcp-port 6401 --data-dir /tmp/beava-prod
 
     # Terminal 2 — run the demo:
     python3 benchmark/fraud-pipeline/fraud_demo.py
@@ -34,9 +34,9 @@ import time
 from datetime import datetime, timezone
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_HERE, "..", "..", "python"))  # for `import tally`
+sys.path.insert(0, os.path.join(_HERE, "..", "..", "python"))  # for `import beava`
 
-import tally as tl  # noqa: E402
+import beava as bv  # noqa: E402
 
 # -- Pipeline definitions (inline so the demo is self-contained) ----------
 # Exercises: count / sum / avg / min / max / stddev / count_distinct (HLL) /
@@ -45,7 +45,7 @@ import tally as tl  # noqa: E402
 # separate — `.with_columns` chained after `.agg` is not supported in v0;
 # callers compute ratio-style risk signals client-side from the raw features.
 
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     merchant_id: str
@@ -57,78 +57,78 @@ class RawTransactions:
     currency: str
 
 
-@tl.table(key="user_id")
-def UserTransactions(txs: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserTransactions(txs: RawTransactions) -> bv.Table:
     return txs.group_by("user_id").agg(
-        tx_count_30m=tl.count(window="30m"),
-        tx_count_1h=tl.count(window="1h"),
-        tx_count_24h=tl.count(window="24h"),
-        tx_count_7d=tl.count(window="7d"),
-        tx_sum_1h=tl.sum("amount", window="1h"),
-        tx_sum_24h=tl.sum("amount", window="24h"),
-        tx_avg_1h=tl.avg("amount", window="1h"),
-        tx_avg_24h=tl.avg("amount", window="24h"),
-        tx_max_24h=tl.max("amount", window="24h"),
-        tx_min_24h=tl.min("amount", window="24h"),
-        tx_stddev_24h=tl.stddev("amount", window="24h"),
-        unique_merchants_1h=tl.count_distinct("merchant_id", window="1h"),
-        unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
-        unique_countries_24h=tl.count_distinct("country", window="24h"),
-        unique_devices_24h=tl.count_distinct("device_id", window="24h"),
-        unique_ips_24h=tl.count_distinct("ip_address", window="24h"),
-        last_country=tl.last("country"),
-        last_merchant=tl.last("merchant_id"),
-        last_amount=tl.last("amount"),
+        tx_count_30m=bv.count(window="30m"),
+        tx_count_1h=bv.count(window="1h"),
+        tx_count_24h=bv.count(window="24h"),
+        tx_count_7d=bv.count(window="7d"),
+        tx_sum_1h=bv.sum("amount", window="1h"),
+        tx_sum_24h=bv.sum("amount", window="24h"),
+        tx_avg_1h=bv.avg("amount", window="1h"),
+        tx_avg_24h=bv.avg("amount", window="24h"),
+        tx_max_24h=bv.max("amount", window="24h"),
+        tx_min_24h=bv.min("amount", window="24h"),
+        tx_stddev_24h=bv.stddev("amount", window="24h"),
+        unique_merchants_1h=bv.count_distinct("merchant_id", window="1h"),
+        unique_merchants_24h=bv.count_distinct("merchant_id", window="24h"),
+        unique_countries_24h=bv.count_distinct("country", window="24h"),
+        unique_devices_24h=bv.count_distinct("device_id", window="24h"),
+        unique_ips_24h=bv.count_distinct("ip_address", window="24h"),
+        last_country=bv.last("country"),
+        last_merchant=bv.last("merchant_id"),
+        last_amount=bv.last("amount"),
     )
 
 
-@tl.table(key="user_id")
-def UserFailedTxns(txs: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserFailedTxns(txs: RawTransactions) -> bv.Table:
     return (
-        txs.filter(tl.col("status") == "failed")
+        txs.filter(bv.col("status") == "failed")
         .group_by("user_id")
         .agg(
-            failed_count_30m=tl.count(window="30m"),
-            failed_count_1h=tl.count(window="1h"),
-            failed_count_24h=tl.count(window="24h"),
-            failed_sum_24h=tl.sum("amount", window="24h"),
+            failed_count_30m=bv.count(window="30m"),
+            failed_count_1h=bv.count(window="1h"),
+            failed_count_24h=bv.count(window="24h"),
+            failed_sum_24h=bv.sum("amount", window="24h"),
         )
     )
 
 
-@tl.table(key="merchant_id")
-def MerchantActivity(txs: RawTransactions) -> tl.Table:
+@bv.table(key="merchant_id")
+def MerchantActivity(txs: RawTransactions) -> bv.Table:
     return txs.group_by("merchant_id").agg(
-        merch_tx_count_1h=tl.count(window="1h"),
-        merch_tx_count_24h=tl.count(window="24h"),
-        merch_tx_sum_24h=tl.sum("amount", window="24h"),
-        merch_avg_amount=tl.avg("amount", window="24h"),
-        merch_unique_users_1h=tl.count_distinct("user_id", window="1h"),
-        merch_unique_users_24h=tl.count_distinct("user_id", window="24h"),
-        merch_max_amount_24h=tl.max("amount", window="24h"),
-        merch_stddev_24h=tl.stddev("amount", window="24h"),
+        merch_tx_count_1h=bv.count(window="1h"),
+        merch_tx_count_24h=bv.count(window="24h"),
+        merch_tx_sum_24h=bv.sum("amount", window="24h"),
+        merch_avg_amount=bv.avg("amount", window="24h"),
+        merch_unique_users_1h=bv.count_distinct("user_id", window="1h"),
+        merch_unique_users_24h=bv.count_distinct("user_id", window="24h"),
+        merch_max_amount_24h=bv.max("amount", window="24h"),
+        merch_stddev_24h=bv.stddev("amount", window="24h"),
     )
 
 
-@tl.table(key="device_id")
-def DeviceActivity(txs: RawTransactions) -> tl.Table:
+@bv.table(key="device_id")
+def DeviceActivity(txs: RawTransactions) -> bv.Table:
     return txs.group_by("device_id").agg(
-        device_tx_count_1h=tl.count(window="1h"),
-        device_tx_count_24h=tl.count(window="24h"),
-        device_unique_users_1h=tl.count_distinct("user_id", window="1h"),
-        device_unique_users_24h=tl.count_distinct("user_id", window="24h"),
-        device_unique_merchants_24h=tl.count_distinct("merchant_id", window="24h"),
+        device_tx_count_1h=bv.count(window="1h"),
+        device_tx_count_24h=bv.count(window="24h"),
+        device_unique_users_1h=bv.count_distinct("user_id", window="1h"),
+        device_unique_users_24h=bv.count_distinct("user_id", window="24h"),
+        device_unique_merchants_24h=bv.count_distinct("merchant_id", window="24h"),
     )
 
 
-@tl.table(key="ip_address")
-def IPActivity(txs: RawTransactions) -> tl.Table:
+@bv.table(key="ip_address")
+def IPActivity(txs: RawTransactions) -> bv.Table:
     return txs.group_by("ip_address").agg(
-        ip_tx_count_1h=tl.count(window="1h"),
-        ip_tx_count_24h=tl.count(window="24h"),
-        ip_unique_users_1h=tl.count_distinct("user_id", window="1h"),
-        ip_unique_users_24h=tl.count_distinct("user_id", window="24h"),
-        ip_unique_devices_24h=tl.count_distinct("device_id", window="24h"),
+        ip_tx_count_1h=bv.count(window="1h"),
+        ip_tx_count_24h=bv.count(window="24h"),
+        ip_unique_users_1h=bv.count_distinct("user_id", window="1h"),
+        ip_unique_users_24h=bv.count_distinct("user_id", window="24h"),
+        ip_unique_devices_24h=bv.count_distinct("device_id", window="24h"),
     )
 
 
@@ -174,7 +174,7 @@ def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def _seed_history(app: tl.App, user_id: str, n: int = 40) -> None:
+def _seed_history(app: bv.App, user_id: str, n: int = 40) -> None:
     """Give a fraud user a benign history so anomalies have a baseline."""
     events = []
     for _ in range(n):
@@ -186,7 +186,7 @@ def _seed_history(app: tl.App, user_id: str, n: int = 40) -> None:
     app.push_many(RawTransactions, events)
 
 
-def _card_testing(app: tl.App) -> None:
+def _card_testing(app: bv.App) -> None:
     uid = FRAUD_USERS["card_testing"]
     events = []
     for i in range(20):
@@ -203,7 +203,7 @@ def _card_testing(app: tl.App) -> None:
     app.push_many(RawTransactions, events)
 
 
-def _velocity_burst(app: tl.App) -> None:
+def _velocity_burst(app: bv.App) -> None:
     uid = FRAUD_USERS["velocity_burst"]
     events = []
     for i in range(50):
@@ -220,7 +220,7 @@ def _velocity_burst(app: tl.App) -> None:
     app.push_many(RawTransactions, events)
 
 
-def _geo_hop(app: tl.App) -> None:
+def _geo_hop(app: bv.App) -> None:
     uid = FRAUD_USERS["geo_hop"]
     countries = ["US", "NG", "CN", "BR", "DE"]
     events = []
@@ -238,7 +238,7 @@ def _geo_hop(app: tl.App) -> None:
     app.push_many(RawTransactions, events)
 
 
-def _high_value_anomaly(app: tl.App) -> None:
+def _high_value_anomaly(app: bv.App) -> None:
     uid = FRAUD_USERS["high_value_anomaly"]
     app.push_many(RawTransactions, [{
         "user_id": uid,
@@ -267,7 +267,7 @@ def main() -> None:
     parser.add_argument("--tps", type=int, default=BENIGN_TPS, help="Benign events/sec")
     args = parser.parse_args()
 
-    app = tl.App(args.host)
+    app = bv.App(args.host)
     app.register(*ALL_DATASETS)
 
     print(f"Seeding history for {len(FRAUD_USERS)} fraud users...")
@@ -324,7 +324,7 @@ def main() -> None:
 
     print(f"\nDone. Benign events: {sent_benign:,}  Fraud bursts: {len(fraud_events)}\n")
     print("=" * 60)
-    print("FRAUD_TIMESTAMPS — paste into tl.fork(extract_at=[...])")
+    print("FRAUD_TIMESTAMPS — paste into bv.fork(extract_at=[...])")
     print("=" * 60)
     print(json.dumps(fraud_events, indent=2))
 

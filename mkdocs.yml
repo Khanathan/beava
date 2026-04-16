@@ -1,8 +1,8 @@
-site_name: Tally
+site_name: Beava
 site_description: "Real-time compute engine. Push events, read results in microseconds. One binary, in-memory, zero infrastructure."
-site_url: "https://petrpan26.github.io/tally/"
-repo_url: https://github.com/petrpan26/tally
-repo_name: petrpan26/tally
+site_url: "https://petrpan26.github.io/beava/"
+repo_url: https://github.com/petrpan26/beava
+repo_name: petrpan26/beava
 
 theme:
   name: material

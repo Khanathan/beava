@@ -79,7 +79,7 @@ jobs:
           restore-keys: |
             rust-${{ runner.os }}-
 
-      - name: Build Tally binary (needed by integration tests)
+      - name: Build Beava binary (needed by integration tests)
         run: cargo build
 
       - uses: actions/setup-python@v5

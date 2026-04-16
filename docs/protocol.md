@@ -1,8 +1,8 @@
-# Tally Binary Protocol Specification
+# Beava Binary Protocol Specification
 
 ## 1. Overview
 
-Tally uses a custom binary protocol over persistent TCP connections for all hot-path operations (PUSH, GET, SET, MSET, MGET). The protocol is designed for minimal overhead: length-prefixed frames, binary opcodes, and no HTTP/JSON framing on the wire.
+Beava uses a custom binary protocol over persistent TCP connections for all hot-path operations (PUSH, GET, SET, MSET, MGET). The protocol is designed for minimal overhead: length-prefixed frames, binary opcodes, and no HTTP/JSON framing on the wire.
 
 Connections are persistent. The client opens a TCP socket once and sends multiple commands over the same connection. The server spawns one async task per connection and reads frames in a loop until the client disconnects.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Tally Demo Recording Script
+# Beava Demo Recording Script
 # =============================================================================
 #
 # This is a GUIDE for the human recording an asciinema/vhs terminal GIF.
@@ -17,21 +17,21 @@
 #   - Pause briefly after each command so viewers can read the output
 #   - Type at a natural pace (or use vhs's Type command for consistency)
 #
-# Prerequisite: Build tally first
+# Prerequisite: Build beava first
 #   cargo build --release
 #   cd python && pip install -e . && cd ..
 #
 # =============================================================================
 
-# --- STEP 1: Start the Tally server ----------------------------------------
+# --- STEP 1: Start the Beava server ----------------------------------------
 # Show that it's a single binary. Start it in the background.
 # Wait a moment for it to be ready.
 
-./target/release/tally &
+./target/release/beava &
 sleep 1
 
 # You should see output like:
-#   [INFO] Tally server starting
+#   [INFO] Beava server starting
 #   [INFO] TCP listening on 0.0.0.0:6400
 #   [INFO] HTTP listening on 0.0.0.0:6401
 
@@ -46,29 +46,29 @@ curl -s http://localhost:6401/health | python3 -m json.tool
 # Create a small Python script inline. Type this out (or have it ready).
 # The point is to show how few lines it takes.
 
-cat > /tmp/tally_demo.py << 'PYEOF'
-import tally as tl
+cat > /tmp/beava_demo.py << 'PYEOF'
+import beava as bv
 
 # Define a stream -- raw payment events
-@tl.stream
+@bv.stream
 class RawTransactions:
     user_id: str
     amount: float
     merchant_id: str
 
 # Define features -- 5 real-time fraud signals
-@tl.table(key="user_id")
-def UserFeatures(txs: RawTransactions) -> tl.Table:
+@bv.table(key="user_id")
+def UserFeatures(txs: RawTransactions) -> bv.Table:
     return txs.group_by("user_id").agg(
-        tx_count_1h=tl.count(window="1h"),
-        tx_sum_1h=tl.sum("amount", window="1h"),
-        avg_amount=tl.avg("amount", window="1h"),
-        max_amount=tl.max("amount", window="1h"),
-        unique_merchants=tl.count_distinct("merchant_id", window="1h"),
+        tx_count_1h=bv.count(window="1h"),
+        tx_sum_1h=bv.sum("amount", window="1h"),
+        avg_amount=bv.avg("amount", window="1h"),
+        max_amount=bv.max("amount", window="1h"),
+        unique_merchants=bv.count_distinct("merchant_id", window="1h"),
     )
 
 # Connect and register
-app = tl.App("localhost:6400")
+app = bv.App("localhost:6400")
 app.register(RawTransactions, UserFeatures)
 print("Pipeline registered.")
 
@@ -96,14 +96,14 @@ PYEOF
 # --- STEP 4: Run the script ------------------------------------------------
 # This is the key moment. Show events going in, features coming back.
 
-python3 /tmp/tally_demo.py
+python3 /tmp/beava_demo.py
 
 # Pause here so viewers can read the output. Each event should show:
 #   - The input (amount, merchant)
 #   - The updated features (count incrementing, sum growing, etc.)
 
 # --- STEP 5: Show memory usage via the management API ----------------------
-# Demonstrate that Tally tracks memory per stream and per entity.
+# Demonstrate that Beava tracks memory per stream and per entity.
 
 curl -s http://localhost:6401/debug/memory | python3 -m json.tool
 
@@ -131,5 +131,5 @@ kill %1
 #   Or use vhs to render directly: vhs demo.tape
 #
 # The GIF should be ~30-45 seconds. Trim dead time in post.
-# Embed in README as: ![Tally Demo](assets/demo.gif)
+# Embed in README as: ![Beava Demo](assets/demo.gif)
 # =============================================================================

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tally throughput benchmark — sync PUSH over the real SDK.
+Beava throughput benchmark — sync PUSH over the real SDK.
 
 Measures events/sec and per-event latency (p50/p95/p99) for three pipeline
 shapes: small, medium, large. Writes timestamped JSON results to ./results/.
@@ -26,8 +26,8 @@ from datetime import datetime
 # Path hack so the bench can run without installing the SDK
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'python'))
 
-import tally as tl  # noqa: E402
-from tally import source, dataset, group_by  # noqa: E402
+import beava as bv  # noqa: E402
+from beava import source, dataset, group_by  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -43,11 +43,11 @@ def define_small():
     @dataset(depends_on=[RawTxns])
     class Transactions:
         features = group_by('user_id').agg(
-            tx_count_1h=tl.count(window='1h'),
-            tx_sum_1h=tl.sum('amount', window='1h'),
-            avg_amount_1h=tl.avg('amount', window='1h'),
-            max_amount_24h=tl.max('amount', window='24h'),
-            min_amount_24h=tl.min('amount', window='24h'),
+            tx_count_1h=bv.count(window='1h'),
+            tx_sum_1h=bv.sum('amount', window='1h'),
+            avg_amount_1h=bv.avg('amount', window='1h'),
+            max_amount_24h=bv.max('amount', window='24h'),
+            min_amount_24h=bv.min('amount', window='24h'),
         )
 
     return [RawTxns, Transactions], RawTxns
@@ -62,24 +62,24 @@ def define_medium():
     @dataset(depends_on=[RawTxns])
     class Transactions:
         features = group_by('user_id').agg(
-            tx_count_1h=tl.count(window='1h'),
-            tx_sum_1h=tl.sum('amount', window='1h'),
-            avg_amount_1h=tl.avg('amount', window='1h'),
-            max_amount_24h=tl.max('amount', window='24h'),
-            failed_count_30m=tl.count(window='30m', where="status == 'failed'"),
+            tx_count_1h=bv.count(window='1h'),
+            tx_sum_1h=bv.sum('amount', window='1h'),
+            avg_amount_1h=bv.avg('amount', window='1h'),
+            max_amount_24h=bv.max('amount', window='24h'),
+            failed_count_30m=bv.count(window='30m', where="status == 'failed'"),
         )
-        failure_rate = tl.derive('failed_count_30m / tx_count_1h')
+        failure_rate = bv.derive('failed_count_30m / tx_count_1h')
 
     @dataset(depends_on=[RawTxns])
     class MerchantActivity:
         features = group_by('merchant_id').agg(
-            merchant_tx_count=tl.count(window='1h'),
-            merchant_sum=tl.sum('amount', window='1h'),
+            merchant_tx_count=bv.count(window='1h'),
+            merchant_sum=bv.sum('amount', window='1h'),
         )
 
     @dataset(depends_on=[Transactions])
     class UserRisk:
-        is_high_volume = tl.derive('Transactions.tx_count_1h > 10')
+        is_high_volume = bv.derive('Transactions.tx_count_1h > 10')
 
     return [RawTxns, Transactions, MerchantActivity, UserRisk], RawTxns
 
@@ -93,40 +93,40 @@ def define_large():
     @dataset(depends_on=[RawTxns])
     class Transactions:
         features = group_by('user_id').agg(
-            tx_count_1h=tl.count(window='1h'),
-            tx_sum_1h=tl.sum('amount', window='1h'),
-            avg_amount_1h=tl.avg('amount', window='1h'),
-            max_amount_24h=tl.max('amount', window='24h'),
-            min_amount_24h=tl.min('amount', window='24h'),
-            failed_count_30m=tl.count(window='30m', where="status == 'failed'"),
-            unique_merchants_24h=tl.distinct_count('merchant_id', window='24h'),
+            tx_count_1h=bv.count(window='1h'),
+            tx_sum_1h=bv.sum('amount', window='1h'),
+            avg_amount_1h=bv.avg('amount', window='1h'),
+            max_amount_24h=bv.max('amount', window='24h'),
+            min_amount_24h=bv.min('amount', window='24h'),
+            failed_count_30m=bv.count(window='30m', where="status == 'failed'"),
+            unique_merchants_24h=bv.distinct_count('merchant_id', window='24h'),
         )
-        failure_rate = tl.derive('failed_count_30m / tx_count_1h')
+        failure_rate = bv.derive('failed_count_30m / tx_count_1h')
 
     @dataset(depends_on=[RawTxns])
     class MerchantActivity:
         features = group_by('merchant_id').agg(
-            merchant_tx_count_1h=tl.count(window='1h'),
-            merchant_sum_1h=tl.sum('amount', window='1h'),
-            merchant_unique_users=tl.distinct_count('user_id', window='24h'),
+            merchant_tx_count_1h=bv.count(window='1h'),
+            merchant_sum_1h=bv.sum('amount', window='1h'),
+            merchant_unique_users=bv.distinct_count('user_id', window='24h'),
         )
 
     @dataset(depends_on=[RawTxns])
     class DeviceActivity:
         features = group_by('device_id').agg(
-            device_tx_count_1h=tl.count(window='1h'),
-            device_unique_users=tl.distinct_count('user_id', window='1h'),
+            device_tx_count_1h=bv.count(window='1h'),
+            device_unique_users=bv.distinct_count('user_id', window='1h'),
         )
 
     @dataset(depends_on=[Transactions])
     class UserRisk:
-        is_high_volume = tl.derive('Transactions.tx_count_1h > 10')
-        suspicious = tl.derive('Transactions.failure_rate > 0.2')
+        is_high_volume = bv.derive('Transactions.tx_count_1h > 10')
+        suspicious = bv.derive('Transactions.failure_rate > 0.2')
 
     @dataset(depends_on=[Transactions])
     class UserSummary:
-        total_tx = tl.derive('Transactions.tx_count_1h')
-        total_amount = tl.derive('Transactions.tx_sum_1h')
+        total_tx = bv.derive('Transactions.tx_count_1h')
+        total_amount = bv.derive('Transactions.tx_sum_1h')
 
     return [RawTxns, Transactions, MerchantActivity, DeviceActivity, UserRisk, UserSummary], RawTxns
 
@@ -163,7 +163,7 @@ def run_single_client_sync(primary_cls, events_per_client, client_id, warmup=100
 
     Returns (latencies_us, wall_seconds). Latencies are measured per event.
     """
-    app = tl.App('localhost:6400', timeout=30.0)
+    app = bv.App('localhost:6400', timeout=30.0)
     latencies = []
 
     # Warmup
@@ -202,7 +202,7 @@ def run_single_client_async(primary_cls, events_per_client, client_id, warmup=10
     most of its iterations on the fast non-sampling code path. Wall time
     (and thus throughput) is measured over the entire run.
     """
-    app = tl.App('localhost:6400', timeout=30.0)
+    app = bv.App('localhost:6400', timeout=30.0)
 
     # Warmup in async mode; flush to exclude warmup from measured wall
     for i in range(warmup):
@@ -240,7 +240,7 @@ def run_single_client_async_batch(primary_cls, events_per_client, client_id,
 
     Returns ([], wall_seconds). No per-event latency sampling — pure throughput.
     """
-    app = tl.App('localhost:6400', timeout=30.0)
+    app = bv.App('localhost:6400', timeout=30.0)
 
     # Warmup
     warmup_events = [make_event(i + client_id * 1000000) for i in range(warmup)]
@@ -284,7 +284,7 @@ def percentile(values, p):
 
 def run_benchmark(args, sample_async_latency=True, quiet=False):
     if not quiet:
-        print(f'\n=== Tally Throughput Benchmark ===')
+        print(f'\n=== Beava Throughput Benchmark ===')
         print(f'Mode:     {args.mode}')
         print(f'Pipeline: {args.pipeline}')
         print(f'Events:   {args.events:,}')
@@ -293,7 +293,7 @@ def run_benchmark(args, sample_async_latency=True, quiet=False):
 
     # Register pipeline
     streams, primary = PIPELINES[args.pipeline]()
-    app = tl.App('localhost:6400', timeout=30.0)
+    app = bv.App('localhost:6400', timeout=30.0)
     app.register(*streams)
     if not quiet:
         print(f'Registered {len(streams)} sources/datasets. Primary: {primary._name}')
@@ -569,7 +569,7 @@ def run_mixed(pipeline_name, events_budget):
     testing the D-10 constraint that sync p99 stays within ±5% of 87µs.
     """
     streams, primary = PIPELINES[pipeline_name]()
-    app_reg = tl.App('localhost:6400', timeout=30.0)
+    app_reg = bv.App('localhost:6400', timeout=30.0)
     app_reg.register(*streams)
     app_reg.push_sync(primary, make_event(0))  # warmup
 
@@ -578,7 +578,7 @@ def run_mixed(pipeline_name, events_budget):
     stop_sampler = threading.Event()
 
     def saturator():
-        app = tl.App('localhost:6400', timeout=30.0)
+        app = bv.App('localhost:6400', timeout=30.0)
         # Warmup
         for i in range(500):
             app.push(primary, make_event(i + 90000000))
@@ -594,7 +594,7 @@ def run_mixed(pipeline_name, events_budget):
         stop_sampler.set()
 
     def sampler():
-        app = tl.App('localhost:6400', timeout=30.0)
+        app = bv.App('localhost:6400', timeout=30.0)
         # Warmup
         for i in range(100):
             app.push_sync(primary, make_event(i + 92000000))

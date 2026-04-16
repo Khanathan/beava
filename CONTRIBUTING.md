@@ -1,6 +1,6 @@
-# Contributing to Tally
+# Contributing to Beava
 
-Welcome! Tally is a real-time feature server: push events in, get features out, one Rust binary, zero infrastructure. See the [README](README.md) for an overview.
+Welcome! Beava is a real-time feature server: push events in, get features out, one Rust binary, zero infrastructure. See the [README](README.md) for an overview.
 
 ## Development Setup
 
@@ -15,8 +15,8 @@ Welcome! Tally is a real-time feature server: push events in, get features out, 
 **Build and run:**
 
 ```bash
-git clone https://github.com/petrpan26/tally.git
-cd tally
+git clone https://github.com/petrpan26/beava.git
+cd beava
 cargo build
 ```
 
@@ -29,7 +29,7 @@ cd python && pip install -e .
 **Start the server (debug build):**
 
 ```bash
-./target/debug/tally
+./target/debug/beava
 # or
 cargo run
 ```
@@ -52,7 +52,7 @@ cargo test -- --test-threads=1
 cd python && python -m pytest tests/ -q
 ```
 
-Python integration tests build and start the Tally binary automatically, so run `cargo build` first.
+Python integration tests build and start the Beava binary automatically, so run `cargo build` first.
 
 **Linting and formatting:**
 
@@ -72,7 +72,7 @@ src/
   state/        In-memory store, snapshots, event log, eviction
 
 python/
-  tally/        Python SDK (client, dataset API, operators, protocol)
+  beava/        Python SDK (client, dataset API, operators, protocol)
   tests/        Python SDK and integration tests
 
 tests/          Rust integration tests
@@ -96,7 +96,7 @@ benchmark/      Performance benchmarks (fraud pipeline, throughput)
 
 ## Reporting Issues
 
-Use [GitHub Issues](https://github.com/petrpan26/tally/issues).
+Use [GitHub Issues](https://github.com/petrpan26/beava/issues).
 
 - **Bug reports:** Include steps to reproduce, expected behavior, and actual behavior.
 - **Feature requests:** Describe the use case and why it matters.

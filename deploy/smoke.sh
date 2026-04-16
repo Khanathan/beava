@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# smoke.sh — post-deploy sanity check for the public Tally demo.
+# smoke.sh — post-deploy sanity check for the public Beava demo.
 #
 # Usage:
-#   bash deploy/smoke.sh https://demo.tally.dev
-#   bash deploy/smoke.sh https://demo.tally.dev --with-replay      # also runs replay eps check
-#   BEAVA_SSH_HOST=root@demo.tally.dev bash deploy/smoke.sh https://demo.tally.dev --with-replay
+#   bash deploy/smoke.sh https://demo.beava.dev
+#   bash deploy/smoke.sh https://demo.beava.dev --with-replay      # also runs replay eps check
+#   BEAVA_SSH_HOST=root@demo.beava.dev bash deploy/smoke.sh https://demo.beava.dev --with-replay
 #
 # Invariants (exit 0 only if ALL pass):
 #   1. /health returns {"status":"ok"}
 #   2. /public/stats returns all 6 required fields
 #   3. Admin endpoint (DELETE /pipelines/*) returns 403 or 404 — NEVER 200
-#   4. /metrics exposes tally_events_total, tally_current_eps, tally_push_latency_p99_seconds,
-#      tally_late_events_dropped_total (Phase 24-04 watermark drops; HELP line required,
+#   4. /metrics exposes beava_events_total, beava_current_eps, beava_push_latency_p99_seconds,
+#      beava_late_events_dropped_total (Phase 24-04 watermark drops; HELP line required,
 #      per-stream series only present once a stream is registered)
 #   5. Crash-recovery: restart service, keys_total restored within 10% in 15s (needs BEAVA_SSH_HOST)
 #   6. TCP 6400 MUST NOT be reachable on the public interface (the CRITICAL invariant)
@@ -24,7 +24,7 @@ set -uo pipefail
 BASE="${1:?usage: smoke.sh <base-url> [--with-replay|--local]}"
 MODE="${2:-}"
 
-# --local: smoke-check against a raw `target/release/tally` (no Caddy, no
+# --local: smoke-check against a raw `target/release/beava` (no Caddy, no
 # systemd). Invariants 3 and 6 can't pass against a local binary because
 # (3) the admin sub-router trusts loopback by design (`require_loopback_or_token`)
 # and (6) the TCP port is listening on all interfaces without the prod-time
@@ -113,12 +113,12 @@ fi
 # -----------------------------------------------------------------------------
 # 4. /metrics exposes the extended Prometheus fields
 # -----------------------------------------------------------------------------
-check "metrics exposes tally_events_total / eps / p99 / late-drops" "
+check "metrics exposes beava_events_total / eps / p99 / late-drops" "
 	resp=\$(curl -fsS --max-time 10 '${BASE}/metrics') || exit 1
-	echo \"\$resp\" | grep -q 'tally_events_total' &&
-	echo \"\$resp\" | grep -q 'tally_current_eps' &&
-	echo \"\$resp\" | grep -q 'tally_push_latency_p99_seconds' &&
-	echo \"\$resp\" | grep -q 'tally_late_events_dropped_total'
+	echo \"\$resp\" | grep -q 'beava_events_total' &&
+	echo \"\$resp\" | grep -q 'beava_current_eps' &&
+	echo \"\$resp\" | grep -q 'beava_push_latency_p99_seconds' &&
+	echo \"\$resp\" | grep -q 'beava_late_events_dropped_total'
 "
 
 # -----------------------------------------------------------------------------
@@ -128,7 +128,7 @@ if [[ "${MODE}" == "--with-replay" ]]; then
 	if [[ -n "${BEAVA_SSH_HOST:-}" ]]; then
 		check "replay eps floor (>= 500k on VM)" "
 			out=\$(ssh -o StrictHostKeyChecking=accept-new \"\${BEAVA_SSH_HOST}\" \
-				'cd /opt/tally 2>/dev/null || cd /root && python3 benchmark/replay/replay_30d.py \
+				'cd /opt/beava 2>/dev/null || cd /root && python3 benchmark/replay/replay_30d.py \
 				 --events 1000000 --workers 4 --host 127.0.0.1 --port 6400 --no-warmup' 2>&1) || exit 1
 			eps=\$(echo \"\$out\" | grep -oE 'events_per_sec=[0-9.]+' | head -1 | cut -d= -f2 | cut -d. -f1)
 			[[ -n \"\$eps\" && \"\$eps\" -ge 500000 ]]
@@ -145,7 +145,7 @@ if [[ -n "${BEAVA_SSH_HOST:-}" ]]; then
 	check "crash recovery: keys_total within 10% after restart" "
 		before=\$(curl -fsS --max-time 10 '${BASE}/public/stats' | grep -oE '\"keys_total\":[0-9]+' | cut -d: -f2)
 		[[ -n \"\$before\" ]] || exit 1
-		ssh -o StrictHostKeyChecking=accept-new \"\${BEAVA_SSH_HOST}\" 'sudo systemctl restart tally' || exit 1
+		ssh -o StrictHostKeyChecking=accept-new \"\${BEAVA_SSH_HOST}\" 'sudo systemctl restart beava' || exit 1
 		# Wait up to 15s for the service to come back and snapshot to load.
 		for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
 			after=\$(curl -fsS --max-time 5 '${BASE}/public/stats' 2>/dev/null | grep -oE '\"keys_total\":[0-9]+' | cut -d: -f2)
