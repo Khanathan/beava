@@ -55,24 +55,54 @@ gaming leaderboards, AI agent context, IoT anomaly detection.
 - **Binary TCP protocol** -- persistent connections, length-prefixed frames, minimal overhead. Any language can implement a client.
 - **Durable** -- append-only event log (WAL) + periodic snapshots. On crash, state recovers from snapshot + WAL replay. At most ~1s of data loss in the worst case.
 
-## Quick Start
+## Quick Start (60 seconds)
 
-### Option A: Docker
+### 1. Start the server
 
 ```bash
-git clone https://github.com/petrpan26/beava.git && cd beava
+git clone https://github.com/petrpan26/beava.git
+cd beava
 docker compose up -d
 ```
 
-### Option B: Build from source
+### 2. Run the demo
 
 ```bash
-git clone https://github.com/petrpan26/beava.git && cd beava
-cargo build --release
-./target/release/beava
+bash examples/fraud/demo.sh
 ```
 
-### Install the Python SDK (first available client)
+You'll see a real-time fraud feature vector for user `u123` — tx count,
+sum, avg, max, distinct-merchants, last-seen — computed across a sliding
+1h window as 200 events stream in. That's a Beava pipeline: one binary,
+one JSON definition, features served from memory in microseconds.
+
+```
+==> Fetching features for u123
+
+    tx_count_1h              62
+    tx_sum_1h                $ 2,296.46
+    avg_amount               $ 37.04
+    max_amount_1h            $ 200.77
+    unique_merchants         8
+    last_merchant            shell_gas
+    last_amount              $ 47.05
+```
+
+### 3. Author your own feature
+
+Read the [walkthrough in `examples/fraud/`](examples/fraud/README.md) to
+see exactly how the pipeline and push flow work, or jump straight to the
+[Python SDK guide](docs/python-sdk.md).
+
+### Alternatives
+
+Build from source instead of Docker:
+
+```bash
+cargo build --release && ./target/release/beava
+```
+
+Or install the Python SDK directly (for `import beava as bv`):
 
 ```bash
 cd python && pip install -e .

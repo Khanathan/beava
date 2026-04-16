@@ -1,23 +1,40 @@
-# docker-compose.yml — single-service local run for Beava.
+# Single-service compose for local Beava dev and the examples/fraud demo.
 #
-# Ports:
-#   6400  — binary TCP protocol (SDK clients: `from beava import App`)
-#   6401  — HTTP management API (health, metrics, /debug/*, pipeline UI)
+#   Ports:
+#     6400 → binary TCP protocol (PUSH / GET / SET / MSET / REGISTER).
+#            Used by the Python SDK (`bv.App("localhost:6400")`) and any
+#            custom client built against `docs/protocol.md`.
+#     6401 → HTTP management API (/health, /pipelines, /debug/*, /metrics).
+#            Used by `examples/fraud/demo.sh` and the Debug UI at /.
 #
-# Volumes:
-#   ./data  — event log + snapshot directory. Persists across restarts.
-#             Delete it to reset state.
+#   Volumes:
+#     ./data  — event log + snapshot directory. Persists across restarts.
+#               Delete it to reset state.
+#
+#   Usage:
+#     docker compose up -d          # build + start
+#     bash examples/fraud/demo.sh   # 60-second first-contact demo
+#     docker compose down           # stop + remove container
+#
+#   First build takes a few minutes (Rust release build inside the image);
+#   subsequent `up` commands are instant because layers are cached.
+
 services:
   beava:
     build: .
+    container_name: beava
     ports:
-      - "6400:6400"
-      - "6401:6401"
+      - "6400:6400"   # TCP protocol — Python SDK + any custom client
+      - "6401:6401"   # HTTP management — /pipelines, /debug/*, /health
     volumes:
-      - ./data:/data
+      - ./data:/data  # snapshots + event log land here, persisted across restarts
     environment:
       - BEAVA_TCP_PORT=6400
       - BEAVA_HTTP_PORT=6401
+      # Accept TCP connections from outside the container so the Python SDK
+      # on the host can push events. Default is 127.0.0.1 inside the
+      # container, which would reject the Docker bridge peer IP.
+      - BEAVA_TCP_BIND=0.0.0.0
       - BEAVA_SNAPSHOT=true
       - BEAVA_SNAPSHOT_PATH=/data/beava.snapshot
       - BEAVA_EVENT_LOG=true

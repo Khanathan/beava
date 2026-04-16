@@ -1,0 +1,13 @@
+{
+  "name": "UserFeatures",
+  "key_field": "user_id",
+  "features": [
+    {"name": "tx_count_1h",     "type": "count",          "window": "1h"},
+    {"name": "tx_sum_1h",       "type": "sum",            "field": "amount",      "window": "1h"},
+    {"name": "avg_amount",      "type": "avg",            "field": "amount",      "window": "1h"},
+    {"name": "max_amount_1h",   "type": "max",            "field": "amount",      "window": "1h"},
+    {"name": "unique_merchants","type": "distinct_count", "field": "merchant_id", "window": "1h"},
+    {"name": "last_merchant",   "type": "last",           "field": "merchant_id"},
+    {"name": "last_amount",     "type": "last",           "field": "amount"}
+  ]
+}
