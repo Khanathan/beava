@@ -1,7 +1,7 @@
 <p align="center">
   <b><font size="6">Beava</font></b>
   <br>
-  <i>The one-binary feature server</i>
+  <i>A single-binary feature server in Rust</i>
 </p>
 
 <p align="center">
@@ -11,84 +11,52 @@
 
 ---
 
-So what breaks when you write a real-time feature today ?
+Define a pipeline in Python. Push events over TCP. Query aggregated features in microseconds. One process. All state in RAM. Apache 2.0.
 
-You write Python. Someone rewrites it as a Flink job. Three sprints
-later it ships and the values don't match your offline work. You debug
-via Slack pings, your PM asks what happened. (We've all been there. I
-have. Probably more than once.)
-
-**Beava is my attempt at a loop that doesn't do that.**
+Replaces Postgres triggers + Redis counters + the cron job that heals drift. Same code from laptop to production: backfill against history, iterate against live prod state with `bv.fork()`, ship.
 
 ```python
 import beava as bv
 
-with bv.fork("beava-prod.internal", scope={"user_id": "u123"}):
-    # Scoped copy of live prod state. Iterate against real bytes.
-    # Close the context → prod is untouched.
-    print(OnboardingSignals.get("u123").clicks_10m)
+@bv.stream
+class Click:
+    user_id: str
+    page: str
+
+@bv.table(key="user_id")
+def UserActivity(c: Click) -> bv.Table:
+    return c.group_by("user_id").agg(
+        clicks_10m = bv.count(window="10m"),
+    )
+
+app = bv.App("localhost:6400")
+app.register(Click, UserActivity)
+
+app.push(Click, {"user_id": "u123", "page": "/checkout"})
+print(app.get("u123").clicks_10m)   # 1
 ```
 
-One file. `@bv.stream`, `@bv.table`, `bv.replay()`, `bv.fork()`. Backfill
-against history. Fork a scoped replica of prod. Ship. Same code laptop
-to production. No Flink rewrite, no platform handoff.
-
-- [So what is Beava ?](#so-what-is-beava-)
 - [Quick Start](#quick-start-60-seconds)
-- [So what is `bv.fork()` ?](#so-what-is-bvfork-)
+- [What Beava replaces](#what-beava-replaces-in-your-stack)
+- [How Beava compares](#how-beava-compares-to-kafka--flink--redis)
+- [Iterate features against live prod state — `bv.fork()`](#iterate-features-against-live-prod-state--bvfork)
 - [Performance](#performance)
-- [Comparison](#comparison)
-- [Honest limits](#honest-limits)
+- [Failure modes](#failure-modes)
+- [Security baseline](#security-baseline-self-hosted-today)
+- [Honest scope](#honest-scope)
+- [Maintainer status + lock-in exit ramp](#maintainer-status--lock-in-exit-ramp)
 - [Documentation](#docs)
-- [Configuration](#configuration)
-- [Community](#community)
 
-## So what is Beava ?
+## Key properties
 
-It's basically a feature server that run on one box. Single Rust binary,
-all state in memory, append-only event log for durability (group-commit
-fsync before ack), Python SDK. Apache 2.0.
-
-The four primitives are the whole API:
-
-- `@bv.stream` — declare an event shape
-- `@bv.table` — declare an aggregation, keyed or keyless
-- `bv.replay()` — backfill against historical events
-- `bv.fork()` — scoped replica of live prod state for feature iteration
-
-That last one is the piece I've been trying to get right for years.
-Most feature stores I've used make you pick between *stale staging*
-(your test says 47.3, prod says 50.1, you burn two days finding the
-difference) or *poke at prod and pray* (no isolation, hope nothing
-explodes). Fork is the third option I always wanted.
-
-**Use cases:** real-time fraud scoring · ML feature serving · session
-features (last-N-click) · rate limits with sliding windows · recsys
-freshness · gaming leaderboards · AI agent context · IoT anomaly
-detection.
-
-**Key properties:**
-
-- **Synchronous and atomic writes** — push an event, all operators across
-  all pipeline stages update in one pass. State is immediately consistent.
-  No eventual consistency, no propagation delay. Easy to reason about.
-- **Sub-microsecond reads** — all state in RAM on one node. A `HashMap::get`
-  costs ~0.1µs. A Flink RocksDB state access costs 5-15µs.
-- **Pipeline cascades** — multi-stage DAGs with `depends_on`. Events
-  propagate in topological order, all in one request.
-- **16 operators** — count, sum, avg, min, max, stddev, percentile,
-  distinct_count (adaptive HLL++), last, first, lag, ema, last_n,
-  exact_min, exact_max, derive.
-- **Sliding windows** — configurable granularity (30m, 1h, 24h, 7d).
-  Bucketed ring buffers for bounded memory.
-- **Expression engine** — derive expressions, where-clause filters,
-  cross-stream references. 21 builtins.
-- **Binary TCP protocol** — persistent connections, length-prefixed frames,
-  minimal overhead. Any language can implement a client.
-- **Durable** — append-only event log + periodic snapshots. On crash,
-  state recovers from snapshot + log replay. Worst-case ~1s of data loss.
-- **Zero unsafe in the hot path** — 4 unsafe blocks total, all libc FFI
-  in `event_log.rs`. See [UNSAFE.md](UNSAFE.md).
+- **Single binary** — one process, one port, one data directory. Ship it under systemd or docker, same binary either way.
+- **No separate message broker** — push events directly over TCP. No Kafka, no Pulsar, no Redpanda in the path.
+- **Synchronous and atomic writes** — push an event, every operator across every pipeline stage updates in one pass. Reads return the latest state, no eventual consistency window.
+- **Sub-microsecond state access** — all state in RAM on one node. A `HashMap::get` costs ~0.1µs.
+- **Pipeline cascades** — multi-stage DAGs with `depends_on`. Events propagate in topological order in one request.
+- **16 operators** — count, sum, avg, min, max, stddev, percentile, distinct_count (adaptive HLL++), last, first, lag, ema, last_n, exact_min, exact_max, derive.
+- **Durable** — append-only WAL fsync'd before ack, periodic snapshots. Worst-case data loss: ~1s. See [Failure modes](#failure-modes).
+- **Zero `unsafe` outside FFI in the hot path** — 4 unsafe blocks total, all libc FFI in `event_log.rs`. Audit in [UNSAFE.md](UNSAFE.md).
 
 ## Quick Start (60 seconds)
 
@@ -100,16 +68,19 @@ cd beava
 docker compose up -d
 ```
 
+Or build from source:
+
+```bash
+cargo build --release && ./target/release/beava
+```
+
 ### 2. Run the demo
 
 ```bash
 bash examples/fraud/demo.sh
 ```
 
-You'll see a real-time fraud feature vector for user `u123` — tx count,
-sum, avg, max, distinct merchants, last seen — computed across a sliding
-1h window as 200 events stream in. That's a Beava pipeline: one binary,
-one JSON definition, features served from memory in microseconds.
+You'll see a real-time fraud feature vector for user `u123` — tx count, sum, avg, max, distinct merchants, last seen — computed across a sliding 1h window as 200 events stream in. That's a Beava pipeline: one binary, one JSON definition, features served from memory in microseconds.
 
 ```
 ==> Fetching features for u123
@@ -125,60 +96,62 @@ one JSON definition, features served from memory in microseconds.
 
 ### 3. Author your own feature
 
-Read the [walkthrough in `examples/fraud/`](examples/fraud/README.md) to
-see exactly how the pipeline and push flow work, or jump straight to the
-[Python SDK guide](docs/python-sdk.md).
+Read the [walkthrough in `examples/fraud/`](examples/fraud/README.md), or jump to the [Python SDK guide](docs/python-sdk.md).
 
-### Alternatives
-
-Build from source instead of Docker:
-
-```bash
-cargo build --release && ./target/release/beava
-```
-
-Or install the Python SDK directly (for `import beava as bv`):
+### Install the Python SDK directly
 
 ```bash
 cd python && pip install -e .
 ```
 
-## So what is `bv.fork()` ?
+## What Beava replaces in your stack
 
-It's basically a `with` block that gives you a local replica of live
-prod state, scoped to whatever keys you care about. You iterate features
-against REAL production bytes — not stale staging data — then close the
-context and prod doesn't care.
+For teams without a streaming platform group:
 
-That's it. That's the primitive.
+| What you run today | What Beava is |
+|---|---|
+| Postgres triggers + Redis counters + a nightly cron to heal drift | One binary, one API, one mental model |
+| A weekend of Kafka setup before the first feature ships | A Python function decorated with `@bv.stream` |
+| Staging that silently drifts from prod | `bv.fork()` — a scoped replica of live prod state |
+| A platform team rewriting your DS prototype as a Flink job | The same Python file, laptop to production |
+
+For teams **already running** Flink or Kafka well — those are excellent systems, keep running them. Beava exists for the long tail that hasn't built that platform yet, not as a replacement for teams who have.
+
+## How Beava compares to Kafka + Flink + Redis
+
+A fair comparison — with the asymmetries called out, not hidden.
+
+| Dimension | Kafka + Flink + Redis | Beava |
+|---|---|---|
+| Systems to deploy | 5-8 | 1 |
+| Separate message broker | Yes (Kafka) | No — direct TCP push |
+| State access (hot path) | Heap state: <1µs · RocksDB fallback: 5-15µs when state exceeds heap | In-process RAM: ~0.1µs single-core lookup |
+| Durability model | Replicated Kafka log + Flink checkpoints | SSD WAL fsync + snapshot + primary/replica; manual failover today |
+| Hot-key contention p99 | Configurable via state backend | ~180µs at 8 concurrent writers; shard the key for higher fanout |
+| Deploy | Kubernetes + Helm + operators | Single binary under systemd |
+| Ops surface | 0.5-1.0 FTE cluster ops | Prometheus `/metrics`, structured JSON logs, `/health` |
+| Time to first feature | Weeks | Minutes |
+
+See [`docs/comparison.md`](docs/comparison.md) for the deeper analysis (operator semantics, watermark handling, connector ecosystem).
+
+## Iterate features against live prod state — `bv.fork()`
+
+A Python `with` block that gives you a scoped replica of live production state. Iterate against real production bytes, close the context, production never sees your reads.
 
 ```python
-import beava as bv
-
 with bv.fork("beava-prod.internal", scope={"user_id": "u123"}):
-    # Replica is frozen at entry by default (snapshot isolation).
-    # Pass tail=True to follow CDC updates from prod.
     print(OnboardingSignals.get("u123").clicks_10m)
-
-    # Hack on the feature, push a synthetic event into the local replica
-    # to validate, all without prod ever seeing your reads.
 ```
 
-Does it solve all skew ? No. **It closes the staging-data skew axis.**
-Feature-logic drift between replay and live push is still your job — if
-you forgot to handle late events, fork won't save you. But the *"my test
-data is lying to me"* axis, the one that actually burns two days of
-debugging — that's gone.
+Default is snapshot isolation (replica frozen at entry). Pass `tail=True` to follow CDC updates from prod in real time. Production writes don't propagate back — forks are read-only by design.
 
-I wanted this for two years and never got it. Full semantics —
-consistency model, dedup, watermarks, all grounded in source pointers —
-in [SEMANTICS.md](SEMANTICS.md).
+**What this fixes:** the "my staging data says 47.3 and prod says 50.1 and I burn two days finding the difference" bug. Staging-data skew is gone.
 
-### AI editor skill (Claude Code / Cursor / Codex)
+**What this doesn't fix:** feature-logic drift between replay and live push (if you forgot to handle late events, fork won't save you), or operational differences between your laptop and prod hardware. Full semantics in [SEMANTICS.md](SEMANTICS.md).
 
-Beava ships a skill that teaches modern AI editors how to build, debug,
-and capacity-plan Beava pipelines — with real numbers from `/debug/*`,
-not hand-wavey advice. Install it once:
+## AI editor skill (Claude Code / Cursor / Codex)
+
+Beava ships a skill that teaches modern AI editors how to build, debug, and capacity-plan Beava pipelines — with real numbers from `/debug/*`, not hand-wavey advice.
 
 ```bash
 beava install-skill          # user-level: ~/.agents/skills/beava/
@@ -187,145 +160,93 @@ beava install-skill --repo   # or: ./.agents/skills/beava/ in the current repo
 
 Then in your editor:
 
-- **Claude Code:** `/beava` (no args for the guided walk-through, or `/beava feature`, `/beava debug`, `/beava plan`, `/beava estimate`).
-- **Cursor** (Agent mode, ⌘L): `@beava` or describe the task — *"add a velocity feature at 10M users scale"*, *"why is beava at prod.example.com using 40 GB"*.
-- **Codex CLI:** `/skills beava`.
+- **Claude Code:** `/beava` (or `/beava feature`, `/beava debug`, `/beava plan`, `/beava estimate`)
+- **Cursor** (Agent mode, ⌘L): `@beava` or describe the task — *"add a velocity feature at 10M users scale"*
+- **Codex CLI:** `/skills beava`
 
-The skill walks you through the 5 things that matter: picking the right
-operators, sizing memory before you push data, projecting capacity
-against real cloud instance prices, debugging a running server via its
-`/debug/memory`, `/debug/key/{id}`, and `/debug/topology` endpoints.
-Point it at a cluster with `export BEAVA_URL=https://...` and
-`BEAVA_TOKEN=...`.
-
-### Define a pipeline and push events
-
-```python
-import beava as bv
-
-@bv.stream
-class RawTransactions:
-    user_id: str
-    amount: float
-    merchant_id: str
-
-@bv.table(key="user_id")
-def UserFeatures(txs: RawTransactions) -> bv.Table:
-    return (
-        txs.group_by("user_id")
-        .agg(
-            tx_count_1h      = bv.count(window="1h"),
-            tx_count_24h     = bv.count(window="24h"),
-            tx_sum_1h        = bv.sum("amount", window="1h"),
-            avg_amount       = bv.avg("amount", window="24h"),
-            unique_merchants = bv.count_distinct("merchant_id", window="24h"),
-        )
-        .with_columns(
-            velocity=(bv.col("tx_count_1h") / 1) / (bv.col("tx_count_24h") / 24),
-        )
-    )
-
-app = bv.App("localhost:6400")
-app.register(RawTransactions, UserFeatures)
-
-# Push events (fire-and-forget, maximum throughput)
-app.push(RawTransactions, {"user_id": "u123", "amount": 50.0, "merchant_id": "m456"})
-app.push(RawTransactions, {"user_id": "u123", "amount": 120.0, "merchant_id": "m789"})
-app.push(RawTransactions, {"user_id": "u123", "amount": 25.0, "merchant_id": "m456"})
-app.flush()
-
-# Read computed results (instant, from in-memory state)
-features = app.get("u123")
-print(features.tx_count_1h)        # 3
-print(features.unique_merchants)   # 2
-print(features.velocity)           # 1.2
-```
-
-The Python SDK is the first client. The underlying [binary TCP protocol](docs/protocol.md)
-is simple enough that clients in Go, Java, Rust, or any language can be
-built against the spec.
+Point the skill at a cluster with `export BEAVA_URL=https://...` and `BEAVA_TOKEN=...`.
 
 ## Performance
 
-47-feature fraud pipeline, 8 client processes, Zipfian key distribution.
-Reproduce with `bash benchmark/fraud-pipeline/run_bench.sh`. Your
-numbers will vary with hardware (in particular: 16-core Hetzner box hits
-544K eps; a 10-core M-series Mac hits 314K — both committed in
-`benchmark/fraud-pipeline/results/`).
+47-feature fraud pipeline, Zipfian key distribution. Reproduce in 70 seconds with `bash benchmark/fraud-pipeline/run_bench.sh`.
 
-| Metric | Value |
-|--------|-------|
-| Throughput (8 clients, 16c Hetzner) | 544K events/sec, each computing 47 features |
-| Throughput (single client, batched) | ~553K events/sec |
-| Sustained load | 29M events, 722K entities, zero degradation |
-| Memory per entity | 7.6 KB (15 features incl. HLL++) |
-| Latency p99 (single-client) | < 100µs |
-| Latency p99 (8-client, hot keys) | ~1.6ms (contention, not scale) |
+| Metric | 16-core Hetzner AX52 | 10-core M-series laptop |
+|--------|---|---|
+| Throughput (sustained) | 544K events/sec | 314K events/sec |
+| Memory per entity | ~8 KB (15 features incl. HLL++) | ~8 KB |
+| p99 reads — single-client | <100µs | ~3ms batched |
+| p99 reads — 8-client contention | ~180µs server-side | (hot-key bound) |
+| Sustained load | 29M events, zero degradation | 60s × 8 clients, no drift |
 
-Why this fast: everything in memory on one node. No network hops between
-services, no serialization to RocksDB, no GC pauses. A single
-`HashMap::get` costs ~0.1µs.
+Full methodology + the "how batch-p99 differs from per-event-p99" caveat: [`benchmark/README.md`](benchmark/README.md). Baseline data committed in `benchmark/fraud-pipeline/results/baseline/`.
 
-See [`benchmark/fraud-pipeline/bench.py`](benchmark/fraud-pipeline/bench.py)
-for the full benchmark, or `bash benchmark/fraud-pipeline/run_bench.sh`
-for one-command reproduction with saved results.
+Why this fast: everything in memory on one node. No network hops between services, no serialization to RocksDB, no GC pauses. A single `HashMap::get` costs ~0.1µs.
 
-## Comparison
+## Failure modes
 
-Real-time compute today usually means Kafka + Flink + Redis: 10-25
-nodes, $3-15K/mo in infra, 0.5-1.0 FTE in ops. Beava does the same shape
-of work on one node.
+Engineer-honest scope. If you're going to put this in your on-call path, these are the scenarios you need to know.
 
-| | Beava | Kafka + Flink + Redis |
-|---|---|---|
-| Nodes | 1 | 10-25 |
-| Systems to manage | 1 | 5-8 |
-| State access latency | ~0.1µs (in-memory) | 5-15µs (RocksDB) |
-| Deploy | Single binary, `systemd` | Kubernetes + Helm + operators |
-| Ops burden | Check the dashboard | 0.5-1.0 FTE |
-| Infra cost (50K eps) | ~$400/mo (one node) | $3-5K/mo |
+**Every push fsynced to WAL before ack.** Worst-case data loss: ~1 second (group-commit window). Snapshots every 5 min (tunable via `BEAVA_SNAPSHOT_INTERVAL`). On crash: replay from latest snapshot + WAL tail. Typical recovery: ~30 seconds per 10M events.
 
-Beava is aimed at use cases that fit on a single node — which is
-honestly most of them. If you need distributed exactly-once processing
-across regions, multi-TB state, or the Kafka connector ecosystem, Flink
-is the right tool. Flink and Kafka are excellent systems built by smart
-people, and a team that already runs them well shouldn't switch. Beava
-exists for the long tail of teams who don't have that platform team —
-not as a replacement for the ones who do.
+**At RAM ceiling.** Beava rejects new writes and preserves committed state — it does not spill to disk. Plan capacity with `BEAVA_MEMORY_LIMIT_MB`. If you hit it, resize the box and restart. Fail-loud by default.
 
-See [full comparison](docs/comparison.md) for the deeper analysis.
+**Process crash, mid-window.** WAL replay on restart; in-flight events since last fsync re-deliver. At-least-once. For exactly-once counters, dedup via `event_id` at ingest.
 
-## Honest limits
+**Single binary = single blast radius.** Primary/replica replication ships today with manual promotion on primary death. Automated HA failover is Cloud. If you need redundancy now, run a primary/replica pair and dedup at the edge via `event_id`.
 
-- Pre-launch OSS. API stabilizing — minor breakage between v0.x releases.
-- No SOC2, HIPAA, or PCI today. (Beava Cloud, Q4 2026 target.)
+**Hot-key contention.** Single-writer keys stay sub-50µs even to 10M entities. 8 concurrent writers on the same key reaches ~180µs p99 — contention, not scale regression. Shard hot keys (e.g. `user_id + hour_bucket`) or debounce them.
+
+**Observability.** Prometheus metrics at `/metrics`, structured JSON logs to stdout, `/health` endpoint for orchestrators. Sample Grafana dashboard in `deploy/`.
+
+## Security baseline (self-hosted, today)
+
+What the binary ships with:
+
+- Admin-only HTTP endpoints (pipeline registration, debug introspection) gated by `BEAVA_ADMIN_TOKEN`
+- `/health` and `/metrics` are safe to expose; all other endpoints require the token
+- Deploy behind a TLS terminator (Caddy, nginx, traefik) for wire encryption
+- Filesystem encryption (LUKS, dm-crypt, ZFS native) is your choice for WAL + snapshot at rest
+
+What we're building:
+
+- Built-in TLS on the binary TCP ingest port (v1.x roadmap)
+- mTLS + RBAC + structured audit log (v1.0)
+- AES-256 at rest, SOC2 Type II, HIPAA BAA (Beava Cloud, Q4 2026 target)
+
+**Regulated deployments** — Beava is not a SOC2/HIPAA vendor today. If compliance is a hard gate, wait for Beava Cloud when it ships.
+
+## Honest scope
+
+- Pre-launch OSS. API will move between v0.x releases.
+- No SOC2, HIPAA, or PCI today (Beava Cloud, Q4 2026 target).
 - Single region. No cross-region replication.
-- Working set must fit in RAM. Modern instances go to 1.5 TB+
-  (~100M+ keyed entities at 40 features). Past that, Beava isn't there
-  yet.
-- Primary/replica ships. Automated HA failover is Cloud.
+- Working set must fit in RAM. Modern instances reach 1.5 TB+ (~100M+ keyed entities at 40 features).
+- Primary/replica with manual failover. Automated HA is Cloud.
 - At-least-once delivery. Dedup via `event_id` for exactly-once counters.
-- No embedding generation today. On roadmap if anyone wants it enough.
-- **Bus factor of 1.** Sole maintainer today. Apache 2.0 + no CLA means
-  if I disappear, the codebase, server, SDK, and debug endpoints can be
-  forked by anyone. That's the actual contingency. Honest about the
-  risk.
+- No embedding generation today. On roadmap if demand is there.
 
-If any of those is a hard stop for you — star the repo, come back when
-Cloud ships the compliance tier.
+If any of those is a hard stop — star the repo, come back when Cloud ships.
+
+## Maintainer status + lock-in exit ramp
+
+Beava is a solo-maintainer project today. Commit cadence and contributor stats are public on GitHub. We commit to publishing a handover plan and moving to a multi-maintainer model before charging for Cloud.
+
+**Lock-in exit ramp.** The on-disk event log is a documented format (see [SEMANTICS.md](SEMANTICS.md)). State export to Parquet via `bv export` is on roadmap. If the project goes quiet for 90 days, `abandoned.md` lands in the repo — Apache 2.0 + no CLA means you can fork everything (server, SDK, debug endpoints, Claude skill) with no legal friction.
+
+Full disclosure: [MAINTAINERS.md](MAINTAINERS.md) · [GOVERNANCE.md](GOVERNANCE.md).
 
 ## Docs
 
 - [Architecture](docs/architecture.md) — system design, event flow, state management
 - [Operators Reference](docs/operators.md) — all 16 operators with signatures, memory, examples
 - [TCP Protocol](docs/protocol.md) — binary wire format. Build a client in any language.
-- [HTTP Management API](docs/http-api.md) — health, metrics, debug endpoints, pipeline management
+- [HTTP Management API](docs/http-api.md) — health, metrics, debug endpoints
 - [Python SDK Guide](docs/python-sdk.md) — installation, pipeline definition, client usage
 - [Fork Semantics](SEMANTICS.md) — consistency model, dedup, watermarks
 - [Comparison](docs/comparison.md) — Beava vs Flink+Kafka+Redis: cost, complexity, performance
 - [Governance](GOVERNANCE.md) — Apache 2.0 perpetuity, Cloud line-drawing, trademark posture
-- [Maintainers](MAINTAINERS.md) — sole maintainer today, bus factor disclosed
-- [Unsafe Audit](UNSAFE.md) — every unsafe block, line by line
+- [Benchmarks](benchmark/README.md) — reproducers + methodology
+- [UNSAFE audit](UNSAFE.md) — every unsafe block, line by line
 
 ## Architecture
 
@@ -351,8 +272,8 @@ Cloud ships the compliance tier.
 |   | /health /metrics |     +----------+----------+   |
 |   | /debug /pipelines|                |              |
 |   +------------------+     +----------v----------+   |
-|     (port 6401)            | Snapshots + Event   |   |
-|                            | Log (local disk)    |   |
+|     (port 6401)            | WAL + Snapshots     |   |
+|                            | (local disk)        |   |
 |                            +---------------------+   |
 +------------------------------------------------------+
 ```
@@ -365,7 +286,9 @@ Cloud ships the compliance tier.
 | `BEAVA_HTTP_PORT` | `6401` | HTTP management port |
 | `BEAVA_WORKER_THREADS` | `4` | Tokio worker threads |
 | `BEAVA_SNAPSHOT` | `true` | Periodic snapshots to disk |
-| `BEAVA_EVENT_LOG` | `true` | Append-only event log for replay |
+| `BEAVA_EVENT_LOG` | `true` | Append-only WAL for replay |
+| `BEAVA_ADMIN_TOKEN` | _(unset)_ | Required for admin endpoints |
+| `BEAVA_MEMORY_LIMIT_MB` | _(unset)_ | Fail-loud RAM cap |
 
 ## Community
 
@@ -383,11 +306,9 @@ cd python && python -m pytest tests/ -q   # Python SDK tests
 
 ## See Also
 
-- [beava.dev](https://beava.dev) — landing page, what people read first
-- [Streaming Shouldn't Require a Platform Team](docs/blog/streaming-shouldnt-require-a-platform-team.md) — why we built Beava and the tradeoffs we chose
-- [Beava vs Flink+Kafka+Redis](docs/comparison.md) — full cost and complexity comparison
-- [TCP Protocol Spec](docs/protocol.md) — build a client in any language
-- [Fraud Detection Benchmark](benchmark/fraud-pipeline/bench.py) — 47-feature pipeline, run it yourself
+- [beava.dev](https://beava.dev) — landing page
+- [Streaming Shouldn't Require a Platform Team](docs/blog/streaming-shouldnt-require-a-platform-team.md) — the long-form story
+- [Benchmark README](benchmark/README.md) — run the numbers yourself
 - [Design Partners — 2 slots this quarter](https://beava.dev#design-partner) — 90 days, direct Slack channel
 
 ## License
