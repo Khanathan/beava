@@ -1,7 +1,7 @@
 <p align="center">
   <b><font size="6">Beava</font></b>
   <br>
-  <i>Real-time compute engine</i>
+  <i>The one-binary feature server</i>
 </p>
 
 <p align="center">
@@ -11,49 +11,84 @@
 
 ---
 
-Beava is a real-time compute engine. Define pipelines. Push events. Get results
-in microseconds. One binary, completely in-memory, zero infrastructure.
+So what breaks when you write a real-time feature today ?
 
-Everything lives in memory on a single node, so reads and writes are
-sub-microsecond with no network hops, no serialization tax, no distributed
-coordination overhead. Durable via append-only event log (WAL) + periodic snapshots.
+You write Python. Someone rewrites it in Scala. Three sprints later it
+ships and the values don't match your offline work. You debug via Slack
+pings to someone who doesn't own the business context. Your PM is angry.
+You are angry (with yourself, with platform, with streaming, a little
+with yourself again).
 
-- [What is Beava?](#what-is-beava)
-- [Quick Start](#quick-start)
+**Beava is the loop that doesn't do that.**
+
+```python
+import beava as bv
+
+with bv.fork("beava-prod.internal", scope={"user_id": "u123"}):
+    # Scoped copy of live prod state. Iterate against real bytes.
+    # Close the context → prod is untouched.
+    print(OnboardingSignals.get("u123").clicks_10m)
+```
+
+One file. `@bv.stream`, `@bv.table`, `bv.replay()`, `bv.fork()`. Backfill
+against history. Fork a scoped replica of prod. Ship. Same code laptop
+to production. No Scala rewrite, no handoff (we've all been there).
+
+- [So what is Beava ?](#so-what-is-beava-)
+- [Quick Start](#quick-start-60-seconds)
+- [So what is `bv.fork()` ?](#so-what-is-bvfork-)
 - [Performance](#performance)
+- [Comparison](#comparison)
+- [Honest limits](#honest-limits)
 - [Documentation](#docs)
-- [Comparison: Beava vs Flink+Kafka+Redis](#comparison)
 - [Configuration](#configuration)
 - [Community](#community)
-- [Contributing](#contributing)
 
-## What is Beava?
+## So what is Beava ?
 
-Beava **ingests** events over a binary TCP protocol, **computes** streaming
-aggregations (windowed counts, sums, averages, percentiles, HLL distinct counts,
-and more), and **cascades** results through multi-stage pipeline DAGs. Every write
-is synchronous and atomic -- all operators update in one pass, state is immediately
-consistent. Push events at 400K/sec, read results in microseconds.
+It's basically a feature server that run on one box. Single Rust binary,
+all state in memory, append-only event log for durability (group-commit
+fsync before ack), Python SDK. Apache 2.0.
 
-Today, real-time compute means Kafka + Flink + Redis. That's 10-25 nodes,
-5-8 systems, and a platform team to keep it running. Most teams never get past
-the evaluation phase. Beava makes real-time compute accessible to any team:
-one Rust binary, a pipeline definition, and `push()`.
+The four primitives are the whole API:
 
-**Use cases:** fraud detection, ML feature serving, real-time personalization,
-gaming leaderboards, AI agent context, IoT anomaly detection.
+- `@bv.stream` — declare an event shape
+- `@bv.table` — declare an aggregation, keyed or keyless
+- `bv.replay()` — backfill against historical events
+- `bv.fork()` — scoped replica of live prod state for feature iteration
+
+That last one is the part I'm proudest of. Every other feature store
+makes you pick between *stale staging* (your test says 47.3, prod says
+50.1, you burn two days) or *poke at prod and pray* (no isolation, your
+PM is angry again). Fork is the third option.
+
+**Use cases:** real-time fraud scoring · ML feature serving · session
+features (last-N-click) · rate limits with sliding windows · recsys
+freshness · gaming leaderboards · AI agent context · IoT anomaly
+detection.
 
 **Key properties:**
 
-- **Every write is synchronous and atomic** -- push an event, all operators across all pipeline stages update in one pass. State is immediately consistent. No eventual consistency, no propagation delay. Easy to reason about.
-- **Fast writes, instant reads** -- push is fire-and-forget for maximum throughput. GET serves the latest state from memory in microseconds. Read-after-write is always consistent.
-- **Completely in-memory** -- all state lives in RAM on a single node. No disk reads on the hot path. Sub-microsecond state access.
-- **Pipeline cascades** -- define multi-stage pipelines with `depends_on`. Events propagate through the DAG in topological order, all within one request.
-- **16 operators** -- count, sum, avg, min, max, stddev, percentile, distinct_count (adaptive HLL++), last, first, lag, ema, last_n, exact_min, exact_max, derive.
-- **Sliding windows** -- configurable granularity (30m, 1h, 24h, 7d). Bucketed ring buffers for bounded memory.
-- **Expression engine** -- derive expressions, where-clause filters, cross-stream references. 21 builtins.
-- **Binary TCP protocol** -- persistent connections, length-prefixed frames, minimal overhead. Any language can implement a client.
-- **Durable** -- append-only event log (WAL) + periodic snapshots. On crash, state recovers from snapshot + WAL replay. At most ~1s of data loss in the worst case.
+- **Synchronous and atomic writes** — push an event, all operators across
+  all pipeline stages update in one pass. State is immediately consistent.
+  No eventual consistency, no propagation delay. Easy to reason about.
+- **Sub-microsecond reads** — all state in RAM on one node. A `HashMap::get`
+  costs ~0.1µs. A Flink RocksDB state access costs 5-15µs.
+- **Pipeline cascades** — multi-stage DAGs with `depends_on`. Events
+  propagate in topological order, all in one request.
+- **16 operators** — count, sum, avg, min, max, stddev, percentile,
+  distinct_count (adaptive HLL++), last, first, lag, ema, last_n,
+  exact_min, exact_max, derive.
+- **Sliding windows** — configurable granularity (30m, 1h, 24h, 7d).
+  Bucketed ring buffers for bounded memory.
+- **Expression engine** — derive expressions, where-clause filters,
+  cross-stream references. 21 builtins.
+- **Binary TCP protocol** — persistent connections, length-prefixed frames,
+  minimal overhead. Any language can implement a client.
+- **Durable** — append-only event log + periodic snapshots. On crash,
+  state recovers from snapshot + log replay. Worst-case ~1s of data loss.
+- **Zero unsafe in the hot path** — 4 unsafe blocks total, all libc FFI
+  in `event_log.rs`. See [UNSAFE.md](UNSAFE.md).
 
 ## Quick Start (60 seconds)
 
@@ -72,7 +107,7 @@ bash examples/fraud/demo.sh
 ```
 
 You'll see a real-time fraud feature vector for user `u123` — tx count,
-sum, avg, max, distinct-merchants, last-seen — computed across a sliding
+sum, avg, max, distinct merchants, last seen — computed across a sliding
 1h window as 200 events stream in. That's a Beava pipeline: one binary,
 one JSON definition, features served from memory in microseconds.
 
@@ -108,11 +143,42 @@ Or install the Python SDK directly (for `import beava as bv`):
 cd python && pip install -e .
 ```
 
+## So what is `bv.fork()` ?
+
+It's basically a `with` block that gives you a local replica of live
+prod state, scoped to whatever keys you care about. You iterate features
+against REAL production bytes — not stale staging data — then close the
+context and prod doesn't care.
+
+That's it. That's the primitive.
+
+```python
+import beava as bv
+
+with bv.fork("beava-prod.internal", scope={"user_id": "u123"}):
+    # Replica is frozen at entry by default (snapshot isolation).
+    # Pass tail=True to follow CDC updates from prod.
+    print(OnboardingSignals.get("u123").clicks_10m)
+
+    # Hack on the feature, push a synthetic event into the local replica
+    # to validate, all without prod ever seeing your reads.
+```
+
+Does it solve all skew ? No. **It closes the staging-data skew axis.**
+Feature-logic drift between replay and live push is still your job — if
+you forgot to handle late events, fork won't save you. But the *"my test
+data is lying to me"* axis, the one that actually burns two days of
+debugging — that's gone.
+
+I wanted this for two years and never got it. Full semantics —
+consistency model, dedup, watermarks, all grounded in source pointers —
+in [SEMANTICS.md](SEMANTICS.md).
+
 ### AI editor skill (Claude Code / Cursor / Codex)
 
-Beava ships a skill that teaches modern AI editors how to build, debug, and
-capacity-plan Beava pipelines — with real numbers from `/debug/*`, not
-hand-wavey advice. Install it once:
+Beava ships a skill that teaches modern AI editors how to build, debug,
+and capacity-plan Beava pipelines — with real numbers from `/debug/*`,
+not hand-wavey advice. Install it once:
 
 ```bash
 beava install-skill          # user-level: ~/.agents/skills/beava/
@@ -126,10 +192,11 @@ Then in your editor:
 - **Codex CLI:** `/skills beava`.
 
 The skill walks you through the 5 things that matter: picking the right
-operators, sizing memory before you push data, projecting capacity against
-real cloud instance prices, and debugging a running server via its
-`/debug/memory`, `/debug/key/{id}`, and `/debug/topology` endpoints. Point it
-at a cluster with `export BEAVA_URL=https://...` and `BEAVA_TOKEN=...`.
+operators, sizing memory before you push data, projecting capacity
+against real cloud instance prices, debugging a running server via its
+`/debug/memory`, `/debug/key/{id}`, and `/debug/topology` endpoints.
+Point it at a cluster with `export BEAVA_URL=https://...` and
+`BEAVA_TOKEN=...`.
 
 ### Define a pipeline and push events
 
@@ -174,59 +241,83 @@ print(features.unique_merchants)   # 2
 print(features.velocity)           # 1.2
 ```
 
-The Python SDK is the first client implementation. The underlying
-[binary TCP protocol](docs/protocol.md) is simple enough that clients
-in Go, Java, Rust, or any language can be built against the spec.
+The Python SDK is the first client. The underlying [binary TCP protocol](docs/protocol.md)
+is simple enough that clients in Go, Java, Rust, or any language can be
+built against the spec.
 
 ## Performance
 
-Measured on a 48-core Xeon with 8 Python client processes, realistic fraud
-detection pipeline (47 features across 5 entity types, Zipfian key distribution).
-Your results will vary with hardware.
+47-feature fraud pipeline, 8 client processes, Zipfian key distribution.
+Reproduce with `bash benchmark/fraud-pipeline/run_bench.sh`. Your
+numbers will vary with hardware (in particular: 16-core Hetzner box hits
+544K eps; a 10-core M-series Mac hits 314K — both committed in
+`benchmark/fraud-pipeline/results/`).
 
 | Metric | Value |
 |--------|-------|
-| Throughput (8 clients) | 430-510K events/sec (each computing 47 features) |
-| Throughput (single client) | 270K events/sec |
+| Throughput (8 clients, 16c Hetzner) | 544K events/sec, each computing 47 features |
+| Throughput (single client, batched) | ~553K events/sec |
 | Sustained load | 29M events, 722K entities, zero degradation |
 | Memory per entity | 7.6 KB (15 features incl. HLL++) |
-| Latency (p99) | < 100 us |
+| Latency p99 (single-client) | < 100µs |
+| Latency p99 (8-client, hot keys) | ~1.6ms (contention, not scale) |
 
-Why this fast: everything is in memory on one node. No network hops between
-services, no serialization to RocksDB, no GC pauses. A single `HashMap::get`
-costs ~0.1 us. A Flink RocksDB state access costs 5-15 us.
+Why this fast: everything in memory on one node. No network hops between
+services, no serialization to RocksDB, no GC pauses. A single
+`HashMap::get` costs ~0.1µs.
 
-See [`benchmark/fraud-pipeline/bench.py`](benchmark/fraud-pipeline/bench.py) for the full benchmark, or `bash benchmark/fraud-pipeline/run_bench.sh` for a one-command run.
+See [`benchmark/fraud-pipeline/bench.py`](benchmark/fraud-pipeline/bench.py)
+for the full benchmark, or `bash benchmark/fraud-pipeline/run_bench.sh`
+for one-command reproduction with saved results.
 
 ## Comparison
 
-Real-time compute today requires Kafka + Flink + Redis: 10-25 nodes, $3-15K/mo
-in infrastructure, and 0.5-1.0 FTE in ops. Beava does the same work on one node.
+Real-time compute today usually means Kafka + Flink + Redis: 10-25
+nodes, $3-15K/mo in infra, 0.5-1.0 FTE in ops. Beava does the same shape
+of work on one node.
 
 | | Beava | Kafka + Flink + Redis |
 |---|---|---|
 | Nodes | 1 | 10-25 |
 | Systems to manage | 1 | 5-8 |
-| State access latency | ~0.1 us (in-memory) | 5-15 us (RocksDB) |
+| State access latency | ~0.1µs (in-memory) | 5-15µs (RocksDB) |
 | Deploy | Single binary, `systemd` | Kubernetes + Helm + operators |
 | Ops burden | Check the dashboard | 0.5-1.0 FTE |
 | Infra cost (50K eps) | ~$400/mo (one node) | $3-5K/mo |
 
-Beava is for the 90% of use cases that fit on a single node. If you need
-distributed exactly-once processing, multi-TB state, or the Kafka connector
-ecosystem, use Flink. Flink and Kafka are excellent systems built by smart
-people. Beava exists because most teams don't need that complexity.
+Beava is for the 99% of use cases that fit on a single node. If you
+need distributed exactly-once processing, multi-TB state, or the Kafka
+connector ecosystem, use Flink. Flink and Kafka are excellent systems
+built by smart people. Beava exists because most teams don't need that
+complexity.
 
-See [full comparison](docs/comparison.md) for a deeper analysis.
+See [full comparison](docs/comparison.md) for the deeper analysis.
+
+## Honest limits
+
+- Pre-launch OSS. API stabilizing — minor breakage between v0.x releases.
+- No SOC2, HIPAA, or PCI today. (Beava Cloud, Q4 2026 target.)
+- Single region. No cross-region replication.
+- Working set must fit in RAM. 128 GB box ≈ 10M keyed entities.
+- Primary/replica ships. Automated HA failover is Cloud.
+- At-least-once delivery. Dedup via `event_id` for exactly-once counters.
+- No embedding generation today. On roadmap if anyone wants it enough.
+
+If any of those is a hard stop for you — star the repo, come back when
+Cloud ships the compliance tier.
 
 ## Docs
 
-- [Architecture](docs/architecture.md) -- system design, event flow, state management
-- [Operators Reference](docs/operators.md) -- all 16 operators with signatures, memory, and examples
-- [TCP Protocol](docs/protocol.md) -- binary wire format specification. Build a client in any language.
-- [HTTP Management API](docs/http-api.md) -- health, metrics, debug endpoints, pipeline management
-- [Python SDK Guide](docs/python-sdk.md) -- installation, pipeline definition, client usage
-- [Comparison](docs/comparison.md) -- Beava vs Flink+Kafka+Redis: cost, complexity, performance
+- [Architecture](docs/architecture.md) — system design, event flow, state management
+- [Operators Reference](docs/operators.md) — all 16 operators with signatures, memory, examples
+- [TCP Protocol](docs/protocol.md) — binary wire format. Build a client in any language.
+- [HTTP Management API](docs/http-api.md) — health, metrics, debug endpoints, pipeline management
+- [Python SDK Guide](docs/python-sdk.md) — installation, pipeline definition, client usage
+- [Fork Semantics](SEMANTICS.md) — consistency model, dedup, watermarks
+- [Comparison](docs/comparison.md) — Beava vs Flink+Kafka+Redis: cost, complexity, performance
+- [Governance](GOVERNANCE.md) — Apache 2.0 perpetuity, Cloud line-drawing, trademark posture
+- [Maintainers](MAINTAINERS.md) — sole maintainer today, hiring a second committer (Sept 2026)
+- [Unsafe Audit](UNSAFE.md) — every unsafe block, line by line
 
 ## Architecture
 
@@ -268,65 +359,28 @@ See [full comparison](docs/comparison.md) for a deeper analysis.
 | `BEAVA_SNAPSHOT` | `true` | Periodic snapshots to disk |
 | `BEAVA_EVENT_LOG` | `true` | Append-only event log for replay |
 
-## Claude Code
-
-Beava ships with a built-in [Claude Code](https://claude.ai/claude-code) skill.
-Clone this repo and type `/beava` to get a guided experience:
-
-1. **Setup** -- build from source or Docker, verify the server is running
-2. **Pipeline design** -- answer questions about your use case, get a working pipeline generated
-3. **Test data** -- realistic distributions (Zipfian IDs, lognormal amounts) sized for your laptop
-4. **Benchmark** -- push events, measure throughput, see actual memory usage per operator
-5. **Capacity planning** -- detect your hardware specs, project scaling costs, compare to Flink stack pricing
-6. **Tuning** -- identify memory hotspots, adjust window granularity, re-measure before/after
-7. **Live diagnostics** -- ask about memory, inspect entities, debug pipelines anytime
-
-The skill reads live data from the `/debug/memory` API and gives specific recommendations
-based on your actual pipeline and hardware. Not generic docs.
-
-### For AI agents
-
-If you're an AI agent (Claude Code, Cursor, Windsurf, etc.) helping a user set up Beava:
-
-```bash
-# 1. Clone and build
-git clone https://github.com/petrpan26/beava.git && cd beava
-cargo build --release
-
-# 2. Start the server
-./target/release/beava &
-
-# 3. Install Python SDK
-cd python && pip install -e . && cd ..
-
-# 4. Verify
-curl -s http://localhost:6401/health
-
-# 5. The /beava skill at .claude/skills/beava/SKILL.md handles the rest
-```
-
-The `/beava` skill file contains the full guided flow. Read it and follow the steps.
-
 ## Community
 
-- [GitHub Issues](https://github.com/petrpan26/beava/issues) -- bugs and feature requests
-- [GitHub Discussions](https://github.com/petrpan26/beava/discussions) -- questions and proposals
+- [GitHub Issues](https://github.com/petrpan26/beava/issues) — bugs and feature requests
+- [GitHub Discussions](https://github.com/petrpan26/beava/discussions) — questions, proposals, design partner inquiries
 
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and PR process.
 
 ```bash
-cargo test -- --test-threads=1    # Rust tests
+cargo test -- --test-threads=1            # Rust tests
 cd python && python -m pytest tests/ -q   # Python SDK tests
 ```
 
 ## See Also
 
-- [Streaming Shouldn't Require a Platform Team](docs/blog/streaming-shouldnt-require-a-platform-team.md) -- why we built Beava and the tradeoffs we chose
-- [Beava vs Flink+Kafka+Redis](docs/comparison.md) -- full cost and complexity comparison
-- [TCP Protocol Spec](docs/protocol.md) -- build a client in any language
-- [Fraud Detection Benchmark](benchmark/fraud-pipeline/bench.py) -- 47-feature pipeline, run it yourself
+- [beava.dev](https://beava.dev) — landing page, what people read first
+- [Streaming Shouldn't Require a Platform Team](docs/blog/streaming-shouldnt-require-a-platform-team.md) — why we built Beava and the tradeoffs we chose
+- [Beava vs Flink+Kafka+Redis](docs/comparison.md) — full cost and complexity comparison
+- [TCP Protocol Spec](docs/protocol.md) — build a client in any language
+- [Fraud Detection Benchmark](benchmark/fraud-pipeline/bench.py) — 47-feature pipeline, run it yourself
+- [Design Partners — 2 slots this quarter](https://beava.dev#design-partner) — 90 days, direct Slack channel
 
 ## License
 
