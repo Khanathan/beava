@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from beava._types_core import FieldSpec
 
 if TYPE_CHECKING:  # pragma: no cover
-    from beava._stream import Stream, StreamDerivation
+    pass
 
 
 class UnionSpec:

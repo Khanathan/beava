@@ -96,7 +96,7 @@ fn history_ttl_lt_downstream_table_ttl_triggers() {
     // Stream with history_ttl = 30d
     register_raw_kind(&mut engine, &stream("Clicks", Some("30d")));
     // Table with ttl = 60d, depends_on Clicks
-    let mut table_desc = table("UserSummary", Some("60d"));
+    let table_desc = table("UserSummary", Some("60d"));
     // Reuse the same Source shape but wire depends_on by manually calling the
     // converter. We need depends_on on the StreamDefinition, which the Source
     // converter leaves as None. Instead: register the table, then patch its

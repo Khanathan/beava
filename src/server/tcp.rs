@@ -1182,7 +1182,7 @@ fn handle_push_core_ex(
     let sample_n = state
         .latency_sample_counter
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if sample_n % LATENCY_SAMPLE_STRIDE == 0 {
+    if sample_n.is_multiple_of(LATENCY_SAMPLE_STRIDE) {
         let mut latency = state.latency.lock();
         latency.record_push(stream_name, push_us, std::time::Instant::now());
         if latency.slow_queries_would_accept(crate::server::latency::CommandKind::Push, push_us) {
@@ -2474,10 +2474,10 @@ async fn handle_snapshot_fetch(
     // (1) Admin-token gate — wire-level bearer check (no loopback bypass on
     // the replica path; admin-only always). Empty expected token (`Some("")`)
     // is not a supported configuration — treat as unauthenticated.
-    let authed = match state.admin_token.as_deref() {
-        Some(expected) if !expected.is_empty() && expected == admin_token => true,
-        _ => false,
-    };
+    let authed = matches!(
+        state.admin_token.as_deref(),
+        Some(expected) if !expected.is_empty() && expected == admin_token
+    );
     if !authed {
         return Err(BeavaError::Protocol("unauthorized".into()));
     }
@@ -2574,10 +2574,10 @@ async fn handle_subscribe(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // (1) Admin-token gate (same shape as snapshot-fetch; empty expected
     // token is not a supported configuration).
-    let authed = match state.admin_token.as_deref() {
-        Some(expected) if !expected.is_empty() && expected == admin_token => true,
-        _ => false,
-    };
+    let authed = matches!(
+        state.admin_token.as_deref(),
+        Some(expected) if !expected.is_empty() && expected == admin_token
+    );
     if !authed {
         // Peer address — the OwnedReadHalf doesn't expose it; we record
         // "unknown" for the signal and rely on operators to correlate via
@@ -2696,6 +2696,10 @@ async fn handle_subscribe(
 ///    knows the response is complete.
 ///
 /// I/O failures during writes are propagated as `BeavaError::Protocol`.
+// clippy's doc_overindented_list_items heuristic doesn't agree with the
+// nested numbered/lettered/bulleted structure above; the rendering in
+// rustdoc is correct as-is.
+#[allow(clippy::doc_overindented_list_items)]
 async fn handle_log_fetch(
     writer: &mut BufWriter<tokio::net::tcp::OwnedWriteHalf>,
     admin_token: &str,
@@ -2704,10 +2708,10 @@ async fn handle_log_fetch(
     state: &SharedState,
 ) -> Result<(), BeavaError> {
     // (1) Admin-token gate.
-    let authed = match state.admin_token.as_deref() {
-        Some(expected) if !expected.is_empty() && expected == admin_token => true,
-        _ => false,
-    };
+    let authed = matches!(
+        state.admin_token.as_deref(),
+        Some(expected) if !expected.is_empty() && expected == admin_token
+    );
     if !authed {
         crate::server::signals::emit_replica_auth_failure(&state.signals, "unknown");
         return Err(BeavaError::Protocol("unauthorized".into()));

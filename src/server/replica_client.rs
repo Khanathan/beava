@@ -410,7 +410,7 @@ impl ReplicaClient {
     /// to every entity currently in the StateStore. Keys with no features
     /// yet are skipped (consistent with the "missing key → None" semantics).
     fn snapshot_extract(&self, ts_ms: u64) {
-        use dashmap::DashMap;
+        
         let now = std::time::SystemTime::now();
         let keys: Vec<String> = match &self.config.keys {
             Some(ks) if !ks.is_empty() => ks.clone(),
@@ -422,7 +422,7 @@ impl ReplicaClient {
             .app
             .extracted_history
             .entry(ts_ms)
-            .or_insert_with(DashMap::new);
+            .or_default();
         for key in keys {
             let feats = self.app.store.get_all_features(&key, now);
             if feats.is_empty() {

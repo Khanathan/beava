@@ -11,6 +11,8 @@ __pycache__/
 dist/
 build/
 *.whl
+.venv/
+venv/
 
 # Beava-specific
 .planning/
@@ -19,6 +21,15 @@ deck/
 *.snapshot*
 events/
 beava.snapshot*
+
+# Marketing / pitch artifacts (not part of the OSS tree)
+deck-*.html
+deck-*.pdf
+*_Deck.pdf
+Tally_VAS2026_Deck.pdf
+branding*.png
+beaver*.png
+2026-*-outreach-*.md
 
 # IDE
 .vscode/

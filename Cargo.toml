@@ -5,6 +5,14 @@ members = ["."]
 name = "beava"
 version = "0.1.0"
 edition = "2021"
+authors = ["Hoang Phan <phan.minhhoang2606@gmail.com>"]
+description = "Real-time feature server with composable streaming pipelines for ML and analytics."
+license = "Apache-2.0"
+repository = "https://github.com/petrpan26/beava"
+homepage = "https://beava.dev"
+readme = "README.md"
+keywords = ["streaming", "real-time", "feature-store", "rust", "python"]
+categories = ["database-implementations", "data-structures", "network-programming"]
 
 [features]
 default = ["server"]

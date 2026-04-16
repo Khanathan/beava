@@ -28,8 +28,8 @@ from beava._schema_v0 import schema_mismatch_error
 from beava._types_core import FieldSpec
 
 if TYPE_CHECKING:  # pragma: no cover
-    from beava._stream import Stream, StreamDerivation
-    from beava._table import Table, TableDerivation
+    from beava._stream import Stream
+    from beava._table import Table
 
 
 _ALLOWED_JOIN_TYPES = {"inner", "left"}
@@ -239,7 +239,7 @@ def table_join(
     Enforces ``on`` matches both tables' full key lists (set-equal) — partial
     keys are deferred past v0.
     """
-    from beava._table import Table, TableDerivation
+    from beava._table import TableDerivation
 
     on_keys = _normalize_on(on)
     type_ = _check_join_type(type_)

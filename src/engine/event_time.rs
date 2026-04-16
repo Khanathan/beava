@@ -127,7 +127,7 @@ fn parse_iso8601(s: &str) -> Option<SystemTime> {
         .unwrap_or(trimmed);
 
     // Split date and time halves on 'T' (also accept space).
-    let (date_part, time_part) = body.split_once(|c| c == 'T' || c == 't' || c == ' ')?;
+    let (date_part, time_part) = body.split_once(['T', 't', ' '])?;
 
     // Parse date: YYYY-MM-DD.
     let mut date_iter = date_part.split('-');
@@ -146,7 +146,7 @@ fn parse_iso8601(s: &str) -> Option<SystemTime> {
 
     // Parse time: HH:MM:SS[.frac]. Ignore any trailing '+hh:mm' offset
     // (treated as UTC per v0 simplification).
-    let time_body = match time_part.find(|c: char| c == '+' || c == '-') {
+    let time_body = match time_part.find(['+', '-']) {
         Some(i) => &time_part[..i],
         None => time_part,
     };
@@ -185,7 +185,7 @@ fn parse_iso8601(s: &str) -> Option<SystemTime> {
     // algorithm). Keeps us off chrono.
     let y = if month <= 2 { year - 1 } else { year };
     let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as i64; // [0, 399]
+    let yoe = y - era * 400; // [0, 399]
     let m = month as i64;
     let d = day as i64;
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn watermark_tracks_max_minus_5s() {
-        let mut wm = WatermarkTracker::new();
+        let wm = WatermarkTracker::new();
         wm.observe("s", sec(100));
         wm.observe("s", sec(110));
         wm.observe("s", sec(105));
@@ -500,14 +500,14 @@ mod tests {
 
     #[test]
     fn watermark_underflow_clamps_to_epoch() {
-        let mut wm = WatermarkTracker::new();
+        let wm = WatermarkTracker::new();
         wm.observe("s", UNIX_EPOCH + Duration::from_secs(2));
         assert_eq!(wm.watermark("s"), Some(UNIX_EPOCH));
     }
 
     #[test]
     fn propagate_stateless_copies_watermark() {
-        let mut wm = WatermarkTracker::new();
+        let wm = WatermarkTracker::new();
         wm.observe("in", sec(100));
         wm.propagate_stateless("in", "out");
         assert_eq!(wm.watermark("out"), Some(sec(95)));
@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn propagate_join_takes_min() {
-        let mut wm = WatermarkTracker::new();
+        let wm = WatermarkTracker::new();
         wm.observe("l", sec(100));
         wm.observe("r", sec(200));
         wm.propagate_join("l", "r", "j");
@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn attach_to_table_inherits_stream_watermark() {
-        let mut wm = WatermarkTracker::new();
+        let wm = WatermarkTracker::new();
         wm.observe("s", sec(110));
         wm.attach_to_table("s", "agg_out");
         assert_eq!(wm.watermark("agg_out"), Some(sec(105)));
@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn late_drop_counter_increments() {
-        let mut c = LateDropCounters::new();
+        let c = LateDropCounters::new();
         assert_eq!(c.get("s"), 0);
         c.increment("s");
         c.increment("s");

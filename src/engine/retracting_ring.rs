@@ -157,7 +157,7 @@ mod tests {
         rb.update_current(
             |_| {},
             t0 + Duration::from_secs(1_000),
-            |b| evicted.extend(b.drain(..)),
+            |b| evicted.append(b),
         );
         assert!(evicted.contains(&1));
         assert!(evicted.contains(&2));
@@ -173,7 +173,7 @@ mod tests {
         rb.update_current(
             |b| b.push(2),
             t0 + Duration::from_secs(10),
-            |b| evicted.extend(b.drain(..)),
+            |b| evicted.append(b),
         );
         assert!(evicted.is_empty());
     }
@@ -190,7 +190,7 @@ mod tests {
         rb.update_current(
             |b| b.push(20),
             t0 + Duration::from_secs(60),
-            |b| evicted.extend(b.drain(..)),
+            |b| evicted.append(b),
         );
         assert!(evicted.is_empty());
         // Now jump past the window: original (10) and (20) both evicted.
@@ -198,7 +198,7 @@ mod tests {
         rb.update_current(
             |_| {},
             t0 + Duration::from_secs(1_000),
-            |b| evicted2.extend(b.drain(..)),
+            |b| evicted2.append(b),
         );
         assert!(evicted2.contains(&10));
         assert!(evicted2.contains(&20));

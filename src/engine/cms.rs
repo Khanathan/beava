@@ -539,7 +539,7 @@ mod tests {
         for v in [
             TopKValue::Str("hello".into()),
             TopKValue::Int(-42),
-            TopKValue::Float(OrderedFloat(3.14)),
+            TopKValue::Float(OrderedFloat(2.5)),
             TopKValue::Bool(true),
         ] {
             let j = v.to_json();

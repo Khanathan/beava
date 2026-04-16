@@ -1785,7 +1785,7 @@ pub enum TopKMode {
 ///   entries when the bucket expires.
 /// - **Sketch mode (> 1024 uniques):** `CountMinSketch` (w, d configurable)
 ///   + `TopKHeap` candidate list of size ~`8k`. Per-bucket retention list
-///   drives CMS decrements on bucket expiry.
+///     drives CMS decrements on bucket expiry.
 ///
 /// Transition happens when `counts.len() > exact_threshold` right after an
 /// insert.
