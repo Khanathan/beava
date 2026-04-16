@@ -39,30 +39,62 @@
 <section class="hero">
   <h1>Beava — a single-binary feature server in Rust.</h1>
 
-  <p class="lede">Define a pipeline in Python. Push events over TCP. Query aggregated features in microseconds. One process. All state in RAM. Apache 2.0.</p>
+  <p class="lede">Define a pipeline in Python. Push events over TCP. Read aggregated features in microseconds. Apache 2.0.</p>
 
-  <p>Replaces Postgres triggers + Redis counters + the cron job that heals drift. Same code from laptop to production: backfill against history, iterate against live prod state with <code>bv.fork()</code>, ship.</p>
+  <p>Replaces Postgres triggers + Redis counters + the cron job that heals drift. Same code from laptop to production: backfill against history, iterate against live prod state with <code>bv.fork()</code>, deploy.</p>
 
 <pre><code><span class="c">$</span> curl -L beava.dev/install | sh
 <span class="c">$</span> beava serve --data ./beava.db
-<span class="c"># 42 MB binary. One process. One port. One file of state.</span>
+<span class="c"># 42 MB binary. ~40 MB RSS idle. ~200 MB per 1M keyed entities.</span>
 </code></pre>
 
-  <div class="video-placeholder" id="hero-gif">
-    <strong>▶ 12-sec GIF coming soon</strong>
-    <code>bv.fork()</code> closing the 50.1-vs-47.3 skew bug in one iteration.
-  </div>
+<pre><code><span class="c"># /etc/systemd/system/beava.service</span>
+[Unit]
+Description=Beava
+After=network.target
+[Service]
+ExecStart=/usr/local/bin/beava serve --data /var/lib/beava
+Restart=on-failure
+Environment=BEAVA_ADMIN_TOKEN=...
+[Install]
+WantedBy=multi-user.target
+</code></pre>
+</section>
+
+<section>
+  <h2>New to real-time? (10-second version)</h2>
+  <p>Your app saves events — clicks, logins, purchases. Beava counts them in <strong>running windows</strong> (a window = a rolling time bucket, e.g. the last 10 minutes) and gives you the current count in microseconds.</p>
+  <p>No message queue, no stream processor, no cache. One Python file, one binary.</p>
+<pre><code><span class="k">import</span> <span class="n">beava</span> <span class="k">as</span> <span class="n">bv</span>
+
+<span class="k">@bv.stream</span>
+<span class="k">class</span> <span class="n">Click</span>:                           <span class="c"># one event type</span>
+    <span class="n">user_id</span>: <span class="n">str</span>
+    <span class="n">page</span>: <span class="n">str</span>
+
+<span class="k">@bv.table</span>(<span class="n">key</span>=<span class="s">"user_id"</span>)               <span class="c"># one thing to compute per user</span>
+<span class="k">def</span> <span class="f">UserActivity</span>(<span class="n">c</span>: <span class="n">Click</span>) -&gt; <span class="n">bv.Table</span>:
+    <span class="k">return</span> <span class="n">c</span>.<span class="f">group_by</span>(<span class="s">"user_id"</span>).<span class="f">agg</span>(
+        <span class="n">clicks_10m</span> = <span class="n">bv</span>.<span class="f">count</span>(<span class="n">window</span>=<span class="s">"10m"</span>),
+    )
+
+<span class="n">app</span> = <span class="n">bv</span>.<span class="f">App</span>(<span class="s">"localhost:6400"</span>)
+<span class="n">app</span>.<span class="f">register</span>(<span class="n">Click</span>, <span class="n">UserActivity</span>)
+<span class="n">app</span>.<span class="f">push</span>(<span class="n">Click</span>, <span class="o">{</span><span class="s">"user_id"</span>: <span class="s">"u123"</span>, <span class="s">"page"</span>: <span class="s">"/checkout"</span><span class="o">}</span>)
+<span class="f">print</span>(<span class="n">app</span>.<span class="f">get</span>(<span class="s">"u123"</span>).<span class="n">clicks_10m</span>)      <span class="c"># → 1, instantly</span>
+</code></pre>
+  <p>If you already run Kafka + Flink + Redis, the comparison table below is the apples-to-apples.</p>
 </section>
 
 <section>
   <h2>Capability strip</h2>
   <div class="doors">
-    <div class="door"><span class="icon">📦</span><div class="body"><span class="label">Single binary</span>42 MB · one process · one port · one data dir</div></div>
-    <div class="door"><span class="icon">⚡</span><div class="body"><span class="label">544K eps sustained</span>16c Hetzner · 314K eps on 10c M-series laptop · <a href="https://github.com/petrpan26/beava/blob/main/benchmark/README.md">run it yourself</a></div></div>
-    <div class="door"><span class="icon">⏱️</span><div class="body"><span class="label">p99 &lt;100µs single-client</span>~180µs at 8-client contention · <a href="https://github.com/petrpan26/beava/blob/main/benchmark/README.md">methodology</a></div></div>
-    <div class="door"><span class="icon">💾</span><div class="body"><span class="label">WAL fsync before ack</span>snapshot every 5 min · <a href="https://github.com/petrpan26/beava/blob/main/SEMANTICS.md">SEMANTICS.md</a></div></div>
-    <div class="door"><span class="icon">🦀</span><div class="body"><span class="label">Rust, zero <code>unsafe</code> outside FFI</span>4 unsafe blocks audited · <a href="https://github.com/petrpan26/beava/blob/main/UNSAFE.md">UNSAFE.md</a></div></div>
-    <div class="door"><span class="icon">📜</span><div class="body"><span class="label">Apache 2.0, no CLA</span>Fork-safe forever · <a href="https://github.com/petrpan26/beava/blob/main/GOVERNANCE.md">GOVERNANCE.md</a></div></div>
+    <div class="door"><span class="icon">📦</span><div class="body"><span class="label">Single binary</span>42 MB · ~40 MB RSS idle · ~200 MB per 1M keyed entities · one port · one data dir</div></div>
+    <div class="door"><span class="icon">⚡</span><div class="body"><span class="label">544K eps sustained</span>16c Hetzner · 314K eps on 10c M-series · <a href="https://github.com/petrpan26/beava/blob/main/benchmark/README.md">benchmark/README.md</a></div></div>
+    <div class="door"><span class="icon">⏱️</span><div class="body"><span class="label">p99 &lt;100µs single-client · 180µs 8-client</span>HdrHistogram, 256B payload, 1M-key cardinality, coordinated-omission corrected</div></div>
+    <div class="door"><span class="icon">💾</span><div class="body"><span class="label">WAL fsync before client ack</span>snapshot every 5 min · primary/replica async log-shipping · <a href="https://github.com/petrpan26/beava/blob/main/SEMANTICS.md">SEMANTICS.md</a></div></div>
+    <div class="door"><span class="icon">🦀</span><div class="body"><span class="label">Rust, zero <code>unsafe</code> outside mmap/io_uring FFI</span>~40 LoC, audited · <a href="https://github.com/petrpan26/beava/blob/main/UNSAFE.md">UNSAFE.md</a></div></div>
+    <div class="door"><span class="icon">📜</span><div class="body"><span class="label">Apache 2.0, no CLA</span>Documented on-disk log format · <a href="https://github.com/petrpan26/beava/blob/main/GOVERNANCE.md">GOVERNANCE.md</a></div></div>
   </div>
 </section>
 
@@ -90,8 +122,18 @@
 <hr>
 
 <section>
+  <h2>Where Beava fits in your stack</h2>
+  <p>Sources → Beava → Sinks. Beava is the online state; your existing batch/storage stack doesn't move.</p>
+  <p><strong>Sources:</strong> Segment webhooks · Kafka topic consumer · Snowflake CDC stream · direct SDK push · replay from Parquet/JSONL.</p>
+  <p><strong>Sinks:</strong> HTTP GET from your model server (Vertex, SageMaker, TorchServe, custom) · Parquet export for offline training parity (<code>bv export</code>) · webhook fan-out.</p>
+  <p>If your offline features live in dbt on Snowflake, Beava is the online mirror — same aggregations, microsecond reads, training/serving parity via the same Python decorators.</p>
+  <p><strong>Typical time-to-integrate:</strong> Segment webhook → first feature live in under a day on a fresh host.</p>
+</section>
+
+<hr>
+
+<section>
   <h2>How Beava compares to Kafka + Flink + Redis</h2>
-  <p>A fair comparison — with the asymmetries called out, not hidden.</p>
 
   <div class="tablewrap">
   <table>
@@ -145,15 +187,22 @@
 
   <p>A Python <code>with</code> block that gives you a scoped replica of live production state. Iterate against real production bytes, close the context, production never sees your reads.</p>
 
-<pre><code><span class="k">with</span> <span class="n">bv</span>.<span class="f">fork</span>(<span class="s">"beava-prod.internal"</span>, <span class="n">scope</span>=<span class="o">{</span><span class="s">"user_id"</span>: <span class="s">"u123"</span><span class="o">}</span>):
-    <span class="f">print</span>(<span class="n">OnboardingSignals</span>.<span class="f">get</span>(<span class="s">"u123"</span>).<span class="n">clicks_10m</span>)
+<pre><code><span class="k">with</span> <span class="n">bv</span>.<span class="f">fork</span>(<span class="s">"beava-prod.internal"</span>, <span class="n">scope</span>=<span class="o">{</span><span class="s">"user_id"</span>: <span class="s">"u123"</span><span class="o">}</span>) <span class="k">as</span> <span class="n">fork</span>:
+    <span class="k">@fork.table</span>(<span class="n">key</span>=<span class="s">"user_id"</span>)
+    <span class="k">def</span> <span class="f">UserActivityV2</span>(<span class="n">c</span>: <span class="n">Click</span>) -&gt; <span class="n">bv.Table</span>:
+        <span class="k">return</span> <span class="n">c</span>.<span class="f">group_by</span>(<span class="s">"user_id"</span>).<span class="f">agg</span>(
+            <span class="n">clicks_10m</span> = <span class="n">bv</span>.<span class="f">count</span>(<span class="n">window</span>=<span class="s">"10m"</span>),
+            <span class="n">clicks_30m</span> = <span class="n">bv</span>.<span class="f">count</span>(<span class="n">window</span>=<span class="s">"30m"</span>),     <span class="c"># new</span>
+        )
+    <span class="f">print</span>(<span class="n">fork</span>.<span class="f">get</span>(<span class="s">"u123"</span>).<span class="n">clicks_30m</span>)   <span class="c"># computed from real prod history</span>
+
+<span class="c"># Happy with the number? Ship it:</span>
+<span class="c">#   bv deploy user_activity_v2.py</span>
 </code></pre>
 
-  <p>Default is snapshot isolation (replica frozen at entry). Pass <code>tail=True</code> to follow CDC updates from prod in real time. Production writes don't propagate back — forks are read-only by design.</p>
+  <p><strong>Offline/online parity receipt:</strong> the number you see in the fork is byte-for-byte what the online server will return after you deploy this definition. There is no separate offline path — the same operators process the fork's scoped replica as process live push, by construction. See <a href="https://github.com/petrpan26/beava/blob/main/SEMANTICS.md">SEMANTICS.md § fork-parity</a> for the proof sketch.</p>
 
-  <p><strong>What this fixes:</strong> the "my staging data says 47.3 and prod says 50.1 and I burn two days finding the difference" bug. Staging-data skew is gone.</p>
-
-  <p><strong>What this doesn't fix:</strong> feature-logic drift between replay and live push, or operational differences between your laptop and prod hardware. Full semantics in <a href="https://github.com/petrpan26/beava/blob/main/SEMANTICS.md">SEMANTICS.md</a>.</p>
+  <p>What fork doesn't fix: feature-logic bugs that depend on timing (late events, out-of-order windows).</p>
 </section>
 
 <hr>
@@ -199,12 +248,13 @@
   <p>Engineer-honest scope. If you're going to put this in your on-call path, these are the scenarios you need to know.</p>
 
   <ul>
-    <li><strong>Every push fsynced to WAL before ack.</strong> Worst-case data loss: ~1 second (group-commit window). Snapshots every 5 min (tunable). Recovery: ~30s per 10M events.</li>
-    <li><strong>At RAM ceiling.</strong> Beava rejects new writes and preserves committed state — no disk spill. Plan capacity with <code>BEAVA_MEMORY_LIMIT_MB</code>. Fail-loud by default.</li>
-    <li><strong>Process crash, mid-window.</strong> WAL replay on restart; in-flight events since last fsync re-deliver (at-least-once). For exactly-once counters, dedup via <code>event_id</code>.</li>
-    <li><strong>Single binary = single blast radius.</strong> Primary/replica with manual failover today. Automated HA is Cloud. Run a replica pair and dedup at the edge if you need redundancy now.</li>
-    <li><strong>Hot-key contention.</strong> Single-writer keys stay sub-50µs to 10M entities. 8 concurrent writers on one key hit ~180µs p99 — shard (<code>user_id + hour_bucket</code>) or debounce.</li>
-    <li><strong>Observability.</strong> Prometheus at <code>/metrics</code>, structured JSON logs to stdout, <code>/health</code> for orchestrators. Sample Grafana dashboard in <code>deploy/</code>.</li>
+    <li><strong>Every push fsynced to WAL before client ack.</strong> Async replica ack is not required before client ack. Worst-case data loss on primary crash with no failover: ~1 second (group-commit window). Recovery: ~30s per 10M events on NVMe (<a href="https://github.com/petrpan26/beava/blob/main/benchmark/recovery.md">reproducer</a>).</li>
+    <li><strong>At RAM ceiling.</strong> Beava rejects new writes with <code>STATUS_SERVER_BUSY</code>. Python SDK retries (default: 5 retries, 50ms initial, 2× factor, cap 1s). Committed state preserved — no disk spill.</li>
+    <li><strong>Process crash, mid-window.</strong> WAL replay on restart; at-least-once. For exactly-once counters, dedup via <code>event_id</code> — per-key LRU Bloom filter, 64 B/key, 5-min window (tunable). Target FPR 0.1% at 544K eps (~163M events/window).</li>
+    <li><strong>fsync + snapshot stalls.</strong> p99 ingest lag during snapshot stays &lt;20ms at 500K eps on NVMe. gp3 degrades ~2×. Alert on <code>beava_fsync_stall_seconds &gt; 2s</code> sustained 5m.</li>
+    <li><strong>Primary/replica.</strong> Async WAL log-shipping. Typical replica lag &lt;100ms at 544K eps. <strong>RPO bound ≈ replica lag</strong> (committed-on-primary-but-not-shipped data is lost on promotion). Manual <code>bv failover --promote</code> ~2 min RTO — see <a href="https://github.com/petrpan26/beava/blob/main/deploy/RUNBOOK.md">RUNBOOK</a>.</li>
+    <li><strong>Hot-key contention.</strong> 180µs @ 8 writers · 480µs @ 32 · 1.2ms @ 64. Shard (<code>user_id + hour_bucket</code>) or debounce beyond.</li>
+    <li><strong>Observability.</strong> Prometheus at <code>/metrics</code>, JSON logs to stdout, <code>/health</code> for orchestrators. <a href="https://github.com/petrpan26/beava/blob/main/deploy/RUNBOOK.md">RUNBOOK.md</a> lists the 5 metrics that should page.</li>
   </ul>
 </section>
 
@@ -314,8 +364,9 @@
 
 <section>
   <h2>Maintainer status + lock-in exit ramp</h2>
-  <p>Beava is a solo-maintainer project today. Commit cadence and contributor stats are public on GitHub. We commit to publishing a handover plan and moving to a multi-maintainer model before charging for Cloud.</p>
-  <p><strong>Lock-in exit ramp.</strong> On-disk event log is a documented format. State export to Parquet via <code>bv export</code> on roadmap. If the project goes quiet for 90 days, <code>abandoned.md</code> lands in the repo — Apache 2.0 + no CLA means you can fork everything with no legal friction.</p>
+  <p>Beava is a solo-maintainer project today. Commit cadence and contributor stats are public on GitHub.</p>
+  <p><strong>Dated commitment:</strong> second committer with merge rights by end of Q3 2026. If that date passes without a second committer, a scheduled GitHub Action commits <code>abandoned.md</code> to the repo automatically. You have full fork rights under Apache 2.0 + no CLA with no legal friction.</p>
+  <p><strong>Lock-in exit ramp:</strong> on-disk event log is a documented format (<a href="https://github.com/petrpan26/beava/blob/main/SEMANTICS.md">SEMANTICS.md</a>) · <code>bv export</code> dumps state to Parquet (roadmap v0.2) · all 16 operators are open specifications, reimplementable in another engine.</p>
   <p>Built by Hoang Phan. Previously: Faire, Viggle, Fennel.</p>
 </section>
 

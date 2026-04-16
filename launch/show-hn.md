@@ -35,24 +35,34 @@ with bv.fork("beava-prod.internal", scope={"user_id": "u123"}):
 Numbers (47-feature fraud pipeline, reproducible):
 - 544K eps sustained on 16-core Hetzner AX52
 - 314K eps on 10-core M-series laptop (baseline committed in repo)
-- p99 <100µs single-client reads (server-side histogram)
-- ~180µs p99 at 8 concurrent writers on hot keys — contention, not
-  scale regression (shard or debounce)
+- p99 <100µs single-client reads, HdrHistogram, 256B payload, 1M-key
+  cardinality, coordinated-omission corrected
+- Contention curve: 180µs @ 8 writers · 480µs @ 32 · 1.2ms @ 64 on
+  one key (shard or debounce beyond)
 
 Reproduce in 70 seconds: `bash benchmark/fraud-pipeline/run_bench.sh`.
 Full methodology + the "batch-p99 vs per-event-p99" caveat is in
 `benchmark/README.md`.
 
-Honest about scope: pre-launch OSS, single region, working set must
-fit in RAM (modern instances reach 1.5 TB+), WAL fsync before ack,
-primary/replica with manual failover, at-least-once delivery. No
-SOC2/HIPAA today — Beava Cloud is planned for Q4 2026. One maintainer;
-lock-in exit ramp via Apache 2.0 + no CLA + documented on-disk log
-format.
+Failure modes documented up front:
+- WAL fsync before client ack (~1s worst-case data loss on primary
+  crash). Async replica ack NOT required before client ack.
+- RAM ceiling returns STATUS_SERVER_BUSY; SDK retries with exponential
+  backoff by default.
+- At-least-once delivery with event_id Bloom-filter dedup (per-key LRU,
+  64 B/key, 5-min window, target FPR 0.1%).
+- Primary/replica async log-shipping. Replica lag typically <100ms at
+  544K eps; **RPO bound ≈ replica lag**. Manual `bv failover --promote`
+  ~2 min RTO.
+- fsync/snapshot stalls: p99 ingest lag during snapshot stays <20ms on
+  NVMe; gp3 degrades ~2×.
+- Observability: Prometheus `/metrics`, JSON logs, `/health`, RUNBOOK.md.
 
-Failure modes spelled out in the README (what happens at RAM ceiling,
-mid-window crash, hot-key contention, observability via Prometheus +
-JSON logs + /health).
+Honest about scope: pre-launch OSS, single region, working set must
+fit in RAM (modern instances reach 1.5 TB+). No SOC2/HIPAA today —
+Beava Cloud Q4 2026. Solo-maintainer; dated commitment to second
+committer by Q3 2026 or a scheduled GitHub Action commits
+`abandoned.md` and you fork under Apache 2.0 + no CLA.
 
 If you already run Flink well, keep running Flink — Beava isn't trying
 to displace working infrastructure. Beava exists for teams who haven't

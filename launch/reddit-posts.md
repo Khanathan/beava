@@ -86,8 +86,10 @@ subscription" so the client can do either without round-trips.
 - 544K eps sustained, 8 client processes, 16-core Hetzner AX52
 - 314K eps on a 10-core M-series Mac (also committed in repo)
 - ~8 KB per entity
-- p99 <100µs single-client reads
-- ~180µs p99 at 8 concurrent writers on hot keys
+- p99 <100µs single-client reads (HdrHistogram, 256B payload, 1M-key
+  cardinality, coordinated-omission corrected)
+- Contention curve: 180µs @ 8 writers · 480µs @ 32 · 1.2ms @ 64 on
+  one key
 
 Reproduce in 70 seconds: `bash benchmark/fraud-pipeline/run_bench.sh`
 
@@ -291,13 +293,14 @@ Other: ~8 KB/entity, p99 <100µs single-client reads, ~180µs p99 at
 
 **Failure modes (what we disclose up front)**
 
-- WAL fsync before ack, ~1s worst-case data loss, ~30s recovery per 10M events
-- At RAM ceiling: rejects new writes, preserves committed state (no disk spill)
-- Process crash mid-window: at-least-once replay, dedup via `event_id` for exact counters
-- Single binary = single blast radius. Primary/replica today with manual failover; automated HA is Cloud
+- WAL fsync before **client** ack (async replica ack not required before client ack); ~1s worst-case data loss on primary crash; ~30s recovery per 10M events on NVMe
+- At RAM ceiling: rejects new writes with STATUS_SERVER_BUSY; SDK retries with exponential backoff (default 5 retries, 50ms initial, 2× factor, cap 1s)
+- Process crash mid-window: at-least-once replay; dedup via `event_id` (per-key LRU Bloom filter, 64 B/key, 5-min window, target FPR 0.1%)
+- Primary/replica async log-shipping: typical replica lag <100ms at 544K eps; **RPO bound ≈ replica lag**; `bv failover --promote` ~2 min manual RTO
+- fsync/snapshot stalls: p99 ingest lag stays <20ms at 500K eps on NVMe; gp3 degrades ~2×
 - Hot-key contention: shard or debounce beyond ~8 concurrent writers on one key
 
-Observability: Prometheus at `/metrics`, JSON logs, `/health`.
+Observability: Prometheus at `/metrics`, JSON logs, `/health`, RUNBOOK.md.
 
 **Where Beava is the wrong answer**
 
