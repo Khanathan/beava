@@ -11,7 +11,7 @@ use super::operators::{
     AvgOp, CountOp, EmaOp, ExactMaxOp, ExactMinOp, FirstOp, LagOp, LastNOp, LastOp, MaxOp, MinOp,
     PercentileOp, StddevOp, SumOp,
 };
-use crate::error::TallyError;
+use crate::error::BeavaError;
 use crate::state::snapshot::OperatorState;
 use crate::state::store::StateStore;
 use crate::types::{FeatureMap, FeatureValue};
@@ -259,7 +259,7 @@ pub fn get_backfill_flag(def: &FeatureDef) -> bool {
 fn diff_features(
     old: &[(String, FeatureDef)],
     new: &[(String, FeatureDef)],
-) -> Result<SchemaDiff, TallyError> {
+) -> Result<SchemaDiff, BeavaError> {
     let old_map: AHashMap<&str, &FeatureDef> =
         old.iter().map(|(name, def)| (name.as_str(), def)).collect();
     let new_map: AHashMap<&str, &FeatureDef> =
@@ -275,7 +275,7 @@ fn diff_features(
         if let Some(old_def) = old_map.get(name) {
             // Feature exists in both -- check type compatibility
             if !same_operator_type(old_def, new_def) {
-                return Err(TallyError::Protocol(format!(
+                return Err(BeavaError::Protocol(format!(
                     "feature '{}' type changed: cannot change operator type on re-registration; remove and re-add with a new name",
                     name
                 )));
@@ -438,7 +438,7 @@ pub struct PipelineEngine {
     /// paths take shared access.
     pub watermarks: SharedWatermarks,
     /// Phase 24-04 — per-stream late-drop counter. Exported as
-    /// `tally_late_events_dropped_total{stream}` via `/metrics`.
+    /// `beava_late_events_dropped_total{stream}` via `/metrics`.
     pub late_drops: SharedLateDrops,
 
     /// Phase 27-02 — optional handle to the process-wide subscriber
@@ -709,9 +709,9 @@ impl PipelineEngine {
     /// Duplicate registration replaces the previous definition (idempotent).
     /// Returns a SchemaDiff describing what changed (added/removed/unchanged features).
     /// Stream names must be non-empty (T-01-14 mitigation).
-    pub fn register(&mut self, stream: StreamDefinition) -> Result<SchemaDiff, TallyError> {
+    pub fn register(&mut self, stream: StreamDefinition) -> Result<SchemaDiff, BeavaError> {
         if stream.name.is_empty() {
-            return Err(TallyError::Protocol("stream name must not be empty".into()));
+            return Err(BeavaError::Protocol("stream name must not be empty".into()));
         }
         // Keyless streams cannot have windowed operators (T-07-01 mitigation)
         if stream.key_field.is_none() {
@@ -729,7 +729,7 @@ impl PipelineEngine {
                         | FeatureDef::Percentile { .. }
                 );
                 if is_windowed {
-                    return Err(TallyError::Protocol(format!(
+                    return Err(BeavaError::Protocol(format!(
                         "keyless stream '{}' cannot have windowed operator '{}'; only derive features are allowed",
                         stream.name, name
                     )));
@@ -790,7 +790,7 @@ impl PipelineEngine {
         event: &serde_json::Value,
         store: &StateStore,
         now: SystemTime,
-    ) -> Result<FeatureMap, TallyError> {
+    ) -> Result<FeatureMap, BeavaError> {
         self.push_internal(stream_name, event, None, None, store, now, true)
     }
 
@@ -809,7 +809,7 @@ impl PipelineEngine {
         event: &serde_json::Value,
         store: &StateStore,
         now: SystemTime,
-    ) -> Result<FeatureMap, TallyError> {
+    ) -> Result<FeatureMap, BeavaError> {
         self.push_internal(stream_name, event, None, None, store, now, false)
     }
 
@@ -833,7 +833,7 @@ impl PipelineEngine {
         events: &[&serde_json::Value],
         store: &StateStore,
         now: SystemTime,
-    ) -> Vec<Result<FeatureMap, TallyError>> {
+    ) -> Vec<Result<FeatureMap, BeavaError>> {
         if events.is_empty() {
             return Vec::new();
         }
@@ -844,7 +844,7 @@ impl PipelineEngine {
             return events
                 .iter()
                 .map(|_| {
-                    Err(TallyError::Protocol(format!(
+                    Err(BeavaError::Protocol(format!(
                         "unknown stream: {}",
                         stream_name
                     )))
@@ -868,12 +868,12 @@ impl PipelineEngine {
         store: &StateStore,
         now: SystemTime,
         read_features: bool,
-    ) -> Result<FeatureMap, TallyError> {
+    ) -> Result<FeatureMap, BeavaError> {
         // 1. Look up stream definition
         let stream = self
             .streams
             .get(stream_name)
-            .ok_or_else(|| TallyError::Protocol(format!("unknown stream: {}", stream_name)))?;
+            .ok_or_else(|| BeavaError::Protocol(format!("unknown stream: {}", stream_name)))?;
 
         // Apply stream-level filter before any processing
         if let Some(ref filter_expr) = stream.filter {
@@ -911,7 +911,7 @@ impl PipelineEngine {
             match event.get(key_field) {
                 Some(serde_json::Value::String(s)) => {
                     if s.is_empty() {
-                        return Err(TallyError::Protocol(format!(
+                        return Err(BeavaError::Protocol(format!(
                             "empty key field '{}'",
                             key_field
                         )));
@@ -919,14 +919,14 @@ impl PipelineEngine {
                     s.clone()
                 }
                 Some(other) => {
-                    return Err(TallyError::Type {
+                    return Err(BeavaError::Type {
                         field: key_field.clone(),
                         expected: "string".into(),
                         got: format!("{}", other),
                     });
                 }
                 None => {
-                    return Err(TallyError::Type {
+                    return Err(BeavaError::Type {
                         field: key_field.clone(),
                         expected: "string".into(),
                         got: "absent".into(),
@@ -1068,7 +1068,7 @@ impl PipelineEngine {
 
     /// Rebuild the DAG from all registered streams. Called after each registration.
     /// Detects circular dependencies via topological sort.
-    fn rebuild_dag(&mut self) -> Result<(), TallyError> {
+    fn rebuild_dag(&mut self) -> Result<(), BeavaError> {
         let mut dag = DiGraph::new();
         let mut indices = AHashMap::new();
 
@@ -1095,7 +1095,7 @@ impl PipelineEngine {
         // Topological sort -- detects cycles
         let order = toposort(&dag, None).map_err(|cycle| {
             let node = &dag[cycle.node_id()];
-            TallyError::Protocol(format!(
+            BeavaError::Protocol(format!(
                 "circular dependency detected involving stream '{}'",
                 node
             ))
@@ -1166,7 +1166,7 @@ impl PipelineEngine {
         event: &serde_json::Value,
         store: &StateStore,
         now: SystemTime,
-    ) -> Result<FeatureMap, TallyError> {
+    ) -> Result<FeatureMap, BeavaError> {
         self.push_with_cascade_internal(stream_name, event, store, now, true)
     }
 
@@ -1194,7 +1194,7 @@ impl PipelineEngine {
         key: &str,
         store: &StateStore,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         self.cascade_table_upsert(input_table, key, false, store, now)
     }
 
@@ -1205,7 +1205,7 @@ impl PipelineEngine {
         key: &str,
         store: &StateStore,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         self.cascade_table_upsert(input_table, key, true, store, now)
     }
 
@@ -1216,7 +1216,7 @@ impl PipelineEngine {
         _tombstoned: bool,
         store: &StateStore,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         // Phase 24-03 — reworked off Phase 23's shadow-marker shim.
         //
         // The cascade now derives output state purely from real Table row
@@ -1355,7 +1355,7 @@ impl PipelineEngine {
         event: &serde_json::Value,
         store: &StateStore,
         now: SystemTime,
-    ) -> Result<FeatureMap, TallyError> {
+    ) -> Result<FeatureMap, BeavaError> {
         self.push_with_cascade_internal(stream_name, event, store, now, false)
     }
 
@@ -1386,7 +1386,7 @@ impl PipelineEngine {
     /// `push_with_cascade_no_features_inner(primary: &StreamDefinition, ...)`
     /// is the next optimization, but it is NOT required for correctness.
     ///
-    /// Returns a `Vec` of per-event `Result<FeatureMap, TallyError>` in
+    /// Returns a `Vec` of per-event `Result<FeatureMap, BeavaError>` in
     /// **input order** (the `FeatureMap` is always empty — `no_features`
     /// mode skips the read). An error at index `i` does NOT halt the batch.
     pub fn push_batch_with_cascade_no_features(
@@ -1395,7 +1395,7 @@ impl PipelineEngine {
         events: &[&serde_json::Value],
         store: &StateStore,
         now: SystemTime,
-    ) -> Vec<Result<FeatureMap, TallyError>> {
+    ) -> Vec<Result<FeatureMap, BeavaError>> {
         if events.is_empty() {
             return Vec::new();
         }
@@ -1406,7 +1406,7 @@ impl PipelineEngine {
             return events
                 .iter()
                 .map(|_| {
-                    Err(TallyError::Protocol(format!(
+                    Err(BeavaError::Protocol(format!(
                         "unknown stream: {}",
                         stream_name
                     )))
@@ -1476,7 +1476,7 @@ impl PipelineEngine {
         store: &StateStore,
         now: SystemTime,
         read_features: bool,
-    ) -> Result<FeatureMap, TallyError> {
+    ) -> Result<FeatureMap, BeavaError> {
         // Determine if downstream cascade exists. `cascade_plan` is populated
         // at finalize_dag time so this is a single AHashMap hit; a missing
         // entry (or empty plan) means "leaf stream, no cascade".
@@ -1607,7 +1607,7 @@ impl PipelineEngine {
                 // Build enriched event.
                 let mut enriched = effective_event.clone();
                 let enriched_map = enriched.as_object_mut().ok_or_else(|| {
-                    TallyError::Protocol(
+                    BeavaError::Protocol(
                         "EnrichFromTable: event is not a JSON object".into(),
                     )
                 })?;
@@ -1724,7 +1724,7 @@ impl PipelineEngine {
                     match effective_event.as_object() {
                         Some(m) => m.clone(),
                         None => {
-                            return Err(TallyError::Protocol(
+                            return Err(BeavaError::Protocol(
                                 "StreamStreamJoin: event is not a JSON object".into(),
                             ));
                         }
@@ -1935,11 +1935,11 @@ impl PipelineEngine {
         store: &StateStore,
         event_time: SystemTime,
         backfill_features: &[String],
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         let stream = self
             .streams
             .get(stream_name)
-            .ok_or_else(|| TallyError::Protocol(format!("unknown stream: {}", stream_name)))?;
+            .ok_or_else(|| BeavaError::Protocol(format!("unknown stream: {}", stream_name)))?;
 
         // Apply stream-level filter (same as push)
         if let Some(ref filter_expr) = stream.filter {
@@ -2236,9 +2236,9 @@ impl PipelineEngine {
 
     /// Register a view definition. View names must be non-empty.
     /// Duplicate registration replaces the previous definition (idempotent).
-    pub fn register_view(&mut self, view: ViewDefinition) -> Result<(), TallyError> {
+    pub fn register_view(&mut self, view: ViewDefinition) -> Result<(), BeavaError> {
         if view.name.is_empty() {
-            return Err(TallyError::Protocol("view name must not be empty".into()));
+            return Err(BeavaError::Protocol("view name must not be empty".into()));
         }
         self.views.insert(view.name.clone(), view);
         Ok(())

@@ -7,7 +7,7 @@ use super::cms::{CountMinSketch, TopKHeap, TopKValue};
 use super::retracting_ring::RetractingRingBuffer;
 use super::uddsketch::UDDSketch;
 use super::window::RingBuffer;
-use crate::error::TallyError;
+use crate::error::BeavaError;
 use crate::types::FeatureValue;
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
@@ -50,7 +50,7 @@ pub fn resolve_field<'a>(
 /// - `read` returns the current aggregate value. Called to collect features.
 ///
 /// `read` takes `&mut self` so implementations can call `advance_to(now)` to
-/// expire stale buckets before aggregating. This is safe in Tally's
+/// expire stale buckets before aggregating. This is safe in Beava's
 /// single-threaded Redis-like design (no concurrent reads).
 pub trait Operator: std::fmt::Debug + Send {
     fn push(
@@ -58,7 +58,7 @@ pub trait Operator: std::fmt::Debug + Send {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError>;
+    ) -> Result<(), BeavaError>;
     fn read(&mut self, now: SystemTime) -> FeatureValue;
 
     /// Estimate the heap memory usage of this operator in bytes.
@@ -100,7 +100,7 @@ impl Operator for CountOp {
         _event: &serde_json::Value,
         _enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         // count needs no field -- always succeeds regardless of event shape (CONTEXT.md)
         self.buffer.add_to_current(1u64, now);
         Ok(())
@@ -130,9 +130,9 @@ impl Operator for CountOp {
 
 /// Sums a numeric field's values within a time window.
 /// Extracts the named field from each event and type-checks it.
-/// Redis-strict: non-numeric field -> TallyError::Type.
+/// Redis-strict: non-numeric field -> BeavaError::Type.
 /// optional=true: absent field -> silent skip (Ok(())).
-/// optional=false: absent field -> TallyError::Type.
+/// optional=false: absent field -> BeavaError::Type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SumOp {
     field: String,
@@ -166,13 +166,13 @@ impl Operator for SumOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
                     Ok(()) // optional=true: absent field -> skip silently
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: "absent".into(),
@@ -186,7 +186,7 @@ impl Operator for SumOp {
                     self.event_count.add_to_current(1u64, now);
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: format!("{}", val),
@@ -276,13 +276,13 @@ impl Operator for MinOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: "absent".into(),
@@ -302,7 +302,7 @@ impl Operator for MinOp {
                     self.event_count.add_to_current(1u64, now);
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: format!("{}", val),
@@ -376,13 +376,13 @@ impl Operator for MaxOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: "absent".into(),
@@ -402,7 +402,7 @@ impl Operator for MaxOp {
                     self.event_count.add_to_current(1u64, now);
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: format!("{}", val),
@@ -471,13 +471,13 @@ impl Operator for LastOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "any".into(),
                         got: "absent".into(),
@@ -559,13 +559,13 @@ impl Operator for AvgOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: "absent".into(),
@@ -578,7 +578,7 @@ impl Operator for AvgOp {
                     self.sum_buffer.add_to_current(f, now);
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: format!("{}", val),
@@ -667,13 +667,13 @@ impl Operator for StddevOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: "absent".into(),
@@ -692,7 +692,7 @@ impl Operator for StddevOp {
                     );
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: format!("{}", val),
@@ -877,13 +877,13 @@ impl Operator for PercentileOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         let val = match resolve_field(&self.field, event, enrichment) {
             None => {
                 return if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: "absent".into(),
@@ -895,7 +895,7 @@ impl Operator for PercentileOp {
         let f = match val.as_f64() {
             Some(x) => x,
             None => {
-                return Err(TallyError::Type {
+                return Err(BeavaError::Type {
                     field: self.field.clone(),
                     expected: "numeric".into(),
                     got: format!("{}", val),
@@ -1050,13 +1050,13 @@ impl Operator for LagOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         _now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "any".into(),
                         got: "absent".into(),
@@ -1140,13 +1140,13 @@ impl Operator for EmaOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: "absent".into(),
@@ -1172,7 +1172,7 @@ impl Operator for EmaOp {
                     self.last_time = Some(now);
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: format!("{}", val),
@@ -1225,13 +1225,13 @@ impl Operator for LastNOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         _now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "any".into(),
                         got: "absent".into(),
@@ -1307,7 +1307,7 @@ impl Operator for FirstOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         // Event-time semantics: retain the value with the EARLIEST event_time.
         // An arriving event with an earlier `_event_time` than what we've
         // stored replaces the current "first" — this is required for the
@@ -1317,7 +1317,7 @@ impl Operator for FirstOp {
                 if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "any".into(),
                         got: "absent".into(),
@@ -1419,13 +1419,13 @@ impl Operator for ExactMinOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: "absent".into(),
@@ -1446,7 +1446,7 @@ impl Operator for ExactMinOp {
                     self.event_count.add_to_current(1u64, now);
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: format!("{}", val),
@@ -1534,13 +1534,13 @@ impl Operator for ExactMaxOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: "absent".into(),
@@ -1559,7 +1559,7 @@ impl Operator for ExactMaxOp {
                     self.event_count.add_to_current(1u64, now);
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: format!("{}", val),
@@ -1600,7 +1600,7 @@ impl Operator for ExactMaxOp {
 // ======================== Phase 22-01 stub operators ========================
 //
 // These operators are part of the v0 aggregation surface (AggOp descriptors
-// serialized by python/tally/_agg_ops.py). Plan 22-01 lands the dispatch
+// serialized by python/beava/_agg_ops.py). Plan 22-01 lands the dispatch
 // scaffold only — their `push` is a silent no-op and `read` returns Missing.
 // Plans 22-02 (Variance/FirstN ordered/linear) and 22-03 (TopK sketches)
 // replace these bodies with real implementations.
@@ -1687,13 +1687,13 @@ impl Operator for VarianceOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: "absent".into(),
@@ -1705,7 +1705,7 @@ impl Operator for VarianceOp {
                     self.buffer.update_current(|b| b.push(f), now);
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "numeric".into(),
                         got: format!("{}", val),
@@ -1919,13 +1919,13 @@ impl Operator for TopKOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         let val = match resolve_field(&self.field, event, enrichment) {
             None => {
                 return if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "scalar".into(),
                         got: "absent".into(),
@@ -1937,7 +1937,7 @@ impl Operator for TopKOp {
         let key = match Self::extract_value(val) {
             Some(k) => k,
             None => {
-                return Err(TallyError::Type {
+                return Err(BeavaError::Type {
                     field: self.field.clone(),
                     expected: "scalar".into(),
                     got: format!("{}", val),
@@ -2165,14 +2165,14 @@ impl Operator for FirstNOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         let et = parse_event_time(event).unwrap_or(now);
         match resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "any".into(),
                         got: "absent".into(),
@@ -2361,7 +2361,7 @@ impl Operator for StreamJoinBuffer {
         _event: &serde_json::Value,
         _enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         _now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         // Stream↔Stream buffers are updated via the cascade handler's
         // `insert`/`evict` calls, not via the standard Operator::push path.
         Ok(())
@@ -2513,7 +2513,7 @@ mod tests {
         let result = op.push(&json!({"amount": "not_a_number"}), None, t);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, TallyError::Type { ref field, .. } if field == "amount"));
+        assert!(matches!(err, BeavaError::Type { ref field, .. } if field == "amount"));
     }
 
     #[test]
@@ -2528,7 +2528,7 @@ mod tests {
         let result = op.push(&json!({}), None, t);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, TallyError::Type { ref got, .. } if got == "absent"));
+        assert!(matches!(err, BeavaError::Type { ref got, .. } if got == "absent"));
     }
 
     #[test]
@@ -2645,7 +2645,7 @@ mod tests {
         let result = op.push(&json!({"amount": "hello"}), None, t);
         assert!(result.is_err());
         assert!(
-            matches!(result.unwrap_err(), TallyError::Type { ref field, .. } if field == "amount")
+            matches!(result.unwrap_err(), BeavaError::Type { ref field, .. } if field == "amount")
         );
     }
 
@@ -2855,7 +2855,7 @@ mod tests {
         let t = ts(1000 * 60);
         let result = op.push(&json!({}), None, t);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TallyError::Type { ref got, .. } if got == "absent"));
+        assert!(matches!(result.unwrap_err(), BeavaError::Type { ref got, .. } if got == "absent"));
     }
 
     #[test]
@@ -2870,7 +2870,7 @@ mod tests {
         let result = op.push(&json!({"amount": "not_a_number"}), None, t);
         assert!(result.is_err());
         assert!(
-            matches!(result.unwrap_err(), TallyError::Type { ref field, .. } if field == "amount")
+            matches!(result.unwrap_err(), BeavaError::Type { ref field, .. } if field == "amount")
         );
     }
 
@@ -2943,7 +2943,7 @@ mod tests {
         let t = ts(1000 * 60);
         let result = op.push(&json!({}), None, t);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TallyError::Type { ref got, .. } if got == "absent"));
+        assert!(matches!(result.unwrap_err(), BeavaError::Type { ref got, .. } if got == "absent"));
     }
 
     #[test]
@@ -2958,7 +2958,7 @@ mod tests {
         let result = op.push(&json!({"amount": "not_a_number"}), None, t);
         assert!(result.is_err());
         assert!(
-            matches!(result.unwrap_err(), TallyError::Type { ref field, .. } if field == "amount")
+            matches!(result.unwrap_err(), BeavaError::Type { ref field, .. } if field == "amount")
         );
     }
 
@@ -3029,7 +3029,7 @@ mod tests {
         let t = ts(1000 * 60);
         let result = op.push(&json!({}), None, t);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TallyError::Type { ref got, .. } if got == "absent"));
+        assert!(matches!(result.unwrap_err(), BeavaError::Type { ref got, .. } if got == "absent"));
     }
 
     // ======================== StddevOp Tests ========================

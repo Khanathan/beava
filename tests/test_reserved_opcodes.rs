@@ -13,10 +13,10 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use tally::engine::pipeline::PipelineEngine;
-use tally::server::protocol::{self, OP_GET, OP_SCAN_RESERVED, STATUS_ERROR, STATUS_OK};
-use tally::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
-use tally::state::store::StateStore;
+use beava::engine::pipeline::PipelineEngine;
+use beava::server::protocol::{self, OP_GET, OP_SCAN_RESERVED, STATUS_ERROR, STATUS_OK};
+use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
+use beava::state::store::StateStore;
 
 async fn start_test_server() -> (u16, SharedState) {
     let state: SharedState = make_concurrent_state(
@@ -34,7 +34,7 @@ async fn start_test_server() -> (u16, SharedState) {
 
     let tcp_state = state.clone();
     tokio::spawn(async move {
-        tally::server::tcp::run_tcp_server_with_listener(tcp_listener, tcp_state)
+        beava::server::tcp::run_tcp_server_with_listener(tcp_listener, tcp_state)
             .await
             .unwrap();
     });

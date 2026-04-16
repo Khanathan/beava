@@ -4,11 +4,11 @@
 //! PERS-03 (crash recovery), PERS-04 (non-blocking write), PERS-05 (TTL eviction).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tally::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use tally::state::eviction::evict_expired_keys;
-use tally::state::snapshot::{load_snapshot, save_snapshot, SerializablePipeline, SnapshotState};
-use tally::state::store::StateStore;
-use tally::types::FeatureValue;
+use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
+use beava::state::eviction::evict_expired_keys;
+use beava::state::snapshot::{load_snapshot, save_snapshot, SerializablePipeline, SnapshotState};
+use beava::state::store::StateStore;
+use beava::types::FeatureValue;
 
 fn ts(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)
@@ -244,7 +244,7 @@ fn test_eviction_preserves_entity_with_no_events() {
 #[test]
 fn test_snapshot_atomic_write() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let final_path = dir.path().join("tally.snapshot");
+    let final_path = dir.path().join("beava.snapshot");
     let tmp_path = final_path.with_extension("tmp");
 
     // Build a snapshot

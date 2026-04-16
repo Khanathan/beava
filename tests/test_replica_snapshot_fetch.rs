@@ -1,6 +1,6 @@
 //! Phase 27-01, Task 3: TCP integration tests for `OP_SNAPSHOT_FETCH` (0x12).
 //!
-//! Spins up the real tally server on a random TCP port with an admin token
+//! Spins up the real beava server on a random TCP port with an admin token
 //! configured, writes a synthetic `BaseSnapshotState` to the server's
 //! snapshot path, and drives the wire protocol end-to-end.
 //!
@@ -27,17 +27,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use tally::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use tally::server::protocol::{
+use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
+use beava::server::protocol::{
     self, Scope, OP_SNAPSHOT_FETCH, REPLICA_FRAME_TAG_HEADER, REPLICA_FRAME_TAG_PAYLOAD,
     STATUS_ERROR,
 };
-use tally::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
-use tally::state::snapshot::{
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
+use beava::state::snapshot::{
     save_base_snapshot, BaseSnapshotState, SerializableEntityState, SerializableStreamEntityState,
     SnapshotHeader, SnapshotType,
 };
-use tally::state::store::StateStore;
+use beava::state::store::StateStore;
 
 const ADMIN_TOKEN: &str = "test-admin-token";
 
@@ -89,7 +89,7 @@ fn entity_with_streams(streams: &[&str]) -> SerializableEntityState {
 }
 
 /// Write a synthetic base snapshot to the file the server will read on
-/// SNAPSHOT_FETCH. Uses the `tally.snapshot.base.NNNNNNNNNN` layout that
+/// SNAPSHOT_FETCH. Uses the `beava.snapshot.base.NNNNNNNNNN` layout that
 /// `load_base_snapshot_for_fetch` scans for. Returns the written path.
 fn write_base_snapshot(snap_dir: &std::path::Path, entities: Vec<(String, SerializableEntityState)>) -> PathBuf {
     let base = BaseSnapshotState {
@@ -102,7 +102,7 @@ fn write_base_snapshot(snap_dir: &std::path::Path, entities: Vec<(String, Serial
         backfill_complete: vec![],
     };
     let bytes = save_base_snapshot(&base).expect("save_base_snapshot");
-    let path = snap_dir.join("tally.snapshot.base.0000000001");
+    let path = snap_dir.join("beava.snapshot.base.0000000001");
     std::fs::write(&path, &bytes).expect("write snapshot");
     path
 }
@@ -119,7 +119,7 @@ async fn start_test_server(
         engine,
         StateStore::new(),
         None,
-        snap_dir.join("tally.snapshot"), // legacy path root (parent == snap_dir)
+        snap_dir.join("beava.snapshot"), // legacy path root (parent == snap_dir)
         Arc::new(BackfillTracker::default()),
         true,  // snapshot_enabled
         false, // event_log_enabled
@@ -134,7 +134,7 @@ async fn start_test_server(
 
     let server_state = state.clone();
     tokio::spawn(async move {
-        let _ = tally::server::tcp::run_tcp_server_with_listener(listener, server_state).await;
+        let _ = beava::server::tcp::run_tcp_server_with_listener(listener, server_state).await;
     });
 
     // Give the listener a tick to become ready.

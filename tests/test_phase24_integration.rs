@@ -34,14 +34,14 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ahash::AHashMap;
-use tally::engine::event_time::WATERMARK_LATENESS;
-use tally::engine::pipeline::PipelineEngine;
-use tally::engine::register::{
+use beava::engine::event_time::WATERMARK_LATENESS;
+use beava::engine::pipeline::PipelineEngine;
+use beava::engine::register::{
     v0_aggregation_to_stream_def, v0_join_to_stream_def, v0_source_to_stream_def,
     V0RegisterPayload,
 };
-use tally::state::store::{StateStore, TableRowState, TOMBSTONE_GRACE};
-use tally::types::FeatureValue;
+use beava::state::store::{StateStore, TableRowState, TOMBSTONE_GRACE};
+use beava::types::FeatureValue;
 
 fn parse(json: &str) -> V0RegisterPayload {
     V0RegisterPayload::parse(json.as_bytes()).expect("parse register JSON")

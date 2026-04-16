@@ -1,7 +1,7 @@
 //! Phase 22-01: v0 REGISTER JSON payload consumer.
 //!
 //! This module defines the serde-level shape of the REGISTER payload as
-//! emitted by `python/tally/_serialize.py::compile_to_register_json` and
+//! emitted by `python/beava/_serialize.py::compile_to_register_json` and
 //! provides `build_operator()` that dispatches per-feature-type to the
 //! correct `OperatorState` variant.
 //!
@@ -14,7 +14,7 @@
 //!
 //! ## Payload shapes
 //!
-//! See `python/tally/_serialize.py` module docstring for the canonical
+//! See `python/beava/_serialize.py` module docstring for the canonical
 //! shapes. Five descriptor kinds: Source (stream/table), StatelessChain,
 //! Aggregation, Join, Union. 22-01 parses all five; execution is
 //! implemented only for the Aggregation branch (plus `count` / `sum`
@@ -33,7 +33,7 @@ use crate::engine::operators::{
     AvgOp, CountOp, EmaOp, FirstNOp, FirstOp, LagOp, LastNOp, LastOp, PercentileOp, StddevOp,
     SumOp, TopKOp, VarianceOp,
 };
-use crate::error::TallyError;
+use crate::error::BeavaError;
 use crate::state::snapshot::OperatorState;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -55,7 +55,7 @@ pub const DEFAULT_TABLE_TTL: &str = "30d";
 pub const DEFAULT_STREAM_HISTORY_TTL: &str = "90d";
 
 // ---------------------------------------------------------------------------
-// Payload structs — serde-shaped to match python/tally/_serialize.py verbatim.
+// Payload structs — serde-shaped to match python/beava/_serialize.py verbatim.
 // ---------------------------------------------------------------------------
 
 /// Top-level REGISTER JSON payload. One of five descriptor kinds.
@@ -160,7 +160,7 @@ pub struct JoinDescriptor {
 }
 
 /// Typed shape of the `join: {...}` block. Mirrors
-/// `python/tally/_join.py::JoinSpec._to_join_json()`.
+/// `python/beava/_join.py::JoinSpec._to_join_json()`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct JoinSpec {
     #[serde(default)]
@@ -233,17 +233,17 @@ pub struct AggregationFeature {
 
 impl V0RegisterPayload {
     /// Parse a REGISTER JSON payload. Wraps serde_json errors into
-    /// `TallyError::Protocol` with a named reason for observability.
-    pub fn parse(bytes: &[u8]) -> Result<Self, TallyError> {
+    /// `BeavaError::Protocol` with a named reason for observability.
+    pub fn parse(bytes: &[u8]) -> Result<Self, BeavaError> {
         // First, reject the pre-Phase-21 v2.0 shape up front: top-level
         // `features: [...]` without `aggregation`. The new shape always
         // carries `kind` and either `aggregation`, `ops`, `join`, or
         // `union` (or is a bare Source).
         let raw: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| {
-            TallyError::Protocol(format!("v0 REGISTER: invalid JSON: {}", e))
+            BeavaError::Protocol(format!("v0 REGISTER: invalid JSON: {}", e))
         })?;
         if raw.get("features").is_some() && raw.get("aggregation").is_none() {
-            return Err(TallyError::Protocol(
+            return Err(BeavaError::Protocol(
                 "v0 REGISTER: legacy top-level 'features' array rejected — \
                  aggregation features now live under aggregation.features[] \
                  (Phase 21-03 contract)"
@@ -251,12 +251,12 @@ impl V0RegisterPayload {
             ));
         }
         if raw.get("kind").is_none() {
-            return Err(TallyError::Protocol(
+            return Err(BeavaError::Protocol(
                 "v0 REGISTER: payload missing required 'kind' field".into(),
             ));
         }
         serde_json::from_value::<V0RegisterPayload>(raw).map_err(|e| {
-            TallyError::Protocol(format!("v0 REGISTER: payload shape mismatch: {}", e))
+            BeavaError::Protocol(format!("v0 REGISTER: payload shape mismatch: {}", e))
         })
     }
 
@@ -291,9 +291,9 @@ impl V0RegisterPayload {
 ///
 /// Matches the Python validator in `_agg_ops._validate_window` so the
 /// engine accepts exactly what the SDK emits.
-pub fn parse_window(s: &str, field_name: &str) -> Result<Duration, TallyError> {
+pub fn parse_window(s: &str, field_name: &str) -> Result<Duration, BeavaError> {
     if s.is_empty() {
-        return Err(TallyError::Protocol(format!(
+        return Err(BeavaError::Protocol(format!(
             "v0 REGISTER: {} is empty",
             field_name
         )));
@@ -302,7 +302,7 @@ pub fn parse_window(s: &str, field_name: &str) -> Result<Duration, TallyError> {
     let (num_str, suffix_secs): (&str, u64) = if let Some(n) = s.strip_suffix("ms") {
         // Milliseconds are sub-second: handle separately.
         let n: u64 = n.parse().map_err(|_| {
-            TallyError::Protocol(format!(
+            BeavaError::Protocol(format!(
                 "v0 REGISTER: {} has non-numeric prefix: {}",
                 field_name, s
             ))
@@ -317,13 +317,13 @@ pub fn parse_window(s: &str, field_name: &str) -> Result<Duration, TallyError> {
     } else if let Some(n) = s.strip_suffix('d') {
         (n, 86_400)
     } else {
-        return Err(TallyError::Protocol(format!(
+        return Err(BeavaError::Protocol(format!(
             "v0 REGISTER: {} missing unit suffix (expected ms/s/m/h/d): {}",
             field_name, s
         )));
     };
     let n: u64 = num_str.parse().map_err(|_| {
-        TallyError::Protocol(format!(
+        BeavaError::Protocol(format!(
             "v0 REGISTER: {} has non-numeric prefix: {}",
             field_name, s
         ))
@@ -348,7 +348,7 @@ pub fn default_bucket(window: Duration) -> Duration {
 /// Returns `None` for non-windowed operators (first/last/first_n/last_n/ema/lag).
 pub fn resolve_window_bucket(
     feat: &AggregationFeature,
-) -> Result<Option<(Duration, Duration)>, TallyError> {
+) -> Result<Option<(Duration, Duration)>, BeavaError> {
     match feat.window.as_deref() {
         None => Ok(None),
         Some(w) => {
@@ -367,7 +367,7 @@ pub fn resolve_window_bucket(
 // ---------------------------------------------------------------------------
 
 /// Hard cap on `lag(n)` — per-entity memory budget enforcement.
-/// Matches `python/tally/_agg_ops.py::_Lag` at the SDK layer; this is
+/// Matches `python/beava/_agg_ops.py::_Lag` at the SDK layer; this is
 /// the defense-in-depth ceiling on the engine side.
 pub const LAG_N_CAP: usize = 10_000;
 
@@ -380,10 +380,10 @@ pub const LAG_N_CAP: usize = 10_000;
 pub fn build_operator_with_source_kind(
     feat: &AggregationFeature,
     source_kind: &str,
-) -> Result<OperatorState, TallyError> {
+) -> Result<OperatorState, BeavaError> {
     // Defense-in-depth: ema / lag require Stream input.
     if matches!(feat.op_type.as_str(), "ema" | "lag") && source_kind == "table" {
-        return Err(TallyError::Protocol(format!(
+        return Err(BeavaError::Protocol(format!(
             "v0 REGISTER: '{}' operator requires a Stream source; got a Table \
              upstream (redundant defense — Phase 21 rejects this at the SDK layer)",
             feat.op_type
@@ -396,22 +396,22 @@ pub fn build_operator_with_source_kind(
 ///
 /// For all 16 AggOp types this returns the correct variant wired to the
 /// parsed window/bucket and operator-specific parameters. Unknown
-/// `feat.type` values fail with `TallyError::Protocol`.
+/// `feat.type` values fail with `BeavaError::Protocol`.
 ///
 /// Does not perform upstream-kind validation — use
 /// [`build_operator_with_source_kind`] when the caller has the source
 /// descriptor in scope (e.g. during REGISTER dispatch).
-pub fn build_operator(feat: &AggregationFeature) -> Result<OperatorState, TallyError> {
+pub fn build_operator(feat: &AggregationFeature) -> Result<OperatorState, BeavaError> {
     let window_bucket = resolve_window_bucket(feat)?;
 
-    let require_field = |ctx: &str| -> Result<String, TallyError> {
+    let require_field = |ctx: &str| -> Result<String, BeavaError> {
         feat.field
             .clone()
-            .ok_or_else(|| TallyError::Protocol(format!("v0 REGISTER: {} requires 'field'", ctx)))
+            .ok_or_else(|| BeavaError::Protocol(format!("v0 REGISTER: {} requires 'field'", ctx)))
     };
-    let require_window = |ctx: &str| -> Result<(Duration, Duration), TallyError> {
+    let require_window = |ctx: &str| -> Result<(Duration, Duration), BeavaError> {
         window_bucket.ok_or_else(|| {
-            TallyError::Protocol(format!("v0 REGISTER: {} requires 'window'", ctx))
+            BeavaError::Protocol(format!("v0 REGISTER: {} requires 'window'", ctx))
         })
     };
 
@@ -463,7 +463,7 @@ pub fn build_operator(feat: &AggregationFeature) -> Result<OperatorState, TallyE
             let field = require_field("percentile")?;
             let (w, b) = require_window("percentile")?;
             let quantile = feat.quantile.ok_or_else(|| {
-                TallyError::Protocol("v0 REGISTER: percentile requires 'quantile'".into())
+                BeavaError::Protocol("v0 REGISTER: percentile requires 'quantile'".into())
             })?;
             OperatorState::Percentile(PercentileOp::new(field, quantile, w, b, optional))
         }
@@ -477,7 +477,7 @@ pub fn build_operator(feat: &AggregationFeature) -> Result<OperatorState, TallyE
             let (w, b) = require_window("top_k")?;
             let k = feat
                 .k
-                .ok_or_else(|| TallyError::Protocol("v0 REGISTER: top_k requires 'k'".into()))?;
+                .ok_or_else(|| BeavaError::Protocol("v0 REGISTER: top_k requires 'k'".into()))?;
             let exact_threshold = feat.exact_threshold.unwrap_or(1024);
             let hybrid_width = feat.hybrid_width.unwrap_or(2048);
             let hybrid_depth = feat.hybrid_depth.unwrap_or(4);
@@ -503,7 +503,7 @@ pub fn build_operator(feat: &AggregationFeature) -> Result<OperatorState, TallyE
         "first_n" => {
             let field = require_field("first_n")?;
             let n = feat.n.ok_or_else(|| {
-                TallyError::Protocol("v0 REGISTER: first_n requires 'n'".into())
+                BeavaError::Protocol("v0 REGISTER: first_n requires 'n'".into())
             })?;
             OperatorState::FirstN(FirstNOp::new(field, n, optional))
         }
@@ -511,13 +511,13 @@ pub fn build_operator(feat: &AggregationFeature) -> Result<OperatorState, TallyE
             let field = require_field("last_n")?;
             let n = feat
                 .n
-                .ok_or_else(|| TallyError::Protocol("v0 REGISTER: last_n requires 'n'".into()))?;
+                .ok_or_else(|| BeavaError::Protocol("v0 REGISTER: last_n requires 'n'".into()))?;
             OperatorState::LastN(LastNOp::new(field, n, optional))
         }
         "ema" => {
             let field = require_field("ema")?;
             let half_life_str = feat.half_life.as_deref().ok_or_else(|| {
-                TallyError::Protocol("v0 REGISTER: ema requires 'half_life'".into())
+                BeavaError::Protocol("v0 REGISTER: ema requires 'half_life'".into())
             })?;
             let half_life = parse_window(half_life_str, "ema.half_life")?;
             OperatorState::Ema(EmaOp::new(field, half_life.as_secs_f64(), optional))
@@ -526,9 +526,9 @@ pub fn build_operator(feat: &AggregationFeature) -> Result<OperatorState, TallyE
             let field = require_field("lag")?;
             let n = feat
                 .n
-                .ok_or_else(|| TallyError::Protocol("v0 REGISTER: lag requires 'n'".into()))?;
+                .ok_or_else(|| BeavaError::Protocol("v0 REGISTER: lag requires 'n'".into()))?;
             if n == 0 || n > LAG_N_CAP {
-                return Err(TallyError::Protocol(format!(
+                return Err(BeavaError::Protocol(format!(
                     "v0 REGISTER: lag.n={} out of range (1..={}); \
                      per-entity memory is bounded by this cap",
                     n, LAG_N_CAP
@@ -537,7 +537,7 @@ pub fn build_operator(feat: &AggregationFeature) -> Result<OperatorState, TallyE
             OperatorState::Lag(LagOp::new(field, n, optional))
         }
         other => {
-            return Err(TallyError::Protocol(format!(
+            return Err(BeavaError::Protocol(format!(
                 "v0 REGISTER: unknown aggregation op type: {}",
                 other
             )));
@@ -557,9 +557,9 @@ pub fn build_operator(feat: &AggregationFeature) -> Result<OperatorState, TallyE
 pub fn encode_group_by(
     keys: &[String],
     event: &serde_json::Value,
-) -> Result<String, TallyError> {
+) -> Result<String, BeavaError> {
     if keys.is_empty() {
-        return Err(TallyError::Protocol(
+        return Err(BeavaError::Protocol(
             "v0 REGISTER: aggregation.keys must be non-empty".into(),
         ));
     }
@@ -570,14 +570,14 @@ pub fn encode_group_by(
             Some(serde_json::Value::Number(n)) => parts.push(n.to_string()),
             Some(serde_json::Value::Bool(b)) => parts.push(b.to_string()),
             Some(serde_json::Value::Null) | None => {
-                return Err(TallyError::Type {
+                return Err(BeavaError::Type {
                     field: k.clone(),
                     expected: "group_by key value".into(),
                     got: "absent".into(),
                 });
             }
             Some(other) => {
-                return Err(TallyError::Type {
+                return Err(BeavaError::Type {
                     field: k.clone(),
                     expected: "scalar (string|number|bool) group_by key".into(),
                     got: format!("{}", other),
@@ -605,30 +605,30 @@ pub fn encode_group_by(
 /// / last / first / lag / ema / last_n / percentile). Variance / top_k /
 /// first_n are v0-only operators (22-02 / 22-03 landed the OperatorState
 /// variants but no FeatureDef variant exists) — the translator returns
-/// `TallyError::Protocol` for these and 22-05 can add FeatureDef variants
+/// `BeavaError::Protocol` for these and 22-05 can add FeatureDef variants
 /// when the operator set grows.
 ///
 /// `where_expr` is translated straight through if present.
 pub fn v0_feature_to_feature_def(
     feat: &AggregationFeature,
-) -> Result<crate::engine::pipeline::FeatureDef, TallyError> {
+) -> Result<crate::engine::pipeline::FeatureDef, BeavaError> {
     use crate::engine::expression::parse_expr;
     use crate::engine::pipeline::FeatureDef;
 
     let window_bucket = resolve_window_bucket(feat)?;
-    let require_field = |ctx: &str| -> Result<String, TallyError> {
+    let require_field = |ctx: &str| -> Result<String, BeavaError> {
         feat.field
             .clone()
-            .ok_or_else(|| TallyError::Protocol(format!("v0→v2 xlate: {} requires 'field'", ctx)))
+            .ok_or_else(|| BeavaError::Protocol(format!("v0→v2 xlate: {} requires 'field'", ctx)))
     };
-    let require_window = |ctx: &str| -> Result<(Duration, Duration), TallyError> {
+    let require_window = |ctx: &str| -> Result<(Duration, Duration), BeavaError> {
         window_bucket.ok_or_else(|| {
-            TallyError::Protocol(format!("v0→v2 xlate: {} requires 'window'", ctx))
+            BeavaError::Protocol(format!("v0→v2 xlate: {} requires 'window'", ctx))
         })
     };
     let where_expr = match feat.r#where.as_deref() {
         Some(expr_str) if !expr_str.is_empty() => Some(parse_expr(expr_str).map_err(|e| {
-            TallyError::Protocol(format!("v0→v2 xlate: invalid where expr: {}", e))
+            BeavaError::Protocol(format!("v0→v2 xlate: invalid where expr: {}", e))
         })?),
         _ => None,
     };
@@ -721,7 +721,7 @@ pub fn v0_feature_to_feature_def(
             let field = require_field("percentile")?;
             let (window, bucket) = require_window("percentile")?;
             let quantile = feat.quantile.ok_or_else(|| {
-                TallyError::Protocol("v0→v2 xlate: percentile requires 'quantile'".into())
+                BeavaError::Protocol("v0→v2 xlate: percentile requires 'quantile'".into())
             })?;
             FeatureDef::Percentile {
                 field,
@@ -753,7 +753,7 @@ pub fn v0_feature_to_feature_def(
             let field = require_field("last_n")?;
             let n = feat
                 .n
-                .ok_or_else(|| TallyError::Protocol("v0→v2 xlate: last_n requires 'n'".into()))?;
+                .ok_or_else(|| BeavaError::Protocol("v0→v2 xlate: last_n requires 'n'".into()))?;
             FeatureDef::LastN {
                 field,
                 n,
@@ -766,7 +766,7 @@ pub fn v0_feature_to_feature_def(
             let hl = feat
                 .half_life
                 .as_deref()
-                .ok_or_else(|| TallyError::Protocol("v0→v2 xlate: ema requires 'half_life'".into()))?;
+                .ok_or_else(|| BeavaError::Protocol("v0→v2 xlate: ema requires 'half_life'".into()))?;
             let half_life_secs = parse_window(hl, "ema.half_life")?.as_secs_f64();
             FeatureDef::Ema {
                 field,
@@ -779,9 +779,9 @@ pub fn v0_feature_to_feature_def(
             let field = require_field("lag")?;
             let n = feat
                 .n
-                .ok_or_else(|| TallyError::Protocol("v0→v2 xlate: lag requires 'n'".into()))?;
+                .ok_or_else(|| BeavaError::Protocol("v0→v2 xlate: lag requires 'n'".into()))?;
             if n == 0 || n > LAG_N_CAP {
-                return Err(TallyError::Protocol(format!(
+                return Err(BeavaError::Protocol(format!(
                     "v0→v2 xlate: lag.n={} out of range (1..={})",
                     n, LAG_N_CAP
                 )));
@@ -795,14 +795,14 @@ pub fn v0_feature_to_feature_def(
         }
         // v0-only operators: no v2.0 FeatureDef variant yet.
         other @ ("variance" | "top_k" | "first_n") => {
-            return Err(TallyError::Protocol(format!(
+            return Err(BeavaError::Protocol(format!(
                 "v0→v2 xlate: op '{}' has no v2.0 FeatureDef equivalent; \
                  add a FeatureDef variant in pipeline.rs to enable end-to-end wiring",
                 other
             )));
         }
         other => {
-            return Err(TallyError::Protocol(format!(
+            return Err(BeavaError::Protocol(format!(
                 "v0→v2 xlate: unknown aggregation op type: {}",
                 other
             )));
@@ -816,11 +816,11 @@ pub fn v0_feature_to_feature_def(
 /// now (Plan 22-04 scope — composite keys land alongside joins in Phase 23).
 pub fn v0_aggregation_to_stream_def(
     desc: &AggregationDescriptor,
-) -> Result<crate::engine::pipeline::StreamDefinition, TallyError> {
+) -> Result<crate::engine::pipeline::StreamDefinition, BeavaError> {
     use crate::engine::pipeline::StreamDefinition;
 
     if desc.aggregation.keys.is_empty() {
-        return Err(TallyError::Protocol(
+        return Err(BeavaError::Protocol(
             "v0→v2 xlate: aggregation.keys must be non-empty".into(),
         ));
     }
@@ -864,11 +864,11 @@ pub fn v0_aggregation_to_stream_def(
 /// aggregations use `depends_on` to fan out from the source.
 pub fn v0_source_to_stream_def(
     desc: &SourceDescriptor,
-) -> Result<crate::engine::pipeline::StreamDefinition, TallyError> {
+) -> Result<crate::engine::pipeline::StreamDefinition, BeavaError> {
     use crate::engine::pipeline::StreamDefinition;
 
     if desc.kind != "stream" && desc.kind != "table" {
-        return Err(TallyError::Protocol(format!(
+        return Err(BeavaError::Protocol(format!(
             "v0→v2 xlate: SourceDescriptor.kind must be 'stream' or 'table', got '{}'",
             desc.kind
         )));
@@ -955,7 +955,7 @@ pub fn v0_source_to_stream_def(
 pub fn v0_join_to_stream_def(
     desc: &JoinDescriptor,
     left_fields_lookup: Option<&dyn Fn(&str) -> Option<Vec<String>>>,
-) -> Result<crate::engine::pipeline::StreamDefinition, TallyError> {
+) -> Result<crate::engine::pipeline::StreamDefinition, BeavaError> {
     // Phase 23-03: for table_table, re-enter the keyed variant with no source
     // meta (permissive — assumes SDK already validated key declarations).
     v0_join_to_stream_def_with_meta(desc, left_fields_lookup, None)
@@ -969,7 +969,7 @@ pub fn v0_join_to_stream_def_with_keys(
     desc: &JoinDescriptor,
     fields_lookup: Option<&dyn Fn(&str) -> Option<Vec<String>>>,
     key_lookup: Option<&dyn Fn(&str) -> Option<Vec<String>>>,
-) -> Result<crate::engine::pipeline::StreamDefinition, TallyError> {
+) -> Result<crate::engine::pipeline::StreamDefinition, BeavaError> {
     let meta_adapter = key_lookup.map(|kl| {
         move |name: &str| -> Option<(Vec<String>, Vec<(String, String)>)> {
             kl(name).map(|keys| (keys, Vec::new()))
@@ -997,7 +997,7 @@ pub fn v0_join_to_stream_def_with_meta(
     source_meta_lookup: Option<
         &dyn Fn(&str) -> Option<(Vec<String>, Vec<(String, String)>)>,
     >,
-) -> Result<crate::engine::pipeline::StreamDefinition, TallyError> {
+) -> Result<crate::engine::pipeline::StreamDefinition, BeavaError> {
     use crate::engine::pipeline::{FeatureDef, JoinType, StreamDefinition};
 
     // Registration-time rejections — T-23-04 (outer) and unknown types.
@@ -1005,14 +1005,14 @@ pub fn v0_join_to_stream_def_with_meta(
         "inner" => JoinType::Inner,
         "left" => JoinType::Left,
         "outer" => {
-            return Err(TallyError::Protocol(
+            return Err(BeavaError::Protocol(
                 "v0 REGISTER: outer joins deferred to v0.1; use two inner+left \
                  joins unioned as a workaround"
                     .into(),
             ));
         }
         other => {
-            return Err(TallyError::Protocol(format!(
+            return Err(BeavaError::Protocol(format!(
                 "v0 REGISTER: join type must be 'inner' or 'left', got '{}'",
                 other
             )));
@@ -1020,7 +1020,7 @@ pub fn v0_join_to_stream_def_with_meta(
     };
 
     if desc.join.on.is_empty() {
-        return Err(TallyError::Protocol(
+        return Err(BeavaError::Protocol(
             "v0 REGISTER: join.on must declare at least one key field".into(),
         ));
     }
@@ -1042,7 +1042,7 @@ pub fn v0_join_to_stream_def_with_meta(
             // `desc.fields` is a JSON object whose keys are output field
             // names. We iterate the keys in document order.
             let fields_obj = desc.fields.as_object().ok_or_else(|| {
-                TallyError::Protocol(
+                BeavaError::Protocol(
                     "v0 REGISTER: join.fields must be a JSON object".into(),
                 )
             })?;
@@ -1102,7 +1102,7 @@ pub fn v0_join_to_stream_def_with_meta(
             // Phase 23-02: symmetric interval windowed join with per-key
             // event-time-indexed buffers on both sides.
             let within_str = desc.join.within.as_ref().ok_or_else(|| {
-                TallyError::Protocol(
+                BeavaError::Protocol(
                     "v0 REGISTER: stream_stream join requires within=<duration> \
                      (e.g. '30s' / '5m'); missing `within` field"
                         .into(),
@@ -1127,7 +1127,7 @@ pub fn v0_join_to_stream_def_with_meta(
                 });
 
             let fields_obj = desc.fields.as_object().ok_or_else(|| {
-                TallyError::Protocol(
+                BeavaError::Protocol(
                     "v0 REGISTER: join.fields must be a JSON object".into(),
                 )
             })?;
@@ -1221,7 +1221,7 @@ pub fn v0_join_to_stream_def_with_meta(
                 || left_keys.iter().any(|k| !right_keys.contains(k))
                 || right_keys.iter().any(|k| !left_keys.contains(k))
             {
-                return Err(TallyError::Protocol(format!(
+                return Err(BeavaError::Protocol(format!(
                     "v0 REGISTER: Table↔Table join requires identical key declarations \
                      (both key field names must match); left='{}' keys={:?}, \
                      right='{}' keys={:?}",
@@ -1234,7 +1234,7 @@ pub fn v0_join_to_stream_def_with_meta(
             if desc.join.on.len() != left_keys.len()
                 || desc.join.on.iter().any(|o| !left_keys.contains(o))
             {
-                return Err(TallyError::Protocol(format!(
+                return Err(BeavaError::Protocol(format!(
                     "v0 REGISTER: Table↔Table join requires full-key match; \
                      v0 requires full-key required in v0 — on={:?} does not cover \
                      table key declaration {:?}",
@@ -1250,7 +1250,7 @@ pub fn v0_join_to_stream_def_with_meta(
                     let rt = rf.iter().find(|(n, _)| n == k).map(|(_, t)| t.as_str());
                     if let (Some(a), Some(b)) = (lt, rt) {
                         if a != b {
-                            return Err(TallyError::Protocol(format!(
+                            return Err(BeavaError::Protocol(format!(
                                 "v0 REGISTER: Table↔Table join schema_mismatch_error: \
                                  key field '{}' type differs between '{}' ({}) and \
                                  '{}' ({})",
@@ -1266,7 +1266,7 @@ pub fn v0_join_to_stream_def_with_meta(
                 || desc.join.left == desc.name
                 || desc.join.right == desc.name
             {
-                return Err(TallyError::Protocol(
+                return Err(BeavaError::Protocol(
                     "v0 REGISTER: Table↔Table join would create a cycle (output \
                      references itself)"
                         .into(),
@@ -1287,7 +1287,7 @@ pub fn v0_join_to_stream_def_with_meta(
                 });
 
             let fields_obj = desc.fields.as_object().ok_or_else(|| {
-                TallyError::Protocol(
+                BeavaError::Protocol(
                     "v0 REGISTER: join.fields must be a JSON object".into(),
                 )
             })?;
@@ -1360,7 +1360,7 @@ pub fn v0_join_to_stream_def_with_meta(
                 max_keys: None,
             })
         }
-        other => Err(TallyError::Protocol(format!(
+        other => Err(BeavaError::Protocol(format!(
             "v0 REGISTER: unknown join shape '{}'; expected stream_table / stream_stream / table_table",
             other
         ))),
@@ -1502,7 +1502,7 @@ mod tests {
         let mut f = mk_feat("unknown_op_xyz");
         f.field = None;
         let err = build_operator(&f).unwrap_err();
-        assert!(matches!(err, TallyError::Protocol(_)));
+        assert!(matches!(err, BeavaError::Protocol(_)));
     }
 
     #[test]
@@ -1556,7 +1556,7 @@ mod tests {
         let legacy = br#"{"name":"X","key_field":"user_id","features":[]}"#;
         let err = V0RegisterPayload::parse(legacy).unwrap_err();
         match err {
-            TallyError::Protocol(msg) => assert!(
+            BeavaError::Protocol(msg) => assert!(
                 msg.contains("legacy top-level 'features'"),
                 "unexpected msg: {}",
                 msg
@@ -1646,7 +1646,7 @@ mod tests {
         f.half_life = Some("30m".into());
         let err = build_operator_with_source_kind(&f, "table").unwrap_err();
         match err {
-            TallyError::Protocol(msg) => {
+            BeavaError::Protocol(msg) => {
                 assert!(msg.contains("requires a Stream source"), "msg={}", msg)
             }
             _ => panic!("expected Protocol error"),
@@ -1680,7 +1680,7 @@ mod tests {
         f.n = Some(LAG_N_CAP + 1);
         let err = build_operator(&f).unwrap_err();
         match err {
-            TallyError::Protocol(msg) => assert!(msg.contains("out of range"), "msg={}", msg),
+            BeavaError::Protocol(msg) => assert!(msg.contains("out of range"), "msg={}", msg),
             _ => panic!("expected Protocol error"),
         }
     }

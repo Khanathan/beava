@@ -30,14 +30,14 @@ use axum::extract::ConnectInfo;
 use axum::http::Request;
 use tower::ServiceExt;
 
-use tally::engine::event_time::{parse_event_time, WATERMARK_LATENESS};
-use tally::engine::pipeline::PipelineEngine;
-use tally::server::http::build_router;
-use tally::server::protocol::{
+use beava::engine::event_time::{parse_event_time, WATERMARK_LATENESS};
+use beava::engine::pipeline::PipelineEngine;
+use beava::server::http::build_router;
+use beava::server::protocol::{
     self, OP_PUSH, OP_REGISTER, STATUS_OK, TYPE_I64, TYPE_STR,
 };
-use tally::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
-use tally::state::store::StateStore;
+use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
+use beava::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
 // Parser tests (pure unit, no server)
@@ -94,7 +94,7 @@ async fn start_test_server() -> (u16, SharedState) {
 
     let tcp_state = state.clone();
     tokio::spawn(async move {
-        tally::server::tcp::run_tcp_server_with_listener(tcp_listener, tcp_state)
+        beava::server::tcp::run_tcp_server_with_listener(tcp_listener, tcp_state)
             .await
             .unwrap();
     });
@@ -327,12 +327,12 @@ async fn late_drop_counter_visible_in_metrics_endpoint() {
         .unwrap();
     let text = String::from_utf8_lossy(&body);
     assert!(
-        text.contains("tally_late_events_dropped_total"),
+        text.contains("beava_late_events_dropped_total"),
         "metrics body missing late-drop counter: {}",
         text
     );
     assert!(
-        text.contains("tally_late_events_dropped_total{stream=\"Clicks\"} 1"),
+        text.contains("beava_late_events_dropped_total{stream=\"Clicks\"} 1"),
         "metrics body did not show Clicks=1: {}",
         text
     );

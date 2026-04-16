@@ -1,5 +1,5 @@
 //! Phase 22-01 integration test: parse realistic REGISTER JSON payloads as
-//! emitted by `python/tally/_serialize.py` and verify `build_operator`
+//! emitted by `python/beava/_serialize.py` and verify `build_operator`
 //! dispatches to the correct `OperatorState` variant for every AggOp.
 //!
 //! These fixtures are literal copies of the JSON `compile_to_register_json`
@@ -8,8 +8,8 @@
 //! change in lockstep — `serde(deny_unknown_fields)` would catch drift
 //! earlier, but we deliberately stay permissive here for additive evolution.
 
-use tally::engine::register::{build_operator, V0RegisterPayload};
-use tally::state::snapshot::OperatorState;
+use beava::engine::register::{build_operator, V0RegisterPayload};
+use beava::state::snapshot::OperatorState;
 
 fn aggregation_payload(features_json: &str) -> String {
     format!(
@@ -30,7 +30,7 @@ fn aggregation_payload(features_json: &str) -> String {
     )
 }
 
-fn parse_and_get_features(payload: &str) -> Vec<tally::engine::register::AggregationFeature> {
+fn parse_and_get_features(payload: &str) -> Vec<beava::engine::register::AggregationFeature> {
     let parsed = V0RegisterPayload::parse(payload.as_bytes()).unwrap();
     match parsed {
         V0RegisterPayload::Aggregation(d) => d.aggregation.features,
@@ -194,7 +194,7 @@ fn rejects_legacy_v2_payload_shape() {
     }"#;
     let err = V0RegisterPayload::parse(legacy).unwrap_err();
     match err {
-        tally::error::TallyError::Protocol(msg) => {
+        beava::error::BeavaError::Protocol(msg) => {
             assert!(msg.contains("legacy top-level 'features'"), "msg was: {}", msg);
         }
         other => panic!("expected Protocol error, got {:?}", other),
@@ -215,7 +215,7 @@ fn rejects_unknown_op_type() {
     let f = parse_and_get_features(&p);
     let err = build_operator(&f[0]).unwrap_err();
     match err {
-        tally::error::TallyError::Protocol(msg) => assert!(msg.contains("unknown aggregation op")),
+        beava::error::BeavaError::Protocol(msg) => assert!(msg.contains("unknown aggregation op")),
         other => panic!("expected Protocol error, got {:?}", other),
     }
 }

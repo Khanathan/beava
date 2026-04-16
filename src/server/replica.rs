@@ -15,7 +15,7 @@
 //!     27-02's push-path notify hook can reuse the exact same matching
 //!     rules on a single `(stream, key)` pair.
 //!   - `record_snapshot_bytes_sent` bumps the module-local atomic counter
-//!     that backs `tally_replica_snapshot_bytes_sent_total`. The counter
+//!     that backs `beava_replica_snapshot_bytes_sent_total`. The counter
 //!     lives here so Phase 28 and later replica endpoints can add sibling
 //!     counters next to it.
 //!
@@ -49,7 +49,7 @@ static SNAPSHOT_BYTES_SENT: AtomicU64 = AtomicU64::new(0);
 // ---------------------------------------------------------------------------
 // Phase 27-02: Replica subscribe metrics (process-wide atomic counters).
 //
-// `tally_replica_subscriptions_active` is a gauge sourced from
+// `beava_replica_subscriptions_active` is a gauge sourced from
 // `SubscriberRegistry::active_count()` at scrape time (no separate atomic).
 // The drop counter has two reason labels ("backpressure" / "disconnect");
 // the per-stream events-pushed counter is kept in a `DashMap<String,u64>`
@@ -60,20 +60,20 @@ static SNAPSHOT_BYTES_SENT: AtomicU64 = AtomicU64::new(0);
 static DROPPED_BACKPRESSURE: AtomicU64 = AtomicU64::new(0);
 static DROPPED_DISCONNECT: AtomicU64 = AtomicU64::new(0);
 
-/// Per-stream `tally_replica_events_pushed_total{stream}` counter.
+/// Per-stream `beava_replica_events_pushed_total{stream}` counter.
 /// Lock-free reads via DashMap; init-on-first-push via `entry(..).or_insert`.
 /// Backed by a `OnceLock` because `DashMap::new` is not `const fn` on the
 /// currently-pinned dashmap version.
 static EVENTS_PUSHED_BY_STREAM: std::sync::OnceLock<DashMap<String, AtomicU64>> =
     std::sync::OnceLock::new();
 
-/// Phase 35-01: per-stream `tally_replica_log_entries_sent_total{stream}`
+/// Phase 35-01: per-stream `beava_replica_log_entries_sent_total{stream}`
 /// counter. One increment per event frame written by `handle_log_fetch`.
 /// Same DashMap layout as `EVENTS_PUSHED_BY_STREAM`.
 static LOG_ENTRIES_SENT_BY_STREAM: std::sync::OnceLock<DashMap<String, AtomicU64>> =
     std::sync::OnceLock::new();
 
-/// Phase 36-01: per-stream `tally_replica_events_ingested_total{stream}`
+/// Phase 36-01: per-stream `beava_replica_events_ingested_total{stream}`
 /// counter. Bumped once per event routed through `replica_ingest`
 /// (i.e., every CDC event the replica-client loop applies locally). Kept
 /// separate from the normal `events_total` metric so operators can see
@@ -166,7 +166,7 @@ fn bump_events_pushed(stream: &str) {
         .fetch_add(1, Ordering::Relaxed);
 }
 
-/// Increment `tally_replica_snapshot_bytes_sent_total` by `n`. Called once
+/// Increment `beava_replica_snapshot_bytes_sent_total` by `n`. Called once
 /// per successful snapshot payload write in `tcp.rs::handle_snapshot_fetch`.
 pub fn record_snapshot_bytes_sent(n: u64) {
     SNAPSHOT_BYTES_SENT.fetch_add(n, Ordering::Relaxed);
@@ -336,7 +336,7 @@ impl SubscriberRegistry {
     }
 
     /// Number of currently-registered subscribers. Backs the
-    /// `tally_replica_subscriptions_active` gauge at scrape time.
+    /// `beava_replica_subscriptions_active` gauge at scrape time.
     pub fn active_count(&self) -> usize {
         self.sessions.len()
     }

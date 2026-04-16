@@ -4,7 +4,7 @@
 //! (22-03 Decision C=1). Runs via `cargo bench --bench uddsketch_ops`.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use tally::engine::uddsketch::UDDSketch;
+use beava::engine::uddsketch::UDDSketch;
 
 fn bench_insert(c: &mut Criterion) {
     let mut group = c.benchmark_group("uddsketch");

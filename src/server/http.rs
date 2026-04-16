@@ -209,7 +209,7 @@ async fn create_pipeline(
     let def_name = req.name.clone();
     let is_view = req.definition_type.as_deref() == Some("view");
     let mut engine = state.engine.write();
-    let result: Result<(), crate::error::TallyError> = if is_view {
+    let result: Result<(), crate::error::BeavaError> = if is_view {
         match crate::server::protocol::convert_view_register_request(req) {
             Ok(view_def) => engine.register_view(view_def),
             Err(e) => {
@@ -319,30 +319,30 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
     let p99_push_seconds = p99_push_us / 1_000_000.0;
 
     let mut body = format!(
-        "# HELP tally_keys_total Number of entity keys in memory\n\
-         # TYPE tally_keys_total gauge\n\
-         tally_keys_total {}\n\
-         # HELP tally_events_total Total events processed\n\
-         # TYPE tally_events_total counter\n\
-         tally_events_total {}\n\
-         # HELP tally_push_latency_seconds Last observed PUSH latency\n\
-         # TYPE tally_push_latency_seconds gauge\n\
-         tally_push_latency_seconds {}\n\
-         # HELP tally_push_latency_p99_seconds Rolling p99 PUSH latency (5 min window)\n\
-         # TYPE tally_push_latency_p99_seconds gauge\n\
-         tally_push_latency_p99_seconds {}\n\
-         # HELP tally_current_eps Events per second (5s EWMA, all streams)\n\
-         # TYPE tally_current_eps gauge\n\
-         tally_current_eps {}\n\
-         # HELP tally_snapshot_duration_seconds Last snapshot write duration\n\
-         # TYPE tally_snapshot_duration_seconds gauge\n\
-         tally_snapshot_duration_seconds {}\n\
-         # HELP tally_memory_bytes Estimated memory usage\n\
-         # TYPE tally_memory_bytes gauge\n\
-         tally_memory_bytes {}\n\
-         # HELP tally_snapshots_skipped_total Snapshot cycles skipped due to in-progress write\n\
-         # TYPE tally_snapshots_skipped_total counter\n\
-         tally_snapshots_skipped_total {}\n",
+        "# HELP beava_keys_total Number of entity keys in memory\n\
+         # TYPE beava_keys_total gauge\n\
+         beava_keys_total {}\n\
+         # HELP beava_events_total Total events processed\n\
+         # TYPE beava_events_total counter\n\
+         beava_events_total {}\n\
+         # HELP beava_push_latency_seconds Last observed PUSH latency\n\
+         # TYPE beava_push_latency_seconds gauge\n\
+         beava_push_latency_seconds {}\n\
+         # HELP beava_push_latency_p99_seconds Rolling p99 PUSH latency (5 min window)\n\
+         # TYPE beava_push_latency_p99_seconds gauge\n\
+         beava_push_latency_p99_seconds {}\n\
+         # HELP beava_current_eps Events per second (5s EWMA, all streams)\n\
+         # TYPE beava_current_eps gauge\n\
+         beava_current_eps {}\n\
+         # HELP beava_snapshot_duration_seconds Last snapshot write duration\n\
+         # TYPE beava_snapshot_duration_seconds gauge\n\
+         beava_snapshot_duration_seconds {}\n\
+         # HELP beava_memory_bytes Estimated memory usage\n\
+         # TYPE beava_memory_bytes gauge\n\
+         beava_memory_bytes {}\n\
+         # HELP beava_snapshots_skipped_total Snapshot cycles skipped due to in-progress write\n\
+         # TYPE beava_snapshots_skipped_total counter\n\
+         beava_snapshots_skipped_total {}\n",
         keys_total,
         events_total,
         push_latency,
@@ -356,9 +356,9 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
     // Phase 24-04: per-stream late-drop counter. Label cardinality is
     // bounded by registered streams (T-24-04-05).
     body.push_str(
-        "# HELP tally_late_events_dropped_total Events dropped for arriving with \
+        "# HELP beava_late_events_dropped_total Events dropped for arriving with \
          event_time older than the stream's current watermark\n\
-         # TYPE tally_late_events_dropped_total counter\n",
+         # TYPE beava_late_events_dropped_total counter\n",
     );
     {
         let engine = state.engine.read();
@@ -368,7 +368,7 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
             // Prometheus exposition grammar.
             let escaped = stream.replace('\\', "\\\\").replace('"', "\\\"");
             body.push_str(&format!(
-                "tally_late_events_dropped_total{{stream=\"{}\"}} {}\n",
+                "beava_late_events_dropped_total{{stream=\"{}\"}} {}\n",
                 escaped, count
             ));
         }
@@ -377,68 +377,68 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
     // Phase 25-02: TTL eviction + history retention counters.
     let escape = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     body.push_str(
-        "# HELP tally_ttl_evictions_total TTL-triggered evictions per Table\n\
-         # TYPE tally_ttl_evictions_total counter\n",
+        "# HELP beava_ttl_evictions_total TTL-triggered evictions per Table\n\
+         # TYPE beava_ttl_evictions_total counter\n",
     );
     for (table, count) in state.eviction_tracker.evictions_snapshot() {
         body.push_str(&format!(
-            "tally_ttl_evictions_total{{table=\"{}\"}} {}\n",
+            "beava_ttl_evictions_total{{table=\"{}\"}} {}\n",
             escape(&table),
             count
         ));
     }
     body.push_str(
-        "# HELP tally_ttl_eviction_then_reinit_total Keys evicted by TTL then \
+        "# HELP beava_ttl_eviction_then_reinit_total Keys evicted by TTL then \
          re-observed within the bloom window (signal: TTL too short)\n\
-         # TYPE tally_ttl_eviction_then_reinit_total counter\n",
+         # TYPE beava_ttl_eviction_then_reinit_total counter\n",
     );
     for (table, count) in state.eviction_tracker.reinits_snapshot() {
         body.push_str(&format!(
-            "tally_ttl_eviction_then_reinit_total{{table=\"{}\"}} {}\n",
+            "beava_ttl_eviction_then_reinit_total{{table=\"{}\"}} {}\n",
             escape(&table),
             count
         ));
     }
     body.push_str(
-        "# HELP tally_bloom_memory_bytes Memory held by per-Table eviction bloom filters\n\
-         # TYPE tally_bloom_memory_bytes gauge\n",
+        "# HELP beava_bloom_memory_bytes Memory held by per-Table eviction bloom filters\n\
+         # TYPE beava_bloom_memory_bytes gauge\n",
     );
     body.push_str(&format!(
-        "tally_bloom_memory_bytes {}\n",
+        "beava_bloom_memory_bytes {}\n",
         state.eviction_tracker.memory_bytes()
     ));
     {
         let m = state.metrics.lock();
         body.push_str(
-            "# HELP tally_history_compacted_total History-log compactions per stream that removed ≥1 entry\n\
-             # TYPE tally_history_compacted_total counter\n",
+            "# HELP beava_history_compacted_total History-log compactions per stream that removed ≥1 entry\n\
+             # TYPE beava_history_compacted_total counter\n",
         );
         for (stream, count) in m.history_compacted_total.iter() {
             body.push_str(&format!(
-                "tally_history_compacted_total{{stream=\"{}\"}} {}\n",
+                "beava_history_compacted_total{{stream=\"{}\"}} {}\n",
                 escape(stream),
                 count
             ));
         }
         body.push_str(
-            "# HELP tally_history_backfill_misses_total Backfill requests whose window \
+            "# HELP beava_history_backfill_misses_total Backfill requests whose window \
              straddled the compaction floor\n\
-             # TYPE tally_history_backfill_misses_total counter\n",
+             # TYPE beava_history_backfill_misses_total counter\n",
         );
         for (stream, count) in m.history_backfill_misses_total.iter() {
             body.push_str(&format!(
-                "tally_history_backfill_misses_total{{stream=\"{}\"}} {}\n",
+                "beava_history_backfill_misses_total{{stream=\"{}\"}} {}\n",
                 escape(stream),
                 count
             ));
         }
         body.push_str(
-            "# HELP tally_max_backfill_span_seen Largest observed backfill span per stream (seconds)\n\
-             # TYPE tally_max_backfill_span_seen gauge\n",
+            "# HELP beava_max_backfill_span_seen Largest observed backfill span per stream (seconds)\n\
+             # TYPE beava_max_backfill_span_seen gauge\n",
         );
         for (stream, span) in m.max_backfill_span_seen.iter() {
             body.push_str(&format!(
-                "tally_max_backfill_span_seen{{stream=\"{}\"}} {}\n",
+                "beava_max_backfill_span_seen{{stream=\"{}\"}} {}\n",
                 escape(stream),
                 span
             ));
@@ -446,48 +446,48 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
     }
     // -------------------------------------------------------------
     // Phase 27-01 + 27-02: replica metric surface.
-    //   - tally_replica_snapshot_bytes_sent_total  (counter, 27-01)
-    //   - tally_replica_subscriptions_active       (gauge,   27-02)
-    //   - tally_replica_events_pushed_total{stream}(counter, 27-02)
-    //   - tally_replica_subscribers_dropped_total{reason}(counter, 27-02)
+    //   - beava_replica_snapshot_bytes_sent_total  (counter, 27-01)
+    //   - beava_replica_subscriptions_active       (gauge,   27-02)
+    //   - beava_replica_events_pushed_total{stream}(counter, 27-02)
+    //   - beava_replica_subscribers_dropped_total{reason}(counter, 27-02)
     // -------------------------------------------------------------
     body.push_str(
-        "# HELP tally_replica_snapshot_bytes_sent_total Total bytes written as \
+        "# HELP beava_replica_snapshot_bytes_sent_total Total bytes written as \
          OP_SNAPSHOT_FETCH payload-frame bodies\n\
-         # TYPE tally_replica_snapshot_bytes_sent_total counter\n",
+         # TYPE beava_replica_snapshot_bytes_sent_total counter\n",
     );
     body.push_str(&format!(
-        "tally_replica_snapshot_bytes_sent_total {}\n",
+        "beava_replica_snapshot_bytes_sent_total {}\n",
         crate::server::replica::snapshot_bytes_sent_total()
     ));
     body.push_str(
-        "# HELP tally_replica_subscriptions_active Currently-active OP_SUBSCRIBE sessions\n\
-         # TYPE tally_replica_subscriptions_active gauge\n",
+        "# HELP beava_replica_subscriptions_active Currently-active OP_SUBSCRIBE sessions\n\
+         # TYPE beava_replica_subscriptions_active gauge\n",
     );
     body.push_str(&format!(
-        "tally_replica_subscriptions_active {}\n",
+        "beava_replica_subscriptions_active {}\n",
         state.subscriber_registry.active_count()
     ));
     body.push_str(
-        "# HELP tally_replica_events_pushed_total Events delivered over \
+        "# HELP beava_replica_events_pushed_total Events delivered over \
          OP_SUBSCRIBE sockets, per stream\n\
-         # TYPE tally_replica_events_pushed_total counter\n",
+         # TYPE beava_replica_events_pushed_total counter\n",
     );
     for (stream, count) in crate::server::replica::events_pushed_snapshot() {
         body.push_str(&format!(
-            "tally_replica_events_pushed_total{{stream=\"{}\"}} {}\n",
+            "beava_replica_events_pushed_total{{stream=\"{}\"}} {}\n",
             escape(&stream),
             count
         ));
     }
     body.push_str(
-        "# HELP tally_replica_subscribers_dropped_total OP_SUBSCRIBE subscribers \
+        "# HELP beava_replica_subscribers_dropped_total OP_SUBSCRIBE subscribers \
          dropped, labelled by reason\n\
-         # TYPE tally_replica_subscribers_dropped_total counter\n",
+         # TYPE beava_replica_subscribers_dropped_total counter\n",
     );
     for (reason, count) in crate::server::replica::subscribers_dropped_snapshot() {
         body.push_str(&format!(
-            "tally_replica_subscribers_dropped_total{{reason=\"{}\"}} {}\n",
+            "beava_replica_subscribers_dropped_total{{reason=\"{}\"}} {}\n",
             reason, count
         ));
     }
@@ -1268,7 +1268,7 @@ async fn trigger_snapshot(
     let write_fut = tokio::task::spawn_blocking(move || {
         let bytes = crate::state::snapshot::save_base_snapshot(&snapshot_data)
             .map_err(std::io::Error::other)?;
-        let filename = format!("tally.snapshot.base.{:010}", seq);
+        let filename = format!("beava.snapshot.base.{:010}", seq);
         let file_path = snap_dir.join(&filename);
         let tmp_path = snap_dir.join(format!("{}.tmp", filename));
         {
@@ -1434,7 +1434,7 @@ fn format_rfc3339_utc(secs: u64) -> String {
 
 /// Phase 44-01: `GET /extracts` — return the historical-extraction registry
 /// captured during replica catchup (see `--replica-extract-at` /
-/// `tally fork --extract-at`).
+/// `beava fork --extract-at`).
 ///
 /// Response shape (timestamps ISO-8601 UTC, sorted ascending):
 /// ```json
@@ -1610,7 +1610,7 @@ mod tests {
             PipelineEngine::new(),
             StateStore::new(),
             None,
-            std::path::PathBuf::from("/tmp/tally-test-snapshot"),
+            std::path::PathBuf::from("/tmp/beava-test-snapshot"),
             Arc::new(BackfillTracker::default()),
             true,
             false,
@@ -1712,7 +1712,7 @@ mod tests {
             PipelineEngine::new(),
             StateStore::new(),
             None,
-            std::path::PathBuf::from("/tmp/tally-test-snapshot"),
+            std::path::PathBuf::from("/tmp/beava-test-snapshot"),
             Arc::new(BackfillTracker::default()),
             false, // snapshots disabled
             false,
@@ -1753,7 +1753,7 @@ mod tests {
             .unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(
-            text.contains("tally_snapshots_skipped_total 42"),
+            text.contains("beava_snapshots_skipped_total 42"),
             "metrics body: {}",
             text
         );

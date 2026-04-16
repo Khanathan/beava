@@ -1,10 +1,10 @@
-"""Phase 37-01: load-bearing E2E demo test for `tally fork`.
+"""Phase 37-01: load-bearing E2E demo test for `beava fork`.
 
 The canonical scientist workflow:
 
-    1. Prod tally is running somewhere with the `Transactions` stream.
+    1. Prod beava is running somewhere with the `Transactions` stream.
     2. Scientist authors a pipeline (count + sum per user), writes it to
-       a REGISTER JSON file, launches `tally fork --remote ... --streams
+       a REGISTER JSON file, launches `beava fork --remote ... --streams
        Transactions --keys u1,u2 --pipeline-file /tmp/p.json --token ...`.
     3. Waits for /debug/ready, then queries the replica over HTTP for
        per-user aggregates.
@@ -14,7 +14,7 @@ The canonical scientist workflow:
 
 If this test passes, the Option M fork workflow is demo-ready.
 
-Skipped cleanly if the `tally` binary hasn't been built.
+Skipped cleanly if the `beava` binary hasn't been built.
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ from pathlib import Path
 import pytest
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_RELEASE_BIN = _PROJECT_ROOT / "target" / "release" / "tally"
-_DEBUG_BIN = _PROJECT_ROOT / "target" / "debug" / "tally"
+_RELEASE_BIN = _PROJECT_ROOT / "target" / "release" / "beava"
+_DEBUG_BIN = _PROJECT_ROOT / "target" / "debug" / "beava"
 
 PROD_ADMIN_TOKEN = "prod-admin-token"
 OP_PUSH = 0x01
@@ -70,7 +70,7 @@ def _wait_for_tcp(host: str, port: int, timeout: float = 20.0) -> None:
                 return
         except OSError:
             time.sleep(0.1)
-    raise RuntimeError(f"tally did not become ready on {host}:{port}")
+    raise RuntimeError(f"beava did not become ready on {host}:{port}")
 
 
 def _wait_for_http(http_port: int, timeout: float = 20.0) -> None:
@@ -84,7 +84,7 @@ def _wait_for_http(http_port: int, timeout: float = 20.0) -> None:
                     return
         except Exception:
             time.sleep(0.1)
-    raise RuntimeError(f"tally HTTP not ready on :{http_port}")
+    raise RuntimeError(f"beava HTTP not ready on :{http_port}")
 
 
 def _wait_for_ready(http_port: int, timeout: float = 30.0) -> None:
@@ -106,7 +106,7 @@ def _wait_for_ready(http_port: int, timeout: float = 30.0) -> None:
             last_err = repr(e)
             time.sleep(0.1)
     raise RuntimeError(
-        f"tally fork /debug/ready did not return 200 on :{http_port}: {last_err}"
+        f"beava fork /debug/ready did not return 200 on :{http_port}: {last_err}"
     )
 
 
@@ -213,10 +213,10 @@ def _scientist_pipeline(stream: str) -> dict:
 
 @pytest.fixture
 def prod_and_fork():
-    """Spawn prod tally + `tally fork` subprocess, yielding endpoints."""
+    """Spawn prod beava + `beava fork` subprocess, yielding endpoints."""
     binary = _pick_binary()
     if binary is None:
-        pytest.skip("tally binary not built; run `cargo build` to enable this test")
+        pytest.skip("beava binary not built; run `cargo build` to enable this test")
 
     tmp_prod = tempfile.TemporaryDirectory()
     tmp_fork = tempfile.TemporaryDirectory()
@@ -225,7 +225,7 @@ def prod_and_fork():
 
     prod_tcp = _find_free_port()
     prod_http = _find_free_port()
-    # `tally fork --local-port P` → HTTP on P, TCP on P+1. Pick an even
+    # `beava fork --local-port P` → HTTP on P, TCP on P+1. Pick an even
     # port we know isn't used and check P+1 is also free.
     fork_http = _find_free_port()
     fork_tcp = fork_http + 1
@@ -241,13 +241,13 @@ def prod_and_fork():
 
     prod_env = os.environ.copy()
     prod_env.update(
-        TALLY_TCP_PORT=str(prod_tcp),
-        TALLY_HTTP_PORT=str(prod_http),
-        TALLY_ADMIN_TOKEN=PROD_ADMIN_TOKEN,
-        TALLY_SNAPSHOT_PATH=str(Path(tmp_prod.name) / "tally.snapshot"),
-        TALLY_SNAPSHOT="1",
-        TALLY_EVENT_LOG="1",
-        TALLY_DATA_DIR=tmp_prod.name,
+        BEAVA_TCP_PORT=str(prod_tcp),
+        BEAVA_HTTP_PORT=str(prod_http),
+        BEAVA_ADMIN_TOKEN=PROD_ADMIN_TOKEN,
+        BEAVA_SNAPSHOT_PATH=str(Path(tmp_prod.name) / "beava.snapshot"),
+        BEAVA_SNAPSHOT="1",
+        BEAVA_EVENT_LOG="1",
+        BEAVA_DATA_DIR=tmp_prod.name,
     )
     prod = subprocess.Popen(
         [str(binary)],
@@ -279,18 +279,18 @@ def prod_and_fork():
         # Let the background fsync timer flush the event log.
         time.sleep(1.2)
 
-        # Spawn `tally fork` — scientist-facing path.
+        # Spawn `beava fork` — scientist-facing path.
         fork_env = os.environ.copy()
         fork_env.update(
-            # These TALLY_* vars are defaults; `tally fork` overrides the
+            # These BEAVA_* vars are defaults; `beava fork` overrides the
             # ports from --local-port anyway. Keep the rest for snapshot dir
             # isolation.
-            TALLY_SNAPSHOT_PATH=str(Path(tmp_fork.name) / "tally.snapshot"),
-            TALLY_SNAPSHOT="0",
-            TALLY_EVENT_LOG="1",
-            TALLY_DATA_DIR=tmp_fork.name,
+            BEAVA_SNAPSHOT_PATH=str(Path(tmp_fork.name) / "beava.snapshot"),
+            BEAVA_SNAPSHOT="0",
+            BEAVA_EVENT_LOG="1",
+            BEAVA_DATA_DIR=tmp_fork.name,
             # Required by the fork's admin routes (debug/key).
-            TALLY_ADMIN_TOKEN=PROD_ADMIN_TOKEN,
+            BEAVA_ADMIN_TOKEN=PROD_ADMIN_TOKEN,
         )
         fork_args = [
             str(binary),

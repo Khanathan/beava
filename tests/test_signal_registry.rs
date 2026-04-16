@@ -12,7 +12,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use tally::server::signals::{
+use beava::server::signals::{
     Category, Severity, Signal, SignalRegistry, DEFAULT_OBSERVATION_WINDOW,
 };
 

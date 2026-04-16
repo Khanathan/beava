@@ -16,9 +16,9 @@
 
 use serde_json::json;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tally::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use tally::state::store::StateStore;
-use tally::types::FeatureValue;
+use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
+use beava::state::store::StateStore;
+use beava::types::FeatureValue;
 
 fn ts(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)
@@ -101,7 +101,7 @@ fn client_types_usable_alongside_engine() {
     // Smoke-check: the Phase 28 client surface is reachable from the
     // same test binary that drives the engine. No server import in
     // sight — this compiles identically under `--features client`.
-    use tally::client::{OutOfScopeError, Session, SessionMode};
+    use beava::client::{OutOfScopeError, Session, SessionMode};
 
     let s = Session::new("replica.example:6400", vec!["Events".into()]);
     assert!(matches!(s.mode, SessionMode::Historical));

@@ -4,7 +4,7 @@
 
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime};
-use tally::state::eviction_tracker::{EvictionTracker, ROTATE_INTERVAL};
+use beava::state::eviction_tracker::{EvictionTracker, ROTATE_INTERVAL};
 
 #[test]
 fn evicted_then_reinit_bumps_counter_within_window() {

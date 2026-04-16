@@ -21,13 +21,13 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use tally::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use tally::server::protocol::{
+use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
+use beava::server::protocol::{
     self, Scope, OP_SUBSCRIBE, REPLICA_FRAME_TAG_EVENT, STATUS_ERROR,
 };
-use tally::server::signals::Category;
-use tally::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
-use tally::state::store::StateStore;
+use beava::server::signals::Category;
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
+use beava::state::store::StateStore;
 
 const ADMIN_TOKEN: &str = "test-admin-token";
 
@@ -66,7 +66,7 @@ async fn start_test_server(stream_names: &[&str]) -> (u16, SharedState) {
         engine.register(stream_def(s)).expect("register stream");
     }
     let tmp = std::env::temp_dir().join(format!(
-        "tally_test_subscribe_{}",
+        "beava_test_subscribe_{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -77,7 +77,7 @@ async fn start_test_server(stream_names: &[&str]) -> (u16, SharedState) {
         engine,
         StateStore::new(),
         None,
-        tmp.join("tally.snapshot"),
+        tmp.join("beava.snapshot"),
         Arc::new(BackfillTracker::default()),
         true,
         false,
@@ -89,7 +89,7 @@ async fn start_test_server(stream_names: &[&str]) -> (u16, SharedState) {
     let port = listener.local_addr().unwrap().port();
     let server_state = state.clone();
     tokio::spawn(async move {
-        let _ = tally::server::tcp::run_tcp_server_with_listener(listener, server_state).await;
+        let _ = beava::server::tcp::run_tcp_server_with_listener(listener, server_state).await;
     });
     tokio::time::sleep(Duration::from_millis(30)).await;
     (port, state)
@@ -272,7 +272,7 @@ async fn backpressure_drops_subscriber() {
         "subscriber should have been dropped under backpressure"
     );
 
-    let drops = tally::server::replica::subscribers_dropped_snapshot();
+    let drops = beava::server::replica::subscribers_dropped_snapshot();
     let bp = drops
         .iter()
         .find(|(r, _)| *r == "backpressure")
@@ -301,7 +301,7 @@ async fn disconnect_cleans_up_registry() {
     }
     assert_eq!(state.subscriber_registry.active_count(), 1);
 
-    let disc_before = tally::server::replica::subscribers_dropped_snapshot()
+    let disc_before = beava::server::replica::subscribers_dropped_snapshot()
         .into_iter()
         .find(|(r, _)| *r == "disconnect")
         .map(|(_, n)| n)
@@ -316,7 +316,7 @@ async fn disconnect_cleans_up_registry() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(state.subscriber_registry.active_count(), 0);
-    let disc_after = tally::server::replica::subscribers_dropped_snapshot()
+    let disc_after = beava::server::replica::subscribers_dropped_snapshot()
         .into_iter()
         .find(|(r, _)| *r == "disconnect")
         .map(|(_, n)| n)

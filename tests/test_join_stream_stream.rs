@@ -9,7 +9,7 @@
 
 mod primitives {
     use serde_json::json;
-    use tally::engine::operators::{JoinSide, StreamJoinBuffer};
+    use beava::engine::operators::{JoinSide, StreamJoinBuffer};
 
     fn ev(n: u64) -> serde_json::Map<String, serde_json::Value> {
         // Minimal event payload keyed by "id"=n; event_time is separate.
@@ -114,13 +114,13 @@ mod primitives {
 mod integration {
     use std::time::{Duration, SystemTime};
 
-    use tally::engine::pipeline::PipelineEngine;
-    use tally::engine::register::{
+    use beava::engine::pipeline::PipelineEngine;
+    use beava::engine::register::{
         v0_aggregation_to_stream_def, v0_join_to_stream_def, v0_source_to_stream_def,
         V0RegisterPayload,
     };
-    use tally::state::store::StateStore;
-    use tally::types::FeatureValue;
+    use beava::state::store::StateStore;
+    use beava::types::FeatureValue;
 
     fn parse(json: &str) -> V0RegisterPayload {
         V0RegisterPayload::parse(json.as_bytes()).expect("parse")
@@ -446,7 +446,7 @@ mod integration {
         // live under entity "u1" (since `on = user_id`) → stream "Joined".
         let entity = store.get_entity("u1").expect("entity u1 exists");
         let stream_state = entity.streams.get("Joined").expect("Joined stream state");
-        use tally::state::snapshot::OperatorState;
+        use beava::state::snapshot::OperatorState;
         let total = stream_state
             .operators
             .iter()

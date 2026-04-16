@@ -1,6 +1,6 @@
 //! Phase 14 Plan 02 -- Concurrency integration tests.
 //!
-//! Proves that multi-client concurrent access to the Tally TCP server is safe
+//! Proves that multi-client concurrent access to the Beava TCP server is safe
 //! and correct under the ConcurrentAppState per-field locking model. All tests
 //! use `tokio::test(flavor = "multi_thread", worker_threads = 4)` to ensure
 //! actual OS-thread parallelism (not just green-thread interleaving).
@@ -21,13 +21,13 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use tally::engine::pipeline::PipelineEngine;
-use tally::server::protocol::{
+use beava::engine::pipeline::PipelineEngine;
+use beava::server::protocol::{
     self, OP_FLUSH, OP_GET, OP_MSET, OP_PUSH, OP_PUSH_ASYNC, OP_REGISTER, OP_SET, STATUS_ERROR,
     STATUS_OK, TYPE_BOOL, TYPE_F64, TYPE_I64, TYPE_NULL, TYPE_STR,
 };
-use tally::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
-use tally::state::store::StateStore;
+use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
+use beava::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
 // Harness helpers
@@ -50,7 +50,7 @@ async fn start_server() -> (u16, SharedState) {
 
     let tcp_state = state.clone();
     tokio::spawn(async move {
-        tally::server::tcp::run_tcp_server_with_listener(tcp_listener, tcp_state)
+        beava::server::tcp::run_tcp_server_with_listener(tcp_listener, tcp_state)
             .await
             .unwrap();
     });
@@ -671,7 +671,7 @@ async fn set_mset_concurrent_with_push() {
 /// across concurrent connections.
 ///
 /// Benchmark gate (run manually):
-///   python3 benchmark/tally-throughput/bench.py --matrix --clients 8
+///   python3 benchmark/beava-throughput/bench.py --matrix --clients 8
 ///   Must pass within -5% of 1.1M eps baseline (C-1 gate)
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn test_enriched_concurrent_clients() {

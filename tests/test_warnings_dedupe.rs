@@ -14,20 +14,20 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use tally::engine::pipeline::PipelineEngine;
-use tally::engine::recommend::ConfigRecommendation;
-use tally::server::signals::{
+use beava::engine::pipeline::PipelineEngine;
+use beava::engine::recommend::ConfigRecommendation;
+use beava::server::signals::{
     emit_config_recommendations, emit_register_failure, format_rfc3339, Signal, SignalRegistry,
 };
-use tally::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
-use tally::state::store::StateStore;
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
+use beava::state::store::StateStore;
 
 fn test_state() -> SharedState {
     make_concurrent_state_full(
         PipelineEngine::new(),
         StateStore::new(),
         None,
-        std::path::PathBuf::from("/tmp/tally-test-warnings-dedupe.snapshot"),
+        std::path::PathBuf::from("/tmp/beava-test-warnings-dedupe.snapshot"),
         Arc::new(BackfillTracker::default()),
         true,
         false,
@@ -195,7 +195,7 @@ fn test_dedupe_registry_ephemeral_on_restart() {
 
 #[test]
 fn test_direct_record_and_emitter_agree_on_dedupe() {
-    use tally::server::signals::{Category, Severity};
+    use beava::server::signals::{Category, Severity};
     let state = test_state();
     state.signals.write().record(Signal::new(
         "register.failure.P1",

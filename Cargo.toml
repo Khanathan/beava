@@ -2,7 +2,7 @@
 members = ["."]
 
 [package]
-name = "tally"
+name = "beava"
 version = "0.1.0"
 edition = "2021"
 
@@ -41,13 +41,13 @@ tower = { version = "0.5", features = ["util"] }
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 [[bin]]
-name = "tally"
+name = "beava"
 path = "src/main.rs"
 required-features = ["server"]
 
 [[bin]]
-name = "tally_suggest_config"
-path = "src/bin/tally_suggest_config.rs"
+name = "beava_suggest_config"
+path = "src/bin/beava_suggest_config.rs"
 
 [[bench]]
 name = "uddsketch_ops"

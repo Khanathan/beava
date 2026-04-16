@@ -134,7 +134,7 @@ function fmtTime(d) {
   return hh + ':' + mm + ':' + ss;
 }
 
-// Build the tally-mark icon for the empty state via createElementNS — every
+// Build the beava-mark icon for the empty state via createElementNS — every
 // attribute is a static literal, no user input reaches SVG.
 function makeTallyMarkIcon() {
   const svg = svgEl('svg', {

@@ -9,10 +9,10 @@
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tally::engine::pipeline::PipelineEngine;
-use tally::engine::recommend::{recommend_config, humanize_duration_secs};
-use tally::engine::register::{v0_source_to_stream_def, SourceDescriptor};
-use tally::state::eviction_tracker::EvictionTracker;
+use beava::engine::pipeline::PipelineEngine;
+use beava::engine::recommend::{recommend_config, humanize_duration_secs};
+use beava::engine::register::{v0_source_to_stream_def, SourceDescriptor};
+use beava::state::eviction_tracker::EvictionTracker;
 
 fn table(name: &str, ttl: Option<&str>) -> SourceDescriptor {
     SourceDescriptor {

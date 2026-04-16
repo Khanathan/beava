@@ -19,10 +19,10 @@ use serde_json::json;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 
-use tally::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use tally::state::event_log::EventLog;
-use tally::state::store::StateStore;
-use tally::types::FeatureValue;
+use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
+use beava::state::event_log::EventLog;
+use beava::state::store::StateStore;
+use beava::types::FeatureValue;
 
 fn ts(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)

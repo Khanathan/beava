@@ -11,16 +11,16 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use tally::engine::pipeline::PipelineEngine;
-use tally::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
-use tally::state::store::StateStore;
+use beava::engine::pipeline::PipelineEngine;
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
+use beava::state::store::StateStore;
 
 fn state_with_mode(public_mode: bool) -> SharedState {
     make_concurrent_state_full(
         PipelineEngine::new(),
         StateStore::new(),
         None,
-        std::path::PathBuf::from("/tmp/tally-test-demo-page.snapshot"),
+        std::path::PathBuf::from("/tmp/beava-test-demo-page.snapshot"),
         Arc::new(BackfillTracker::default()),
         true,
         false,
@@ -33,7 +33,7 @@ async fn start_with(state: SharedState) -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
-        tally::server::http::run_http_server_with_listener(listener, state)
+        beava::server::http::run_http_server_with_listener(listener, state)
             .await
             .unwrap();
     });
@@ -76,8 +76,8 @@ async fn demo_page_served_when_public() {
     assert_eq!(status, 200);
     let text = String::from_utf8_lossy(&body);
     assert!(
-        text.contains("<h1>Tally</h1>"),
-        "demo.html must contain <h1>Tally</h1>; body:\n{}",
+        text.contains("<h1>Beava</h1>"),
+        "demo.html must contain <h1>Beava</h1>; body:\n{}",
         text
     );
     assert!(
@@ -97,7 +97,7 @@ async fn debug_page_served_when_not_public() {
     // markers that the Phase 10 UI is known to ship: vendored d3, htmx, or
     // the app.js bundle. Fail if the demo marker leaks in.
     assert!(
-        !text.contains("<h1>Tally</h1>") || text.contains("app.js"),
+        !text.contains("<h1>Beava</h1>") || text.contains("app.js"),
         "public_mode=false must not serve the demo page; body head:\n{}",
         &text[..text.len().min(400)]
     );

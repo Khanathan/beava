@@ -21,13 +21,13 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use tally::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use tally::server::protocol::{
+use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
+use beava::server::protocol::{
     self, Scope, OP_LOG_FETCH, REPLICA_FRAME_TAG_END, REPLICA_FRAME_TAG_EVENT, STATUS_ERROR,
 };
-use tally::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
-use tally::state::event_log::EventLog;
-use tally::state::store::StateStore;
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
+use beava::state::event_log::EventLog;
+use beava::state::store::StateStore;
 
 const ADMIN_TOKEN: &str = "test-admin-token";
 
@@ -62,7 +62,7 @@ async fn start_test_server(stream_names: &[&str]) -> (u16, SharedState) {
         engine.register(stream_def(s)).expect("register stream");
     }
     let tmp = std::env::temp_dir().join(format!(
-        "tally_test_log_fetch_{}",
+        "beava_test_log_fetch_{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -81,7 +81,7 @@ async fn start_test_server(stream_names: &[&str]) -> (u16, SharedState) {
         engine,
         StateStore::new(),
         Some(event_log),
-        tmp.join("tally.snapshot"),
+        tmp.join("beava.snapshot"),
         Arc::new(BackfillTracker::default()),
         true,
         true, // event_log_enabled
@@ -93,7 +93,7 @@ async fn start_test_server(stream_names: &[&str]) -> (u16, SharedState) {
     let port = listener.local_addr().unwrap().port();
     let server_state = state.clone();
     tokio::spawn(async move {
-        let _ = tally::server::tcp::run_tcp_server_with_listener(listener, server_state).await;
+        let _ = beava::server::tcp::run_tcp_server_with_listener(listener, server_state).await;
     });
     tokio::time::sleep(Duration::from_millis(30)).await;
     (port, state)
@@ -249,7 +249,7 @@ async fn happy_path_returns_all_events_then_end() {
     assert_eq!(events.len(), 10, "expected 10 events, got {}", events.len());
 
     // Metric counter must reflect the send.
-    let metric = tally::server::replica::log_entries_sent_snapshot();
+    let metric = beava::server::replica::log_entries_sent_snapshot();
     let orders_sent = metric
         .iter()
         .find(|(s, _)| s == "orders")
@@ -257,7 +257,7 @@ async fn happy_path_returns_all_events_then_end() {
         .unwrap_or(0);
     assert!(
         orders_sent >= 10,
-        "tally_replica_log_entries_sent_total{{stream=\"orders\"}} should be ≥ 10, got {}",
+        "beava_replica_log_entries_sent_total{{stream=\"orders\"}} should be ≥ 10, got {}",
         orders_sent
     );
 

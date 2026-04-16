@@ -1,7 +1,7 @@
-/// Single error enum for all Tally error domains.
+/// Single error enum for all Beava error domains.
 /// Variants: Parse, Type, Window, Expression, Protocol per CONTEXT.md.
 #[derive(Debug, thiserror::Error)]
-pub enum TallyError {
+pub enum BeavaError {
     #[error("parse error: {0}")]
     Parse(String),
 

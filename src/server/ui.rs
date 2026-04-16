@@ -1,6 +1,6 @@
 //! Static asset serving for the embedded Debug UI (DBUI-05).
 //!
-//! All files under `src/server/ui/` are compiled into the Tally binary via
+//! All files under `src/server/ui/` are compiled into the Beava binary via
 //! `rust-embed` at build time. Runtime access is through `UiAssets::get(path)`
 //! and the two axum handlers below, which are mounted by
 //! `src/server/http.rs::build_router` at `/` and `/static/{*file}`.

@@ -23,14 +23,14 @@ use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
-use tally::engine::pipeline::PipelineEngine;
-use tally::engine::recommend::ConfigRecommendation;
-use tally::server::http::build_router;
-use tally::server::signals::{
+use beava::engine::pipeline::PipelineEngine;
+use beava::engine::recommend::ConfigRecommendation;
+use beava::server::http::build_router;
+use beava::server::signals::{
     emit_config_recommendations, emit_late_drop_signals, emit_register_failure,
 };
-use tally::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
-use tally::state::store::StateStore;
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
+use beava::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -41,7 +41,7 @@ fn fresh_state() -> SharedState {
         PipelineEngine::new(),
         StateStore::new(),
         None,
-        std::path::PathBuf::from("/tmp/tally-test-warnings-integration.snapshot"),
+        std::path::PathBuf::from("/tmp/beava-test-warnings-integration.snapshot"),
         Arc::new(BackfillTracker::default()),
         true,
         false,

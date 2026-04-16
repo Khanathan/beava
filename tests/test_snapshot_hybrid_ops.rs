@@ -10,9 +10,9 @@
 use serde_json::json;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tally::engine::hll::DistinctCountOp;
-use tally::engine::operators::{PercentileOp, TopKOp};
-use tally::state::snapshot::OperatorState;
+use beava::engine::hll::DistinctCountOp;
+use beava::engine::operators::{PercentileOp, TopKOp};
+use beava::state::snapshot::OperatorState;
 
 fn ts(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)

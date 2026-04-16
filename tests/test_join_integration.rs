@@ -17,13 +17,13 @@
 
 use std::time::{Duration, SystemTime};
 
-use tally::engine::pipeline::PipelineEngine;
-use tally::engine::register::{
+use beava::engine::pipeline::PipelineEngine;
+use beava::engine::register::{
     v0_aggregation_to_stream_def, v0_join_to_stream_def, v0_source_to_stream_def,
     V0RegisterPayload,
 };
-use tally::state::store::StateStore;
-use tally::types::FeatureValue;
+use beava::state::store::StateStore;
+use beava::types::FeatureValue;
 
 fn parse(json: &str) -> V0RegisterPayload {
     V0RegisterPayload::parse(json.as_bytes()).expect("parse")

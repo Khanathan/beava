@@ -4,7 +4,7 @@ Ensures the in-tree Python SDK (python/) and the benchmark/ package are
 importable regardless of where pytest is invoked from, so the plan's
 documented commands work out of the box:
 
-    cd /data/home/tally && python -m pytest tests/integration/ -x -q
+    cd /data/home/beava && python -m pytest tests/integration/ -x -q
 """
 
 from __future__ import annotations

@@ -6,10 +6,10 @@
 use ahash::AHashSet;
 use serde_json::json;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tally::engine::expression::parse_expr;
-use tally::engine::pipeline::{FeatureDef, PipelineEngine, Projection, StreamDefinition};
-use tally::state::store::StateStore;
-use tally::types::FeatureValue;
+use beava::engine::expression::parse_expr;
+use beava::engine::pipeline::{FeatureDef, PipelineEngine, Projection, StreamDefinition};
+use beava::state::store::StateStore;
+use beava::types::FeatureValue;
 
 fn ts(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)
@@ -778,19 +778,19 @@ fn test_feature_value_json_round_trip() {
 use std::collections::HashSet;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
-use tally::server::protocol::{convert_register_request, RegisterRequest};
-use tally::server::tcp::{
+use beava::server::protocol::{convert_register_request, RegisterRequest};
+use beava::server::tcp::{
     make_concurrent_state, run_backfill, BackfillStatus, BackfillTracker, SharedState,
 };
-use tally::state::event_log::EventLog;
-use tally::state::snapshot::{load_snapshot, save_snapshot, SerializablePipeline, SnapshotState};
+use beava::state::event_log::EventLog;
+use beava::state::snapshot::{load_snapshot, save_snapshot, SerializablePipeline, SnapshotState};
 
 /// Helper: create a SharedState with event log enabled in a temp dir.
 fn make_state_with_event_log(log_dir: &std::path::Path) -> SharedState {
     let event_log = EventLog::new(log_dir.to_path_buf()).ok();
     make_concurrent_state(
         PipelineEngine::new(),
-        tally::state::store::StateStore::new(),
+        beava::state::store::StateStore::new(),
         event_log,
         log_dir.join("test.snapshot"),
         Arc::new(BackfillTracker::default()),
@@ -1124,7 +1124,7 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
 #[test]
 fn test_schema_evolution_add_remove() {
     let mut engine = PipelineEngine::new();
-    let store = tally::state::store::StateStore::new();
+    let store = beava::state::store::StateStore::new();
     let now = ts(60_000);
 
     // Register stream with [count_1h, sum_1h]
@@ -1429,7 +1429,7 @@ async fn test_backfill_idempotent_restart() {
             let missing: Vec<String> = stream
                 .features
                 .iter()
-                .filter(|(_, def)| tally::engine::pipeline::get_backfill_flag(def))
+                .filter(|(_, def)| beava::engine::pipeline::get_backfill_flag(def))
                 .filter(|(name, _)| {
                     !restored_complete.contains(&(stream.name.clone(), name.clone()))
                 })
@@ -1468,7 +1468,7 @@ async fn test_backfill_idempotent_restart() {
             let missing: Vec<String> = stream
                 .features
                 .iter()
-                .filter(|(_, def)| tally::engine::pipeline::get_backfill_flag(def))
+                .filter(|(_, def)| beava::engine::pipeline::get_backfill_flag(def))
                 .filter(|(name, _)| {
                     !restored_complete.contains(&(stream.name.clone(), name.clone()))
                 })

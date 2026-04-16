@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use parking_lot::{Mutex as PLMutex, RwLock};
 
 use crate::engine::pipeline::PipelineEngine;
-use crate::error::TallyError;
+use crate::error::BeavaError;
 use crate::server::protocol::{self, Command, STATUS_ERROR, STATUS_OK};
 use crate::state::event_log::{EventLog, LogEntry};
 use crate::state::store::StateStore;
@@ -44,15 +44,15 @@ pub struct Metrics {
     pub snapshots_skipped: u64,
     /// Phase 25-02: per-stream history-log compaction counter. Bumped once per
     /// successful compaction that removed ≥1 entry. Exposed as
-    /// `tally_history_compacted_total{stream}`.
+    /// `beava_history_compacted_total{stream}`.
     pub history_compacted_total: std::collections::HashMap<String, u64>,
     /// Phase 25-02: per-stream backfill-miss counter. Bumped when a backfill
     /// read returned an entry set that straddled the compaction floor (some
     /// events are guaranteed missing). Exposed as
-    /// `tally_history_backfill_misses_total{stream}`.
+    /// `beava_history_backfill_misses_total{stream}`.
     pub history_backfill_misses_total: std::collections::HashMap<String, u64>,
     /// Phase 25-02: largest observed backfill span per stream in seconds.
-    /// Exposed as `tally_max_backfill_span_seen{stream}`.
+    /// Exposed as `beava_max_backfill_span_seen{stream}`.
     pub max_backfill_span_seen: std::collections::HashMap<String, u64>,
 }
 
@@ -122,10 +122,10 @@ pub struct ConcurrentAppState {
     /// Phase 10.2 DBUI-07: per-command and per-stream latency histograms.
     pub latency: PLMutex<crate::server::latency::LatencyTracker>,
 
-    /// Whether snapshot persistence is enabled (TALLY_SNAPSHOT env var).
+    /// Whether snapshot persistence is enabled (BEAVA_SNAPSHOT env var).
     pub snapshot_enabled: bool,
 
-    /// Whether the event log is enabled (TALLY_EVENT_LOG env var).
+    /// Whether the event log is enabled (BEAVA_EVENT_LOG env var).
     pub event_log_enabled: bool,
 
     /// Phase 15: cycle guard — true while a snapshot write is in progress.
@@ -133,7 +133,7 @@ pub struct ConcurrentAppState {
     pub snapshot_in_progress: AtomicBool,
 
     /// Phase 20: optional bearer token for admin HTTP routes. Loaded from
-    /// `TALLY_ADMIN_TOKEN` at startup. If `None`, non-loopback admin requests
+    /// `BEAVA_ADMIN_TOKEN` at startup. If `None`, non-loopback admin requests
     /// are always rejected (403).
     pub admin_token: Option<String>,
 
@@ -151,13 +151,13 @@ pub struct ConcurrentAppState {
     pub recent_events: PLMutex<RecentEventsRing>,
 
     /// Phase 20: when true, `GET /` serves the public demo page; when false
-    /// it serves the debug UI. Set via `--public-mode` / `TALLY_PUBLIC_MODE`.
+    /// it serves the debug UI. Set via `--public-mode` / `BEAVA_PUBLIC_MODE`.
     pub public_mode: bool,
 
     /// Phase 25-02: per-Table eviction tracker — bloom filter of recently-
     /// evicted keys plus per-Table eviction and eviction-then-reinit counters.
     /// Drives the `/debug/config-recommendations` endpoint and
-    /// `tally_ttl_evictions_total` / `tally_ttl_eviction_then_reinit_total`
+    /// `beava_ttl_evictions_total` / `beava_ttl_eviction_then_reinit_total`
     /// on `/metrics`.
     pub eviction_tracker: Arc<crate::state::eviction_tracker::EvictionTracker>,
 
@@ -626,7 +626,7 @@ async fn handle_connection(
                         // frame. Instead, handle inline:
                         let cmd_start = std::time::Instant::now();
                         let is_mset = matches!(&cmd2, Command::Mset { .. });
-                        let response: Result<Option<Vec<u8>>, TallyError> = match cmd2 {
+                        let response: Result<Option<Vec<u8>>, BeavaError> = match cmd2 {
                             Command::Mset { entries } => {
                                 handle_mset(entries, &state).await.map(Some)
                             }
@@ -799,7 +799,7 @@ async fn handle_connection(
         // Sync dispatch path. cmd is one of Mset/Flush/other.
         let cmd_start = std::time::Instant::now();
         let is_mset = matches!(&cmd, Command::Mset { .. });
-        let response: Result<Option<Vec<u8>>, TallyError> = match cmd {
+        let response: Result<Option<Vec<u8>>, BeavaError> = match cmd {
             Command::Mset { entries } => handle_mset(entries, &state).await.map(Some),
             Command::Flush => Ok(Some(Vec::new())),
             Command::PushAsync { .. } => unreachable!("handled above"),
@@ -921,7 +921,7 @@ async fn flush_drain(
 ///     `push_internal` is already a no-op. This is the "thin approach"
 ///     documented in 36-01-PLAN.md §stop-and-report to avoid factoring
 ///     `push_with_cascade_internal` (300+ lines).
-///   * Bumps `tally_replica_events_ingested_total{stream}` instead of the
+///   * Bumps `beava_replica_events_ingested_total{stream}` instead of the
 ///     normal accept counter / throughput tracker (replicated events are
 ///     not locally-accepted traffic — operators need a separate signal).
 ///
@@ -934,7 +934,7 @@ pub fn replica_ingest(
     stream_name: &str,
     ts_ms: u64,
     raw_payload: &[u8],
-) -> Result<(), TallyError> {
+) -> Result<(), BeavaError> {
     use crate::state::event_log::{decode_log_payload, LOG_FMT_BINARY, LOG_FMT_JSON};
     // Decode the log-payload wrapper (format byte + body) that the upstream
     // persisted. The body is either binary-tagged (OP_PUSH binary wire) or
@@ -945,14 +945,14 @@ pub fn replica_ingest(
         LOG_FMT_BINARY => {
             let mut buf = body;
             protocol::decode_event_binary(&mut buf).map_err(|e| {
-                TallyError::Protocol(format!("replica_ingest: binary decode: {}", e))
+                BeavaError::Protocol(format!("replica_ingest: binary decode: {}", e))
             })?
         }
         LOG_FMT_JSON => serde_json::from_slice(body).map_err(|e| {
-            TallyError::Protocol(format!("replica_ingest: json decode: {}", e))
+            BeavaError::Protocol(format!("replica_ingest: json decode: {}", e))
         })?,
         other => {
-            return Err(TallyError::Protocol(format!(
+            return Err(BeavaError::Protocol(format!(
                 "replica_ingest: unknown log fmt byte 0x{:02x}",
                 other
             )));
@@ -1009,7 +1009,7 @@ fn handle_push_core(
     stream_name: &str,
     payload: &serde_json::Value,
     now: SystemTime,
-) -> Result<crate::types::FeatureMap, TallyError> {
+) -> Result<crate::types::FeatureMap, BeavaError> {
     handle_push_core_ex(state, stream_name, payload, &[], now, true)
 }
 
@@ -1044,7 +1044,7 @@ fn handle_push_core_ex(
     raw_payload: &[u8],
     now: SystemTime,
     read_features: bool,
-) -> Result<crate::types::FeatureMap, TallyError> {
+) -> Result<crate::types::FeatureMap, BeavaError> {
     let push_start = std::time::Instant::now();
     let engine = state.engine.read();
     let store = &state.store;
@@ -1152,7 +1152,7 @@ fn handle_push_core_ex(
     // EWMA `ThroughputTracker`; that tracker is no longer part of the hot
     // path. We just bump the global EPS ring once per successful PUSH —
     // cascade/fan-out event counts are still visible via /metrics
-    // (tally_events_total counts successful PUSHes, not derived events).
+    // (beava_events_total counts successful PUSHes, not derived events).
     // Per-stream EPS visibility on `/debug/throughput` becomes admin-path
     // only; see 41-01-SUMMARY.md for the trade-off.
     state.atomic_throughput.bump(1);
@@ -1371,7 +1371,7 @@ impl ConnAccumulator {
 pub fn handle_push_batch(
     state: &SharedState,
     batch: &[PendingAsync],
-) -> Vec<Result<(), TallyError>> {
+) -> Vec<Result<(), BeavaError>> {
     if batch.is_empty() {
         return Vec::new();
     }
@@ -1380,7 +1380,7 @@ pub fn handle_push_batch(
         return batch
             .iter()
             .map(|_| {
-                Err(TallyError::Protocol(
+                Err(BeavaError::Protocol(
                     "replica mode: local PUSH disabled".into(),
                 ))
             })
@@ -1397,7 +1397,7 @@ pub fn handle_push_batch(
     // Result slots in input order, pre-filled with Ok. Per-event errors
     // from the cascade-aware batch primitive are scattered back to their
     // input positions below.
-    let mut results: Vec<Result<(), TallyError>> = (0..batch.len()).map(|_| Ok(())).collect();
+    let mut results: Vec<Result<(), BeavaError>> = (0..batch.len()).map(|_| Ok(())).collect();
 
     // Phase 14 fix: engine read lock only. Store is accessed via DashMap
     // (no lock needed). Event log lock is deferred to AFTER all entity state
@@ -1653,7 +1653,7 @@ fn record_recent_event(
 // `handle_connection`. The batch path is the only async push path.
 
 /// Handle synchronous commands: lock, process, unlock. No .await while locked.
-fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, TallyError> {
+fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, BeavaError> {
     let now = SystemTime::now();
     match cmd {
         Command::Push {
@@ -1666,7 +1666,7 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             // client loop. Scientists wanting synthetic events need a
             // separate helper flag (deferred — see 36-CONTEXT.md §deferred).
             if state.replica_mode.load(Ordering::Relaxed) {
-                return Err(TallyError::Protocol(
+                return Err(BeavaError::Protocol(
                     "replica mode: local PUSH disabled".into(),
                 ));
             }
@@ -1782,7 +1782,7 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                         }
                     }
                 } else {
-                    return Err(TallyError::Protocol(
+                    return Err(BeavaError::Protocol(
                         "SET payload must be a JSON object".into(),
                     ));
                 }
@@ -1818,7 +1818,7 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                 .to_string();
             let raw_json = payload.clone();
 
-            let result = (|| -> Result<Vec<u8>, TallyError> {
+            let result = (|| -> Result<Vec<u8>, BeavaError> {
             // Plan 22-04: v0 REGISTER dispatch. v0 payloads always carry a top-level
             // `kind` field ("stream" | "table"). v2.0 payloads never had one — detect
             // by the presence of `kind` and route to the v0 translator → existing
@@ -1826,7 +1826,7 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             let is_v0 = raw_json.get("kind").is_some();
             if is_v0 {
                 let v0_bytes = serde_json::to_vec(&raw_json).map_err(|e| {
-                    TallyError::Protocol(format!("v0 REGISTER: re-serialize failed: {}", e))
+                    BeavaError::Protocol(format!("v0 REGISTER: re-serialize failed: {}", e))
                 })?;
                 let parsed = crate::engine::register::V0RegisterPayload::parse(&v0_bytes)?;
                 let stream_def = match &parsed {
@@ -1900,7 +1900,7 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
                     }
                     crate::engine::register::V0RegisterPayload::StatelessChain(_)
                     | crate::engine::register::V0RegisterPayload::Union(_) => {
-                        return Err(TallyError::Protocol(format!(
+                        return Err(BeavaError::Protocol(format!(
                             "v0 REGISTER: descriptor kind '{}' not yet wired for end-to-end \
                              execution (Phase 23 lands joins/stateless-chains/union)",
                             parsed.descriptor_kind()
@@ -1928,7 +1928,7 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
             }
 
             let req: protocol::RegisterRequest = serde_json::from_value(payload)
-                .map_err(|e| TallyError::Protocol(format!("invalid register payload: {}", e)))?;
+                .map_err(|e| BeavaError::Protocol(format!("invalid register payload: {}", e)))?;
             let def_name = req.name.clone();
             let is_view = req.definition_type.as_deref() == Some("view");
             // REGISTER needs engine write lock (D-04).
@@ -2052,7 +2052,7 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
         Command::GetMulti { table_names, key } => {
             handle_get_multi(state, &table_names, &key, now)
         }
-        Command::ReservedNotImplemented { op_name } => Err(TallyError::NotImplemented(format!(
+        Command::ReservedNotImplemented { op_name } => Err(BeavaError::NotImplemented(format!(
             "{} reserved in v0; not implemented",
             op_name
         ))),
@@ -2074,14 +2074,14 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
         // dispatch after an async burst). Return STATUS_ERROR rather
         // than panicking — the client will see a structured refusal and
         // can retry on a quiescent connection.
-        Command::SnapshotFetch { .. } => Err(TallyError::Protocol(
+        Command::SnapshotFetch { .. } => Err(BeavaError::Protocol(
             "OP_SNAPSHOT_FETCH not supported on this dispatch path (mix with async pushes not allowed)".into(),
         )),
         // Phase 27-02: same reasoning as SnapshotFetch above. Subscribe
         // takes ownership of the connection and is dispatched at the
         // outer loop in `handle_connection`. Landing here means the mix
         // invariant was violated — return a structured error.
-        Command::Subscribe { .. } => Err(TallyError::Protocol(
+        Command::Subscribe { .. } => Err(BeavaError::Protocol(
             "OP_SUBSCRIBE not supported on this dispatch path (connection ownership conflict)".into(),
         )),
         // Phase 35-01: OP_LOG_FETCH is intercepted in `handle_connection`
@@ -2089,7 +2089,7 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Tal
         // event frames followed by a terminal END frame instead of a
         // single STATUS_OK envelope. Landing here means the outer
         // interception was skipped — return STATUS_ERROR.
-        Command::LogFetch { .. } => Err(TallyError::Protocol(
+        Command::LogFetch { .. } => Err(BeavaError::Protocol(
             "OP_LOG_FETCH not supported on this dispatch path (mix with async pushes not allowed)".into(),
         )),
     }
@@ -2113,11 +2113,11 @@ fn handle_push_table(
     key: &str,
     fields_json: serde_json::Value,
     now: SystemTime,
-) -> Result<Vec<u8>, TallyError> {
+) -> Result<Vec<u8>, BeavaError> {
     {
         let engine = state.engine.read();
         if !engine.has_registered_table(table_name) {
-            return Err(TallyError::Protocol(format!(
+            return Err(BeavaError::Protocol(format!(
                 "unknown table: {}",
                 table_name
             )));
@@ -2127,7 +2127,7 @@ fn handle_push_table(
     let map = match fields_json {
         serde_json::Value::Object(m) => m,
         _ => {
-            return Err(TallyError::Protocol(
+            return Err(BeavaError::Protocol(
                 "OP_PUSH_TABLE fields payload must be a JSON object".into(),
             ))
         }
@@ -2198,11 +2198,11 @@ fn handle_delete_table(
     table_name: &str,
     key: &str,
     now: SystemTime,
-) -> Result<Vec<u8>, TallyError> {
+) -> Result<Vec<u8>, BeavaError> {
     {
         let engine = state.engine.read();
         if !engine.has_registered_table(table_name) {
-            return Err(TallyError::Protocol(format!(
+            return Err(BeavaError::Protocol(format!(
                 "unknown table: {}",
                 table_name
             )));
@@ -2241,7 +2241,7 @@ fn handle_delete_table(
 /// Behaviour contract (see 25-01-PLAN.md):
 ///
 /// 1. Validate EVERY requested `table_name` is registered as a Table BEFORE
-///    any state read. The first unknown name aborts with `TallyError::Protocol`
+///    any state read. The first unknown name aborts with `BeavaError::Protocol`
 ///    (maps to `STATUS_ERROR`) — no partial state read, no partial response
 ///    (T-25-01-03 tampering mitigation).
 /// 2. For each registered `name`, project `state.store.collect_table_row_view`.
@@ -2258,13 +2258,13 @@ fn handle_get_multi(
     table_names: &[String],
     key: &str,
     now: SystemTime,
-) -> Result<Vec<u8>, TallyError> {
+) -> Result<Vec<u8>, BeavaError> {
     // (1) Validate every table is registered under engine read lock.
     {
         let engine = state.engine.read();
         for name in table_names {
             if !engine.has_registered_table(name) {
-                return Err(TallyError::Protocol(format!("unknown table: {}", name)));
+                return Err(BeavaError::Protocol(format!("unknown table: {}", name)));
             }
         }
     }
@@ -2281,13 +2281,13 @@ fn handle_get_multi(
         }
         // Encode the key as a JSON string via serde_json to handle escaping.
         let key_json = serde_json::to_vec(name)
-            .map_err(|e| TallyError::Protocol(format!("GET_MULTI key serialize: {}", e)))?;
+            .map_err(|e| BeavaError::Protocol(format!("GET_MULTI key serialize: {}", e)))?;
         body.extend_from_slice(&key_json);
         body.push(b':');
         match state.store.collect_table_row_view(key, name, now) {
             Some(row) => {
                 let row_bytes = serde_json::to_vec(&row).map_err(|e| {
-                    TallyError::Protocol(format!("GET_MULTI row serialize: {}", e))
+                    BeavaError::Protocol(format!("GET_MULTI row serialize: {}", e))
                 })?;
                 body.extend_from_slice(&row_bytes);
             }
@@ -2451,12 +2451,12 @@ fn json_to_feature_value(v: serde_json::Value) -> FeatureValue {
 ///    the client-provided `admin_token` must match exactly. If the server
 ///    has no admin token configured, reject (the replica wire is admin-
 ///    only in v0; a misconfigured server refuses rather than leaking
-///    snapshot bytes to anonymous clients). Failure → `TallyError::Auth`.
+///    snapshot bytes to anonymous clients). Failure → `BeavaError::Auth`.
 /// 2. **Capture `snapshot_taken_at = SystemTime::now()`.** Response-only;
 ///    never persisted.
 /// 3. **Collect known streams.** From `state.engine.read().list_streams()`.
 /// 4. **Validate scope.** `protocol::validate_scope` runs all seven locked
-///    rejection rules. Failure → `TallyError::Protocol`.
+///    rejection rules. Failure → `BeavaError::Protocol`.
 /// 5. **Acquire the base snapshot.** Read the on-disk snapshot file via
 ///    `load_snapshot_file`. If the snapshot file is missing / corrupt,
 ///    synthesize an empty `BaseSnapshotState` so that a fresh server with
@@ -2464,13 +2464,13 @@ fn json_to_feature_value(v: serde_json::Value) -> FeatureValue {
 /// 6. **Filter in-memory.** `replica::filter_base_snapshot`.
 /// 7. **Serialize filtered state with postcard** and emit the header +
 ///    payload frame pair. Increment
-///    `tally_replica_snapshot_bytes_sent_total` by payload length.
+///    `beava_replica_snapshot_bytes_sent_total` by payload length.
 async fn handle_snapshot_fetch(
     writer: &mut BufWriter<tokio::net::tcp::OwnedWriteHalf>,
     admin_token: &str,
     scope: protocol::Scope,
     state: &SharedState,
-) -> Result<(), TallyError> {
+) -> Result<(), BeavaError> {
     // (1) Admin-token gate — wire-level bearer check (no loopback bypass on
     // the replica path; admin-only always). Empty expected token (`Some("")`)
     // is not a supported configuration — treat as unauthenticated.
@@ -2479,7 +2479,7 @@ async fn handle_snapshot_fetch(
         _ => false,
     };
     if !authed {
-        return Err(TallyError::Protocol("unauthorized".into()));
+        return Err(BeavaError::Protocol("unauthorized".into()));
     }
 
     // (2) Capture response-only timestamp.
@@ -2493,7 +2493,7 @@ async fn handle_snapshot_fetch(
 
     // (4) Validate — all seven rules.
     if let Err(e) = protocol::validate_scope(&scope, &known) {
-        return Err(TallyError::Protocol(format!("invalid scope: {}", e)));
+        return Err(BeavaError::Protocol(format!("invalid scope: {}", e)));
     }
 
     // (5) Acquire the base snapshot. Missing / corrupt file → empty.
@@ -2504,7 +2504,7 @@ async fn handle_snapshot_fetch(
 
     // (7) Serialize + emit header + payload frames.
     let payload_bytes = postcard::to_allocvec(&filtered)
-        .map_err(|e| TallyError::Protocol(format!("snapshot serialize failed: {}", e)))?;
+        .map_err(|e| BeavaError::Protocol(format!("snapshot serialize failed: {}", e)))?;
 
     // Header frame body: [u64 BE ts_secs][u32 BE ts_nanos]. `encode_frame`
     // adds the 4-byte length prefix + 1-byte tag (reused as "opcode" here —
@@ -2520,16 +2520,16 @@ async fn handle_snapshot_fetch(
     let header_frame =
         protocol::encode_frame(protocol::REPLICA_FRAME_TAG_HEADER, &header_body);
     writer.write_all(&header_frame).await.map_err(|e| {
-        TallyError::Protocol(format!("write snapshot header frame failed: {}", e))
+        BeavaError::Protocol(format!("write snapshot header frame failed: {}", e))
     })?;
 
     let payload_frame =
         protocol::encode_frame(protocol::REPLICA_FRAME_TAG_PAYLOAD, &payload_bytes);
     writer.write_all(&payload_frame).await.map_err(|e| {
-        TallyError::Protocol(format!("write snapshot payload frame failed: {}", e))
+        BeavaError::Protocol(format!("write snapshot payload frame failed: {}", e))
     })?;
     writer.flush().await.map_err(|e| {
-        TallyError::Protocol(format!("flush snapshot response failed: {}", e))
+        BeavaError::Protocol(format!("flush snapshot response failed: {}", e))
     })?;
 
     // (7c) Metric bump.
@@ -2664,7 +2664,7 @@ async fn handle_subscribe(
 ///    `handle_subscribe`). Empty expected token is not a supported
 ///    configuration — treat as unauthenticated. Failure emits a
 ///    `safety/error` signal via `emit_replica_auth_failure` and returns
-///    `TallyError::Protocol("unauthorized")`; the caller wraps it in a
+///    `BeavaError::Protocol("unauthorized")`; the caller wraps it in a
 ///    STATUS_ERROR frame.
 /// 2. **Collect known streams** from `state.engine.read().list_streams()`.
 /// 3. **Validate scope** via `protocol::validate_scope` — all seven
@@ -2690,19 +2690,19 @@ async fn handle_subscribe(
 ///           is ill-defined and 27-CONTEXT locked key-bearing events
 ///           only for replica delivery.
 ///         - Write one `encode_log_event_frame(ts_ms, raw_payload)` frame
-///           and bump `tally_replica_log_entries_sent_total{stream}`.
+///           and bump `beava_replica_log_entries_sent_total{stream}`.
 /// 5. **Terminal frame:** after all streams drained, write one
 ///    `encode_log_end_frame()` (tag 0x04, empty body) so the client
 ///    knows the response is complete.
 ///
-/// I/O failures during writes are propagated as `TallyError::Protocol`.
+/// I/O failures during writes are propagated as `BeavaError::Protocol`.
 async fn handle_log_fetch(
     writer: &mut BufWriter<tokio::net::tcp::OwnedWriteHalf>,
     admin_token: &str,
     from_ts_millis: u64,
     scope: protocol::Scope,
     state: &SharedState,
-) -> Result<(), TallyError> {
+) -> Result<(), BeavaError> {
     // (1) Admin-token gate.
     let authed = match state.admin_token.as_deref() {
         Some(expected) if !expected.is_empty() && expected == admin_token => true,
@@ -2710,7 +2710,7 @@ async fn handle_log_fetch(
     };
     if !authed {
         crate::server::signals::emit_replica_auth_failure(&state.signals, "unknown");
-        return Err(TallyError::Protocol("unauthorized".into()));
+        return Err(BeavaError::Protocol("unauthorized".into()));
     }
 
     // (2) Known-streams lookup + per-stream key_field snapshot. We lock the
@@ -2733,7 +2733,7 @@ async fn handle_log_fetch(
 
     // (3) Validate scope.
     if let Err(e) = protocol::validate_scope(&scope, &known) {
-        return Err(TallyError::Protocol(format!("invalid scope: {}", e)));
+        return Err(BeavaError::Protocol(format!("invalid scope: {}", e)));
     }
 
     // (4) Flush the event-log writer before reading, so LOG_FETCH sees
@@ -2824,7 +2824,7 @@ async fn handle_log_fetch(
             writer
                 .write_all(&frame)
                 .await
-                .map_err(|e| TallyError::Protocol(format!("write log-fetch event frame failed: {}", e)))?;
+                .map_err(|e| BeavaError::Protocol(format!("write log-fetch event frame failed: {}", e)))?;
             crate::server::replica::bump_log_entries_sent(stream_name);
         }
     }
@@ -2834,11 +2834,11 @@ async fn handle_log_fetch(
     writer
         .write_all(&end)
         .await
-        .map_err(|e| TallyError::Protocol(format!("write log-fetch end frame failed: {}", e)))?;
+        .map_err(|e| BeavaError::Protocol(format!("write log-fetch end frame failed: {}", e)))?;
     writer
         .flush()
         .await
-        .map_err(|e| TallyError::Protocol(format!("flush log-fetch response failed: {}", e)))?;
+        .map_err(|e| BeavaError::Protocol(format!("flush log-fetch response failed: {}", e)))?;
     Ok(())
 }
 
@@ -2846,7 +2846,7 @@ async fn handle_log_fetch(
 ///
 /// Source-of-truth lookup order (matches `src/main.rs::load_incremental_snapshots`
 /// for startup — we want the replica endpoint to see what recovery would see):
-///   1. Highest-sequence `tally.snapshot.base.*` in `snapshot_path`'s parent
+///   1. Highest-sequence `beava.snapshot.base.*` in `snapshot_path`'s parent
 ///      directory (the Phase 9+ layout production actually writes).
 ///   2. The file at `snapshot_path` itself, if it exists (legacy single-blob
 ///      layout + a convenient test escape hatch).
@@ -2872,7 +2872,7 @@ fn load_base_snapshot_for_fetch(state: &SharedState) -> crate::state::snapshot::
         backfill_complete: vec![],
     };
 
-    // (1) Scan parent dir for `tally.snapshot.base.*` — pick the highest seq.
+    // (1) Scan parent dir for `beava.snapshot.base.*` — pick the highest seq.
     let snap_dir = state
         .snapshot_path
         .parent()
@@ -2882,7 +2882,7 @@ fn load_base_snapshot_for_fetch(state: &SharedState) -> crate::state::snapshot::
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy().into_owned();
-            if let Some(seq_str) = name_str.strip_prefix("tally.snapshot.base.") {
+            if let Some(seq_str) = name_str.strip_prefix("beava.snapshot.base.") {
                 if let Ok(seq) = seq_str.parse::<u64>() {
                     match &best {
                         Some((cur, _)) if *cur >= seq => {}
@@ -2914,7 +2914,7 @@ fn load_base_snapshot_for_fetch(state: &SharedState) -> crate::state::snapshot::
 async fn handle_mset(
     entries: Vec<(String, serde_json::Value)>,
     state: &SharedState,
-) -> Result<Vec<u8>, TallyError> {
+) -> Result<Vec<u8>, BeavaError> {
     let now = SystemTime::now();
     for chunk in entries.chunks(1024) {
         for (key, payload) in chunk {

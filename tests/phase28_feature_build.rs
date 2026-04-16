@@ -10,8 +10,8 @@ fn engine_and_state_are_shared_across_features() {
     // These types must exist regardless of feature flag.
     // If a future change accidentally puts them behind
     // #[cfg(feature = "server")], this test stops compiling.
-    use tally::engine::pipeline::PipelineEngine;
-    use tally::state::store::StateStore;
+    use beava::engine::pipeline::PipelineEngine;
+    use beava::state::store::StateStore;
 
     let _ = std::any::type_name::<PipelineEngine>();
     let _ = std::any::type_name::<StateStore>();
@@ -20,5 +20,5 @@ fn engine_and_state_are_shared_across_features() {
 #[test]
 #[cfg(feature = "server")]
 fn server_module_present_under_server_feature() {
-    let _ = std::any::type_name::<tally::server::tcp::SharedState>();
+    let _ = std::any::type_name::<beava::server::tcp::SharedState>();
 }

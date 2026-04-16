@@ -19,7 +19,7 @@ use crate::engine::operators::{
     AvgOp, CountOp, EmaOp, ExactMaxOp, ExactMinOp, FirstNOp, FirstOp, LagOp, LastNOp, LastOp,
     MaxOp, MinOp, Operator, PercentileOp, StddevOp, StreamJoinBuffer, SumOp, TopKOp, VarianceOp,
 };
-use crate::error::TallyError;
+use crate::error::BeavaError;
 use crate::state::store::{SerializableTableRow, StaticFeature};
 use crate::types::FeatureValue;
 use serde::{Deserialize, Serialize};
@@ -82,7 +82,7 @@ impl OperatorState {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         match self {
             Self::Count(op) => op.push(event, enrichment, now),
             Self::Sum(op) => op.push(event, enrichment, now),

@@ -10,12 +10,12 @@
 use std::time::SystemTime;
 
 use ahash::AHashMap;
-use tally::engine::pipeline::PipelineEngine;
-use tally::engine::register::{
+use beava::engine::pipeline::PipelineEngine;
+use beava::engine::register::{
     v0_join_to_stream_def, v0_source_to_stream_def, V0RegisterPayload,
 };
-use tally::state::store::{StateStore, TableRowState};
-use tally::types::FeatureValue;
+use beava::state::store::{StateStore, TableRowState};
+use beava::types::FeatureValue;
 
 fn parse(json: &str) -> V0RegisterPayload {
     V0RegisterPayload::parse(json.as_bytes()).expect("parse register JSON")

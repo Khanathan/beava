@@ -22,15 +22,15 @@ use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
-use tally::engine::pipeline::PipelineEngine;
-use tally::engine::recommend::ConfigRecommendation;
-use tally::server::http::build_router;
-use tally::server::signals::{
+use beava::engine::pipeline::PipelineEngine;
+use beava::engine::recommend::ConfigRecommendation;
+use beava::server::http::build_router;
+use beava::server::signals::{
     emit_config_recommendations, emit_late_drop_signals, emit_perf_p99_signal,
     emit_register_failure, emit_snapshot_failure,
 };
-use tally::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
-use tally::state::store::StateStore;
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
+use beava::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -41,7 +41,7 @@ fn test_state() -> SharedState {
         PipelineEngine::new(),
         StateStore::new(),
         None,
-        std::path::PathBuf::from("/tmp/tally-test-warnings-feed.snapshot"),
+        std::path::PathBuf::from("/tmp/beava-test-warnings-feed.snapshot"),
         Arc::new(BackfillTracker::default()),
         true,
         false,
@@ -203,7 +203,7 @@ async fn test_operational_category_from_memory_pressure_via_record() {
     // We cannot fake RSS in-process, so we record through the same
     // registry with the same id — this validates the id scheme + the
     // serialized shape that the endpoint will emit when the emitter fires.
-    use tally::server::signals::{Category, Severity, Signal};
+    use beava::server::signals::{Category, Severity, Signal};
     let state = test_state();
     state.signals.write().record(Signal::new(
         "memory.pressure",

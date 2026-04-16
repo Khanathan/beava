@@ -7,12 +7,12 @@
 
 use std::time::{Duration, SystemTime};
 
-use tally::engine::pipeline::PipelineEngine;
-use tally::engine::register::{
+use beava::engine::pipeline::PipelineEngine;
+use beava::engine::register::{
     encode_group_by, v0_aggregation_to_stream_def, v0_source_to_stream_def, V0RegisterPayload,
 };
-use tally::state::store::StateStore;
-use tally::types::FeatureValue;
+use beava::state::store::StateStore;
+use beava::types::FeatureValue;
 
 fn parse_agg(json: &str) -> V0RegisterPayload {
     V0RegisterPayload::parse(json.as_bytes()).expect("parse")
@@ -137,7 +137,7 @@ fn composite_keys_missing_field_errors() {
         &ev,
     )
     .unwrap_err();
-    // TallyError::Type { field: "merchant_id", .. }
+    // BeavaError::Type { field: "merchant_id", .. }
     let msg = format!("{}", err);
     assert!(msg.contains("merchant_id"), "err msg: {}", msg);
 }

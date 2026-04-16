@@ -11,17 +11,17 @@
 
 use std::time::{Duration, UNIX_EPOCH};
 
-use tally::engine::operators::CountOp;
-use tally::state::snapshot::{
+use beava::engine::operators::CountOp;
+use beava::state::snapshot::{
     load_snapshot, save_base_snapshot_v6_for_test, save_snapshot, BaseSnapshotStateV6,
     OperatorState, SerializableEntityState, SerializableEntityStateV6,
     SerializableStreamEntityState, SnapshotHeader, SnapshotState, SnapshotType, LEGACY_V6_FORMAT,
     SNAPSHOT_FORMAT_VERSION,
 };
-use tally::state::store::{
+use beava::state::store::{
     SerializableTableRow, StateStore, StaticFeature, TableRowState, TOMBSTONE_GRACE,
 };
-use tally::types::FeatureValue;
+use beava::types::FeatureValue;
 
 fn ts(secs: u64) -> std::time::SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)

@@ -5,8 +5,8 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use serde_json::json;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tally::engine::hll::{DistinctCountOp, Hll};
-use tally::engine::operators::Operator;
+use beava::engine::hll::{DistinctCountOp, Hll};
+use beava::engine::operators::Operator;
 
 fn ts(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)

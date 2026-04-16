@@ -6,7 +6,7 @@
 //!
 //! Exposed via:
 //! - `GET /debug/config-recommendations` (admin-gated)
-//! - `tally suggest-config` CLI (wraps the HTTP endpoint)
+//! - `beava suggest-config` CLI (wraps the HTTP endpoint)
 //! - startup advisory log (one terse line per knob)
 
 use crate::engine::pipeline::PipelineEngine;

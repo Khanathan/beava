@@ -14,7 +14,7 @@
 //! `WATERMARK_LATENESS` constant is locked at 5 seconds for v0; per-
 //! stream tunable lateness ships post-v0 (see Phase 24 CONTEXT.md §Late
 //! event handling). Events whose `event_time < watermark` are dropped
-//! by the TCP dispatcher with a `tally_late_events_dropped_total{stream}`
+//! by the TCP dispatcher with a `beava_late_events_dropped_total{stream}`
 //! counter increment; the counter is exported through the existing
 //! `/metrics` endpoint.
 //!
@@ -359,7 +359,7 @@ impl WatermarkTracker {
 }
 
 /// Counter of late-event drops per stream. Exported via the existing
-/// `/metrics` endpoint as `tally_late_events_dropped_total{stream="..."}`.
+/// `/metrics` endpoint as `beava_late_events_dropped_total{stream="..."}`.
 #[derive(Debug)]
 pub struct LateDropCounters {
     per_stream: DashMap<String, AtomicU64>,

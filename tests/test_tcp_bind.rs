@@ -5,7 +5,7 @@
 //! PUSH/SET/MSET with no auth layer), NOT a convenience, so the default path
 //! gets its own named test.
 
-use tally::server::auth::resolve_tcp_bind;
+use beava::server::auth::resolve_tcp_bind;
 
 #[test]
 fn test_default_bind_is_loopback() {

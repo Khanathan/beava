@@ -13,11 +13,11 @@
 use serde_json::json;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tally::engine::operators::{
+use beava::engine::operators::{
     AvgOp, CountOp, EmaOp, FirstNOp, FirstOp, LagOp, LastNOp, LastOp, MaxOp, MinOp, Operator,
     StddevOp, SumOp, VarianceOp, FIRST_N_CAP,
 };
-use tally::types::FeatureValue;
+use beava::types::FeatureValue;
 
 fn ts(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)

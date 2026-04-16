@@ -1,6 +1,6 @@
 //! Integration tests for the Phase 10 Debug UI (DBUI-01 through DBUI-05).
 //!
-//! These tests start a real Tally HTTP server on a random localhost port
+//! These tests start a real Beava HTTP server on a random localhost port
 //! and exercise every endpoint the embedded debug UI talks to, plus the
 //! static asset serving for the vendored JS. Pattern matches
 //! `tests/test_server.rs` -- raw TCP, no reqwest dependency.
@@ -13,14 +13,14 @@ use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use tally::engine::pipeline::{
+use beava::engine::pipeline::{
     FeatureDef, PipelineEngine, StreamDefinition, ViewDefinition, ViewFeatureDef,
 };
-use tally::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
-use tally::state::store::StateStore;
+use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
+use beava::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
-// Helper A: start a Tally HTTP server on a random localhost port.
+// Helper A: start a Beava HTTP server on a random localhost port.
 // ---------------------------------------------------------------------------
 
 /// Build a fresh `SharedState` with an empty engine/store.
@@ -36,7 +36,7 @@ fn make_test_state() -> SharedState {
     )
 }
 
-/// Start a Tally HTTP server on a random loopback port. Returns
+/// Start a Beava HTTP server on a random loopback port. Returns
 /// `(http_port, state)` so the caller can mutate the state directly (register
 /// pipelines, push events) and also send real HTTP requests through the
 /// running axum router.
@@ -46,7 +46,7 @@ async fn start_debug_ui_server() -> (u16, SharedState) {
     let port = listener.local_addr().unwrap().port();
     let server_state = state.clone();
     tokio::spawn(async move {
-        tally::server::http::run_http_server_with_listener(listener, server_state)
+        beava::server::http::run_http_server_with_listener(listener, server_state)
             .await
             .unwrap();
     });
@@ -1122,8 +1122,8 @@ async fn static_index_is_embedded() {
     );
     let body = body_string(&body);
     assert!(
-        body.contains("tally \u{2014} debug"),
-        "expected `tally \u{2014} debug` title in index.html body"
+        body.contains("beava \u{2014} debug"),
+        "expected `beava \u{2014} debug` title in index.html body"
     );
 }
 
@@ -1291,8 +1291,8 @@ async fn split_view_shell_has_dag_canvas_and_drill_in_panel() {
     // Title locked by Phase 10 regression test static_index_is_embedded,
     // re-asserted here for defense-in-depth
     assert!(
-        body.contains("tally \u{2014} debug"),
-        "title must remain 'tally — debug'"
+        body.contains("beava \u{2014} debug"),
+        "title must remain 'beava — debug'"
     );
 
     // Vendor script order: d3 before dagre-d3 before htmx before app.js

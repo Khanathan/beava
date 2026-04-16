@@ -4,7 +4,7 @@
 //! primary gate for Plan 22-04 Step 4 (O(log k) insert optimization).
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use tally::engine::cms::{CountMinSketch, TopKHeap, TopKValue};
+use beava::engine::cms::{CountMinSketch, TopKHeap, TopKValue};
 
 fn bench_cms(c: &mut Criterion) {
     let mut group = c.benchmark_group("cms");

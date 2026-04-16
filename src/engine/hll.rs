@@ -25,7 +25,7 @@
 
 use crate::engine::operators::Operator;
 use crate::engine::window::RingBuffer;
-use crate::error::TallyError;
+use crate::error::BeavaError;
 use crate::types::FeatureValue;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
@@ -437,13 +437,13 @@ impl Operator for DistinctCountOp {
         event: &serde_json::Value,
         enrichment: Option<&ahash::AHashMap<String, serde_json::Value>>,
         now: SystemTime,
-    ) -> Result<(), TallyError> {
+    ) -> Result<(), BeavaError> {
         match crate::engine::operators::resolve_field(&self.field, event, enrichment) {
             None => {
                 if self.optional {
                     Ok(())
                 } else {
-                    Err(TallyError::Type {
+                    Err(BeavaError::Type {
                         field: self.field.clone(),
                         expected: "string or numeric".into(),
                         got: "absent".into(),
@@ -456,7 +456,7 @@ impl Operator for DistinctCountOp {
                     serde_json::Value::Number(n) => n.to_string(),
                     serde_json::Value::Bool(b) => b.to_string(),
                     _ => {
-                        return Err(TallyError::Type {
+                        return Err(BeavaError::Type {
                             field: self.field.clone(),
                             expected: "string or numeric".into(),
                             got: format!("{}", val),

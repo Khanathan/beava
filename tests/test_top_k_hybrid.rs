@@ -6,8 +6,8 @@
 use serde_json::json;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tally::engine::operators::{Operator, TopKOp};
-use tally::types::FeatureValue;
+use beava::engine::operators::{Operator, TopKOp};
+use beava::types::FeatureValue;
 
 fn ts(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)

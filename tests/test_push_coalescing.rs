@@ -18,12 +18,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
-use tally::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use tally::server::tcp::{
+use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
+use beava::server::tcp::{
     handle_push_batch, make_concurrent_state, BackfillTracker, ConnAccumulator, PendingAsync,
     SharedState, BATCH_DEADLINE_US, BATCH_SIZE,
 };
-use tally::state::store::StateStore;
+use beava::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
 // Harness helpers
@@ -118,8 +118,8 @@ fn get_count(state: &SharedState, stream: &str, key: &str) -> Option<i64> {
         .or_else(|| features.get("count_1h"))
     {
         match fv {
-            tally::types::FeatureValue::Int(n) => Some(*n),
-            tally::types::FeatureValue::Float(f) => Some(*f as i64),
+            beava::types::FeatureValue::Int(n) => Some(*n),
+            beava::types::FeatureValue::Float(f) => Some(*f as i64),
             _ => None,
         }
     } else {
@@ -483,7 +483,7 @@ fn partial_failure_scatters_err_to_correct_seq() {
 
 mod e2e {
     use super::*;
-    use tally::server::protocol::{
+    use beava::server::protocol::{
         self as proto, OP_GET, OP_PUSH_ASYNC, STATUS_ERROR, STATUS_OK, TYPE_I64, TYPE_STR,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -539,7 +539,7 @@ mod e2e {
         let addr = listener.local_addr().unwrap();
         let srv_state = state.clone();
         tokio::spawn(async move {
-            let _ = tally::server::tcp::run_tcp_server_with_listener(listener, srv_state).await;
+            let _ = beava::server::tcp::run_tcp_server_with_listener(listener, srv_state).await;
         });
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         (addr, state)
@@ -708,7 +708,7 @@ mod e2e {
     //      floor; this is the primary defense in cargo-test mode)
     // The tight ±5% bench gate — sync p99 in [82.6, 91.4]µs under
     // release-build multi-core saturation — lives in
-    // benchmark/tally-throughput/bench.py and is evaluated by `--mode mixed`.
+    // benchmark/beava-throughput/bench.py and is evaluated by `--mode mixed`.
     #[tokio::test]
     async fn mixed_workload_sync_p99() {
         let (addr, _state) = spawn_server().await;

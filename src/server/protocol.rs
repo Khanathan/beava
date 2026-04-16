@@ -2,7 +2,7 @@
 //! response serialization. All functions are synchronous (pure byte manipulation).
 
 use crate::engine::pipeline::{FeatureDef, StreamDefinition, ViewDefinition, ViewFeatureDef};
-use crate::error::TallyError;
+use crate::error::BeavaError;
 use serde::Deserialize;
 
 // Command opcodes
@@ -242,7 +242,7 @@ pub enum Command {
         key: String,
     },
     /// Phase 25-01: Reserved opcode landed at the parser. Handler emits a
-    /// typed `TallyError::NotImplemented` (STATUS_ERROR on the wire) WITHOUT
+    /// typed `BeavaError::NotImplemented` (STATUS_ERROR on the wire) WITHOUT
     /// tearing down the connection (T-25-01-04). `op_name` identifies which
     /// reserved opcode so the error message remains descriptive.
     ReservedNotImplemented { op_name: &'static str },
@@ -368,10 +368,10 @@ pub fn write_scope(buf: &mut Vec<u8>, scope: &Scope) {
 }
 
 /// Phase 27-01: decode a Scope from the wire. Advances `*buf` past consumed
-/// bytes. Returns `TallyError::Protocol` on truncation / bad UTF-8.
-pub fn read_scope(buf: &mut &[u8]) -> Result<Scope, TallyError> {
+/// bytes. Returns `BeavaError::Protocol` on truncation / bad UTF-8.
+pub fn read_scope(buf: &mut &[u8]) -> Result<Scope, BeavaError> {
     if buf.len() < 2 {
-        return Err(TallyError::Protocol(
+        return Err(BeavaError::Protocol(
             "scope header truncated: need 2 bytes for n_streams".into(),
         ));
     }
@@ -382,7 +382,7 @@ pub fn read_scope(buf: &mut &[u8]) -> Result<Scope, TallyError> {
         streams.push(read_string(buf)?);
     }
     if buf.is_empty() {
-        return Err(TallyError::Protocol("scope truncated: need has_keys byte".into()));
+        return Err(BeavaError::Protocol("scope truncated: need has_keys byte".into()));
     }
     let has_keys = buf[0];
     *buf = &buf[1..];
@@ -390,7 +390,7 @@ pub fn read_scope(buf: &mut &[u8]) -> Result<Scope, TallyError> {
         0 => None,
         1 => {
             if buf.len() < 4 {
-                return Err(TallyError::Protocol("scope.keys truncated: need 4 bytes for count".into()));
+                return Err(BeavaError::Protocol("scope.keys truncated: need 4 bytes for count".into()));
             }
             let n_keys = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
             *buf = &buf[4..];
@@ -403,14 +403,14 @@ pub fn read_scope(buf: &mut &[u8]) -> Result<Scope, TallyError> {
             Some(ks)
         }
         other => {
-            return Err(TallyError::Protocol(format!(
+            return Err(BeavaError::Protocol(format!(
                 "scope has_keys byte must be 0 or 1, got {}",
                 other
             )));
         }
     };
     if buf.is_empty() {
-        return Err(TallyError::Protocol(
+        return Err(BeavaError::Protocol(
             "scope truncated: need has_prefix byte".into(),
         ));
     }
@@ -420,7 +420,7 @@ pub fn read_scope(buf: &mut &[u8]) -> Result<Scope, TallyError> {
         0 => None,
         1 => Some(read_string(buf)?),
         other => {
-            return Err(TallyError::Protocol(format!(
+            return Err(BeavaError::Protocol(format!(
                 "scope has_prefix byte must be 0 or 1, got {}",
                 other
             )));
@@ -489,18 +489,18 @@ pub fn encode_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
 
 /// Parse a complete frame buffer: [4-byte BE length][opcode][payload].
 /// Returns (opcode, payload slice). The 4-byte length covers opcode + payload.
-pub fn parse_frame(data: &[u8]) -> Result<(u8, &[u8]), TallyError> {
+pub fn parse_frame(data: &[u8]) -> Result<(u8, &[u8]), BeavaError> {
     if data.len() < 5 {
-        return Err(TallyError::Protocol(
+        return Err(BeavaError::Protocol(
             "frame too short: need at least 5 bytes".into(),
         ));
     }
     let length = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
     if length == 0 {
-        return Err(TallyError::Protocol("frame length is zero".into()));
+        return Err(BeavaError::Protocol("frame length is zero".into()));
     }
     if data.len() < 4 + length {
-        return Err(TallyError::Protocol(format!(
+        return Err(BeavaError::Protocol(format!(
             "frame truncated: expected {} bytes after header, got {}",
             length,
             data.len() - 4
@@ -586,24 +586,24 @@ pub fn encode_response(status: u8, payload: &[u8]) -> Vec<u8> {
 
 /// Read a protocol string: [u16 BE length][UTF-8 bytes].
 /// Advances the slice past the consumed bytes.
-/// Returns TallyError::Protocol on truncation or invalid UTF-8.
-pub fn read_string(buf: &mut &[u8]) -> Result<String, TallyError> {
+/// Returns BeavaError::Protocol on truncation or invalid UTF-8.
+pub fn read_string(buf: &mut &[u8]) -> Result<String, BeavaError> {
     if buf.len() < 2 {
-        return Err(TallyError::Protocol(
+        return Err(BeavaError::Protocol(
             "string header truncated: need 2 bytes for length".into(),
         ));
     }
     let len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
     *buf = &buf[2..];
     if buf.len() < len {
-        return Err(TallyError::Protocol(format!(
+        return Err(BeavaError::Protocol(format!(
             "string data truncated: expected {} bytes, got {}",
             len,
             buf.len()
         )));
     }
     let s = std::str::from_utf8(&buf[..len])
-        .map_err(|e| TallyError::Protocol(format!("invalid UTF-8 in string: {}", e)))?;
+        .map_err(|e| BeavaError::Protocol(format!("invalid UTF-8 in string: {}", e)))?;
     let result = s.to_owned();
     *buf = &buf[len..];
     Ok(result)
@@ -626,10 +626,10 @@ pub fn write_string(s: &str) -> Vec<u8> {
 }
 
 /// Read remaining bytes in buffer as JSON.
-/// Returns TallyError::Protocol on parse failure.
-pub fn read_json_payload(buf: &mut &[u8]) -> Result<serde_json::Value, TallyError> {
+/// Returns BeavaError::Protocol on parse failure.
+pub fn read_json_payload(buf: &mut &[u8]) -> Result<serde_json::Value, BeavaError> {
     let value = serde_json::from_slice(buf)
-        .map_err(|e| TallyError::Protocol(format!("invalid JSON payload: {}", e)))?;
+        .map_err(|e| BeavaError::Protocol(format!("invalid JSON payload: {}", e)))?;
     *buf = &buf[buf.len()..]; // consume all
     Ok(value)
 }
@@ -649,10 +649,10 @@ pub fn read_json_payload(buf: &mut &[u8]) -> Result<serde_json::Value, TallyErro
 ///
 /// Returns a `serde_json::Value::Object` with fields inserted in file order.
 /// Advances `*buf` past all consumed bytes. Truncation, unknown tags,
-/// and non-finite floats return `TallyError::Protocol`.
-pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, TallyError> {
+/// and non-finite floats return `BeavaError::Protocol`.
+pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, BeavaError> {
     if buf.len() < 2 {
-        return Err(TallyError::Protocol(
+        return Err(BeavaError::Protocol(
             "field_count header truncated: need 2 bytes".into(),
         ));
     }
@@ -669,7 +669,7 @@ pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, TallyEr
     for _ in 0..field_count {
         let key = read_string(buf)?;
         if buf.is_empty() {
-            return Err(TallyError::Protocol("type tag truncated".into()));
+            return Err(BeavaError::Protocol("type tag truncated".into()));
         }
         let tag = buf[0];
         *buf = &buf[1..];
@@ -677,7 +677,7 @@ pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, TallyEr
             TYPE_NULL => serde_json::Value::Null,
             TYPE_BOOL => {
                 if buf.is_empty() {
-                    return Err(TallyError::Protocol("bool value truncated".into()));
+                    return Err(BeavaError::Protocol("bool value truncated".into()));
                 }
                 let b = buf[0] != 0;
                 *buf = &buf[1..];
@@ -685,7 +685,7 @@ pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, TallyEr
             }
             TYPE_I64 => {
                 if buf.len() < 8 {
-                    return Err(TallyError::Protocol(
+                    return Err(BeavaError::Protocol(
                         "i64 value truncated: need 8 bytes".into(),
                     ));
                 }
@@ -695,20 +695,20 @@ pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, TallyEr
             }
             TYPE_F64 => {
                 if buf.len() < 8 {
-                    return Err(TallyError::Protocol(
+                    return Err(BeavaError::Protocol(
                         "f64 value truncated: need 8 bytes".into(),
                     ));
                 }
                 let n = f64::from_be_bytes(buf[..8].try_into().unwrap());
                 *buf = &buf[8..];
                 if n.is_nan() || n.is_infinite() {
-                    return Err(TallyError::Protocol(format!(
+                    return Err(BeavaError::Protocol(format!(
                         "f64 value is not finite: {}",
                         n
                     )));
                 }
                 let num = serde_json::Number::from_f64(n).ok_or_else(|| {
-                    TallyError::Protocol("f64 could not be represented as JSON number".into())
+                    BeavaError::Protocol("f64 could not be represented as JSON number".into())
                 })?;
                 serde_json::Value::Number(num)
             }
@@ -717,7 +717,7 @@ pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, TallyEr
                 serde_json::Value::String(s)
             }
             _ => {
-                return Err(TallyError::Protocol(format!(
+                return Err(BeavaError::Protocol(format!(
                     "unknown type tag 0x{:02x}",
                     tag
                 )));
@@ -740,8 +740,8 @@ pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, TallyEr
 /// - SET (0x03): read_string for key, remaining bytes as JSON
 /// - MSET (0x04): u32 BE count, then for each: read_string key + u32 json_len + json_bytes
 /// - REGISTER (0x05): entire payload as JSON
-/// - Unknown: TallyError::Protocol
-pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> {
+/// - Unknown: BeavaError::Protocol
+pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, BeavaError> {
     let mut buf: &[u8] = payload;
     match opcode {
         OP_PUSH => {
@@ -782,7 +782,7 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
         }
         OP_MSET => {
             if buf.len() < 4 {
-                return Err(TallyError::Protocol(
+                return Err(BeavaError::Protocol(
                     "MSET payload too short: need 4 bytes for count".into(),
                 ));
             }
@@ -793,21 +793,21 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
                 let key = read_string(&mut buf)?;
                 // Each entry has u32 json_len followed by json_bytes
                 if buf.len() < 4 {
-                    return Err(TallyError::Protocol(
+                    return Err(BeavaError::Protocol(
                         "MSET entry truncated: need 4 bytes for json_len".into(),
                     ));
                 }
                 let json_len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
                 buf = &buf[4..];
                 if buf.len() < json_len {
-                    return Err(TallyError::Protocol(format!(
+                    return Err(BeavaError::Protocol(format!(
                         "MSET entry JSON truncated: expected {} bytes, got {}",
                         json_len,
                         buf.len()
                     )));
                 }
                 let value: serde_json::Value = serde_json::from_slice(&buf[..json_len])
-                    .map_err(|e| TallyError::Protocol(format!("MSET entry invalid JSON: {}", e)))?;
+                    .map_err(|e| BeavaError::Protocol(format!("MSET entry invalid JSON: {}", e)))?;
                 buf = &buf[json_len..];
                 entries.push((key, value));
             }
@@ -821,7 +821,7 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
         }
         OP_MGET => {
             if buf.len() < 4 {
-                return Err(TallyError::Protocol(
+                return Err(BeavaError::Protocol(
                     "MGET payload too short: need 4 bytes for count".into(),
                 ));
             }
@@ -836,7 +836,7 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
         OP_PUSH_BATCH => {
             let stream_name = read_string(&mut buf)?;
             if buf.len() < 8 {
-                return Err(TallyError::Protocol(
+                return Err(BeavaError::Protocol(
                     "PUSH_BATCH header truncated: need 8 bytes for batch_id + count".into(),
                 ));
             }
@@ -845,20 +845,20 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
             buf = &buf[8..];
 
             if count > 16_384 {
-                return Err(TallyError::Protocol("batch too large".into()));
+                return Err(BeavaError::Protocol("batch too large".into()));
             }
 
             let mut events = Vec::with_capacity(count.min(16_384));
             for _ in 0..count {
                 if buf.len() < 4 {
-                    return Err(TallyError::Protocol(
+                    return Err(BeavaError::Protocol(
                         "PUSH_BATCH event length truncated".into(),
                     ));
                 }
                 let event_len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
                 buf = &buf[4..];
                 if buf.len() < event_len {
-                    return Err(TallyError::Protocol(format!(
+                    return Err(BeavaError::Protocol(format!(
                         "PUSH_BATCH event truncated: expected {} bytes, got {}",
                         event_len,
                         buf.len()
@@ -882,7 +882,7 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
             let key = read_string(&mut buf)?;
             let fields = read_json_payload(&mut buf)?;
             if !fields.is_object() {
-                return Err(TallyError::Protocol(
+                return Err(BeavaError::Protocol(
                     "OP_PUSH_TABLE fields payload must be a JSON object".into(),
                 ));
             }
@@ -900,7 +900,7 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
         OP_GET_MULTI => {
             // Wire: [u16 count][count × u16-string table_name][u16-string key]
             if buf.len() < 2 {
-                return Err(TallyError::Protocol(
+                return Err(BeavaError::Protocol(
                     "GET_MULTI header truncated: need 2 bytes for count".into(),
                 ));
             }
@@ -909,12 +909,12 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
             // Cardinality guards (T-25-01-01): reject empty and oversized
             // requests BEFORE allocating per-request memory.
             if count == 0 {
-                return Err(TallyError::Protocol(
+                return Err(BeavaError::Protocol(
                     "GET_MULTI requires at least one table_name".into(),
                 ));
             }
             if count > 256 {
-                return Err(TallyError::Protocol(format!(
+                return Err(BeavaError::Protocol(format!(
                     "GET_MULTI table_names count exceeds 256: got {}",
                     count
                 )));
@@ -954,7 +954,7 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
             // cursor sitting between the token and the Scope.
             let admin_token = read_string(&mut buf)?;
             if buf.len() < 8 {
-                return Err(TallyError::Protocol(
+                return Err(BeavaError::Protocol(
                     "LOG_FETCH truncated: need 8 bytes for from_ts_millis".into(),
                 ));
             }
@@ -969,7 +969,7 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
                 scope,
             })
         }
-        _ => Err(TallyError::Protocol(format!(
+        _ => Err(BeavaError::Protocol(format!(
             "unknown opcode: 0x{:02x}",
             opcode
         ))),
@@ -983,7 +983,7 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, TallyError> 
 // Phase 28-01: canonical definitions moved to `crate::duration` so engine
 // and state modules can use them under `--features client` (where this
 // `server::protocol` module is gated out). These re-exports preserve every
-// existing `tally::server::protocol::{FOREVER_TTL, is_forever_ttl,
+// existing `beava::server::protocol::{FOREVER_TTL, is_forever_ttl,
 // parse_duration_str}` call site (including public tests).
 pub use crate::duration::{is_forever_ttl, parse_duration_str, FOREVER_TTL};
 
@@ -1080,14 +1080,14 @@ fn default_bucket(window: std::time::Duration) -> std::time::Duration {
 
 /// Convert a RegisterRequest DTO into a StreamDefinition with parsed expressions.
 /// Validates name/key_field non-empty, parses duration strings, parses derive expressions.
-pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition, TallyError> {
+pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition, BeavaError> {
     if req.name.is_empty() {
-        return Err(TallyError::Protocol("stream name must not be empty".into()));
+        return Err(BeavaError::Protocol("stream name must not be empty".into()));
     }
     // Validate key_field: if present, must not be empty
     if let Some(ref kf) = req.key_field {
         if kf.is_empty() {
-            return Err(TallyError::Protocol("key_field must not be empty".into()));
+            return Err(BeavaError::Protocol("key_field must not be empty".into()));
         }
     }
     // Keyless streams cannot have windowed operators (T-07-01 mitigation)
@@ -1112,7 +1112,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                     | "exact_max"
             );
             if is_windowed {
-                return Err(TallyError::Protocol(format!(
+                return Err(BeavaError::Protocol(format!(
                     "keyless stream '{}' cannot have windowed operator '{}'; only derive features are allowed",
                     req.name, f.name
                 )));
@@ -1126,7 +1126,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
         let where_expr = match &f.where_clause {
             Some(clause) => {
                 let expr = crate::engine::expression::parse_expr(clause).map_err(|e| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': invalid where expression: {}",
                         f.name, e
                     ))
@@ -1139,7 +1139,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
         let def = match f.feature_type.as_str() {
             "count" => {
                 let window_str = f.window.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': count requires 'window' field",
                         f.name
                     ))
@@ -1158,10 +1158,10 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "sum" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!("feature '{}': sum requires 'field'", f.name))
+                    BeavaError::Protocol(format!("feature '{}': sum requires 'field'", f.name))
                 })?;
                 let window_str = f.window.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': sum requires 'window' field",
                         f.name
                     ))
@@ -1182,10 +1182,10 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "avg" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!("feature '{}': avg requires 'field'", f.name))
+                    BeavaError::Protocol(format!("feature '{}': avg requires 'field'", f.name))
                 })?;
                 let window_str = f.window.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': avg requires 'window' field",
                         f.name
                     ))
@@ -1206,10 +1206,10 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "min" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!("feature '{}': min requires 'field'", f.name))
+                    BeavaError::Protocol(format!("feature '{}': min requires 'field'", f.name))
                 })?;
                 let window_str = f.window.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': min requires 'window' field",
                         f.name
                     ))
@@ -1230,10 +1230,10 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "max" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!("feature '{}': max requires 'field'", f.name))
+                    BeavaError::Protocol(format!("feature '{}': max requires 'field'", f.name))
                 })?;
                 let window_str = f.window.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': max requires 'window' field",
                         f.name
                     ))
@@ -1254,7 +1254,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "last" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!("feature '{}': last requires 'field'", f.name))
+                    BeavaError::Protocol(format!("feature '{}': last requires 'field'", f.name))
                 })?;
                 FeatureDef::Last {
                     field,
@@ -1264,13 +1264,13 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "distinct_count" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': distinct_count requires 'field'",
                         f.name
                     ))
                 })?;
                 let window_str = f.window.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': distinct_count requires 'window' field",
                         f.name
                     ))
@@ -1291,10 +1291,10 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "stddev" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!("feature '{}': stddev requires 'field'", f.name))
+                    BeavaError::Protocol(format!("feature '{}': stddev requires 'field'", f.name))
                 })?;
                 let window_str = f.window.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': stddev requires 'window' field",
                         f.name
                     ))
@@ -1315,25 +1315,25 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "percentile" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': percentile requires 'field'",
                         f.name
                     ))
                 })?;
                 let quantile = f.quantile.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': percentile requires 'quantile' field (e.g. 0.95)",
                         f.name
                     ))
                 })?;
                 if !(0.0..=1.0).contains(&quantile) {
-                    return Err(TallyError::Protocol(format!(
+                    return Err(BeavaError::Protocol(format!(
                         "feature '{}': quantile must be between 0.0 and 1.0, got {}",
                         f.name, quantile
                     )));
                 }
                 let window_str = f.window.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': percentile requires 'window' field",
                         f.name
                     ))
@@ -1355,16 +1355,16 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "lag" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!("feature '{}': lag requires 'field'", f.name))
+                    BeavaError::Protocol(format!("feature '{}': lag requires 'field'", f.name))
                 })?;
                 let n = f.n.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': lag requires 'n' (positive integer)",
                         f.name
                     ))
                 })?;
                 if n == 0 {
-                    return Err(TallyError::Protocol(format!(
+                    return Err(BeavaError::Protocol(format!(
                         "feature '{}': lag 'n' must be >= 1",
                         f.name
                     )));
@@ -1378,10 +1378,10 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "ema" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!("feature '{}': ema requires 'field'", f.name))
+                    BeavaError::Protocol(format!("feature '{}': ema requires 'field'", f.name))
                 })?;
                 let half_life_str = f.half_life.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': ema requires 'half_life' (duration string, e.g. '30m')",
                         f.name
                     ))
@@ -1389,7 +1389,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                 let half_life_dur = parse_duration_str(&half_life_str)?;
                 let half_life_secs = half_life_dur.as_secs_f64();
                 if half_life_secs <= 0.0 {
-                    return Err(TallyError::Protocol(format!(
+                    return Err(BeavaError::Protocol(format!(
                         "feature '{}': ema half_life must be positive",
                         f.name
                     )));
@@ -1403,16 +1403,16 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "last_n" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!("feature '{}': last_n requires 'field'", f.name))
+                    BeavaError::Protocol(format!("feature '{}': last_n requires 'field'", f.name))
                 })?;
                 let n = f.n.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': last_n requires 'n' (positive integer)",
                         f.name
                     ))
                 })?;
                 if n == 0 {
-                    return Err(TallyError::Protocol(format!(
+                    return Err(BeavaError::Protocol(format!(
                         "feature '{}': last_n 'n' must be >= 1",
                         f.name
                     )));
@@ -1426,7 +1426,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "first" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!("feature '{}': first requires 'field'", f.name))
+                    BeavaError::Protocol(format!("feature '{}': first requires 'field'", f.name))
                 })?;
                 FeatureDef::First {
                     field,
@@ -1436,13 +1436,13 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "exact_min" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': exact_min requires 'field'",
                         f.name
                     ))
                 })?;
                 let window_str = f.window.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': exact_min requires 'window' field",
                         f.name
                     ))
@@ -1463,13 +1463,13 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "exact_max" => {
                 let field = f.field.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': exact_max requires 'field'",
                         f.name
                     ))
                 })?;
                 let window_str = f.window.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': exact_max requires 'window' field",
                         f.name
                     ))
@@ -1490,18 +1490,18 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
             }
             "derive" => {
                 let expr_str = f.expr.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': derive requires 'expr' field",
                         f.name
                     ))
                 })?;
                 let expr = crate::engine::expression::parse_expr(&expr_str).map_err(|e| {
-                    TallyError::Protocol(format!("feature '{}': invalid expression: {}", f.name, e))
+                    BeavaError::Protocol(format!("feature '{}': invalid expression: {}", f.name, e))
                 })?;
                 FeatureDef::Derive { expr }
             }
             unknown => {
-                return Err(TallyError::Protocol(format!(
+                return Err(BeavaError::Protocol(format!(
                     "unknown feature type: {}",
                     unknown
                 )));
@@ -1514,7 +1514,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
         .filter
         .map(|f| crate::engine::expression::parse_expr(&f))
         .transpose()
-        .map_err(|e| TallyError::Protocol(format!("invalid filter expression: {}", e)))?;
+        .map_err(|e| BeavaError::Protocol(format!("invalid filter expression: {}", e)))?;
 
     let entity_ttl = req.entity_ttl.map(|s| parse_duration_str(&s)).transpose()?;
     let history_ttl = req
@@ -1532,7 +1532,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
                 drp.into_iter().collect(),
             )),
             (Some(_), Some(_)) => {
-                return Err(TallyError::Protocol(
+                return Err(BeavaError::Protocol(
                     "projection: select and drop are mutually exclusive".into(),
                 ));
             }
@@ -1562,15 +1562,15 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
 
 /// Convert a RegisterRequest DTO into a ViewDefinition.
 /// Only "derive" and "lookup" feature types are allowed in views.
-pub fn convert_view_register_request(req: RegisterRequest) -> Result<ViewDefinition, TallyError> {
+pub fn convert_view_register_request(req: RegisterRequest) -> Result<ViewDefinition, BeavaError> {
     if req.name.is_empty() {
-        return Err(TallyError::Protocol("view name must not be empty".into()));
+        return Err(BeavaError::Protocol("view name must not be empty".into()));
     }
     let key_field = req
         .key_field
-        .ok_or_else(|| TallyError::Protocol("view key_field must not be empty".into()))?;
+        .ok_or_else(|| BeavaError::Protocol("view key_field must not be empty".into()))?;
     if key_field.is_empty() {
-        return Err(TallyError::Protocol("key_field must not be empty".into()));
+        return Err(BeavaError::Protocol("key_field must not be empty".into()));
     }
 
     let mut features = Vec::with_capacity(req.features.len());
@@ -1578,25 +1578,25 @@ pub fn convert_view_register_request(req: RegisterRequest) -> Result<ViewDefinit
         let vdef = match f.feature_type.as_str() {
             "derive" => {
                 let expr_str = f.expr.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': derive requires 'expr' field",
                         f.name
                     ))
                 })?;
                 let expr = crate::engine::expression::parse_expr(&expr_str).map_err(|e| {
-                    TallyError::Protocol(format!("feature '{}': invalid expression: {}", f.name, e))
+                    BeavaError::Protocol(format!("feature '{}': invalid expression: {}", f.name, e))
                 })?;
                 ViewFeatureDef::Derive { expr }
             }
             "lookup" => {
                 let target = f.target.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': lookup requires 'target' field (e.g. 'StreamName.feature_name')",
                         f.name
                     ))
                 })?;
                 let on_field = f.on.ok_or_else(|| {
-                    TallyError::Protocol(format!(
+                    BeavaError::Protocol(format!(
                         "feature '{}': lookup requires 'on' field",
                         f.name
                     ))
@@ -1604,7 +1604,7 @@ pub fn convert_view_register_request(req: RegisterRequest) -> Result<ViewDefinit
                 // Parse "StreamName.feature_name" into stream and feature parts
                 let parts: Vec<&str> = target.splitn(2, '.').collect();
                 if parts.len() != 2 {
-                    return Err(TallyError::Protocol(format!(
+                    return Err(BeavaError::Protocol(format!(
                         "feature '{}': lookup target must be 'StreamName.feature_name', got '{}'",
                         f.name, target
                     )));
@@ -1616,7 +1616,7 @@ pub fn convert_view_register_request(req: RegisterRequest) -> Result<ViewDefinit
                 }
             }
             other => {
-                return Err(TallyError::Protocol(format!(
+                return Err(BeavaError::Protocol(format!(
                     "view feature '{}': only supports 'derive' and 'lookup' types, got '{}'",
                     f.name, other
                 )));
@@ -1868,7 +1868,7 @@ mod tests {
         let result = parse_command(0xFE, &[]);
         assert!(result.is_err());
         match result.unwrap_err() {
-            TallyError::Protocol(msg) => assert!(msg.contains("unknown opcode")),
+            BeavaError::Protocol(msg) => assert!(msg.contains("unknown opcode")),
             _ => panic!("expected Protocol error"),
         }
     }
@@ -2169,7 +2169,7 @@ mod tests {
     fn op_get_multi_truncated_payload_errors_without_panic() {
         // Empty payload: no count bytes.
         let err = parse_command(OP_GET_MULTI, &[]).unwrap_err();
-        assert!(matches!(err, TallyError::Protocol(_)));
+        assert!(matches!(err, BeavaError::Protocol(_)));
 
         // Count claims 2 but only one string follows.
         let mut payload = Vec::new();
@@ -2177,7 +2177,7 @@ mod tests {
         payload.extend_from_slice(&write_string("A"));
         // No second table string, no key — truncation.
         let err = parse_command(OP_GET_MULTI, &payload).unwrap_err();
-        assert!(matches!(err, TallyError::Protocol(_)));
+        assert!(matches!(err, BeavaError::Protocol(_)));
     }
 
     #[test]

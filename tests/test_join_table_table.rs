@@ -1,7 +1,7 @@
 //! Phase 23-03 Task 1 — Table↔Table same-key join end-to-end.
 //!
 //! Drives the engine via the same REGISTER JSON shape that
-//! `python/tally/_serialize.py::_compile_join` emits at the SDK layer for
+//! `python/beava/_serialize.py::_compile_join` emits at the SDK layer for
 //! `shape="table_table"`. Verifies:
 //!
 //!   * `inner` / `left` merge on either-side upsert
@@ -13,12 +13,12 @@
 use std::time::SystemTime;
 
 use ahash::AHashMap;
-use tally::engine::pipeline::PipelineEngine;
-use tally::engine::register::{
+use beava::engine::pipeline::PipelineEngine;
+use beava::engine::register::{
     v0_join_to_stream_def, v0_source_to_stream_def, V0RegisterPayload,
 };
-use tally::state::store::{StateStore, TableRowState};
-use tally::types::FeatureValue;
+use beava::state::store::{StateStore, TableRowState};
+use beava::types::FeatureValue;
 
 fn parse(json: &str) -> V0RegisterPayload {
     V0RegisterPayload::parse(json.as_bytes()).expect("parse")
@@ -455,7 +455,7 @@ fn tt_rejects_mismatched_keys() {
         })
     };
     let fields_lookup = |_name: &str| -> Option<Vec<String>> { None };
-    let err = tally::engine::register::v0_join_to_stream_def_with_keys(
+    let err = beava::engine::register::v0_join_to_stream_def_with_keys(
         &j_desc,
         Some(&fields_lookup),
         Some(&key_lookup),
@@ -511,7 +511,7 @@ fn tt_rejects_partial_key() {
         })
     };
     let fields_lookup = |_name: &str| -> Option<Vec<String>> { None };
-    let err = tally::engine::register::v0_join_to_stream_def_with_keys(
+    let err = beava::engine::register::v0_join_to_stream_def_with_keys(
         &j_desc,
         Some(&fields_lookup),
         Some(&key_lookup),

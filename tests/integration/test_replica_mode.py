@@ -1,9 +1,9 @@
 """Phase 36-01: end-to-end replica-mode server boot test.
 
 Spawns:
-  * a "prod" tally binary on ephemeral ports with a Transactions stream
+  * a "prod" beava binary on ephemeral ports with a Transactions stream
     registered and a handful of seed events.
-  * a "replica" tally binary on separate ports, launched with the
+  * a "replica" beava binary on separate ports, launched with the
     full `--replica-*` flag set and a `--replica-pipeline-file` that
     defines a `count_1h` aggregate per user_id.
 
@@ -16,7 +16,7 @@ Verifies:
   4. Attempting a local PUSH directly against the replica returns a
      STATUS_ERROR with the "replica mode: local PUSH disabled" message.
 
-Skipped cleanly if the `tally` binary hasn't been built.
+Skipped cleanly if the `beava` binary hasn't been built.
 """
 
 from __future__ import annotations
@@ -35,8 +35,8 @@ from pathlib import Path
 import pytest
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_RELEASE_BIN = _PROJECT_ROOT / "target" / "release" / "tally"
-_DEBUG_BIN = _PROJECT_ROOT / "target" / "debug" / "tally"
+_RELEASE_BIN = _PROJECT_ROOT / "target" / "release" / "beava"
+_DEBUG_BIN = _PROJECT_ROOT / "target" / "debug" / "beava"
 
 PROD_ADMIN_TOKEN = "prod-admin-token"
 OP_PUSH = 0x01
@@ -71,7 +71,7 @@ def _wait_for_tcp(host: str, port: int, timeout: float = 20.0) -> None:
                 return
         except OSError:
             time.sleep(0.1)
-    raise RuntimeError(f"tally did not become ready on {host}:{port}")
+    raise RuntimeError(f"beava did not become ready on {host}:{port}")
 
 
 def _wait_for_http(http_port: int, timeout: float = 20.0) -> None:
@@ -85,7 +85,7 @@ def _wait_for_http(http_port: int, timeout: float = 20.0) -> None:
                     return
         except Exception:
             time.sleep(0.1)
-    raise RuntimeError(f"tally HTTP not ready on :{http_port}")
+    raise RuntimeError(f"beava HTTP not ready on :{http_port}")
 
 
 def _register_stream_http(http_port: int, token: str, name: str) -> None:
@@ -182,10 +182,10 @@ def _build_register_pipeline_json(stream_name: str, feature_name: str) -> dict:
 
 @pytest.fixture
 def prod_and_replica():
-    """Spawn a prod tally + a replica tally, yielding their endpoints."""
+    """Spawn a prod beava + a replica beava, yielding their endpoints."""
     binary = _pick_binary()
     if binary is None:
-        pytest.skip("tally binary not built; run `cargo build` to enable this test")
+        pytest.skip("beava binary not built; run `cargo build` to enable this test")
 
     tmp_prod = tempfile.TemporaryDirectory()
     tmp_replica = tempfile.TemporaryDirectory()
@@ -201,13 +201,13 @@ def prod_and_replica():
 
     prod_env = os.environ.copy()
     prod_env.update(
-        TALLY_TCP_PORT=str(prod_tcp),
-        TALLY_HTTP_PORT=str(prod_http),
-        TALLY_ADMIN_TOKEN=PROD_ADMIN_TOKEN,
-        TALLY_SNAPSHOT_PATH=str(Path(tmp_prod.name) / "tally.snapshot"),
-        TALLY_SNAPSHOT="1",
-        TALLY_EVENT_LOG="1",
-        TALLY_DATA_DIR=tmp_prod.name,
+        BEAVA_TCP_PORT=str(prod_tcp),
+        BEAVA_HTTP_PORT=str(prod_http),
+        BEAVA_ADMIN_TOKEN=PROD_ADMIN_TOKEN,
+        BEAVA_SNAPSHOT_PATH=str(Path(tmp_prod.name) / "beava.snapshot"),
+        BEAVA_SNAPSHOT="1",
+        BEAVA_EVENT_LOG="1",
+        BEAVA_DATA_DIR=tmp_prod.name,
     )
     prod = subprocess.Popen(
         [str(binary)],
@@ -234,13 +234,13 @@ def prod_and_replica():
         # Spin up replica pointing at prod.
         replica_env = os.environ.copy()
         replica_env.update(
-            TALLY_TCP_PORT=str(replica_tcp),
-            TALLY_HTTP_PORT=str(replica_http),
-            TALLY_ADMIN_TOKEN=PROD_ADMIN_TOKEN,
-            TALLY_SNAPSHOT_PATH=str(Path(tmp_replica.name) / "tally.snapshot"),
-            TALLY_SNAPSHOT="0",
-            TALLY_EVENT_LOG="1",
-            TALLY_DATA_DIR=tmp_replica.name,
+            BEAVA_TCP_PORT=str(replica_tcp),
+            BEAVA_HTTP_PORT=str(replica_http),
+            BEAVA_ADMIN_TOKEN=PROD_ADMIN_TOKEN,
+            BEAVA_SNAPSHOT_PATH=str(Path(tmp_replica.name) / "beava.snapshot"),
+            BEAVA_SNAPSHOT="0",
+            BEAVA_EVENT_LOG="1",
+            BEAVA_DATA_DIR=tmp_replica.name,
         )
         replica_args = [
             str(binary),

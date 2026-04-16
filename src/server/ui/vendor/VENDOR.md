@@ -1,7 +1,7 @@
 # Vendored Frontend Assets — Phase 10 Debug UI
 
 These JavaScript libraries are committed to the repository rather than fetched at
-runtime so that the Tally binary ships with its debug UI fully self-contained
+runtime so that the Beava binary ships with its debug UI fully self-contained
 (DBUI-05). The pinned versions below are embedded at compile time via
 `rust-embed` (see `src/server/ui.rs`).
 

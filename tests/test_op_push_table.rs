@@ -1,7 +1,7 @@
 //! Phase 24-02, Task 1: TCP integration tests for OP_PUSH_TABLE /
 //! OP_DELETE_TABLE and the merged GET view.
 //!
-//! Spins up the real tally server on random ports and drives end-to-end
+//! Spins up the real beava server on random ports and drives end-to-end
 //! frames across the wire. Covers the six behaviours enumerated in the plan:
 //!
 //!   * push_table_creates_live_row
@@ -18,13 +18,13 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use tally::engine::pipeline::PipelineEngine;
-use tally::server::protocol::{
+use beava::engine::pipeline::PipelineEngine;
+use beava::server::protocol::{
     self, OP_DELETE_TABLE, OP_GET, OP_PUSH, OP_PUSH_TABLE, OP_REGISTER, OP_SET, STATUS_ERROR,
     STATUS_OK, TYPE_F64, TYPE_I64, TYPE_STR,
 };
-use tally::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
-use tally::state::store::{StateStore, TableRowState};
+use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
+use beava::state::store::{StateStore, TableRowState};
 
 // ---------------------------------------------------------------------------
 // Server + frame helpers (copied from test_server.rs)
@@ -46,7 +46,7 @@ async fn start_test_server() -> (u16, SharedState) {
 
     let tcp_state = state.clone();
     tokio::spawn(async move {
-        tally::server::tcp::run_tcp_server_with_listener(tcp_listener, tcp_state)
+        beava::server::tcp::run_tcp_server_with_listener(tcp_listener, tcp_state)
             .await
             .unwrap();
     });

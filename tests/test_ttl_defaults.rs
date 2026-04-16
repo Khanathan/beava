@@ -6,9 +6,9 @@
 //! behave as locked by v0-restructure-spec §7.2.
 
 use std::time::Duration;
-use tally::engine::pipeline::PipelineEngine;
-use tally::engine::register::{v0_source_to_stream_def, SourceDescriptor};
-use tally::server::protocol::{is_forever_ttl, parse_duration_str, FOREVER_TTL};
+use beava::engine::pipeline::PipelineEngine;
+use beava::engine::register::{v0_source_to_stream_def, SourceDescriptor};
+use beava::server::protocol::{is_forever_ttl, parse_duration_str, FOREVER_TTL};
 
 fn table_source(name: &str, entity_ttl: Option<&str>) -> SourceDescriptor {
     SourceDescriptor {

@@ -5,25 +5,25 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use tally::engine::pipeline::PipelineEngine;
-use tally::server::auth::resolve_tcp_bind;
-use tally::server::http::run_http_server;
-use tally::server::protocol::{
+use beava::engine::pipeline::PipelineEngine;
+use beava::server::auth::resolve_tcp_bind;
+use beava::server::http::run_http_server;
+use beava::server::protocol::{
     convert_register_request, convert_view_register_request, RegisterRequest,
 };
-use tally::server::replica_client::{ReplicaBootConfig, ReplicaClient};
-use tally::server::tcp::{
+use beava::server::replica_client::{ReplicaBootConfig, ReplicaClient};
+use beava::server::tcp::{
     make_concurrent_state_full, run_backfill, run_tcp_server, BackfillStatus, BackfillTracker,
     SharedState,
 };
-use tally::state::event_log::EventLog;
-use tally::state::eviction::evict_expired_keys;
-use tally::state::snapshot::{
+use beava::state::event_log::EventLog;
+use beava::state::eviction::evict_expired_keys;
+use beava::state::snapshot::{
     load_legacy_v5, load_snapshot_file, save_base_snapshot, save_delta_snapshot, BaseSnapshotState,
     DeltaSnapshotState, SerializablePipeline, SnapshotFile, SnapshotHeader, SnapshotState,
     SnapshotType,
 };
-use tally::state::store::StateStore;
+use beava::state::store::StateStore;
 
 /// Local enum used by the periodic snapshot timer to pass a fully-prepared
 /// snapshot payload (base or delta) into the blocking serialization task.
@@ -36,7 +36,7 @@ enum SnapshotData {
 /// cycle (default 30s). Emitters dedupe by stable id, so repeat calls are
 /// free. Called from the periodic snapshot task after each write attempt.
 fn poll_signal_sources(state: &SharedState) {
-    use tally::server::signals;
+    use beava::server::signals;
 
     let now = SystemTime::now();
 
@@ -51,9 +51,9 @@ fn poll_signal_sources(state: &SharedState) {
     };
     signals::emit_late_drop_signals(&state.signals, &drops, now, 1.0);
 
-    // 2. Memory pressure (operational). `TALLY_MEMORY_LIMIT_MB` env var
+    // 2. Memory pressure (operational). `BEAVA_MEMORY_LIMIT_MB` env var
     //    drives the threshold; if unset the emitter is a no-op.
-    let limit_bytes = std::env::var("TALLY_MEMORY_LIMIT_MB")
+    let limit_bytes = std::env::var("BEAVA_MEMORY_LIMIT_MB")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .map(|mb| mb * 1_048_576);
@@ -73,19 +73,19 @@ fn poll_signal_sources(state: &SharedState) {
     //    registry path gives the UI one feed for everything.
     let recs = {
         let engine = state.engine.read();
-        tally::engine::recommend::recommend_config(&engine, &state.eviction_tracker)
+        beava::engine::recommend::recommend_config(&engine, &state.eviction_tracker)
     };
     signals::emit_config_recommendations(&state.signals, &recs);
 }
 
 /// Phase 37-01: fork-synthesized replica config. Populated by `main()` when
-/// `tally fork ...` is invoked; consumed by `async_main` in place of the
+/// `beava fork ...` is invoked; consumed by `async_main` in place of the
 /// normal `--replica-*` parsing path.
 static FORK_CONFIG: std::sync::OnceLock<ReplicaBootConfig> = std::sync::OnceLock::new();
 
 fn main() {
-    // Phase 37-01: handle `tally fork` subcommand. Parse fork flags, set
-    // TALLY_TCP_PORT / TALLY_HTTP_PORT for the local-port override, print
+    // Phase 37-01: handle `beava fork` subcommand. Parse fork flags, set
+    // BEAVA_TCP_PORT / BEAVA_HTTP_PORT for the local-port override, print
     // the banner, and stash the synthesized replica config for async_main.
     if is_fork_subcommand() {
         let args: Vec<String> = std::env::args().collect();
@@ -97,7 +97,7 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("{}", e);
-                eprintln!("Run `tally fork --help` for usage.");
+                eprintln!("Run `beava fork --help` for usage.");
                 std::process::exit(2);
             }
         };
@@ -123,10 +123,10 @@ fn main() {
         // (needed to reject local PUSHes and for future SUBSCRIBE clients).
         let local_http: u16 = local_port_raw.parse().unwrap_or(7400);
         let local_tcp = local_http.saturating_add(1);
-        std::env::set_var("TALLY_HTTP_PORT", &local_port_raw);
-        std::env::set_var("TALLY_TCP_PORT", local_tcp.to_string());
+        std::env::set_var("BEAVA_HTTP_PORT", &local_port_raw);
+        std::env::set_var("BEAVA_TCP_PORT", local_tcp.to_string());
         eprintln!(
-            "tally fork — remote={} scope={:?} since_ms={} -> http://localhost:{} (tcp :{})",
+            "beava fork — remote={} scope={:?} since_ms={} -> http://localhost:{} (tcp :{})",
             cfg.remote, cfg.streams, cfg.since_millis, local_http, local_tcp
         );
         FORK_CONFIG
@@ -134,7 +134,7 @@ fn main() {
             .expect("FORK_CONFIG must be set exactly once");
     }
 
-    let worker_threads: usize = std::env::var("TALLY_WORKER_THREADS")
+    let worker_threads: usize = std::env::var("BEAVA_WORKER_THREADS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(4);
@@ -171,15 +171,15 @@ fn arg_flag(name: &str) -> bool {
     std::env::args().skip(1).any(|a| a == long)
 }
 
-/// Phase 37-01: detect `tally fork` subcommand — looks at `args[1]`.
+/// Phase 37-01: detect `beava fork` subcommand — looks at `args[1]`.
 fn is_fork_subcommand() -> bool {
     std::env::args().nth(1).as_deref() == Some("fork")
 }
 
-/// Phase 37-01: `tally fork` is a scientist-facing wrapper around the
+/// Phase 37-01: `beava fork` is a scientist-facing wrapper around the
 /// Phase 36 replica-mode boot. It parses its own flag set (`--remote`,
 /// `--streams`, etc.), translates them into a `ReplicaBootConfig`, and
-/// sets `TALLY_TCP_PORT` / `TALLY_HTTP_PORT` env vars so downstream code
+/// sets `BEAVA_TCP_PORT` / `BEAVA_HTTP_PORT` env vars so downstream code
 /// binds the listener on the scientist-requested local port.
 ///
 /// `args` is the full argv slice (args[0] = binary, args[1] = "fork",
@@ -212,21 +212,21 @@ fn parse_fork_args_from(args: &[String]) -> Result<ReplicaBootConfig, String> {
     }
 
     let remote = get(args, "remote")
-        .ok_or_else(|| "tally fork: --remote HOST:PORT required".to_string())?;
+        .ok_or_else(|| "beava fork: --remote HOST:PORT required".to_string())?;
     let streams_raw = get(args, "streams")
-        .ok_or_else(|| "tally fork: --streams s1,s2,... required".to_string())?;
+        .ok_or_else(|| "beava fork: --streams s1,s2,... required".to_string())?;
     let streams: Vec<String> = streams_raw
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
     if streams.is_empty() {
-        return Err("tally fork: --streams must list at least one stream".into());
+        return Err("beava fork: --streams must list at least one stream".into());
     }
     // `--since` defaults to full history.
     let since_raw = get(args, "since").unwrap_or_else(|| "1970-01-01T00:00:00Z".into());
     let since_millis = parse_replica_since(&since_raw)
-        .map_err(|e| format!("tally fork: bad --since: {}", e))?;
+        .map_err(|e| format!("beava fork: bad --since: {}", e))?;
     let keys = get(args, "keys").map(|s| {
         s.split(',')
             .map(|k| k.trim().to_string())
@@ -235,21 +235,21 @@ fn parse_fork_args_from(args: &[String]) -> Result<ReplicaBootConfig, String> {
     });
     let key_prefix = get(args, "key-prefix");
     if keys.is_some() && key_prefix.is_some() {
-        return Err("tally fork: --keys and --key-prefix are mutually exclusive".into());
+        return Err("beava fork: --keys and --key-prefix are mutually exclusive".into());
     }
     let token = get(args, "token")
-        .or_else(|| std::env::var("TALLY_REPLICA_TOKEN").ok())
+        .or_else(|| std::env::var("BEAVA_REPLICA_TOKEN").ok())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
-            "tally fork: --token (or TALLY_REPLICA_TOKEN env var) required".to_string()
+            "beava fork: --token (or BEAVA_REPLICA_TOKEN env var) required".to_string()
         })?;
     // `--local-port` defaults to 7400.
     let local_port_raw = get(args, "local-port").unwrap_or_else(|| "7400".into());
     let local_port: u16 = local_port_raw
         .parse()
-        .map_err(|_| format!("tally fork: bad --local-port '{}'", local_port_raw))?;
+        .map_err(|_| format!("beava fork: bad --local-port '{}'", local_port_raw))?;
     if local_port == 0 {
-        return Err("tally fork: --local-port must be > 0".into());
+        return Err("beava fork: --local-port must be > 0".into());
     }
     let pipeline_file = get(args, "pipeline-file").map(std::path::PathBuf::from);
     // Phase 44-01: scientist-facing `--extract-at T1,T2,...` → translate to
@@ -264,7 +264,7 @@ fn parse_fork_args_from(args: &[String]) -> Result<ReplicaBootConfig, String> {
                     continue;
                 }
                 let ms = parse_replica_since(t).map_err(|e| {
-                    format!("tally fork: bad --extract-at entry '{}': {}", t, e)
+                    format!("beava fork: bad --extract-at entry '{}': {}", t, e)
                 })?;
                 out.push(ms);
             }
@@ -289,16 +289,16 @@ fn parse_fork_args_from(args: &[String]) -> Result<ReplicaBootConfig, String> {
 
 fn print_fork_help() {
     eprintln!(
-        "usage: tally fork --remote HOST:PORT --streams s1,s2 [OPTIONS]\n\
+        "usage: beava fork --remote HOST:PORT --streams s1,s2 [OPTIONS]\n\
          \n\
-         Scoped local replica for scientists. Wraps `tally --replica-*` with\n\
+         Scoped local replica for scientists. Wraps `beava --replica-*` with\n\
          scientist-friendly defaults: blocks until catchup, picks a loopback\n\
          local port, defaults `--since` to full history.\n\
          \n\
          Required flags:\n\
-           --remote HOST:PORT      Upstream tally cluster.\n\
+           --remote HOST:PORT      Upstream beava cluster.\n\
            --streams s1,s2,...     Streams to replicate.\n\
-           --token TOKEN           Admin token (or TALLY_REPLICA_TOKEN env).\n\
+           --token TOKEN           Admin token (or BEAVA_REPLICA_TOKEN env).\n\
          \n\
          Optional flags:\n\
            --since TS              ISO-8601 UTC or u64 ms; default 1970-01-01T00:00:00Z.\n\
@@ -312,7 +312,7 @@ fn print_fork_help() {
                                    key feature state as it crosses each Tᵢ;\n\
                                    query via GET /extracts after catchup.\n\
          \n\
-         Python-authored pipelines: launch `tally fork` without --pipeline-file,\n\
+         Python-authored pipelines: launch `beava fork` without --pipeline-file,\n\
          then from Python run `tl.register(pipeline, remote=\"localhost:PORT\")`\n\
          after the fork prints its ready banner.\n"
     );
@@ -441,10 +441,10 @@ fn parse_replica_boot_config() -> Result<Option<ReplicaBootConfig>, String> {
         return Err("--replica-keys and --replica-key-prefix are mutually exclusive".into());
     }
     let token = arg_value("replica-token")
-        .or_else(|| std::env::var("TALLY_REPLICA_TOKEN").ok())
+        .or_else(|| std::env::var("BEAVA_REPLICA_TOKEN").ok())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
-            "--replica-token (or TALLY_REPLICA_TOKEN env var) required in replica mode".to_string()
+            "--replica-token (or BEAVA_REPLICA_TOKEN env var) required in replica mode".to_string()
         })?;
     // Default true per 36-CONTEXT.md §Listener gating.
     let block_until_catchup = match arg_value("replica-block-until-catchup") {
@@ -514,15 +514,15 @@ fn seed_pipelines_from_file(
         let name = if is_v0 {
             let v0_bytes = serde_json::to_vec(&item)
                 .map_err(|e| format!("v0 REGISTER: re-serialize failed: {}", e))?;
-            let parsed = tally::engine::register::V0RegisterPayload::parse(&v0_bytes)
+            let parsed = beava::engine::register::V0RegisterPayload::parse(&v0_bytes)
                 .map_err(|e| format!("parse v0 REGISTER: {}", e))?;
             let stream_def = match &parsed {
-                tally::engine::register::V0RegisterPayload::Source(desc) => {
-                    tally::engine::register::v0_source_to_stream_def(desc)
+                beava::engine::register::V0RegisterPayload::Source(desc) => {
+                    beava::engine::register::v0_source_to_stream_def(desc)
                         .map_err(|e| format!("v0 source → stream_def: {}", e))?
                 }
-                tally::engine::register::V0RegisterPayload::Aggregation(desc) => {
-                    tally::engine::register::v0_aggregation_to_stream_def(desc)
+                beava::engine::register::V0RegisterPayload::Aggregation(desc) => {
+                    beava::engine::register::v0_aggregation_to_stream_def(desc)
                         .map_err(|e| format!("v0 aggregation → stream_def: {}", e))?
                 }
                 other => {
@@ -576,27 +576,27 @@ fn seed_pipelines_from_file(
 }
 
 async fn async_main() {
-    let tcp_port = std::env::var("TALLY_TCP_PORT").unwrap_or_else(|_| "6400".into());
-    let http_port = std::env::var("TALLY_HTTP_PORT").unwrap_or_else(|_| "6401".into());
+    let tcp_port = std::env::var("BEAVA_TCP_PORT").unwrap_or_else(|_| "6400".into());
+    let http_port = std::env::var("BEAVA_HTTP_PORT").unwrap_or_else(|_| "6401".into());
     let snapshot_path = PathBuf::from(
-        std::env::var("TALLY_SNAPSHOT_PATH").unwrap_or_else(|_| "tally.snapshot".into()),
+        std::env::var("BEAVA_SNAPSHOT_PATH").unwrap_or_else(|_| "beava.snapshot".into()),
     );
-    let ttl_multiplier: u32 = std::env::var("TALLY_TTL_MULTIPLIER")
+    let ttl_multiplier: u32 = std::env::var("BEAVA_TTL_MULTIPLIER")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(2);
 
-    let event_log_enabled = std::env::var("TALLY_EVENT_LOG")
+    let event_log_enabled = std::env::var("BEAVA_EVENT_LOG")
         .map(|v| v != "false" && v != "0")
         .unwrap_or(true);
-    let snapshot_enabled = std::env::var("TALLY_SNAPSHOT")
+    let snapshot_enabled = std::env::var("BEAVA_SNAPSHOT")
         .map(|v| v != "false" && v != "0")
         .unwrap_or(true);
 
     // Phase 20 (TRAC-05): TCP listener defaults to loopback so the raw TCP
     // protocol (PUSH/SET/MSET/REGISTER) is never reachable on the public
     // internet unless the operator opts in via `--tcp-bind 0.0.0.0`.
-    let tcp_bind_env = std::env::var("TALLY_TCP_BIND").ok();
+    let tcp_bind_env = std::env::var("BEAVA_TCP_BIND").ok();
     let tcp_bind_cli = arg_value("tcp-bind");
     let tcp_addr = resolve_tcp_bind(tcp_bind_env.as_deref(), tcp_bind_cli.as_deref(), &tcp_port);
     // HTTP continues to bind 0.0.0.0 — it is the public surface (deploy/Caddyfile
@@ -606,18 +606,18 @@ async fn async_main() {
     // Phase 20: admin bearer token (TRAC-05). Presence is optional — without
     // one, admin routes only work from loopback. Public demo hosts set this so
     // ops can call admin routes through the Caddy reverse-proxy.
-    let admin_token = std::env::var("TALLY_ADMIN_TOKEN").ok().filter(|s| !s.is_empty());
+    let admin_token = std::env::var("BEAVA_ADMIN_TOKEN").ok().filter(|s| !s.is_empty());
     // Phase 20: public-mode toggle (TRAC-06). When set, `GET /` serves
     // `demo.html` from the embed root. Otherwise it serves the debug UI.
     let public_mode = arg_flag("public-mode")
-        || std::env::var("TALLY_PUBLIC_MODE")
+        || std::env::var("BEAVA_PUBLIC_MODE")
             .map(|v| v != "false" && v != "0")
             .unwrap_or(false);
 
     // Initialize event log directory (skip if disabled)
     let event_log = if event_log_enabled {
         let event_log_dir =
-            PathBuf::from(std::env::var("TALLY_DATA_DIR").unwrap_or_else(|_| ".".into()))
+            PathBuf::from(std::env::var("BEAVA_DATA_DIR").unwrap_or_else(|_| ".".into()))
                 .join("events");
         EventLog::new(event_log_dir).map(Some).unwrap_or_else(|e| {
             eprintln!("Failed to initialize event log: {}", e);
@@ -645,7 +645,7 @@ async fn async_main() {
     // Phase 9: how often to write a full base snapshot. Every Nth cycle is a
     // base, all other cycles are deltas. Default 10 (= one base per ~5 minutes
     // at the default 30s interval).
-    let full_snapshot_interval: u64 = std::env::var("TALLY_FULL_SNAPSHOT_INTERVAL")
+    let full_snapshot_interval: u64 = std::env::var("BEAVA_FULL_SNAPSHOT_INTERVAL")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
@@ -684,7 +684,7 @@ async fn async_main() {
                     if let Ok(req) = req {
                         let def_name = req.name.clone();
                         let is_view = req.definition_type.as_deref() == Some("view");
-                        let registered: Result<(), tally::error::TallyError> = if is_view {
+                        let registered: Result<(), beava::error::BeavaError> = if is_view {
                             convert_view_register_request(req)
                                 .and_then(|view_def| engine.register_view(view_def))
                         } else {
@@ -731,7 +731,7 @@ async fn async_main() {
                 let missing: Vec<String> = stream
                     .features
                     .iter()
-                    .filter(|(_, def)| tally::engine::pipeline::get_backfill_flag(def))
+                    .filter(|(_, def)| beava::engine::pipeline::get_backfill_flag(def))
                     .filter(|(name, _)| !bc.contains(&(stream.name.clone(), name.clone())))
                     .map(|(name, _)| name.clone())
                     .collect();
@@ -786,7 +786,7 @@ async fn async_main() {
     // Listener startup waits on `catchup_done_rx` when
     // `--replica-block-until-catchup=true` (the default).
     let replica_boot = if let Some(cfg) = FORK_CONFIG.get() {
-        // Phase 37-01: `tally fork` path — config was synthesized in main().
+        // Phase 37-01: `beava fork` path — config was synthesized in main().
         Some(cfg.clone())
     } else {
         match parse_replica_boot_config() {
@@ -1003,13 +1003,13 @@ async fn async_main() {
                     let (bytes, filename) = match snapshot_data {
                         SnapshotData::Base(base) => {
                             let bytes = save_base_snapshot(&base).map_err(std::io::Error::other)?;
-                            let filename = format!("tally.snapshot.base.{:010}", seq);
+                            let filename = format!("beava.snapshot.base.{:010}", seq);
                             Ok::<(Vec<u8>, String), std::io::Error>((bytes, filename))
                         }
                         SnapshotData::Delta(delta) => {
                             let bytes =
                                 save_delta_snapshot(&delta).map_err(std::io::Error::other)?;
-                            let filename = format!("tally.snapshot.delta.{:010}", seq);
+                            let filename = format!("beava.snapshot.delta.{:010}", seq);
                             Ok((bytes, filename))
                         }
                     }?;
@@ -1058,14 +1058,14 @@ async fn async_main() {
                         // Phase 25-02: emit operational signal so the failure
                         // surfaces on /debug/warnings. record() does no disk
                         // I/O, so we cannot recurse on repeat failures.
-                        tally::server::signals::emit_snapshot_failure(
+                        beava::server::signals::emit_snapshot_failure(
                             &snap_state.signals,
                             &format!("{}", e),
                         );
                     }
                     Err(e) => {
                         eprintln!("Snapshot task panicked: {}", e);
-                        tally::server::signals::emit_snapshot_failure(
+                        beava::server::signals::emit_snapshot_failure(
                             &snap_state.signals,
                             &format!("snapshot task panicked: {}", e),
                         );
@@ -1093,7 +1093,7 @@ async fn async_main() {
             // Phase 25-02: evict expired Table rows (per-Table TTL) and record
             // each eviction in the EvictionTracker so eviction→reinit signals
             // surface on /metrics and /debug/config-recommendations.
-            let table_evicted = tally::state::eviction::evict_expired_table_rows(
+            let table_evicted = beava::state::eviction::evict_expired_table_rows(
                 &evict_state.store,
                 &engine,
                 &evict_state.eviction_tracker,
@@ -1188,13 +1188,13 @@ async fn async_main() {
     {
         let engine = state.engine.read();
         let recs =
-            tally::engine::recommend::recommend_config(&engine, &state.eviction_tracker);
+            beava::engine::recommend::recommend_config(&engine, &state.eviction_tracker);
         drop(engine);
         if !recs.is_empty() {
             if recs.len() > 3 {
                 eprintln!(
                     "advisory: {} config recommendations available; run \
-                     'tally suggest-config' or query /debug/config-recommendations",
+                     'beava suggest-config' or query /debug/config-recommendations",
                     recs.len()
                 );
             } else {
@@ -1227,8 +1227,8 @@ fn cleanup_old_snapshots(dir: &Path, current_base_seq: u64) {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
         let seq_opt = name_str
-            .strip_prefix("tally.snapshot.base.")
-            .or_else(|| name_str.strip_prefix("tally.snapshot.delta."));
+            .strip_prefix("beava.snapshot.base.")
+            .or_else(|| name_str.strip_prefix("beava.snapshot.delta."));
         if let Some(seq_str) = seq_opt {
             if let Ok(seq) = seq_str.parse::<u64>() {
                 if seq < current_base_seq {
@@ -1251,11 +1251,11 @@ pub(crate) fn load_incremental_snapshots(
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy().into_owned();
-            if let Some(seq_str) = name_str.strip_prefix("tally.snapshot.base.") {
+            if let Some(seq_str) = name_str.strip_prefix("beava.snapshot.base.") {
                 if let Ok(seq) = seq_str.parse::<u64>() {
                     bases.push((seq, entry.path()));
                 }
-            } else if let Some(seq_str) = name_str.strip_prefix("tally.snapshot.delta.") {
+            } else if let Some(seq_str) = name_str.strip_prefix("beava.snapshot.delta.") {
                 if let Ok(seq) = seq_str.parse::<u64>() {
                     deltas.push((seq, entry.path()));
                 }
@@ -1363,7 +1363,7 @@ mod replica_cli_tests {
     }
 }
 
-// ================ Phase 37-01: `tally fork` flag parser tests =============
+// ================ Phase 37-01: `beava fork` flag parser tests =============
 
 #[cfg(test)]
 mod fork_cli_tests {
@@ -1376,7 +1376,7 @@ mod fork_cli_tests {
     #[test]
     fn parses_minimal_happy_path() {
         let args = argv(&[
-            "tally",
+            "beava",
             "fork",
             "--remote",
             "localhost:6400",
@@ -1401,7 +1401,7 @@ mod fork_cli_tests {
     #[test]
     fn parses_all_flags() {
         let args = argv(&[
-            "tally",
+            "beava",
             "fork",
             "--remote",
             "10.0.0.1:7000",
@@ -1431,7 +1431,7 @@ mod fork_cli_tests {
     #[test]
     fn accepts_eq_form() {
         let args = argv(&[
-            "tally",
+            "beava",
             "fork",
             "--remote=h:1",
             "--streams=s",
@@ -1443,14 +1443,14 @@ mod fork_cli_tests {
 
     #[test]
     fn rejects_missing_remote() {
-        let args = argv(&["tally", "fork", "--streams", "s", "--token", "t"]);
+        let args = argv(&["beava", "fork", "--streams", "s", "--token", "t"]);
         let err = parse_fork_args_from(&args).unwrap_err();
         assert!(err.contains("--remote"), "{}", err);
     }
 
     #[test]
     fn rejects_missing_streams() {
-        let args = argv(&["tally", "fork", "--remote", "h:1", "--token", "t"]);
+        let args = argv(&["beava", "fork", "--remote", "h:1", "--token", "t"]);
         let err = parse_fork_args_from(&args).unwrap_err();
         assert!(err.contains("--streams"), "{}", err);
     }
@@ -1458,20 +1458,20 @@ mod fork_cli_tests {
     #[test]
     fn rejects_missing_token_without_env() {
         // Ensure env is not set for this test.
-        let saved = std::env::var("TALLY_REPLICA_TOKEN").ok();
-        std::env::remove_var("TALLY_REPLICA_TOKEN");
-        let args = argv(&["tally", "fork", "--remote", "h:1", "--streams", "s"]);
+        let saved = std::env::var("BEAVA_REPLICA_TOKEN").ok();
+        std::env::remove_var("BEAVA_REPLICA_TOKEN");
+        let args = argv(&["beava", "fork", "--remote", "h:1", "--streams", "s"]);
         let err = parse_fork_args_from(&args).unwrap_err();
         assert!(err.contains("--token"), "{}", err);
         if let Some(v) = saved {
-            std::env::set_var("TALLY_REPLICA_TOKEN", v);
+            std::env::set_var("BEAVA_REPLICA_TOKEN", v);
         }
     }
 
     #[test]
     fn rejects_ambiguous_since() {
         let args = argv(&[
-            "tally",
+            "beava",
             "fork",
             "--remote",
             "h:1",
@@ -1488,7 +1488,7 @@ mod fork_cli_tests {
     #[test]
     fn rejects_keys_and_key_prefix_mutex() {
         let args = argv(&[
-            "tally",
+            "beava",
             "fork",
             "--remote",
             "h:1",
@@ -1508,7 +1508,7 @@ mod fork_cli_tests {
     #[test]
     fn rejects_invalid_local_port() {
         let args = argv(&[
-            "tally",
+            "beava",
             "fork",
             "--remote",
             "h:1",
@@ -1525,7 +1525,7 @@ mod fork_cli_tests {
     #[test]
     fn rejects_zero_local_port() {
         let args = argv(&[
-            "tally",
+            "beava",
             "fork",
             "--remote",
             "h:1",
@@ -1541,7 +1541,7 @@ mod fork_cli_tests {
 
     #[test]
     fn help_flag_returns_help_sentinel() {
-        let args = argv(&["tally", "fork", "--help"]);
+        let args = argv(&["beava", "fork", "--help"]);
         let err = parse_fork_args_from(&args).unwrap_err();
         assert_eq!(err, "__HELP__");
     }
@@ -1550,7 +1550,7 @@ mod fork_cli_tests {
     #[test]
     fn parses_extract_at_iso8601_list_and_sorts() {
         let args = argv(&[
-            "tally",
+            "beava",
             "fork",
             "--remote",
             "h:1",
@@ -1582,7 +1582,7 @@ mod fork_cli_tests {
     #[test]
     fn parses_extract_at_u64_millis_mix() {
         let args = argv(&[
-            "tally",
+            "beava",
             "fork",
             "--remote",
             "h:1",
@@ -1600,7 +1600,7 @@ mod fork_cli_tests {
     #[test]
     fn extract_at_default_empty_when_absent() {
         let args = argv(&[
-            "tally", "fork", "--remote", "h:1", "--streams", "s", "--token", "t",
+            "beava", "fork", "--remote", "h:1", "--streams", "s", "--token", "t",
         ]);
         let cfg = parse_fork_args_from(&args).unwrap();
         assert!(cfg.extract_at_millis.is_empty());
@@ -1609,7 +1609,7 @@ mod fork_cli_tests {
     #[test]
     fn rejects_bad_extract_at_entry() {
         let args = argv(&[
-            "tally",
+            "beava",
             "fork",
             "--remote",
             "h:1",
@@ -1632,11 +1632,11 @@ mod seed_pipelines_tests {
     use super::seed_pipelines_from_file;
     use std::io::Write;
     use std::sync::Arc;
-    use tally::engine::pipeline::PipelineEngine;
-    use tally::server::tcp::{make_concurrent_state, BackfillTracker};
-    use tally::state::store::StateStore;
+    use beava::engine::pipeline::PipelineEngine;
+    use beava::server::tcp::{make_concurrent_state, BackfillTracker};
+    use beava::state::store::StateStore;
 
-    fn fresh_state() -> tally::server::tcp::SharedState {
+    fn fresh_state() -> beava::server::tcp::SharedState {
         let tmp = tempfile::tempdir().unwrap();
         let snapshot_path = tmp.path().join("snap");
         // Leak tempdir so the path is valid for the life of the test; tests are

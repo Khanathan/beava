@@ -1,7 +1,7 @@
 """Phase 35-01: cross-language wire-contract test for OP_LOG_FETCH.
 
 Two asyncio clients open raw-socket `OP_LOG_FETCH` requests against the real
-Rust tally binary after a driver pushes a known set of events. The test
+Rust beava binary after a driver pushes a known set of events. The test
 asserts:
 
   1. wire_contract_reads_event_frames_then_end — the response frame stream
@@ -17,7 +17,7 @@ We do NOT decode the binary body — substring matching on the user_id
 bytes is enough to verify scope filtering without pulling in a
 language-level codec.
 
-Skipped cleanly if the `tally` binary hasn't been built.
+Skipped cleanly if the `beava` binary hasn't been built.
 """
 
 from __future__ import annotations
@@ -35,8 +35,8 @@ from typing import Tuple
 import pytest
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_RELEASE_BIN = _PROJECT_ROOT / "target" / "release" / "tally"
-_DEBUG_BIN = _PROJECT_ROOT / "target" / "debug" / "tally"
+_RELEASE_BIN = _PROJECT_ROOT / "target" / "release" / "beava"
+_DEBUG_BIN = _PROJECT_ROOT / "target" / "debug" / "beava"
 
 ADMIN_TOKEN = "asyncio-test-admin"
 OP_PUSH = 0x01
@@ -168,7 +168,7 @@ def _wait_for_tcp(host: str, port: int, timeout: float = 15.0) -> None:
                 return
         except OSError:
             time.sleep(0.1)
-    raise RuntimeError(f"tally did not become ready on {host}:{port}")
+    raise RuntimeError(f"beava did not become ready on {host}:{port}")
 
 
 def _register_stream_http(http_port: int, name: str) -> None:
@@ -198,24 +198,24 @@ def _register_stream_http(http_port: int, name: str) -> None:
 
 
 @pytest.fixture
-def tally_server():
-    """Spawn a fresh tally binary on ephemeral ports with event_log enabled
+def beava_server():
+    """Spawn a fresh beava binary on ephemeral ports with event_log enabled
     so PUSH writes land on disk and LOG_FETCH can read them back."""
     binary = _pick_binary()
     if binary is None:
-        pytest.skip("tally binary not built; run `cargo build` to enable this test")
+        pytest.skip("beava binary not built; run `cargo build` to enable this test")
 
     tmp = tempfile.TemporaryDirectory()
     tcp_port = _find_free_port()
     http_port = _find_free_port()
     env = os.environ.copy()
-    env["TALLY_TCP_PORT"] = str(tcp_port)
-    env["TALLY_HTTP_PORT"] = str(http_port)
-    env["TALLY_ADMIN_TOKEN"] = ADMIN_TOKEN
-    env["TALLY_SNAPSHOT_PATH"] = str(Path(tmp.name) / "tally.snapshot")
-    env["TALLY_SNAPSHOT"] = "1"
-    env["TALLY_EVENT_LOG"] = "1"
-    env["TALLY_DATA_DIR"] = tmp.name
+    env["BEAVA_TCP_PORT"] = str(tcp_port)
+    env["BEAVA_HTTP_PORT"] = str(http_port)
+    env["BEAVA_ADMIN_TOKEN"] = ADMIN_TOKEN
+    env["BEAVA_SNAPSHOT_PATH"] = str(Path(tmp.name) / "beava.snapshot")
+    env["BEAVA_SNAPSHOT"] = "1"
+    env["BEAVA_EVENT_LOG"] = "1"
+    env["BEAVA_DATA_DIR"] = tmp.name
 
     proc = subprocess.Popen(
         [str(binary)],
@@ -293,10 +293,10 @@ async def _log_fetch(
 
 
 @pytest.mark.timeout(60)
-def test_wire_contract_reads_event_frames_then_end(tally_server):
+def test_wire_contract_reads_event_frames_then_end(beava_server):
     """Push 5 events to `orders`, fetch with from_ts=0, verify frame count
     and END frame and timestamp monotonicity on the wire."""
-    host, tcp_port, _http_port = tally_server
+    host, tcp_port, _http_port = beava_server
 
     async def _run():
         for k in ("k1", "k2", "k3", "k4", "k5"):
@@ -329,10 +329,10 @@ def test_wire_contract_reads_event_frames_then_end(tally_server):
 
 
 @pytest.mark.timeout(60)
-def test_scope_isolation_across_two_clients(tally_server):
+def test_scope_isolation_across_two_clients(beava_server):
     """Two clients with disjoint scopes (orders vs clicks) see disjoint
     event sets from a shared log."""
-    host, tcp_port, _http_port = tally_server
+    host, tcp_port, _http_port = beava_server
 
     async def _run():
         # Interleaved pushes across two streams.

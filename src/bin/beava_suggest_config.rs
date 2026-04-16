@@ -1,4 +1,4 @@
-//! `tally suggest-config` — CLI that hits `/debug/config-recommendations`
+//! `beava suggest-config` — CLI that hits `/debug/config-recommendations`
 //! and prints one-line-per-recommendation summaries grouped by pipeline name.
 //!
 //! Phase 25-02: zero new HTTP dependency. Uses a minimal blocking HTTP/1.1
@@ -12,7 +12,7 @@ use std::time::Duration;
 
 fn print_usage() {
     eprintln!(
-        "usage: tally_suggest_config [--addr URL] [--token TOKEN]\n\
+        "usage: beava_suggest_config [--addr URL] [--token TOKEN]\n\
          \n\
          Hits GET {{addr}}/debug/config-recommendations and prints a terse\n\
          summary. Default addr: http://localhost:6401.\n\
@@ -160,7 +160,7 @@ fn main() {
         std::process::exit(0);
     }
 
-    println!("# tally suggest-config — {} recommendation(s)", recs.len());
+    println!("# beava suggest-config — {} recommendation(s)", recs.len());
     for r in &recs {
         let knob = r.get("knob").and_then(|v| v.as_str()).unwrap_or("?");
         let current = r.get("current").and_then(|v| v.as_str()).unwrap_or("?");

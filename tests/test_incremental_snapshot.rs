@@ -14,15 +14,15 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tally::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use tally::state::eviction::evict_expired_keys;
-use tally::state::snapshot::{
+use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
+use beava::state::eviction::evict_expired_keys;
+use beava::state::snapshot::{
     load_legacy_v5, load_snapshot_file, save_base_snapshot, save_delta_snapshot, BaseSnapshotState,
     DeltaSnapshotState, SerializablePipeline, SnapshotFile, SnapshotHeader, SnapshotState,
     SnapshotType, LEGACY_V5_FORMAT, SNAPSHOT_FORMAT_VERSION,
 };
-use tally::state::store::StateStore;
-use tally::types::FeatureValue;
+use beava::state::store::StateStore;
+use beava::types::FeatureValue;
 
 fn ts(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)
@@ -140,7 +140,7 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
         backfill_complete: vec![],
     };
     let bytes = save_base_snapshot(&base).unwrap();
-    std::fs::write(snap_dir.join("tally.snapshot.base.0000000000"), &bytes).unwrap();
+    std::fs::write(snap_dir.join("beava.snapshot.base.0000000000"), &bytes).unwrap();
     store.clear_dirty();
     let _ = store.take_deleted();
 
@@ -156,7 +156,7 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
         deleted_keys: vec![],
     };
     let bytes = save_delta_snapshot(&delta1).unwrap();
-    std::fs::write(snap_dir.join("tally.snapshot.delta.0000000001"), &bytes).unwrap();
+    std::fs::write(snap_dir.join("beava.snapshot.delta.0000000001"), &bytes).unwrap();
     store.clear_dirty();
 
     // Cycle 2: update u1 -> delta with only u1 (seq=2)
@@ -171,7 +171,7 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
         deleted_keys: vec![],
     };
     let bytes = save_delta_snapshot(&delta2).unwrap();
-    std::fs::write(snap_dir.join("tally.snapshot.delta.0000000002"), &bytes).unwrap();
+    std::fs::write(snap_dir.join("beava.snapshot.delta.0000000002"), &bytes).unwrap();
 
     // Now recover from disk: load base + apply deltas in order.
     let (merged, next_seq) = recover_from_dir(&snap_dir).expect("recovery should succeed");
@@ -225,7 +225,7 @@ fn test_incremental_snapshot_deleted_keys_removed_on_recovery() {
         backfill_complete: vec![],
     };
     let bytes = save_base_snapshot(&base).unwrap();
-    std::fs::write(snap_dir.join("tally.snapshot.base.0000000000"), &bytes).unwrap();
+    std::fs::write(snap_dir.join("beava.snapshot.base.0000000000"), &bytes).unwrap();
 
     // Delta marks u2 as deleted.
     let delta = DeltaSnapshotState {
@@ -237,7 +237,7 @@ fn test_incremental_snapshot_deleted_keys_removed_on_recovery() {
         deleted_keys: vec!["u2".into()],
     };
     let bytes = save_delta_snapshot(&delta).unwrap();
-    std::fs::write(snap_dir.join("tally.snapshot.delta.0000000001"), &bytes).unwrap();
+    std::fs::write(snap_dir.join("beava.snapshot.delta.0000000001"), &bytes).unwrap();
 
     // Recover.
     let (merged, next_seq) = recover_from_dir(&snap_dir).unwrap();
@@ -387,11 +387,11 @@ fn recover_from_dir(snap_dir: &std::path::Path) -> Option<(SnapshotState, u64)> 
     for entry in std::fs::read_dir(snap_dir).ok()?.flatten() {
         let name = entry.file_name();
         let name_str = name.to_string_lossy().into_owned();
-        if let Some(seq_str) = name_str.strip_prefix("tally.snapshot.base.") {
+        if let Some(seq_str) = name_str.strip_prefix("beava.snapshot.base.") {
             if let Ok(seq) = seq_str.parse::<u64>() {
                 bases.push((seq, entry.path()));
             }
-        } else if let Some(seq_str) = name_str.strip_prefix("tally.snapshot.delta.") {
+        } else if let Some(seq_str) = name_str.strip_prefix("beava.snapshot.delta.") {
             if let Ok(seq) = seq_str.parse::<u64>() {
                 deltas.push((seq, entry.path()));
             }

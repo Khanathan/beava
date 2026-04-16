@@ -1,4 +1,4 @@
-//! Integration tests for the Tally TCP + HTTP server.
+//! Integration tests for the Beava TCP + HTTP server.
 //!
 //! Tests all SRV-* requirements by starting a real server on random ports
 //! and sending binary protocol frames over TCP connections.
@@ -16,13 +16,13 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use tally::engine::pipeline::PipelineEngine;
-use tally::server::protocol::{
+use beava::engine::pipeline::PipelineEngine;
+use beava::server::protocol::{
     self, OP_FLUSH, OP_GET, OP_MSET, OP_PUSH, OP_PUSH_ASYNC, OP_REGISTER, OP_SET, STATUS_ERROR,
     STATUS_OK, TYPE_BOOL, TYPE_F64, TYPE_I64, TYPE_NULL, TYPE_STR,
 };
-use tally::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
-use tally::state::store::StateStore;
+use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
+use beava::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
 // Test server helper
@@ -50,7 +50,7 @@ async fn start_test_server() -> (u16, u16, SharedState) {
     // Spawn TCP accept loop using pre-bound listener
     let tcp_state = state.clone();
     tokio::spawn(async move {
-        tally::server::tcp::run_tcp_server_with_listener(tcp_listener, tcp_state)
+        beava::server::tcp::run_tcp_server_with_listener(tcp_listener, tcp_state)
             .await
             .unwrap();
     });
@@ -58,7 +58,7 @@ async fn start_test_server() -> (u16, u16, SharedState) {
     // Spawn HTTP server using pre-bound listener
     let http_state = state.clone();
     tokio::spawn(async move {
-        tally::server::http::run_http_server_with_listener(http_listener, http_state)
+        beava::server::http::run_http_server_with_listener(http_listener, http_state)
             .await
             .unwrap();
     });
@@ -890,25 +890,25 @@ async fn test_metrics_endpoint() {
     let (status, body) = http_get(http_port, "/metrics").await;
     assert_eq!(status, 200);
     assert!(
-        body.contains("tally_keys_total"),
-        "Metrics should contain tally_keys_total, got: {}",
+        body.contains("beava_keys_total"),
+        "Metrics should contain beava_keys_total, got: {}",
         body
     );
     assert!(
-        body.contains("tally_events_total"),
-        "Metrics should contain tally_events_total"
+        body.contains("beava_events_total"),
+        "Metrics should contain beava_events_total"
     );
     assert!(
-        body.contains("tally_push_latency_seconds"),
-        "Metrics should contain tally_push_latency_seconds"
+        body.contains("beava_push_latency_seconds"),
+        "Metrics should contain beava_push_latency_seconds"
     );
     assert!(
-        body.contains("tally_snapshot_duration_seconds"),
-        "Metrics should contain tally_snapshot_duration_seconds"
+        body.contains("beava_snapshot_duration_seconds"),
+        "Metrics should contain beava_snapshot_duration_seconds"
     );
     assert!(
-        body.contains("tally_memory_bytes"),
-        "Metrics should contain tally_memory_bytes"
+        body.contains("beava_memory_bytes"),
+        "Metrics should contain beava_memory_bytes"
     );
 }
 

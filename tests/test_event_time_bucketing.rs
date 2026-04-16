@@ -21,14 +21,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use tally::engine::event_time::WATERMARK_LATENESS;
-use tally::engine::pipeline::PipelineEngine;
-use tally::engine::window::RingBuffer;
-use tally::server::protocol::{
+use beava::engine::event_time::WATERMARK_LATENESS;
+use beava::engine::pipeline::PipelineEngine;
+use beava::engine::window::RingBuffer;
+use beava::server::protocol::{
     self, OP_PUSH, OP_REGISTER, STATUS_OK, TYPE_I64, TYPE_STR,
 };
-use tally::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
-use tally::state::store::StateStore;
+use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
+use beava::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
 // Ring-buffer level: event-time bucket routing
@@ -125,7 +125,7 @@ async fn start_test_server() -> (u16, SharedState) {
 
     let tcp_state = state.clone();
     tokio::spawn(async move {
-        tally::server::tcp::run_tcp_server_with_listener(tcp_listener, tcp_state)
+        beava::server::tcp::run_tcp_server_with_listener(tcp_listener, tcp_state)
             .await
             .unwrap();
     });
@@ -350,7 +350,7 @@ async fn out_of_order_within_5s_lands_in_correct_bucket() {
     let v = merged
         .get("clicks_1h")
         .expect("clicks_1h feature present in merged view");
-    use tally::types::FeatureValue;
+    use beava::types::FeatureValue;
     match v {
         FeatureValue::Int(n) => assert_eq!(*n, 2, "expected 2 events in window; got {}", n),
         other => panic!("expected Int count; got {:?}", other),

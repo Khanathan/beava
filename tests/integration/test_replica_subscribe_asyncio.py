@@ -1,7 +1,7 @@
 """Phase 27-02, Task 3: cross-language wire-contract test for OP_SUBSCRIBE.
 
 Two raw-socket asyncio clients open `OP_SUBSCRIBE` sessions against the real
-Rust tally binary. Scope A = [orders]; Scope B = [clicks]. A test driver
+Rust beava binary. Scope A = [orders]; Scope B = [clicks]. A test driver
 interleaves pushes to both streams; the test asserts each client receives
 ONLY its scope-matching events, in the accept order of the matching pushes.
 
@@ -11,11 +11,11 @@ is the only ordering the server commits to.
 
 Frame decoding is shallow: the test parses the documented event-frame shape
 `[u32 len][u8 tag=0x03][u64 secs][u32 nanos][u32 payload_len][payload]` and
-then uses `json.loads` on the payload (tally's JSON PUSH path sends the
+then uses `json.loads` on the payload (beava's JSON PUSH path sends the
 client's event dict verbatim). No postcard decoder is needed — SUBSCRIBE
 frames carry JSON payload bytes, not postcard.
 
-Skipped cleanly if the `tally` binary hasn't been built.
+Skipped cleanly if the `beava` binary hasn't been built.
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ from typing import Tuple
 import pytest
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_RELEASE_BIN = _PROJECT_ROOT / "target" / "release" / "tally"
-_DEBUG_BIN = _PROJECT_ROOT / "target" / "debug" / "tally"
+_RELEASE_BIN = _PROJECT_ROOT / "target" / "release" / "beava"
+_DEBUG_BIN = _PROJECT_ROOT / "target" / "debug" / "beava"
 
 ADMIN_TOKEN = "asyncio-test-admin"
 OP_PUSH = 0x01
@@ -143,7 +143,7 @@ def _wait_for_tcp(host: str, port: int, timeout: float = 15.0) -> None:
                 return
         except OSError:
             time.sleep(0.1)
-    raise RuntimeError(f"tally did not become ready on {host}:{port}")
+    raise RuntimeError(f"beava did not become ready on {host}:{port}")
 
 
 def _register_stream_http(http_port: int, name: str) -> None:
@@ -173,23 +173,23 @@ def _register_stream_http(http_port: int, name: str) -> None:
 
 
 @pytest.fixture
-def tally_server():
-    """Spawn a fresh tally binary on ephemeral ports. No seeded snapshot —
+def beava_server():
+    """Spawn a fresh beava binary on ephemeral ports. No seeded snapshot —
     subscribe delivers live events only, so the server starts with an empty
     state and we register `orders` + `clicks` via HTTP."""
     binary = _pick_binary()
     if binary is None:
-        pytest.skip("tally binary not built; run `cargo build` to enable this test")
+        pytest.skip("beava binary not built; run `cargo build` to enable this test")
 
     tmp = tempfile.TemporaryDirectory()
     tcp_port = _find_free_port()
     http_port = _find_free_port()
     env = os.environ.copy()
-    env["TALLY_TCP_PORT"] = str(tcp_port)
-    env["TALLY_HTTP_PORT"] = str(http_port)
-    env["TALLY_ADMIN_TOKEN"] = ADMIN_TOKEN
-    env["TALLY_SNAPSHOT_PATH"] = str(Path(tmp.name) / "tally.snapshot")
-    env["TALLY_SNAPSHOT"] = "1"
+    env["BEAVA_TCP_PORT"] = str(tcp_port)
+    env["BEAVA_HTTP_PORT"] = str(http_port)
+    env["BEAVA_ADMIN_TOKEN"] = ADMIN_TOKEN
+    env["BEAVA_SNAPSHOT_PATH"] = str(Path(tmp.name) / "beava.snapshot")
+    env["BEAVA_SNAPSHOT"] = "1"
 
     proc = subprocess.Popen(
         [str(binary)],
@@ -245,14 +245,14 @@ async def _push_event(host: str, port: int, stream_name: str, user_id: str) -> N
 
 
 @pytest.mark.timeout(60)
-def test_multi_subscriber_scope_isolation_and_ordering(tally_server):
+def test_multi_subscriber_scope_isolation_and_ordering(beava_server):
     """Two subscribers with disjoint scopes see only their matching events.
 
     We deliberately do NOT assert a cross-subscriber total order — the
     server commits only to per-subscriber accept-order (per
     27-CONTEXT.md §Per-connection ordering guarantee).
     """
-    host, tcp_port, _http_port = tally_server
+    host, tcp_port, _http_port = beava_server
 
     async def _run():
         # Open both subscribers before any push fires, so registration

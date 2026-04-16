@@ -2,7 +2,7 @@
 //!
 //! When a key is evicted by TTL we record it in a per-Table bloom filter; if
 //! the same key reappears within the rolling 7-day window we bump the
-//! `tally_ttl_eviction_then_reinit_total{table}` counter. That signal drives
+//! `beava_ttl_eviction_then_reinit_total{table}` counter. That signal drives
 //! the recommendation engine in `pipeline::recommend_config`.
 //!
 //! Design: hand-rolled bloom filter (no new dependency). ~1 MiB per Table at
@@ -18,7 +18,7 @@
 //!
 //! Memory bound: 256-Table cap × ~2 MiB (two slots) ≈ 512 MiB worst-case,
 //! documented in the STRIDE register as T-25-02-02 with mitigation: the
-//! `tally_bloom_memory_bytes` metric surfaces actual usage.
+//! `beava_bloom_memory_bytes` metric surfaces actual usage.
 
 use ahash::RandomState;
 use dashmap::DashMap;
@@ -168,7 +168,7 @@ impl GenerationalBloom {
 
 /// Per-Table eviction tracker. Tracks (a) evicted keys in a generational
 /// bloom filter and (b) a monotone counter of confirmed eviction→reinit
-/// events. The counter drives the `tally_ttl_eviction_then_reinit_total`
+/// events. The counter drives the `beava_ttl_eviction_then_reinit_total`
 /// metric and the recommendation engine.
 #[derive(Debug, Default)]
 pub struct EvictionTracker {
@@ -225,7 +225,7 @@ impl EvictionTracker {
 
     /// Called on entity (re)creation. Returns `true` iff the bloom says we
     /// recently evicted this key — in which case the caller should bump
-    /// `tally_ttl_eviction_then_reinit_total{table}`.
+    /// `beava_ttl_eviction_then_reinit_total{table}`.
     ///
     /// Returns `false` (and does nothing) if no bloom exists for the table
     /// yet (i.e. no eviction was ever recorded).
@@ -253,7 +253,7 @@ impl EvictionTracker {
     }
 
     /// Total memory currently held by per-Table blooms (bytes). Exposed via
-    /// `tally_bloom_memory_bytes`.
+    /// `beava_bloom_memory_bytes`.
     pub fn memory_bytes(&self) -> usize {
         let mut total = 0;
         for entry in self.per_table.iter() {

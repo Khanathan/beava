@@ -1,6 +1,6 @@
 //! Phase 36-01: replica-mode boot client.
 //!
-//! When `tally` is launched with `--replica-from HOST:PORT`, this module
+//! When `beava` is launched with `--replica-from HOST:PORT`, this module
 //! drives the CDC replay loop:
 //!
 //!   1. Connect to the upstream cluster.

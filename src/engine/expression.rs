@@ -11,7 +11,7 @@ use winnow::error::ContextError;
 use winnow::prelude::*;
 use winnow::token::{literal, take_while};
 
-use crate::error::TallyError;
+use crate::error::BeavaError;
 
 type PResult<T> = winnow::Result<T>;
 
@@ -891,19 +891,19 @@ fn eval_fn_call(name: &str, args: &[Expr], ctx: &EvalContext) -> FeatureValue {
 /// Parse an expression string into an AST.
 ///
 /// Called at pipeline registration time, not per-event.
-pub fn parse_expr(input: &str) -> Result<Expr, TallyError> {
+pub fn parse_expr(input: &str) -> Result<Expr, BeavaError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err(TallyError::Parse("empty expression".into()));
+        return Err(BeavaError::Parse("empty expression".into()));
     }
     let mut remaining = trimmed;
     let expr = parse_full_expr
         .parse_next(&mut remaining)
-        .map_err(|e| TallyError::Parse(format!("failed to parse expression '{}': {}", input, e)))?;
+        .map_err(|e| BeavaError::Parse(format!("failed to parse expression '{}': {}", input, e)))?;
     // Ensure the entire input was consumed.
     let leftover = remaining.trim();
     if !leftover.is_empty() {
-        return Err(TallyError::Parse(format!(
+        return Err(BeavaError::Parse(format!(
             "unexpected trailing input '{}' in expression '{}'",
             leftover, input
         )));

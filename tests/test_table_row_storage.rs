@@ -7,8 +7,8 @@
 use ahash::AHashMap;
 use std::time::{Duration, UNIX_EPOCH};
 
-use tally::state::store::{StateStore, TableRowState, TOMBSTONE_GRACE};
-use tally::types::FeatureValue;
+use beava::state::store::{StateStore, TableRowState, TOMBSTONE_GRACE};
+use beava::types::FeatureValue;
 
 fn ts(secs: u64) -> std::time::SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)

@@ -1,7 +1,7 @@
 """Phase 27-01, Task 3: cross-language wire-contract test for OP_SNAPSHOT_FETCH.
 
 A raw-socket Python asyncio client round-trips the `OP_SNAPSHOT_FETCH` (0x12)
-wire protocol against the real Rust tally binary. Proves:
+wire protocol against the real Rust beava binary. Proves:
 
   * The admin-token + Scope request encoding defined in
     `src/server/protocol.rs` can be produced from Python.
@@ -17,7 +17,7 @@ a full postcard decoder for nested operator/table/static-feature types.
 Nested bytes are only counted / structure-checked at the outer layer.
 Cross-language comparison of operator internals is covered in Rust.
 
-The test is skipped cleanly if the `tally` binary hasn't been built —
+The test is skipped cleanly if the `beava` binary hasn't been built —
 the Rust integration tests cover the same wire contract.
 """
 
@@ -36,8 +36,8 @@ from typing import Tuple
 import pytest
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_RELEASE_BIN = _PROJECT_ROOT / "target" / "release" / "tally"
-_DEBUG_BIN = _PROJECT_ROOT / "target" / "debug" / "tally"
+_RELEASE_BIN = _PROJECT_ROOT / "target" / "release" / "beava"
+_DEBUG_BIN = _PROJECT_ROOT / "target" / "debug" / "beava"
 
 ADMIN_TOKEN = "asyncio-test-admin"
 OP_SNAPSHOT_FETCH = 0x12
@@ -157,7 +157,7 @@ def _wait_for_tcp(host: str, port: int, timeout: float = 15.0) -> None:
                 return
         except OSError:
             time.sleep(0.1)
-    raise RuntimeError(f"tally did not become ready on {host}:{port}")
+    raise RuntimeError(f"beava did not become ready on {host}:{port}")
 
 
 def _write_base_snapshot_file(path: Path, entities: list[tuple[str, list[str]]]) -> None:
@@ -220,14 +220,14 @@ def _enc_varint_string(s: str) -> bytes:
 
 
 @pytest.fixture
-def tally_server():
-    """Spawn a fresh tally binary on ephemeral ports with a seeded snapshot."""
+def beava_server():
+    """Spawn a fresh beava binary on ephemeral ports with a seeded snapshot."""
     binary = _pick_binary()
     if binary is None:
-        pytest.skip("tally binary not built; run `cargo build` to enable this test")
+        pytest.skip("beava binary not built; run `cargo build` to enable this test")
 
     tmp = tempfile.TemporaryDirectory()
-    snap_path = Path(tmp.name) / "tally.snapshot.base.0000000001"
+    snap_path = Path(tmp.name) / "beava.snapshot.base.0000000001"
 
     # Seed entities:
     #   u1 → [orders]
@@ -245,12 +245,12 @@ def tally_server():
     tcp_port = _find_free_port()
     http_port = _find_free_port()
     env = os.environ.copy()
-    env["TALLY_TCP_PORT"] = str(tcp_port)
-    env["TALLY_HTTP_PORT"] = str(http_port)
-    env["TALLY_ADMIN_TOKEN"] = ADMIN_TOKEN
-    env["TALLY_SNAPSHOT_PATH"] = str(Path(tmp.name) / "tally.snapshot")
+    env["BEAVA_TCP_PORT"] = str(tcp_port)
+    env["BEAVA_HTTP_PORT"] = str(http_port)
+    env["BEAVA_ADMIN_TOKEN"] = ADMIN_TOKEN
+    env["BEAVA_SNAPSHOT_PATH"] = str(Path(tmp.name) / "beava.snapshot")
     # Make sure snapshotting is on so the server's snap_dir lookup works.
-    env["TALLY_SNAPSHOT"] = "1"
+    env["BEAVA_SNAPSHOT"] = "1"
 
     proc = subprocess.Popen(
         [str(binary)],
@@ -371,8 +371,8 @@ def _shallow_decode_entity_keys(payload: bytes, expected_count: int) -> list[str
 
 
 @pytest.mark.timeout(60)
-def test_snapshot_fetch_streams_only_roundtrip(tally_server):
-    host, tcp_port, _http_port = tally_server
+def test_snapshot_fetch_streams_only_roundtrip(beava_server):
+    host, tcp_port, _http_port = beava_server
 
     # Scope: orders only → expect entities = [u1, u3] (2 entities).
     secs, nanos, payload = asyncio.run(
@@ -389,8 +389,8 @@ def test_snapshot_fetch_streams_only_roundtrip(tally_server):
 
 
 @pytest.mark.timeout(60)
-def test_snapshot_fetch_rejects_wrong_token(tally_server):
-    host, tcp_port, _http_port = tally_server
+def test_snapshot_fetch_rejects_wrong_token(beava_server):
+    host, tcp_port, _http_port = beava_server
 
     async def _run() -> str:
         reader, writer = await asyncio.open_connection(host, tcp_port)
@@ -414,8 +414,8 @@ def test_snapshot_fetch_rejects_wrong_token(tally_server):
 
 
 @pytest.mark.timeout(60)
-def test_snapshot_fetch_rejects_unknown_stream(tally_server):
-    host, tcp_port, _http_port = tally_server
+def test_snapshot_fetch_rejects_unknown_stream(beava_server):
+    host, tcp_port, _http_port = beava_server
 
     async def _run() -> str:
         reader, writer = await asyncio.open_connection(host, tcp_port)

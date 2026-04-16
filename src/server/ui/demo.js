@@ -41,7 +41,7 @@ async function poll() {
     if (drops) {
       try {
         const mtxt = await fetch('/metrics').then(r => r.text());
-        const total = sumMetric(mtxt, 'tally_late_events_dropped_total');
+        const total = sumMetric(mtxt, 'beava_late_events_dropped_total');
         drops.textContent = total == null ? '–' : fmt(total);
       } catch (_) { /* best-effort */ }
     }

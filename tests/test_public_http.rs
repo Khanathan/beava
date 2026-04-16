@@ -14,11 +14,11 @@ use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use tally::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use tally::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
+use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
 #[cfg(feature = "demo")]
-use tally::server::tcp::RecentEvent;
-use tally::state::store::StateStore;
+use beava::server::tcp::RecentEvent;
+use beava::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
 // Test harness (mirrors tests/test_debug_ui.rs:start_debug_ui_server).
@@ -29,7 +29,7 @@ fn make_test_state() -> SharedState {
         PipelineEngine::new(),
         StateStore::new(),
         None,
-        std::path::PathBuf::from("/tmp/tally-test-public-http.snapshot"),
+        std::path::PathBuf::from("/tmp/beava-test-public-http.snapshot"),
         Arc::new(BackfillTracker::default()),
         true,
         false,
@@ -44,7 +44,7 @@ async fn start_server() -> (u16, SharedState) {
     let port = listener.local_addr().unwrap().port();
     let server_state = state.clone();
     tokio::spawn(async move {
-        tally::server::http::run_http_server_with_listener(listener, server_state)
+        beava::server::http::run_http_server_with_listener(listener, server_state)
             .await
             .unwrap();
     });
@@ -279,9 +279,9 @@ async fn metrics_contains_new_fields() {
     assert_eq!(status, 200);
     let text = body_string(&body);
     for field in [
-        "tally_events_total",
-        "tally_push_latency_p99_seconds",
-        "tally_current_eps",
+        "beava_events_total",
+        "beava_push_latency_p99_seconds",
+        "beava_current_eps",
     ] {
         assert!(
             text.contains(field),

@@ -1,7 +1,7 @@
 """Integration test for the 30-day replay CLI at reduced CI scale.
 
 Covers TRAC-01 / TRAC-03:
-- CLI runs end-to-end against a spawned Tally subprocess
+- CLI runs end-to-end against a spawned Beava subprocess
 - Report contains all 7 required fields
 - events_per_sec > 50_000 (generous CI floor; real hardware is ~10x faster)
 - keys_total > 0 after replay (server actually ingested events)
@@ -9,7 +9,7 @@ Covers TRAC-01 / TRAC-03:
 Scale: 100_000 events × 4 workers. Target wall-clock: < 30s including
 subprocess startup (the pytest --timeout enforces this).
 
-The ``tally_server`` fixture is borrowed from ``python/tests/conftest.py``
+The ``beava_server`` fixture is borrowed from ``python/tests/conftest.py``
 conceptually — we replicate it here locally so the test file is
 self-contained and the plan's documented pytest command works verbatim.
 """
@@ -26,13 +26,13 @@ import time
 
 import pytest
 
-# Plan 26-03 ported the replay CLI to the v0 SDK (`@tl.stream` / `@tl.table`).
+# Plan 26-03 ported the replay CLI to the v0 SDK (`@bv.stream` / `@bv.table`).
 # The previous skip-gate is gone; this test is back in the active suite.
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _CLI_PATH = os.path.join(_PROJECT_ROOT, "benchmark", "replay", "replay_30d.py")
-_BINARY_PATH = os.path.join(_PROJECT_ROOT, "target", "debug", "tally")
-_RELEASE_BINARY = os.path.join(_PROJECT_ROOT, "target", "release", "tally")
+_BINARY_PATH = os.path.join(_PROJECT_ROOT, "target", "debug", "beava")
+_RELEASE_BINARY = os.path.join(_PROJECT_ROOT, "target", "release", "beava")
 
 
 def _find_free_port() -> int:
@@ -49,12 +49,12 @@ def _wait_for_tcp(host: str, port: int, timeout: float = 15.0) -> None:
                 return
         except OSError:
             time.sleep(0.1)
-    raise RuntimeError(f"Tally did not become ready on {host}:{port} within {timeout}s")
+    raise RuntimeError(f"Beava did not become ready on {host}:{port} within {timeout}s")
 
 
 @pytest.fixture(scope="module")
-def tally_instance():
-    """Spawn a fresh Tally binary on ephemeral ports for this module.
+def beava_instance():
+    """Spawn a fresh Beava binary on ephemeral ports for this module.
 
     Prefers the release binary (faster replay, closer to production) but
     falls back to the debug binary. Skips the test cleanly if neither
@@ -64,15 +64,15 @@ def tally_instance():
     binary = _RELEASE_BINARY if os.path.exists(_RELEASE_BINARY) else _BINARY_PATH
     if not os.path.exists(binary):
         pytest.skip(
-            f"Tally binary not found at {binary}; build with `cargo build` "
+            f"Beava binary not found at {binary}; build with `cargo build` "
             f"(or `cargo build --release`) to enable this integration test."
         )
 
     tcp_port = _find_free_port()
     http_port = _find_free_port()
     env = os.environ.copy()
-    env["TALLY_TCP_PORT"] = str(tcp_port)
-    env["TALLY_HTTP_PORT"] = str(http_port)
+    env["BEAVA_TCP_PORT"] = str(tcp_port)
+    env["BEAVA_HTTP_PORT"] = str(http_port)
 
     proc = subprocess.Popen(
         [binary],
@@ -120,9 +120,9 @@ def test_replay_cli_help_runs():
         assert flag in result.stdout, f"help text missing {flag!r}"
 
 
-def test_replay_end_to_end(tally_instance):
-    """100k events × 4 workers against a fresh Tally, assert report fields + eps floor."""
-    host, tcp_port, http_port = tally_instance
+def test_replay_end_to_end(beava_instance):
+    """100k events × 4 workers against a fresh Beava, assert report fields + eps floor."""
+    host, tcp_port, http_port = beava_instance
 
     t0 = time.perf_counter()
     result = subprocess.run(
@@ -180,12 +180,12 @@ def test_replay_end_to_end(tally_instance):
     assert elapsed_wall < 60, f"replay took {elapsed_wall:.1f}s, expected < 60s"
 
 
-def test_replay_determinism_same_seed(tally_instance):
+def test_replay_determinism_same_seed(beava_instance):
     """The generator piece is already tested for determinism; this guards the
     integration contract: re-running the CLI with the same --events does not
     crash on repeat ingestion into the same instance.
     """
-    host, tcp_port, http_port = tally_instance
+    host, tcp_port, http_port = beava_instance
     cmd = [
         sys.executable, _CLI_PATH,
         "--events", "5000",

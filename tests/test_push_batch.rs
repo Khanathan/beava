@@ -18,16 +18,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
-use tally::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use tally::server::protocol::{
+use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
+use beava::server::protocol::{
     self as proto, decode_event_binary, parse_command, OP_GET, OP_PUSH_ASYNC, OP_PUSH_BATCH,
     STATUS_ERROR, STATUS_OK, TYPE_F64, TYPE_I64, TYPE_STR,
 };
-use tally::server::tcp::{
+use beava::server::tcp::{
     handle_push_batch, make_concurrent_state, BackfillTracker, ConnAccumulator, PendingAsync,
     SharedState, BATCH_DEADLINE_US, BATCH_SIZE,
 };
-use tally::state::store::StateStore;
+use beava::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
 // Harness helpers
@@ -92,8 +92,8 @@ fn get_count(state: &SharedState, stream: &str, key: &str) -> Option<i64> {
         .or_else(|| features.get("count_1h"))
     {
         match fv {
-            tally::types::FeatureValue::Int(n) => Some(*n),
-            tally::types::FeatureValue::Float(f) => Some(*f as i64),
+            beava::types::FeatureValue::Int(n) => Some(*n),
+            beava::types::FeatureValue::Float(f) => Some(*f as i64),
             _ => None,
         }
     } else {
@@ -326,7 +326,7 @@ mod e2e {
         let addr = listener.local_addr().unwrap();
         let srv_state = state.clone();
         tokio::spawn(async move {
-            let _ = tally::server::tcp::run_tcp_server_with_listener(listener, srv_state).await;
+            let _ = beava::server::tcp::run_tcp_server_with_listener(listener, srv_state).await;
         });
         tokio::time::sleep(Duration::from_millis(20)).await;
         (addr, state)
@@ -364,7 +364,7 @@ mod e2e {
         let addr = listener.local_addr().unwrap();
         let srv_state = state.clone();
         tokio::spawn(async move {
-            let _ = tally::server::tcp::run_tcp_server_with_listener(listener, srv_state).await;
+            let _ = beava::server::tcp::run_tcp_server_with_listener(listener, srv_state).await;
         });
         tokio::time::sleep(Duration::from_millis(20)).await;
 
@@ -449,7 +449,7 @@ mod e2e {
         let addr = listener.local_addr().unwrap();
         let srv_state = state.clone();
         tokio::spawn(async move {
-            let _ = tally::server::tcp::run_tcp_server_with_listener(listener, srv_state).await;
+            let _ = beava::server::tcp::run_tcp_server_with_listener(listener, srv_state).await;
         });
         tokio::time::sleep(Duration::from_millis(20)).await;
 
