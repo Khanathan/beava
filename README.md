@@ -249,7 +249,7 @@ Committed run: [`benchmark/fraud-pipeline/results/baseline/summary.json`](benchm
 
 Recovery wall-clock, measured on a 10-core Apple M4 (NVMe): **7.04s for a 4.7 GB on-disk state (10.3M events, 24,945 entities)**. Repro: `bash benchmark/recovery/run_recovery_bench.sh`. Scales with snapshot size; snapshot load is a synchronous postcard deserialization before the TCP listener binds, so `/debug/ready` flips 200 the moment the server is serving-correct.
 
-**At RAM ceiling.** `BEAVA_MEMORY_LIMIT_MB` is a fail-loud cap — committed state is preserved but new writes stop until you resize. There is no disk spill today.
+**At RAM ceiling.** `BEAVA_MEMORY_LIMIT_MB` (when set) drives an operational signal at 85% RSS and escalates at 95%, surfaced via `/debug/warnings`. The signal does NOT reject writes today — the operator is expected to alert on the signal and resize before the kernel OOM-killer intervenes. There is no disk spill.
 
 **Process crash, mid-window.** Snapshot-based restore; delivery is at-least-once (push reconnect-and-resend on broken pipe). Server-side `event_id` dedup is not shipped and is no longer on the roadmap — at-least-once is the stable semantic. Idempotency on accumulating operators (`count`, `sum`) is the client's responsibility.
 
