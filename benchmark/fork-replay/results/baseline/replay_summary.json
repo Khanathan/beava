@@ -1,0 +1,25 @@
+{
+  "timestamp": "20260417T042412Z",
+  "host": {
+    "hostname": "Hoangs-MacBook-Pro.local",
+    "platform": "darwin"
+  },
+  "config": {
+    "target_rate": 1000,
+    "duration_seconds": 5,
+    "entities": 1000
+  },
+  "push": {
+    "events_pushed": 5000,
+    "wall_seconds": 5.005,
+    "achieved_eps": 999.0,
+    "upstream_keys_total": 993
+  },
+  "replay": {
+    "catchup_seconds": 0.219,
+    "events_replayed": 5000,
+    "replay_eps": 22831,
+    "fork_keys_total": 993,
+    "keys_preserved_pct": 100.0
+  }
+}

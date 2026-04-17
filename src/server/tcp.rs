@@ -2811,10 +2811,14 @@ async fn handle_log_fetch(
             // key_field and apply the full (stream + keys + key_prefix) scope
             // filter. Drop events missing or malformed at their key field.
             //
-            // Keyless streams: there is no per-event key to compare against.
-            // Emit the event if the caller asked for the stream with no
-            // per-key filter; drop it if the caller requested keys/key_prefix
-            // (can't apply a key filter without a key_field).
+            // Keyless streams (v0: @bv.stream has no `key=` arg) AND caller
+            // supplied `keys`/`key_prefix`: fall back to searching every
+            // string field in the decoded payload for a match. This lets
+            // scope-filtered forks work against the common pattern where the
+            // stream carries an entity field (e.g. `user_id`) that its
+            // downstream @bv.table uses as its key. Without this fallback,
+            // fork(..., keys=[...]) against a keyless stream would emit
+            // zero events — see the bench regression in 2026-04.
             match &kf {
                 Some(kf_name) => {
                     let (fmt, body) = decode_log_payload(&entry.payload);
@@ -2846,7 +2850,40 @@ async fn handle_log_fetch(
                 }
                 None => {
                     if scope.keys.is_some() || scope.key_prefix.is_some() {
-                        continue;
+                        // Try the any-string-field fallback. Decode the
+                        // event body, scan string fields, and emit if ANY
+                        // matches the scope. This is a scope-OVER-approximation:
+                        // we may emit events that look matching on a
+                        // non-key field, which is harmless because the
+                        // replica re-filters at extraction time.
+                        let (fmt, body) = decode_log_payload(&entry.payload);
+                        let event_value: Option<serde_json::Value> = match fmt {
+                            LOG_FMT_BINARY => {
+                                let mut buf = body;
+                                protocol::decode_event_binary(&mut buf).ok()
+                            }
+                            LOG_FMT_JSON => serde_json::from_slice(body).ok(),
+                            _ => None,
+                        };
+                        let any_match = event_value
+                            .as_ref()
+                            .and_then(|v| v.as_object())
+                            .map(|obj| {
+                                obj.values().any(|val| match val.as_str() {
+                                    Some(s) if !s.is_empty() => {
+                                        crate::server::replica::entity_matches_scope(
+                                            &stream_arr,
+                                            s,
+                                            &scope,
+                                        )
+                                    }
+                                    _ => false,
+                                })
+                            })
+                            .unwrap_or(false);
+                        if !any_match {
+                            continue;
+                        }
                     }
                     // Stream overlap already guaranteed by the outer loop.
                 }
