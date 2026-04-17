@@ -171,7 +171,12 @@ async fn http_push_single(
     match crate::server::tcp::handle_push_core_ex(
         &state, &stream, &payload, &body, now, read_features,
     ) {
-        Ok(_fm) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
+        Ok(_fm) => {
+            // Phase 45-04 A5: HTTP single-event path — bump labeled counter.
+            // events_total is already bumped inside handle_push_core_ex.
+            state.events_http.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            (StatusCode::OK, Json(json!({"ok": true}))).into_response()
+        }
         Err(e) => map_err_to_response(e),
     }
 }
@@ -255,6 +260,14 @@ async fn http_push_batch(
                 }
             }
         }
+    }
+
+    // Phase 45-04 A5: HTTP batch path — bump labeled counter.
+    // events_total is already bumped inside handle_push_batch.
+    if accepted > 0 {
+        state
+            .events_http
+            .fetch_add(accepted as u64, std::sync::atomic::Ordering::Relaxed);
     }
 
     (
@@ -353,6 +366,14 @@ async fn http_push_ndjson(
     }
     // Flush final partial chunk.
     flush_batch!();
+
+    // Phase 45-04 A5: HTTP ndjson path — bump labeled counter.
+    // events_total is already bumped inside handle_push_batch per chunk.
+    if accepted > 0 {
+        state
+            .events_http
+            .fetch_add(accepted as u64, std::sync::atomic::Ordering::Relaxed);
+    }
 
     (
         StatusCode::OK,

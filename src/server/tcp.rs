@@ -195,6 +195,16 @@ pub struct ConcurrentAppState {
     /// rarely written and stay behind the mutex.
     pub events_total: std::sync::atomic::AtomicU64,
 
+    /// Phase 45-04 A5: per-protocol event counters for the dual-emit
+    /// `beava_events_total{proto="http"|"tcp"}` labeled series. Bumped by HTTP
+    /// handlers (`events_http`) and TCP push sites (`events_tcp`). The unlabeled
+    /// `events_total` is preserved for backward compat and equals their sum.
+    /// TODO(Phase 47): remove unlabeled beava_events_total and these fields if
+    /// dashboards have migrated to the labeled series.
+    pub events_http: std::sync::atomic::AtomicU64,
+    /// Phase 45-04 A5: TCP-originated event counter. See `events_http` doc.
+    pub events_tcp: std::sync::atomic::AtomicU64,
+
     /// Phase 41-01 T2: last observed PUSH latency, in nanoseconds. Replaces
     /// `Metrics::push_latency_seconds` which used to live inside the mutex
     /// and was rewritten on every successful PUSH. Stored as nanos to keep
@@ -369,6 +379,8 @@ pub fn make_concurrent_state_full(
         replica_mode: AtomicBool::new(false),
         replica_last_applied_ts_ms: std::sync::atomic::AtomicU64::new(0),
         events_total: std::sync::atomic::AtomicU64::new(0),
+        events_http: std::sync::atomic::AtomicU64::new(0),   // Phase 45-04 A5
+        events_tcp: std::sync::atomic::AtomicU64::new(0),    // Phase 45-04 A5
         last_push_latency_nanos: std::sync::atomic::AtomicU64::new(0),
         atomic_throughput: crate::server::throughput::AtomicThroughput::new(),
         latency_sample_counter: std::sync::atomic::AtomicU64::new(0),
@@ -444,6 +456,11 @@ async fn handle_connection(
     ) {
         let batch = accumulator.drain();
         let results = handle_push_batch(state, &batch);
+        let n_ok = results.iter().filter(|r| r.is_ok()).count() as u64;
+        // Phase 45-04 A5: TCP async-batch path — bump labeled counter.
+        if n_ok > 0 {
+            state.events_tcp.fetch_add(n_ok, std::sync::atomic::Ordering::Relaxed);
+        }
         for (ev, res) in batch.iter().zip(results.iter()) {
             if let Err(err) = res {
                 pending_drain.push((ev.seq, err.to_string()));
@@ -654,6 +671,11 @@ async fn handle_connection(
                                     })
                                     .collect();
                                 let results = handle_push_batch(&state, &batch);
+                                // Phase 45-04 A5: TCP MSET-batch path — bump labeled counter.
+                                let n_ok_tcp = results.iter().filter(|r| r.is_ok()).count() as u64;
+                                if n_ok_tcp > 0 {
+                                    state.events_tcp.fetch_add(n_ok_tcp, std::sync::atomic::Ordering::Relaxed);
+                                }
                                 for (i, (ev, res)) in batch.iter().zip(results.iter()).enumerate() {
                                     if let Err(err) = res {
                                         pending_drain.push((
@@ -825,6 +847,11 @@ async fn handle_connection(
                     })
                     .collect();
                 let results = handle_push_batch(&state, &batch);
+                // Phase 45-04 A5: TCP async-batch path (second site) — bump labeled counter.
+                let n_ok_tcp2 = results.iter().filter(|r| r.is_ok()).count() as u64;
+                if n_ok_tcp2 > 0 {
+                    state.events_tcp.fetch_add(n_ok_tcp2, std::sync::atomic::Ordering::Relaxed);
+                }
                 for (i, (ev, res)) in batch.iter().zip(results.iter()).enumerate() {
                     if let Err(err) = res {
                         pending_drain
@@ -2015,6 +2042,8 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Bea
                 event_time,
                 false,
             )?;
+            // Phase 45-04 A5: TCP sync single-event path — bump labeled counter.
+            state.events_tcp.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(feature_map_to_json(&crate::types::FeatureMap::new()))
         }
         Command::Get { key } => {

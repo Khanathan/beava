@@ -297,6 +297,13 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
     let events_total = state
         .events_total
         .load(std::sync::atomic::Ordering::Relaxed);
+    // Phase 45-04 A5: per-protocol labeled counters for dual-emit transition.
+    let events_http = state
+        .events_http
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let events_tcp = state
+        .events_tcp
+        .load(std::sync::atomic::Ordering::Relaxed);
     let push_latency = state
         .last_push_latency_nanos
         .load(std::sync::atomic::Ordering::Relaxed) as f64
@@ -322,9 +329,11 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
         "# HELP beava_keys_total Number of entity keys in memory\n\
          # TYPE beava_keys_total gauge\n\
          beava_keys_total {}\n\
-         # HELP beava_events_total Total events processed\n\
+         # HELP beava_events_total Total events ingested (sum of all protocols; unlabeled for backward compat; labeled series will replace in v1.1)\n\
          # TYPE beava_events_total counter\n\
          beava_events_total {}\n\
+         beava_events_total{{proto=\"http\"}} {}\n\
+         beava_events_total{{proto=\"tcp\"}} {}\n\
          # HELP beava_push_latency_seconds Last observed PUSH latency\n\
          # TYPE beava_push_latency_seconds gauge\n\
          beava_push_latency_seconds {}\n\
@@ -344,7 +353,9 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
          # TYPE beava_snapshots_skipped_total counter\n\
          beava_snapshots_skipped_total {}\n",
         keys_total,
-        events_total,
+        events_total,           // TODO(Phase 47): remove unlabeled beava_events_total emission
+        events_http,
+        events_tcp,
         push_latency,
         p99_push_seconds,
         current_eps,
