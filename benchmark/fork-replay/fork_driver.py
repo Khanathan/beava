@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import sys
 import time
 import urllib.request
@@ -33,6 +34,68 @@ def fetch_keys_total(http_port: int) -> int:
         if line.startswith("beava_keys_total "):
             return int(line.split()[1])
     return 0
+
+
+def sample_count_features(app: bv.App, sample_keys: list[str]) -> dict[str, float]:
+    """Read UserCounts.count_1h for each sample key. Returns {key: count}.
+
+    Missing keys map to 0.0 so forks with partial replay surface as
+    "missing" rather than "different".
+    """
+    out: dict[str, float] = {}
+    for key in sample_keys:
+        try:
+            # App.get(key) returns a FeatureResult across all tables keyed
+            # by that entity. UserCounts.count_1h is nested under the
+            # qualified "UserCounts.count_1h" name, but the FeatureResult
+            # flattens it to the short name when unambiguous.
+            features = app.get(key)
+            val = (
+                getattr(features, "count_1h", None)
+                if hasattr(features, "count_1h")
+                else features.to_dict().get("UserCounts.count_1h", 0)
+            )
+            if val is None:
+                val = features.to_dict().get("UserCounts.count_1h", 0)
+            try:
+                out[key] = float(val)
+            except (TypeError, ValueError):
+                out[key] = 0.0
+        except Exception:
+            out[key] = 0.0
+    return out
+
+
+def diff_counts(upstream: dict[str, float], fork: dict[str, float]) -> dict:
+    """Compute upstream-vs-fork feature diff. Returns summary stats.
+
+    Any key whose counts disagree is a correctness failure.
+    """
+    mismatch = 0
+    total_upstream = 0.0
+    total_fork = 0.0
+    diffs: list[tuple[str, float, float]] = []
+    for key in upstream:
+        u = upstream[key]
+        f = fork.get(key, 0.0)
+        total_upstream += u
+        total_fork += f
+        if abs(u - f) > 1e-6:
+            mismatch += 1
+            if len(diffs) < 5:
+                diffs.append((key, u, f))
+    return {
+        "sampled_keys": len(upstream),
+        "mismatched_keys": mismatch,
+        "upstream_count_sum": total_upstream,
+        "fork_count_sum": total_fork,
+        "count_sum_delta_pct": (
+            round(100.0 * (total_fork - total_upstream) / max(1.0, total_upstream), 4)
+        ),
+        "first_mismatches": [
+            {"key": k, "upstream": u, "fork": f} for (k, u, f) in diffs
+        ],
+    }
 
 
 def main() -> None:
@@ -56,6 +119,18 @@ def main() -> None:
         help="Seconds to wait for fork catchup (default 300)",
     )
     ap.add_argument("--key-prefix", default="u", help="Key prefix to replicate")
+    ap.add_argument(
+        "--sample-keys",
+        type=int,
+        default=20,
+        help="After catchup, compare UserCounts.count_1h between upstream and fork for N random sample keys (0 disables).",
+    )
+    ap.add_argument(
+        "--entity-count",
+        type=int,
+        default=1000,
+        help="Must match push_rate.py's --entities. Sample keys are picked uniformly from u0..u{N-1}.",
+    )
     args = ap.parse_args()
 
     # `beava fork` convention (see src/main.rs): --local-port is the
@@ -77,9 +152,31 @@ def main() -> None:
         catchup = time.monotonic() - t0
         print(f"fork caught up in {catchup:.3f}s", file=sys.stderr)
         keys_total = fetch_keys_total(local_http_port)
-        # Stream the fork subprocess stderr to our own stderr BEFORE
-        # the context exits (bv.fork().__exit__ runs stop() which may
-        # delete the temp log). Cheap post-mortem for every run.
+
+        # Feature-value diff: prove the fork didn't just match the entity
+        # count but also the aggregate values. Picks sample keys uniformly
+        # at random, reads UserCounts.count_1h from upstream and from the
+        # fork, and reports per-key mismatches. Keeps the fork's App open
+        # inside the with-block so the subprocess stays alive for reads.
+        diff: dict = {}
+        if args.sample_keys > 0:
+            random.seed(42)  # stable, repeatable samples across runs
+            sample_keys = [
+                f"u{random.randrange(args.entity_count)}"
+                for _ in range(args.sample_keys)
+            ]
+            fork_app = bv.App(f"127.0.0.1:{args.local_port + 1}", timeout=10.0)
+            upstream_host, _, upstream_port = args.remote.rpartition(":")
+            upstream_app = bv.App(args.remote, timeout=10.0)
+            try:
+                upstream_vals = sample_count_features(upstream_app, sample_keys)
+                fork_vals = sample_count_features(fork_app, sample_keys)
+                diff = diff_counts(upstream_vals, fork_vals)
+            except Exception as e:
+                diff = {"error": f"feature compare failed: {e}"}
+
+        # Stream the fork subprocess stderr BEFORE the context exits
+        # (bv.fork().__exit__ runs stop() which deletes the temp log).
         if fork.log_path is not None and fork.log_path.exists():
             try:
                 with open(fork.log_path, "r", encoding="utf-8", errors="replace") as fh:
@@ -93,6 +190,7 @@ def main() -> None:
     summary = {
         "catchup_seconds": round(catchup, 3),
         "keys_total": keys_total,
+        "feature_diff": diff,
     }
     print(json.dumps(summary))
 

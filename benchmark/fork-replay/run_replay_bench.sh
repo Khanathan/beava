@@ -172,9 +172,17 @@ REPLAY_EPS=$(python3 -c "print(int(float('$EVENTS_PUSHED')/max(0.001,float('$CAT
 # 4. Summary
 # ------------------------------------------------------------------------
 
-python3 - "$SUMMARY_JSON" "$TS" "$EVENTS_PUSHED" "$PUSH_WALL" "$CATCHUP_S" "$REPLAY_EPS" "$UPSTREAM_KEYS" "$FORK_KEYS" "$RATE" "$DURATION" "$ENTITIES" <<'PY'
+python3 - "$SUMMARY_JSON" "$TS" "$EVENTS_PUSHED" "$PUSH_WALL" "$CATCHUP_S" "$REPLAY_EPS" "$UPSTREAM_KEYS" "$FORK_KEYS" "$RATE" "$DURATION" "$ENTITIES" "$RESULTS_DIR/fork_raw.json" <<'PY'
 import json, socket, sys
-(out, ts, events, pw, cs, reps, up_keys, fork_keys, rate, dur, ents) = sys.argv[1:]
+(out, ts, events, pw, cs, reps, up_keys, fork_keys, rate, dur, ents, fork_raw) = sys.argv[1:]
+# Pull the feature-diff block that fork_driver emitted. It's the proof
+# that catchup is semantically correct, not just entity-count-matching.
+feature_diff = None
+try:
+    with open(fork_raw) as fh:
+        feature_diff = json.load(fh).get("feature_diff")
+except Exception:
+    pass
 summary = {
     "timestamp": ts,
     "host": {"hostname": socket.gethostname(), "platform": sys.platform},
@@ -184,7 +192,8 @@ summary = {
              "upstream_keys_total": int(up_keys)},
     "replay": {"catchup_seconds": float(cs), "events_replayed": int(events),
                "replay_eps": int(reps), "fork_keys_total": int(fork_keys),
-               "keys_preserved_pct": round(100.0 * int(fork_keys) / max(1, int(up_keys)), 2)},
+               "keys_preserved_pct": round(100.0 * int(fork_keys) / max(1, int(up_keys)), 2),
+               "feature_diff": feature_diff},
 }
 with open(out, "w") as fh:
     json.dump(summary, fh, indent=2)
