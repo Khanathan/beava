@@ -973,6 +973,11 @@ async fn debug_latency(State(state): State<SharedState>) -> Json<serde_json::Val
     Json(latency.to_json(now))
 }
 
+async fn debug_shard_probe(State(_state): State<SharedState>) -> Json<serde_json::Value> {
+    let snap = crate::server::shard_probe::snapshot();
+    Json(serde_json::to_value(&snap).unwrap_or(serde_json::Value::Null))
+}
+
 /// Per-stream memory accumulator used by `debug_memory`.
 #[derive(Default)]
 struct StreamMemoryStats {
@@ -1555,6 +1560,7 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/debug/topology", get(debug_topology))
         .route("/debug/throughput", get(debug_throughput))
         .route("/debug/latency", get(debug_latency))
+        .route("/debug/shard_probe", get(debug_shard_probe))
         .route("/snapshot", post(trigger_snapshot))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),

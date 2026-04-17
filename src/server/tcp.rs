@@ -1618,6 +1618,60 @@ pub fn handle_push_batch(
             .collect();
     }
 
+    // Cross-shard probe: if `BEAVA_SHARD_PROBE=N` is set, enumerate each
+    // event's touched keys (primary + cascade + fan-out) and record the
+    // distinct-shard count. Zero-cost when disabled (single atomic read).
+    if crate::server::shard_probe::is_enabled() {
+        let engine = state.engine.read();
+        let fan_out_all = engine.fan_out_targets();
+        for ev in batch {
+            let stream_name = ev.stream_name.as_str();
+            let cascade_targets = engine.get_cascade_targets(stream_name);
+            let primary_kf = engine
+                .get_stream(stream_name)
+                .and_then(|s| s.key_field.clone());
+            // Collect key-string views touched by this event.
+            let mut keys: Vec<&str> = Vec::with_capacity(8);
+            if let Some(ref kf) = primary_kf {
+                if let Some(serde_json::Value::String(k)) = ev.payload.get(kf.as_str()) {
+                    if !k.is_empty() {
+                        keys.push(k.as_str());
+                    }
+                }
+            }
+            for ds_name in &cascade_targets {
+                if let Some(d) = engine.get_stream(ds_name) {
+                    if let Some(ref kf) = d.key_field {
+                        if let Some(serde_json::Value::String(k)) = ev.payload.get(kf.as_str()) {
+                            if !k.is_empty() {
+                                keys.push(k.as_str());
+                            }
+                        }
+                    }
+                }
+            }
+            for (target_name, target_key_field) in &fan_out_all {
+                if target_name == stream_name {
+                    continue;
+                }
+                if primary_kf.as_deref() == Some(target_key_field.as_str()) {
+                    continue;
+                }
+                if cascade_targets.iter().any(|ct| ct == target_name) {
+                    continue;
+                }
+                if let Some(serde_json::Value::String(k)) =
+                    ev.payload.get(target_key_field.as_str())
+                {
+                    if !k.is_empty() {
+                        keys.push(k.as_str());
+                    }
+                }
+            }
+            crate::server::shard_probe::record_event(&keys);
+        }
+    }
+
     // Phase 43 T1: measure total server-side batch processing time so the
     // PUSH histogram on /debug/latency reflects the batch path (OP_PUSH_BATCH
     // and OP_PUSH_ASYNC accumulator flushes). Previously only the OP_PUSH

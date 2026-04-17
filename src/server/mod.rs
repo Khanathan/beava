@@ -4,6 +4,7 @@ pub mod latency;
 pub mod protocol;
 pub mod replica;
 pub mod replica_client;
+pub mod shard_probe;
 pub mod signals;
 pub mod tcp;
 pub mod throughput;

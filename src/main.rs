@@ -140,6 +140,7 @@ fn main() {
     builder.enable_all();
     let runtime = builder.build().expect("failed to build tokio runtime");
     eprintln!("Worker threads: {}", worker_threads);
+    beava::server::shard_probe::init_from_env();
     runtime.block_on(async_main());
 }
 
