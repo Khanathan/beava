@@ -1,40 +1,890 @@
-# Beava HTTP Management API Reference
+# Beava HTTP API
 
-## Overview
+## Quickstart
 
-Beava exposes a secondary HTTP API on port **6401** for management, monitoring, and debugging. This API is separate from the primary binary TCP protocol on port 6400 that handles the hot path (PUSH, GET, SET, MSET). The HTTP API is not designed for high-throughput event ingestion -- use the TCP protocol for that.
+Register a pipeline via the Python SDK, then push and read from any HTTP client in under 60 seconds:
 
-All responses are JSON unless otherwise noted. The API is built with Axum and runs on its own Tokio listener.
+```bash
+# 1. Register a stream (Python SDK)
+python3 -c "
+import tally as tl
+@tl.stream
+class transactions:
+    user: str
+    amount: float
+tl.register_remote(remote='localhost:6401', pipelines=[])
+"
 
-## Configuration
+# 2. Push an event
+curl -X POST http://localhost:6401/push/transactions \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN}" \
+  -d '{"user":"alice","amount":10.5}'
 
-| Environment Variable | Default | Description |
-|---|---|---|
-| `BEAVA_HTTP_PORT` | `6401` | Port the HTTP management API listens on |
-
-The server binds to `0.0.0.0:${BEAVA_HTTP_PORT}`.
+# 3. Read features back
+curl http://localhost:6401/features/alice \
+  -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN}"
+```
 
 ---
 
-## Endpoints
+## Event Ingest Endpoints
+
+### POST /push/{stream}
+
+Push a single JSON event to a registered stream. The event is accepted into the
+in-memory ingest queue and acknowledged immediately (buffer-accept semantics).
+
+**Path parameters**
+
+| Param    | Description                             |
+| -------- | --------------------------------------- |
+| `stream` | Name of the registered stream to target |
+
+**Query parameters**
+
+| Param    | Default | Description                                                                                                  |
+| -------- | ------- | ------------------------------------------------------------------------------------------------------------ |
+| `sync`   | `0`     | Set to `1` to wait until the in-memory ingest queue drains before responding. Useful for tests and CLI tooling. **Durable-ack (fsync) is deferred to Phase 46.** See [Durability Semantics](#durability-semantics). |
+
+**Request body**
+
+A single JSON object. Arbitrary payload fields are accepted. The optional
+`_event_time` field pins the event timestamp; omitting it uses server wall-clock.
+
+```json
+{"user": "alice", "amount": 10.5, "_event_time": 1700000000000}
+```
+
+`_event_time` may be:
+- An integer (Unix milliseconds): `1700000000000`
+- A string (RFC 3339): `"2023-11-14T22:13:20Z"`
+
+**Response (200 — accepted)**
+
+```json
+{"ok": true}
+```
+
+**Response (400 — schema error)**
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "stream_not_registered",
+    "message": "unknown stream: transactions"
+  }
+}
+```
+
+**Status codes**
+
+| Code | Meaning                                                               |
+| ---- | --------------------------------------------------------------------- |
+| 200  | Event accepted into the ingest queue                                  |
+| 400  | Invalid JSON body, schema mismatch, or stream not registered          |
+| 401  | Missing or invalid `Authorization: Bearer <token>` header             |
+| 413  | Body exceeds `BEAVA_HTTP_MAX_BODY` limit (default 16 MiB)             |
+| 408  | Handler did not complete within the server-side timeout (30s default) |
+
+---
+
+#### curl
+
+```bash
+curl -X POST http://localhost:6401/push/transactions \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN}" \
+  -d '{"user":"alice","amount":10.5,"_event_time":1700000000000}'
+# → 200 {"ok":true}
+```
+
+#### Go (net/http)
+
+```go
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+)
+
+func main() {
+	body := []byte(`{"user":"alice","amount":10.5,"_event_time":1700000000000}`)
+	req, _ := http.NewRequest("POST", "http://localhost:6401/push/transactions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("BEAVA_ADMIN_TOKEN"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	fmt.Printf("%d %s\n", resp.StatusCode, b)
+}
+```
+
+#### Node (fetch)
+
+```javascript
+const body = { user: 'alice', amount: 10.5, _event_time: 1700000000000 };
+const res = await fetch('http://localhost:6401/push/transactions', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${process.env.BEAVA_ADMIN_TOKEN}`,
+  },
+  body: JSON.stringify(body),
+});
+console.log(res.status, await res.text());
+// → 200 {"ok":true}
+```
+
+---
+
+### POST /push-batch/{stream}
+
+Push a JSON array of events to a registered stream in one request. Each event's
+`_event_time` is captured individually for per-event watermark gating.
+
+> **Phase 46 note:** Per-event event-time bucketing (`push_batch_with_cascade_no_features`
+> signature change) is a Phase 46 correctness fix. Phase 45 captures per-event
+> timestamps in `PendingAsync.now`; Phase 46 drops the internal wrapping.
+
+**Path parameters**
+
+| Param    | Description                             |
+| -------- | --------------------------------------- |
+| `stream` | Name of the registered stream to target |
+
+**Query parameters**
+
+| Param  | Default | Description                                                          |
+| ------ | ------- | -------------------------------------------------------------------- |
+| `sync` | `0`     | Set to `1` to wait for in-memory queue drain. See [Durability Semantics](#durability-semantics). |
+
+**Request body**
+
+A JSON array of event objects. Maximum size is `BEAVA_HTTP_MAX_BODY` (default 16 MiB).
+Each event follows the same schema as the single-event endpoint.
+
+```json
+[
+  {"user": "alice", "amount": 5.0},
+  {"user": "bob",   "amount": 20.0},
+  {"user": "alice", "amount": 7.5}
+]
+```
+
+**Response (200 — D-12 summary-only)**
+
+```json
+{
+  "ok": true,
+  "data": {
+    "accepted": 3,
+    "rejected": 0,
+    "first_error": null
+  }
+}
+```
+
+If some events are rejected (e.g., schema mismatch), the rest are still accepted.
+`first_error` contains the first failure's code and message.
+
+**Status codes**
+
+| Code | Meaning                                                   |
+| ---- | --------------------------------------------------------- |
+| 200  | Batch processed; see `accepted`/`rejected` in response    |
+| 400  | Body is not a valid JSON array                            |
+| 401  | Missing or invalid `Authorization: Bearer <token>` header |
+| 413  | Body exceeds `BEAVA_HTTP_MAX_BODY` limit (default 16 MiB) |
+
+---
+
+#### curl
+
+```bash
+curl -X POST "http://localhost:6401/push-batch/transactions?sync=1" \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN}" \
+  -d '[{"user":"alice","amount":5},{"user":"bob","amount":20},{"user":"alice","amount":7.5}]'
+# → 200 {"ok":true,"data":{"accepted":3,"rejected":0,"first_error":null}}
+```
+
+#### Go (net/http)
+
+```go
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+)
+
+func main() {
+	events := []map[string]interface{}{
+		{"user": "alice", "amount": 5.0},
+		{"user": "bob", "amount": 20.0},
+		{"user": "alice", "amount": 7.5},
+	}
+	payload, _ := json.Marshal(events)
+	req, _ := http.NewRequest("POST", "http://localhost:6401/push-batch/transactions?sync=1", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("BEAVA_ADMIN_TOKEN"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	fmt.Printf("%d %s\n", resp.StatusCode, b)
+}
+```
+
+#### Node (fetch)
+
+```javascript
+const events = [
+  { user: 'alice', amount: 5.0 },
+  { user: 'bob',   amount: 20.0 },
+  { user: 'alice', amount: 7.5 },
+];
+const res = await fetch('http://localhost:6401/push-batch/transactions?sync=1', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${process.env.BEAVA_ADMIN_TOKEN}`,
+  },
+  body: JSON.stringify(events),
+});
+const data = await res.json();
+console.log(res.status, data);
+// → 200 { ok: true, data: { accepted: 3, rejected: 0, first_error: null } }
+```
+
+---
+
+### POST /push/{stream}/ndjson
+
+Push events as newline-delimited JSON (NDJSON). Each line is a separate event
+object. The server uses `axum-extra::JsonLines` for line-by-line streaming parse —
+no full-array allocation in memory. Events are flushed to the ingest engine in
+chunks of 1000.
+
+Use this endpoint for:
+- Backfill operations accumulating thousands of events per call
+- Streaming producers that generate events one-per-line
+- Large historical loads where the 16 MiB body limit would otherwise apply
+
+**Path parameters**
+
+| Param    | Description                             |
+| -------- | --------------------------------------- |
+| `stream` | Name of the registered stream to target |
+
+**Request headers**
+
+`Content-Type: application/x-ndjson`
+
+**Request body**
+
+One JSON object per line. Malformed lines are counted as `rejected`; the stream
+is NOT aborted on a bad line.
+
+```
+{"user":"alice","amount":1.0}
+{"user":"alice","amount":2.0}
+{"user":"carol","amount":100.0}
+{"user":"bob","amount":3.0}
+{"user":"alice","amount":4.0}
+```
+
+**Response (200 — D-13 summary-only)**
+
+```json
+{
+  "ok": true,
+  "data": {
+    "accepted": 5,
+    "rejected": 0,
+    "chunks": 1,
+    "first_error": null
+  }
+}
+```
+
+`chunks` is the number of 1000-event flush batches sent to the engine.
+
+**Status codes**
+
+| Code | Meaning                                                   |
+| ---- | --------------------------------------------------------- |
+| 200  | All parseable lines processed; see `accepted`/`rejected`  |
+| 401  | Missing or invalid `Authorization: Bearer <token>` header |
+
+> Note: body limit does not apply to NDJSON — the stream is parsed line-by-line
+> without buffering the full body. This makes NDJSON suitable for large backfills
+> that exceed the 16 MiB JSON-array limit.
+
+---
+
+#### curl
+
+```bash
+printf '%s\n' \
+  '{"user":"alice","amount":1}' \
+  '{"user":"alice","amount":2}' \
+  '{"user":"carol","amount":100}' \
+  '{"user":"bob","amount":3}' \
+  '{"user":"alice","amount":4}' \
+  | curl -X POST http://localhost:6401/push/transactions/ndjson \
+      -H 'Content-Type: application/x-ndjson' \
+      -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN}" \
+      --data-binary @-
+# → 200 {"ok":true,"data":{"accepted":5,"rejected":0,"chunks":1,"first_error":null}}
+```
+
+#### Go (net/http)
+
+```go
+package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+)
+
+func main() {
+	ndjson := strings.Join([]string{
+		`{"user":"alice","amount":1}`,
+		`{"user":"alice","amount":2}`,
+		`{"user":"carol","amount":100}`,
+		`{"user":"bob","amount":3}`,
+		`{"user":"alice","amount":4}`,
+	}, "\n")
+	req, _ := http.NewRequest("POST", "http://localhost:6401/push/transactions/ndjson", strings.NewReader(ndjson))
+	req.Header.Set("Content-Type", "application/x-ndjson")
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("BEAVA_ADMIN_TOKEN"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	fmt.Printf("%d %s\n", resp.StatusCode, b)
+}
+```
+
+#### Node (fetch)
+
+```javascript
+const lines = [
+  { user: 'alice', amount: 1 },
+  { user: 'alice', amount: 2 },
+  { user: 'carol', amount: 100 },
+  { user: 'bob',   amount: 3 },
+  { user: 'alice', amount: 4 },
+].map(e => JSON.stringify(e)).join('\n');
+
+const res = await fetch('http://localhost:6401/push/transactions/ndjson', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/x-ndjson',
+    'Authorization': `Bearer ${process.env.BEAVA_ADMIN_TOKEN}`,
+  },
+  body: lines,
+});
+console.log(res.status, await res.text());
+// → 200 {"ok":true,"data":{"accepted":5,"rejected":0,"chunks":1,"first_error":null}}
+```
+
+---
+
+## Read Endpoints
+
+### GET /features/{key}
+
+Return the current computed feature values for an entity key. By default, returns
+all tables. Use `?table=X` to filter to one table.
+
+Read endpoints are available on the **admin router** by default. When the server is
+started with `--public`, they move to the public router (no token required).
+See [Authentication](#authentication).
+
+**Path parameters**
+
+| Param | Description                              |
+| ----- | ---------------------------------------- |
+| `key` | Entity key value (e.g., user ID, device) |
+
+**Query parameters**
+
+| Param   | Default | Description                                     |
+| ------- | ------- | ----------------------------------------------- |
+| `table` | (all)   | Filter results to a single table (stream name)  |
+
+**Response (200)**
+
+```json
+{
+  "ok": true,
+  "data": {
+    "key": "alice",
+    "tables": {
+      "transactions": {
+        "tx_count_1h": 12,
+        "tx_sum_1h": 455.5,
+        "velocity_spike": 2.1
+      }
+    }
+  }
+}
+```
+
+**Response (404 — key not found)**
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "key_not_found",
+    "message": "no entity for key alice"
+  }
+}
+```
+
+**Status codes**
+
+| Code | Meaning                                            |
+| ---- | -------------------------------------------------- |
+| 200  | Feature values returned                            |
+| 401  | Missing or invalid `Authorization` (non-public)    |
+| 404  | No entity found for the given key                  |
+
+---
+
+#### curl
+
+```bash
+# All tables
+curl http://localhost:6401/features/alice \
+  -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN}"
+
+# Single table filter
+curl "http://localhost:6401/features/alice?table=transactions" \
+  -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN}"
+```
+
+#### Go (net/http)
+
+```go
+package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+)
+
+func main() {
+	req, _ := http.NewRequest("GET", "http://localhost:6401/features/alice", nil)
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("BEAVA_ADMIN_TOKEN"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	fmt.Printf("%d %s\n", resp.StatusCode, b)
+}
+```
+
+#### Node (fetch)
+
+```javascript
+const res = await fetch('http://localhost:6401/features/alice', {
+  headers: {
+    'Authorization': `Bearer ${process.env.BEAVA_ADMIN_TOKEN}`,
+  },
+});
+const data = await res.json();
+console.log(res.status, JSON.stringify(data, null, 2));
+```
+
+---
+
+### GET /streams
+
+List all registered streams with their names and current watermarks.
+
+**Response (200)**
+
+```json
+{
+  "ok": true,
+  "data": {
+    "streams": [
+      {"name": "transactions", "watermark_ms": 1700000042000},
+      {"name": "logins",       "watermark_ms": 1700000038000}
+    ]
+  }
+}
+```
+
+`watermark_ms` is the Unix millisecond timestamp of the latest event processed by
+that stream. `null` if no events have been processed yet.
+
+**Status codes**
+
+| Code | Meaning                                            |
+| ---- | -------------------------------------------------- |
+| 200  | Stream list returned                               |
+| 401  | Missing or invalid `Authorization` (non-public)    |
+
+---
+
+#### curl
+
+```bash
+curl http://localhost:6401/streams \
+  -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN}"
+```
+
+#### Go (net/http)
+
+```go
+package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+)
+
+func main() {
+	req, _ := http.NewRequest("GET", "http://localhost:6401/streams", nil)
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("BEAVA_ADMIN_TOKEN"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	fmt.Printf("%d %s\n", resp.StatusCode, b)
+}
+```
+
+#### Node (fetch)
+
+```javascript
+const res = await fetch('http://localhost:6401/streams', {
+  headers: {
+    'Authorization': `Bearer ${process.env.BEAVA_ADMIN_TOKEN}`,
+  },
+});
+console.log(res.status, await res.text());
+```
+
+---
+
+### GET /streams/{name}
+
+Return details for a single registered stream: name, watermark, and the list of
+feature definitions.
+
+**Path parameters**
+
+| Param  | Description                     |
+| ------ | ------------------------------- |
+| `name` | Name of the registered stream   |
+
+**Response (200)**
+
+```json
+{
+  "ok": true,
+  "data": {
+    "name": "transactions",
+    "watermark_ms": 1700000042000,
+    "features": [
+      {"name": "tx_count_1h", "type": "Count { window_secs: 3600, bucket_secs: 60 }"},
+      {"name": "tx_sum_1h",   "type": "Sum { field: \"amount\", window_secs: 3600 }"}
+    ]
+  }
+}
+```
+
+> Note: the `type` field is the Rust debug representation of the `FeatureDef` variant.
+> This will be replaced with a structured schema in Phase 47.
+
+**Response (404 — stream not found)**
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "stream_not_found",
+    "message": "stream transactions not registered"
+  }
+}
+```
+
+**Status codes**
+
+| Code | Meaning                                            |
+| ---- | -------------------------------------------------- |
+| 200  | Stream detail returned                             |
+| 401  | Missing or invalid `Authorization` (non-public)    |
+| 404  | No stream registered under that name               |
+
+---
+
+#### curl
+
+```bash
+curl http://localhost:6401/streams/transactions \
+  -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN}"
+```
+
+#### Go (net/http)
+
+```go
+package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+)
+
+func main() {
+	req, _ := http.NewRequest("GET", "http://localhost:6401/streams/transactions", nil)
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("BEAVA_ADMIN_TOKEN"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	fmt.Printf("%d %s\n", resp.StatusCode, b)
+}
+```
+
+#### Node (fetch)
+
+```javascript
+const res = await fetch('http://localhost:6401/streams/transactions', {
+  headers: {
+    'Authorization': `Bearer ${process.env.BEAVA_ADMIN_TOKEN}`,
+  },
+});
+const data = await res.json();
+console.log(res.status, JSON.stringify(data, null, 2));
+```
+
+---
+
+## Authentication
+
+All write endpoints (`POST /push/*`) and, by default, all read endpoints
+(`GET /features/*`, `GET /streams*`) require authentication.
+
+**Token authentication**
+
+Pass a Bearer token in the `Authorization` header:
+
+```
+Authorization: Bearer <token>
+```
+
+The token must match the `BEAVA_ADMIN_TOKEN` environment variable set when the
+server started.
+
+**Loopback bypass**
+
+Requests originating from `127.0.0.1` or `::1` (localhost) are automatically
+authenticated — no token required. This allows local tooling and scripts to omit
+the header.
+
+**Public read endpoints**
+
+Start the server with `--public` to serve the three read endpoints
+(`/features/*`, `/streams`, `/streams/*`) on the public router without
+authentication. Write endpoints always require authentication regardless of
+`--public`.
+
+```bash
+beava serve --public
+```
+
+**401 Unauthorized**
+
+When authentication fails, the server responds with HTTP 401 and a JSON body:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "unauthorized",
+    "message": "missing or invalid authorization token"
+  }
+}
+```
+
+> **Phase 45 note:** The status code for auth failures is `401 Unauthorized`
+> (not 403). This is an intentional change from older Beava versions (orchestrator
+> decision A4).
+
+---
+
+## Durability Semantics
+
+### Default: buffer-accept
+
+By default, `POST /push/{stream}` and `POST /push-batch/{stream}` return `200`
+after the event is accepted into the **in-memory ingest queue**. The response does
+NOT wait for the event log to be flushed to disk (`fsync`).
+
+This gives maximum throughput (>100 K EPS on `/push-batch`). Events in the
+in-memory queue are durable to clean shutdowns but not to hard crashes.
+
+### `?sync=1`: wait for in-memory drain
+
+Adding `?sync=1` to a push request causes the handler to wait until the in-memory
+ingest queue drains before responding. This makes writes observable immediately on
+the next `GET /features` call without a race:
+
+```bash
+# Push event, then immediately read features with no race
+curl -X POST "http://localhost:6401/push/transactions?sync=1" \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN}" \
+  -d '{"user":"alice","amount":10.5}'
+
+curl http://localhost:6401/features/alice \
+  -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN}"
+```
+
+`?sync=1` is useful for tests and CLI tooling. Expect a throughput drop (from
+>100 K EPS to ~10-50 K EPS) because each request now waits for queue drain.
+
+### Durable-ack (fsync) — Phase 46
+
+**Durable write-acknowledgment (waiting for `fsync` to the SSD event log) is
+deferred to Phase 46.** When Phase 46 ships, a new `?durable=1` query param (or a
+separate endpoint) will provide crash-safe write acknowledgment. Until then, `?sync=1`
+is the strongest guarantee available.
+
+> Orchestrator decision A7: in-memory sync semantics in Phase 45; durable-ack in Phase 46.
+
+---
+
+## Observability
+
+### Prometheus metrics
+
+The `/metrics` endpoint (no auth required) exposes Prometheus text format:
+
+```bash
+curl http://localhost:6401/metrics
+```
+
+**Event counters**
+
+```
+# HELP beava_events_total Total events processed
+# TYPE beava_events_total counter
+beava_events_total 892041
+beava_events_total{proto="http"} 102000
+beava_events_total{proto="tcp"}  790041
+```
+
+> **Deprecation notice:** The unlabeled `beava_events_total` counter (no `proto`
+> label) is **deprecated and will be removed in Phase 47**. Consumers should
+> migrate to `beava_events_total{proto="http"}` and `beava_events_total{proto="tcp"}`
+> to distinguish ingest path throughput.
+
+**Other metrics**
+
+| Metric                            | Type    | Description                                     |
+| --------------------------------- | ------- | ----------------------------------------------- |
+| `beava_keys_total`                | gauge   | Number of entity keys in the in-memory store    |
+| `beava_push_latency_seconds`      | gauge   | Last observed PUSH latency                      |
+| `beava_snapshot_duration_seconds` | gauge   | Duration of the most recent snapshot write      |
+| `beava_memory_bytes`              | gauge   | Estimated memory usage (~2 KB per entity key)   |
+| `beava_snapshots_skipped_total`   | counter | Snapshot cycles skipped (previous still running)|
+
+---
+
+## Body Limits
+
+| Source                 | Default | Override                                           |
+| ---------------------- | ------- | -------------------------------------------------- |
+| Single event / batch   | 16 MiB  | `BEAVA_HTTP_MAX_BODY=<bytes>` environment variable |
+| NDJSON streaming       | Unlimited (line-by-line parse) | N/A                     |
+
+```bash
+# Start server with a 64 MiB body limit
+BEAVA_HTTP_MAX_BODY=67108864 beava serve
+```
+
+When the body limit is exceeded, the server returns HTTP 413 with a JSON envelope
+before the handler runs:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "body_limit_exceeded",
+    "message": "request body too large"
+  }
+}
+```
+
+---
+
+## Configuration Reference
+
+| Variable             | Default | Description                                                  |
+| -------------------- | ------- | ------------------------------------------------------------ |
+| `BEAVA_HTTP_PORT`    | `6401`  | HTTP API listen port                                         |
+| `BEAVA_ADMIN_TOKEN`  | (none)  | Bearer token required for authenticated endpoints            |
+| `BEAVA_HTTP_MAX_BODY`| `16777216` | Maximum request body in bytes for JSON endpoints (16 MiB) |
+
+---
+
+# Appendix: Legacy Management Endpoints
+
+The following endpoints were part of the original Beava HTTP management API.
+They remain fully supported and have not changed. They are demoted to the appendix
+because Phase 45 adds higher-throughput ingest + read paths that are the primary
+developer surface.
+
+---
 
 ### GET /health
 
-Health check endpoint. Returns immediately with a static response. Suitable for load balancer health probes.
-
-**Response**
+Health check. Returns immediately; suitable for load-balancer probes.
 
 ```json
 {"status": "ok"}
 ```
-
-**Status Codes**
-
-| Code | Meaning |
-|---|---|
-| 200 | Server is running |
-
-**Example**
 
 ```bash
 curl http://localhost:6401/health
@@ -44,61 +894,22 @@ curl http://localhost:6401/health
 
 ### GET /metrics
 
-Prometheus-compatible metrics in text exposition format. Suitable for scraping by Prometheus or compatible monitoring systems.
-
-**Response** (Content-Type: `text/plain; version=0.0.4`)
-
-```
-# HELP beava_keys_total Number of entity keys in memory
-# TYPE beava_keys_total gauge
-beava_keys_total 14523
-# HELP beava_events_total Total events processed
-# TYPE beava_events_total counter
-beava_events_total 892041
-# HELP beava_push_latency_seconds Last observed PUSH latency
-# TYPE beava_push_latency_seconds gauge
-beava_push_latency_seconds 0.000042
-# HELP beava_snapshot_duration_seconds Last snapshot write duration
-# TYPE beava_snapshot_duration_seconds gauge
-beava_snapshot_duration_seconds 0.312
-# HELP beava_memory_bytes Estimated memory usage
-# TYPE beava_memory_bytes gauge
-beava_memory_bytes 29741056
-# HELP beava_snapshots_skipped_total Snapshot cycles skipped due to in-progress write
-# TYPE beava_snapshots_skipped_total counter
-beava_snapshots_skipped_total 0
-```
-
-**Metrics Reference**
-
-| Metric | Type | Description |
-|---|---|---|
-| `beava_keys_total` | gauge | Number of entity keys currently in the in-memory store |
-| `beava_events_total` | counter | Total events processed since server start |
-| `beava_push_latency_seconds` | gauge | Last observed PUSH command latency |
-| `beava_snapshot_duration_seconds` | gauge | Duration of the most recent snapshot write |
-| `beava_memory_bytes` | gauge | Estimated memory usage (~2KB per entity key) |
-| `beava_snapshots_skipped_total` | counter | Snapshot cycles skipped because a previous write was still in progress |
-
-**Status Codes**
-
-| Code | Meaning |
-|---|---|
-| 200 | Metrics returned |
-
-**Example**
+Prometheus metrics in text exposition format (Content-Type: `text/plain; version=0.0.4`).
 
 ```bash
 curl http://localhost:6401/metrics
 ```
 
+See [Observability](#observability) above for the full metric reference.
+
 ---
 
 ### POST /pipelines
 
-Register a new stream or view pipeline definition. The request body is the same JSON format produced by the Python SDK's serialization. Streams and views are distinguished by the `definition_type` field.
+Register a new stream or view pipeline definition. Used by the Python SDK
+`tl.register_remote()` call internally.
 
-**Request Body**
+**Request body**
 
 ```json
 {
@@ -107,25 +918,12 @@ Register a new stream or view pipeline definition. The request body is the same 
   "definition_type": "stream",
   "features": [
     {"name": "tx_count_1h", "type": "count", "window": "1h", "bucket": "1m"},
-    {"name": "tx_sum_1h", "type": "sum", "field": "amount", "window": "1h", "bucket": "1m"},
-    {"name": "velocity_spike", "type": "derive", "expr": "(tx_count_1h / 1) / (tx_count_24h / 24)"}
+    {"name": "tx_sum_1h",   "type": "sum",   "field": "amount", "window": "1h", "bucket": "1m"}
   ]
 }
 ```
 
-For views, set `"definition_type": "view"`:
-
-```json
-{
-  "name": "UserRisk",
-  "key_field": "user_id",
-  "definition_type": "view",
-  "features": [
-    {"name": "tx_to_login_ratio", "type": "derive", "expr": "Transactions.tx_count_1h / Logins.login_count_1h"},
-    {"name": "merchant_chargebacks", "type": "lookup", "target": "MerchantActivity.chargeback_count_24h", "on": "merchant_id"}
-  ]
-}
-```
+For views, set `"definition_type": "view"`.
 
 **Response (success)**
 
@@ -133,33 +931,12 @@ For views, set `"definition_type": "view"`:
 {"status": "ok"}
 ```
 
-**Response (error)**
-
-```json
-{"error": "invalid request: missing field `name`"}
-```
-
-**Status Codes**
-
-| Code | Meaning |
-|---|---|
-| 200 | Pipeline registered successfully |
-| 400 | Invalid request body or validation error |
-
-**Example**
+**Status codes:** 200 (success), 400 (invalid body or validation error).
 
 ```bash
 curl -X POST http://localhost:6401/pipelines \
   -H "Content-Type: application/json" \
-  -d '{
-    "name": "Transactions",
-    "key_field": "user_id",
-    "definition_type": "stream",
-    "features": [
-      {"name": "tx_count_1h", "type": "count", "window": "1h", "bucket": "1m"},
-      {"name": "tx_sum_1h", "type": "sum", "field": "amount", "window": "1h", "bucket": "1m"}
-    ]
-  }'
+  -d '{"name":"Transactions","key_field":"user_id","definition_type":"stream","features":[]}'
 ```
 
 ---
@@ -168,21 +945,9 @@ curl -X POST http://localhost:6401/pipelines \
 
 List all registered pipeline names.
 
-**Response**
-
 ```json
-{
-  "pipelines": ["Transactions", "Logins", "MerchantActivity"]
-}
+{"pipelines": ["Transactions", "Logins", "MerchantActivity"]}
 ```
-
-**Status Codes**
-
-| Code | Meaning |
-|---|---|
-| 200 | List returned |
-
-**Example**
 
 ```bash
 curl http://localhost:6401/pipelines
@@ -192,42 +957,7 @@ curl http://localhost:6401/pipelines
 
 ### GET /pipelines/:name
 
-Get the full definition of a registered pipeline, including all feature definitions with their configuration.
-
-**Response (success)**
-
-```json
-{
-  "name": "Transactions",
-  "key_field": "user_id",
-  "features": [
-    {"name": "tx_count_1h", "type": "count", "window_secs": 3600, "bucket_secs": 60},
-    {"name": "tx_sum_1h", "type": "sum", "field": "amount", "window_secs": 3600, "bucket_secs": 60, "optional": false},
-    {"name": "avg_amount_1h", "type": "avg", "field": "amount", "window_secs": 3600, "bucket_secs": 60, "optional": false},
-    {"name": "max_amount_24h", "type": "max", "field": "amount", "window_secs": 86400, "bucket_secs": 60, "optional": false},
-    {"name": "unique_merchants", "type": "distinct_count", "field": "merchant_id", "window_secs": 86400, "bucket_secs": 60, "optional": false},
-    {"name": "last_country", "type": "last", "field": "country", "optional": false},
-    {"name": "velocity_spike", "type": "derive"}
-  ]
-}
-```
-
-Supported feature types in the response: `count`, `sum`, `avg`, `min`, `max`, `distinct_count`, `last`, `first`, `derive`, `lag`, `ema`, `last_n`, `stddev`, `percentile`, `exact_min`, `exact_max`.
-
-**Response (not found)**
-
-```json
-{"error": "pipeline 'NonExistent' not found"}
-```
-
-**Status Codes**
-
-| Code | Meaning |
-|---|---|
-| 200 | Pipeline definition returned |
-| 404 | Pipeline not found |
-
-**Example**
+Get the full definition of a registered pipeline.
 
 ```bash
 curl http://localhost:6401/pipelines/Transactions
@@ -237,28 +967,7 @@ curl http://localhost:6401/pipelines/Transactions
 
 ### DELETE /pipelines/:name
 
-Remove a registered pipeline. Also deregisters the stream from the event log.
-
-**Response (success)**
-
-```json
-{"status": "ok"}
-```
-
-**Response (not found)**
-
-```json
-{"error": "pipeline 'NonExistent' not found"}
-```
-
-**Status Codes**
-
-| Code | Meaning |
-|---|---|
-| 200 | Pipeline removed |
-| 404 | Pipeline not found |
-
-**Example**
+Remove a registered pipeline and deregister its stream from the event log.
 
 ```bash
 curl -X DELETE http://localhost:6401/pipelines/Transactions
@@ -268,117 +977,26 @@ curl -X DELETE http://localhost:6401/pipelines/Transactions
 
 ### POST /snapshot
 
-Trigger a manual snapshot write. Writes a full base snapshot to disk. The snapshot includes all entity state, pipeline definitions, and backfill completion records.
+Trigger a manual snapshot write to disk.
 
-**Query Parameters**
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `wait` | bool | `false` | If `true`, block until the snapshot write completes before responding |
-| `timeout_ms` | u64 | none | Maximum milliseconds to wait when `wait=true`. Returns 408 on timeout. |
-
-**Response (success)**
-
-```json
-{
-  "status": "ok",
-  "bytes": 1048576,
-  "duration_ms": 312
-}
-```
-
-**Response (snapshots disabled)**
-
-```json
-{"error": "snapshots disabled"}
-```
-
-**Response (already in progress)**
-
-```json
-{"error": "snapshot cycle already in progress"}
-```
-
-**Response (timeout)**
-
-```json
-{"error": "snapshot timed out"}
-```
-
-**Status Codes**
-
-| Code | Meaning |
-|---|---|
-| 200 | Snapshot written successfully |
-| 404 | Snapshots are disabled on this server |
-| 408 | Snapshot write timed out (only when `wait=true` with `timeout_ms`) |
-| 409 | A snapshot is already in progress |
-| 500 | Snapshot write failed (I/O error) |
-
-**Examples**
+**Query parameters:** `wait=true` to block until complete; `timeout_ms=<ms>` limits wait time.
 
 ```bash
-# Fire-and-forget snapshot
+# Fire-and-forget
 curl -X POST http://localhost:6401/snapshot
 
-# Wait for completion
-curl -X POST "http://localhost:6401/snapshot?wait=true"
-
-# Wait with a 5-second timeout
+# Wait for completion with 5s timeout
 curl -X POST "http://localhost:6401/snapshot?wait=true&timeout_ms=5000"
 ```
+
+**Status codes:** 200 (written), 404 (snapshots disabled), 408 (timeout), 409 (already in progress), 500 (I/O error).
 
 ---
 
 ### GET /debug/key/:key
 
-Inspect the full internal state for an entity key. Returns live operator states, static features (from SET/MSET), computed feature values, and the last event timestamp.
-
-**Response (success)**
-
-```json
-{
-  "key": "u123",
-  "live_operators": [
-    {
-      "name": "tx_count_1h",
-      "stream": "Transactions",
-      "state": "Counter { buckets: RingBuffer { ... } }"
-    },
-    {
-      "name": "tx_sum_1h",
-      "stream": "Transactions",
-      "state": "Sum { buckets: RingBuffer { ... } }"
-    }
-  ],
-  "static_features": {
-    "lifetime_value": 4500.0,
-    "segment": "high_value"
-  },
-  "computed_features": {
-    "Transactions.tx_count_1h": 7,
-    "Transactions.tx_sum_1h": 350.0,
-    "Transactions.velocity_spike": 2.3,
-    "lifetime_value": 4500.0
-  },
-  "last_event_at": 1712966400
-}
-```
-
-**Response (not found)**
-
-```json
-{"error": "key 'u999' not found"}
-```
-
-**Status Codes**
-
-| Code | Meaning |
-|---|---|
-| 200 | Key state returned |
-| 404 | Key not found in the store |
-
-**Example**
+Inspect the full internal state for an entity key: live operator states, static
+features, computed feature values, last event timestamp.
 
 ```bash
 curl http://localhost:6401/debug/key/u123
@@ -388,47 +1006,7 @@ curl http://localhost:6401/debug/key/u123
 
 ### GET /debug/memory
 
-Memory usage breakdown. Shows total entity count, registered stream count, an estimated byte total, and per-stream/view breakdowns.
-
-**Response**
-
-```json
-{
-  "entity_count": 14523,
-  "stream_count": 3,
-  "estimated_bytes": 29743104,
-  "per_stream": [
-    {
-      "name": "Transactions",
-      "kind": "stream",
-      "key_count": 12000,
-      "estimated_bytes": 24576000
-    },
-    {
-      "name": "Logins",
-      "kind": "stream",
-      "key_count": 8500,
-      "estimated_bytes": 17408000
-    },
-    {
-      "name": "UserRisk",
-      "kind": "view",
-      "key_count": 0,
-      "estimated_bytes": 0
-    }
-  ]
-}
-```
-
-The `estimated_bytes` values are computed from the actual operator state in memory (ring buffer sizes, HLL register bytes, per-value overhead). Each stream entry also includes `operator_breakdown` (bytes by operator type) and `features` (per-feature byte totals). Views show `key_count: 0` because they are computed on read, not stored.
-
-**Status Codes**
-
-| Code | Meaning |
-|---|---|
-| 200 | Memory breakdown returned |
-
-**Example**
+Memory usage breakdown by stream, including entity count and estimated byte totals.
 
 ```bash
 curl http://localhost:6401/debug/memory
@@ -438,69 +1016,8 @@ curl http://localhost:6401/debug/memory
 
 ### GET /debug/topology
 
-Pipeline DAG topology. Returns all registered streams and views as nodes, with edges representing cascade dependencies (between streams) and lookup dependencies (from views to streams). Includes the cached topological execution order.
-
-**Response**
-
-```json
-{
-  "nodes": [
-    {
-      "name": "Transactions",
-      "kind": "stream",
-      "key_field": "user_id",
-      "features": ["tx_count_1h", "tx_sum_1h", "velocity_spike"],
-      "operators": [
-        {"name": "tx_count_1h", "op": "count", "window": "1h", "bucket": "1m"},
-        {"name": "tx_sum_1h", "op": "sum", "field": "amount", "window": "1h", "bucket": "1m"},
-        {"name": "velocity_spike", "op": "derive", "expr": "(tx_count_1h / 1) / (tx_count_24h / 24)"}
-      ],
-      "depends_on": []
-    },
-    {
-      "name": "UserRisk",
-      "kind": "view",
-      "key_field": "user_id",
-      "features": ["tx_to_login_ratio", "merchant_chargebacks"],
-      "operators": [
-        {"name": "tx_to_login_ratio", "op": "derive", "expr": "Transactions.tx_count_1h / Logins.login_count_1h"},
-        {"name": "merchant_chargebacks", "op": "lookup", "target": "MerchantActivity.chargeback_count_24h", "on": "merchant_id"}
-      ],
-      "depends_on": []
-    }
-  ],
-  "edges": [
-    {"from": "MerchantActivity", "to": "UserRisk", "kind": "lookup"}
-  ],
-  "topo_order": ["Transactions", "Logins", "MerchantActivity", "UserRisk"]
-}
-```
-
-**Node Fields**
-
-| Field | Description |
-|---|---|
-| `name` | Stream or view name |
-| `kind` | `"stream"` or `"view"` |
-| `key_field` | The entity key field (may be `null` for keyless streams) |
-| `features` | List of feature names defined on this stream/view |
-| `operators` | Detailed operator definitions including type, window, field, expressions |
-| `depends_on` | Upstream stream names (cascade dependencies). Always empty for views. |
-
-**Edge Kinds**
-
-| Kind | Description |
-|---|---|
-| `cascade` | Stream depends on another stream (via `depends_on`) |
-| `lookup` | View has a lookup feature referencing a target stream |
-
-**Status Codes**
-
-| Code | Meaning |
-|---|---|
-| 200 | Topology returned |
-
-**Example**
+Pipeline DAG topology: nodes (streams + views), edges (cascade + lookup
+dependencies), and the cached topological execution order.
 
 ```bash
 curl http://localhost:6401/debug/topology
@@ -510,56 +1027,19 @@ curl http://localhost:6401/debug/topology
 
 ### GET /debug/throughput
 
-Per-stream throughput metrics using exponentially weighted moving averages (EWMA) over 5-second, 1-minute, and 5-minute windows.
-
-**Response**
-
-```json
-{
-  "streams": [
-    {
-      "name": "Transactions",
-      "ewma_5s": 1234.5,
-      "ewma_1m": 1100.2,
-      "ewma_5m": 980.7
-    },
-    {
-      "name": "Logins",
-      "ewma_5s": 45.2,
-      "ewma_1m": 42.1,
-      "ewma_5m": 40.0
-    }
-  ]
-}
-```
-
-The EWMA values represent events per second, decayed up to the current instant when the endpoint is called.
-
-**Status Codes**
-
-| Code | Meaning |
-|---|---|
-| 200 | Throughput data returned |
-
-**Example**
+Per-stream throughput using exponentially weighted moving averages (EWMA) over
+5-second, 1-minute, and 5-minute windows. Values are events per second.
 
 ```bash
-curl http://localhost:6401/debug/throughput
+# Watch throughput every 2 seconds
+watch -n 2 'curl -s http://localhost:6401/debug/throughput | jq .'
 ```
 
 ---
 
 ### GET /debug/latency
 
-Per-command and per-stream latency histograms. Provides detailed latency distribution data.
-
-**Status Codes**
-
-| Code | Meaning |
-|---|---|
-| 200 | Latency data returned |
-
-**Example**
+Per-command and per-stream latency histograms.
 
 ```bash
 curl http://localhost:6401/debug/latency
@@ -569,40 +1049,7 @@ curl http://localhost:6401/debug/latency
 
 ### GET /debug/backfill
 
-Status of active and completed backfill tasks. Shows progress for each backfill operation including the stream, features being backfilled, total events, processed events, and completion status.
-
-**Response**
-
-```json
-{
-  "backfill_tasks": [
-    {
-      "stream": "Transactions",
-      "features": ["tx_count_1h", "tx_sum_1h"],
-      "total_events": 50000,
-      "processed_events": 32000,
-      "completed": false,
-      "status": "running"
-    },
-    {
-      "stream": "Logins",
-      "features": ["login_count_1h"],
-      "total_events": 10000,
-      "processed_events": 10000,
-      "completed": true,
-      "status": "completed"
-    }
-  ]
-}
-```
-
-**Status Codes**
-
-| Code | Meaning |
-|---|---|
-| 200 | Backfill status returned |
-
-**Example**
+Status of active and completed backfill tasks.
 
 ```bash
 curl http://localhost:6401/debug/backfill
@@ -610,101 +1057,59 @@ curl http://localhost:6401/debug/backfill
 
 ---
 
-### GET /
+### GET / and GET /static/*file
 
-Debug UI index page. Serves the built-in web dashboard for visual inspection of pipelines, topology, throughput, and key state.
-
-### GET /static/*file
-
-Static assets for the debug UI (JavaScript, CSS, etc.).
+Debug UI index page and static assets for the built-in web dashboard.
 
 ---
 
 ## Debug Endpoints Guide
 
-The debug endpoints are designed for troubleshooting production issues. Here is how to use them effectively.
-
 ### Inspecting a Specific Entity
-
-Use `GET /debug/key/:key` to see everything Beava knows about an entity:
 
 ```bash
 curl -s http://localhost:6401/debug/key/u123 | jq .
 ```
 
-**What to look for:**
-
-- **`live_operators`** -- The raw operator state including internal ring buffer contents. The `state` field is a Rust debug representation of the operator. Look for unexpected zero values or stale bucket data.
-- **`static_features`** -- Features written via SET/MSET. If a feature you expect from a streaming pipeline shows up here, something wrote to it directly and may be overriding live values.
-- **`computed_features`** -- The final feature values as a GET command would return them. Compare these against `live_operators` to verify derive expressions are computing correctly.
-- **`last_event_at`** -- Unix timestamp of the most recent event for this key. If this is old, the entity may be approaching TTL eviction.
+Look for `computed_features` to see final feature values, `live_operators` for raw
+ring buffer state, and `last_event_at` for freshness.
 
 ### Understanding Memory Usage
-
-Use `GET /debug/memory` to identify which streams are consuming the most memory:
 
 ```bash
 curl -s http://localhost:6401/debug/memory | jq .
 ```
 
-**What to look for:**
-
-- **`entity_count`** vs individual stream `key_count` -- A single entity can have state in multiple streams. The total entity count may be lower than the sum of per-stream key counts.
-- **Views show `key_count: 0`** -- This is expected. Views are computed on read and do not store per-key state.
-- **`estimated_bytes`** -- This is a rough estimate (~2KB per entity-stream pair). Actual memory depends on the number and type of operators. Streams with many windowed operators or HyperLogLog (distinct_count) features will use more.
+Views show `key_count: 0` (computed on read, not stored). Streams with HLL
+(`distinct_count`) operators will have higher per-key memory than average.
 
 ### Visualizing the Pipeline DAG
-
-Use `GET /debug/topology` to understand how streams and views are connected:
 
 ```bash
 curl -s http://localhost:6401/debug/topology | jq .
 ```
 
-**What to look for:**
-
-- **`edges`** -- Cascade edges show stream-to-stream dependencies. Lookup edges show which streams a view reads from. Missing edges may indicate a misconfigured pipeline.
-- **`topo_order`** -- The execution order Beava uses when processing events. Streams earlier in this list are evaluated first. If a derive expression references a stream that appears later, the value may be stale by one event.
-- **`operators`** -- Per-node operator details including window sizes, fields, filter expressions, and derive formulas. Useful for verifying that the Python SDK serialized the pipeline correctly.
+`topo_order` is the execution order — streams earlier in the list are evaluated
+before streams that appear later. Derive expressions referencing a later stream
+may see stale values by one event.
 
 ### Monitoring Throughput
 
-Use `GET /debug/throughput` to see real-time event rates per stream:
-
 ```bash
-# Watch throughput every 2 seconds
 watch -n 2 'curl -s http://localhost:6401/debug/throughput | jq .'
 ```
 
-**What to look for:**
-
-- **`ewma_5s`** -- Most responsive to bursts. Good for detecting sudden traffic spikes.
-- **`ewma_5m`** -- Smoothed long-term rate. Good for capacity planning.
-- **Streams with zero throughput** -- May indicate a misconfigured producer or a stream that is registered but not receiving events.
-
 ### Monitoring Backfill Progress
-
-Use `GET /debug/backfill` to track long-running backfill operations:
 
 ```bash
 curl -s http://localhost:6401/debug/backfill | jq '.backfill_tasks[] | select(.status == "running")'
 ```
 
-**What to look for:**
-
-- **`processed_events` vs `total_events`** -- Progress indicator. If `processed_events` stops advancing, the backfill may be stuck.
-- **Multiple running tasks** -- Backfills run concurrently. Watch for resource contention if many are active simultaneously.
-
 ### Checking Snapshot Health
-
-Use `POST /snapshot` with `wait=true` to verify snapshots are working:
 
 ```bash
 curl -s -X POST "http://localhost:6401/snapshot?wait=true&timeout_ms=10000" | jq .
 ```
 
-**What to look for:**
-
-- **`duration_ms`** -- If this is growing over time, the state store is getting larger. Consider TTL eviction settings.
-- **`bytes`** -- Snapshot size on disk. Monitor for unexpected growth.
-- **409 Conflict** -- A snapshot is already in progress. Check `beava_snapshots_skipped_total` in `/metrics` to see if periodic snapshots are being skipped due to slow writes.
+A 409 response means a snapshot is already in progress. Monitor
+`beava_snapshots_skipped_total` in `/metrics` if periodic snapshots are being skipped.
