@@ -240,8 +240,23 @@ impl std::fmt::Debug for StateStore {
 
 impl Default for StateStore {
     fn default() -> Self {
+        // `BEAVA_ENTITIES_SHARDS=<N>` (power of two) overrides DashMap's
+        // default shard count for the entities map. Used by the
+        // profile_ingest harness to test whether more shards reduces
+        // lock-exclusive contention under Zipfian hot-key traffic.
+        // When unset, falls through to DashMap's default
+        // (num_cpus * 4, rounded up to power of two = 64 on 10-core M4).
+        let entities = if let Some(n) = std::env::var("BEAVA_ENTITIES_SHARDS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|n| n.is_power_of_two() && *n >= 1)
+        {
+            DashMap::with_shard_amount(n)
+        } else {
+            DashMap::new()
+        };
         Self {
-            entities: DashMap::new(),
+            entities,
             dirty_keys: dashmap::DashSet::new(),
             deleted_keys: dashmap::DashSet::new(),
             // Start at 1 so that a newly-created entity's `dirty_gen = 0` is
