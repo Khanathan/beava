@@ -1113,12 +1113,20 @@ async fn async_main() {
         }
     });
 
-    // Periodic event log fsync timer (ELOG-04: 1-second interval, Redis everysec pattern)
-    // Skip if event log is disabled.
+    // Periodic event log fsync timer (ELOG-04: Redis everysec pattern by
+    // default). Interval is tunable via BEAVA_FSYNC_INTERVAL_MS so operators
+    // can trade throughput for a tighter crash data-loss window. Range is
+    // clamped to [10ms, 60s]; defaults to 1000ms matching Redis appendfsync
+    // everysec.
     if event_log_enabled {
         let fsync_state = state.clone();
+        let fsync_interval_ms: u64 = std::env::var("BEAVA_FSYNC_INTERVAL_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|ms| ms.clamp(1, 60_000))
+            .unwrap_or(1000);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            let mut interval = tokio::time::interval(Duration::from_millis(fsync_interval_ms));
             interval.tick().await; // Skip first immediate tick
             loop {
                 interval.tick().await;
