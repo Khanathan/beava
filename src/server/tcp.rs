@@ -990,6 +990,237 @@ pub fn replica_ingest(
     Ok(())
 }
 
+/// Replica-side batch ingest. Semantically equivalent to calling
+/// `replica_ingest` N times, but amortizes:
+///
+/// - the engine read lock (held once for the whole batch),
+/// - `store.mark_dirty` (one `mark_dirty_many` call per touched stream),
+/// - `event_log.append` (one `append_many_with_ts` per touched stream — one
+///   `libc::write()` syscall per stream instead of N),
+/// - the per-stream `beava_replica_events_ingested_total` counter bump (one
+///   `fetch_add(n)` per stream instead of N `fetch_add(1)`),
+/// - the `replica_last_applied_ts_ms` fetch_max (once per batch).
+///
+/// Per-event `event_time` semantics are **preserved**: each event's operator
+/// bucket routing and `LogEntry.timestamp` use `UNIX_EPOCH + ts_ms`, so
+/// a downstream fork reading this replica's log via `handle_log_fetch`
+/// observes the same ts_ms stream upstream would have emitted.
+///
+/// Bails on the first per-event error, but flushes log + dirty state for
+/// every successfully-applied event before returning. Returns the count
+/// of events applied.
+pub fn replica_ingest_batch(
+    state: &SharedState,
+    events: &[(String, u64, Vec<u8>)],
+) -> Result<usize, BeavaError> {
+    use crate::state::event_log::{decode_log_payload, LOG_FMT_BINARY, LOG_FMT_JSON};
+
+    if events.is_empty() {
+        return Ok(0);
+    }
+
+    let engine = state.engine.read();
+    let store = &state.store;
+
+    // Per-stream accumulators for end-of-batch flush.
+    let mut per_stream_log: ahash::AHashMap<String, (Vec<Vec<u8>>, Vec<SystemTime>)> =
+        ahash::AHashMap::new();
+    let mut per_stream_dirty: ahash::AHashMap<String, Vec<String>> = ahash::AHashMap::new();
+    let mut per_stream_counts: ahash::AHashMap<String, u64> = ahash::AHashMap::new();
+    let mut max_ts_ms: u64 = 0;
+    let mut n_ok: usize = 0;
+    let mut first_err: Option<BeavaError> = None;
+
+    // Cache fan_out_targets once; it doesn't change mid-batch under the
+    // read lock.
+    let fan_out_all = engine.fan_out_targets();
+
+    'outer: for (stream_name, ts_ms, raw_payload) in events {
+        let (fmt, body) = decode_log_payload(raw_payload);
+        let payload_value: serde_json::Value = match fmt {
+            LOG_FMT_BINARY => {
+                let mut buf = body;
+                match protocol::decode_event_binary(&mut buf) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        first_err = Some(BeavaError::Protocol(format!(
+                            "replica_ingest_batch: binary decode: {}",
+                            e
+                        )));
+                        break 'outer;
+                    }
+                }
+            }
+            LOG_FMT_JSON => match serde_json::from_slice(body) {
+                Ok(v) => v,
+                Err(e) => {
+                    first_err = Some(BeavaError::Protocol(format!(
+                        "replica_ingest_batch: json decode: {}",
+                        e
+                    )));
+                    break 'outer;
+                }
+            },
+            other => {
+                first_err = Some(BeavaError::Protocol(format!(
+                    "replica_ingest_batch: unknown log fmt byte 0x{:02x}",
+                    other
+                )));
+                break 'outer;
+            }
+        };
+
+        let event_time =
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(*ts_ms);
+
+        // Primary + cascade push (no features — replica semantics).
+        if let Err(e) =
+            engine.push_with_cascade_no_features(stream_name, &payload_value, store, event_time)
+        {
+            first_err = Some(e);
+            break 'outer;
+        }
+
+        // Build the log payload once; reused across primary + cascade + fan-out.
+        let log_body = if fmt == LOG_FMT_BINARY { body } else { &[] };
+        let log_payload = make_log_payload(&payload_value, log_body);
+
+        // Primary: queue log + dirty.
+        let primary_key_field: Option<String> = engine
+            .get_stream(stream_name)
+            .and_then(|s| s.key_field.clone());
+        if let Some(ref kf) = primary_key_field {
+            if let Some(serde_json::Value::String(k)) = payload_value.get(kf.as_str()) {
+                if !k.is_empty() {
+                    per_stream_dirty
+                        .entry(stream_name.clone())
+                        .or_default()
+                        .push(k.clone());
+                }
+            }
+        }
+        let entry = per_stream_log
+            .entry(stream_name.clone())
+            .or_default();
+        entry.0.push(log_payload.clone());
+        entry.1.push(event_time);
+        *per_stream_counts.entry(stream_name.clone()).or_insert(0) += 1;
+
+        // Cascade targets: log + dirty keys (mirror handle_push_core_ex).
+        let cascade_targets = engine.get_cascade_targets(stream_name);
+        for ds_name in &cascade_targets {
+            if let Some(d) = engine.get_stream(ds_name) {
+                let (should_log, dirty_key) = match &d.key_field {
+                    Some(kf) => match payload_value.get(kf.as_str()) {
+                        Some(serde_json::Value::String(k)) if !k.is_empty() => {
+                            (true, Some(k.clone()))
+                        }
+                        _ => (false, None),
+                    },
+                    None => (true, None),
+                };
+                if should_log {
+                    let ds_entry = per_stream_log
+                        .entry(ds_name.clone())
+                        .or_default();
+                    ds_entry.0.push(log_payload.clone());
+                    ds_entry.1.push(event_time);
+                }
+                if let Some(k) = dirty_key {
+                    per_stream_dirty
+                        .entry(ds_name.clone())
+                        .or_default()
+                        .push(k);
+                }
+            }
+        }
+
+        // Fan-out: filter targets the same way handle_push_core_ex does.
+        for (target_name, target_key_field) in &fan_out_all {
+            if target_name == stream_name {
+                continue;
+            }
+            if primary_key_field.as_deref() == Some(target_key_field.as_str()) {
+                continue;
+            }
+            if cascade_targets.iter().any(|ct| ct == target_name) {
+                continue;
+            }
+            if let Some(serde_json::Value::String(k)) =
+                payload_value.get(target_key_field.as_str())
+            {
+                if !k.is_empty() {
+                    let _ = engine.push_no_features(
+                        target_name,
+                        &payload_value,
+                        store,
+                        event_time,
+                    );
+                    per_stream_dirty
+                        .entry(target_name.clone())
+                        .or_default()
+                        .push(k.clone());
+                    let tgt_entry = per_stream_log
+                        .entry(target_name.clone())
+                        .or_default();
+                    tgt_entry.0.push(log_payload.clone());
+                    tgt_entry.1.push(event_time);
+                }
+            }
+        }
+
+        if *ts_ms > max_ts_ms {
+            max_ts_ms = *ts_ms;
+        }
+        n_ok += 1;
+    }
+
+    // Flush dirty keys per stream (one `dirty_keys` mutex acquisition each).
+    for (_stream, keys) in &per_stream_dirty {
+        store.mark_dirty_many(keys.iter().map(|s| s.as_str()));
+    }
+
+    // Flush event-log per stream via the per-timestamp batch writer.
+    // One `libc::write()` syscall per stream instead of N.
+    if let Some(ref log) = state.event_log {
+        for (stream_name, (bodies, timestamps)) in &per_stream_log {
+            let refs: Vec<&[u8]> = bodies.iter().map(|v| v.as_slice()).collect();
+            let _ = log.append_many_with_ts(stream_name, &refs, timestamps);
+        }
+    }
+
+    // Per-stream replica counter bump (one fetch_add per stream).
+    for (stream_name, n) in &per_stream_counts {
+        crate::server::replica::bump_replica_events_ingested_by(stream_name, *n);
+    }
+
+    // Advance reconnect cursor to the highest applied ts.
+    if n_ok > 0 {
+        state
+            .replica_last_applied_ts_ms
+            .fetch_max(max_ts_ms, Ordering::Relaxed);
+    }
+
+    // Bump events_total once per batch too — matches the sync-batch path's
+    // per-event semantics when converted back (N events applied).
+    state
+        .events_total
+        .fetch_add(n_ok as u64, std::sync::atomic::Ordering::Relaxed);
+    state.atomic_throughput.bump(n_ok as u64);
+
+    match first_err {
+        Some(e) if n_ok == 0 => Err(e),
+        Some(e) => {
+            // Partial success: some events applied + flushed; return the
+            // error so the caller can reconnect-and-resume from
+            // replica_last_applied_ts_ms. We've committed N in-memory + log
+            // state so resume is consistent.
+            Err(e)
+        }
+        None => Ok(n_ok),
+    }
+}
+
 /// Core PUSH side-effect pipeline shared by sync and async push paths (Phase 11).
 ///
 /// Performs the full PUSH work under a single lock acquisition:

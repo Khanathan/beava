@@ -334,6 +334,54 @@ impl EventLog {
         Ok(written)
     }
 
+    /// Batch-append multiple raw events with **per-event** timestamps.
+    ///
+    /// Same single-syscall semantics as `append_many`, but each event carries
+    /// its own `SystemTime`. Used by the replica-side batch ingest path, where
+    /// a single batch can span hours of upstream event time and the
+    /// `LogEntry.timestamp` must survive a later `handle_log_fetch` readback
+    /// (the fork reader emits ts_ms directly from `entry.timestamp`).
+    ///
+    /// `event_bytes_list.len()` must equal `timestamps.len()`.
+    pub fn append_many_with_ts(
+        &self,
+        stream_name: &str,
+        event_bytes_list: &[&[u8]],
+        timestamps: &[SystemTime],
+    ) -> std::io::Result<usize> {
+        assert_eq!(
+            event_bytes_list.len(),
+            timestamps.len(),
+            "append_many_with_ts: events/timestamps length mismatch"
+        );
+        if event_bytes_list.is_empty() {
+            return Ok(0);
+        }
+        let log_ref = match self.writers.get(stream_name) {
+            Some(w) => w,
+            None => return Ok(0),
+        };
+        let rough_cap: usize = event_bytes_list.iter().map(|b| b.len() + 32).sum();
+        let mut buf = Vec::with_capacity(rough_cap);
+        let mut written = 0usize;
+        for (bytes, ts) in event_bytes_list.iter().zip(timestamps.iter()) {
+            let entry = LogEntry {
+                timestamp: *ts,
+                payload: bytes.to_vec(),
+            };
+            let encoded = postcard::to_stdvec(&entry).map_err(std::io::Error::other)?;
+            buf.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+            buf.extend_from_slice(&encoded);
+            written += 1;
+        }
+        debug_assert!(
+            buf.len() < 1_048_576,
+            "event-log batch frame exceeds 1 MiB (Linux O_APPEND atomicity guarantee weakens above this); consider smaller batches"
+        );
+        log_ref.append_raw(&buf)?;
+        Ok(written)
+    }
+
     /// Read all log entries for a stream.
     /// Opens the file independently from the writer.
     pub fn read_entries(&self, stream_name: &str) -> std::io::Result<Vec<LogEntry>> {

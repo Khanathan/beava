@@ -87,14 +87,23 @@ fn replica_events_ingested_map() -> &'static DashMap<String, AtomicU64> {
 
 /// Phase 36-01: bump the per-stream replica-events-ingested counter by 1.
 pub fn bump_replica_events_ingested(stream: &str) {
+    bump_replica_events_ingested_by(stream, 1);
+}
+
+/// Batched variant: bump the per-stream replica-events-ingested counter by `n`.
+/// Used by the replica-batch ingest path to amortize DashMap lookups.
+pub fn bump_replica_events_ingested_by(stream: &str, n: u64) {
+    if n == 0 {
+        return;
+    }
     let m = replica_events_ingested_map();
     if let Some(existing) = m.get(stream) {
-        existing.fetch_add(1, Ordering::Relaxed);
+        existing.fetch_add(n, Ordering::Relaxed);
         return;
     }
     m.entry(stream.to_owned())
         .or_insert_with(|| AtomicU64::new(0))
-        .fetch_add(1, Ordering::Relaxed);
+        .fetch_add(n, Ordering::Relaxed);
 }
 
 /// Phase 36-01: read snapshot of `(stream, count)` pairs for the per-stream

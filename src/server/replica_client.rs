@@ -35,7 +35,16 @@ use crate::client::wire::{
     write_scope, Scope as ClientScope, OP_LOG_FETCH, REPLICA_FRAME_TAG_END,
     REPLICA_FRAME_TAG_EVENT,
 };
-use crate::server::tcp::{replica_ingest, SharedState};
+use crate::server::tcp::{replica_ingest, replica_ingest_batch, SharedState};
+
+/// Max events accumulated before a forced flush in the catchup batch loop.
+/// Chosen to keep the batch's log-payload frame under the 1 MiB
+/// `O_APPEND`-atomic guard in `event_log::append_many_with_ts` for
+/// typical event sizes (~200-800 bytes), and to amortize the engine
+/// read lock + syscall cost over enough events that per-event overhead
+/// drops into single-digit microseconds. Empirically tuned via
+/// benchmark/fork-replay.
+const REPLICA_BATCH_FLUSH_SIZE: usize = 1000;
 
 /// Phase 27-02 subscribe opcode — mirrors `src/client/session.rs::OP_SUBSCRIBE`.
 const OP_SUBSCRIBE: u8 = 0x11;
@@ -250,6 +259,13 @@ impl ReplicaClient {
         let mut extract_cursor: usize = 0;
         let extract_at = &self.config.extract_at_millis.clone();
 
+        // Batch accumulator for the catchup hot path. Flushed via
+        // `replica_ingest_batch` at `REPLICA_BATCH_FLUSH_SIZE` events, at
+        // END-frame, and **before** any extract_at snapshot so the snapshot
+        // sees the correct state.
+        let mut pending: Vec<(String, u64, Vec<u8>)> =
+            Vec::with_capacity(REPLICA_BATCH_FLUSH_SIZE);
+
         // Read response frames until END (or STATUS_ERROR).
         loop {
             let frame_len = read_u32_be(&mut stream).await?;
@@ -267,6 +283,14 @@ impl ReplicaClient {
             let tag = body[0];
             match tag {
                 t if t == REPLICA_FRAME_TAG_END => {
+                    // Flush any remaining buffered events before the final
+                    // extract_at snapshots so "state-at-end-of-log" is
+                    // correct.
+                    if !pending.is_empty() {
+                        replica_ingest_batch(&self.app, &pending)
+                            .map_err(|e| ReplicaError::IngestFailed(e.to_string()))?;
+                        pending.clear();
+                    }
                     // Phase 44-01: snapshot any remaining extract_at entries
                     // that were never crossed during replay. They capture
                     // the state-as-of end-of-log, which is the correct
@@ -300,13 +324,29 @@ impl ReplicaClient {
                     let payload = &body[13..13 + payload_len];
                     // Phase 44-01: snapshot-before-apply for every cursor
                     // threshold strictly less than this event's ts_ms.
+                    // Must flush the pending batch first so the snapshot
+                    // sees the state produced by all prior events.
                     while extract_cursor < extract_at.len()
                         && ts_ms > extract_at[extract_cursor]
                     {
+                        if !pending.is_empty() {
+                            replica_ingest_batch(&self.app, &pending)
+                                .map_err(|e| ReplicaError::IngestFailed(e.to_string()))?;
+                            pending.clear();
+                        }
                         self.snapshot_extract(extract_at[extract_cursor]);
                         extract_cursor += 1;
                     }
-                    self.apply_event(ts_ms, payload)?;
+                    // Resolve the stream up-front (same logic single-event
+                    // apply_event uses) so the batch path has everything
+                    // it needs without re-acquiring the engine lock.
+                    let stream_name = self.resolve_stream_for_event(payload)?;
+                    pending.push((stream_name, ts_ms, payload.to_vec()));
+                    if pending.len() >= REPLICA_BATCH_FLUSH_SIZE {
+                        replica_ingest_batch(&self.app, &pending)
+                            .map_err(|e| ReplicaError::IngestFailed(e.to_string()))?;
+                        pending.clear();
+                    }
                 }
                 0x01 => {
                     // STATUS_ERROR (shared tag value) — body[1..] is the msg.
