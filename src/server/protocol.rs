@@ -1557,6 +1557,7 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
         ephemeral: req.ephemeral,
         pipeline_ttl,
         max_keys: req.max_keys,
+        watermark_lateness: None,
     })
 }
 

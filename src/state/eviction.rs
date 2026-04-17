@@ -59,8 +59,18 @@ pub fn evict_expired_stream_entries(
                     },
                 };
 
+                // D-17 / CORR-07: source the eviction clock from the per-stream
+                // watermark's observed_max so historical backfills (30-day-old events)
+                // don't immediately evict entities whose event-time is old-by-wall-clock
+                // but alive-by-event-time. Fallback to the wall-clock `now` arg preserves
+                // existing semantics for streams that have never been observed.
+                let scan_clock = engine
+                    .watermarks
+                    .observed_max(stream_name)
+                    .unwrap_or(now);
+
                 // Check if stream entry is expired
-                let age = now
+                let age = scan_clock
                     .duration_since(last_event)
                     .unwrap_or(std::time::Duration::ZERO);
                 if age > ttl {
@@ -212,6 +222,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         }
     }
 
@@ -322,6 +333,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         }
     }
 
@@ -471,6 +483,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
 

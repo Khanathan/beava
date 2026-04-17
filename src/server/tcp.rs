@@ -3417,6 +3417,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         state.engine.write().register(stream).unwrap();
     }
@@ -3744,6 +3745,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         state.engine.write().register(stream).unwrap();
     }
