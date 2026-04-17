@@ -630,6 +630,23 @@ async fn async_main() {
         None
     };
 
+    // Phase 43 T6: opt-in S2 archive backend. BEAVA_S2_TOKEN +
+    // BEAVA_S2_BASIN turn it on; absence keeps the pre-T6 behaviour
+    // (compact_stream drops expired entries silently). On compaction,
+    // expired entries are POSTed to S2 in 1000-record chunks BEFORE
+    // being dropped from local disk; any upload failure aborts the
+    // cycle so no data is lost.
+    if let (Some(log), Some(arch)) = (
+        event_log.as_ref(),
+        beava::state::s2_archive::S2Archive::new_from_env(),
+    ) {
+        eprintln!(
+            "S2 archive: enabled (basin={}, uploading expired entries on compaction)",
+            arch.basin()
+        );
+        log.set_archive_backend(Some(std::sync::Arc::new(arch)));
+    }
+
     // Phase 14: ConcurrentAppState with per-field locking.
     // Phase 20: also carries admin_token + public_mode.
     let state: SharedState = make_concurrent_state_full(

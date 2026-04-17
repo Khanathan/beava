@@ -215,6 +215,12 @@ pub struct EventLog {
     writers: DashMap<String, LockFreeStreamLog>,
     /// Per-stream history TTL for compaction. Streams not in this map are not logged.
     history_ttls: DashMap<String, Duration>,
+    /// Phase 43 T6: optional archive backend invoked by `compact_stream`
+    /// BEFORE the expired entries are dropped. On archive error the local
+    /// compaction is aborted — entries stay on disk — and the error is
+    /// returned so the periodic compaction task can log/signal it. None
+    /// means "drop expired entries without archiving" (pre-T6 behaviour).
+    archive_backend: parking_lot::Mutex<crate::state::s2_archive::MaybeArchive>,
 }
 
 impl EventLog {
@@ -225,6 +231,7 @@ impl EventLog {
             log_dir,
             writers: DashMap::new(),
             history_ttls: DashMap::new(),
+            archive_backend: parking_lot::Mutex::new(None),
         })
     }
 
@@ -411,6 +418,21 @@ impl EventLog {
             return Ok(0);
         }
 
+        // Phase 43 T6: if an archive backend is wired, ship the expired
+        // entries off-box BEFORE dropping them locally. Any failure
+        // aborts this compaction cycle — kept+removed stay as-is on disk
+        // — so the next cycle will retry. Partial archival is NOT
+        // recoverable from local state alone, so we refuse to drop
+        // anything until the full batch is accepted.
+        if let Some(backend) = self.archive_backend.lock().as_ref().cloned() {
+            backend.archive(stream_name, &removed).map_err(|e| {
+                std::io::Error::other(format!(
+                    "compact_stream aborted: archive backend rejected batch for {}: {}",
+                    stream_name, e
+                ))
+            })?;
+        }
+
         let sanitized = sanitize_stream_name(stream_name);
         let log_path = self.log_dir.join(format!("{}.log", sanitized));
         let tmp_path = self.log_dir.join(format!("{}.log.tmp", sanitized));
@@ -462,6 +484,14 @@ impl EventLog {
     /// concurrent mutations.
     pub fn registered_streams(&self) -> Vec<String> {
         self.writers.iter().map(|e| e.key().clone()).collect()
+    }
+
+    /// Install (or clear) the archive backend. Called from main.rs at
+    /// startup after the EventLog is constructed; safe to call at any
+    /// time — compact_stream reads the current value at the top of its
+    /// critical section.
+    pub fn set_archive_backend(&self, backend: crate::state::s2_archive::MaybeArchive) {
+        *self.archive_backend.lock() = backend;
     }
 }
 
@@ -610,6 +640,135 @@ mod tests {
         log.append("A", b"data_a", ts(1000)).unwrap();
         log.append("B", b"data_b", ts(1000)).unwrap();
         assert!(log.fsync_all().is_ok());
+    }
+
+    // ----- Phase 43 T6: archive-backend integration tests -----
+
+    struct CapturingArchive {
+        calls: std::sync::Mutex<Vec<(String, Vec<LogEntry>)>>,
+        fail_next: std::sync::atomic::AtomicBool,
+    }
+
+    impl CapturingArchive {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::Mutex::new(Vec::new()),
+                fail_next: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl crate::state::s2_archive::ArchiveBackend for CapturingArchive {
+        fn archive(
+            &self,
+            stream_name: &str,
+            entries: &[LogEntry],
+        ) -> std::io::Result<usize> {
+            if self
+                .fail_next
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(std::io::Error::other("simulated S2 outage"));
+            }
+            // Clone entries for assertion later.
+            let cloned: Vec<LogEntry> = entries
+                .iter()
+                .map(|e| LogEntry {
+                    timestamp: e.timestamp,
+                    payload: e.payload.clone(),
+                })
+                .collect();
+            self.calls
+                .lock()
+                .unwrap()
+                .push((stream_name.to_string(), cloned));
+            Ok(entries.len())
+        }
+    }
+
+    #[test]
+    fn compact_stream_hands_expired_entries_to_archive_backend() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        // 10-second retention so ts=1000 is expired by ts=2000.
+        log.register_stream("S", Some(Duration::from_secs(10)))
+            .unwrap();
+
+        log.append("S", b"old1", ts(1000)).unwrap();
+        log.append("S", b"old2", ts(1001)).unwrap();
+        log.append("S", b"fresh", ts(1995)).unwrap();
+
+        let archive = std::sync::Arc::new(CapturingArchive::new());
+        log.set_archive_backend(Some(archive.clone()));
+
+        // Compact at ts=2000; ts=1000,1001 are past cutoff (2000-10=1990);
+        // ts=1995 stays.
+        let removed = log.compact_stream("S", ts(2000)).unwrap();
+        assert_eq!(removed, 2);
+
+        let calls = archive.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "archive should be called exactly once");
+        assert_eq!(calls[0].0, "S");
+        assert_eq!(calls[0].1.len(), 2);
+        assert_eq!(calls[0].1[0].payload, b"old1");
+        assert_eq!(calls[0].1[1].payload, b"old2");
+
+        // Local disk retains only the fresh entry.
+        let remaining = log.read_entries("S").unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].payload, b"fresh");
+    }
+
+    #[test]
+    fn compact_stream_aborts_and_retains_entries_when_archive_fails() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        log.register_stream("S", Some(Duration::from_secs(10)))
+            .unwrap();
+
+        log.append("S", b"old", ts(1000)).unwrap();
+        log.append("S", b"fresh", ts(1995)).unwrap();
+
+        let archive = std::sync::Arc::new(CapturingArchive::new());
+        archive
+            .fail_next
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        log.set_archive_backend(Some(archive.clone()));
+
+        // The simulated S2 failure must abort compaction; the expired
+        // entry MUST remain on disk so the next cycle can retry it.
+        let result = log.compact_stream("S", ts(2000));
+        assert!(result.is_err(), "compaction should fail on archive error");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("simulated S2 outage"),
+            "err should chain the archive error, got: {}",
+            err_msg
+        );
+
+        // Both entries still on disk (nothing dropped).
+        let remaining = log.read_entries("S").unwrap();
+        assert_eq!(
+            remaining.len(),
+            2,
+            "both entries must be retained when archive fails"
+        );
+    }
+
+    #[test]
+    fn compact_stream_with_no_archive_backend_still_drops_locally() {
+        // Backwards-compatible path: no backend set = pre-T6 behaviour.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        log.register_stream("S", Some(Duration::from_secs(10)))
+            .unwrap();
+
+        log.append("S", b"old", ts(1000)).unwrap();
+        log.append("S", b"fresh", ts(1995)).unwrap();
+
+        assert_eq!(log.compact_stream("S", ts(2000)).unwrap(), 1);
+        let remaining = log.read_entries("S").unwrap();
+        assert_eq!(remaining.len(), 1);
     }
 
     #[test]
