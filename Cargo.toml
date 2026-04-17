@@ -48,6 +48,9 @@ sha2 = "0.10"
 tower = { version = "0.5", features = ["util"] }
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 pprof = { version = "0.14", features = ["flamegraph", "frame-pointer"] }
+scc = "3.7"
+papaya = "0.2"
+flurry = "0.5"
 
 [[bin]]
 name = "beava"
