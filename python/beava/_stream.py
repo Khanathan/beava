@@ -97,10 +97,12 @@ class StreamSource(Stream):
         schema: dict[str, FieldSpec],
         *,
         history_ttl: str | None = None,
+        watermark_lateness: str | None = None,
     ) -> None:
         self._name = name
         self._schema = schema
         self._history_ttl = history_ttl
+        self._watermark_lateness = watermark_lateness
         # Sources have no upstream ops.
         self._ops: list[dict[str, Any]] = []
         self._upstreams: list[Stream] = []
@@ -324,15 +326,19 @@ def _build_stream_derivation_from_func(
     )
 
 
-def stream(cls: type | FunctionType | None = None, *, history_ttl: str | None = None):  # noqa: D401
+def stream(cls: type | FunctionType | None = None, *, history_ttl: str | None = None, watermark_lateness: str | None = None):  # noqa: D401
     # Phase 25-02: validate history_ttl client-side (server also validates).
     if history_ttl is not None:
         from beava._table import _validate_duration_str
         _validate_duration_str(history_ttl, field="history_ttl")
-    return _stream_impl(cls, history_ttl=history_ttl)
+    # D-11 / CORR-03: validate watermark_lateness client-side (server also parses).
+    if watermark_lateness is not None:
+        from beava._table import _validate_duration_str
+        _validate_duration_str(watermark_lateness, field="watermark_lateness")
+    return _stream_impl(cls, history_ttl=history_ttl, watermark_lateness=watermark_lateness)
 
 
-def _stream_impl(cls: type | FunctionType | None = None, *, history_ttl: str | None = None):
+def _stream_impl(cls: type | FunctionType | None = None, *, history_ttl: str | None = None, watermark_lateness: str | None = None):
     """Decorator that declares a Stream — class form or function form.
 
     Class form::
@@ -369,6 +375,7 @@ def _stream_impl(cls: type | FunctionType | None = None, *, history_ttl: str | N
                 name=target.__name__,
                 schema=schema,
                 history_ttl=history_ttl,
+                watermark_lateness=watermark_lateness,
             )
         raise TypeError(
             f"@bv.stream must be applied to a class or function, got "

@@ -66,6 +66,11 @@ def _compile_source(descriptor: Any) -> dict[str, Any]:
         d["key_field"] = None
         if getattr(descriptor, "_history_ttl", None) is not None:
             d["history_ttl"] = descriptor._history_ttl
+        # D-11 / CORR-03: emit per-stream watermark lateness override when set.
+        # Server-side SourceDescriptor receives this as Option<String> and
+        # parses via parse_duration_str → StreamDefinition.watermark_lateness.
+        if getattr(descriptor, "_watermark_lateness", None) is not None:
+            d["watermark_lateness"] = descriptor._watermark_lateness
     elif isinstance(descriptor, TableSource):
         d["kind"] = "table"
         d["mode"] = descriptor._mode
