@@ -53,6 +53,7 @@ fn fresh_state_with_stream() -> SharedState {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
     state

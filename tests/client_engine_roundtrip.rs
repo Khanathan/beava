@@ -59,6 +59,7 @@ fn minimal_tx_stream() -> StreamDefinition {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     }
 }
 

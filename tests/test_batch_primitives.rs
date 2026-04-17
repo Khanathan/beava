@@ -50,6 +50,7 @@ fn make_count_stream(name: &str, key: &str) -> StreamDefinition {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     }
 }
 
@@ -75,6 +76,7 @@ fn make_cascade_child(name: &str, key: &str, parent: &str) -> StreamDefinition {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     }
 }
 

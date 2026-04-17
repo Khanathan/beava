@@ -57,6 +57,7 @@ fn stream_def(name: &str) -> StreamDefinition {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     }
 }
 

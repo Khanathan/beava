@@ -50,6 +50,7 @@ fn register_events_stream(state: &SharedState) {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 }

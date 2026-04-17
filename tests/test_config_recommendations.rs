@@ -24,6 +24,7 @@ fn table(name: &str, ttl: Option<&str>) -> SourceDescriptor {
         fields: serde_json::json!({"user_id": {"type": "str", "optional": false}}),
         history_ttl: None,
         entity_ttl: ttl.map(|s| s.to_string()),
+        watermark_lateness: None,
     }
 }
 
@@ -37,6 +38,7 @@ fn stream(name: &str, history_ttl: Option<&str>) -> SourceDescriptor {
         fields: serde_json::json!({"user_id": {"type": "str", "optional": false}}),
         history_ttl: history_ttl.map(|s| s.to_string()),
         entity_ttl: None,
+        watermark_lateness: None,
     }
 }
 

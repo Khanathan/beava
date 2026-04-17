@@ -49,6 +49,7 @@ fn make_tx_stream() -> StreamDefinition {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     }
 }
 
@@ -162,6 +163,7 @@ fn test_eviction_removes_old_entity() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -224,6 +226,7 @@ fn test_eviction_preserves_entity_with_no_events() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 

@@ -67,6 +67,7 @@ fn make_tx_stream_with_derive() -> StreamDefinition {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     }
 }
 
@@ -199,6 +200,7 @@ fn test_derive_division_by_zero_returns_missing() {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     };
 
     let mut engine = PipelineEngine::new();
@@ -272,6 +274,7 @@ fn test_window_expiration_end_to_end() {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     };
 
     let mut engine = PipelineEngine::new();
@@ -338,6 +341,7 @@ fn test_derive_with_event_field_access() {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     };
 
     let mut engine = PipelineEngine::new();
@@ -420,6 +424,7 @@ fn make_keyless_stream(name: &str) -> StreamDefinition {
         max_keys: None,
         depends_on: None,
         filter: None,
+        watermark_lateness: None,
     }
 }
 
@@ -445,6 +450,7 @@ fn make_keyed_dependent_stream(name: &str, key: &str, deps: Vec<&str>) -> Stream
         max_keys: None,
         depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
         filter: None,
+        watermark_lateness: None,
     }
 }
 
@@ -663,6 +669,7 @@ fn test_keyed_to_keyed_cascade() {
         max_keys: None,
         depends_on: None,
         filter: None,
+        watermark_lateness: None,
     };
     let b = StreamDefinition {
         name: "B".into(),
@@ -685,6 +692,7 @@ fn test_keyed_to_keyed_cascade() {
         max_keys: None,
         depends_on: Some(vec!["A".into()]),
         filter: None,
+        watermark_lateness: None,
     };
     engine.register(a).unwrap();
     engine.register(b).unwrap();
@@ -867,6 +875,7 @@ async fn test_backfill_replay_deterministic() {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     };
     {
         state.engine.write().register(stream1).unwrap();
@@ -928,6 +937,7 @@ async fn test_backfill_replay_deterministic() {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     };
     {
         let mut engine = state.engine.write();
@@ -1011,6 +1021,7 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     };
     {
         state.engine.write().register(stream1).unwrap();
@@ -1064,6 +1075,7 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     };
     {
         let mut engine = state.engine.write();
@@ -1162,6 +1174,7 @@ fn test_schema_evolution_add_remove() {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     };
     engine.register(stream1).unwrap();
 
@@ -1217,6 +1230,7 @@ fn test_schema_evolution_add_remove() {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     };
     let diff = engine.register(stream2).unwrap();
     assert!(diff.removed.contains(&"sum_1h".to_string()));
@@ -1269,6 +1283,7 @@ async fn test_backfill_idempotent_restart() {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     };
     {
         state.engine.write().register(stream1).unwrap();
@@ -1331,6 +1346,7 @@ async fn test_backfill_idempotent_restart() {
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     };
 
     {
@@ -1573,6 +1589,7 @@ fn test_enriched_derive_to_downstream_sum() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -1596,6 +1613,7 @@ fn test_enriched_derive_to_downstream_sum() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -1624,6 +1642,7 @@ fn test_enriched_derive_to_downstream_sum() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -1673,6 +1692,7 @@ fn test_enriched_multi_hop_cascade() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -1696,6 +1716,7 @@ fn test_enriched_multi_hop_cascade() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -1732,6 +1753,7 @@ fn test_enriched_multi_hop_cascade() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -1760,6 +1782,7 @@ fn test_enriched_multi_hop_cascade() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -1817,6 +1840,7 @@ fn test_enriched_cascade_async_mode() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -1839,6 +1863,7 @@ fn test_enriched_cascade_async_mode() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -1866,6 +1891,7 @@ fn test_enriched_cascade_async_mode() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -1928,6 +1954,7 @@ fn test_enriched_where_clause() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -1950,6 +1977,7 @@ fn test_enriched_where_clause() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -1976,6 +2004,7 @@ fn test_enriched_where_clause() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -2039,6 +2068,7 @@ fn test_enriched_field_resolution_qualified() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -2061,6 +2091,7 @@ fn test_enriched_field_resolution_qualified() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -2088,6 +2119,7 @@ fn test_enriched_field_resolution_qualified() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -2131,6 +2163,7 @@ fn test_enriched_field_resolution_unqualified() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -2153,6 +2186,7 @@ fn test_enriched_field_resolution_unqualified() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -2181,6 +2215,7 @@ fn test_enriched_field_resolution_unqualified() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -2251,6 +2286,7 @@ fn test_enriched_no_cascade_unchanged() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -2342,6 +2378,7 @@ fn test_projection_select_push() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -2416,6 +2453,7 @@ fn test_projection_drop_push() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -2477,6 +2515,7 @@ fn test_projection_select_get() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -2533,6 +2572,7 @@ fn test_projection_drop_get() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 
@@ -2598,6 +2638,7 @@ fn test_projection_derive_still_evaluates() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .unwrap();
 

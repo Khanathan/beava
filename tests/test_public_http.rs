@@ -118,6 +118,7 @@ fn register_txns(state: &SharedState) {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+        watermark_lateness: None,
         })
         .expect("register Transactions");
 }
