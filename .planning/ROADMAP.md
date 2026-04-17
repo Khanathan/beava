@@ -171,7 +171,15 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
   6. A user defines `@bv.stream(watermark_lateness="10m")` and sees that value honored; streams without the field keep defaulting to 5 s with no snapshot-migration churn (validates CORR-03/CORR-04).
   7. A user or maintainer opens `docs/event-time.md` and understands bucket assignment, watermark lateness, crash-replay determinism, TTL semantics, join idle-input behavior, and fork watermark propagation in one page (validates OBS-03; closes 2d.v + 2d.i as docs-only).
   8. A maintainer runs the full 9-cell benchmark matrix after all Phase 46 merges and every cell is within −5% of the committed v2.0 BASELINE (validates CORR-02 — hard merge gate for the 2a fix).
-**Plans**: TBD
+**Plans:** 1/8 plans executed
+- [ ] 46-01-PLAN.md — Wave 0 deps + 9-cell bench shims + 10 test scaffolds + CORR-05 verification test
+- [x] 46-02-PLAN.md — Wave 1 docs/event-time.md stub (CORR-09 2d.i + 2d.v one-line closures)
+- [ ] 46-03-PLAN.md — Wave 2 2a batch-path fix (D-01/D-02/D-26) + CORR-01 proptest + 9-cell merge gate (CORR-02)
+- [ ] 46-04-PLAN.md — Wave 3 per-stream watermark_lateness (CORR-03/04) + Python SDK plumbing (no humantime_serde)
+- [ ] 46-05-PLAN.md — Wave 3 (parallel) 2d.ii backfill event-time + 2d.iii TTL clock + 2d.iv replica observe (CORR-06/07/08)
+- [ ] 46-06-PLAN.md — Wave 4 ring-buffer drops metric with bounded cardinality + mutual-exclusivity (OBS-01/02)
+- [ ] 46-07-PLAN.md — Wave 4 (parallel) ArcSwap<DashSet> atomic dirty-set swap + busy-racer + <2% bench gate (CORR-10)
+- [ ] 46-08-PLAN.md — Wave 5 full docs/event-time.md (OBS-03) + fsync hook scaffold (D-27) + ship-gate test (SHIP-01)
 
 ### Phase 47: Repo Polish, Docker, CI, Docs, Examples
 **Goal**: Turn the GitHub repo into a surface that earns the "let me try the quickstart" click in the first 10 seconds and delivers correct, live feature values in the next 50. `docker run beavadb/beava:latest` + a copy-pasteable `curl` from a <60-line README is the single published onboarding path. Close the ship-gate (fresh-VM smoke, outreach re-audit, benchmarks re-verified, quickstart GIF).
@@ -213,5 +221,5 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
 | 37. `tally fork` CLI + E2E demo | v0 | 1/1 | Complete   | 2026-04-15 |
 | 38. Mothball Option K surfaces | v0 | 0/1 | **Planned (Option M)** | — |
 | 45. HTTP Ingest & Read API | v1.0-launch | 5/5 | Complete   | 2026-04-17 |
-| 43. Correctness Audit, Fixes & Ship-Gate Integration Test | v1.0-launch | 0/? | **Ready to plan** (parallel with 42) | — |
+| 46. Correctness Audit, Fixes & Ship-Gate Integration Test | v1.0-launch | 1/8 | In Progress|  |
 | 44. Repo Polish, Docker, CI, Docs, Examples | v1.0-launch | 0/? | Planned (items unblock as 42 / 43 land) | — |
