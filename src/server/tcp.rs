@@ -3015,6 +3015,17 @@ async fn handle_log_fetch(
     use crate::state::event_log::{decode_log_payload, LOG_FMT_BINARY, LOG_FMT_JSON};
     use std::time::UNIX_EPOCH;
 
+    // Frame-write batching: instead of `writer.write_all(&frame).await` per
+    // event (5 M awaits on a 5 M-event LOG_FETCH), accumulate framed bytes
+    // into this per-call buffer and flush only when it crosses
+    // `LOG_FETCH_FLUSH_BYTES`. Cuts tokio yields by ~3000× on the big-log
+    // path. See bench_log_fetch_upstream.rs for the profile that motivated
+    // this — the CPU work was already sub-300 ns/event; most of the 1.19 s
+    // "filter+encode+write-to-sink" time at 5 M events was actually the
+    // per-event `write_all` async machinery.
+    const LOG_FETCH_FLUSH_BYTES: usize = 256 * 1024;
+    let mut out_buf: Vec<u8> = Vec::with_capacity(LOG_FETCH_FLUSH_BYTES + 1024);
+
     for stream_name in &scope.streams {
         // Phase 40: `read_entries` uses `&self` and opens the file fresh;
         // no lock on `state.event_log` needed.
@@ -3025,6 +3036,7 @@ async fn handle_log_fetch(
 
         let kf = key_fields.get(stream_name).cloned().flatten();
         let stream_arr = [stream_name.as_str()];
+        let mut frames_this_stream: u64 = 0;
 
         for entry in entries {
             // Timestamp gate (inclusive).
@@ -3120,14 +3132,36 @@ async fn handle_log_fetch(
                 }
             }
 
-            // Emit event frame: body = [u64 ts_ms][u32 payload_len][payload].
-            let frame = protocol::encode_log_event_frame(ts_ms, &entry.payload);
-            writer
-                .write_all(&frame)
-                .await
-                .map_err(|e| BeavaError::Protocol(format!("write log-fetch event frame failed: {}", e)))?;
-            crate::server::replica::bump_log_entries_sent(stream_name);
+            // Emit event frame by appending directly to the per-call batch
+            // buffer (no intermediate `Vec<u8>` allocation from
+            // `encode_log_event_frame`, no per-event tokio yield).
+            // Frame layout: [u32 body_len][u8 tag][u64 ts_ms][u32 payload_len][payload]
+            let body_len = 1 + 8 + 4 + entry.payload.len();
+            out_buf.extend_from_slice(&(body_len as u32).to_be_bytes());
+            out_buf.push(protocol::REPLICA_FRAME_TAG_EVENT);
+            out_buf.extend_from_slice(&ts_ms.to_be_bytes());
+            out_buf.extend_from_slice(&(entry.payload.len() as u32).to_be_bytes());
+            out_buf.extend_from_slice(&entry.payload);
+            frames_this_stream += 1;
+            if out_buf.len() >= LOG_FETCH_FLUSH_BYTES {
+                writer.write_all(&out_buf).await.map_err(|e| {
+                    BeavaError::Protocol(format!("write log-fetch event batch failed: {}", e))
+                })?;
+                out_buf.clear();
+            }
         }
+
+        // Amortized per-stream counter bump — single DashMap lookup per
+        // LOG_FETCH instead of one per event.
+        crate::server::replica::bump_log_entries_sent_by(stream_name, frames_this_stream);
+    }
+
+    // Flush whatever is left in the batch buffer before the END frame.
+    if !out_buf.is_empty() {
+        writer.write_all(&out_buf).await.map_err(|e| {
+            BeavaError::Protocol(format!("write log-fetch event batch tail failed: {}", e))
+        })?;
+        out_buf.clear();
     }
 
     // (6) Terminal END frame.

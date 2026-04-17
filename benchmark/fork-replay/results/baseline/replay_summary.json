@@ -1,5 +1,5 @@
 {
-  "timestamp": "20260417T115338Z",
+  "timestamp": "20260417T121911Z",
   "host": {
     "hostname": "Hoangs-MacBook-Pro.local",
     "platform": "darwin"
@@ -11,21 +11,21 @@
   },
   "push": {
     "events_pushed": 5000000,
-    "wall_seconds": 5.613,
-    "achieved_eps": 890789.2,
+    "wall_seconds": 5.151,
+    "achieved_eps": 970685.3,
     "upstream_keys_total": 1000
   },
   "replay": {
-    "catchup_seconds": 11.465,
+    "catchup_seconds": 10.632,
     "events_replayed": 5000000,
-    "replay_eps": 436109,
+    "replay_eps": 470278,
     "fork_keys_total": 1000,
     "keys_preserved_pct": 100.0,
     "feature_diff": {
       "sampled_keys": 20,
       "mismatched_keys": 0,
-      "upstream_count_sum": 99964.0,
-      "fork_count_sum": 99964.0,
+      "upstream_count_sum": 99898.0,
+      "fork_count_sum": 99898.0,
       "count_sum_delta_pct": 0.0,
       "first_mismatches": []
     }

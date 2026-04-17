@@ -131,14 +131,24 @@ pub fn log_entries_sent_snapshot() -> Vec<(String, u64)> {
 /// Phase 35-01: bump the per-stream log-entries-sent counter by 1.
 /// Called once per event frame written in `handle_log_fetch`.
 pub fn bump_log_entries_sent(stream: &str) {
+    bump_log_entries_sent_by(stream, 1);
+}
+
+/// Batched variant: bump the per-stream log-entries-sent counter by `n`.
+/// Used by `handle_log_fetch` to amortize DashMap lookups when streaming
+/// thousands of event frames in a single LOG_FETCH response.
+pub fn bump_log_entries_sent_by(stream: &str, n: u64) {
+    if n == 0 {
+        return;
+    }
     let m = log_entries_sent_map();
     if let Some(existing) = m.get(stream) {
-        existing.fetch_add(1, Ordering::Relaxed);
+        existing.fetch_add(n, Ordering::Relaxed);
         return;
     }
     m.entry(stream.to_owned())
         .or_insert_with(|| AtomicU64::new(0))
-        .fetch_add(1, Ordering::Relaxed);
+        .fetch_add(n, Ordering::Relaxed);
 }
 
 fn events_pushed_map() -> &'static DashMap<String, AtomicU64> {

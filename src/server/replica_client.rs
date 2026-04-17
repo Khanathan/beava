@@ -282,6 +282,12 @@ impl ReplicaClient {
         let mut n_batches: u64 = 0;
         let mut total_bytes: u64 = 0;
 
+        // Reused frame-body buffer: previously every iteration allocated a
+        // fresh `vec![0u8; frame_len]` — 5M allocs over a 5M-event catchup.
+        // Resizing this Vec in place lets the allocator reuse the same heap
+        // region across the hot loop.
+        let mut body: Vec<u8> = Vec::with_capacity(1024);
+
         // Read response frames until END (or STATUS_ERROR).
         loop {
             let t_read0 = if profile { Some(std::time::Instant::now()) } else { None };
@@ -292,7 +298,7 @@ impl ReplicaClient {
                     frame_len
                 )));
             }
-            let mut body = vec![0u8; frame_len as usize];
+            body.resize(frame_len as usize, 0);
             stream.read_exact(&mut body).await?;
             if let Some(t0) = t_read0 {
                 t_read_ns += t0.elapsed().as_nanos();
