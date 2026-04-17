@@ -257,19 +257,6 @@ Measured on a 10-core Apple M4 (NVMe), peak-load server-side p99 per event:
 
 fsync does not block the hot PUSH path (it's a background timer), but more frequent fsyncs write less accumulated dirty data per syscall and cause less disk-I/O-queue contention with in-flight writes — hence the lower p99 at shorter intervals. On NVMe, 1ms is viable; on slower disks, prefer the 100ms default.
 
-**Snapshot-interval tuning** (`BEAVA_SNAPSHOT_INTERVAL_MS`, clamped [100ms, 600s], default 30000ms). Snapshot writes run on `tokio::spawn_blocking` and never block the hot PUSH path, but the entity clone that precedes each write walks the store's DashMap briefly:
-
-| `BEAVA_SNAPSHOT_INTERVAL_MS` | throughput | server p99 | notes |
-|---|---:|---:|---|
-| 30000 (default) | ~320K eps | 65 µs | baseline |
-| 10000 | ~360K eps | 39 µs | best observed |
-| 5000 | ~355K eps | 41 µs | similar |
-| 1000 | **~215K eps (−33%)** | **133 µs (+2×)** | snapshots run back-to-back |
-
-10s is the sweet spot on this hardware: narrower data-loss window than the default with slightly better throughput. 1s is counter-productive — snapshots queue up and dominate disk I/O. Recovery wall-clock measured at 10s interval: 9s (vs 7s at 30s default) — noise-close, recovery cost scales with snapshot **size**, not cadence.
-
-**Retention**: old base snapshots and deltas are auto-deleted on each new base cycle (see `cleanup_old_snapshots` in `src/main.rs`). Event-log entries older than per-stream `history_ttl` (default 90 days) are compacted out on a 60s timer. No unbounded disk growth.
-
 Recovery wall-clock, measured on a 10-core Apple M4 (NVMe): **7.04s for a 4.7 GB on-disk state (10.3M events, 24,945 entities)**. Repro: `bash benchmark/recovery/run_recovery_bench.sh`. Scales with snapshot size; snapshot load is a synchronous postcard deserialization before the TCP listener binds, so `/debug/ready` flips 200 the moment the server is serving-correct.
 
 **At RAM ceiling.** `BEAVA_MEMORY_LIMIT_MB` is a fail-loud cap — committed state is preserved but new writes stop until you resize. There is no disk spill today.

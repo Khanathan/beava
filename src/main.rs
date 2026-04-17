@@ -863,20 +863,11 @@ async fn async_main() {
     });
 
     // Periodic incremental snapshot timer (PERS-01, PERS-04, OPS-03).
-    // Interval is tunable via BEAVA_SNAPSHOT_INTERVAL_MS so operators can
-    // trade a (small) clone-cost per tick for a tighter data-loss window
-    // and smaller per-delta size. Clamped to [100ms, 600s]. Default 30000ms
-    // preserves pre-tunable behaviour.
     // Skip if snapshots are disabled.
     if snapshot_enabled {
         let snap_state = state.clone();
-        let snapshot_interval_ms: u64 = std::env::var("BEAVA_SNAPSHOT_INTERVAL_MS")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .map(|ms| ms.clamp(100, 600_000))
-            .unwrap_or(30_000);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(snapshot_interval_ms));
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
             interval.tick().await; // First tick completes immediately -- skip it
             loop {
                 interval.tick().await;
