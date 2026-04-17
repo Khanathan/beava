@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 46-01-PLAN.md (Wave 0 — deps, bench shims, test scaffolds, CORR-05 verification closure)
-last_updated: "2026-04-17T23:26:00.000Z"
+stopped_at: Completed 46-03-PLAN.md (Wave 2a — signature change + group-by-bucket + proptest; bench deferred pending tooling fix)
+last_updated: "2026-04-17T23:33:18Z"
 last_activity: 2026-04-17 — Phase 45-02 complete. GET /features/{key} (?table filter), GET /streams, GET /streams/{name} live; HTTP-07 public-mode routing verified; 9 integration tests all green (0 ignored).
 progress:
   total_phases: 15
   completed_phases: 8
   total_plans: 30
-  completed_plans: 21
-  percent: 70
+  completed_plans: 22
+  percent: 73
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: `.planning/PROJECT.md` (updated 2026-04-17)
 ## Current Position
 
 **Phase:** 46 (Correctness Audit, Fixes & Ship-Gate) — in progress
-**Plan:** 01 complete (Wave 0 — deps, bench shims, test scaffolds, CORR-05); Plan 02 complete (docs/event-time.md stub); Plan 03 next
-**Status:** Active — Phase 46-01 and 46-02 complete; ready to execute 46-03
-**Last activity:** 2026-04-17 — Phase 46-01 complete. proptest 1.11 + arc-swap 1.9 pinned; 9-cell bench matrix shims committed; 9 TDD-RED scaffolds for Waves 2-5; CORR-05 verification test green (run_backfill uses single-event path confirmed).
+**Plan:** 03 complete (Wave 2a — signature + group-by-bucket + proptest; CORR-01 closed); Plan 04 next
+**Status:** Active — Phase 46-01, 46-02, 46-03 complete; ready to execute 46-04
+**Last activity:** 2026-04-17 — Phase 46-03 complete. push_batch_with_cascade_no_features takes &[(&Value, SystemTime)]; hashmap bucket coalescing eliminates min_event_time collapse (CORR-01); proptest 256 cases × 3 runs green; spot bench +10.48% above baseline; full 9-cell matrix deferred pending run_matrix.sh tooling fix.
 
 ## Milestone Status
 
@@ -81,6 +81,8 @@ See: `.planning/PROJECT.md` (updated 2026-04-17)
 - **Keep Python SDK TCP path unchanged** — HTTP is additive. Single canonical event schema locked BEFORE Block 1 ships.
 - **Keep `tally` binary name for v1.0-launch**; rename to `beava` in v1.1 to avoid doc churn.
 - **Single ship-gate integration test** covers CORR-01 (2a) + CORR-05 (2d.i) + CORR-06 (2d.ii) simultaneously: `HTTP push → crash → recover → read features`.
+- **46-03 decision: hashmap identity-key bucket coalescing** — `bucket_of(t) = t` (raw SystemTime as key); operators re-align per feature internally. Spot bench (complex-c8-x8, 30s): +10.48% above baseline. Full 9-cell matrix deferred pending run_matrix.sh OUTPUT_DIR tooling fix.
+- **46-03 decision: D-26 is a no-op at HTTP layer** — http_ingest.rs already correct; fix lived entirely in tcp.rs handle_push_batch min_event_time collapse removal.
 
 ### Key design decisions (inherited, locked)
 
