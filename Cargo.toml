@@ -77,3 +77,7 @@ harness = false
 [[bench]]
 name = "hll_ops"
 harness = false
+
+[[bench]]
+name = "dirty_swap"
+harness = false
