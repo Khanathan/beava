@@ -1116,23 +1116,10 @@ async fn async_main() {
             interval.tick().await; // Skip first immediate tick
             loop {
                 interval.tick().await;
-                // Phase 43 T2: measure fsync_all wall time so operators can
-                // alert on stalled durability via beava_fsync_stall_seconds_total.
-                let fsync_start = std::time::Instant::now();
                 let result = match &fsync_state.event_log {
                     Some(log) => log.fsync_all(),
                     None => Ok(()),
                 };
-                let elapsed_nanos = fsync_start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-                fsync_state
-                    .fsync_stall_nanos_total
-                    .fetch_add(elapsed_nanos, std::sync::atomic::Ordering::Relaxed);
-                fsync_state
-                    .fsync_calls_total
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                fsync_state
-                    .fsync_last_nanos
-                    .store(elapsed_nanos, std::sync::atomic::Ordering::Relaxed);
                 if let Err(e) = result {
                     eprintln!("Event log fsync failed: {}", e);
                 }

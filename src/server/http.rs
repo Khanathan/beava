@@ -342,16 +342,7 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
          beava_memory_bytes {}\n\
          # HELP beava_snapshots_skipped_total Snapshot cycles skipped due to in-progress write\n\
          # TYPE beava_snapshots_skipped_total counter\n\
-         beava_snapshots_skipped_total {}\n\
-         # HELP beava_fsync_stall_seconds_total Cumulative seconds the background fsync_all timer has spent inside libc fsync/fdatasync\n\
-         # TYPE beava_fsync_stall_seconds_total counter\n\
-         beava_fsync_stall_seconds_total {}\n\
-         # HELP beava_fsync_total Number of completed fsync_all invocations\n\
-         # TYPE beava_fsync_total counter\n\
-         beava_fsync_total {}\n\
-         # HELP beava_fsync_last_seconds Wall time of the most recent fsync_all\n\
-         # TYPE beava_fsync_last_seconds gauge\n\
-         beava_fsync_last_seconds {}\n",
+         beava_snapshots_skipped_total {}\n",
         keys_total,
         events_total,
         push_latency,
@@ -360,17 +351,6 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
         snapshot_duration,
         memory_bytes,
         snapshots_skipped,
-        state
-            .fsync_stall_nanos_total
-            .load(std::sync::atomic::Ordering::Relaxed) as f64
-            / 1_000_000_000.0,
-        state
-            .fsync_calls_total
-            .load(std::sync::atomic::Ordering::Relaxed),
-        state
-            .fsync_last_nanos
-            .load(std::sync::atomic::Ordering::Relaxed) as f64
-            / 1_000_000_000.0,
     );
 
     // Phase 24-04: per-stream late-drop counter. Label cardinality is

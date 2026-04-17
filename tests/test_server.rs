@@ -910,61 +910,6 @@ async fn test_metrics_endpoint() {
         body.contains("beava_memory_bytes"),
         "Metrics should contain beava_memory_bytes"
     );
-    // Phase 43 T2: fsync stall metrics must be exposed so operators can
-    // alert on stalled durability.
-    assert!(
-        body.contains("beava_fsync_stall_seconds_total"),
-        "Metrics should contain beava_fsync_stall_seconds_total"
-    );
-    assert!(
-        body.contains("beava_fsync_total"),
-        "Metrics should contain beava_fsync_total"
-    );
-    assert!(
-        body.contains("beava_fsync_last_seconds"),
-        "Metrics should contain beava_fsync_last_seconds"
-    );
-}
-
-/// Phase 43 T2: /metrics must propagate the actual fsync stall atomics from
-/// AppState into the Prometheus body, with correct second-unit conversion.
-/// Tests the exposure path independently of the 1-second timer (which would
-/// otherwise force a 1.5s sleep per test run).
-#[tokio::test(flavor = "current_thread")]
-async fn test_metrics_fsync_values_propagate() {
-    let (_tcp_port, http_port, state) = start_test_server().await;
-
-    // Simulate three fsync invocations totaling 180ms, last one 50ms.
-    state
-        .fsync_stall_nanos_total
-        .store(180_000_000, std::sync::atomic::Ordering::Relaxed);
-    state
-        .fsync_calls_total
-        .store(3, std::sync::atomic::Ordering::Relaxed);
-    state
-        .fsync_last_nanos
-        .store(50_000_000, std::sync::atomic::Ordering::Relaxed);
-
-    let (status, body) = http_get(http_port, "/metrics").await;
-    assert_eq!(status, 200);
-
-    // Counter total in seconds: 180_000_000 ns / 1e9 = 0.18.
-    assert!(
-        body.contains("beava_fsync_stall_seconds_total 0.18"),
-        "Expected beava_fsync_stall_seconds_total 0.18, body = {}",
-        body
-    );
-    assert!(
-        body.contains("beava_fsync_total 3"),
-        "Expected beava_fsync_total 3, body = {}",
-        body
-    );
-    // Last duration: 50_000_000 ns / 1e9 = 0.05.
-    assert!(
-        body.contains("beava_fsync_last_seconds 0.05"),
-        "Expected beava_fsync_last_seconds 0.05, body = {}",
-        body
-    );
 }
 
 /// Test: GET /debug/key/:key after pushing events returns operator state.
