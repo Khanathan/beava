@@ -124,7 +124,7 @@ WantedBy=multi-user.target
 <section>
   <h2>Where Beava fits in your stack</h2>
   <p>Sources → Beava → Sinks. Beava is the online state; your existing batch/storage stack doesn't move.</p>
-  <p><strong>Sources:</strong> Segment webhooks · Kafka topic consumer · Snowflake CDC stream · direct SDK push · replay from Parquet/JSONL.</p>
+  <p><strong>Sources:</strong> anything that calls <code>app.push()</code> — a webhook handler, a Kafka consumer, a Snowflake CDC reader, a replay script. Beava ships the TCP/Python surface; the glue to your event source is code you write (typically &lt; 50 lines).</p>
   <p><strong>Sinks:</strong> HTTP GET from your model server (Vertex, SageMaker, TorchServe, custom) · Parquet export for offline training parity (roadmap) · webhook fan-out.</p>
   <p>If your offline features live in dbt on Snowflake, Beava is the online mirror — same aggregations, microsecond reads, training/serving parity via the same Python decorators.</p>
   <p><strong>Typical time-to-integrate:</strong> Segment webhook → first feature live in under a day on a fresh host.</p>
@@ -208,6 +208,39 @@ WantedBy=multi-user.target
   <p><strong>Offline/online parity receipt:</strong> the number you see in the fork is byte-for-byte what the online server will return after you deploy this definition. There is no separate offline path — the same operators process the fork's scoped replica as process live push, by construction. See <a href="https://github.com/petrpan26/beava/blob/main/SEMANTICS.md">SEMANTICS.md § fork-parity</a> for the proof sketch.</p>
 
   <p>What fork doesn't fix: feature-logic bugs that depend on timing (late events, out-of-order windows).</p>
+</section>
+
+<hr>
+
+<section id="training-extract">
+  <h2>Training data — point-in-time extract</h2>
+
+  <p>When you need historical feature values to train a model, launch a fork with one or more extraction timestamps. The replica replays production's event log and snapshots per-entity feature state as it crosses each Tᵢ, exactly as the online server would have returned them at that instant.</p>
+
+<pre><code>beava fork \
+  --remote beava-prod.internal:6400 \
+  --streams Click,Transaction \
+  --keys u123,u456 \
+  --pipeline-file pipeline.json \
+  --extract-at 2026-03-01T10:00:00Z,2026-03-15T10:00:00Z,2026-04-01T10:00:00Z \
+  --token $BEAVA_REPLICA_TOKEN
+<span class="c"># Wait for the "catchup complete" banner, then:</span>
+curl localhost:7400/extracts | jq .
+</code></pre>
+
+  <p>Output is JSON — one entry per <code>(timestamp, entity_key)</code>. Convert with pandas for anything columnar:</p>
+
+<pre><code><span class="k">import</span> <span class="n">pandas</span> <span class="k">as</span> <span class="n">pd</span>, <span class="n">requests</span>
+<span class="n">resp</span> = <span class="n">requests</span>.<span class="f">get</span>(<span class="s">"http://localhost:7400/extracts"</span>).<span class="f">json</span>()[<span class="s">"extracts"</span>]
+<span class="n">rows</span> = [
+    {<span class="s">"timestamp"</span>: <span class="n">ts</span>, <span class="s">"key"</span>: <span class="n">key</span>, **<span class="n">features</span>}
+    <span class="k">for</span> <span class="n">ts</span>, <span class="n">per_key</span> <span class="k">in</span> <span class="n">resp</span>.<span class="f">items</span>()
+    <span class="k">for</span> <span class="n">key</span>, <span class="n">features</span> <span class="k">in</span> <span class="n">per_key</span>.<span class="f">items</span>()
+]
+<span class="n">pd</span>.<span class="f">DataFrame</span>(<span class="n">rows</span>).<span class="f">to_parquet</span>(<span class="s">"training.parquet"</span>)
+</code></pre>
+
+  <p>Training pipelines want point-in-time features keyed by entity — that's the shape above, correct by construction because the same operators run in replay as run online. A dedicated <code>bv export</code> would wrap this three-line pandas step and was flagged as fabricated in the pre-launch audit; the real extract API is <code>--extract-at</code> + <code>GET /extracts</code>, documented here.</p>
 </section>
 
 <hr>

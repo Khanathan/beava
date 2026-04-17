@@ -110,7 +110,7 @@ See the [walkthrough in `examples/fraud/`](examples/fraud/README.md) or the [Pyt
 
 Sources → Beava → Sinks. Beava is the online state; your existing batch/storage stack doesn't move.
 
-**Sources:** Segment webhooks · Kafka topic consumer · Snowflake CDC stream · direct SDK push · replay from Parquet/JSONL.
+**Sources:** anything that calls `app.push()` — a webhook handler, a Kafka consumer, a Snowflake CDC reader, a replay script. Beava ships the TCP/Python surface; the glue to your event source is code you write (typically < 50 lines).
 
 **Sinks:** HTTP GET from your model server (Vertex, SageMaker, TorchServe, custom) · Parquet export for offline training parity (roadmap) · webhook fan-out.
 
@@ -170,6 +170,37 @@ with bv.fork(
 **Offline/online parity:** the same operators process events in fork and in live push. See [SEMANTICS.md](SEMANTICS.md) for the consistency model.
 
 What fork doesn't fix: feature-logic bugs that depend on timing (late events, out-of-order windows).
+
+## Training data — point-in-time extract
+
+When you need historical feature values to train a model, launch a fork with one or more extraction timestamps. The replica replays production's event log and snapshots per-entity feature state as it crosses each Tᵢ, exactly as the online server would have returned them at that instant.
+
+```bash
+beava fork \
+  --remote beava-prod.internal:6400 \
+  --streams Click,Transaction \
+  --keys u123,u456 \
+  --pipeline-file pipeline.json \
+  --extract-at 2026-03-01T10:00:00Z,2026-03-15T10:00:00Z,2026-04-01T10:00:00Z \
+  --token $BEAVA_REPLICA_TOKEN
+# Wait for the "catchup complete" banner, then:
+curl localhost:7400/extracts | jq .
+```
+
+Output is JSON — one entry per `(timestamp, entity_key)`. Convert downstream with pandas for anything columnar:
+
+```python
+import pandas as pd, requests
+resp = requests.get("http://localhost:7400/extracts").json()["extracts"]
+rows = [
+    {"timestamp": ts, "key": key, **features}
+    for ts, per_key in resp.items()
+    for key, features in per_key.items()
+]
+pd.DataFrame(rows).to_parquet("training.parquet")
+```
+
+The shape is what training pipelines actually want — point-in-time features keyed by entity, correct by construction because the same operators ran in replay as run online. A dedicated `bv export` would wrap this three-line pandas step and the audit flagged it as fabricated — the real extract API is `--extract-at` + `GET /extracts`, above.
 
 ## Use cases
 
