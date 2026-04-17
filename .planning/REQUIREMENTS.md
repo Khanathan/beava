@@ -12,10 +12,10 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 - [ ] **HTTP-01**: A user can create a single event via `POST /push/{stream}` with a JSON body and receive a 2xx on accept, a structured 4xx on schema mismatch, and a 413 when the body exceeds `BEAVA_HTTP_MAX_BODY`.
 - [ ] **HTTP-02**: A user can push a JSON array of events via `POST /push-batch/{stream}`, receive one response summarizing per-event accept/reject, and observe each event appear under its correct event-time bucket (validates the 2a fix from the client side).
 - [ ] **HTTP-03**: A user can stream events via `POST /push/{stream}/ndjson` using chunked transfer, parsed line-by-line via `axum-extra::JsonLines`, without the 2 MiB default body limit truncating the upload.
-- [ ] **HTTP-04**: A user can query features for an entity via `GET /features/{key}` and receive the current values across all tables, with optional `?table=X` to filter to a single table.
-- [ ] **HTTP-05**: A user can list registered streams via `GET /streams` and inspect one via `GET /streams/{name}`, returning the stream's schema and current watermark.
+- [x] **HTTP-04**: A user can query features for an entity via `GET /features/{key}` and receive the current values across all tables, with optional `?table=X` to filter to a single table.
+- [x] **HTTP-05**: A user can list registered streams via `GET /streams` and inspect one via `GET /streams/{name}`, returning the stream's schema and current watermark.
 - [x] **HTTP-06**: A user's write requests to `/push*` are rejected with 401 when the admin token is missing and accepted from loopback without a token — inheriting the existing `require_loopback_or_token` middleware unchanged.
-- [ ] **HTTP-07**: A user can serve `/features/*` and `/streams/*` read endpoints from the public router when the server is started with `--public`, while writes remain admin-only.
+- [x] **HTTP-07**: A user can serve `/features/*` and `/streams/*` read endpoints from the public router when the server is started with `--public`, while writes remain admin-only.
 - [ ] **HTTP-08**: A user can reproduce the `docker run ... → curl POST /push → curl GET /features` flow from the repo's `examples/curl-ingest/` directory without editing configuration.
 - [ ] **HTTP-09**: A user can drive sustained **>100 K EPS** on `/push-batch/{stream}` from a single client, measured by `oha` against the reference box, and record the number in `benchmark/README.md`.
 - [ ] **HTTP-10**: A developer can reference `docs/http-api.md` and find working `curl`, Go (`net/http`), and Node (`fetch`) examples for each of the 6 endpoints above.
@@ -133,10 +133,10 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 | HTTP-01 | Phase 45 | Pending |
 | HTTP-02 | Phase 45 | Pending |
 | HTTP-03 | Phase 45 | Pending |
-| HTTP-04 | Phase 45 | Pending |
-| HTTP-05 | Phase 45 | Pending |
+| HTTP-04 | Phase 45 | Complete |
+| HTTP-05 | Phase 45 | Complete |
 | HTTP-06 | Phase 45 | Complete |
-| HTTP-07 | Phase 45 | Pending |
+| HTTP-07 | Phase 45 | Complete |
 | HTTP-08 | Phase 45 | Pending |
 | HTTP-09 | Phase 45 | Pending |
 | HTTP-10 | Phase 45 | Pending |
