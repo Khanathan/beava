@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 46-02-PLAN.md (docs/event-time.md stub, CORR-09 closed)
-last_updated: "2026-04-17T23:22:52.727Z"
+stopped_at: Completed 46-01-PLAN.md (Wave 0 — deps, bench shims, test scaffolds, CORR-05 verification closure)
+last_updated: "2026-04-17T23:26:00.000Z"
 last_activity: 2026-04-17 — Phase 45-02 complete. GET /features/{key} (?table filter), GET /streams, GET /streams/{name} live; HTTP-07 public-mode routing verified; 9 integration tests all green (0 ignored).
 progress:
   total_phases: 15
@@ -25,10 +25,10 @@ See: `.planning/PROJECT.md` (updated 2026-04-17)
 
 ## Current Position
 
-**Phase:** 45 (HTTP Ingest & Read API) — in progress
-**Plan:** 02 complete (Wave 1 read endpoints); Plan 03 next (Wave 2 write handlers)
-**Status:** Active — Phase 45-02 complete; ready to execute 45-03
-**Last activity:** 2026-04-17 — Phase 45-02 complete. GET /features/{key} (?table filter), GET /streams, GET /streams/{name} live; HTTP-07 public-mode routing verified; 9 integration tests all green (0 ignored).
+**Phase:** 46 (Correctness Audit, Fixes & Ship-Gate) — in progress
+**Plan:** 01 complete (Wave 0 — deps, bench shims, test scaffolds, CORR-05); Plan 02 complete (docs/event-time.md stub); Plan 03 next
+**Status:** Active — Phase 46-01 and 46-02 complete; ready to execute 46-03
+**Last activity:** 2026-04-17 — Phase 46-01 complete. proptest 1.11 + arc-swap 1.9 pinned; 9-cell bench matrix shims committed; 9 TDD-RED scaffolds for Waves 2-5; CORR-05 verification test green (run_backfill uses single-event path confirmed).
 
 ## Milestone Status
 
@@ -61,6 +61,7 @@ See: `.planning/PROJECT.md` (updated 2026-04-17)
 | Phase 45-http-ingest-read-api P04 | 35 | 3 tasks | 5 files |
 | Phase 45 P05 | 45 | 5 tasks | 7 files |
 | Phase 46-correctness-audit-fixes P02 | 8m | 1 tasks | 1 files |
+| Phase 46-correctness-audit-fixes P01 | 15m | 3 tasks | 14 files |
 
 ## Accumulated Context
 
