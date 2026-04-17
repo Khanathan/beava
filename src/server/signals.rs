@@ -448,26 +448,36 @@ pub fn update_memory_ceiling_flag(
     at_memory_ceiling: &std::sync::atomic::AtomicBool,
     configured_limit_bytes: Option<u64>,
 ) {
-    let Some(limit) = configured_limit_bytes else {
-        at_memory_ceiling.store(false, std::sync::atomic::Ordering::Relaxed);
-        return;
-    };
+    let currently = at_memory_ceiling.load(std::sync::atomic::Ordering::Relaxed);
+    let new_val = decide_memory_ceiling(currently, sample_rss_bytes(), configured_limit_bytes);
+    if new_val != currently {
+        at_memory_ceiling.store(new_val, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Pure-logic decision for `update_memory_ceiling_flag`, extracted for
+/// direct unit testing of the hysteresis band without mocking platform
+/// RSS probes. Returns the new flag value given current state + sampled
+/// RSS + configured limit. A None RSS (macOS / locked-down /proc) or
+/// a None/zero limit forces the flag off.
+fn decide_memory_ceiling(
+    currently_set: bool,
+    rss_bytes: Option<u64>,
+    limit_bytes: Option<u64>,
+) -> bool {
+    let Some(limit) = limit_bytes else { return false; };
     if limit == 0 {
-        at_memory_ceiling.store(false, std::sync::atomic::Ordering::Relaxed);
-        return;
+        return false;
     }
-    let Some(rss_bytes) = sample_rss_bytes() else {
-        // Cannot sample (macOS dev box, locked-down /proc) — keep gating off.
-        at_memory_ceiling.store(false, std::sync::atomic::Ordering::Relaxed);
-        return;
-    };
-    let ratio = rss_bytes as f64 / limit as f64;
-    let currently_set = at_memory_ceiling.load(std::sync::atomic::Ordering::Relaxed);
+    let Some(rss) = rss_bytes else { return false; };
+    let ratio = rss as f64 / limit as f64;
     if !currently_set && ratio >= 1.0 {
-        at_memory_ceiling.store(true, std::sync::atomic::Ordering::Relaxed);
-    } else if currently_set && ratio < 0.95 {
-        at_memory_ceiling.store(false, std::sync::atomic::Ordering::Relaxed);
+        return true;
     }
+    if currently_set && ratio < 0.95 {
+        return false;
+    }
+    currently_set
 }
 
 /// PUSH p99 latency SLO breach (performance category). Threshold is a
@@ -663,4 +673,70 @@ fn sample_rss_bytes() -> Option<u64> {
 #[cfg(not(target_os = "linux"))]
 fn sample_rss_bytes() -> Option<u64> {
     None
+}
+
+#[cfg(test)]
+mod memory_ceiling_tests {
+    use super::decide_memory_ceiling;
+
+    #[test]
+    fn none_limit_disables_gate() {
+        assert!(!decide_memory_ceiling(false, Some(999), None));
+        assert!(!decide_memory_ceiling(true, Some(999), None));
+    }
+
+    #[test]
+    fn zero_limit_disables_gate() {
+        assert!(!decide_memory_ceiling(true, Some(1_000_000), Some(0)));
+    }
+
+    #[test]
+    fn none_rss_cannot_set_gate() {
+        // macOS dev box: sample_rss_bytes returns None. Gate must stay off
+        // so writes are not rejected on developer laptops.
+        assert!(!decide_memory_ceiling(false, None, Some(1000)));
+        // If somehow already set, it clears when we cannot sample.
+        assert!(!decide_memory_ceiling(true, None, Some(1000)));
+    }
+
+    #[test]
+    fn below_limit_does_not_set_gate() {
+        // 80% of limit — well under the 100% trigger.
+        assert!(!decide_memory_ceiling(false, Some(800), Some(1000)));
+    }
+
+    #[test]
+    fn at_or_above_limit_sets_gate() {
+        // Exactly 100%
+        assert!(decide_memory_ceiling(false, Some(1000), Some(1000)));
+        // Over the limit
+        assert!(decide_memory_ceiling(false, Some(1500), Some(1000)));
+    }
+
+    #[test]
+    fn hysteresis_keeps_gate_set_between_95_and_100() {
+        // Already set, still at 98% — must remain set (hysteresis band).
+        // This prevents flapping: without hysteresis, a workload oscillating
+        // around 100% would rapidly toggle the reject-writes flag.
+        assert!(decide_memory_ceiling(true, Some(980), Some(1000)));
+        // Already set, at 95% exactly — still above clear threshold,
+        // stays set.
+        assert!(decide_memory_ceiling(true, Some(950), Some(1000)));
+    }
+
+    #[test]
+    fn drop_below_95_clears_gate() {
+        // Already set, dropped to 94% — clears (headroom restored).
+        assert!(!decide_memory_ceiling(true, Some(940), Some(1000)));
+        // Far below
+        assert!(!decide_memory_ceiling(true, Some(500), Some(1000)));
+    }
+
+    #[test]
+    fn between_95_and_100_does_not_newly_set_gate() {
+        // Not set yet, at 98% — only `>=100%` sets. 98% must stay off.
+        // (Only a crossing of 100% flips the gate on; mere hysteresis
+        // band without having crossed is not a write-reject condition.)
+        assert!(!decide_memory_ceiling(false, Some(980), Some(1000)));
+    }
 }
