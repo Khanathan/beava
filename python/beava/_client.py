@@ -20,8 +20,10 @@ from __future__ import annotations
 import select
 import socket
 import struct
+import time
 
 from beava._protocol import MAX_FRAME_SIZE, STATUS_ERROR, encode_frame
+from beava._retry import DEFAULT_POLICY, RetryPolicy
 from beava._types import ConnectionError, ProtocolError
 
 
@@ -29,19 +31,32 @@ class BeavaClient:
     """Low-level TCP client for the Beava binary protocol.
 
     Connects lazily on first ``send_command`` call. Auto-reconnects
-    transparently if the server closes the connection.
+    transparently if the server closes the connection. Transient send
+    failures are retried according to ``retry_policy``; see
+    :class:`~beava._retry.RetryPolicy` for tuning.
 
     Args:
         host: Server hostname or IP address.
         port: Server TCP port.
         timeout: Socket timeout in seconds for both connect and read (default 5.0).
+        retry_policy: Backoff schedule for transient connection failures.
+            Defaults to :data:`~beava._retry.DEFAULT_POLICY` (3 retries,
+            ~50 ms initial delay, 2× backoff, jitter on).
     """
 
-    def __init__(self, host: str, port: int, *, timeout: float = 5.0) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        *,
+        timeout: float = 5.0,
+        retry_policy: RetryPolicy | None = None,
+    ) -> None:
         self._host = host
         self._port = port
         self._timeout = timeout
         self._sock: socket.socket | None = None
+        self._retry_policy = retry_policy or DEFAULT_POLICY
         # Phase 11: first-error sink for deferred async errors. Populated by
         # drain_errors_nonblock when one or more STATUS_ERROR frames are
         # buffered from prior OP_PUSH_ASYNC calls; raised by the next drain
@@ -243,17 +258,17 @@ class BeavaClient:
         """Send one wire frame with NO response read (fire-and-forget).
 
         Used by ``App.push()`` for ``OP_PUSH_ASYNC`` and ``App.flush()`` for
-        ``OP_FLUSH``. Auto-reconnects once on broken pipe, mirroring
-        :meth:`send_command`.
+        ``OP_FLUSH``. Transient socket failures (broken pipe, connection
+        reset) are retried according to ``self._retry_policy``.
 
         **Delivery semantic: at-least-once.** If ``sendall`` raises
-        ``OSError`` mid-write (for example, a broken pipe after the kernel
-        has already shipped some bytes to the server), this method
-        reconnects and re-sends the full frame. Under that failure mode the
-        original event may have reached the server on the old connection
-        AND a duplicate event will arrive on the new connection. For
-        idempotent operators (``last``, ``set`` of a static feature) this
-        is harmless; for accumulating operators (``count``, ``sum``) a
+        ``OSError`` mid-write (broken pipe after the kernel has already
+        shipped some bytes to the server), this method reconnects and
+        re-sends the full frame. Under that failure mode the original
+        event may have reached the server on the old connection AND a
+        duplicate event will arrive on the new connection. For idempotent
+        operators (``last``, ``set`` of a static feature) this is
+        harmless; for accumulating operators (``count``, ``sum``) a
         duplicate event doubles its contribution. If your pipeline cannot
         tolerate at-least-once async push, use :meth:`send_command` with
         ``OP_PUSH`` (sync push) instead — sync push uses request/response
@@ -261,19 +276,30 @@ class BeavaClient:
         whether to retry. Server-side de-duplication is deferred to a
         future phase (see T-11-12).
         """
-        self._ensure_connected()
-        try:
-            self._send_frame(opcode, payload)
-        except (OSError, ConnectionError):
-            self._sock = None
-            self._connect()
-            self._send_frame(opcode, payload)
+        policy = self._retry_policy
+        last_exc: BaseException | None = None
+        # attempt 0 is the initial try; attempts 1..max_retries are retries.
+        for attempt in range(policy.max_retries + 1):
+            try:
+                self._ensure_connected()
+                self._send_frame(opcode, payload)
+                return
+            except (OSError, ConnectionError) as exc:
+                last_exc = exc
+                self._sock = None
+                if attempt >= policy.max_retries:
+                    break
+                time.sleep(policy.compute_delay(attempt + 1))
+        assert last_exc is not None
+        raise self._wrap_transport_error(last_exc)
 
     def send_command(self, opcode: int, payload: bytes) -> tuple[int, bytes]:
         """Send a command and return the response ``(status, payload)``.
 
-        Connects lazily on first call. If the connection is broken,
-        auto-reconnects once and retries the send transparently.
+        Connects lazily on first call. Transient socket failures are
+        retried according to ``self._retry_policy``; server-returned
+        STATUS_ERROR frames are NOT retried and surface as the status
+        byte of the returned tuple.
 
         Phase 11 H-2 fix: drains any pending async error frames from the
         kernel buffer BEFORE sending, so a stale error from a prior
@@ -287,22 +313,48 @@ class BeavaClient:
         # consistent. Also consumes any STATUS_OK stragglers so our own
         # _recv_frame below pairs with the response to THIS command.
         self.drain_errors_nonblock()
-        self._ensure_connected()
         # Any bytes left in _drain_buf must be partial frames (less than a
         # full header+body). We splice them in front of the next read so
         # sync recv stays byte-aligned with the server's frame stream.
+        # Prefix applies only to the initial attempt; on reconnect the
+        # stream resets so retries use plain recv.
         prefix = bytes(self._drain_buf)
         self._drain_buf.clear()
-        try:
-            self._send_frame(opcode, payload)
-            return self._recv_frame_with_prefix(prefix)
-        except ConnectionError:
-            # Connection dropped -- reconnect and retry once. Any leftover
-            # drain prefix is from the dead connection and must be dropped.
-            self._sock = None
-            self._connect()
-            self._send_frame(opcode, payload)
-            return self._recv_frame()
+
+        policy = self._retry_policy
+        last_exc: BaseException | None = None
+        for attempt in range(policy.max_retries + 1):
+            try:
+                self._ensure_connected()
+                self._send_frame(opcode, payload)
+                if attempt == 0 and prefix:
+                    return self._recv_frame_with_prefix(prefix)
+                return self._recv_frame()
+            except (OSError, ConnectionError) as exc:
+                last_exc = exc
+                self._sock = None
+                prefix = b""  # stale on reconnect
+                if attempt >= policy.max_retries:
+                    break
+                time.sleep(policy.compute_delay(attempt + 1))
+        assert last_exc is not None
+        raise self._wrap_transport_error(last_exc)
+
+    @staticmethod
+    def _wrap_transport_error(exc: BaseException) -> ConnectionError:
+        """Normalize a raw socket-layer error into beava's ConnectionError.
+
+        The retry loop catches both Python builtin OSError subclasses
+        (BrokenPipeError, ConnectionResetError) and our own BeavaError-
+        derived ConnectionError. Callers should see a single, consistent
+        SDK-level error type after all retries are exhausted, so we wrap
+        anything that isn't already the custom type.
+        """
+        if isinstance(exc, ConnectionError):
+            return exc
+        wrapped = ConnectionError(f"transport failure after retries: {exc}")
+        wrapped.__cause__ = exc
+        return wrapped
 
     def _recv_frame_with_prefix(self, prefix: bytes) -> tuple[int, bytes]:
         """Like ``_recv_frame`` but prepends ``prefix`` to the socket stream.

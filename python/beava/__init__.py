@@ -29,6 +29,7 @@ from beava._types import FeatureResult, ConnectionError, ProtocolError, BeavaErr
 # and talk to it through the pure-Python `beava.App` over HTTP/TCP — no
 # native extension required.
 from beava._app import App
+from beava._retry import DEFAULT_POLICY, NO_RETRY, RetryPolicy
 from beava._protocol import (
     OP_PUSH,
     OP_GET,
@@ -92,6 +93,10 @@ __all__ = [
     "ProtocolError",
     # App
     "App",
+    # Retry policy (Phase 43)
+    "RetryPolicy",
+    "DEFAULT_POLICY",
+    "NO_RETRY",
     # Protocol constants
     "OP_PUSH",
     "OP_GET",

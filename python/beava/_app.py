@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 
 from beava._client import BeavaClient
+from beava._retry import RetryPolicy
 from beava._protocol import (
     OP_DELETE_TABLE,
     OP_FLUSH,
@@ -54,11 +55,23 @@ class App:
     Args:
         address: Server address as ``"host:port"`` or ``"host"`` (default port 6400).
         timeout: Socket timeout in seconds (default 5.0).
+        retry_policy: Backoff schedule for transient connection failures;
+            see :class:`~beava._retry.RetryPolicy`. ``None`` uses
+            :data:`~beava._retry.DEFAULT_POLICY` (3 retries, 50 ms initial
+            delay, exponential backoff with jitter).
     """
 
-    def __init__(self, address: str, *, timeout: float = 5.0) -> None:
+    def __init__(
+        self,
+        address: str,
+        *,
+        timeout: float = 5.0,
+        retry_policy: RetryPolicy | None = None,
+    ) -> None:
         host, port = self._parse_address(address)
-        self._client = BeavaClient(host, port, timeout=timeout)
+        self._client = BeavaClient(
+            host, port, timeout=timeout, retry_policy=retry_policy
+        )
         self._batch_id_counter: int = 0
 
     @staticmethod
