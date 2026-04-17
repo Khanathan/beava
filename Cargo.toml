@@ -41,12 +41,6 @@ parking_lot = "0.12"
 ordered-float = { version = "4", features = ["serde"] }
 rand = "0.8"
 libc = "0.2"
-# Phase 43 T6: minimal sync HTTPS client for the S2 archive uploader on the
-# compaction path. `ureq` has no async runtime of its own and works fine
-# inside a tokio task's synchronous critical section; rustls avoids an
-# OpenSSL dep on macOS/Linux.
-ureq = { version = "2", default-features = false, features = ["tls", "json"] }
-base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"
