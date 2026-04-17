@@ -92,7 +92,8 @@ fn test_incremental_snapshot_delta_contains_only_dirty_entities() {
     push(&store, &engine, "u3", 30.0, now);
 
     let valid_features = engine.valid_features_map();
-    let changed = store.clone_dirty_for_snapshot_with_gc(&valid_features);
+    let frozen = store.take_dirty_and_advance_gen();
+    let changed = store.clone_dirty_for_snapshot_with_gc(&frozen, &valid_features);
 
     // Delta must contain exactly u1 and u3, NOT u2.
     let keys: Vec<String> = changed.iter().map(|(k, _)| k.clone()).collect();
@@ -147,7 +148,8 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
 
     // Cycle 1: push u3 -> delta with only u3 (seq=1)
     push(&store, &engine, "u3", 30.0, now);
-    let changed = store.clone_dirty_for_snapshot_with_gc(&engine.valid_features_map());
+    let frozen1 = store.take_dirty_and_advance_gen();
+    let changed = store.clone_dirty_for_snapshot_with_gc(&frozen1, &engine.valid_features_map());
     let delta1 = DeltaSnapshotState {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Delta { base_seq: 0 },
@@ -158,11 +160,13 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
     };
     let bytes = save_delta_snapshot(&delta1).unwrap();
     std::fs::write(snap_dir.join("beava.snapshot.delta.0000000001"), &bytes).unwrap();
-    store.clear_dirty();
+    // Note: take_dirty_and_advance_gen() above already cleared and advanced gen;
+    // no need for a redundant clear_dirty() here.
 
     // Cycle 2: update u1 -> delta with only u1 (seq=2)
     push(&store, &engine, "u1", 5.0, now);
-    let changed = store.clone_dirty_for_snapshot_with_gc(&engine.valid_features_map());
+    let frozen2 = store.take_dirty_and_advance_gen();
+    let changed = store.clone_dirty_for_snapshot_with_gc(&frozen2, &engine.valid_features_map());
     let delta2 = DeltaSnapshotState {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Delta { base_seq: 0 },

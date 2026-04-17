@@ -218,6 +218,47 @@ impl OperatorState {
             Self::StreamJoinBuffer(_) => "stream_join_buffer",
         }
     }
+
+    /// Return and clear the last ring-buffer drop reason recorded during the
+    /// most recent `push()` call. Returns `None` if no drop occurred or if
+    /// the operator does not own a `RingBuffer` (e.g. Last, Lag, Ema).
+    ///
+    /// Used by `push_internal` in `pipeline.rs` to bump
+    /// `beava_ring_buffer_drops_total` without changing the `Operator` trait
+    /// signature (D-06 / OBS-01).
+    pub fn ring_buffer_drop_reason(&mut self) -> Option<crate::engine::event_time::DropReason> {
+        match self {
+            // Operators that own a RingBuffer<T> as their primary data structure.
+            // We read the primary buffer's last_drop (the first buffer that
+            // processes the event determines the drop reason; parallel buffers
+            // like event_count have the same window so they would produce the
+            // same reason).
+            Self::Count(op) => op.take_ring_buffer_drop(),
+            Self::Sum(op) => op.take_ring_buffer_drop(),
+            Self::Avg(op) => op.take_ring_buffer_drop(),
+            Self::Min(op) => op.take_ring_buffer_drop(),
+            Self::Max(op) => op.take_ring_buffer_drop(),
+            Self::Stddev(op) => op.take_ring_buffer_drop(),
+            Self::ExactMin(op) => op.take_ring_buffer_drop(),
+            Self::ExactMax(op) => op.take_ring_buffer_drop(),
+            Self::Variance(op) => op.take_ring_buffer_drop(),
+            Self::DistinctCount(op) => op.take_ring_buffer_drop(),
+            // Operators that use RetractingRingBuffer or no ring buffer:
+            // RetractingRingBuffer always accepts events (advance_to then
+            // write to head), so no drop reason is ever set.
+            // Non-windowed operators (Last, Lag, Ema, LastN, First, FirstN,
+            // StreamJoinBuffer) have no ring buffer at all.
+            Self::Percentile(_)
+            | Self::TopK(_)
+            | Self::Last(_)
+            | Self::Lag(_)
+            | Self::Ema(_)
+            | Self::LastN(_)
+            | Self::First(_)
+            | Self::FirstN(_)
+            | Self::StreamJoinBuffer(_) => None,
+        }
+    }
 }
 
 /// Serializable pipeline definition for snapshot persistence.

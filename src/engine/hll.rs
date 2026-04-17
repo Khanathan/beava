@@ -429,6 +429,11 @@ impl DistinctCountOp {
             optional,
         }
     }
+
+    /// Return and clear the last ring-buffer drop reason (D-06 / OBS-01).
+    pub fn take_ring_buffer_drop(&mut self) -> Option<crate::engine::event_time::DropReason> {
+        self.buffer.take_last_drop()
+    }
 }
 
 impl Operator for DistinctCountOp {

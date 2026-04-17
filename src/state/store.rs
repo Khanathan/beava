@@ -200,23 +200,30 @@ impl EntityState {
 /// v1.3: `entities` is a `DashMap` for per-key concurrency — two events
 /// targeting different entity keys never contend on the same lock.
 ///
-/// v1.4 (this file): `dirty_keys` is a `DashSet` (shard-locked); additionally
-/// each `EntityState` carries a `dirty_gen: AtomicU64` and the store carries
-/// a `snapshot_gen: AtomicU64`. 99% of `mark_dirty` calls on hot keys
-/// short-circuit at the per-entity atomic load — never touching the shared
-/// set's shard locks, eliminating the contention that capped 8-client
-/// throughput at ~300K EPS in the fraud-pipeline bench.
+/// v1.4 (this file): `dirty_keys` is an `ArcSwap<DashSet>` (lock-free publication
+/// via arc-swap); additionally each `EntityState` carries a `dirty_gen: AtomicU64`
+/// and the store carries a `snapshot_gen: AtomicU64`. 99% of `mark_dirty` calls on
+/// hot keys short-circuit at the per-entity atomic load — never touching the shared
+/// set's shard locks, eliminating the contention that capped 8-client throughput at
+/// ~300K EPS in the fraud-pipeline bench.
+///
+/// v1.5 (D-21 / CORR-10): `dirty_keys` promoted to `ArcSwap<DashSet<String>>` so
+/// `take_dirty_and_advance_gen()` can atomically swap in a fresh empty set and bump
+/// `snapshot_gen` without a narrow window where a writer's insert is erased by a
+/// concurrent clear (2d.vi + 2d.vii).
 ///
 /// v1.1 Phase 9: tracks dirty and deleted keys since the last snapshot clear
 /// for incremental snapshot serialization.
 pub struct StateStore {
     entities: DashMap<EntityKey, EntityState>,
-    /// Keys modified since the current snapshot cycle began. Sharded via
-    /// `DashSet`'s internal per-shard RwLocks so writers on different key
-    /// hashes don't contend. 99% of marks short-circuit at the per-entity
-    /// `dirty_gen` check before ever reaching this set — so insert pressure
-    /// here is O(unique entities touched per cycle), not O(pushes per cycle).
-    dirty_keys: dashmap::DashSet<EntityKey>,
+    /// Keys modified since the current snapshot cycle began.  Wrapped in
+    /// `ArcSwap` so the snapshotter can atomically publish a fresh empty set
+    /// while writers continue inserting into the old Arc without losing keys.
+    /// Writers call `self.dirty_keys.load().insert(k)` — the `load()` guard
+    /// holds an Arc ref-count bump (~5-10 ns) for the duration of the insert.
+    /// 99% of marks short-circuit at the per-entity `dirty_gen` check before
+    /// ever reaching this set.
+    dirty_keys: arc_swap::ArcSwap<dashmap::DashSet<EntityKey>>,
     /// Keys evicted/deleted since last snapshot clear. Populated by eviction
     /// and explicit deletes; consumed by delta snapshot serialization.
     deleted_keys: dashmap::DashSet<EntityKey>,
@@ -232,7 +239,7 @@ impl std::fmt::Debug for StateStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StateStore")
             .field("entity_count", &self.entities.len())
-            .field("dirty_count", &self.dirty_keys.len())
+            .field("dirty_count", &self.dirty_keys.load().len())
             .field("deleted_count", &self.deleted_keys.len())
             .finish()
     }
@@ -257,7 +264,7 @@ impl Default for StateStore {
         };
         Self {
             entities,
-            dirty_keys: dashmap::DashSet::new(),
+            dirty_keys: arc_swap::ArcSwap::new(std::sync::Arc::new(dashmap::DashSet::new())),
             deleted_keys: dashmap::DashSet::new(),
             // Start at 1 so that a newly-created entity's `dirty_gen = 0` is
             // always strictly less than the current gen — first mark_dirty
@@ -609,7 +616,13 @@ impl StateStore {
         // its default `dirty_gen = 0 < cur_gen` will cause the next mark to
         // transition. Meanwhile we still want the key in the set so the
         // snapshot cycle picks it up — insert directly.
-        self.dirty_keys.insert(key.to_string());
+        //
+        // D-21 / CORR-10: `load()` acquires a Guard that holds an Arc ref-count
+        // bump. Writers inserting under the OLD Arc (before a concurrent
+        // take_dirty_and_advance_gen swap) land in the frozen set that the
+        // snapshotter already holds — no key is lost. Writers inserting under
+        // the NEW Arc land in the fresh set and are picked up next cycle.
+        self.dirty_keys.load().insert(key.to_string());
     }
 
     /// Batch-mark entity keys as dirty. Calls `mark_dirty` per key. The
@@ -633,20 +646,37 @@ impl StateStore {
     /// in the next delta's `changed_entities` (avoids ambiguity).
     pub fn mark_deleted(&self, key: &str) {
         self.deleted_keys.insert(key.to_string());
-        self.dirty_keys.remove(key);
+        self.dirty_keys.load().remove(key);
+    }
+
+    /// D-21 / CORR-10: atomically swap the dirty-set AND advance snapshot_gen
+    /// in one operation. Closes the 2d.vii race where a writer's `mark_dirty(k)`
+    /// under the OLD generation could be erased by a subsequent `clear_dirty()`.
+    ///
+    /// After this call: the returned `Arc` owns all keys marked dirty in the
+    /// CURRENT snapshot cycle; any subsequent `mark_dirty()` lands in the fresh
+    /// empty set belonging to the NEXT cycle — no key is lost regardless of
+    /// scheduling interleaving between writers and the snapshotter.
+    ///
+    /// Ordering: `snapshot_gen` is bumped FIRST (Release) so any writer whose
+    /// per-entity `dirty_gen` cmpxchg lands between the gen-bump and the set-swap
+    /// re-inserts into the NEW set under the new gen and is picked up next cycle.
+    pub fn take_dirty_and_advance_gen(&self) -> std::sync::Arc<dashmap::DashSet<EntityKey>> {
+        use std::sync::atomic::Ordering;
+        self.snapshot_gen.fetch_add(1, Ordering::Release);
+        self.dirty_keys
+            .swap(std::sync::Arc::new(dashmap::DashSet::new()))
     }
 
     /// Clear the dirty set and advance the snapshot generation. Called after
     /// a successful snapshot write. The generation bump ensures all per-entity
     /// `dirty_gen` values become stale — next `mark_dirty` call on any entity
     /// will re-insert into the shared set.
+    ///
+    /// Thin wrapper around `take_dirty_and_advance_gen()` — preserved for
+    /// backward compatibility with callers that don't need the frozen set.
     pub fn clear_dirty(&self) {
-        use std::sync::atomic::Ordering;
-        self.dirty_keys.clear();
-        // Release: the clear() above must be visible before writers see the
-        // new generation (so a writer that sees the new gen and swaps its
-        // entity's dirty_gen re-inserts into a just-emptied set).
-        self.snapshot_gen.fetch_add(1, Ordering::Release);
+        let _ = self.take_dirty_and_advance_gen();
     }
 
     /// Drain the deleted key set into a Vec. Leaves the set empty.
@@ -659,29 +689,34 @@ impl StateStore {
 
     /// Number of keys currently marked dirty.
     pub fn dirty_count(&self) -> usize {
-        self.dirty_keys.len()
+        self.dirty_keys.load().len()
     }
 
     /// Read-only view of the dirty key set (clone). Primarily for tests and debug APIs.
     #[cfg(test)]
     pub(crate) fn dirty_keys(&self) -> AHashSet<EntityKey> {
-        self.dirty_keys.iter().map(|r| r.key().clone()).collect()
+        self.dirty_keys.load().iter().map(|r| r.key().clone()).collect()
     }
 
     /// Clone only dirty entities for a delta snapshot, applying the same lazy
     /// GC pattern as `clone_for_snapshot_with_gc`. Entities whose key is not
-    /// in `dirty_keys` are skipped entirely. If a stream is not present in
+    /// in `frozen` are skipped entirely. If a stream is not present in
     /// `valid_features`, all of its operators are included (defensive, matching
     /// the non-delta path).
+    ///
+    /// D-21 / CORR-10: the caller must supply the frozen `Arc<DashSet>` returned
+    /// by `take_dirty_and_advance_gen()` rather than reading `self.dirty_keys`
+    /// internally — this prevents the snapshot from accidentally observing the
+    /// post-swap active set (which belongs to the next cycle).
     pub fn clone_dirty_for_snapshot_with_gc(
         &self,
+        frozen: &dashmap::DashSet<EntityKey>,
         valid_features: &AHashMap<String, Vec<String>>,
     ) -> Vec<(String, SerializableEntityState)> {
-        // Snapshot the dirty-key set as a plain HashSet once, to avoid
+        // Snapshot the frozen dirty-key set as a plain HashSet once, to avoid
         // holding DashSet shard locks while iterating `entities` (which
         // would deadlock if a shard overlapped).
-        let dirty: AHashSet<String> = self
-            .dirty_keys
+        let dirty: AHashSet<String> = frozen
             .iter()
             .map(|r| r.key().clone())
             .collect();
@@ -1097,7 +1132,8 @@ impl StateStore {
         }
 
         // Distribute dirty/deleted keys to per-stream stores
-        for dirty_ref in self.dirty_keys.iter() {
+        let dirty_guard = self.dirty_keys.load();
+        for dirty_ref in dirty_guard.iter() {
             let key = dirty_ref.key();
             for entry in stream_stores.iter() {
                 if entry.value().entities.contains_key(key) {
@@ -1170,7 +1206,7 @@ impl StateStore {
         }
         StateStore {
             entities,
-            dirty_keys: store_dirty,
+            dirty_keys: arc_swap::ArcSwap::new(std::sync::Arc::new(store_dirty)),
             deleted_keys: store_deleted,
             snapshot_gen: std::sync::atomic::AtomicU64::new(1),
         }
@@ -1784,7 +1820,8 @@ mod tests {
         store.mark_dirty("u3");
 
         let valid_features = ahash::AHashMap::new();
-        let snapshot = store.clone_dirty_for_snapshot_with_gc(&valid_features);
+        let frozen = store.take_dirty_and_advance_gen();
+        let snapshot = store.clone_dirty_for_snapshot_with_gc(&frozen, &valid_features);
 
         assert_eq!(snapshot.len(), 2);
         let keys: Vec<&String> = snapshot.iter().map(|(k, _)| k).collect();
@@ -1811,7 +1848,8 @@ mod tests {
         }
 
         let valid_features = ahash::AHashMap::new();
-        let snapshot = store.clone_dirty_for_snapshot_with_gc(&valid_features);
+        let frozen = store.take_dirty_and_advance_gen();
+        let snapshot = store.clone_dirty_for_snapshot_with_gc(&frozen, &valid_features);
         assert!(snapshot.is_empty());
     }
 
@@ -1842,7 +1880,8 @@ mod tests {
             vec!["a".to_string(), "c".to_string()],
         );
 
-        let snapshot = store.clone_dirty_for_snapshot_with_gc(&valid_features);
+        let frozen = store.take_dirty_and_advance_gen();
+        let snapshot = store.clone_dirty_for_snapshot_with_gc(&frozen, &valid_features);
         assert_eq!(snapshot.len(), 1);
         let stream_snap = &snapshot[0].1.streams[0];
         assert_eq!(stream_snap.0, "Transactions");
@@ -1872,7 +1911,8 @@ mod tests {
 
         // valid_features does NOT contain OldStream
         let valid_features = ahash::AHashMap::new();
-        let snapshot = store.clone_dirty_for_snapshot_with_gc(&valid_features);
+        let frozen = store.take_dirty_and_advance_gen();
+        let snapshot = store.clone_dirty_for_snapshot_with_gc(&frozen, &valid_features);
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].1.streams[0].1.operators.len(), 1);
     }
@@ -1885,7 +1925,8 @@ mod tests {
         store.mark_dirty("ghost");
         // No entity for "ghost" was ever created
         let valid_features = ahash::AHashMap::new();
-        let snapshot = store.clone_dirty_for_snapshot_with_gc(&valid_features);
+        let frozen = store.take_dirty_and_advance_gen();
+        let snapshot = store.clone_dirty_for_snapshot_with_gc(&frozen, &valid_features);
         assert!(snapshot.is_empty());
     }
 

@@ -92,6 +92,11 @@ impl CountOp {
             buffer: RingBuffer::new(window_duration, bucket_duration),
         }
     }
+
+    /// Return and clear the last ring-buffer drop reason (D-06 / OBS-01).
+    pub fn take_ring_buffer_drop(&mut self) -> Option<crate::engine::event_time::DropReason> {
+        self.buffer.take_last_drop()
+    }
 }
 
 impl Operator for CountOp {
@@ -157,6 +162,11 @@ impl SumOp {
             event_count: RingBuffer::new(window_duration, bucket_duration),
             optional,
         }
+    }
+
+    /// Return and clear the last ring-buffer drop reason (D-06 / OBS-01).
+    pub fn take_ring_buffer_drop(&mut self) -> Option<crate::engine::event_time::DropReason> {
+        self.buffer.take_last_drop()
     }
 }
 
@@ -268,6 +278,11 @@ impl MinOp {
             optional,
         }
     }
+
+    /// Return and clear the last ring-buffer drop reason (D-06 / OBS-01).
+    pub fn take_ring_buffer_drop(&mut self) -> Option<crate::engine::event_time::DropReason> {
+        self.buffer.take_last_drop()
+    }
 }
 
 impl Operator for MinOp {
@@ -367,6 +382,11 @@ impl MaxOp {
             event_count: RingBuffer::new(window_duration, bucket_duration),
             optional,
         }
+    }
+
+    /// Return and clear the last ring-buffer drop reason (D-06 / OBS-01).
+    pub fn take_ring_buffer_drop(&mut self) -> Option<crate::engine::event_time::DropReason> {
+        self.buffer.take_last_drop()
     }
 }
 
@@ -551,6 +571,11 @@ impl AvgOp {
             optional,
         }
     }
+
+    /// Return and clear the last ring-buffer drop reason (D-06 / OBS-01).
+    pub fn take_ring_buffer_drop(&mut self) -> Option<crate::engine::event_time::DropReason> {
+        self.count_buffer.take_last_drop()
+    }
 }
 
 impl Operator for AvgOp {
@@ -658,6 +683,11 @@ impl StddevOp {
             buffer: RingBuffer::new(window_duration, bucket_duration),
             optional,
         }
+    }
+
+    /// Return and clear the last ring-buffer drop reason (D-06 / OBS-01).
+    pub fn take_ring_buffer_drop(&mut self) -> Option<crate::engine::event_time::DropReason> {
+        self.buffer.take_last_drop()
     }
 }
 
@@ -1411,6 +1441,11 @@ impl ExactMinOp {
             }
         }
     }
+
+    /// Return and clear the last ring-buffer drop reason (D-06 / OBS-01).
+    pub fn take_ring_buffer_drop(&mut self) -> Option<crate::engine::event_time::DropReason> {
+        self.bucket_values.take_last_drop()
+    }
 }
 
 impl Operator for ExactMinOp {
@@ -1525,6 +1560,11 @@ impl ExactMaxOp {
                 *self.sorted_values.entry(OrderedFloat(val)).or_insert(0) += 1;
             }
         }
+    }
+
+    /// Return and clear the last ring-buffer drop reason (D-06 / OBS-01).
+    pub fn take_ring_buffer_drop(&mut self) -> Option<crate::engine::event_time::DropReason> {
+        self.bucket_values.take_last_drop()
     }
 }
 
@@ -1678,6 +1718,11 @@ impl VarianceOp {
             buffer: RingBuffer::new(window, bucket),
             optional,
         }
+    }
+
+    /// Return and clear the last ring-buffer drop reason (D-06 / OBS-01).
+    pub fn take_ring_buffer_drop(&mut self) -> Option<crate::engine::event_time::DropReason> {
+        self.buffer.take_last_drop()
     }
 }
 

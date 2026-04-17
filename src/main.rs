@@ -963,9 +963,13 @@ async fn async_main() {
                         Some((SnapshotData::Base(base), seq, true, snap_dir, prev_base))
                     } else {
                         // Delta -- clone only dirty entities.
-                        let changed = store.clone_dirty_for_snapshot_with_gc(&valid_features);
+                        // D-21 / CORR-10: atomically swap out the dirty set and
+                        // advance snapshot_gen in one operation, then pass the
+                        // frozen Arc<DashSet> to clone_dirty_for_snapshot_with_gc
+                        // so the snapshot never observes the post-swap active set.
+                        let frozen = store.take_dirty_and_advance_gen();
+                        let changed = store.clone_dirty_for_snapshot_with_gc(&frozen, &valid_features);
                         let deleted = store.take_deleted();
-                        store.clear_dirty();
 
                         if changed.is_empty() && deleted.is_empty() {
                             *snap_state.snapshot_cycle.lock() = cycle + 1;
