@@ -27,9 +27,9 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 - [x] **CORR-03**: A user defining a stream can set a per-stream `watermark_lateness` (`@bv.stream(watermark_lateness="10m")`), stored in `StreamDefinition`, propagating through the engine; absent field defaults to 5 s.
 - [x] **CORR-04**: A stream-definition snapshot from before this change loads cleanly with the default 5 s lateness (schema-migration tolerance).
 - [ ] **CORR-05**: A maintainer can close audit item **2d.i** with a verification test proving `run_backfill` uses `push_for_backfill` (single-event path), **not** `handle_push_batch` — closes as "not a bug, verified."
-- [ ] **CORR-06**: A user running backfill via the event log sees each event bucketed by its payload `_event_time`, not by the log entry's wall-clock timestamp — closes audit item **2d.ii**. Validated by property test: push → crash → recover → feature values identical to a live-ingest baseline.
-- [ ] **CORR-07**: A user ingesting 30-day-old historical events does not see `entity_ttl` immediately evict the entity — eviction clock sources from `WatermarkTracker::observed_max(stream)`, not wall-clock — closes audit item **2d.iii**.
-- [ ] **CORR-08**: A user running a fork replica that cascades into downstream tables sees watermarks advance on the downstream — `replica_ingest_batch` calls `watermarks.observe()` per event — closes audit item **2d.iv**.
+- [x] **CORR-06**: A user running backfill via the event log sees each event bucketed by its payload `_event_time`, not by the log entry's wall-clock timestamp — closes audit item **2d.ii**. Validated by property test: push → crash → recover → feature values identical to a live-ingest baseline.
+- [x] **CORR-07**: A user ingesting 30-day-old historical events does not see `entity_ttl` immediately evict the entity — eviction clock sources from `WatermarkTracker::observed_max(stream)`, not wall-clock — closes audit item **2d.iii**.
+- [x] **CORR-08**: A user running a fork replica that cascades into downstream tables sees watermarks advance on the downstream — `replica_ingest_batch` calls `watermarks.observe()` per event — closes audit item **2d.iv**.
 - [x] **CORR-09**: A maintainer can close audit item **2d.v** with a one-paragraph note in `docs/event-time.md` documenting that joins require both sides producing events in v1; per-stream idle markers are explicitly deferred to v1.1.
 - [ ] **CORR-10**: A developer can no longer observe a race where a writer calls `mark_dirty(k)` under the old gen while `clear_dirty()` has already advanced the gen — fixed via atomic swap of the dirty set in `take_dirty_and_advance_gen()` — closes audit items **2d.vi** and **2d.vii** together. Regression is within 2% on the 9-cell bench.
 
@@ -145,9 +145,9 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 | CORR-03 | Phase 46 | Complete |
 | CORR-04 | Phase 46 | Complete |
 | CORR-05 | Phase 46 | Pending |
-| CORR-06 | Phase 46 | Pending |
-| CORR-07 | Phase 46 | Pending |
-| CORR-08 | Phase 46 | Pending |
+| CORR-06 | Phase 46 | Complete |
+| CORR-07 | Phase 46 | Complete |
+| CORR-08 | Phase 46 | Complete |
 | CORR-09 | Phase 46 | Complete |
 | CORR-10 | Phase 46 | Pending |
 | OBS-01 | Phase 46 | Pending |

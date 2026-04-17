@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 46-04-PLAN.md (Wave 3 — per-stream watermark_lateness + Python SDK; CORR-03/CORR-04 closed)
-last_updated: "2026-04-17T23:41:37.977Z"
+stopped_at: Completed 46-05-PLAN.md
+last_updated: "2026-04-17T23:46:54.358Z"
 last_activity: 2026-04-17 — Phase 46-03 complete. push_batch_with_cascade_no_features takes &[(&Value, SystemTime)]; hashmap bucket coalescing eliminates min_event_time collapse (CORR-01); proptest 256 cases × 3 runs green; spot bench +10.48% above baseline; full 9-cell matrix deferred pending run_matrix.sh tooling fix.
 progress:
   total_phases: 15
   completed_phases: 8
   total_plans: 30
-  completed_plans: 24
-  percent: 80
+  completed_plans: 25
+  percent: 83
 ---
 
 # Project State
@@ -63,6 +63,7 @@ See: `.planning/PROJECT.md` (updated 2026-04-17)
 | Phase 46-correctness-audit-fixes P02 | 8m | 1 tasks | 1 files |
 | Phase 46-correctness-audit-fixes P01 | 15m | 3 tasks | 14 files |
 | Phase 46 P04 | 15 | 2 tasks | 7 files |
+| Phase 46 P05 | 45 | 3 tasks | 28 files |
 
 ## Accumulated Context
 
@@ -145,7 +146,7 @@ Runbook in `.planning/phases/26-test-migration-bench-docs-demo/26-04-SUMMARY.md 
 
 ## Session Continuity
 
-**Stopped at:** Completed 46-04-PLAN.md (Wave 3 — per-stream watermark_lateness + Python SDK; CORR-03/CORR-04 closed)
+**Stopped at:** Completed 46-05-PLAN.md
 
 **Next action:** Execute `45-03-PLAN.md` (Wave 2 — write handlers: `http_push_single`, `http_push_batch`, `http_push_ndjson`).
 
