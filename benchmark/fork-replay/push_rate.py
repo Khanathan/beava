@@ -1,8 +1,16 @@
-"""Rate-limited event pusher for the fork-replay bench.
+"""Event pusher for the fork-replay bench.
 
-Pushes events at a target rate (events/sec) against an upstream Beava
-cluster for a configurable duration. Uses a sleep-based rate limiter —
-simple and accurate within ±5% at rates <= ~50K eps.
+Pushes events against an upstream Beava cluster. Two modes:
+
+- Rate-limited: `--rate R --duration D` pushes at a target EPS for D
+  seconds via a batch-deadline sleep scheduler. Accurate within ±5%
+  at target rates <= ~50 K eps.
+- Unthrottled: `--rate 0 [--target-events N]` pushes as fast as the
+  single Python client can manage. Stops after `--target-events N`
+  (if set) or `--duration D` seconds, whichever comes first.
+
+Unthrottled mode lands ~40-50 K eps on one client via push_many;
+fine for seeding a fork-replay bench at 5 M events in ~2 minutes.
 
 Output: one JSON line at exit with `events_pushed`, `wall_seconds`,
 `achieved_eps`. Stderr carries progress.
@@ -25,31 +33,51 @@ import beava as bv
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", required=True, help="Upstream as HOST:PORT")
-    ap.add_argument("--rate", type=float, required=True, help="Target events/sec")
-    ap.add_argument("--duration", type=float, required=True, help="Seconds to push")
+    ap.add_argument(
+        "--rate",
+        type=float,
+        required=True,
+        help="Target events/sec. Set 0 or negative for unthrottled.",
+    )
+    ap.add_argument(
+        "--duration",
+        type=float,
+        required=True,
+        help="Max seconds to push (upper bound; --target-events can end earlier).",
+    )
+    ap.add_argument(
+        "--target-events",
+        type=int,
+        default=0,
+        help="Stop after N events pushed (0 = no cap; only --duration terminates).",
+    )
     ap.add_argument(
         "--entities",
         type=int,
         default=1000,
         help="Number of distinct user_ids to sample from (default 1000)",
     )
-    ap.add_argument("--batch", type=int, default=100, help="Push batch size (default 100)")
+    ap.add_argument("--batch", type=int, default=1000, help="Push batch size (default 1000)")
     ap.add_argument(
         "--register",
         action="store_true",
         help="Register the pipeline before pushing (once per bench run)",
     )
     args = ap.parse_args()
+    unthrottled = args.rate <= 0
+    target_events = args.target_events if args.target_events > 0 else None
 
     app = bv.App(args.host)
     if args.register:
         app.register(Event, UserCounts)
         print("pipeline registered", file=sys.stderr)
 
-    # Rate-limited push loop. Batch sleep-calibrated: target the next
-    # batch-deadline wall-clock and sleep the remainder. That's accurate
-    # to a ms even at low rates where time.sleep() resolution dominates.
-    seconds_per_batch = args.batch / args.rate
+    # Push loop — rate-limited when args.rate > 0, else unthrottled.
+    # The batch-deadline sleep scheduler targets the next wall-clock
+    # batch boundary and sleeps the residual. Accurate to a ms at
+    # target rates below ~50 K eps. Unthrottled mode skips the sleep
+    # entirely and lets a single Python client sustain ~40-50 K eps.
+    seconds_per_batch = args.batch / args.rate if not unthrottled else 0.0
     deadline = time.monotonic() + seconds_per_batch
     start = time.monotonic()
     stop_at = start + args.duration
@@ -60,6 +88,8 @@ def main() -> None:
     while True:
         now = time.monotonic()
         if now >= stop_at:
+            break
+        if target_events is not None and total >= target_events:
             break
         # Build + push a batch. Events are plain dicts — @bv.stream turns
         # the class into a StreamSource descriptor, not a dataclass, so we
@@ -74,14 +104,16 @@ def main() -> None:
         ]
         app.push_many(Event, events)
         total += args.batch
-        # Sleep to next batch deadline. If we're already behind, skip
-        # the sleep (limiter ramps up to catch up but can't sustain a
-        # rate above what the network allows).
+        # Sleep to next batch deadline (rate-limited mode only). If we
+        # are behind the deadline, skip the sleep and let the limiter
+        # ramp up — it cannot sustain a rate above what the single
+        # Python client can push.
         now = time.monotonic()
-        sleep_s = deadline - now
-        if sleep_s > 0:
-            time.sleep(sleep_s)
-        deadline += seconds_per_batch
+        if not unthrottled:
+            sleep_s = deadline - now
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+            deadline += seconds_per_batch
         if now - last_progress >= 5.0:
             achieved = total / (now - start) if now > start else 0
             print(

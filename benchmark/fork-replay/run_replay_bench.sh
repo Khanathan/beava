@@ -30,6 +30,11 @@ FORK_PY="$REPO/benchmark/fork-replay/fork_driver.py"
 RATE="${RATE:-1000}"
 DURATION="${DURATION:-30}"
 ENTITIES="${ENTITIES:-1000}"
+# Optional event-count cap. When TARGET_EVENTS is set, push_rate.py stops
+# once N events have been pushed (DURATION remains an upper bound). Pair
+# with RATE=0 for "push 5 M events as fast as this single Python client
+# can manage". At 5 M events and ~40 K single-client EPS, expect ~2 min.
+TARGET_EVENTS="${TARGET_EVENTS:-0}"
 TCP_PORT="${TCP_PORT:-6800}"
 HTTP_PORT="${HTTP_PORT:-6801}"
 # `beava fork` convention: --local-port is the HTTP port; TCP is HTTP+1.
@@ -135,6 +140,7 @@ PUSH_JSON=$(python3 "$PUSH_PY" \
     --host "localhost:$TCP_PORT" \
     --rate "$RATE" \
     --duration "$DURATION" \
+    --target-events "$TARGET_EVENTS" \
     --entities "$ENTITIES" \
     --register 2>> "$STDOUT_LOG")
 echo "push result: $PUSH_JSON"

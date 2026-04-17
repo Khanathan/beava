@@ -6,7 +6,7 @@ All notable changes to Beava. Format based on [Keep a Changelog](https://keepach
 
 ### Added
 
-- Fork-replay benchmark (`benchmark/fork-replay/`) — rate-limited pusher + fork driver + orchestrator. Measures catchup wall-clock for `bv.fork()` against an upstream running at a target EPS. Committed baseline: 5,000 events at 1,000 EPS → 219 ms catchup → 22,831 replay EPS → 100% entities preserved (993/993) on 10-core Apple M4.
+- Fork-replay benchmark (`benchmark/fork-replay/`) — rate-limited or unthrottled pusher + fork driver + orchestrator. Measures catchup wall-clock for `bv.fork()` against an upstream with accumulated events. Committed baseline (5 M event stress test): **5,000,000 events → 30.3 s fork catchup → 165,092 replay EPS → 100% entities preserved (1,000 / 1,000)** on 10-core Apple M4, 1,000 distinct entities, simple `count` pipeline. Replay EPS is about half of peak ingest EPS (315K), meaning a 1-hour backlog catches up in ~2 hours on this hardware.
 - Recovery benchmark (`benchmark/recovery/`) — snapshot-restore wall-clock at peak EPS. Committed baseline: 10.3M events / 4.7 GB on-disk state → 7.04 s recovery → 24,945 / 24,945 entities preserved (100%) on 10-core Apple M4.
 - Server-side PUSH latency instrumentation in `handle_push_batch`. `/debug/latency` and `/metrics` `beava_push_latency_p99_seconds` now report a meaningful number under batch-push load (previously reported 0 because the batch path was not wired to the histogram).
 
