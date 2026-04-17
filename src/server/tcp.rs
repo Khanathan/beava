@@ -1107,6 +1107,10 @@ pub fn replica_ingest_batch(
             first_err = Some(e);
             break 'outer;
         }
+        // D-19 / CORR-08: advance the replica's watermark per event so downstream
+        // table-cascade γ-propagation fires. Mirrors the live-ingest call at
+        // tcp.rs:1750. Atomic fetch_max on AtomicU64 — ~5 ns/call.
+        engine.watermarks.observe(stream_name, event_time);
 
         // Build the log payload once; reused across primary + cascade + fan-out.
         let log_body = if fmt == LOG_FMT_BINARY { body } else { &[] };
@@ -2730,11 +2734,16 @@ pub async fn run_backfill(
                     },
                     _ => continue,
                 };
+                // D-15 / CORR-06: bucket the replayed event by its payload _event_time,
+                // falling back to entry.timestamp only when the payload has no _event_time.
+                // This matches live-ingest semantics exactly so crash-replay produces
+                // bit-identical feature values.
+                let event_time = crate::engine::event_time::parse_event_time(&event, entry.timestamp);
                 let _ = engine.push_for_backfill(
                     &stream_name,
                     &event,
                     &state.store,
-                    entry.timestamp, // Event timestamp for determinism (SCHM-05)
+                    event_time, // was: entry.timestamp (D-15 fix)
                     &feature_names,
                 );
                 // Mark entity key dirty for incremental snapshots (OPS-03)
