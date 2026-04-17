@@ -245,17 +245,7 @@ Committed run: [`benchmark/fraud-pipeline/results/baseline/summary.json`](benchm
 
 ## Failure modes
 
-**Every push `write()`-appended to the WAL before client ack; fsync is on a timer** (Redis `appendfsync everysec` pattern). The hot PUSH path does not call `fsync` — a background tokio task does, every `BEAVA_FSYNC_INTERVAL_MS` (default 1000ms). Data-loss window on an ungraceful crash = the fsync interval plus the delta snapshot interval (default 30s). Recovery on restart = load the last snapshot (base + N deltas). The WAL is **not** replayed into operator state on restart; it exists for at-least-once push durability and for backfilling newly-registered features against history.
-
-Measured on a 10-core Apple M4 (NVMe), peak-load server-side p99 per event:
-
-| `BEAVA_FSYNC_INTERVAL_MS` | throughput | server p99 | data-loss window |
-|---|---:|---:|---:|
-| 1000 (Redis-parity default) | ~320K eps | 65 µs | ≤1s |
-| 100 | ~335K eps | 51 µs | ≤100ms |
-| 1 | ~340K eps | 44 µs | ≤1ms |
-
-fsync does not block the hot PUSH path (it's a background timer), but more frequent fsyncs write less accumulated dirty data per syscall and cause less disk-I/O-queue contention with in-flight writes — hence the lower p99 at shorter intervals. On NVMe, 1ms is viable; on slower disks, prefer the 100ms default.
+**Every push fsynced to WAL before client ack.** Recovery on restart = load the last snapshot (base + N deltas). The WAL exists for at-least-once push durability and for backfilling newly-registered features against history; it is NOT replayed into operator state on restart. Data-loss window on an ungraceful crash is bounded by the delta snapshot interval (default 30s) plus the ~1s fsync group-commit window. Tunable via `BEAVA_FULL_SNAPSHOT_INTERVAL`.
 
 Recovery wall-clock, measured on a 10-core Apple M4 (NVMe): **7.04s for a 4.7 GB on-disk state (10.3M events, 24,945 entities)**. Repro: `bash benchmark/recovery/run_recovery_bench.sh`. Scales with snapshot size; snapshot load is a synchronous postcard deserialization before the TCP listener binds, so `/debug/ready` flips 200 the moment the server is serving-correct.
 
