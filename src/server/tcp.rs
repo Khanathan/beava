@@ -224,6 +224,21 @@ pub struct ConcurrentAppState {
     /// launched without `--replica-extract-at`.
     pub extracted_history:
         dashmap::DashMap<u64, dashmap::DashMap<String, serde_json::Value>>,
+
+    /// Phase 43 T2: cumulative nanoseconds spent in the background
+    /// `fsync_all` timer. Surfaced on `/metrics` as
+    /// `beava_fsync_stall_seconds_total` (counter). Operators watching for
+    /// stalled durability (SSD stalls, budget-exhausted gp3 bursts) alert
+    /// on a rising rate of this counter.
+    pub fsync_stall_nanos_total: std::sync::atomic::AtomicU64,
+
+    /// Number of completed `fsync_all` invocations, regardless of outcome.
+    /// Exposed as `beava_fsync_total` (counter).
+    pub fsync_calls_total: std::sync::atomic::AtomicU64,
+
+    /// Duration of the most recent `fsync_all`, in nanoseconds. Exposed as
+    /// `beava_fsync_last_seconds` (gauge).
+    pub fsync_last_nanos: std::sync::atomic::AtomicU64,
 }
 
 /// Phase 41-01 T4: only every Nth PUSH records into the latency histogram.
@@ -373,6 +388,9 @@ pub fn make_concurrent_state_full(
         atomic_throughput: crate::server::throughput::AtomicThroughput::new(),
         latency_sample_counter: std::sync::atomic::AtomicU64::new(0),
         extracted_history: dashmap::DashMap::new(),
+        fsync_stall_nanos_total: std::sync::atomic::AtomicU64::new(0),
+        fsync_calls_total: std::sync::atomic::AtomicU64::new(0),
+        fsync_last_nanos: std::sync::atomic::AtomicU64::new(0),
     })
 }
 
