@@ -245,11 +245,13 @@ Committed run: [`benchmark/fraud-pipeline/results/baseline/summary.json`](benchm
 
 ## Failure modes
 
-**Every push fsynced to WAL before client ack.** Worst-case data loss on crash: ~1 second (group-commit window, tunable via `BEAVA_FULL_SNAPSHOT_INTERVAL`). Recovery on restart = load snapshot + replay WAL tail; we haven't published a reproducer for recovery time yet.
+**Every push fsynced to WAL before client ack.** Recovery on restart = load the last snapshot (base + N deltas). The WAL exists for at-least-once push durability and for backfilling newly-registered features against history; it is NOT replayed into operator state on restart. Data-loss window on an ungraceful crash is bounded by the delta snapshot interval (default 30s) plus the ~1s fsync group-commit window. Tunable via `BEAVA_FULL_SNAPSHOT_INTERVAL`.
+
+Recovery wall-clock, measured on a 10-core Apple M4 (NVMe): **7.04s for a 4.7 GB on-disk state (10.3M events, 24,945 entities)**. Repro: `bash benchmark/recovery/run_recovery_bench.sh`. Scales with snapshot size; snapshot load is a synchronous postcard deserialization before the TCP listener binds, so `/debug/ready` flips 200 the moment the server is serving-correct.
 
 **At RAM ceiling.** `BEAVA_MEMORY_LIMIT_MB` is a fail-loud cap — committed state is preserved but new writes stop until you resize. There is no disk spill today.
 
-**Process crash, mid-window.** WAL replay on restart; delivery is at-least-once. Server-side `event_id` dedup is on the roadmap (see python/beava/_client.py); today, idempotency is the client's responsibility.
+**Process crash, mid-window.** Snapshot-based restore; delivery is at-least-once (push reconnect-and-resend on broken pipe). Server-side `event_id` dedup is not shipped and is no longer on the roadmap — at-least-once is the stable semantic. Idempotency on accumulating operators (`count`, `sum`) is the client's responsibility.
 
 **fsync + snapshot stalls.** Group-commit batches push fsyncs; the snapshot loop runs every 5 min on `spawn_blocking` so ingest isn't synchronously blocked. Quantified latency under snapshot load is not yet benchmarked — planning headroom is the operator's call.
 

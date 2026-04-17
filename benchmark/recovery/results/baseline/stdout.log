@@ -1,0 +1,37 @@
+
+[1m==> Recovery-time benchmark — 2026-04-17 00:44:21Z[0m
+Host: Darwin arm64, 10 cores
+Config: DURATION=30s CLIENTS=8 THREADS=8
+Results: /Users/petrpan26/work/tally/benchmark/recovery/results/20260417T004421Z
+
+[1m==> Starting server (PID capture)[0m
+    Initial startup: 0.018s
+
+[1m==> Pushing events for 30s at peak EPS[0m
+    Events pushed: 10285000
+    Entities in memory: 24945
+
+[1m==> Triggering POST /snapshot (admin-gated, retries on 409 = in-progress)[0m
+    POST /snapshot => HTTP 200 after 9.105129083s
+
+[1m==> kill -9 PID=24341 (ungraceful crash)[0m
+    State on disk: 4703899648 bytes
+
+[1m==> Waiting for TCP/HTTP ports to become bindable (TIME_WAIT drain)[0m
+    Ports bindable after 1s
+
+[1m==> Restarting server on same data dir — timing to /debug/ready[0m
+    Recovery wall-clock: 7.036s
+    Entities after restart: 24945
+
+[1m==> DONE[0m
+    summary:   /Users/petrpan26/work/tally/benchmark/recovery/results/20260417T004421Z/recovery_summary.json
+    logs:      /Users/petrpan26/work/tally/benchmark/recovery/results/20260417T004421Z/server.log / /Users/petrpan26/work/tally/benchmark/recovery/results/20260417T004421Z/server-restart.log
+
+    Events pushed:       10,285,000
+    State on disk:       4486.0 MB
+    Entities pre-crash:  24,945
+    Forced snapshot:     9.105s
+    Initial startup:     0.018s (empty state)
+    Recovery wall-clock: 7.036s
+    Entities preserved:  100.0% (24,945 / 24,945)
