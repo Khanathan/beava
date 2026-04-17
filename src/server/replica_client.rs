@@ -266,8 +266,25 @@ impl ReplicaClient {
         let mut pending: Vec<(String, u64, Vec<u8>)> =
             Vec::with_capacity(REPLICA_BATCH_FLUSH_SIZE);
 
+        // Lightweight profiling: accumulate wall-clock spent in each phase
+        // of the catchup loop. Printed to stderr on END-frame so the
+        // benchmark harness + human reader can see where the 11.5 s goes.
+        // Guarded by BEAVA_REPLICA_PROFILE=1 so production replicas don't
+        // pay the (tiny) Instant::now overhead — but we take that cost per
+        // event intentionally during measurement runs.
+        let profile = std::env::var("BEAVA_REPLICA_PROFILE").ok().as_deref() == Some("1");
+        let loop_start = std::time::Instant::now();
+        let mut t_read_ns: u128 = 0;
+        let mut t_parse_ns: u128 = 0;
+        let mut t_resolve_ns: u128 = 0;
+        let mut t_apply_ns: u128 = 0;
+        let mut n_events: u64 = 0;
+        let mut n_batches: u64 = 0;
+        let mut total_bytes: u64 = 0;
+
         // Read response frames until END (or STATUS_ERROR).
         loop {
+            let t_read0 = if profile { Some(std::time::Instant::now()) } else { None };
             let frame_len = read_u32_be(&mut stream).await?;
             if frame_len == 0 || frame_len > HARD_FRAME_LIMIT {
                 return Err(ReplicaError::Protocol(format!(
@@ -277,6 +294,10 @@ impl ReplicaClient {
             }
             let mut body = vec![0u8; frame_len as usize];
             stream.read_exact(&mut body).await?;
+            if let Some(t0) = t_read0 {
+                t_read_ns += t0.elapsed().as_nanos();
+                total_bytes += (4 + body.len()) as u64;
+            }
             if body.is_empty() {
                 return Err(ReplicaError::Protocol("log-fetch frame empty".into()));
             }
@@ -287,8 +308,10 @@ impl ReplicaClient {
                     // extract_at snapshots so "state-at-end-of-log" is
                     // correct.
                     if !pending.is_empty() {
+                        let t_apply0 = if profile { Some(std::time::Instant::now()) } else { None };
                         replica_ingest_batch(&self.app, &pending)
                             .map_err(|e| ReplicaError::IngestFailed(e.to_string()))?;
+                        if let Some(t0) = t_apply0 { t_apply_ns += t0.elapsed().as_nanos(); n_batches += 1; }
                         pending.clear();
                     }
                     // Phase 44-01: snapshot any remaining extract_at entries
@@ -300,9 +323,34 @@ impl ReplicaClient {
                         self.snapshot_extract(extract_at[extract_cursor]);
                         extract_cursor += 1;
                     }
+                    if profile {
+                        let loop_total = loop_start.elapsed().as_nanos();
+                        let other_ns = loop_total.saturating_sub(t_read_ns + t_parse_ns + t_resolve_ns + t_apply_ns);
+                        let per_event_ns = if n_events > 0 { (loop_total / n_events as u128) as u64 } else { 0 };
+                        eprintln!(
+                            "[replica-profile] LOG_FETCH loop summary:\n  \
+                             events={} batches={} bytes={} wall={:.3}s ({:.0} EPS, {} ns/event, {:.1} MiB/s)\n  \
+                             net read   : {:.3}s ({:.1}%)\n  \
+                             frame parse: {:.3}s ({:.1}%)\n  \
+                             resolve    : {:.3}s ({:.1}%)\n  \
+                             apply_batch: {:.3}s ({:.1}%)\n  \
+                             other      : {:.3}s ({:.1}%)",
+                            n_events, n_batches, total_bytes,
+                            loop_total as f64 / 1e9,
+                            if loop_total > 0 { (n_events as u128 * 1_000_000_000) as f64 / loop_total as f64 } else { 0.0 },
+                            per_event_ns,
+                            if loop_total > 0 { (total_bytes as f64) / (loop_total as f64 / 1e9) / (1024.0 * 1024.0) } else { 0.0 },
+                            t_read_ns as f64 / 1e9,    100.0 * t_read_ns as f64 / loop_total.max(1) as f64,
+                            t_parse_ns as f64 / 1e9,   100.0 * t_parse_ns as f64 / loop_total.max(1) as f64,
+                            t_resolve_ns as f64 / 1e9, 100.0 * t_resolve_ns as f64 / loop_total.max(1) as f64,
+                            t_apply_ns as f64 / 1e9,   100.0 * t_apply_ns as f64 / loop_total.max(1) as f64,
+                            other_ns as f64 / 1e9,     100.0 * other_ns as f64 / loop_total.max(1) as f64,
+                        );
+                    }
                     return Ok(());
                 }
                 t if t == REPLICA_FRAME_TAG_EVENT => {
+                    let t_parse0 = if profile { Some(std::time::Instant::now()) } else { None };
                     // body = [tag][u64 ts_ms][u32 payload_len][payload]
                     if body.len() < 1 + 8 + 4 {
                         return Err(ReplicaError::Protocol(
@@ -322,6 +370,7 @@ impl ReplicaClient {
                         )));
                     }
                     let payload = &body[13..13 + payload_len];
+                    if let Some(t0) = t_parse0 { t_parse_ns += t0.elapsed().as_nanos(); }
                     // Phase 44-01: snapshot-before-apply for every cursor
                     // threshold strictly less than this event's ts_ms.
                     // Must flush the pending batch first so the snapshot
@@ -330,8 +379,10 @@ impl ReplicaClient {
                         && ts_ms > extract_at[extract_cursor]
                     {
                         if !pending.is_empty() {
+                            let t_apply0 = if profile { Some(std::time::Instant::now()) } else { None };
                             replica_ingest_batch(&self.app, &pending)
                                 .map_err(|e| ReplicaError::IngestFailed(e.to_string()))?;
+                            if let Some(t0) = t_apply0 { t_apply_ns += t0.elapsed().as_nanos(); n_batches += 1; }
                             pending.clear();
                         }
                         self.snapshot_extract(extract_at[extract_cursor]);
@@ -340,11 +391,16 @@ impl ReplicaClient {
                     // Resolve the stream up-front (same logic single-event
                     // apply_event uses) so the batch path has everything
                     // it needs without re-acquiring the engine lock.
+                    let t_res0 = if profile { Some(std::time::Instant::now()) } else { None };
                     let stream_name = self.resolve_stream_for_event(payload)?;
+                    if let Some(t0) = t_res0 { t_resolve_ns += t0.elapsed().as_nanos(); }
                     pending.push((stream_name, ts_ms, payload.to_vec()));
+                    n_events += 1;
                     if pending.len() >= REPLICA_BATCH_FLUSH_SIZE {
+                        let t_apply0 = if profile { Some(std::time::Instant::now()) } else { None };
                         replica_ingest_batch(&self.app, &pending)
                             .map_err(|e| ReplicaError::IngestFailed(e.to_string()))?;
+                        if let Some(t0) = t_apply0 { t_apply_ns += t0.elapsed().as_nanos(); n_batches += 1; }
                         pending.clear();
                     }
                 }
