@@ -146,6 +146,68 @@ replay. Two reasons to run it:
 - Back-fill tool — point it at an existing Beava instance with
   `--input events.jsonl` to replay your own captured event log.
 
+## HTTP ingest load test (Phase 45)
+
+`benchmark/http_load.sh` measures sustained EPS on the HTTP
+`POST /push-batch/{stream}` endpoint using [oha](https://github.com/hatoo/oha).
+
+### Quick start
+
+```bash
+# Prerequisites
+cargo install oha     # one-time
+
+# Start a release server
+cargo build --release
+./target/release/beava serve &
+
+# Smoke run (no EPS gate, 5s)
+bash benchmark/http_load.sh
+
+# Full reference-box run (EPS >= 100,000 gate, 30s, appends to this README)
+LOAD_TEST_REFERENCE_BOX_REQUIRED=1 bash benchmark/http_load.sh
+```
+
+### How it works
+
+1. Generates a JSON array payload of `EVENTS_PER_BATCH` events (default 1000
+   in reference mode, 100 in smoke mode) with Zipfian-distributed user keys.
+2. Registers `bench_stream` via `POST /pipelines` (idempotent).
+3. Runs `oha -z ${DURATION} -c ${CONCURRENCY}` against
+   `POST /push-batch/bench_stream`, posting the payload file on every request.
+4. Parses the JSON output: `EPS = RPS × events_per_batch`.
+5. In reference mode: asserts EPS ≥ 100,000 and appends the result to this file.
+6. In smoke mode: prints the measured EPS without gating.
+
+### Reference-box EPS target
+
+**Target: EPS ≥ 100,000 on `/push-batch` with 1000-event batches.**
+
+This target is measured on a dedicated reference box (NOT GitHub Actions).
+The TCP path on the same hardware delivers 314K EPS (10-core M-series laptop
+baseline from Phase 42). The HTTP path is expected to be somewhat lower due
+to HTTP framing overhead, but > 100K is achievable with the `Bytes`-extractor
+hot path in `http_ingest.rs`.
+
+**Measured number: TBD — measure on reference box.**
+
+To reproduce: run `LOAD_TEST_REFERENCE_BOX_REQUIRED=1 bash benchmark/http_load.sh`
+on the reference machine (same one that produced the 314K TCP baseline).
+The script will append the result below once measured.
+
+### Knobs
+
+| Variable                         | Default      | Purpose                                         |
+|----------------------------------|--------------|-------------------------------------------------|
+| `PORT`                           | `6401`       | HTTP server port                                |
+| `BEAVA_ADMIN_TOKEN`              | `test-admin` | Auth token                                      |
+| `STREAM`                         | `bench_stream`| Target stream name                             |
+| `CONCURRENCY`                    | `64`         | oha `-c` concurrency level                      |
+| `DURATION`                       | `30s` / `5s` | oha `-z` duration (reference / smoke mode)      |
+| `LOAD_TEST_REFERENCE_BOX_REQUIRED` | (unset)    | Set to `1` to enable EPS gate and README append |
+
+---
+
 ## Archive
 
 [`fraud-pipeline/results/archive/tally-throughput/`](fraud-pipeline/results/archive/tally-throughput/) — 
