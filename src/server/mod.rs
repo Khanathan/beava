@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod http;
+pub mod http_ingest;
 pub mod latency;
 pub mod protocol;
 pub mod replica;

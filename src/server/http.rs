@@ -1561,11 +1561,23 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/debug/throughput", get(debug_throughput))
         .route("/debug/latency", get(debug_latency))
         .route("/debug/shard_probe", get(debug_shard_probe))
-        .route("/snapshot", post(trigger_snapshot))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_loopback_or_token,
-        ));
+        .route("/snapshot", post(trigger_snapshot));
+
+    // Phase 45: register HTTP ingest + read routes.
+    // public_mode toggles read-route placement (D-03 / HTTP-07).
+    // MUST be called BEFORE .route_layer(require_loopback_or_token) so that
+    // the auth layer covers the new write routes (Pitfall 15 prevention).
+    let public_mode = state.public_mode;
+    let (public_router, admin_router) = crate::server::http_ingest::register_ingest_routes(
+        public_router,
+        admin_router,
+        public_mode,
+    );
+
+    let admin_router = admin_router.route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        require_loopback_or_token,
+    ));
 
     public_router.merge(admin_router).with_state(state)
 }
