@@ -151,11 +151,11 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
   3. A user can drive sustained **>100 K EPS** against `/push-batch/{stream}` from a single `oha` client against a reference box, with the number committed in `benchmark/README.md`.
   4. A user's unauthenticated `POST /push/*` request returns 401 from a non-loopback source and 200 from loopback — inheriting `require_loopback_or_token` unchanged, verified by a per-endpoint auth integration test.
   5. A developer opens `docs/http-api.md` and copy-pastes working curl, Go (`net/http`), and Node (`fetch`) examples for each of the 6 endpoints.
-**Plans:** 2/5 plans executed
+**Plans:** 4/5 plans executed
 - [x] 45-01-PLAN.md — Wave 0 scaffolding: deps (axum-extra/tower-http/tower), auth 403→401, body-limit+timeout layer, http_ingest.rs skeleton, 7 test scaffolds (TDD RED)
 - [x] 45-02-PLAN.md — Wave 1 read endpoints: GET /features/{key} with ?table filter, GET /streams, GET /streams/{name}, public-mode routing (HTTP-04/05/07)
-- [ ] 45-03-PLAN.md — Wave 1 write endpoints: POST /push, /push-batch, /push/ndjson via handle_push_core_ex/handle_push_batch + schema-parity round-trip (HTTP-01/02/03)
-- [ ] 45-04-PLAN.md — Wave 2 exhaustive per-route auth sweep + beava_events_total{proto} dual-emit metric transition (HTTP-06 / A5)
+- [x] 45-03-PLAN.md — Wave 1 write endpoints: POST /push, /push-batch, /push/ndjson via handle_push_core_ex/handle_push_batch + schema-parity round-trip (HTTP-01/02/03)
+- [x] 45-04-PLAN.md — Wave 2 exhaustive per-route auth sweep + beava_events_total{proto} dual-emit metric transition (HTTP-06 / A5)
 - [ ] 45-05-PLAN.md — Wave 2 docs/http-api.md rewrite + examples/curl-ingest/ + benchmark/http_load.sh (>100K EPS reference-box checkpoint) + docs/http-api-examples.sh (HTTP-08/09/10)
 
 ### Phase 46: Correctness Audit, Fixes & Ship-Gate Integration Test
@@ -212,6 +212,6 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
 | 36. Replica-mode server boot | v0 | 1/1 | Complete   | 2026-04-15 |
 | 37. `tally fork` CLI + E2E demo | v0 | 1/1 | Complete   | 2026-04-15 |
 | 38. Mothball Option K surfaces | v0 | 0/1 | **Planned (Option M)** | — |
-| 45. HTTP Ingest & Read API | v1.0-launch | 2/5 | In Progress|  |
+| 45. HTTP Ingest & Read API | v1.0-launch | 4/5 | In Progress|  |
 | 43. Correctness Audit, Fixes & Ship-Gate Integration Test | v1.0-launch | 0/? | **Ready to plan** (parallel with 42) | — |
 | 44. Repo Polish, Docker, CI, Docs, Examples | v1.0-launch | 0/? | Planned (items unblock as 42 / 43 land) | — |
