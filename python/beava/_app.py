@@ -42,7 +42,7 @@ from beava._protocol import (
     encode_register,
     encode_set,
 )
-from beava._types import FeatureResult, ProtocolError, ServerBusyError
+from beava._types import FeatureResult, ProtocolError
 
 
 class App:
@@ -85,21 +85,11 @@ class App:
     def _send(self, opcode: int, payload: bytes) -> bytes:
         """Send a command and return the response payload.
 
-        Raises ``ServerBusyError`` (a :class:`ProtocolError` subclass) when
-        the server is rejecting writes under memory-ceiling backpressure,
-        and a plain ``ProtocolError`` for all other server-side errors.
-        Transport-level failures surface as :class:`ConnectionError` from
-        the retry loop in :class:`BeavaClient`.
+        Raises ``ProtocolError`` if the server returns an error status.
         """
         status, resp = self._client.send_command(opcode, payload)
         if status == STATUS_ERROR:
-            msg = resp.decode("utf-8", errors="replace")
-            # Phase 43 T4: the server flags memory-ceiling rejections with
-            # a distinctive `server_busy:` prefix so the SDK can surface a
-            # specific type without adding a new wire status byte.
-            if msg.startswith("server_busy:"):
-                raise ServerBusyError(msg)
-            raise ProtocolError(msg)
+            raise ProtocolError(resp.decode("utf-8", errors="replace"))
         return resp
 
     # ------------------------------------------------------------------

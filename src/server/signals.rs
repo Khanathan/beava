@@ -436,40 +436,6 @@ pub fn emit_memory_pressure_signal(
     registry.write().record(sig);
 }
 
-/// Phase 43 T4: toggle the `at_memory_ceiling` flag consumed by the PUSH
-/// paths to reject writes when RSS has exceeded `BEAVA_MEMORY_LIMIT_MB`.
-///
-/// Set on crossing 100% of the configured limit, cleared below 95% so
-/// writes resume only after real headroom exists. Five-percent hysteresis
-/// prevents flapping at the boundary. If the limit is unset or RSS cannot
-/// be sampled (e.g., macOS), the flag is left false and writes are never
-/// rejected — the feature is Linux-production first.
-pub fn update_memory_ceiling_flag(
-    at_memory_ceiling: &std::sync::atomic::AtomicBool,
-    configured_limit_bytes: Option<u64>,
-) {
-    let Some(limit) = configured_limit_bytes else {
-        at_memory_ceiling.store(false, std::sync::atomic::Ordering::Relaxed);
-        return;
-    };
-    if limit == 0 {
-        at_memory_ceiling.store(false, std::sync::atomic::Ordering::Relaxed);
-        return;
-    }
-    let Some(rss_bytes) = sample_rss_bytes() else {
-        // Cannot sample (macOS dev box, locked-down /proc) — keep gating off.
-        at_memory_ceiling.store(false, std::sync::atomic::Ordering::Relaxed);
-        return;
-    };
-    let ratio = rss_bytes as f64 / limit as f64;
-    let currently_set = at_memory_ceiling.load(std::sync::atomic::Ordering::Relaxed);
-    if !currently_set && ratio >= 1.0 {
-        at_memory_ceiling.store(true, std::sync::atomic::Ordering::Relaxed);
-    } else if currently_set && ratio < 0.95 {
-        at_memory_ceiling.store(false, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
 /// PUSH p99 latency SLO breach (performance category). Threshold is a
 /// 10× multiplier over the CLAUDE.md design target of 100µs → 1ms, tuned
 /// to avoid noise from GC/JIT warmup. `current_p99_us` is expected to be
