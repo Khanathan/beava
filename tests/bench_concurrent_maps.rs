@@ -238,6 +238,118 @@ fn bench_sharded_mutex() {
     });
 }
 
+// ============================================================
+// Part 2: does per-operator DashMap unlock pipeline parallelism?
+// ============================================================
+//
+// Real Beava pushes touch N_OPS operators per event (count_1h, sum_1h,
+// p99_1h, distinct, etc.). Current design: all N_OPS updates happen
+// under ONE shard lock (the entity's RefMut). Proposal: split operators
+// into N_OPS separate DashMaps keyed by entity_key, so two threads
+// pushing to the same entity can pipeline — Thread A updates count_1h
+// while Thread B starts updating sum_1h.
+//
+// Per-event cost: N_OPS lock acquisitions instead of 1. Trade-off is
+// whether pipeline parallelism outweighs the extra acquisition overhead.
+
+/// Number of operators updated per "event" (approximating a Beava
+/// stream with count_1h + sum_1h + distinct_1h + min_1h + max_1h + ...).
+const N_OPS: usize = 8;
+
+#[derive(Default, Clone)]
+struct OpState {
+    value: u64,
+    buf: Vec<u8>,
+}
+
+impl OpState {
+    #[inline]
+    fn push(&mut self, v: u64) {
+        self.value = self.value.wrapping_add(v);
+        // Simulate the ~1-3 µs of real work operator.push does
+        // (HLL hash, bucket advance, sketch update).
+        if self.buf.len() < 16 {
+            self.buf.extend_from_slice(&v.to_le_bytes());
+        } else {
+            self.buf[0..8].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+}
+
+/// Entity with N_OPS inline operators — the current Beava layout.
+#[derive(Default, Clone)]
+struct EntityWithOps {
+    ops: [OpState; N_OPS],
+}
+
+// --- MONOLITHIC: one DashMap<key, EntityWithOps>, update all N_OPS under one lock ---
+fn bench_monolithic_entity() {
+    let map: Arc<dashmap::DashMap<String, EntityWithOps>> = Arc::new(dashmap::DashMap::new());
+    let label = "MONOLITHIC: DashMap<key, EntityWithOps>";
+    let m = map.clone();
+    drive(label, move |tid| {
+        let mut rng = tid.wrapping_mul(0x9E3779B97F4A7C15);
+        let key = zipf_key(&mut rng, N_KEYS);
+        let mut e = m.entry(key).or_default();
+        // All N_OPS updates under one held RefMut (current Beava behavior)
+        for i in 0..N_OPS {
+            e.value_mut().ops[i].push(1);
+        }
+    });
+}
+
+// --- PER-OPERATOR DashMaps: N_OPS separate maps, one lock per op ---
+fn bench_per_operator() {
+    // One DashMap per operator slot.
+    let maps: Arc<Vec<dashmap::DashMap<String, OpState>>> =
+        Arc::new((0..N_OPS).map(|_| dashmap::DashMap::new()).collect());
+    let label = "PER-OP: Vec<DashMap<key, OpState>>";
+    let m = maps.clone();
+    drive(label, move |tid| {
+        let mut rng = tid.wrapping_mul(0x9E3779B97F4A7C15);
+        let key = zipf_key(&mut rng, N_KEYS);
+        // Separate lookup + acquire per operator — N_OPS lock pairs,
+        // but other threads can interleave at operator granularity.
+        for i in 0..N_OPS {
+            let mut e = m[i].entry(key.clone()).or_default();
+            e.value_mut().push(1);
+        }
+    });
+}
+
+// --- Composite-key single DashMap: DashMap<(key, op_idx), OpState> ---
+// Different operators for the same entity hash to different shards.
+// Avoids the Vec<DashMap> overhead but still gets per-op locking.
+fn bench_composite_key_dashmap() {
+    let map: Arc<dashmap::DashMap<(String, u8), OpState>> = Arc::new(dashmap::DashMap::new());
+    let label = "COMPOSITE-KEY: DashMap<(key, op), OpState>";
+    let m = map.clone();
+    drive(label, move |tid| {
+        let mut rng = tid.wrapping_mul(0x9E3779B97F4A7C15);
+        let key = zipf_key(&mut rng, N_KEYS);
+        for i in 0..N_OPS {
+            let mut e = m.entry((key.clone(), i as u8)).or_default();
+            e.value_mut().push(1);
+        }
+    });
+}
+
+// --- Per-operator with Arc<str> key (avoid clone overhead) ---
+fn bench_per_operator_arc_str() {
+    let maps: Arc<Vec<dashmap::DashMap<Arc<str>, OpState>>> =
+        Arc::new((0..N_OPS).map(|_| dashmap::DashMap::new()).collect());
+    let label = "PER-OP (Arc<str>): Vec<DashMap<Arc<str>, OpState>>";
+    let m = maps.clone();
+    drive(label, move |tid| {
+        let mut rng = tid.wrapping_mul(0x9E3779B97F4A7C15);
+        let key: Arc<str> = Arc::from(zipf_key(&mut rng, N_KEYS).as_str());
+        for i in 0..N_OPS {
+            let mut e = m[i].entry(key.clone()).or_default();
+            e.value_mut().push(1);
+        }
+    });
+}
+
 #[test]
 #[ignore]
 fn concurrent_map_shootout() {
@@ -252,5 +364,14 @@ fn concurrent_map_shootout() {
     bench_rwlock();
     bench_sharded_mutex();
     bench_mutex();
+
+    println!(
+        "\n=== per-operator layout shootout (N_OPS={} per event) ===\n",
+        N_OPS
+    );
+    bench_monolithic_entity();
+    bench_per_operator();
+    bench_composite_key_dashmap();
+    bench_per_operator_arc_str();
     println!();
 }
