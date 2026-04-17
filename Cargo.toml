@@ -47,6 +47,7 @@ tempfile = "3"
 sha2 = "0.10"
 tower = { version = "0.5", features = ["util"] }
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+pprof = { version = "0.14", features = ["flamegraph", "frame-pointer"] }
 
 [[bin]]
 name = "beava"
