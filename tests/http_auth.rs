@@ -1,22 +1,49 @@
-//! Phase 45 Wave 0: per-endpoint auth sweep.
+//! Phase 45 Wave 2: exhaustive per-route × per-case auth sweep (HTTP-06 / D-19).
 //!
-//! Verifies that `require_loopback_or_token` correctly gates all three write
-//! routes and that read routes are ungated when `public_mode = true`.
+//! Covers all 6 HTTP routes across 4 case types:
+//!   (a) off-loopback, no token           → 401
+//!   (b) loopback, no token               → NOT 401
+//!   (c) off-loopback, valid Bearer token → NOT 401
+//!   (d) public_mode=true, off-loopback   → NOT 401 (reads only; writes still 401)
 //!
-//! This test MUST pass at end of Wave 0 because the stubs already sit behind
-//! the auth layer — 401 is returned before the handler even runs.
+//! This test is the canonical Pitfall-15 regression guard. If a future refactor
+//! moves any write route BELOW `.route_layer(require_loopback_or_token)`, exactly
+//! one of the assertions in `test_writes_reject_offloopback_noauth` will fail with
+//! a message like:
+//!   "route POST /push/s expected 401 got 200 OK"
+//!
+//! 7 test functions × 3-6 routes each = every route covered by ≥ 3 assertions.
 
 mod http_common;
 
 use axum::body::Body;
-use axum::http::{Method, Request, StatusCode};
+use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
 use beava::server::http::build_router;
 use http_common::{build_test_state, inject_loopback, inject_peer, public_addr, TEST_ADMIN_TOKEN};
 
-/// Build a oneshot request with optional Authorization header.
-fn make_request(method: &str, path: &str, bearer: Option<&str>) -> Request<Body> {
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const WRITE_ROUTES: &[(&str, &str)] = &[
+    ("POST", "/push/s"),
+    ("POST", "/push-batch/s"),
+    ("POST", "/push/s/ndjson"),
+];
+
+const READ_ROUTES: &[(&str, &str)] = &[
+    ("GET", "/features/k"),
+    ("GET", "/streams"),
+    ("GET", "/streams/s"),
+];
+
+// ---------------------------------------------------------------------------
+// Request builder helpers
+// ---------------------------------------------------------------------------
+
+fn make_req(method: &str, path: &str, bearer: Option<&str>) -> Request<Body> {
     let mut b = Request::builder()
         .method(method)
         .uri(path)
@@ -28,95 +55,158 @@ fn make_request(method: &str, path: &str, bearer: Option<&str>) -> Request<Body>
 }
 
 // ---------------------------------------------------------------------------
-// Write routes — must be admin-gated (401 off-loopback, not-401 on loopback)
+// Test 1: Write routes — off-loopback, no token → 401
 // ---------------------------------------------------------------------------
 
+/// Structural regression guard (Pitfall 15): if a write route is mounted
+/// AFTER `.route_layer(require_loopback_or_token)`, this test will catch it
+/// because that route will let the off-loopback unauthenticated request through.
 #[tokio::test]
-async fn test_auth_sweep_all_ingest_routes() {
-    let write_routes = [
-        (Method::POST, "/push/teststream"),
-        (Method::POST, "/push-batch/teststream"),
-        (Method::POST, "/push/teststream/ndjson"),
-    ];
-
-    // --- Write routes: off-loopback without token → 401 ---
-    for (method, path) in &write_routes {
+async fn test_writes_reject_offloopback_noauth() {
+    for (method, path) in WRITE_ROUTES {
         let app = build_router(build_test_state(false));
-        let mut req = make_request(method.as_str(), path, None);
+        let mut req = make_req(method, path, None);
         inject_peer(&mut req, public_addr());
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(
             resp.status(),
             StatusCode::UNAUTHORIZED,
-            "expected 401 UNAUTHORIZED for off-loopback {} {} (no token)",
+            "route {} {} expected 401 (off-loopback, no token) got {}",
             method,
-            path
+            path,
+            resp.status()
         );
     }
+}
 
-    // --- Write routes: loopback without token → NOT 401 (stub = 501 or other) ---
-    for (method, path) in &write_routes {
+// ---------------------------------------------------------------------------
+// Test 2: Write routes — loopback, no token → NOT 401
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_writes_allow_loopback_noauth() {
+    for (method, path) in WRITE_ROUTES {
         let app = build_router(build_test_state(false));
-        let mut req = make_request(method.as_str(), path, None);
+        let mut req = make_req(method, path, None);
         inject_loopback(&mut req);
         let resp = app.oneshot(req).await.unwrap();
         assert_ne!(
             resp.status(),
             StatusCode::UNAUTHORIZED,
-            "loopback {} {} must NOT be 401 (got {:?})",
+            "route {} {} must NOT be 401 from loopback (got {})",
             method,
             path,
             resp.status()
         );
     }
+}
 
-    // --- Write routes: off-loopback with valid token → NOT 401 ---
-    for (method, path) in &write_routes {
+// ---------------------------------------------------------------------------
+// Test 3: Write routes — off-loopback, valid Bearer token → NOT 401
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_writes_allow_offloopback_withtoken() {
+    for (method, path) in WRITE_ROUTES {
         let app = build_router(build_test_state(false));
-        let mut req = make_request(method.as_str(), path, Some(TEST_ADMIN_TOKEN));
+        let mut req = make_req(method, path, Some(TEST_ADMIN_TOKEN));
         inject_peer(&mut req, public_addr());
         let resp = app.oneshot(req).await.unwrap();
         assert_ne!(
             resp.status(),
             StatusCode::UNAUTHORIZED,
-            "valid-token {} {} must NOT be 401 (got {:?})",
+            "route {} {} with valid token must NOT be 401 (got {})",
             method,
             path,
             resp.status()
         );
     }
+}
 
-    // --- Read routes on public_mode=true server: no auth → NOT 401 ---
-    let read_routes = [
-        (Method::GET, "/features/alice"),
-        (Method::GET, "/streams"),
-        (Method::GET, "/streams/teststream"),
-    ];
-    for (method, path) in &read_routes {
-        let app = build_router(build_test_state(true)); // public_mode = true
-        let mut req = make_request(method.as_str(), path, None);
-        inject_peer(&mut req, public_addr());
-        let resp = app.oneshot(req).await.unwrap();
-        assert_ne!(
-            resp.status(),
-            StatusCode::UNAUTHORIZED,
-            "public_mode read {} {} must NOT be 401 (got {:?})",
-            method,
-            path,
-            resp.status()
-        );
-    }
+// ---------------------------------------------------------------------------
+// Test 4: Read routes — off-loopback, no token, public_mode=false → 401
+// ---------------------------------------------------------------------------
 
-    // --- Read routes on public_mode=false server: no auth → 401 ---
-    for (method, path) in &read_routes {
+#[tokio::test]
+async fn test_reads_reject_offloopback_noauth_when_not_public() {
+    for (method, path) in READ_ROUTES {
         let app = build_router(build_test_state(false)); // public_mode = false
-        let mut req = make_request(method.as_str(), path, None);
+        let mut req = make_req(method, path, None);
         inject_peer(&mut req, public_addr());
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(
             resp.status(),
             StatusCode::UNAUTHORIZED,
-            "admin-mode read {} {} must be 401 off-loopback (got {:?})",
+            "route {} {} in admin-mode must be 401 off-loopback no-auth (got {})",
+            method,
+            path,
+            resp.status()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: Read routes — off-loopback, no token, public_mode=true → NOT 401
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_reads_allow_offloopback_noauth_when_public() {
+    for (method, path) in READ_ROUTES {
+        let app = build_router(build_test_state(true)); // public_mode = true
+        let mut req = make_req(method, path, None);
+        inject_peer(&mut req, public_addr());
+        let resp = app.oneshot(req).await.unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "route {} {} in public_mode must NOT be 401 off-loopback no-auth (got {})",
+            method,
+            path,
+            resp.status()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: Read routes — loopback, no token, public_mode=false → NOT 401
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_reads_allow_loopback_even_when_not_public() {
+    for (method, path) in READ_ROUTES {
+        let app = build_router(build_test_state(false)); // public_mode = false
+        let mut req = make_req(method, path, None);
+        inject_loopback(&mut req);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "route {} {} from loopback must NOT be 401 even in admin mode (got {})",
+            method,
+            path,
+            resp.status()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: Write routes — public_mode=true, off-loopback, no token → 401
+//
+// Writes are ALWAYS admin-gated regardless of public_mode. A public server
+// must not expose unauthenticated write access.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_writes_always_admin_even_when_public() {
+    for (method, path) in WRITE_ROUTES {
+        let app = build_router(build_test_state(true)); // public_mode = true
+        let mut req = make_req(method, path, None);
+        inject_peer(&mut req, public_addr());
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "write route {} {} in public_mode must still be 401 off-loopback no-auth (got {})",
             method,
             path,
             resp.status()
