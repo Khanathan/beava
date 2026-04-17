@@ -19,6 +19,23 @@ class ProtocolError(BeavaError):
     """Raised when a protocol-level error occurs (bad frame, server error status)."""
 
 
+class ServerBusyError(ProtocolError):
+    """Raised when the server rejects a write under memory-ceiling backpressure.
+
+    Sent by the server when RSS has crossed ``BEAVA_MEMORY_LIMIT_MB`` and
+    writes are being fail-loud-rejected to prevent OOM. Callers should
+    back off exponentially and retry in application code — this is NOT
+    a transport failure and the SDK's :class:`RetryPolicy` deliberately
+    does not auto-retry it, because "retry immediately" is precisely the
+    wrong response (the server is already overloaded).
+
+    Typical recovery:
+    1. Sleep with backoff (seconds to minutes).
+    2. Check ``/metrics`` ``beava_memory_bytes`` before retrying.
+    3. Or resize the server before resuming writes.
+    """
+
+
 class FeatureResult:
     """Thin wrapper over a feature map providing attribute-style access.
 

@@ -22,7 +22,13 @@ Plan 21-01; aggregation and join operators return in Plans 21-02 and
 21-03 in function form on top of ``@bv.stream`` / ``@bv.table``.
 """
 
-from beava._types import FeatureResult, ConnectionError, ProtocolError, BeavaError
+from beava._types import (
+    BeavaError,
+    ConnectionError,
+    FeatureResult,
+    ProtocolError,
+    ServerBusyError,
+)
 
 # Phase 38-01 mothball: the `beava._native` PyO3 extension (Plan 30-01) is
 # gone. Scientists now run the scoped replica via `beava fork` (Phase 37)
@@ -91,6 +97,7 @@ __all__ = [
     "BeavaError",
     "ConnectionError",
     "ProtocolError",
+    "ServerBusyError",
     # App
     "App",
     # Retry policy (Phase 43)

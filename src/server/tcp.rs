@@ -225,6 +225,14 @@ pub struct ConcurrentAppState {
     pub extracted_history:
         dashmap::DashMap<u64, dashmap::DashMap<String, serde_json::Value>>,
 
+    /// Phase 43 T4: reject-writes-at-memory-ceiling flag. Set true by the
+    /// periodic signals timer when measured RSS exceeds
+    /// `BEAVA_MEMORY_LIMIT_MB`; cleared when RSS drops below 95% of the
+    /// limit (5% hysteresis). PUSH, PUSH_ASYNC, and PUSH_BATCH check this
+    /// flag at entry and short-circuit with a `server_busy:` error when
+    /// set, so clients see fail-loud backpressure instead of OOM-kill.
+    pub at_memory_ceiling: std::sync::atomic::AtomicBool,
+
     /// Phase 43 T2: cumulative nanoseconds spent in the background
     /// `fsync_all` timer. Surfaced on `/metrics` as
     /// `beava_fsync_stall_seconds_total` (counter). Operators watching for
@@ -391,6 +399,7 @@ pub fn make_concurrent_state_full(
         fsync_stall_nanos_total: std::sync::atomic::AtomicU64::new(0),
         fsync_calls_total: std::sync::atomic::AtomicU64::new(0),
         fsync_last_nanos: std::sync::atomic::AtomicU64::new(0),
+        at_memory_ceiling: std::sync::atomic::AtomicBool::new(false),
     })
 }
 
@@ -1393,6 +1402,23 @@ pub fn handle_push_batch(
     if batch.is_empty() {
         return Vec::new();
     }
+    // Phase 43 T4: fail-loud backpressure when RSS is over the
+    // `BEAVA_MEMORY_LIMIT_MB` ceiling. Client sees a distinctive
+    // `server_busy:` prefix so the SDK can raise ServerBusyError; the
+    // retry policy does NOT retry this (it's an application error, not
+    // a transport failure).
+    if state.at_memory_ceiling.load(Ordering::Relaxed) {
+        return batch
+            .iter()
+            .map(|_| {
+                Err(BeavaError::Protocol(
+                    "server_busy: memory_limit_exceeded — writes rejected until \
+                     RSS falls below 95% of BEAVA_MEMORY_LIMIT_MB"
+                        .into(),
+                ))
+            })
+            .collect();
+    }
     // Phase 36-01: replica mode rejects async-batch PUSH alongside sync PUSH.
     if state.replica_mode.load(Ordering::Relaxed) {
         return batch
@@ -1708,6 +1734,18 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Bea
             payload,
             raw_payload,
         } => {
+            // Phase 43 T4: reject PUSH once RSS has crossed
+            // BEAVA_MEMORY_LIMIT_MB. Same rationale as the batch guard —
+            // fail-loud to the client so the SDK surfaces ServerBusyError,
+            // rather than letting committed state continue growing until
+            // the process is OOM-killed.
+            if state.at_memory_ceiling.load(Ordering::Relaxed) {
+                return Err(BeavaError::Protocol(
+                    "server_busy: memory_limit_exceeded — writes rejected until \
+                     RSS falls below 95% of BEAVA_MEMORY_LIMIT_MB"
+                        .into(),
+                ));
+            }
             // Phase 36-01: replica mode rejects client-originated PUSH.
             // Events must come from the configured upstream via the replica
             // client loop. Scientists wanting synthetic events need a

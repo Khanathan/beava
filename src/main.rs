@@ -59,6 +59,12 @@ fn poll_signal_sources(state: &SharedState) {
         .map(|mb| mb * 1_048_576);
     signals::emit_memory_pressure_signal(&state.signals, limit_bytes);
 
+    // Phase 43 T4: flip the reject-writes flag when RSS exceeds the limit;
+    // clear it again under 95% (5% hysteresis prevents flapping). On
+    // macOS dev boxes sample_rss_bytes returns None and the flag stays
+    // false — memory gating is a Linux-production feature.
+    signals::update_memory_ceiling_flag(&state.at_memory_ceiling, limit_bytes);
+
     // 3. PUSH p99 SLO breach (performance). Sample from the latency
     //    tracker; threshold 1ms (10× the CLAUDE.md 100µs design target).
     let p99_us = state
