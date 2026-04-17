@@ -36,6 +36,7 @@ axum = "0.8"
 axum-extra = { version = "0.12", features = ["json-lines"] }
 tower-http = { version = "0.6", features = ["limit", "timeout"] }
 tower = { version = "0.5", features = ["util"] }
+tokio-stream = { version = "0.1", features = ["io-util"] }
 bytes = "1.11"
 petgraph = "0.8"
 rust-embed = { version = "8.11", features = ["mime-guess", "debug-embed"] }
