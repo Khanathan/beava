@@ -1735,9 +1735,13 @@ pub fn handle_push_batch(
         // event gets its own `_event_time` (or wall-clock fallback); the
         // stream's watermark is checked BEFORE the batch call so late
         // events never reach the operator bucket router.
-        let mut kept_refs: Vec<&serde_json::Value> = Vec::with_capacity(batch.len());
+        //
+        // D-01 (CORR-01): kept now holds (&Value, SystemTime) pairs so that
+        // push_batch_with_cascade_no_features receives a per-event event-time.
+        // The old `min_event_time` collapse (which destroyed per-event precision
+        // and was the 2a bug) is removed entirely.
+        let mut kept: Vec<(&serde_json::Value, SystemTime)> = Vec::with_capacity(batch.len());
         let mut kept_idxs: Vec<usize> = Vec::with_capacity(batch.len());
-        let mut min_event_time: Option<SystemTime> = None;
         for (idx, ev) in batch.iter().enumerate() {
             let et = crate::engine::event_time::parse_event_time(&ev.payload, ev.now);
             let wm = engine.watermarks.watermark(stream_name);
@@ -1748,17 +1752,12 @@ pub fn handle_push_batch(
                 }
             }
             engine.watermarks.observe(stream_name, et);
-            kept_refs.push(&ev.payload);
+            kept.push((&ev.payload, et));
             kept_idxs.push(idx);
-            min_event_time = Some(match min_event_time {
-                Some(m) => m.min(et),
-                None => et,
-            });
         }
-        let now = min_event_time.unwrap_or(batch[0].now);
 
         let per_event =
-            engine.push_batch_with_cascade_no_features(stream_name, &kept_refs, store, now);
+            engine.push_batch_with_cascade_no_features(stream_name, &kept, store);
 
         // Scatter errors to result slots.
         for (k_idx, res) in per_event.into_iter().enumerate() {
@@ -1787,6 +1786,9 @@ pub fn handle_push_batch(
         // Deferred event log append. Phase 42: batch into a single
         // `append_many` so the whole batch becomes one `O_APPEND` `write()`
         // syscall — batch-atomic, lock-free, one kernel transition.
+        // D-01: use the wall-clock arrival time of the first batch event as
+        // the log-entry timestamp — this is only used for event-log ordering,
+        // not for bucket routing (which is now per-event inside the primitive).
         if let Some(ref log) = state.event_log {
             let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(batch.len());
             for (idx, ev) in batch.iter().enumerate() {
@@ -1796,7 +1798,7 @@ pub fn handle_push_batch(
             }
             if !payloads.is_empty() {
                 let refs: Vec<&[u8]> = payloads.iter().map(|v| v.as_slice()).collect();
-                let _ = log.append_many(stream_name, &refs, now);
+                let _ = log.append_many(stream_name, &refs, batch[0].now);
             }
         }
     } else {
@@ -1817,9 +1819,13 @@ pub fn handle_push_batch(
                 .and_then(|s| s.key_field.as_deref());
 
             // Phase 24-04: per-event late-drop gate for this stream group.
-            let mut kept_refs: Vec<&serde_json::Value> = Vec::with_capacity(indices.len());
+            //
+            // D-01 (CORR-01): kept now holds (&Value, SystemTime) pairs so
+            // push_batch_with_cascade_no_features receives a per-event
+            // event-time. The old `min_et` collapse is removed entirely.
+            let mut kept: Vec<(&serde_json::Value, SystemTime)> =
+                Vec::with_capacity(indices.len());
             let mut kept_orig: Vec<usize> = Vec::with_capacity(indices.len());
-            let mut min_et: Option<SystemTime> = None;
             for &i in indices {
                 let et =
                     crate::engine::event_time::parse_event_time(&batch[i].payload, batch[i].now);
@@ -1831,17 +1837,12 @@ pub fn handle_push_batch(
                     }
                 }
                 engine.watermarks.observe(stream_name, et);
-                kept_refs.push(&batch[i].payload);
+                kept.push((&batch[i].payload, et));
                 kept_orig.push(i);
-                min_et = Some(match min_et {
-                    Some(m) => m.min(et),
-                    None => et,
-                });
             }
-            let now = min_et.unwrap_or_else(SystemTime::now);
 
             let per_event =
-                engine.push_batch_with_cascade_no_features(stream_name, &kept_refs, store, now);
+                engine.push_batch_with_cascade_no_features(stream_name, &kept, store);
 
             for (k_idx, res) in per_event.into_iter().enumerate() {
                 if let Err(e) = res {

@@ -293,8 +293,8 @@ mod push_batch_with_cascade_no_features {
     fn empty_batch_returns_empty_vec() {
         let engine = build_cascade_engine();
         let store = StateStore::new();
-        let events: Vec<&serde_json::Value> = vec![];
-        let out = engine.push_batch_with_cascade_no_features("Txns", &events, &store, ts(1000));
+        let pairs: Vec<(&serde_json::Value, SystemTime)> = vec![];
+        let out = engine.push_batch_with_cascade_no_features("Txns", &pairs, &store);
         assert!(out.is_empty());
         assert_eq!(store.entity_count(), 0);
     }
@@ -305,7 +305,9 @@ mod push_batch_with_cascade_no_features {
         let store = StateStore::new();
         let e = json!({"user_id": "u1"});
         let events = vec![&e, &e];
-        let out = engine.push_batch_with_cascade_no_features("ghost", &events, &store, ts(1000));
+        let pairs: Vec<(&serde_json::Value, SystemTime)> =
+            events.iter().map(|e| (*e, ts(1000))).collect();
+        let out = engine.push_batch_with_cascade_no_features("ghost", &pairs, &store);
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(|r| r.is_err()));
         assert_eq!(store.entity_count(), 0);
@@ -328,7 +330,9 @@ mod push_batch_with_cascade_no_features {
         let now = ts(1000);
 
         // Batch path on A
-        let out_a = engine_a.push_batch_with_cascade_no_features("Txns", &events, &store_a, now);
+        let pairs_a: Vec<(&serde_json::Value, SystemTime)> =
+            events.iter().map(|e| (*e, now)).collect();
+        let out_a = engine_a.push_batch_with_cascade_no_features("Txns", &pairs_a, &store_a);
         assert_eq!(out_a.len(), 3);
         assert!(out_a.iter().all(|r| r.is_ok()));
 
@@ -374,7 +378,9 @@ mod push_batch_with_cascade_no_features {
         let events = vec![&e0, &e1, &e2, &e3];
         let now = ts(1000);
 
-        let out = engine.push_batch_with_cascade_no_features("Txns", &events, &store, now);
+        let pairs: Vec<(&serde_json::Value, SystemTime)> =
+            events.iter().map(|e| (*e, now)).collect();
+        let out = engine.push_batch_with_cascade_no_features("Txns", &pairs, &store);
         assert_eq!(out.len(), 4);
         assert!(out.iter().all(|r| r.is_ok()));
 
@@ -404,7 +410,9 @@ mod push_batch_with_cascade_no_features {
         let events = vec![&e0, &e1, &e2];
         let now = ts(1000);
 
-        let out = engine.push_batch_with_cascade_no_features("Txns", &events, &store, now);
+        let pairs: Vec<(&serde_json::Value, SystemTime)> =
+            events.iter().map(|e| (*e, now)).collect();
+        let out = engine.push_batch_with_cascade_no_features("Txns", &pairs, &store);
         assert_eq!(out.len(), 3);
         assert!(out[0].is_ok());
         assert!(out[1].is_err());
@@ -424,7 +432,9 @@ mod push_batch_with_cascade_no_features {
         let e = json!({"user_id": "u1"});
         let events = vec![&e, &e, &e];
 
-        let out = engine.push_batch_with_cascade_no_features("nope", &events, &store, ts(1000));
+        let pairs: Vec<(&serde_json::Value, SystemTime)> =
+            events.iter().map(|e| (*e, ts(1000))).collect();
+        let out = engine.push_batch_with_cascade_no_features("nope", &pairs, &store);
         assert_eq!(out.len(), 3);
         assert!(out.iter().all(|r| r.is_err()));
         assert_eq!(store.entity_count(), 0);

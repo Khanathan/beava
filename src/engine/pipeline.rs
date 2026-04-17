@@ -1375,9 +1375,8 @@ impl PipelineEngine {
     pub fn push_batch_with_cascade_no_features(
         &self,
         stream_name: &str,
-        events: &[&serde_json::Value],
+        events: &[(&serde_json::Value, SystemTime)],
         store: &StateStore,
-        now: SystemTime,
     ) -> Vec<Result<FeatureMap, BeavaError>> {
         if events.is_empty() {
             return Vec::new();
@@ -1426,28 +1425,57 @@ impl PipelineEngine {
             })
             .collect();
 
-        let mut out = Vec::with_capacity(events.len());
-        for event in events {
-            // 1. Primary + cascade via the existing single-event worker.
-            //    Preserves depends_on DAG cascade semantics EXACTLY (D-06).
-            let res = self.push_with_cascade_no_features(stream_name, event, store, now);
+        // D-01/D-02: Group events by per-event event-time (CORR-01 fix).
+        // Events with identical event_time collapse to one hashmap entry,
+        // preserving pre-fix lock-amortization for the steady-state case
+        // (all events at wall-clock "now" => one entry, zero overhead vs old
+        // behaviour).  Events with distinct event_times are no longer
+        // collapsed to a fabricated shared `now` — that is the correctness
+        // win.  Each operator's RingBuffer aligns to its own bucket width
+        // internally, so we use the raw SystemTime as the map key (identity
+        // "bucket_of" function): operators re-align per feature, not here.
+        //
+        // Algorithm: hashmap bucket coalescing (D-02 "recommended" path from
+        // 46-RESEARCH.md Gap 2 option (b)).  One pass to build groups, one
+        // pass to process, one pass to scatter results back to input order.
+        // stdlib HashMap is used — ahash is a direct dep but HashMap<K,V>
+        // with SystemTime keys is idiomatic here; ahash is already indirect.
+        let mut groups: std::collections::HashMap<SystemTime, Vec<usize>> =
+            std::collections::HashMap::with_capacity(events.len().min(8));
+        for (i, (_ev, et)) in events.iter().enumerate() {
+            groups.entry(*et).or_default().push(i);
+        }
 
-            // 2. Fan-out dispatch mirrors the TCP handler's per-event fan-out
-            //    block. Each qualifying target receives exactly ONE push per
-            //    event — matching v1.2 semantics for async pushes.
-            if res.is_ok() {
-                for (target_name, target_key_field) in &fan_out {
-                    if let Some(serde_json::Value::String(key_val)) =
-                        event.get(target_key_field.as_str())
-                    {
-                        if !key_val.is_empty() {
-                            let _ = self.push_no_features(target_name, event, store, now);
+        let mut out: Vec<Result<FeatureMap, BeavaError>> =
+            (0..events.len()).map(|_| Ok(FeatureMap::default())).collect();
+
+        for (group_now, indices) in groups {
+            for i in indices {
+                let (event, _et) = events[i];
+
+                // 1. Primary + cascade via the existing single-event worker.
+                //    Preserves depends_on DAG cascade semantics EXACTLY (D-06).
+                let res =
+                    self.push_with_cascade_no_features(stream_name, event, store, group_now);
+
+                // 2. Fan-out dispatch mirrors the TCP handler's per-event fan-out
+                //    block. Each qualifying target receives exactly ONE push per
+                //    event — matching v1.2 semantics for async pushes.
+                if res.is_ok() {
+                    for (target_name, target_key_field) in &fan_out {
+                        if let Some(serde_json::Value::String(key_val)) =
+                            event.get(target_key_field.as_str())
+                        {
+                            if !key_val.is_empty() {
+                                let _ =
+                                    self.push_no_features(target_name, event, store, group_now);
+                            }
                         }
                     }
                 }
-            }
 
-            out.push(res);
+                out[i] = res;
+            }
         }
         out
     }
