@@ -2,27 +2,23 @@
 
 ## Quickstart
 
-Register a pipeline via the Python SDK, then push and read from any HTTP client in under 60 seconds:
+Register a stream and push events from the command line in under 60 seconds:
 
 ```bash
-# 1. Register a stream (Python SDK)
-python3 -c "
-import tally as tl
-@tl.stream
-class transactions:
-    user: str
-    amount: float
-tl.register_remote(remote='localhost:6401', pipelines=[])
-"
+# 1. Register a stream with windowed features
+curl -X POST http://127.0.0.1:6401/pipelines \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN}" \
+  -d '{"name":"transactions","key_field":"user","definition_type":"stream","features":[{"name":"tx_count_1h","type":"count","window":"1h","bucket":"1m"}]}'
 
 # 2. Push an event
-curl -X POST http://localhost:6401/push/transactions \
+curl -X POST http://127.0.0.1:6401/push/transactions \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN}" \
   -d '{"user":"alice","amount":10.5}'
 
 # 3. Read features back
-curl http://localhost:6401/features/alice \
+curl http://127.0.0.1:6401/features/alice \
   -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN}"
 ```
 
