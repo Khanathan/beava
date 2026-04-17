@@ -174,7 +174,7 @@ What fork doesn't fix: feature-logic bugs that depend on timing (late events, ou
 ## Use cases
 
 ### Real-time fraud scoring
-47-feature pipeline, 302K events/sec sustained on a 10-core Apple M4 laptop. See [examples/fraud/](examples/fraud/).
+47-feature pipeline, 315K events/sec sustained on a 10-core Apple M4 laptop (server p99 42 µs per event). See [examples/fraud/](examples/fraud/).
 
 ### Agent session state, with TTL
 
@@ -203,10 +203,11 @@ Aggregations served from memory, no cache invalidation.
 
 | Metric | 10-core Apple M4 laptop, 32 GB RAM |
 |--------|---|
-| Throughput (sustained) | 302K events/sec |
-| Per-event server time | 3.31 µs |
+| Throughput (sustained) | 315K events/sec |
+| Per-event wall time (aggregate, 8 clients) | 3.18 µs |
+| Server-side PUSH latency (per event) | p50 21 µs · p95 31 µs · p99 42 µs |
 | Memory per entity (47-feature fraud pipeline) | ~616 KB |
-| Client batch latency (1000-event `push_many`) | p50 ~2.8 ms · p99 ~137 ms |
+| Client batch latency (1000-event `push_many`) | p50 ~2.6 ms · p99 ~126 ms |
 | Sustained load | 60s × 8 clients, no drift |
 
 Committed run: [`benchmark/fraud-pipeline/results/baseline/summary.json`](benchmark/fraud-pipeline/results/baseline/summary.json). Per-entity memory varies widely by operator mix — the 47-feature fraud pipeline carries several HLL sketches per key, so simpler pipelines run an order of magnitude less. Full methodology + the batch-p99-vs-per-event caveat: [`benchmark/README.md`](benchmark/README.md).

@@ -1,69 +1,69 @@
 
-[1m==> Beava fraud-pipeline benchmark — 2026-04-16 23:51:05Z[0m
+[1m==> Beava fraud-pipeline benchmark — 2026-04-17 00:02:37Z[0m
 Host: Darwin arm64, 10 cores
 Config: MODE=complex CLIENTS=8 WORKER_THREADS=8 WARMUP=5s DURATION=60s
-Results: /Users/petrpan26/work/tally/benchmark/fraud-pipeline/results/20260416T235105Z
+Results: /Users/petrpan26/work/tally/benchmark/fraud-pipeline/results/20260417T000237Z
 Binary: /Users/petrpan26/work/tally/target/release/beava
 
 [1m==> Starting server on TCP=6400 HTTP=6401 threads=8[0m
-Server ready (pid=14240, data=/var/folders/m2/s1yp9jkj11b68p2mgcr3thw80000gn/T/beava-bench-data.XXXXXX.hPm1AvMMdy)
+Server ready (pid=17068, data=/var/folders/m2/s1yp9jkj11b68p2mgcr3thw80000gn/T/beava-bench-data.XXXXXX.TJuCPnAghQ)
 
 [1m==> Warmup 5s (output discarded)[0m
 
 [1m==> Measuring 60s (live EPS every 5s)[0m
-    t=  5.1s  events=     1798000  instant=    350487 eps  avg=    350487 eps
-    t= 10.2s  events=     3588000  instant=    355864 eps  avg=    353149 eps
-    t= 15.2s  events=     5293000  instant=    336291 eps  avg=    347537 eps
-    t= 20.3s  events=     7047000  instant=    345956 eps  avg=    347142 eps
-    t= 26.8s  events=     8443000  instant=    213455 eps  avg=    314567 eps
-    t= 31.9s  events=     9688000  instant=    246047 eps  avg=    303699 eps
-    t= 36.9s  events=    11375000  instant=    336726 eps  avg=    308182 eps
-    t= 42.0s  events=    12997000  instant=    318664 eps  avg=    309452 eps
-    t= 47.1s  events=    14677000  instant=    328767 eps  avg=    311547 eps
-    t= 52.1s  events=    16481000  instant=    360079 eps  avg=    316212 eps
-    t= 60.5s  events=    18471000  instant=    238323 eps  avg=    305457 eps
-    t= 62.9s  events=    19003000  instant=    221666 eps  avg=    302258 eps
+    t=  5.1s  events=     1722000  instant=    340316 eps  avg=    340316 eps
+    t= 15.0s  events=     3726000  instant=    201204 eps  avg=    248069 eps
+    t= 20.1s  events=     5490000  instant=    345882 eps  avg=    272862 eps
+    t= 20.2s  events=     6842000  instant=  13520000 eps  avg=    338377 eps
+    t= 26.1s  events=     8244000  instant=    237627 eps  avg=    315620 eps
+    t= 31.1s  events=     9589000  instant=    267395 eps  avg=    307833 eps
+    t= 36.2s  events=    11286000  instant=    338722 eps  avg=    312112 eps
+    t= 41.2s  events=    13134000  instant=    368862 eps  avg=    319018 eps
+    t= 46.2s  events=    15017000  instant=    374353 eps  avg=    325043 eps
+    t= 51.2s  events=    16898000  instant=    375449 eps  avg=    329974 eps
+    t= 60.3s  events=    19226000  instant=    256105 eps  avg=    318839 eps
+    t= 63.3s  events=    19929000  instant=    235906 eps  avg=    314933 eps
 
 [1m==> Aggregating[0m
 
 [1m==> STEADY-STATE SUMMARY[0m
     Config:       complex pipeline, 8 clients, 8 server threads
     Duration:     60s measured (+5s warmup)
-    Events:       19,003,000
-    Aggregate:    302,267 events/sec
-    Per event:    3.31 microseconds
+    Events:       19,929,000
+    Aggregate:    314,931 events/sec
+    Per event:    3.18 microseconds
 
     Client push_many latency (microseconds per 1000-event batch call):
                    median across clients    worst across clients
-      p50       :       2,824.2                 3,031.7
-      p99       :     137,233.1               252,122.9
-      p99.9     :     137,233.1               252,122.9
+      p50       :       2,572.8                20,433.1
+      p99       :     125,812.0               132,696.7
+      p99.9     :     125,812.0               132,696.7
 
     Server-side PUSH latency (microseconds; from /debug/latency):
-      p50       :           0.0
-      p95       :           0.0
-      p99       :           0.0
-      count     :             0
+      p50       :          21.3
+      p95       :          31.0
+      p99       :          42.1
+      count     :        21,589
 
-    Memory:       5,876.8 MB across ~9,998 per-stream keys
-                  (616,349 bytes per entity)
+    Memory:       5,878.9 MB across ~9,999 per-stream keys
+                  (616,514 bytes per entity)
 
     Per-client throughput:
-      proc-0: 2,487,000 events in  60.47s =    41,129 eps
-      proc-1: 2,363,000 events in  60.34s =    39,163 eps
-      proc-2: 2,442,000 events in  60.27s =    40,516 eps
-      proc-3: 2,421,000 events in  60.23s =    40,195 eps
-      proc-4: 2,418,000 events in  60.24s =    40,137 eps
-      proc-5: 2,316,000 events in  60.40s =    38,343 eps
-      proc-6: 2,364,000 events in  60.39s =    39,145 eps
-      proc-7: 2,192,000 events in  62.87s =    34,866 eps
+      proc-0: 2,549,000 events in  60.30s =    42,274 eps
+      proc-1: 2,515,000 events in  60.25s =    41,741 eps
+      proc-2: 2,570,000 events in  60.15s =    42,723 eps
+      proc-3: 2,470,000 events in  60.22s =    41,016 eps
+      proc-4: 2,318,000 events in  63.28s =    36,630 eps
+      proc-5: 2,494,000 events in  60.29s =    41,363 eps
+      proc-6: 2,472,000 events in  60.23s =    41,045 eps
+      proc-7: 2,541,000 events in  60.27s =    42,163 eps
 
 
 [1m==> DONE[0m
-    summary.json:  /Users/petrpan26/work/tally/benchmark/fraud-pipeline/results/20260416T235105Z/summary.json
-    stdout.log:    /Users/petrpan26/work/tally/benchmark/fraud-pipeline/results/20260416T235105Z/stdout.log
-    server.log:    /Users/petrpan26/work/tally/benchmark/fraud-pipeline/results/20260416T235105Z/server.log
-    per-client:    /Users/petrpan26/work/tally/benchmark/fraud-pipeline/results/20260416T235105Z/measure-*.jsonl
+    summary.json:  /Users/petrpan26/work/tally/benchmark/fraud-pipeline/results/20260417T000237Z/summary.json
+    stdout.log:    /Users/petrpan26/work/tally/benchmark/fraud-pipeline/results/20260417T000237Z/stdout.log
+    server.log:    /Users/petrpan26/work/tally/benchmark/fraud-pipeline/results/20260417T000237Z/server.log
+    per-client:    /Users/petrpan26/work/tally/benchmark/fraud-pipeline/results/20260417T000237Z/measure-*.jsonl
 
 Compare throughput against the Phase-42 Hetzner baseline (544K eps, 16-core).
 On laptops, 60-200K eps is typical; numbers scale near-linearly with core count up to

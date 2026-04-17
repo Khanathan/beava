@@ -538,3 +538,78 @@ fn decode_microbench_1000_events() {
         per_event_us
     );
 }
+
+// ===========================================================================
+// Server-side latency instrumentation for batch path
+// ===========================================================================
+
+/// handle_push_batch must populate the PUSH command histogram so that
+/// /debug/latency reports non-zero p50/p99 under batch ingest. Before the
+/// Phase 43 fix, only the legacy OP_PUSH single-event path recorded
+/// latency; the 99%+ of real traffic (OP_PUSH_BATCH + OP_PUSH_ASYNC
+/// accumulator flush → handle_push_batch) produced count=0 forever.
+#[test]
+fn handle_push_batch_records_push_latency() {
+    let state = make_state();
+    register(&state, vec![count_stream("Tx", "user_id")]);
+
+    // Baseline: PUSH histogram is empty before any batch call.
+    {
+        let latency = state.latency.lock();
+        let now = std::time::Instant::now();
+        let j = latency.to_json(now);
+        assert_eq!(
+            j["per_command"][0]["command"].as_str().unwrap(),
+            "PUSH",
+            "first per_command entry should be PUSH"
+        );
+        assert_eq!(
+            j["per_command"][0]["count"].as_u64().unwrap(),
+            0,
+            "PUSH count should be 0 before any batch"
+        );
+    }
+
+    let batch: Vec<PendingAsync> = (0..10)
+        .map(|i| {
+            PendingAsync::new(
+                i,
+                "Tx".into(),
+                json!({"user_id": format!("u{}", i)}),
+                vec![],
+                ts(1000),
+            )
+        })
+        .collect();
+
+    let results = handle_push_batch(&state, &batch);
+    assert_eq!(results.len(), 10);
+    for r in &results {
+        assert!(r.is_ok(), "all events in the batch should succeed");
+    }
+
+    let latency = state.latency.lock();
+    let now = std::time::Instant::now();
+    let j = latency.to_json(now);
+
+    let push_count = j["per_command"][0]["count"].as_u64().unwrap();
+    assert!(
+        push_count >= 1,
+        "PUSH count must be >= 1 after handle_push_batch (got {}); \
+         pre-Phase-43 bug: only OP_PUSH single-event path recorded latency",
+        push_count
+    );
+    let p50 = j["per_command"][0]["p50_us"].as_f64().unwrap();
+    assert!(
+        p50 > 0.0,
+        "PUSH p50_us should be > 0 after a real batch (got {})",
+        p50
+    );
+
+    let per_stream = j["per_stream"].as_array().unwrap();
+    assert!(
+        per_stream.iter().any(|s| s["stream"] == "Tx"),
+        "per_stream should include 'Tx' after a push to Tx; got {:?}",
+        per_stream
+    );
+}

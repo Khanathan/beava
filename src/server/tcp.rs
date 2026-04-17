@@ -1387,6 +1387,13 @@ pub fn handle_push_batch(
             .collect();
     }
 
+    // Phase 43 T1: measure total server-side batch processing time so the
+    // PUSH histogram on /debug/latency reflects the batch path (OP_PUSH_BATCH
+    // and OP_PUSH_ASYNC accumulator flushes). Previously only the OP_PUSH
+    // single-event hot path recorded latency, so production traffic — which
+    // runs ~100% through this function — reported count=0 forever.
+    let batch_start = std::time::Instant::now();
+
     // Fast path: check if all events target the same stream (common case
     // under single-client sustained load). Avoids the grouping Vec entirely.
     let all_same_stream = batch.len() == 1
@@ -1586,6 +1593,28 @@ pub fn handle_push_batch(
         .events_total
         .fetch_add(batch_len, std::sync::atomic::Ordering::Relaxed);
     state.atomic_throughput.bump(batch_len);
+
+    // Phase 43 T1: record server-side PUSH latency. We divide total batch
+    // elapsed by batch.len() to produce a per-event microsecond number
+    // directly comparable to the OP_PUSH single-event path. The stream
+    // attribution is the common-stream name when all events target one
+    // stream (99%+ of production batches); mixed-stream batches attribute
+    // to "_mixed" rather than skewing a real stream's percentile.
+    //
+    // Cost: one mutex acquisition per batch (~100ns). At 300 batches/sec
+    // (60s × 300K eps / 1000-event batches) that is 60µs/min — negligible
+    // vs the ~333µs/batch processing cost.
+    let batch_elapsed_us = batch_start.elapsed().as_secs_f64() * 1_000_000.0;
+    let per_event_us = batch_elapsed_us / batch.len() as f64;
+    let stream_attr: &str = if all_same_stream {
+        batch[0].stream_name.as_str()
+    } else {
+        "_mixed"
+    };
+    {
+        let mut latency = state.latency.lock();
+        latency.record_push(stream_attr, per_event_us, std::time::Instant::now());
+    }
 
     // Phase 20: record each event in the recent-events ring (bounded).
     //

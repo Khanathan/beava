@@ -90,7 +90,7 @@ WantedBy=multi-user.target
   <h2>Capability strip</h2>
   <div class="doors">
     <div class="door"><span class="icon">📦</span><div class="body"><span class="label">Single binary</span>one process · one port · one data dir · deploy under systemd (<a href="https://github.com/petrpan26/beava/blob/main/deploy/beava.service">beava.service</a>)</div></div>
-    <div class="door"><span class="icon">⚡</span><div class="body"><span class="label">302K eps sustained</span>10-core Apple M4 laptop · 47-feature fraud pipeline · <a href="https://github.com/petrpan26/beava/blob/main/benchmark/README.md">benchmark/README.md</a></div></div>
+    <div class="door"><span class="icon">⚡</span><div class="body"><span class="label">315K eps sustained</span>10-core Apple M4 laptop · 47-feature fraud pipeline · server p99 42 µs · <a href="https://github.com/petrpan26/beava/blob/main/benchmark/README.md">benchmark/README.md</a></div></div>
     <div class="door"><span class="icon">⏱️</span><div class="body"><span class="label">Sub-microsecond state access</span>in-process RAM, ~0.1µs hashmap lookup</div></div>
     <div class="door"><span class="icon">💾</span><div class="body"><span class="label">WAL fsync before client ack</span>snapshot every 5 min · single-node today, HA is Cloud · <a href="https://github.com/petrpan26/beava/blob/main/SEMANTICS.md">SEMANTICS.md</a></div></div>
     <div class="door"><span class="icon">🦀</span><div class="body"><span class="label">Rust, zero <code>unsafe</code> outside 4 libc FFI blocks</span>write/fdatasync/fsync in <code>event_log.rs</code>, ~15 LoC · <a href="https://github.com/petrpan26/beava/blob/main/UNSAFE.md">UNSAFE.md</a></div></div>
@@ -215,7 +215,7 @@ WantedBy=multi-user.target
 <section>
   <h2>Use cases</h2>
   <div class="doors">
-    <div class="door"><span class="icon">🛡️</span><div class="body"><span class="label">Real-time fraud scoring</span>47-feature pipeline, 302K events/sec on a 10-core laptop</div></div>
+    <div class="door"><span class="icon">🛡️</span><div class="body"><span class="label">Real-time fraud scoring</span>47-feature pipeline, 315K events/sec · server p99 42 µs/event</div></div>
     <div class="door"><span class="icon">🤖</span><div class="body"><span class="label">Agent session state</span>Per-session windows with TTL eviction; replaces Postgres + Redis + cron</div></div>
     <div class="door"><span class="icon">🛒</span><div class="body"><span class="label">Session signals for recsys</span>Last-N-click, recency, velocity, distinct-merchant counts</div></div>
     <div class="door"><span class="icon">📊</span><div class="body"><span class="label">Real-time dashboards</span>Aggregations served from memory, no cache invalidation</div></div>
@@ -234,10 +234,11 @@ WantedBy=multi-user.target
       <tr><th>Metric</th><th>10-core Apple M4 laptop, 32 GB RAM</th></tr>
     </thead>
     <tbody>
-      <tr><td>Throughput (sustained)</td><td>302K events/sec</td></tr>
-      <tr><td>Per-event server time</td><td>3.31 µs</td></tr>
+      <tr><td>Throughput (sustained)</td><td>315K events/sec</td></tr>
+      <tr><td>Per-event wall time (aggregate, 8 clients)</td><td>3.18 µs</td></tr>
+      <tr><td>Server-side PUSH latency (per event)</td><td>p50 21 µs · p95 31 µs · p99 42 µs</td></tr>
       <tr><td>Memory per entity (47-feature fraud pipeline)</td><td>~616 KB</td></tr>
-      <tr><td>Client batch latency (1000-event <code>push_many</code>)</td><td>p50 ~2.8 ms · p99 ~137 ms</td></tr>
+      <tr><td>Client batch latency (1000-event <code>push_many</code>)</td><td>p50 ~2.6 ms · p99 ~126 ms</td></tr>
       <tr><td>Sustained load</td><td>60s × 8 clients, no drift</td></tr>
     </tbody>
   </table>
