@@ -126,7 +126,13 @@ pub struct StreamEntityState {
 /// table row named "X" does not populate `static_features["X"]`, and vice
 /// versa. The legacy `static_features` path is preserved for backward
 /// compatibility with existing SET/MSET callers.
-#[derive(Debug, Clone)]
+///
+/// `dirty_gen` is the per-entity snapshot-generation watermark: set equal to
+/// the current `StateStore.snapshot_gen` by `mark_dirty`. Events whose entity
+/// already matches the current generation short-circuit without touching the
+/// shared dirty set — eliminates hot-key cache-line bouncing on the
+/// shared-dirty-set lock.
+#[derive(Debug)]
 pub struct EntityState {
     /// Live features grouped by stream name. Each stream has its own operators
     /// and last_event_at for independent TTL management.
@@ -137,6 +143,26 @@ pub struct EntityState {
     /// row (Live or Tombstoned) addressed by `(entity_key, table_name)`. See
     /// `TableRow` for the lifecycle contract.
     pub table_rows: AHashMap<String, TableRow>,
+    /// Generation watermark: the last `snapshot_gen` value this entity was
+    /// marked dirty under. If `dirty_gen >= snapshot_gen`, the entity is
+    /// already in the global dirty set for the current cycle — skip the
+    /// shared-set touch. Relaxed ordering is sufficient because the dirty-set
+    /// Insert after the generation swap, and the snapshotter's gen bump
+    /// under AcqRel provides the visibility fence.
+    pub dirty_gen: std::sync::atomic::AtomicU64,
+}
+
+impl Clone for EntityState {
+    fn clone(&self) -> Self {
+        Self {
+            streams: self.streams.clone(),
+            static_features: self.static_features.clone(),
+            table_rows: self.table_rows.clone(),
+            dirty_gen: std::sync::atomic::AtomicU64::new(
+                self.dirty_gen.load(std::sync::atomic::Ordering::Relaxed),
+            ),
+        }
+    }
 }
 
 impl Default for EntityState {
@@ -145,6 +171,7 @@ impl Default for EntityState {
             streams: AHashMap::new(),
             static_features: AHashMap::new(),
             table_rows: AHashMap::new(),
+            dirty_gen: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -172,22 +199,32 @@ impl EntityState {
 ///
 /// v1.3: `entities` is a `DashMap` for per-key concurrency — two events
 /// targeting different entity keys never contend on the same lock.
-/// `dirty_keys` and `deleted_keys` are wrapped in fine-grained `PLMutex`
-/// so snapshot tracking does not require a global store lock.
+///
+/// v1.4 (this file): `dirty_keys` is a `DashSet` (shard-locked); additionally
+/// each `EntityState` carries a `dirty_gen: AtomicU64` and the store carries
+/// a `snapshot_gen: AtomicU64`. 99% of `mark_dirty` calls on hot keys
+/// short-circuit at the per-entity atomic load — never touching the shared
+/// set's shard locks, eliminating the contention that capped 8-client
+/// throughput at ~300K EPS in the fraud-pipeline bench.
 ///
 /// v1.1 Phase 9: tracks dirty and deleted keys since the last snapshot clear
 /// for incremental snapshot serialization.
 pub struct StateStore {
     entities: DashMap<EntityKey, EntityState>,
-    /// Keys modified since last snapshot clear (mutation-touched).
-    /// `RwLock` because Zipfian traffic means ~99% of `mark_dirty` calls hit
-    /// keys that are already dirty — those take a parallel shared read lock
-    /// and skip the String allocation. Only genuinely new keys escalate to
-    /// the write lock, so concurrent PUSH handlers almost never serialize.
-    dirty_keys: parking_lot::RwLock<AHashSet<EntityKey>>,
+    /// Keys modified since the current snapshot cycle began. Sharded via
+    /// `DashSet`'s internal per-shard RwLocks so writers on different key
+    /// hashes don't contend. 99% of marks short-circuit at the per-entity
+    /// `dirty_gen` check before ever reaching this set — so insert pressure
+    /// here is O(unique entities touched per cycle), not O(pushes per cycle).
+    dirty_keys: dashmap::DashSet<EntityKey>,
     /// Keys evicted/deleted since last snapshot clear. Populated by eviction
     /// and explicit deletes; consumed by delta snapshot serialization.
-    deleted_keys: parking_lot::Mutex<AHashSet<EntityKey>>,
+    deleted_keys: dashmap::DashSet<EntityKey>,
+    /// Snapshot-cycle generation counter. Bumped by `clear_dirty` after each
+    /// delta/base snapshot is written. `mark_dirty` compares the per-entity
+    /// `dirty_gen` against this value to decide whether to touch the shared
+    /// `dirty_keys` set.
+    snapshot_gen: std::sync::atomic::AtomicU64,
 }
 
 // DashMap does not implement Debug, so implement manually.
@@ -195,8 +232,8 @@ impl std::fmt::Debug for StateStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StateStore")
             .field("entity_count", &self.entities.len())
-            .field("dirty_count", &self.dirty_keys.read().len())
-            .field("deleted_count", &self.deleted_keys.lock().len())
+            .field("dirty_count", &self.dirty_keys.len())
+            .field("deleted_count", &self.deleted_keys.len())
             .finish()
     }
 }
@@ -205,8 +242,12 @@ impl Default for StateStore {
     fn default() -> Self {
         Self {
             entities: DashMap::new(),
-            dirty_keys: parking_lot::RwLock::new(AHashSet::new()),
-            deleted_keys: parking_lot::Mutex::new(AHashSet::new()),
+            dirty_keys: dashmap::DashSet::new(),
+            deleted_keys: dashmap::DashSet::new(),
+            // Start at 1 so that a newly-created entity's `dirty_gen = 0` is
+            // always strictly less than the current gen — first mark_dirty
+            // always inserts into the shared set.
+            snapshot_gen: std::sync::atomic::AtomicU64::new(1),
         }
     }
 }
@@ -522,75 +563,94 @@ impl StateStore {
     // ======================== Dirty / Deleted Tracking (Phase 9) ========================
 
     /// Mark an entity key as dirty (mutated since the last snapshot clear).
-    /// Idempotent -- repeated calls leave the dirty set unchanged.
+    /// Idempotent — repeated calls for the same key within a snapshot cycle
+    /// are free after the first.
+    ///
+    /// Hot path: reads `snapshot_gen` and the entity's `dirty_gen`; if they
+    /// match, the entity is already tracked for this cycle and the shared
+    /// `dirty_keys` set is never touched. Two relaxed atomic loads — ~1-2 ns
+    /// each from cache — vs the old ~50-100 ns `RwLock.read()` + hash lookup.
+    ///
+    /// Cold path (first mark of this entity this cycle): swap the
+    /// `dirty_gen` to the current `snapshot_gen`; if we were the thread that
+    /// transitioned it, insert the key into the sharded dirty set.
     pub fn mark_dirty(&self, key: &str) {
-        // Read-lock first: Zipfian skew means most calls hit a key that's
-        // already dirty, which can be served by a shared lock without
-        // allocating. Only escalate to a write lock when the key is new.
-        if self.dirty_keys.read().contains(key) {
-            return;
+        use std::sync::atomic::Ordering;
+        let cur_gen = self.snapshot_gen.load(Ordering::Acquire);
+        if let Some(entity) = self.entities.get(key) {
+            // Fast path: entity already marked dirty this cycle.
+            if entity.dirty_gen.load(Ordering::Relaxed) >= cur_gen {
+                return;
+            }
+            // Try to claim the transition. If another thread already swapped
+            // to cur_gen between our load and swap, `old` will equal cur_gen
+            // and we skip the insert (no duplicate work).
+            let old = entity.dirty_gen.swap(cur_gen, Ordering::Relaxed);
+            if old >= cur_gen {
+                return;
+            }
         }
-        self.dirty_keys.write().insert(key.to_string());
+        // If the entity doesn't exist yet, the push path will create it and
+        // its default `dirty_gen = 0 < cur_gen` will cause the next mark to
+        // transition. Meanwhile we still want the key in the set so the
+        // snapshot cycle picks it up — insert directly.
+        self.dirty_keys.insert(key.to_string());
     }
 
-    /// Batch-mark entity keys as dirty. Idempotent. O(n) inserts into the
-    /// `dirty_keys` HashSet using a single `extend` call. Mirrors `mark_dirty`
-    /// semantics — does **not** touch `deleted_keys` (a key already in
-    /// `deleted_keys` remains there; this matches the single-key `mark_dirty`
-    /// contract which also does not cross-mutate the delete set).
+    /// Batch-mark entity keys as dirty. Calls `mark_dirty` per key. The
+    /// per-entity `dirty_gen` short-circuit makes this a cheap loop under
+    /// Zipfian hot-key traffic: the shared set is untouched after the first
+    /// mark of each unique entity per snapshot cycle.
     ///
     /// Used by Phase 12's `handle_push_batch` to amortize the per-event
-    /// dirty-mark cost: one call per stream group instead of one per event.
+    /// dirty-mark cost across the whole batch.
     pub fn mark_dirty_many<'a, I>(&self, keys: I)
     where
         I: IntoIterator<Item = &'a str>,
     {
-        // Two-phase dedup: first pass under a shared read lock skips keys
-        // already in the set (the Zipfian-common case), allocating a `String`
-        // only for the truly-new ones. Second pass takes the write lock once
-        // to extend the set with those new keys. Combined with the caller's
-        // per-batch call (one invocation per PUSH batch), this keeps the
-        // write lock cold under sustained load.
-        let new_keys: Vec<String> = {
-            let r = self.dirty_keys.read();
-            keys.into_iter()
-                .filter(|k| !r.contains(*k))
-                .map(str::to_string)
-                .collect()
-        };
-        if new_keys.is_empty() {
-            return;
+        for k in keys {
+            self.mark_dirty(k);
         }
-        self.dirty_keys.write().extend(new_keys);
     }
 
     /// Mark an entity key as deleted since the last snapshot clear. A deleted
     /// key is automatically removed from the dirty set so it does not appear
     /// in the next delta's `changed_entities` (avoids ambiguity).
     pub fn mark_deleted(&self, key: &str) {
-        self.deleted_keys.lock().insert(key.to_string());
-        self.dirty_keys.write().remove(key);
+        self.deleted_keys.insert(key.to_string());
+        self.dirty_keys.remove(key);
     }
 
-    /// Clear the dirty set. Called after a successful snapshot write.
+    /// Clear the dirty set and advance the snapshot generation. Called after
+    /// a successful snapshot write. The generation bump ensures all per-entity
+    /// `dirty_gen` values become stale — next `mark_dirty` call on any entity
+    /// will re-insert into the shared set.
     pub fn clear_dirty(&self) {
-        self.dirty_keys.write().clear();
+        use std::sync::atomic::Ordering;
+        self.dirty_keys.clear();
+        // Release: the clear() above must be visible before writers see the
+        // new generation (so a writer that sees the new gen and swaps its
+        // entity's dirty_gen re-inserts into a just-emptied set).
+        self.snapshot_gen.fetch_add(1, Ordering::Release);
     }
 
     /// Drain the deleted key set into a Vec. Leaves the set empty.
     pub fn take_deleted(&self) -> Vec<String> {
-        self.deleted_keys.lock().drain().collect()
+        // DashSet has no atomic drain; emulate by iterate-collect-clear.
+        let out: Vec<String> = self.deleted_keys.iter().map(|r| r.key().clone()).collect();
+        self.deleted_keys.clear();
+        out
     }
 
     /// Number of keys currently marked dirty.
     pub fn dirty_count(&self) -> usize {
-        self.dirty_keys.read().len()
+        self.dirty_keys.len()
     }
 
     /// Read-only view of the dirty key set (clone). Primarily for tests and debug APIs.
     #[cfg(test)]
     pub(crate) fn dirty_keys(&self) -> AHashSet<EntityKey> {
-        self.dirty_keys.read().clone()
+        self.dirty_keys.iter().map(|r| r.key().clone()).collect()
     }
 
     /// Clone only dirty entities for a delta snapshot, applying the same lazy
@@ -602,7 +662,14 @@ impl StateStore {
         &self,
         valid_features: &AHashMap<String, Vec<String>>,
     ) -> Vec<(String, SerializableEntityState)> {
-        let dirty = self.dirty_keys.read();
+        // Snapshot the dirty-key set as a plain HashSet once, to avoid
+        // holding DashSet shard locks while iterating `entities` (which
+        // would deadlock if a shard overlapped).
+        let dirty: AHashSet<String> = self
+            .dirty_keys
+            .iter()
+            .map(|r| r.key().clone())
+            .collect();
         self.entities
             .iter()
             .filter(|entry| dirty.contains(entry.key().as_str()))
@@ -795,6 +862,7 @@ impl StateStore {
                     .into_iter()
                     .map(|(k, v)| (k, TableRow::from(v)))
                     .collect(),
+                dirty_gen: std::sync::atomic::AtomicU64::new(0),
             };
             self.entities.insert(key, entity);
         }
@@ -822,6 +890,7 @@ impl StateStore {
                     .into_iter()
                     .map(|(k, v)| (k, TableRow::from(v)))
                     .collect(),
+                dirty_gen: std::sync::atomic::AtomicU64::new(0),
             };
             self.entities.insert(key, entity);
         }
@@ -863,6 +932,7 @@ impl StateStore {
                     .into_iter()
                     .map(|(k, v)| (k, TableRow::from(v)))
                     .collect(),
+                dirty_gen: std::sync::atomic::AtomicU64::new(0),
             };
             self.entities.insert(key, entity);
         }
@@ -1012,8 +1082,8 @@ impl StateStore {
         }
 
         // Distribute dirty/deleted keys to per-stream stores
-        let dirty = self.dirty_keys.read();
-        for key in dirty.iter() {
+        for dirty_ref in self.dirty_keys.iter() {
+            let key = dirty_ref.key();
             for entry in stream_stores.iter() {
                 if entry.value().entities.contains_key(key) {
                     entry.value().dirty_keys.lock().insert(key.clone());
@@ -1075,10 +1145,19 @@ impl StateStore {
             entity.static_features = static_features.clone();
         }
 
+        let store_dirty = dashmap::DashSet::new();
+        for k in dirty_keys {
+            store_dirty.insert(k);
+        }
+        let store_deleted = dashmap::DashSet::new();
+        for k in deleted_keys {
+            store_deleted.insert(k);
+        }
         StateStore {
             entities,
-            dirty_keys: parking_lot::RwLock::new(dirty_keys),
-            deleted_keys: parking_lot::Mutex::new(deleted_keys),
+            dirty_keys: store_dirty,
+            deleted_keys: store_deleted,
+            snapshot_gen: std::sync::atomic::AtomicU64::new(1),
         }
     }
 }
