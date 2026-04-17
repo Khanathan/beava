@@ -57,7 +57,7 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
 **Phase numbering:** Continues from previous milestones (highest existing phase dir is 41 per LAUNCH.md Key Decision); no reset. Stretch phases 32/33/34 reserved for v0 but unstarted.
 
 **Phase summary:**
-- [ ] **Phase 45: HTTP Ingest & Read API** — 6 HTTP endpoints (3 push, 3 read) + curl/Go/Node examples + >100 K EPS load-test harness. Covers HTTP-01..HTTP-10 (10 requirements).
+- [x] **Phase 45: HTTP Ingest & Read API** — 6 HTTP endpoints (3 push, 3 read) + curl/Go/Node examples + >100 K EPS load-test harness. Covers HTTP-01..HTTP-10 (10 requirements). (completed 2026-04-17)
 - [ ] **Phase 46: Correctness Audit, Fixes & Ship-Gate Integration Test** — 2a batch-`now` fix, 2b ring-buffer-drops metric, 2c per-stream watermark lateness, 2d.i–vii audit closures (some code, some docs), `docs/event-time.md`, single backfill→crash→recover→verify integration test. Covers CORR-01..CORR-10 + OBS-01..OBS-03 + SHIP-01 (14 requirements).
 - [ ] **Phase 47: Repo Polish, Docker, CI, Docs, Examples** — multi-stage distroless Docker image + Docker Hub publish, GitHub Actions CI (fmt/clippy/test <5 min), <60-line HTTP-first README rewrite, 8 flat-markdown docs pages, 3 example projects, community files audit, directory READMEs, TODO/FIXME sweep, social preview + topics, fresh-VM smoke test, outreach re-audit, benchmarks re-verified, quickstart GIF. Covers INFRA-01..INFRA-10 + CONTENT-01..CONTENT-11 + SHIP-02..SHIP-05 (25 requirements).
 
@@ -151,12 +151,12 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
   3. A user can drive sustained **>100 K EPS** against `/push-batch/{stream}` from a single `oha` client against a reference box, with the number committed in `benchmark/README.md`.
   4. A user's unauthenticated `POST /push/*` request returns 401 from a non-loopback source and 200 from loopback — inheriting `require_loopback_or_token` unchanged, verified by a per-endpoint auth integration test.
   5. A developer opens `docs/http-api.md` and copy-pastes working curl, Go (`net/http`), and Node (`fetch`) examples for each of the 6 endpoints.
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans complete
 - [x] 45-01-PLAN.md — Wave 0 scaffolding: deps (axum-extra/tower-http/tower), auth 403→401, body-limit+timeout layer, http_ingest.rs skeleton, 7 test scaffolds (TDD RED)
 - [x] 45-02-PLAN.md — Wave 1 read endpoints: GET /features/{key} with ?table filter, GET /streams, GET /streams/{name}, public-mode routing (HTTP-04/05/07)
 - [x] 45-03-PLAN.md — Wave 1 write endpoints: POST /push, /push-batch, /push/ndjson via handle_push_core_ex/handle_push_batch + schema-parity round-trip (HTTP-01/02/03)
 - [x] 45-04-PLAN.md — Wave 2 exhaustive per-route auth sweep + beava_events_total{proto} dual-emit metric transition (HTTP-06 / A5)
-- [ ] 45-05-PLAN.md — Wave 2 docs/http-api.md rewrite + examples/curl-ingest/ + benchmark/http_load.sh (>100K EPS reference-box checkpoint) + docs/http-api-examples.sh (HTTP-08/09/10)
+- [x] 45-05-PLAN.md — Wave 2 docs/http-api.md rewrite + examples/curl-ingest/ + benchmark/http_load.sh (>100K EPS reference-box checkpoint) + docs/http-api-examples.sh (HTTP-08/09/10)
 
 ### Phase 46: Correctness Audit, Fixes & Ship-Gate Integration Test
 **Goal**: Close every correctness item flagged by the release audit so a publicly-launched Beava can be trusted with backfill, crash-recovery, TTL, and fork workloads from minute one. Land the single backfill→crash→recover→verify integration test that simultaneously exercises the 2a fix, the 2d.i closure, and the 2d.ii fix.
@@ -212,6 +212,6 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
 | 36. Replica-mode server boot | v0 | 1/1 | Complete   | 2026-04-15 |
 | 37. `tally fork` CLI + E2E demo | v0 | 1/1 | Complete   | 2026-04-15 |
 | 38. Mothball Option K surfaces | v0 | 0/1 | **Planned (Option M)** | — |
-| 45. HTTP Ingest & Read API | v1.0-launch | 4/5 | In Progress|  |
+| 45. HTTP Ingest & Read API | v1.0-launch | 5/5 | Complete   | 2026-04-17 |
 | 43. Correctness Audit, Fixes & Ship-Gate Integration Test | v1.0-launch | 0/? | **Ready to plan** (parallel with 42) | — |
 | 44. Repo Polish, Docker, CI, Docs, Examples | v1.0-launch | 0/? | Planned (items unblock as 42 / 43 land) | — |

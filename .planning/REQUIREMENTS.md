@@ -16,9 +16,9 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 - [x] **HTTP-05**: A user can list registered streams via `GET /streams` and inspect one via `GET /streams/{name}`, returning the stream's schema and current watermark.
 - [x] **HTTP-06**: A user's write requests to `/push*` are rejected with 401 when the admin token is missing and accepted from loopback without a token — inheriting the existing `require_loopback_or_token` middleware unchanged.
 - [x] **HTTP-07**: A user can serve `/features/*` and `/streams/*` read endpoints from the public router when the server is started with `--public`, while writes remain admin-only.
-- [ ] **HTTP-08**: A user can reproduce the `docker run ... → curl POST /push → curl GET /features` flow from the repo's `examples/curl-ingest/` directory without editing configuration.
-- [ ] **HTTP-09**: A user can drive sustained **>100 K EPS** on `/push-batch/{stream}` from a single client, measured by `oha` against the reference box, and record the number in `benchmark/README.md`.
-- [ ] **HTTP-10**: A developer can reference `docs/http-api.md` and find working `curl`, Go (`net/http`), and Node (`fetch`) examples for each of the 6 endpoints above.
+- [x] **HTTP-08**: A user can reproduce the `docker run ... → curl POST /push → curl GET /features` flow from the repo's `examples/curl-ingest/` directory without editing configuration.
+- [x] **HTTP-09**: A user can drive sustained **>100 K EPS** on `/push-batch/{stream}` from a single client, measured by `oha` against the reference box, and record the number in `benchmark/README.md`.
+- [x] **HTTP-10**: A developer can reference `docs/http-api.md` and find working `curl`, Go (`net/http`), and Node (`fetch`) examples for each of the 6 endpoints above.
 
 ### CORR — Correctness Fixes (Phase 46, Block 2 — 2a, 2c, 2d.*)
 
@@ -137,9 +137,9 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 | HTTP-05 | Phase 45 | Complete |
 | HTTP-06 | Phase 45 | Complete |
 | HTTP-07 | Phase 45 | Complete |
-| HTTP-08 | Phase 45 | Pending |
-| HTTP-09 | Phase 45 | Pending |
-| HTTP-10 | Phase 45 | Pending |
+| HTTP-08 | Phase 45 | Complete |
+| HTTP-09 | Phase 45 | Complete |
+| HTTP-10 | Phase 45 | Complete |
 | CORR-01 | Phase 46 | Pending |
 | CORR-02 | Phase 46 | Pending |
 | CORR-03 | Phase 46 | Pending |
