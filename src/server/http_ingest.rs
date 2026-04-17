@@ -421,23 +421,74 @@ async fn http_get_features(
         .into_response()
 }
 
-async fn http_list_streams(State(_state): State<SharedState>) -> impl IntoResponse {
-    stub_501("list_streams")
+async fn http_list_streams(State(state): State<SharedState>) -> impl IntoResponse {
+    use std::time::UNIX_EPOCH;
+    let engine = state.engine.read();
+    let mut streams: Vec<serde_json::Value> = Vec::new();
+    for def in engine.list_streams() {
+        let wm = engine.watermarks.watermark(&def.name);
+        let wm_ms: Option<u64> = wm
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64);
+        streams.push(json!({
+            "name": def.name,
+            "watermark_ms": wm_ms,
+        }));
+    }
+    (
+        StatusCode::OK,
+        Json(json!({ "ok": true, "data": { "streams": streams } })),
+    )
+        .into_response()
 }
 
 async fn http_get_stream(
-    State(_state): State<SharedState>,
-    Path(_name): Path<String>,
+    State(state): State<SharedState>,
+    Path(name): Path<String>,
 ) -> impl IntoResponse {
-    stub_501("get_stream")
-}
-
-fn stub_501(handler: &'static str) -> (StatusCode, Json<serde_json::Value>) {
+    use std::time::UNIX_EPOCH;
+    let engine = state.engine.read();
+    let def = match engine.get_stream(&name) {
+        Some(d) => d,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "stream_not_found",
+                        "message": format!("stream {name} not registered")
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+    let wm = engine.watermarks.watermark(&name);
+    let wm_ms: Option<u64> = wm
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64);
+    // feature type: use Debug repr of FeatureDef variant — polished in Phase 47.
+    let features: Vec<serde_json::Value> = def
+        .features
+        .iter()
+        .map(|(fname, fdef)| {
+            json!({
+                "name": fname,
+                "type": format!("{:?}", fdef),
+            })
+        })
+        .collect();
     (
-        StatusCode::NOT_IMPLEMENTED,
+        StatusCode::OK,
         Json(json!({
-            "ok": false,
-            "error": { "code": "not_implemented", "message": format!("handler {handler} not yet wired (Phase 45 Wave 0 stub)") }
+            "ok": true,
+            "data": {
+                "name": def.name,
+                "watermark_ms": wm_ms,
+                "features": features,
+            }
         })),
     )
+        .into_response()
 }
