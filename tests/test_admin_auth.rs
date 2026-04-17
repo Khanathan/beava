@@ -95,7 +95,8 @@ async fn loopback_post_snapshot_ok() {
 }
 
 // ---------------------------------------------------------------------------
-// Public (non-loopback) cases — must be 403 without a valid token.
+// Public (non-loopback) cases — must be 401 without a valid token.
+// HTTP-06 / orchestrator decision A4: require_loopback_or_token returns 401.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -103,7 +104,7 @@ async fn public_get_debug_memory_forbidden() {
     let app = build_router(state_with_token(Some("secret")));
     let req = request("GET", "/debug/memory", public_addr(), None);
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -111,7 +112,7 @@ async fn public_post_pipelines_forbidden() {
     let app = build_router(state_with_token(Some("secret")));
     let req = request("POST", "/pipelines", public_addr(), None);
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -127,7 +128,7 @@ async fn public_with_wrong_token_forbidden() {
     let app = build_router(state_with_token(Some("secret")));
     let req = request("GET", "/debug/memory", public_addr(), Some("wrong"));
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -137,7 +138,7 @@ async fn public_without_token_config_forbidden() {
     let app = build_router(state_with_token(None));
     let req = request("GET", "/debug/memory", public_addr(), Some("anything"));
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 // ---------------------------------------------------------------------------

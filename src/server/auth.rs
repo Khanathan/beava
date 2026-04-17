@@ -34,7 +34,7 @@ use serde_json::json;
 use super::tcp::SharedState;
 
 /// Admit loopback requests; admit non-loopback requests only when they carry
-/// `Authorization: Bearer <admin_token>`. Reject everything else with 403.
+/// `Authorization: Bearer <admin_token>`. Reject everything else with 401.
 ///
 /// Security properties (VALIDATION §ASVS V2/V4):
 /// - Loopback bypass: `addr.ip().is_loopback()` covers both 127.0.0.0/8 and ::1
@@ -45,6 +45,9 @@ use super::tcp::SharedState;
 ///   requests rejected.
 /// - Denial response: application/json body `{"error": ...}` so JSON-speaking
 ///   clients (the blog widget, smoke.sh) can parse it.
+/// - HTTP-06 (orchestrator decision A4): returns 401 Unauthorized (not 403
+///   Forbidden) so clients can distinguish "no credentials" from "wrong
+///   credentials / insufficient privilege".
 pub async fn require_loopback_or_token(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<SharedState>,
@@ -63,7 +66,7 @@ pub async fn require_loopback_or_token(
         }
     }
     (
-        StatusCode::FORBIDDEN,
+        StatusCode::UNAUTHORIZED,
         Json(json!({"error": "admin route: loopback or bearer token required"})),
     )
         .into_response()

@@ -33,6 +33,9 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 postcard = { version = "1.1", features = ["use-std", "alloc"] }
 tokio = { version = "1.50", features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "time"] }
 axum = "0.8"
+axum-extra = { version = "0.12", features = ["json-lines"] }
+tower-http = { version = "0.6", features = ["limit", "timeout"] }
+tower = { version = "0.5", features = ["util"] }
 bytes = "1.11"
 petgraph = "0.8"
 rust-embed = { version = "8.11", features = ["mime-guess", "debug-embed"] }
@@ -45,7 +48,6 @@ libc = "0.2"
 [dev-dependencies]
 tempfile = "3"
 sha2 = "0.10"
-tower = { version = "0.5", features = ["util"] }
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 pprof = { version = "0.14", features = ["flamegraph", "frame-pointer"] }
 scc = "3.7"

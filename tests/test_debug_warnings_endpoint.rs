@@ -343,7 +343,7 @@ async fn test_within_severity_order_by_first_seen_ascending() {
 async fn test_debug_warnings_is_admin_gated() {
     let state = test_state();
     let app = build_router(state);
-    // Non-loopback peer, no token → 403.
+    // Non-loopback peer, no token → 401 (HTTP-06 / orchestrator decision A4).
     let addr: SocketAddr = "8.8.8.8:54321".parse().unwrap();
     let mut req = Request::builder()
         .method("GET")
@@ -352,5 +352,5 @@ async fn test_debug_warnings_is_admin_gated() {
         .unwrap();
     req.extensions_mut().insert(ConnectInfo(addr));
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }

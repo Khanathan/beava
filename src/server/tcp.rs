@@ -1268,7 +1268,7 @@ fn make_log_payload(payload: &serde_json::Value, raw_payload: &[u8]) -> Vec<u8> 
     }
 }
 
-fn handle_push_core_ex(
+pub(crate) fn handle_push_core_ex(
     state: &SharedState,
     stream_name: &str,
     payload: &serde_json::Value,
