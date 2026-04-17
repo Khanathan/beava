@@ -1398,13 +1398,7 @@ impl PipelineEngine {
         }
 
         // Resolve fan-out targets ONCE (D-07) and compute the filtered list
-        // of targets this primary should actually fan out to. The TCP
-        // handler's per-event fan-out loop (src/server/tcp.rs:364+) skips:
-        //   (a) the primary stream itself,
-        //   (b) any target sharing the primary's key_field,
-        //   (c) any target already reached through the cascade DAG.
-        // We mirror that filter here so batch semantics match what
-        // handle_push and handle_push_async do for a single event.
+        // of targets this primary should actually fan out to.
         let primary_key_field = self
             .get_stream(stream_name)
             .and_then(|s| s.key_field.clone());
@@ -1426,15 +1420,40 @@ impl PipelineEngine {
             })
             .collect();
 
+        // Fast path: batch-coalesce by key when the stream has no cascade.
+        // For cascade-bearing streams, fall through to per-event dispatch
+        // (preserves depends_on DAG semantics — hot path for fan-out-only
+        // pipelines like the fraud bench).
+        //
+        // Coalescing: pre-group events by primary key (then per fan-out
+        // target, by target key), take the DashMap shard lock ONCE per
+        // unique key, apply all events for that key under the single held
+        // RefMut. For a Zipfian-skewed 1000-event batch this reduces shard
+        // write-lock acquisitions from ~1000 to ~30 on the primary path
+        // and from ~1000×N_fan_out to ~30×N_fan_out on fan-out —
+        // measurements showed 66% of CPU in dashmap::lock_exclusive under
+        // concurrent ingest, all traceable to per-event entity().
+        let can_coalesce =
+            cascade_targets.is_empty() && primary_key_field.is_some() && self
+                .get_stream(stream_name)
+                .and_then(|s| s.group_by_keys.as_ref().map(|v| v.len()))
+                .unwrap_or(0)
+                == 0;
+        if can_coalesce {
+            return self.push_batch_coalesced_no_cascade(
+                stream_name,
+                primary_key_field.as_deref().unwrap(),
+                &fan_out,
+                events,
+                store,
+                now,
+            );
+        }
+
+        // Slow path (cascade exists): per-event dispatch.
         let mut out = Vec::with_capacity(events.len());
         for event in events {
-            // 1. Primary + cascade via the existing single-event worker.
-            //    Preserves depends_on DAG cascade semantics EXACTLY (D-06).
             let res = self.push_with_cascade_no_features(stream_name, event, store, now);
-
-            // 2. Fan-out dispatch mirrors the TCP handler's per-event fan-out
-            //    block. Each qualifying target receives exactly ONE push per
-            //    event — matching v1.2 semantics for async pushes.
             if res.is_ok() {
                 for (target_name, target_key_field) in &fan_out {
                     if let Some(serde_json::Value::String(key_val)) =
@@ -1446,10 +1465,255 @@ impl PipelineEngine {
                     }
                 }
             }
-
             out.push(res);
         }
         out
+    }
+
+    /// Coalesced batch path for cascade-free streams. Groups events by
+    /// primary key + per-fan-out target key; takes each entity's shard
+    /// write-lock ONCE for its key group, applies every event for that
+    /// key under the held lock, releases.
+    ///
+    /// Invariants at call site:
+    ///   - `primary_kf` is the primary stream's key field (known non-None)
+    ///   - The primary stream has NO cascade targets (depends_on chain is
+    ///     empty in both directions reaching this stream)
+    ///   - `fan_out` has already been filtered by
+    ///     `push_batch_with_cascade_no_features` to exclude stream_name,
+    ///     same-key-field targets, and cascade targets.
+    fn push_batch_coalesced_no_cascade(
+        &self,
+        stream_name: &str,
+        primary_kf: &str,
+        fan_out: &[(String, String)],
+        events: &[&serde_json::Value],
+        store: &StateStore,
+        now: SystemTime,
+    ) -> Vec<Result<FeatureMap, BeavaError>> {
+        let mut results: Vec<Result<FeatureMap, BeavaError>> =
+            (0..events.len()).map(|_| Ok(FeatureMap::new())).collect();
+
+        // Group events by primary key.
+        let mut by_primary: AHashMap<&str, Vec<usize>> = AHashMap::new();
+        for (idx, ev) in events.iter().enumerate() {
+            match ev.get(primary_kf) {
+                Some(serde_json::Value::String(k)) if !k.is_empty() => {
+                    by_primary.entry(k.as_str()).or_default().push(idx);
+                }
+                Some(serde_json::Value::String(_)) => {
+                    results[idx] = Err(BeavaError::Protocol(format!(
+                        "empty key field '{}'",
+                        primary_kf
+                    )));
+                }
+                Some(other) => {
+                    results[idx] = Err(BeavaError::Type {
+                        field: primary_kf.to_string(),
+                        expected: "string".into(),
+                        got: format!("{}", other),
+                    });
+                }
+                None => {
+                    results[idx] = Err(BeavaError::Type {
+                        field: primary_kf.to_string(),
+                        expected: "string".into(),
+                        got: "absent".into(),
+                    });
+                }
+            }
+        }
+
+        // Primary: one RefMut per unique key, process all events for that key.
+        for (key, indices) in &by_primary {
+            let events_for_key: Vec<&serde_json::Value> =
+                indices.iter().map(|&i| events[i]).collect();
+            let per_event_results =
+                self.push_stream_batch_same_key(stream_name, key, &events_for_key, store, now);
+            for (&idx, res) in indices.iter().zip(per_event_results.into_iter()) {
+                if results[idx].is_ok() {
+                    results[idx] = res;
+                }
+            }
+        }
+
+        // Fan-out: per target, one RefMut per unique fan-out key.
+        for (target_name, target_kf) in fan_out {
+            let mut by_target: AHashMap<&str, Vec<usize>> = AHashMap::new();
+            for (idx, ev) in events.iter().enumerate() {
+                if results[idx].is_err() {
+                    continue;
+                }
+                if let Some(serde_json::Value::String(k)) = ev.get(target_kf.as_str()) {
+                    if !k.is_empty() {
+                        by_target.entry(k.as_str()).or_default().push(idx);
+                    }
+                }
+            }
+            for (tkey, indices) in &by_target {
+                let events_for_key: Vec<&serde_json::Value> =
+                    indices.iter().map(|&i| events[i]).collect();
+                // Fan-out push results are discarded (push_no_features also does this).
+                let _ = self
+                    .push_stream_batch_same_key(target_name, tkey, &events_for_key, store, now);
+            }
+        }
+
+        results
+    }
+
+    /// Apply N events sharing the same entity key to `stream_name`'s
+    /// operators under a SINGLE held DashMap RefMut.
+    ///
+    /// Semantic contract vs per-event `push_internal` with read_features=false,
+    /// enrichment=None:
+    ///   - Stream-level filter applied per event (same)
+    ///   - Where-clause per operator applied per event (same)
+    ///   - Operators created lazily (same; amortized once per key group)
+    ///   - last_event_at bumped to `now` for each successful event (same)
+    ///   - Replica subscribers notified per successful event (same)
+    ///   - Returns an empty FeatureMap per event on success (same as
+    ///     read_features=false path)
+    fn push_stream_batch_same_key(
+        &self,
+        stream_name: &str,
+        key: &str,
+        events: &[&serde_json::Value],
+        store: &StateStore,
+        now: SystemTime,
+    ) -> Vec<Result<FeatureMap, BeavaError>> {
+        let stream = match self.streams.get(stream_name) {
+            Some(s) => s,
+            None => {
+                return events
+                    .iter()
+                    .map(|_| {
+                        Err(BeavaError::Protocol(format!(
+                            "unknown stream: {}",
+                            stream_name
+                        )))
+                    })
+                    .collect();
+            }
+        };
+        // Keyless streams don't participate in per-key batching — this
+        // branch should be unreachable for callers respecting the
+        // `can_coalesce` gate, but handle defensively.
+        if stream.key_field.is_none() {
+            return events.iter().map(|_| Ok(FeatureMap::new())).collect();
+        }
+
+        // Pre-collect the operator feature slice (filters out Derive) ONCE.
+        // Using clones here to break the immutable borrow of `stream` so
+        // we can take the shard write lock without aliasing.
+        let op_feature_names: Vec<String> = stream
+            .features
+            .iter()
+            .filter(|(_, def)| !matches!(def, FeatureDef::Derive { .. }))
+            .map(|(n, _)| n.clone())
+            .collect();
+        let op_feature_defs: Vec<FeatureDef> = stream
+            .features
+            .iter()
+            .filter(|(_, def)| !matches!(def, FeatureDef::Derive { .. }))
+            .map(|(_, d)| d.clone())
+            .collect();
+        let filter_expr = stream.filter.clone();
+        // Release immutable borrow on `stream` so the store mutations below
+        // don't alias. `stream` is a shared reference (not Copy / not an
+        // RAII guard), so explicit scope-ending is the idiomatic form.
+        let _ = stream;
+
+        // THE SINGLE LOCK ACQUISITION: one DashMap shard write-lock for
+        // the entire batch of same-key events.
+        let mut entity = store.get_or_create_entity(key);
+        entity.get_or_create_stream(stream_name);
+
+        // Init any missing operators once per batch.
+        {
+            let stream_state = entity.streams.get_mut(stream_name).unwrap();
+            for (name, def) in op_feature_names.iter().zip(op_feature_defs.iter()) {
+                if !stream_state.operators.iter().any(|(n, _)| n == name) {
+                    if let Some(op) = create_operator(def) {
+                        stream_state.operators.push((name.clone(), op));
+                    }
+                }
+            }
+        }
+
+        let mut results: Vec<Result<FeatureMap, BeavaError>> = Vec::with_capacity(events.len());
+        let empty_features: AHashMap<String, FeatureValue> = AHashMap::new();
+        let empty_json_features: AHashMap<String, serde_json::Value> = AHashMap::new();
+
+        for event in events {
+            // Stream-level filter
+            if let Some(ref fe) = filter_expr {
+                let ctx = EvalContext {
+                    features: &empty_features,
+                    event: Some(event),
+                    enrichment: None,
+                    event_time: Some(now),
+                };
+                let r = eval(fe, &ctx);
+                if matches!(
+                    r,
+                    FeatureValue::Int(0) | FeatureValue::Missing | FeatureValue::Float(0.0)
+                ) {
+                    results.push(Ok(FeatureMap::new()));
+                    continue;
+                }
+            }
+
+            // Apply event to each operator
+            let stream_state = entity.streams.get_mut(stream_name).unwrap();
+            let mut push_err: Option<BeavaError> = None;
+            for (name, def) in op_feature_names.iter().zip(op_feature_defs.iter()) {
+                if let Some((_, op)) = stream_state
+                    .operators
+                    .iter_mut()
+                    .find(|(n, _)| n == name)
+                {
+                    // Where clause
+                    if let Some(where_expr) = get_where_expr(def) {
+                        let ctx = EvalContext {
+                            features: &empty_features,
+                            event: Some(event),
+                            enrichment: None,
+                            event_time: Some(now),
+                        };
+                        let r = eval(where_expr, &ctx);
+                        if matches!(
+                            r,
+                            FeatureValue::Int(0) | FeatureValue::Missing | FeatureValue::Float(0.0)
+                        ) {
+                            continue;
+                        }
+                    }
+                    if let Err(e) = op.push(event, Some(&empty_json_features), now) {
+                        push_err = Some(e);
+                        break;
+                    }
+                }
+            }
+            if let Some(e) = push_err {
+                results.push(Err(e));
+                continue;
+            }
+            stream_state.last_event_at = Some(now);
+
+            // Subscriber notification (mirrors push_internal's placement)
+            #[cfg(feature = "server")]
+            if let Some(reg) = &self.subscriber_registry {
+                if let Ok(payload_bytes) = serde_json::to_vec(event) {
+                    reg.notify_subscribers(stream_name, key, &payload_bytes, now);
+                }
+            }
+
+            results.push(Ok(FeatureMap::new()));
+        }
+
+        // RefMut drops here → shard write-lock released.
+        results
     }
 
     fn push_with_cascade_internal(
