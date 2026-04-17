@@ -203,7 +203,7 @@ fn parse_iso8601(s: &str) -> Option<SystemTime> {
 /// Per-stream watermark state tracked on the engine.
 ///
 /// Stores `max(event_time observed)` per stream; watermark is derived
-/// on read as `observed_max − WATERMARK_LATENESS`. Storing the max
+/// on read as `observed_max − lateness_for(stream)`. Storing the max
 /// rather than the derived watermark is intentional: it keeps the
 /// data model monotone (max is easier to reason about than a derived
 /// quantity that could regress under underflow).
@@ -217,6 +217,11 @@ pub struct WatermarkTracker {
     /// Most recent event_time observed (not necessarily the max — this
     /// is the "last event" pointer for debug visibility). Last-writer-wins.
     last_event_time: DashMap<String, AtomicU64>,
+    /// D-10 / CORR-03: per-stream watermark lateness override. Absent entry
+    /// falls back to the global `WATERMARK_LATENESS` constant (5 s).
+    /// Populated by `PipelineEngine::register` when
+    /// `StreamDefinition.watermark_lateness` is `Some`.
+    watermark_lateness: DashMap<String, Duration>,
 }
 
 impl Default for WatermarkTracker {
@@ -230,6 +235,7 @@ impl WatermarkTracker {
         Self {
             observed_max: DashMap::new(),
             last_event_time: DashMap::new(),
+            watermark_lateness: DashMap::new(),
         }
     }
 
@@ -266,10 +272,26 @@ impl WatermarkTracker {
         }
     }
 
-    /// Current watermark for `stream`, i.e. `observed_max - 5s`. Returns
-    /// `None` if the stream has never been observed — in which case no
-    /// event should be considered late (the first event always seeds
-    /// the tracker).
+    /// D-10 / CORR-03: set the per-stream watermark lateness override.
+    /// Called by `PipelineEngine::register` when `StreamDefinition.watermark_lateness`
+    /// is `Some`. Lock-free insert into the DashMap.
+    pub fn set_lateness(&self, stream: &str, lateness: Duration) {
+        self.watermark_lateness.insert(stream.to_string(), lateness);
+    }
+
+    /// D-10 / CORR-03: look up the per-stream lateness override.
+    /// Falls back to the global `WATERMARK_LATENESS` constant (5 s) when the
+    /// stream has no override registered.
+    pub fn lateness_for(&self, stream: &str) -> Duration {
+        self.watermark_lateness
+            .get(stream)
+            .map(|e| *e.value())
+            .unwrap_or(WATERMARK_LATENESS)
+    }
+
+    /// Current watermark for `stream`, i.e. `observed_max - lateness_for(stream)`.
+    /// Returns `None` if the stream has never been observed — in which case no
+    /// event should be considered late (the first event always seeds the tracker).
     pub fn watermark(&self, stream: &str) -> Option<SystemTime> {
         let entry = self.observed_max.get(stream)?;
         let ns = entry.value().load(Ordering::Relaxed);
@@ -277,10 +299,11 @@ impl WatermarkTracker {
             return None;
         }
         let max = nanos_to_sys(ns);
+        let lateness = self.lateness_for(stream);
         // Clamp to UNIX_EPOCH to avoid a pre-epoch watermark that
         // would then "late-drop" the very first event.
         Some(match max.duration_since(UNIX_EPOCH) {
-            Ok(d) if d >= WATERMARK_LATENESS => max - WATERMARK_LATENESS,
+            Ok(d) if d >= lateness => max - lateness,
             _ => UNIX_EPOCH,
         })
     }

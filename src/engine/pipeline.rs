@@ -390,6 +390,11 @@ pub struct StreamDefinition {
     pub pipeline_ttl: Option<Duration>,
     /// Maximum number of entity keys for this stream (schema-only, no runtime enforcement yet).
     pub max_keys: Option<u64>,
+    /// Per-stream watermark lateness override (D-09/CORR-03).
+    /// When Some, WatermarkTracker uses this duration instead of the global
+    /// WATERMARK_LATENESS constant (5 s). When None, the 5 s default applies.
+    /// Absent in older snapshots → None → 5 s default (CORR-04 forward-compat).
+    pub watermark_lateness: Option<Duration>,
 }
 
 
@@ -749,6 +754,12 @@ impl PipelineEngine {
         };
 
         let name_clone = stream.name.clone();
+        // D-10 / CORR-03: propagate per-stream watermark lateness override into
+        // WatermarkTracker before inserting the stream. This way any immediate
+        // observe() calls during cascade evaluation use the correct lateness.
+        if let Some(lateness) = stream.watermark_lateness {
+            self.watermarks.set_lateness(&stream.name, lateness);
+        }
         self.streams.insert(name_clone.clone(), stream);
         // Rebuild DAG and validate (cycle detection)
         if let Err(e) = self.rebuild_dag() {
@@ -2371,6 +2382,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         }
     }
 
@@ -2399,6 +2411,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         assert!(engine.register(stream).is_err());
     }
@@ -2519,6 +2532,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
         engine
@@ -2543,6 +2557,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(3600));
@@ -2576,6 +2591,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
         assert_eq!(engine.max_window_duration(), Duration::ZERO);
@@ -2720,6 +2736,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(stream).unwrap();
         let now = ts(60_000);
@@ -2784,6 +2801,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(stream).unwrap();
         let now = ts(60_000);
@@ -2872,6 +2890,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(86400));
@@ -2951,6 +2970,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
         engine
@@ -2975,6 +2995,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
 
@@ -3054,6 +3075,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
 
@@ -3090,6 +3112,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
 
@@ -3165,6 +3188,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
 
@@ -3190,6 +3214,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
 
@@ -3235,6 +3260,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         assert_eq!(stream.entity_ttl, Some(Duration::from_secs(300)));
     }
@@ -3254,6 +3280,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         assert_eq!(stream.entity_ttl, None);
         assert_eq!(stream.history_ttl, None);
@@ -3276,6 +3303,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
         assert_eq!(
@@ -3301,6 +3329,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
         assert_eq!(engine.get_stream_entity_ttl("Transactions"), None);
@@ -3352,6 +3381,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(86400));
@@ -3375,6 +3405,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(stream).unwrap();
         assert_eq!(engine.stream_count(), 1);
@@ -3405,6 +3436,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         let result = engine.register(stream);
         assert!(result.is_err());
@@ -3442,6 +3474,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(stream).unwrap();
         assert_eq!(engine.stream_count(), 1);
@@ -3464,6 +3497,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(stream).unwrap();
 
@@ -3501,6 +3535,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(stream).unwrap();
         assert_eq!(engine.stream_count(), 1);
@@ -3538,6 +3573,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(stream).unwrap();
         assert_eq!(engine.stream_count(), 1);
@@ -3570,6 +3606,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(stream).unwrap();
         let now = ts(60_000);
@@ -3622,6 +3659,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
         // Register a keyless stream
@@ -3639,6 +3677,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
 
@@ -3680,6 +3719,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         let b = StreamDefinition {
             name: "B".into(),
@@ -3694,6 +3734,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         let a = StreamDefinition {
             name: "A".into(),
@@ -3708,6 +3749,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(c).unwrap();
         engine.register(b).unwrap();
@@ -3747,6 +3789,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(stream).unwrap();
         let now = ts(60_000);
@@ -3781,6 +3824,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         let diff1 = engine.register(stream1).unwrap();
         assert!(diff1.added.contains(&"tx_count_1h".to_string()));
@@ -3821,6 +3865,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         let diff2 = engine.register(stream2).unwrap();
         assert!(diff2.added.contains(&"tx_sum_1h".to_string()));
@@ -3865,6 +3910,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(stream1).unwrap();
 
@@ -3890,6 +3936,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         let diff = engine.register(stream2).unwrap();
         assert!(diff.removed.contains(&"tx_sum_1h".to_string()));
@@ -3921,6 +3968,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(stream1).unwrap();
 
@@ -3948,6 +3996,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         let result = engine.register(stream2);
         assert!(result.is_err());
@@ -3996,6 +4045,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         let diff = engine.register(stream).unwrap();
         assert_eq!(diff.added.len(), 2);
@@ -4056,6 +4106,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(stream1).unwrap();
 
@@ -4108,6 +4159,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(stream2).unwrap();
 
@@ -4165,6 +4217,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
         engine
@@ -4189,6 +4242,7 @@ mod tests {
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
             .unwrap();
 
@@ -4246,6 +4300,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(stream).unwrap();
 
@@ -4304,6 +4359,7 @@ mod tests {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
+            watermark_lateness: None,
         };
         engine.register(stream).unwrap();
 

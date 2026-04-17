@@ -96,6 +96,12 @@ pub struct SourceDescriptor {
     pub history_ttl: Option<String>,
     #[serde(default)]
     pub entity_ttl: Option<String>,
+    /// D-09 / CORR-03: per-stream watermark lateness override (human-readable
+    /// string, e.g. "10m"). Parsed server-side via parse_duration_str.
+    /// Absent in older snapshots → None (serde default) → 5 s fallback
+    /// via WatermarkTracker::lateness_for (CORR-04 forward-compat).
+    #[serde(default)]
+    pub watermark_lateness: Option<String>,
 }
 
 /// Stream/Table derivation with a stateless `ops: [...]` chain.
@@ -856,6 +862,7 @@ pub fn v0_aggregation_to_stream_def(
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness: None,
     })
 }
 
@@ -919,6 +926,14 @@ pub fn v0_source_to_stream_def(
             .map(parse_duration_str)
             .transpose()?
     };
+    // D-09 / CORR-03: parse the per-stream watermark lateness override.
+    // Mirrors the entity_ttl pattern — string from JSON, parsed server-side.
+    // Absent field → None → 5 s fallback via WatermarkTracker::lateness_for.
+    let watermark_lateness = desc
+        .watermark_lateness
+        .as_deref()
+        .map(parse_duration_str)
+        .transpose()?;
 
     Ok(StreamDefinition {
         name: desc.name.clone(),
@@ -933,6 +948,7 @@ pub fn v0_source_to_stream_def(
         ephemeral: None,
         pipeline_ttl: None,
         max_keys: None,
+        watermark_lateness,
     })
 }
 
@@ -1096,6 +1112,7 @@ pub fn v0_join_to_stream_def_with_meta(
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
         }
         "stream_stream" => {
@@ -1193,6 +1210,7 @@ pub fn v0_join_to_stream_def_with_meta(
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
         }
         "table_table" => {
@@ -1358,6 +1376,7 @@ pub fn v0_join_to_stream_def_with_meta(
                 ephemeral: None,
                 pipeline_ttl: None,
                 max_keys: None,
+                watermark_lateness: None,
             })
         }
         other => Err(BeavaError::Protocol(format!(
