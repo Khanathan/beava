@@ -89,17 +89,29 @@ fn make_state() -> SharedState {
     )
 }
 
-/// Zipfian-ish key generator: top-1% entities get most traffic, matching
-/// the real fraud bench's hot-key distribution. Produces 1 of N keys where
-/// N = 10_000, ~50% weight on first 30 keys.
+/// Key generator. Defaults to Zipfian-1.2 (pathological hot-key).
+/// Set `BENCH_UNIFORM_KEYS=1` to use uniform random keys — this is the
+/// diagnostic: if lock_exclusive drops significantly under uniform
+/// distribution, the 66% contention is hot-shard-specific, not
+/// an architectural problem.
 fn zipf_key(rng_state: &mut u64, prefix: &str, n: u64) -> String {
     *rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
     let u = (*rng_state >> 33) as f64 / (1u64 << 31) as f64;
-    // Rough Zipf-1.2 approx via inverse-transform.
-    let alpha = 1.2_f64;
-    let rank = ((u * (n as f64).powf(1.0 - alpha) + (1.0 - u)).powf(1.0 / (1.0 - alpha)))
-        .max(1.0)
-        .min(n as f64) as u64;
+    // Uniform keys when BENCH_UNIFORM_KEYS=1. Cached via OnceLock to avoid
+    // per-event env lookups.
+    use std::sync::OnceLock;
+    static UNIFORM: OnceLock<bool> = OnceLock::new();
+    let uniform = *UNIFORM.get_or_init(|| {
+        std::env::var("BENCH_UNIFORM_KEYS").ok().as_deref() == Some("1")
+    });
+    let rank = if uniform {
+        (u * n as f64) as u64 + 1
+    } else {
+        let alpha = 1.2_f64;
+        ((u * (n as f64).powf(1.0 - alpha) + (1.0 - u)).powf(1.0 / (1.0 - alpha)))
+            .max(1.0)
+            .min(n as f64) as u64
+    };
     format!("{}{:06}", prefix, rank)
 }
 
@@ -270,6 +282,96 @@ fn profile_ingest_hot_path() {
     }
     eprintln!("\n=== top 20 by inclusive samples ===");
     for (name, count) in incl.iter().take(20) {
+        let pct = 100.0 * *count as f64 / total_samples.max(1) as f64;
+        eprintln!("  {:>5.1}%  ({:>6} samples)  {}", pct, count, name);
+    }
+}
+
+/// Thread-per-core simulation: each thread owns its own isolated StateStore
+/// and processes only keys in its partition. No DashMap sharing, no
+/// cross-thread channels, no locks on the entity-state hot path. This is
+/// the upper bound for what TPC could deliver — it measures whether the
+/// 66% lock_exclusive ceiling in the shared-state design is actually
+/// architectural or just contention-shaped.
+///
+/// Caveat: does NOT model cross-shard reshuffle cost (channel sends for
+/// fan-out). The fraud pipeline has 100% cross-shard fan-out, so the real
+/// TPC number for that shape would be this number minus ~800-2000 ns/event
+/// of channel overhead (per earlier research).
+#[test]
+#[ignore]
+fn profile_ingest_thread_per_core_simulation() {
+    const N_WORKERS: usize = 8;
+    const DURATION_S: u64 = 8;
+    const BATCH_SIZE: usize = 1000;
+
+    // One isolated state per worker — perfect partitioning, zero sharing.
+    let states: Vec<SharedState> = (0..N_WORKERS).map(|_| make_state()).collect();
+
+    let guard = pprof::ProfilerGuardBuilder::default()
+        .frequency(250)
+        .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+        .build()
+        .expect("pprof start");
+
+    let total_events = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let start = Instant::now();
+
+    let mut handles = Vec::with_capacity(N_WORKERS);
+    for tid in 0..N_WORKERS {
+        let state = states[tid].clone();
+        let total_events = total_events.clone();
+        let stop = stop.clone();
+        handles.push(thread::spawn(move || {
+            let mut seq: u64 = tid as u64 * 1_000_000_000;
+            let mut local_events: usize = 0;
+            while !stop.load(Ordering::Relaxed) {
+                let batch = synth_batch(tid as u64, seq, BATCH_SIZE);
+                seq = seq.wrapping_add(BATCH_SIZE as u64);
+                let results = handle_push_batch(&state, &batch);
+                for r in &results {
+                    if r.is_ok() {
+                        local_events += 1;
+                    }
+                }
+            }
+            total_events.fetch_add(local_events, Ordering::Relaxed);
+        }));
+    }
+
+    thread::sleep(Duration::from_secs(DURATION_S));
+    stop.store(true, Ordering::Relaxed);
+    for h in handles {
+        h.join().unwrap();
+    }
+    let elapsed = start.elapsed();
+    let total = total_events.load(Ordering::Relaxed);
+    let eps = total as f64 / elapsed.as_secs_f64();
+    eprintln!(
+        "\n=== TPC simulation ===\n  threads={} (isolated states) duration={:.2}s events={} → {:.0} EPS ({:.0} EPS/thread)",
+        N_WORKERS,
+        elapsed.as_secs_f64(),
+        total,
+        eps,
+        eps / N_WORKERS as f64,
+    );
+
+    let report = guard.report().build().expect("pprof report");
+    use std::collections::HashMap;
+    let mut leaf_counts: HashMap<String, i64> = HashMap::new();
+    let mut total_samples: i64 = 0;
+    for (frames, &count) in report.data.iter() {
+        let count = count as i64;
+        total_samples += count;
+        if let Some(leaf) = frames.frames.iter().next().and_then(|frame| frame.first()) {
+            *leaf_counts.entry(leaf.name()).or_insert(0) += count;
+        }
+    }
+    let mut leaf: Vec<(String, i64)> = leaf_counts.into_iter().collect();
+    leaf.sort_by(|a, b| b.1.cmp(&a.1));
+    eprintln!("\n=== TPC top 15 leaf functions ===");
+    for (name, count) in leaf.iter().take(15) {
         let pct = 100.0 * *count as f64 / total_samples.max(1) as f64;
         eprintln!("  {:>5.1}%  ({:>6} samples)  {}", pct, count, name);
     }
