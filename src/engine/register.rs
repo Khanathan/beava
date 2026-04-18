@@ -102,6 +102,11 @@ pub struct SourceDescriptor {
     /// via WatermarkTracker::lateness_for (CORR-04 forward-compat).
     #[serde(default)]
     pub watermark_lateness: Option<String>,
+    /// D-07 / TPC-DX-01: declared shard partitioning key.
+    /// Absent in pre-Wave-1 payloads → None (backward compat via serde default).
+    /// Single string → ShardKeySpec::Single; JSON array → ShardKeySpec::Tuple.
+    #[serde(default)]
+    pub shard_key: Option<crate::engine::join_validator::ShardKeySpec>,
 }
 
 /// Stream/Table derivation with a stateless `ops: [...]` chain.

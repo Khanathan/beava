@@ -98,11 +98,13 @@ class StreamSource(Stream):
         *,
         history_ttl: str | None = None,
         watermark_lateness: str | None = None,
+        shard_key: str | tuple | None = None,
     ) -> None:
         self._name = name
         self._schema = schema
         self._history_ttl = history_ttl
         self._watermark_lateness = watermark_lateness
+        self._beava_shard_key = shard_key
         # Sources have no upstream ops.
         self._ops: list[dict[str, Any]] = []
         self._upstreams: list[Stream] = []
@@ -326,7 +328,17 @@ def _build_stream_derivation_from_func(
     )
 
 
-def stream(cls: type | FunctionType | None = None, *, history_ttl: str | None = None, watermark_lateness: str | None = None):  # noqa: D401
+def stream(cls: type | FunctionType | None = None, *, history_ttl: str | None = None, watermark_lateness: str | None = None, shard_key: str | tuple | None = None):  # noqa: D401
+    # D-09 / TPC-DX-01: validate shard_key type client-side.
+    if shard_key is not None and not isinstance(shard_key, (str, tuple)):
+        raise TypeError(
+            f"shard_key must be str, tuple[str, ...], or None, got {type(shard_key).__name__}"
+        )
+    if isinstance(shard_key, tuple):
+        if len(shard_key) == 0:
+            raise TypeError("shard_key tuple must not be empty")
+        if not all(isinstance(k, str) for k in shard_key):
+            raise TypeError("shard_key tuple elements must all be str")
     # Phase 25-02: validate history_ttl client-side (server also validates).
     if history_ttl is not None:
         from beava._table import _validate_duration_str
@@ -335,10 +347,10 @@ def stream(cls: type | FunctionType | None = None, *, history_ttl: str | None = 
     if watermark_lateness is not None:
         from beava._table import _validate_duration_str
         _validate_duration_str(watermark_lateness, field="watermark_lateness")
-    return _stream_impl(cls, history_ttl=history_ttl, watermark_lateness=watermark_lateness)
+    return _stream_impl(cls, history_ttl=history_ttl, watermark_lateness=watermark_lateness, shard_key=shard_key)
 
 
-def _stream_impl(cls: type | FunctionType | None = None, *, history_ttl: str | None = None, watermark_lateness: str | None = None):
+def _stream_impl(cls: type | FunctionType | None = None, *, history_ttl: str | None = None, watermark_lateness: str | None = None, shard_key: str | tuple | None = None):
     """Decorator that declares a Stream — class form or function form.
 
     Class form::
@@ -376,6 +388,7 @@ def _stream_impl(cls: type | FunctionType | None = None, *, history_ttl: str | N
                 schema=schema,
                 history_ttl=history_ttl,
                 watermark_lateness=watermark_lateness,
+                shard_key=shard_key,
             )
         raise TypeError(
             f"@bv.stream must be applied to a class or function, got "

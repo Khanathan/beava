@@ -71,6 +71,14 @@ def _compile_source(descriptor: Any) -> dict[str, Any]:
         # parses via parse_duration_str → StreamDefinition.watermark_lateness.
         if getattr(descriptor, "_watermark_lateness", None) is not None:
             d["watermark_lateness"] = descriptor._watermark_lateness
+        # D-07 / TPC-DX-01: emit shard_key in REGISTER payload when declared.
+        # str → ShardKeySpec::Single on server; tuple → ShardKeySpec::Tuple.
+        sk = getattr(descriptor, "_beava_shard_key", None)
+        if sk is not None:
+            if isinstance(sk, str):
+                d["shard_key"] = sk
+            elif isinstance(sk, tuple):
+                d["shard_key"] = list(sk)
     elif isinstance(descriptor, TableSource):
         d["kind"] = "table"
         d["mode"] = descriptor._mode

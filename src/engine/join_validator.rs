@@ -11,12 +11,17 @@
 //!   on both streams."`
 
 use ahash::AHashMap;
+use serde::{Deserialize, Serialize};
 
 use crate::engine::pipeline::{FeatureDef, StreamDefinition};
 
 /// A shard-key specification on a stream. Additive in Phase 51.
 /// None = "no explicit shard_key" (default key heuristic applies).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `#[serde(untagged)]` lets a JSON string deserialize as `Single` and
+/// a JSON array as `Tuple`, matching `_serialize.py` output (D-07/TPC-DX-01).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum ShardKeySpec {
     /// Single-field sharding: `shard_key = "user_id"`.
     Single(String),
