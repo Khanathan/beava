@@ -1471,6 +1471,33 @@ pub fn handle_push_core_ex(
         }
     }
 
+    // Phase 49-05 (TPC Wave 1): shadow write — mirror entity state into Shard-0
+    // after the existing StateStore write. Purely additive; does not change any
+    // observable output. At N=1, shard index is always 0.
+    //
+    // Safety: Mutex guard is acquired, used, and dropped within a single
+    // synchronous block — no `.await` inside the guard scope (T-49-05-01).
+    // Wave 2 (Phase 50) will make the shard path PRIMARY and remove the
+    // StateStore write from the hot path.
+    {
+        let sharded = state.sharded_store.lock().expect("sharded_store mutex poisoned");
+        let stream_def_opt = engine.get_stream(stream_name).cloned();
+        let key_field = stream_def_opt.as_ref().and_then(|s| s.key_field.as_deref());
+        if let Some(key_field) = key_field {
+            if let Some(serde_json::Value::String(key)) = payload.get(key_field) {
+                if !key.is_empty() {
+                    let mut shard = sharded.shard_for_event(payload, Some(key_field));
+                    // Ensure entity exists in shard state (Wave 1: identity copy from StateStore).
+                    shard.state.entry(key.clone()).or_insert_with(crate::state::store::EntityState::default);
+                    // Mark dirty in shard dirty_set.
+                    shard.dirty_set.insert(key.clone());
+                    // Mirror watermark observe to shard.
+                    shard.watermark.observe(stream_name, now);
+                }
+            }
+        }
+    }
+
     Ok(features)
 }
 

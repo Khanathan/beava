@@ -25,6 +25,7 @@ fn table(name: &str, ttl: Option<&str>) -> SourceDescriptor {
         history_ttl: None,
         entity_ttl: ttl.map(|s| s.to_string()),
         watermark_lateness: None,
+        shard_key: None,
     }
 }
 
@@ -39,6 +40,7 @@ fn stream(name: &str, history_ttl: Option<&str>) -> SourceDescriptor {
         history_ttl: history_ttl.map(|s| s.to_string()),
         entity_ttl: None,
         watermark_lateness: None,
+        shard_key: None,
     }
 }
 
