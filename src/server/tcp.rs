@@ -237,6 +237,11 @@ pub struct ConcurrentAppState {
     /// Phase 49-05 (TPC Wave 1): sharded state store alongside the DashMap compat shim.
     /// At N=1, all state lives in Shard-0. Wave 4 (Phase 52) removes the DashMap `store`.
     pub sharded_store: std::sync::Arc<std::sync::Mutex<crate::shard::store::ShardedStateStoreV1>>,
+
+    /// Phase 50-03/04 (TPC Wave 2): per-shard thread handles. Populated by run_tcp_server
+    /// after spawn_shard_threads() completes the ready-barrier. Empty until server starts.
+    /// RwLock: written once at startup, then read-only on every push (D-08).
+    pub shard_handles: parking_lot::RwLock<Vec<crate::shard::thread::ShardHandle>>,
 }
 
 /// Phase 41-01 T4: only every Nth PUSH records into the latency histogram.
@@ -398,6 +403,8 @@ pub fn make_concurrent_state_full(
         sharded_store: std::sync::Arc::new(std::sync::Mutex::new(
             crate::shard::store::ShardedStateStoreV1::new(n_shards),
         )),
+        // Phase 50-03/04: populated by run_tcp_server after spawn_shard_threads.
+        shard_handles: parking_lot::RwLock::new(Vec::new()),
     })
 }
 
@@ -410,8 +417,10 @@ pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::i
         crate::shard::traits::ShardedStateStore::shard_count(&*ss) as usize
     };
     let inbox_size = crate::shard::thread::inbox_size_from_env();
-    let _shard_handles = crate::shard::thread::spawn_shard_threads(shard_count, inbox_size);
+    let shard_handles = crate::shard::thread::spawn_shard_threads(shard_count, inbox_size);
     // D-01: shard ready-barrier passed. Safe to bind listener.
+    // Store handles in shared state so push paths can route via try_send (D-08).
+    *state.shard_handles.write() = shard_handles;
 
     let listener = TcpListener::bind(addr).await?;
     run_tcp_server_with_listener(listener, state).await
@@ -1313,16 +1322,46 @@ pub fn handle_push_core_ex(
     let engine = state.engine.read();
     let store = &state.store;
 
-    // TPC-INFRA-01 (Wave 0): compute shard hint at ingest; at N=1 always routes to shard 0.
-    // Value is discarded here — no downstream propagation (CONTEXT.md D-01).
-    let _shard_hint: u32 = {
+    // Phase 50-04 (Wave 2): compute shard_index from shard_hint.
+    // shard_hint % N routes to the correct shard (D-08).
+    let shard_hint: u32 = {
         let key_field_ref = engine
             .get_stream(stream_name)
             .and_then(|s| s.key_field.as_deref());
         crate::routing::shard_hint_for_event(payload, key_field_ref)
     };
-    // TODO(Wave 1): replace `let _` with `let slot = _shard_hint % N_SHARDS` when
-    // ShardRouter is introduced (Phase 49).
+    let shard_index: usize = {
+        let handles = state.shard_handles.read();
+        let n = handles.len().max(1);
+        (shard_hint as usize) % n
+    };
+
+    // D-08: fire-and-forget try_send to shard inbox.
+    // The existing synchronous processing path handles correctness;
+    // the SPSC send delivers a notification for the shard's metrics.
+    // Full routing (shard thread owns state) lands in Wave 3/4.
+    {
+        let handles = state.shard_handles.read();
+        if let Some(handle) = handles.get(shard_index) {
+            if handle.is_down.load(std::sync::atomic::Ordering::Relaxed) {
+                // Shard is DOWN — still process via legacy path but mark it.
+                crate::shard::metrics::record_shard_down(shard_index);
+            } else {
+                let ev = crate::shard::thread::ShardEvent {
+                    payload: bytes::Bytes::copy_from_slice(raw_payload),
+                    stream_name: Arc::from(stream_name),
+                    shard_hint,
+                    response_tx: None, // fire-and-forget; legacy path handles the response
+                };
+                if handle.inbox_tx.try_send(ev).is_err() {
+                    // D-08: inbox full — increment backpressure counter.
+                    crate::shard::metrics::record_inbox_full(shard_index);
+                    // Note: legacy processing continues regardless — Phase 50 Wave 2
+                    // keeps the old path for correctness; SPSC is additive here.
+                }
+            }
+        }
+    }
 
     // Phase 14 fix: Do NOT acquire event_log lock during entity state work.
     // Entity state mutations use DashMap (lock-free per key). Event log
@@ -1508,9 +1547,9 @@ pub fn handle_push_core_ex(
         }
     }
 
-    // Phase 50-02: per-shard event counter. shard_index wired in Plan 50-04.
+    // Phase 50-04: per-shard event counter with real shard_index (replaces 50-02 placeholder).
     crate::shard::metrics::record_shard_event(
-        0,
+        shard_index,
         crate::shard::metrics::Outcome::Accepted,
     );
 
