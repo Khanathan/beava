@@ -35,6 +35,11 @@ pub mod error;
 #[allow(missing_docs)]
 pub mod routing;
 
+/// Per-shard state: Shard struct, ShardedStateStore trait, ShardedStateStoreV1 impl (v1.2 TPC Wave 1).
+// Phase 49: Wave 1 plumbing — N=1 only. N>1 routing lands in Wave 2.
+#[allow(missing_docs)]
+pub mod shard;
+
 /// HTTP + TCP server, auth, replica, and observability surfaces (feature = "server").
 // Phase 47 audit: deferred sub-module docs to post-launch (D-11 scope: crate root only)
 #[cfg(feature = "server")]
