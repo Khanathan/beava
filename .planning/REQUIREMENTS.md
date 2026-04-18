@@ -41,11 +41,11 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 
 ### INFRA — Docker, CI, Repo Hygiene (Phase 47, Block 3 — 3a/3c/3e/3g)
 
-- [ ] **INFRA-01**: A user can run `docker run -p 6900:6900 beavadb/beava:latest` and see a working Beava server — image is published to Docker Hub with `:latest` + `:0.1.0` tags.
-- [ ] **INFRA-02**: A user can `docker compose up` against `examples/docker-compose.yml` to get a Beava container with a mounted data volume and exposed port.
+- [x] **INFRA-01**: A user can run `docker run -p 6900:6900 beavadb/beava:latest` and see a working Beava server — image is published to Docker Hub with `:latest` + `:0.1.0` tags.
+- [x] **INFRA-02**: A user can `docker compose up` against `examples/docker-compose.yml` to get a Beava container with a mounted data volume and exposed port.
 - [x] **INFRA-03**: A maintainer sees `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --lib` all green on every push and PR via `.github/workflows/ci.yml` (<5 min run time).
 - [x] **INFRA-04**: A user sees a green CI badge linked to GitHub Actions at the top of README.md.
-- [ ] **INFRA-05**: A maintainer builds the image from the repo root using a multi-stage Dockerfile (cargo-chef planner/cooker/builder → `gcr.io/distroless/cc-debian12:nonroot`); image runs as non-root.
+- [x] **INFRA-05**: A maintainer builds the image from the repo root using a multi-stage Dockerfile (cargo-chef planner/cooker/builder → `gcr.io/distroless/cc-debian12:nonroot`); image runs as non-root.
 - [ ] **INFRA-06**: A maintainer has resolved every `TODO` / `FIXME` / `XXX` in `src/` — each is either fixed, converted to a GitHub issue, or marked load-bearing with a tracking-issue link.
 - [ ] **INFRA-07**: A maintainer has no stray `println!` / `dbg!` / `eprintln!` calls in `src/` except explicitly-intentional startup logging or profile instrumentation.
 - [ ] **INFRA-08**: A maintainer sees `#![warn(missing_docs)]` enabled on the crate root and every `pub fn` / `pub struct` in `src/lib.rs` exports has at least a one-line doc comment.
@@ -154,11 +154,11 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 | OBS-02 | Phase 46 | Complete |
 | OBS-03 | Phase 46 | Complete |
 | SHIP-01 | Phase 46 | Complete |
-| INFRA-01 | Phase 47 | Pending |
-| INFRA-02 | Phase 47 | Pending |
+| INFRA-01 | Phase 47 | Complete |
+| INFRA-02 | Phase 47 | Complete |
 | INFRA-03 | Phase 47 | Complete |
 | INFRA-04 | Phase 47 | Complete |
-| INFRA-05 | Phase 47 | Pending |
+| INFRA-05 | Phase 47 | Complete |
 | INFRA-06 | Phase 47 | Pending |
 | INFRA-07 | Phase 47 | Pending |
 | INFRA-08 | Phase 47 | Pending |

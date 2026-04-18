@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 47-04-PLAN.md (community files, CHANGELOG, social preview, runbook)
-last_updated: "2026-04-18T00:57:19.043Z"
+stopped_at: Completed 47-repo-polish 47-01-PLAN.md (Docker image + compose + publish runbook)
+last_updated: "2026-04-18T01:07:06.610Z"
 last_activity: 2026-04-17 — Phase 46-03 complete. push_batch_with_cascade_no_features takes &[(&Value, SystemTime)]; hashmap bucket coalescing eliminates min_event_time collapse (CORR-01); proptest 256 cases × 3 runs green; spot bench +10.48% above baseline; full 9-cell matrix deferred pending run_matrix.sh tooling fix.
 progress:
   total_phases: 15
   completed_phases: 9
   total_plans: 40
-  completed_plans: 31
-  percent: 78
+  completed_plans: 32
+  percent: 80
 ---
 
 # Project State
@@ -69,6 +69,7 @@ See: `.planning/PROJECT.md` (updated 2026-04-17)
 | Phase 47-repo-polish P02 | 41 | 1 tasks | 1 files |
 | Phase 47-repo-polish P05 | 8 | 2 tasks | 4 files |
 | Phase 47-repo-polish P04 | 15 | 3 tasks | 5 files |
+| Phase 47-repo-polish P01 | 60 | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -151,7 +152,7 @@ Runbook in `.planning/phases/26-test-migration-bench-docs-demo/26-04-SUMMARY.md 
 
 ## Session Continuity
 
-**Stopped at:** Completed 47-04-PLAN.md (community files, CHANGELOG, social preview, runbook)
+**Stopped at:** Completed 47-repo-polish 47-01-PLAN.md (Docker image + compose + publish runbook)
 
 **Next action:** Execute `45-03-PLAN.md` (Wave 2 — write handlers: `http_push_single`, `http_push_batch`, `http_push_ndjson`).
 
