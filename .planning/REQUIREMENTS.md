@@ -55,10 +55,10 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 ### CONTENT — Docs, README, Examples (Phase 47, Block 3 — 3a/3b/3d/3f)
 
 - [x] **CONTENT-01**: A visitor opens `README.md` and sees a <60-line document leading with a 5-line HTTP copy-paste demo (`curl -X POST http://localhost:6900/push/...`), followed by the fork demo, then links to docs + architecture.
-- [ ] **CONTENT-02**: A user can open `docs/getting-started.md` and go from `docker run` → pushing an event → reading a feature value in under 60 seconds on a fresh machine.
-- [ ] **CONTENT-03**: A user can read `docs/concepts.md` and understand streams, tables, operators, and the fork model in one sitting.
+- [x] **CONTENT-02**: A user can open `docs/getting-started.md` and go from `docker run` → pushing an event → reading a feature value in under 60 seconds on a fresh machine.
+- [x] **CONTENT-03**: A user can read `docs/concepts.md` and understand streams, tables, operators, and the fork model in one sitting.
 - [ ] **CONTENT-04**: A user can reference `docs/python-sdk.md` and find the Python API reference (decorators, client, types) for the existing SDK.
-- [ ] **CONTENT-05**: A user can read `docs/operations.md` and plan sizing, durability guarantees, crash-recovery, and tuning before deploying Beava.
+- [x] **CONTENT-05**: A user can read `docs/operations.md` and plan sizing, durability guarantees, crash-recovery, and tuning before deploying Beava.
 - [ ] **CONTENT-06**: A user can read `docs/architecture.md` and understand Beava's single-node design, why it's single-binary, and the scaling posture (thread-per-core / multi-node as v1.2+).
 - [ ] **CONTENT-07**: A user can read `docs/faq.md` and find honest answers to "will it scale?", "what about Flink?", and "is this production-ready?"
 - [ ] **CONTENT-08**: A user can run `examples/fraud-scoring/` — a working fraud-pipeline project defining streams + tables, pushing synthetic traffic, querying features — against a freshly-started Beava Docker container.
@@ -165,10 +165,10 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 | INFRA-09 | Phase 47 | Complete |
 | INFRA-10 | Phase 47 | Complete |
 | CONTENT-01 | Phase 47 | Complete |
-| CONTENT-02 | Phase 47 | Pending |
-| CONTENT-03 | Phase 47 | Pending |
+| CONTENT-02 | Phase 47 | Complete |
+| CONTENT-03 | Phase 47 | Complete |
 | CONTENT-04 | Phase 47 | Pending |
-| CONTENT-05 | Phase 47 | Pending |
+| CONTENT-05 | Phase 47 | Complete |
 | CONTENT-06 | Phase 47 | Pending |
 | CONTENT-07 | Phase 47 | Pending |
 | CONTENT-08 | Phase 47 | Pending |

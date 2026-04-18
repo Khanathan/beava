@@ -194,14 +194,14 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
   6. A maintainer can re-run `benchmark/` ingest / recovery / fork-replay scripts on the current tree and reproduce the committed v2.0 BASELINE within −5%, with the machine spec in the committed JSON (validates SHIP-03).
   7. A maintainer has re-audited `.planning/outreach/LAUNCH-PACKAGE-V8.md` against `AUDIT-V11.md` — every headline claim in README + outreach maps to a committed benchmark file or citation, with no fabricated "N× faster" claims (validates SHIP-04).
   8. A visitor browsing `src/server/`, `src/engine/`, `src/state/`, `benchmark/`, `deploy/` sees a 1–2 paragraph `README.md` in each explaining the module's role; every `pub fn` / `pub struct` in `src/lib.rs` exports has at least a one-line doc comment; zero stray `println!` / `dbg!` / `eprintln!` outside intentional startup logging (validates INFRA-06/07/08, CONTENT-11).
-**Plans:** 5/10 plans executed
+**Plans:** 6/10 plans executed
 - [x] 47-01-PLAN.md — Wave 0 Dockerfile (cargo-chef → distroless/cc-debian12:nonroot) + examples/docker-compose.yml + Docker Hub publish runbook (INFRA-01/02/05)
 - [x] 47-02-PLAN.md — Wave 0 GitHub Actions CI workflow (fmt / clippy / nextest / Python SDK 3.10-3.12 matrix; <5 min) (INFRA-03/04)
 - [ ] 47-03-PLAN.md — Wave 0 code hygiene: TODO/FIXME audit + println/dbg sweep + missing_docs on lib.rs + clippy + fmt + dead-code (INFRA-06/07/08)
 - [x] 47-04-PLAN.md — Wave 0 community files audit + CHANGELOG v0.1.0 + social preview PNG + github repo surface runbook (INFRA-09/10)
 - [x] 47-05-PLAN.md — Wave 0 directory READMEs: src/server, src/engine, src/state (new) + benchmark (extend) + deploy (new) (CONTENT-11)
 - [x] 47-06-PLAN.md — Wave 1 README rewrite <60 lines HTTP-first + docs/legacy-readme.md preservation (CONTENT-01)
-- [ ] 47-07-PLAN.md — Wave 1 core docs: getting-started.md (60-sec Docker) + concepts.md + operations.md (CONTENT-02/03/05)
+- [x] 47-07-PLAN.md — Wave 1 core docs: getting-started.md (60-sec Docker) + concepts.md + operations.md (CONTENT-02/03/05)
 - [ ] 47-08-PLAN.md — Wave 1 reference docs: architecture + faq + comparison + python-sdk re-verify + http-api.md polish (CONTENT-04/06/07, CONTENT-10 docs polish)
 - [ ] 47-09-PLAN.md — Wave 1 examples: fraud-scoring/ (HTTP variant) + session-features/ + curl-ingest/README + examples/README index (CONTENT-08/09/10)
 - [ ] 47-10-PLAN.md — Wave 2 ship gate: SHIP-VM-SMOKE runbook + LAUNCH-VERIFY benchmarks + OUTREACH audit checklist + QUICKSTART recording runbook + PHASE-47-CLOSURE audit (SHIP-02/03/04/05)
@@ -232,4 +232,4 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
 | 38. Mothball Option K surfaces | v0 | 0/1 | **Planned (Option M)** | — |
 | 45. HTTP Ingest & Read API | v1.0-launch | 5/5 | Complete   | 2026-04-17 |
 | 46. Correctness Audit, Fixes & Ship-Gate Integration Test | v1.0-launch | 8/8 | Complete   | 2026-04-18 |
-| 47. Repo Polish, Docker, CI, Docs, Examples | v1.0-launch | 5/10 | In Progress|  |
+| 47. Repo Polish, Docker, CI, Docs, Examples | v1.0-launch | 6/10 | In Progress|  |
