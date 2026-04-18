@@ -10,6 +10,8 @@ pub mod global_watermark;
 /// Per-shard Prometheus metrics (Phase 50-02, D-07).
 pub mod metrics;
 pub mod store;
+/// Shard thread lifecycle: spawn, ready-barrier, pinning, quarantine (Phase 50-03).
+pub mod thread;
 pub mod traits;
 pub mod watermark;
 

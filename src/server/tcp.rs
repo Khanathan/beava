@@ -403,6 +403,16 @@ pub fn make_concurrent_state_full(
 
 /// Start the TCP server on the given address. Loops forever accepting connections.
 pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::io::Error> {
+    // D-01: spawn-all-at-boot + ready-barrier. All N shard threads must signal
+    // ready before any listener socket binds.
+    let shard_count = {
+        let ss = state.sharded_store.lock().expect("sharded_store mutex poisoned");
+        crate::shard::traits::ShardedStateStore::shard_count(&*ss) as usize
+    };
+    let inbox_size = crate::shard::thread::inbox_size_from_env();
+    let _shard_handles = crate::shard::thread::spawn_shard_threads(shard_count, inbox_size);
+    // D-01: shard ready-barrier passed. Safe to bind listener.
+
     let listener = TcpListener::bind(addr).await?;
     run_tcp_server_with_listener(listener, state).await
 }
