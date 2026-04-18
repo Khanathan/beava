@@ -77,9 +77,15 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. A user calls `GET /streams` and receives the fleet-wide stream list merged from all shards; the response includes `scatter_latency_us` and the added p99 latency vs a point query is <15 μs.
   2. A user registering a join between two streams with differing `shard_key=` declarations receives a `JoinShardKeyMismatch` error that names both streams, both keys, and shows the exact decorator fix; the pipeline does not start.
-  3. An operator calls `GET /debug/shards` and receives per-shard diagnostics (inbox depth, reactor utilization, keys owned, watermark lag); a shard whose `keys_owned` exceeds 2× the fleet mean is flagged with `status: "hot"` in the response.
+  3. An operator calls `GET /debug/shards` and receives per-shard diagnostics (inbox depth, reactor utilization, keys owned, watermark lag); a shard whose `keys_owned` exceeds 1.5× the fleet mean is flagged in `hot_shards` in the response.
   4. Each shard publishes its per-stream max event-time to a global atomic; the global watermark for any stream is `min` across per-shard atomics; per-entity TTL eviction reads only the shard-local watermark (no cross-shard read on the eviction hot path).
-**Plans**: TBD
+**Plans**: 5 plans
+Plans:
+- [ ] 51-01-PLAN.md — TDD: GlobalWatermarkStore (Arc<Box<[AtomicU64]>>), WatermarkState.publish_if_due, BEAVA_WATERMARK_PUBLISH_INTERVAL env (Wave 1)
+- [ ] 51-02-PLAN.md — TDD: scatter_gather in src/routing/scatter.rs; GET /streams + GET /streams/{name} handlers updated; beava_cross_shard_fanout_total increment (Wave 2)
+- [ ] 51-03-PLAN.md — TDD: GET /debug/shards endpoint; ShardDiagnosticsReport; hot-shard detection at 1.5× (BEAVA_HOT_SHARD_THRESHOLD); log-warn-once/60s (Wave 2)
+- [ ] 51-04-PLAN.md — TDD: join_validator::validate_shard_keys; JoinShardKeyMismatch D-12 locked message; pipeline.rs register() integration; /debug/warnings signal (Wave 2)
+- [ ] 51-05-PLAN.md — Integrated verification: full test suite + human verify GET /streams, GET /debug/shards, JoinShardKeyMismatch, watermark counter (Wave 3)
 **UI hint**: no
 
 ### Phase 52: 52-event-log-recovery-ship-gate
@@ -104,5 +110,5 @@ Plans:
 | 48. Shard-hint scaffolding | 3/3 | Complete | 2026-04-18 |
 | 49. Per-shard state store | 0/6 | Planned | — |
 | 50. Multi-shard routing | 0/? | Not started | — |
-| 51. Cross-shard queries + joins | 0/? | Not started | — |
+| 51. Cross-shard queries + joins | 0/5 | Planned | — |
 | 52. Event log, recovery, ship-gate | 0/? | Not started | — |
