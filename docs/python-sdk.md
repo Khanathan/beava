@@ -1,5 +1,7 @@
 # Beava Python SDK
 
+See also: [docs/http-api.md](http-api.md) · [docs/architecture.md](architecture.md) · [docs/concepts.md](concepts.md)
+
 The Beava Python SDK is a thin client for the Beava real-time feature server. You define
 pipelines in Python, register them with the server, push events, and read computed features.
 Python never touches the hot path -- all computation happens server-side in Rust.
@@ -8,7 +10,11 @@ Python never touches the hot path -- all computation happens server-side in Rust
 
 Requires Python 3.10+.
 
-Install from source:
+```bash
+pip install beava
+```
+
+Or install from source (development):
 
 ```bash
 cd python
@@ -37,7 +43,7 @@ def UserFeatures(tra: Transactions) -> bv.Table:
         tx_sum_1h=bv.sum("amount", window="1h"),
         avg_amount_1h=bv.avg("amount", window="1h"),
     )
-    # v0: add .with_columns(velocity=<bv.col expression for "tx_count_1h / (tx_sum_1h + 1)">) to the table above
+
 # 3. Connect and register
 app = bv.App("localhost:6400")
 app.register(UserFeatures)  # registers Transactions automatically
@@ -134,7 +140,7 @@ features = bv.group_by("user_id").agg(
 
 ### Derived features
 
-Add derived features as class attributes alongside `features`:
+Add derived features using `.with_columns()` chained after `.agg()`:
 
 ```python
 @bv.table(key="user_id")
@@ -142,8 +148,9 @@ def UserMetrics(tra: Transactions) -> bv.Table:
     return tra.group_by("user_id").agg(
         tx_count_1h=bv.count(window="1h"),
         tx_count_24h=bv.count(window="24h"),
+    ).with_columns(
+        velocity_spike=bv.derive("(tx_count_1h / 1) / (tx_count_24h / 24)"),
     )
-    # v0: add .with_columns(velocity_spike=<bv.col expression for "(tx_count_1h / 1) / (tx_count_24h / 24)">) to the table above
 ```
 
 ### Cascading datasets
@@ -214,7 +221,7 @@ Count events in a sliding window.
 
 ```python
 tx_count_1h = bv.count(window="1h")
-failed_count = bv.count(window="30m")  # v0: filter on the source stream before group_by
+failed_count = bv.count(window="30m", where="status == 'failed'")
 ```
 
 **Parameters:**
@@ -432,13 +439,58 @@ recent_amounts = bv.last_n("amount", n=5)
 | `n`        | `int`  | Yes      | Number of recent values to keep.         |
 | `optional` | `bool` | No       | Skip events where field is missing.      |
 
+### bv.variance
+
+Variance of a numeric field in a sliding window.
+
+```python
+amount_var = bv.variance("amount", window="24h")
+```
+
+**Parameters:** Same as `bv.stddev`.
+
+### bv.top_k
+
+Top-K most frequent values of a field in a sliding window (Count-Min Sketch backed).
+
+```python
+top_merchants = bv.top_k("merchant_id", k=5, window="24h")
+```
+
+**Parameters:**
+
+| Name     | Type           | Required | Description                    |
+|----------|----------------|----------|--------------------------------|
+| `field`  | `str`          | Yes      | Event field (positional).      |
+| `k`      | `int`          | Yes      | Number of top values to return.|
+| `window` | `str`          | Yes      | Window duration.               |
+| `bucket` | `str \| None`  | No       | Bucket granularity.            |
+
+### bv.first_n
+
+Store the first N values of a field (in order of arrival). Once N values have been
+seen, no further updates occur.
+
+```python
+first_merchants = bv.first_n("merchant_id", n=3)
+```
+
+**Parameters:**
+
+| Name       | Type   | Required | Description                              |
+|------------|--------|----------|------------------------------------------|
+| `field`    | `str`  | Yes      | Event field (positional).                |
+| `n`        | `int`  | Yes      | Number of first values to keep.          |
+| `optional` | `bool` | No       | Skip events where field is missing.      |
+
 ### bv.derive
 
 Expression computed over other features. Evaluated on read, stores no state.
 
 ```python
-# v0: add .with_columns(failure_rate=<bv.col expression for "failed_count_1h / tx_count_1h">) to the table above
-# v0: add .with_columns(is_suspicious=<bv.col expression for "tx_count_1h > 10 and unique_countries_24h > 3">) to the table above
+failure_rate = bv.derive("failed_count_1h / tx_count_1h")
+is_suspicious = bv.derive("tx_count_1h > 10 and unique_countries_24h > 3")
+normalized = bv.derive("(last_amount - tx_avg_24h) / (tx_stddev_24h + 0.001)")
 ```
 
 **Parameters:**
@@ -447,7 +499,7 @@ Expression computed over other features. Evaluated on read, stores no state.
 |--------|-------|----------|--------------------------------|
 | `expr` | `str` | Yes      | Expression string (positional).|
 
-See [Derived Features](#derived-features-1) for expression syntax details.
+See [Derived Features](#derived-features) for expression syntax details.
 
 ### bv.lookup
 
@@ -522,13 +574,12 @@ Available: `abs()`, `min()`, `max()`, `now()`
 
 ## Filtering
 
-Use the `filter=` parameter on `@bv.table` to only process events matching a condition.
-The filter expression uses the same syntax as `bv.derive()`.
+Use `.filter()` on the stream before `.group_by()` to only process events matching a
+condition. The filter expression uses `bv.col()` comparisons.
 
 ```python
 @bv.table(key="user_id")
 def FailedTransactions(tra: Transactions) -> bv.Table:
-    # v0: decorator-level filter= replaced by an explicit .filter() on the stream.
     return tra.filter(bv.col("status") == "failed").group_by("user_id").agg(
         failed_count_30m=bv.count(window="30m"),
         failed_count_1h=bv.count(window="1h"),
@@ -543,7 +594,7 @@ You can also use `where=` on individual operators for per-feature filtering:
 ```python
 features = bv.group_by("user_id").agg(
     total_count=bv.count(window="1h"),
-    failed_count=bv.count(window="1h")  # v0: filter on the source stream before group_by,
+    failed_count=bv.count(window="1h", where="status == 'failed'"),
 )
 ```
 
@@ -753,6 +804,85 @@ features.to_dict()         # {"tx_count_1h": 7, ...}
 Accessing a feature that does not exist raises `AttributeError` (attribute access)
 or `KeyError` (dictionary access).
 
+## Fork: Scoped Local Replicas
+
+`bv.fork()` spawns a scoped local replica of a remote Beava server. The replica
+receives the production event stream (historical catchup via `LOG_FETCH`, then live
+tail via `SUBSCRIBE`) and runs independent local pipelines against it — without
+touching production state.
+
+This is the primary workflow for data scientists experimenting with new features
+against live production data.
+
+```python
+import beava as bv
+
+@bv.stream
+class Transactions:
+    user_id: str
+    amount: float
+
+@bv.table(key="user_id")
+def TxnSummary(t: Transactions) -> bv.Table:
+    return t.group_by("user_id").agg(
+        count_1h=bv.count(window="1h"),
+        sum_1h=bv.sum("amount", window="1h"),
+    )
+
+with bv.fork(
+    remote="prod.beava.dev:6400",
+    streams=[Transactions],
+    keys=["u1", "u2"],          # optional: scope to specific keys
+    token="replica-token",       # or set BEAVA_REPLICA_TOKEN env var
+    pipelines=[TxnSummary],      # optional: local pipeline definitions
+) as fork:
+    # query the local replica
+    result = fork.get(TxnSummary, key="u1")
+    print(result)  # {"count_1h": 42, "sum_1h": 1234.5}
+```
+
+### bv.fork() parameters
+
+| Parameter       | Type                    | Default           | Description |
+|-----------------|-------------------------|-------------------|-------------|
+| `remote`        | `str`                   | required          | Upstream server as `"HOST:PORT"` |
+| `streams`       | `list`                  | required          | `@bv.stream` descriptors to replicate |
+| `keys`          | `list[str] \| None`     | `None`            | Exact keys to replicate (mutex with `key_prefix`) |
+| `key_prefix`    | `str \| None`           | `None`            | Key prefix filter (mutex with `keys`) |
+| `since`         | `str \| int`            | epoch 0           | ISO-8601 UTC or unix-ms start timestamp |
+| `token`         | `str \| None`           | `None`            | Replica admin token; falls back to `BEAVA_REPLICA_TOKEN` env |
+| `pipelines`     | `list \| None`          | `None`            | `@bv.table` descriptors to register on the fork |
+| `extract_at`    | `list \| None`          | `None`            | Timestamps for historical feature extraction snapshots |
+| `local_port`    | `int \| None`           | auto-allocated    | HTTP port for the local fork |
+| `binary_path`   | `str \| None`           | PATH lookup       | Path to the `beava` binary |
+| `ready_timeout` | `float`                 | `30.0`            | Seconds to wait for the fork to become ready |
+| `env`           | `dict[str, str] \| None`| `None`            | Extra env vars for the subprocess |
+
+### ForkedReplica methods
+
+| Method | Description |
+|--------|-------------|
+| `fork.get(pipeline_or_stream, *, key)` | Fetch feature values for a key |
+| `fork.inspect(*keys)` | Batch-query raw computed_features for multiple keys |
+| `fork.extract_history()` | Retrieve historical extraction snapshots (requires `extract_at=`) |
+| `fork.stop()` | Terminate the subprocess and clean up temp files (idempotent) |
+| `fork.local_port` | HTTP port the fork is listening on |
+| `fork.local_url` | `http://127.0.0.1:{local_port}` |
+| `fork.pid` | PID of the fork subprocess |
+| `fork.log_path` | Path to the fork's stderr log (for debugging) |
+
+### Fork error types
+
+| Exception | When raised |
+|-----------|-------------|
+| `bv.ForkError` | Base class for all fork failures |
+| `bv.ForkValidationError` | Invalid arguments (raised before subprocess spawn) |
+| `bv.ForkTimeoutError` | `/debug/ready` did not return 200 within `ready_timeout` |
+| `bv.ForkSubprocessError` | The `beava fork` subprocess exited unexpectedly |
+
+See [docs/architecture.md § Fork Replica Model](architecture.md#fork-replica-model) for
+the full design and watermark correctness guarantee.
+
 ## Pipeline Validation
 
 Use `bv.validate()` to check pipeline definitions for errors before registering with
@@ -786,23 +916,19 @@ Each error has three attributes:
 ### Example: catching a field mismatch
 
 ```python
-class TxnEvent:  # @bv.stream declared above; v0 streams are plain annotated classes
-    user_id: str = Field()
-    amount: float = Field()
+import beava as bv
 
-# v0: schema is defined directly via @bv.stream annotations.
 @bv.stream
 class Transactions:
-    user_id: str = Field()
-    amount: float = Field()
-    merchant_id: str = Field()
-    status: str = Field()
-    # (schema TxnEvent inlined)
+    user_id: str
+    amount: float
+    merchant_id: str
+    status: str
 
 @bv.table(key="user_id")
 def UserMetrics(tra: Transactions) -> bv.Table:
     return tra.group_by("user_id").agg(
-        total=bv.sum("price", window="1h"),  # "price" not in TxnEvent
+        total=bv.sum("price", window="1h"),  # "price" not in Transactions schema
     )
 
 errors = bv.validate(Transactions, UserMetrics)
@@ -891,19 +1017,20 @@ def UserTransactions(raw: RawTransactions) -> bv.Table:
         last_country=bv.last("country"),
         last_merchant=bv.last("merchant_id"),
         last_amount=bv.last("amount"),
+    ).with_columns(
+        # Derived signals
+        velocity_spike=bv.derive("(tx_count_1h / 1) / (tx_count_24h / 24)"),
+        amount_vs_avg=bv.derive("last_amount / tx_avg_24h"),
+        spend_acceleration=bv.derive("tx_sum_1h / (tx_sum_24h / 24)"),
+        high_value_ratio=bv.derive("tx_max_24h / tx_avg_24h"),
+        merchant_diversity_1h=bv.derive("unique_merchants_1h / tx_count_1h"),
+        country_hop_flag=bv.derive("unique_countries_24h > 3"),
     )
-    # Derived signals
-    # v0: add .with_columns(velocity_spike=<bv.col expression for "(tx_count_1h / 1) / (tx_count_24h / 24)">) to the table above
-    # v0: add .with_columns(amount_vs_avg=<bv.col expression for "last_amount / tx_avg_24h">) to the table above
-    # v0: add .with_columns(spend_acceleration=<bv.col expression for "tx_sum_1h / (tx_sum_24h / 24)">) to the table above
-    # v0: add .with_columns(high_value_ratio=<bv.col expression for "tx_max_24h / tx_avg_24h">) to the table above
-    # v0: add .with_columns(merchant_diversity_1h=<bv.col expression for "unique_merchants_1h / tx_count_1h">) to the table above
-    # v0: add .with_columns(country_hop_flag=<bv.col expression for "unique_countries_24h > 3">) to the table above
+
 # --- Entity 2: Failed transactions (4 features) ---
 
 @bv.table(key="user_id")
 def UserFailedTxns(raw: RawTransactions) -> bv.Table:
-    # v0: decorator-level filter= replaced by an explicit .filter() on the stream.
     return raw.filter(bv.col("status") == "failed").group_by("user_id").agg(
         failed_count_30m=bv.count(window="30m"),
         failed_count_1h=bv.count(window="1h"),
