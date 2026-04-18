@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
+milestone: v1.0-launch-complete
 milestone_name: milestone
-status: completed
-stopped_at: "Completed 47-10-PLAN.md (ship-gate closure: SHIP-02..SHIP-05, Phase 47 engineering-complete)"
-last_updated: "2026-04-18T01:26:55.465Z"
-last_activity: 2026-04-17 — Phase 46-03 complete. push_batch_with_cascade_no_features takes &[(&Value, SystemTime)]; hashmap bucket coalescing eliminates min_event_time collapse (CORR-01); proptest 256 cases × 3 runs green; spot bench +10.48% above baseline; full 9-cell matrix deferred pending run_matrix.sh tooling fix.
+status: completed-pending-launch-day-humanrun
+stopped_at: "v1.0-launch engineering-complete 2026-04-17 — awaiting launch-day human-run items (Docker push, GitHub repo wire-up, fresh-VM smoke, quickstart GIF, HTTP EPS measurement, outreach sign-off)"
+last_updated: "2026-04-17T00:00:00.000Z"
+last_activity: 2026-04-17 — Milestone v1.0-launch engineering-complete. All three phases (45 HTTP, 46 correctness, 47 polish) shipped; 49 requirements closed or deferred (40 code-shipped, 6 runbook-delivered, 3 DEFERRED to v1.1 by user decision). ROADMAP archived at .planning/milestones/v1.0-launch-ROADMAP.md.
 progress:
   total_phases: 15
-  completed_phases: 9
+  completed_phases: 12
   total_plans: 40
-  completed_plans: 37
-  percent: 93
+  completed_plans: 40
+  percent: 100
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-17)
 
 **Core value:** A skeptical engineer evaluating Beava on github.com can go from landing on the repo to correct, live feature values in under 60 seconds — from any language.
-**Current focus:** Milestone v1.0-launch — Public Launch Readiness (Phases 45-47)
+**Current focus:** Milestone v1.0-launch — engineering-complete; awaiting launch-day human-run items.
 
 ## Current Position
 
-**Phase:** 46 (Correctness Audit, Fixes & Ship-Gate) — in progress
-**Plan:** 03 complete (Wave 2a — signature + group-by-bucket + proptest; CORR-01 closed); Plan 04 next
-**Status:** Active — Phase 46-01, 46-02, 46-03 complete; ready to execute 46-04
-**Last activity:** 2026-04-17 — Phase 46-03 complete. push_batch_with_cascade_no_features takes &[(&Value, SystemTime)]; hashmap bucket coalescing eliminates min_event_time collapse (CORR-01); proptest 256 cases × 3 runs green; spot bench +10.48% above baseline; full 9-cell matrix deferred pending run_matrix.sh tooling fix.
+**Phase:** none (milestone v1.0-launch engineering-complete; awaiting launch-day human-run items)
+**Plan:** n/a
+**Status:** Engineering complete — launch-day human-run pending
+**Last activity:** 2026-04-17 — Milestone v1.0-launch engineering-complete. All three phases (45 HTTP, 46 correctness, 47 polish) shipped; 49 requirements closed or deferred (40 code-shipped, 6 runbook-delivered, 3 DEFERRED to v1.1 by user decision). ROADMAP archived at .planning/milestones/v1.0-launch-ROADMAP.md.
 
 ## Milestone Status
 
@@ -42,7 +42,41 @@ See: `.planning/PROJECT.md` (updated 2026-04-17)
 | v2.1 Launch | Engineering complete; live-run ops pending | 2026-04-14 (eng) |
 | v0 Restructure (21-26) | Complete | 2026-04-14 |
 | v0 Data-Scientist Fork (27, 35-38) | Engineering complete | 2026-04-15 |
-| **v1.0-launch — Public Launch Readiness** | **Active — Phase 45 ready to plan** | **—** |
+| **v1.0-launch — Public Launch Readiness** | **Engineering complete — launch-day human-run pending** | **2026-04-17** |
+
+## Launch Day Checklist
+
+Six human-run items required before public launch. Execute in order — items 3 and 4
+depend on item 1 (Docker Hub image live). Full detail in
+`.planning/v1.0-launch-MILESTONE-AUDIT.md § Launch-Day Checklist`.
+
+1. **Docker Hub push** — `docs/docker-publish-runbook.md` — build and push
+   `beavadb/beava:latest` + `beavadb/beava:0.1.0`. Prerequisite for items 3, 4.
+2. **GitHub repo settings wire-up** — `docs/github-repo-surface-runbook.md` — set
+   description, topics (8 items), upload `site/assets/social-preview.png`.
+3. **Fresh-VM smoke test (SHIP-02)** — `.planning/phases/47-repo-polish/SHIP-VM-SMOKE.md`
+   — depends on Docker Hub image (item 1). 6-step runbook, SC-1/SC-2/SC-3 checklist.
+4. **Quickstart GIF recording (SHIP-05)** —
+   `.planning/phases/47-repo-polish/QUICKSTART-RECORDING-RUNBOOK.md` — depends on
+   Docker Hub image (item 1). asciinema + agg, <3 MB output.
+5. **HTTP EPS measurement (HTTP-09, CORR-02, OUTREACH precondition)** —
+   `LOAD_TEST_REFERENCE_BOX_REQUIRED=1 bash benchmark/http_load.sh` — commits measured
+   number to `benchmark/README.md`. Required before citing "100K+ EPS over HTTP".
+6. **Outreach sign-off (SHIP-04)** —
+   `.planning/phases/47-repo-polish/OUTREACH-AUDIT-CHECKLIST.md` — 10-item VC checklist
+   + final package at `.planning/outreach/LAUNCH-PACKAGE-V8.md`.
+
+### Deferred to v1.1 backlog (user decision)
+
+Three code-hygiene items were explicitly deferred by user during Phase 47. They do not
+block launch. The de-facto state of the codebase is clean on all three (audit confirms);
+the plan was simply not executed.
+
+| Req | Item | De-facto state | v1.1 action |
+|-----|------|---------------|-------------|
+| INFRA-06 | TODO/FIXME/XXX sweep | Clean: 0 naked TODOs outside vendor; 2 `TODO(gh-TBD)` annotated items; `TODO-AUDIT.md` documents dispositions | File 2 GitHub issues at repo-go-public time |
+| INFRA-07 | `println!`/`dbg!`/`eprintln!` audit | Clean: all non-vendor prints annotated `// Intentional: ... (Phase 47 audit)`; zero bare `dbg!` | Confirm annotation survey in v1.1 cleanup pass |
+| INFRA-08 | `#![warn(missing_docs)]` + pub re-export docs | `#![warn(missing_docs)]` IS present in `src/lib.rs`; per-export coverage not fully verified | Complete doc-comment pass on `src/lib.rs` exports in v1.1 |
 
 ## Performance Metrics
 
@@ -50,31 +84,12 @@ See: `.planning/PROJECT.md` (updated 2026-04-17)
 |--------|-----------------|-----------------------|-------|
 | 9-cell benchmark matrix | BASELINE committed | Within −5% of BASELINE | CORR-02 hard merge gate for 2a fix |
 | Single-stream TCP push (baseline) | ~350 K EPS | Unchanged | Regression gate |
-| HTTP `/push-batch/{stream}` throughput | N/A | >100 K EPS sustained (oha, reference box) | HTTP-09 ship criterion |
+| HTTP `/push-batch/{stream}` throughput | N/A | >100 K EPS sustained (oha, reference box) | HTTP-09 ship criterion — measurement pending (launch Step 5) |
 | Ring-buffer drop counter hot-path overhead | N/A | <100 ns per drop (cached Counter handle) | OBS-01 pitfall-4 mitigation |
 | 2d.vi/vii atomic DashSet swap regression | N/A | Within 2% on 9-cell | CORR-10 ceiling |
 | Docker image size (distroless/cc-debian12:nonroot) | N/A | <200 MB target (~80 MB expected) | INFRA-05 |
 | CI pipeline (fmt + clippy + test) | N/A | <5 min | INFRA-03 |
-| Fresh-VM time-to-first-feature-read | N/A | <60 s | SHIP-02 / CONTENT-02 / core-value gate |
-| Phase 45 P01 | 35 | 3 tasks | 17 files |
-| Phase 45 P02 | 12 | 3 tasks | 3 files |
-| Phase 45-http-ingest-read-api P04 | 35 | 3 tasks | 5 files |
-| Phase 45 P05 | 45 | 5 tasks | 7 files |
-| Phase 46-correctness-audit-fixes P02 | 8m | 1 tasks | 1 files |
-| Phase 46-correctness-audit-fixes P01 | 15m | 3 tasks | 14 files |
-| Phase 46 P04 | 15 | 2 tasks | 7 files |
-| Phase 46 P05 | 45 | 3 tasks | 28 files |
-| Phase 46 P06 | 45 | 3 tasks | 6 files |
-| Phase 46-correctness-audit-fixes P08 | 40 | 3 tasks | 4 files |
-| Phase 47-repo-polish P02 | 41 | 1 tasks | 1 files |
-| Phase 47-repo-polish P05 | 8 | 2 tasks | 4 files |
-| Phase 47-repo-polish P04 | 15 | 3 tasks | 5 files |
-| Phase 47-repo-polish P01 | 60 | 2 tasks | 5 files |
-| Phase 47-repo-polish P06 | 120 | 2 tasks | 2 files |
-| Phase 47 P07 | 25 | 3 tasks | 4 files |
-| Phase 47 P09 | 4 | 3 tasks | 10 files |
-| Phase 47 P08 | 45 | 4 tasks | 5 files |
-| Phase 47 P10 | 60 | 5 tasks | 5 files |
+| Fresh-VM time-to-first-feature-read | N/A | <60 s | SHIP-02 / CONTENT-02 / core-value gate — measurement pending (launch Step 3) |
 
 ## Accumulated Context
 
@@ -94,8 +109,8 @@ See: `.planning/PROJECT.md` (updated 2026-04-17)
 - **Keep Python SDK TCP path unchanged** — HTTP is additive. Single canonical event schema locked BEFORE Block 1 ships.
 - **Keep `tally` binary name for v1.0-launch**; rename to `beava` in v1.1 to avoid doc churn.
 - **Single ship-gate integration test** covers CORR-01 (2a) + CORR-05 (2d.i) + CORR-06 (2d.ii) simultaneously: `HTTP push → crash → recover → read features`.
-- **46-03 decision: hashmap identity-key bucket coalescing** — `bucket_of(t) = t` (raw SystemTime as key); operators re-align per feature internally. Spot bench (complex-c8-x8, 30s): +10.48% above baseline. Full 9-cell matrix deferred pending run_matrix.sh OUTPUT_DIR tooling fix.
-- **46-03 decision: D-26 is a no-op at HTTP layer** — http_ingest.rs already correct; fix lived entirely in tcp.rs handle_push_batch min_event_time collapse removal.
+- **46-03 decision: hashmap identity-key bucket coalescing** — `bucket_of(t) = t` (raw SystemTime as key); operators re-align per feature internally. Spot bench (complex-c8-x8, 30s): +10.48% above baseline.
+- **47-03 DEFERRED by user decision** — code-hygiene (INFRA-06/07/08) deferred to v1.1; de-facto state confirmed clean by audit.
 
 ### Key design decisions (inherited, locked)
 
@@ -111,20 +126,13 @@ See: `.planning/PROJECT.md` (updated 2026-04-17)
 
 ### Outstanding todos
 
-None at milestone entry. Roadmap complete; Phase 45 ready to plan.
+Launch-day human-run items only (see Launch Day Checklist above). No engineering work remaining.
 
 ### Blockers
 
-None. All three phases have clear inputs, disjoint code paths for 42 vs 43, and item-level dependencies for 44 are documented in ROADMAP.md phase-detail section.
+None. Engineering complete. Launch-day items are orchestration-only.
 
-### Research flags (surface during phase planning)
-
-- **Phase 46 (2a group-by-bucket):** Decide sort-in-place contiguous grouping vs hash-map bucket coalescing via micro-benchmark at phase kickoff.
-- **Phase 46 (2d.vi/vii atomic-swap):** Benchmark `ArcSwap<DashSet<String>>` vs `AtomicPtr` vs mutex-guarded swap against the 2% ceiling.
-- **Phase 45 (100 K EPS HTTP target):** Design estimate unverified on current tree; profiling pass required before claiming ship criterion (serde overhead mitigation via `Bytes` + per-line parse if needed).
-- **Phase 47 item ordering:** Docker + CI + clippy/fmt + community files + directory READMEs start day one. README rewrite + `examples/curl-ingest/` + `docs/http-api.md` + HTTP-variant `examples/fraud-scoring/` + `examples/session-features/` block on Phase 45. `docs/event-time.md` cross-linking blocks on Phase 46.
-
-### v2.1 Launch — Remaining ops (async)
+### v2.1 Launch — Remaining ops (async, independent)
 
 Runbook in `.planning/phases/26-test-migration-bench-docs-demo/26-04-SUMMARY.md § Resuming v2.1 Launch`. Not engineering-gated; Hetzner VM provision + 5-day live observation only. Independent of v1.0-launch.
 
@@ -145,6 +153,7 @@ Runbook in `.planning/phases/26-test-migration-bench-docs-demo/26-04-SUMMARY.md 
 - CLI subcommands (`beava push/get/tail`)
 - Per-stream idle markers for join watermark stalls (DX-06, v1.1)
 - `tally` → `beava` binary rename (v1.1)
+- INFRA-06 / INFRA-07 / INFRA-08 formal plan execution (v1.1 code hygiene)
 
 ## Phase History
 
@@ -153,16 +162,12 @@ Runbook in `.planning/phases/26-test-migration-bench-docs-demo/26-04-SUMMARY.md 
 - v2.1 Launch (Phase 20): `.planning/milestones/v2.1-ROADMAP.md`
 - v0 Restructure (Phases 21-26): `.planning/milestones/v0-ROADMAP.md`
 - v0 Data-Scientist Fork (Phases 27, 35-38): in-flight archival pending `/gsd-complete-milestone` run
-- v1.0-launch (Phases 45-47): active in `.planning/ROADMAP.md` (v1.0-launch section)
+- **v1.0-launch (Phases 45-47): `.planning/milestones/v1.0-launch-ROADMAP.md`** — archived 2026-04-17
 
 ## Session Continuity
 
-**Stopped at:** Completed 47-10-PLAN.md (ship-gate closure: SHIP-02..SHIP-05, Phase 47 engineering-complete)
+**Stopped at:** Milestone v1.0-launch engineering-complete 2026-04-17. All three phases shipped; ROADMAP archived; REQUIREMENTS checkboxes housekept; STATE updated.
 
-**Next action:** Execute `45-03-PLAN.md` (Wave 2 — write handlers: `http_push_single`, `http_push_batch`, `http_push_ndjson`).
+**Next action:** Launch day — execute the 6-item human-run checklist above, in order. Items 3 and 4 depend on item 1.
 
-**Note:** The linter auto-implemented write handlers during 45-02 execution. Verify 45-03 plan scope before running — write handlers may already be live.
-
-**Parallel workstream:** Phase 46 can begin planning/execution alongside Phase 45 — disjoint code paths (HTTP router vs engine internals).
-
-**Phase 47:** Day-one items (Docker, CI, clippy/fmt, community files, directory READMEs, docs pages that don't cross-link to 45/46) can begin planning at the same time — critical path is Phase 45 + Phase 46 landing before ship-gate SHIP-02/03/04/05 closes.
+**Next engineering milestone:** TBD. Candidates include v1.1 (binary rename to `beava`, per-stream idle markers, code-hygiene backlog INFRA-06/07/08), or resume v0 stretch phases (35 OP_LOG_FETCH, 38 mothball Option K).
