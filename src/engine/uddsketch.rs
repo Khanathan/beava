@@ -245,8 +245,7 @@ impl UDDSketch {
 
     pub fn estimated_bytes(&self) -> usize {
         let per_entry = std::mem::size_of::<i32>() + std::mem::size_of::<u64>() + 48;
-        std::mem::size_of::<Self>()
-            + per_entry * (self.pos_buckets.len() + self.neg_buckets.len())
+        std::mem::size_of::<Self>() + per_entry * (self.pos_buckets.len() + self.neg_buckets.len())
     }
 }
 
@@ -314,7 +313,12 @@ mod tests {
         let truth = ground_truth_quantile(&survivors, 0.5);
         let q50 = s.quantile(0.5);
         let err = (q50 - truth).abs() / truth;
-        assert!(err <= s.current_alpha() * 3.0, "q50={} truth={}", q50, truth);
+        assert!(
+            err <= s.current_alpha() * 3.0,
+            "q50={} truth={}",
+            q50,
+            truth
+        );
         assert_eq!(s.total_count(), 500);
     }
 

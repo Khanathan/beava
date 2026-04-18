@@ -38,8 +38,9 @@ fn build_sales_engine() -> (PipelineEngine, StateStore) {
     }"#;
     let sales_src_val: serde_json::Value = serde_json::from_str(sales_src).unwrap();
     let sales_def = match parse(sales_src) {
-        V0RegisterPayload::Source(d) => beava::engine::register::v0_source_to_stream_def(&d)
-            .expect("sales source def"),
+        V0RegisterPayload::Source(d) => {
+            beava::engine::register::v0_source_to_stream_def(&d).expect("sales source def")
+        }
         _ => panic!("expected Source"),
     };
     engine.register(sales_def).unwrap();
@@ -63,8 +64,9 @@ fn build_sales_engine() -> (PipelineEngine, StateStore) {
         "depends_on":["Sales"]
     }"#;
     let agg_def = match parse(agg) {
-        V0RegisterPayload::Aggregation(d) => v0_aggregation_to_stream_def(&d)
-            .expect("aggregation def"),
+        V0RegisterPayload::Aggregation(d) => {
+            v0_aggregation_to_stream_def(&d).expect("aggregation def")
+        }
         _ => panic!("expected Aggregation"),
     };
     engine.register(agg_def).unwrap();
@@ -85,10 +87,7 @@ fn push_sales(
     amount: f64,
     event_time: SystemTime,
 ) -> bool {
-    let et_ms = event_time
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64;
+    let et_ms = event_time.duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
 
     // Watermark gate — mirrors tcp.rs late-drop logic (OBS-02).
     let wm_opt = engine.watermarks.watermark("Sales");
@@ -209,11 +208,23 @@ fn bounded_labels() {
     let base = epoch_plus_secs(1_700_100_000);
 
     // Step 1: push event at base+100s to set ring-buffer epoch for "target".
-    push_sales(&engine2, &store2, "target", 1.0, base + Duration::from_secs(100));
+    push_sales(
+        &engine2,
+        &store2,
+        "target",
+        1.0,
+        base + Duration::from_secs(100),
+    );
     // wm = base+100 − 5s = base+95.
 
     // Step 2: push event at base+110s to advance wm (base+110 − 5s = base+105).
-    push_sales(&engine2, &store2, "target", 1.0, base + Duration::from_secs(110));
+    push_sales(
+        &engine2,
+        &store2,
+        "target",
+        1.0,
+        base + Duration::from_secs(110),
+    );
     // wm = base+105. Ring buffer for "target" now has epoch around base+110.
 
     // Step 3: push at base+102. Gate check: 102 >= 105? No → late-drop at gate.
@@ -247,11 +258,23 @@ fn bounded_labels() {
     let t = epoch_plus_secs(1_700_200_000);
 
     // Establish watermark with an early event so wm stays low.
-    push_sales(&engine3, &store3, "anchor", 1.0, t + Duration::from_secs(10));
+    push_sales(
+        &engine3,
+        &store3,
+        "anchor",
+        1.0,
+        t + Duration::from_secs(10),
+    );
     // wm = t+10 − 5s = t+5.
 
     // Push "new_key" at t+200 to set its ring-buffer epoch far in the future.
-    push_sales(&engine3, &store3, "new_key", 1.0, t + Duration::from_secs(200));
+    push_sales(
+        &engine3,
+        &store3,
+        "new_key",
+        1.0,
+        t + Duration::from_secs(200),
+    );
     // wm = t+200 − 5s = t+195. Ring buffer for "new_key" epoch ≈ t+200.
 
     // Push "new_key" at t+187: delta=200-187=13s, window=10s → TooOld.
@@ -270,11 +293,23 @@ fn bounded_labels() {
     let t4 = epoch_plus_secs(1_700_300_000);
 
     // Anchor advances wm to t4+5.
-    push_sales(&engine4, &store4, "anchor", 1.0, t4 + Duration::from_secs(10));
+    push_sales(
+        &engine4,
+        &store4,
+        "anchor",
+        1.0,
+        t4 + Duration::from_secs(10),
+    );
     // wm = t4+5.
 
     // Target: push at t4+20. Target ring-buffer epoch = t4+20. wm = t4+15.
-    push_sales(&engine4, &store4, "target", 1.0, t4 + Duration::from_secs(20));
+    push_sales(
+        &engine4,
+        &store4,
+        "target",
+        1.0,
+        t4 + Duration::from_secs(20),
+    );
     // wm = t4+15.
 
     // Target: push at t4+7. Gate: 7 >= 15? No → late-drop. Still not right.
@@ -306,12 +341,24 @@ fn bounded_labels() {
     let t5 = epoch_plus_secs(1_700_400_000);
 
     // Establish anchor at t5+10 → wm = t5+5.
-    push_sales(&engine5, &store5, "anchor", 1.0, t5 + Duration::from_secs(10));
+    push_sales(
+        &engine5,
+        &store5,
+        "anchor",
+        1.0,
+        t5 + Duration::from_secs(10),
+    );
     assert_eq!(engine5.late_drops.get("Sales"), 0);
 
     // Push "target" at t5+200 → target ring-buffer epoch = t5+200. wm = t5+195.
     // This also advances wm to t5+195.
-    push_sales(&engine5, &store5, "target", 1.0, t5 + Duration::from_secs(200));
+    push_sales(
+        &engine5,
+        &store5,
+        "target",
+        1.0,
+        t5 + Duration::from_secs(200),
+    );
 
     // Now we have: wm = t5+195, target ring-buffer epoch ≈ t5+200.
     // Event at t5+188: gate check 188 >= 195? No → late-drop.
@@ -398,7 +445,10 @@ fn bounded_labels() {
     // All snapshot entries must use only the three legal reason strings.
     for ((_, _, reason), _) in &snapshot {
         assert!(
-            matches!(reason, DropReason::TooOld | DropReason::TooNew | DropReason::PreEpoch),
+            matches!(
+                reason,
+                DropReason::TooOld | DropReason::TooNew | DropReason::PreEpoch
+            ),
             "unexpected reason variant in snapshot: {:?}",
             reason
         );
@@ -410,8 +460,18 @@ fn bounded_labels() {
     }
 
     // operator_kind labels are all from the compile-time set.
-    let allowed_kinds = ["count", "sum", "avg", "min", "max", "stddev",
-                         "distinct_count", "exact_min", "exact_max", "variance"];
+    let allowed_kinds = [
+        "count",
+        "sum",
+        "avg",
+        "min",
+        "max",
+        "stddev",
+        "distinct_count",
+        "exact_min",
+        "exact_max",
+        "variance",
+    ];
     for ((_, kind, _), _) in &snapshot {
         assert!(
             allowed_kinds.contains(&kind.as_str()),
@@ -475,8 +535,7 @@ fn counters_mutually_exclusive() {
     );
     // Ring-buffer counter must NOT have changed (event never reached the ring buffer).
     assert_eq!(
-        rb_after_gate,
-        rb_before,
+        rb_after_gate, rb_before,
         "ring_buffer_drops must NOT increment for a gate-dropped event (OBS-02)"
     );
 
@@ -532,8 +591,7 @@ fn counters_mutually_exclusive() {
     );
     // late_drops must NOT have changed (gate was bypassed).
     assert_eq!(
-        late_rb_after,
-        late_rb_before,
+        late_rb_after, late_rb_before,
         "late_drops must NOT increment for a ring-buffer-only TooOld drop (OBS-02)"
     );
 

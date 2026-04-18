@@ -151,11 +151,7 @@ async fn test_get_multi_assembles_feature_vector() {
     let (status, _) = send_frame(
         &mut s,
         OP_PUSH_TABLE,
-        &build_push_table_payload(
-            "Subscription",
-            "u1",
-            &serde_json::json!({"plan": "gold"}),
-        ),
+        &build_push_table_payload("Subscription", "u1", &serde_json::json!({"plan": "gold"})),
     )
     .await;
     assert_eq!(status, STATUS_OK);
@@ -187,11 +183,7 @@ async fn test_get_multi_null_for_missing_table_row() {
     let (status, _) = send_frame(
         &mut s,
         OP_PUSH_TABLE,
-        &build_push_table_payload(
-            "UserProfile",
-            "u1",
-            &serde_json::json!({"country": "DE"}),
-        ),
+        &build_push_table_payload("UserProfile", "u1", &serde_json::json!({"country": "DE"})),
     )
     .await;
     assert_eq!(status, STATUS_OK);
@@ -236,11 +228,7 @@ async fn test_get_multi_null_for_tombstoned() {
     let (status, _) = send_frame(
         &mut s,
         OP_PUSH_TABLE,
-        &build_push_table_payload(
-            "UserProfile",
-            "u1",
-            &serde_json::json!({"country": "FR"}),
-        ),
+        &build_push_table_payload("UserProfile", "u1", &serde_json::json!({"country": "FR"})),
     )
     .await;
     assert_eq!(status, STATUS_OK);
@@ -286,11 +274,7 @@ async fn test_get_multi_unknown_table_rejects() {
     let (status, _) = send_frame(
         &mut s,
         OP_PUSH_TABLE,
-        &build_push_table_payload(
-            "UserProfile",
-            "u1",
-            &serde_json::json!({"country": "US"}),
-        ),
+        &build_push_table_payload("UserProfile", "u1", &serde_json::json!({"country": "US"})),
     )
     .await;
     assert_eq!(status, STATUS_OK);
@@ -389,11 +373,7 @@ async fn test_get_multi_single_round_trip() {
     let (status, _) = send_frame(
         &mut s,
         OP_PUSH_TABLE,
-        &build_push_table_payload(
-            "UserProfile",
-            "u1",
-            &serde_json::json!({"country": "US"}),
-        ),
+        &build_push_table_payload("UserProfile", "u1", &serde_json::json!({"country": "US"})),
     )
     .await;
     assert_eq!(status, STATUS_OK);

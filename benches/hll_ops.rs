@@ -2,11 +2,11 @@
 //!
 //! Runs via `cargo bench --bench hll_ops`.
 
+use beava::engine::hll::{DistinctCountOp, Hll};
+use beava::engine::operators::Operator;
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use serde_json::json;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use beava::engine::hll::{DistinctCountOp, Hll};
-use beava::engine::operators::Operator;
 
 fn ts(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)
@@ -56,7 +56,8 @@ fn bench_distinct_count_op(c: &mut Criterion) {
         let t = ts(1_000_000);
         // Warm past the HLL threshold.
         for i in 0..2000 {
-            op.push(&json!({ "d": format!("w{}", i) }), None, t).unwrap();
+            op.push(&json!({ "d": format!("w{}", i) }), None, t)
+                .unwrap();
         }
         let mut i: u64 = 2000;
         b.iter(|| {

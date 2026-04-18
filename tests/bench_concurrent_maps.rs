@@ -221,8 +221,9 @@ fn bench_sharded_mutex() {
     use std::collections::HashMap;
     use std::hash::{BuildHasher, Hasher};
     const N_SHARDS: usize = 64;
-    let shards: Vec<parking_lot::Mutex<HashMap<String, Entity>>> =
-        (0..N_SHARDS).map(|_| parking_lot::Mutex::new(HashMap::new())).collect();
+    let shards: Vec<parking_lot::Mutex<HashMap<String, Entity>>> = (0..N_SHARDS)
+        .map(|_| parking_lot::Mutex::new(HashMap::new()))
+        .collect();
     let map: Arc<Vec<parking_lot::Mutex<HashMap<String, Entity>>>> = Arc::new(shards);
     let hasher_state = ahash::RandomState::with_seeds(1, 2, 3, 4);
     let label = "sharded-64 Mutex<HashMap>";

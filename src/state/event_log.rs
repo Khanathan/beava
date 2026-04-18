@@ -88,11 +88,7 @@ pub struct LockFreeStreamLog {
 impl LockFreeStreamLog {
     /// Open (or create) a log file at `path` in append mode.
     pub fn open(path: &Path, stream_name: String) -> io::Result<Self> {
-        let file = File::options()
-            .create(true)
-            
-            .append(true)
-            .open(path)?;
+        let file = File::options().create(true).append(true).open(path)?;
         Ok(Self {
             fd: OwnedFd::from(file),
             stream_name,
@@ -244,9 +240,7 @@ impl EventLog {
         // registrations for the same stream). We do the open here, outside
         // the DashMap slot, to keep the entry closure simple.
         let log = LockFreeStreamLog::open(&path, stream_name.to_string())?;
-        self.writers
-            .entry(stream_name.to_string())
-            .or_insert(log);
+        self.writers.entry(stream_name.to_string()).or_insert(log);
         self.history_ttls
             .entry(stream_name.to_string())
             .or_insert_with(|| history_ttl.unwrap_or(DEFAULT_HISTORY_TTL));
@@ -897,7 +891,10 @@ mod tests {
 
         let mut names: Vec<String> = log.registered_streams();
         names.sort();
-        assert_eq!(names, vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        assert_eq!(
+            names,
+            vec!["A".to_string(), "B".to_string(), "C".to_string()]
+        );
     }
 
     #[test]
@@ -1116,8 +1113,12 @@ mod tests {
             let bar_c = Arc::clone(&barrier);
             handles.push(thread::spawn(move || {
                 bar_c.wait();
-                let per_event: Vec<u8> = (0..128).map(|i| (tid as u8).wrapping_add(i as u8)).collect();
-                let batch: Vec<&[u8]> = (0..EVENTS_PER_BATCH).map(|_| per_event.as_slice()).collect();
+                let per_event: Vec<u8> = (0..128)
+                    .map(|i| (tid as u8).wrapping_add(i as u8))
+                    .collect();
+                let batch: Vec<&[u8]> = (0..EVENTS_PER_BATCH)
+                    .map(|_| per_event.as_slice())
+                    .collect();
                 for _ in 0..BATCHES_PER_THREAD {
                     log_c.append_many("Y", &batch, ts(1000)).unwrap();
                 }
@@ -1158,8 +1159,15 @@ mod tests {
         let result = log
             .append_with_fsync("FsyncStream", b"durable_payload", now)
             .await;
-        assert!(result.is_ok(), "append_with_fsync returned error: {:?}", result);
-        assert!(result.unwrap(), "append_with_fsync returned false (stream not registered?)");
+        assert!(
+            result.is_ok(),
+            "append_with_fsync returned error: {:?}",
+            result
+        );
+        assert!(
+            result.unwrap(),
+            "append_with_fsync returned false (stream not registered?)"
+        );
 
         // Entry must be readable after fsync.
         let entries = log.read_entries("FsyncStream").unwrap();

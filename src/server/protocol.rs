@@ -245,7 +245,9 @@ pub enum Command {
     /// typed `BeavaError::NotImplemented` (STATUS_ERROR on the wire) WITHOUT
     /// tearing down the connection (T-25-01-04). `op_name` identifies which
     /// reserved opcode so the error message remains descriptive.
-    ReservedNotImplemented { op_name: &'static str },
+    ReservedNotImplemented {
+        op_name: &'static str,
+    },
     /// Phase 27-01: scope-aware snapshot fetch. Decoded by `parse_command`
     /// from `OP_SNAPSHOT_FETCH` frames; the handler performs auth + scope
     /// validation itself before doing any snapshot I/O.
@@ -257,14 +259,20 @@ pub enum Command {
     /// sent a zero-length token, which the handler rejects with
     /// STATUS_ERROR "unauthorized" unless the server also has `admin_token`
     /// set to `Some("")` (not a supported configuration).
-    SnapshotFetch { admin_token: String, scope: Scope },
+    SnapshotFetch {
+        admin_token: String,
+        scope: Scope,
+    },
     /// Phase 27-02: open a live-subscribe stream. The wire shape matches
     /// `SnapshotFetch` — the same `[u16 token_len][token][Scope]` payload
     /// mirrored across both replica opcodes. The handler owns the socket
     /// for the subscription's lifetime; `handle_connection` returns after
     /// spawning the drain task, so SUBSCRIBE cannot mix with any other
     /// opcode on the same connection.
-    Subscribe { admin_token: String, scope: Scope },
+    Subscribe {
+        admin_token: String,
+        scope: Scope,
+    },
     /// Phase 35-01: scoped historical-log fetch. Decoded by `parse_command`
     /// from `OP_LOG_FETCH` frames. The wire shape is:
     ///   `[u16 token_len][token][u64 BE from_ts_millis][Scope]`
@@ -323,11 +331,22 @@ impl std::fmt::Display for ScopeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ScopeError::EmptyStreams => write!(f, "scope.streams must be non-empty"),
-            ScopeError::UnknownStream(s) => write!(f, "scope.streams references unknown stream: {}", s),
-            ScopeError::KeysAndPrefix => write!(f, "scope.keys and scope.key_prefix are mutually exclusive"),
-            ScopeError::PullNotImplemented(p) => write!(f, "scope.pull='{}' is not implemented in v0 (only 'all')", p),
+            ScopeError::UnknownStream(s) => {
+                write!(f, "scope.streams references unknown stream: {}", s)
+            }
+            ScopeError::KeysAndPrefix => {
+                write!(f, "scope.keys and scope.key_prefix are mutually exclusive")
+            }
+            ScopeError::PullNotImplemented(p) => write!(
+                f,
+                "scope.pull='{}' is not implemented in v0 (only 'all')",
+                p
+            ),
             ScopeError::TooManyKeys(n) => write!(f, "scope.keys.len()={} exceeds cap of 10000", n),
-            ScopeError::EmptyPrefix => write!(f, "scope.key_prefix must not be an empty string (omit instead)"),
+            ScopeError::EmptyPrefix => write!(
+                f,
+                "scope.key_prefix must not be an empty string (omit instead)"
+            ),
             ScopeError::EmptyKey => write!(f, "scope.keys must not contain empty strings"),
         }
     }
@@ -382,7 +401,9 @@ pub fn read_scope(buf: &mut &[u8]) -> Result<Scope, BeavaError> {
         streams.push(read_string(buf)?);
     }
     if buf.is_empty() {
-        return Err(BeavaError::Protocol("scope truncated: need has_keys byte".into()));
+        return Err(BeavaError::Protocol(
+            "scope truncated: need has_keys byte".into(),
+        ));
     }
     let has_keys = buf[0];
     *buf = &buf[1..];
@@ -390,7 +411,9 @@ pub fn read_scope(buf: &mut &[u8]) -> Result<Scope, BeavaError> {
         0 => None,
         1 => {
             if buf.len() < 4 {
-                return Err(BeavaError::Protocol("scope.keys truncated: need 4 bytes for count".into()));
+                return Err(BeavaError::Protocol(
+                    "scope.keys truncated: need 4 bytes for count".into(),
+                ));
             }
             let n_keys = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
             *buf = &buf[4..];

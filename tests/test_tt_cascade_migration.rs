@@ -11,9 +11,7 @@ use std::time::SystemTime;
 
 use ahash::AHashMap;
 use beava::engine::pipeline::PipelineEngine;
-use beava::engine::register::{
-    v0_join_to_stream_def, v0_source_to_stream_def, V0RegisterPayload,
-};
+use beava::engine::register::{v0_join_to_stream_def, v0_source_to_stream_def, V0RegisterPayload};
 use beava::state::store::{StateStore, TableRowState};
 use beava::types::FeatureValue;
 
@@ -36,10 +34,8 @@ fn build_engine(
     let mut engine = PipelineEngine::new();
     let mut raws: Vec<(String, serde_json::Value)> = Vec::new();
 
-    for (name, fields, key_clause) in [
-        ("A", a_fields, a_key_clause),
-        ("B", b_fields, b_key_clause),
-    ] {
+    for (name, fields, key_clause) in [("A", a_fields, a_key_clause), ("B", b_fields, b_key_clause)]
+    {
         let json = format!(
             r#"{{"name":"{}","kind":"table","mode":"overwrite",{},"fields":{}}}"#,
             name, key_clause, fields
@@ -54,10 +50,8 @@ fn build_engine(
         raws.push((name.into(), val));
     }
 
-    let on_arr = serde_json::to_string(
-        &join_on.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-    )
-    .unwrap();
+    let on_arr =
+        serde_json::to_string(&join_on.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap();
     let j_json = format!(
         r#"{{"name":"J","kind":"table","mode":"overwrite",{},"fields":{},
             "join":{{"op":"join","left":"A","right":"B","on":{},"type":"{}","shape":"table_table"}},
@@ -123,8 +117,7 @@ const A_FIELDS_X: &str =
     r#"{"user_id":{"type":"str","optional":false},"x":{"type":"int","optional":false}}"#;
 const B_FIELDS_Y: &str =
     r#"{"user_id":{"type":"str","optional":false},"y":{"type":"int","optional":false}}"#;
-const FIELDS_XY: &str =
-    r#"{"user_id":{"type":"str","optional":false},"x":{"type":"int","optional":false},"y":{"type":"int","optional":false}}"#;
+const FIELDS_XY: &str = r#"{"user_id":{"type":"str","optional":false},"x":{"type":"int","optional":false},"y":{"type":"int","optional":false}}"#;
 const KEY_USER: &str = r#""key_field":"user_id""#;
 
 // ---------------------------------------------------------------------------
@@ -134,13 +127,21 @@ const KEY_USER: &str = r#""key_field":"user_id""#;
 #[test]
 fn cascade_migration_inner_both_live_merges() {
     let (engine, store) = build_engine(
-        A_FIELDS_X, KEY_USER, B_FIELDS_Y, KEY_USER, &["user_id"], "inner", FIELDS_XY,
+        A_FIELDS_X,
+        KEY_USER,
+        B_FIELDS_Y,
+        KEY_USER,
+        &["user_id"],
+        "inner",
+        FIELDS_XY,
     );
     push_table(&engine, &store, "A", "u1", &[("x", FeatureValue::Int(1))]);
     // Only A live: inner should NOT emit a Live row.
     let j = store.get_table_row("u1", "J");
     assert!(
-        j.as_ref().map(|r| !matches!(r.state, TableRowState::Live)).unwrap_or(true),
+        j.as_ref()
+            .map(|r| !matches!(r.state, TableRowState::Live))
+            .unwrap_or(true),
         "inner with only left must not emit Live"
     );
 
@@ -154,7 +155,13 @@ fn cascade_migration_inner_both_live_merges() {
 #[test]
 fn cascade_migration_inner_right_tombstone_retracts_output() {
     let (engine, store) = build_engine(
-        A_FIELDS_X, KEY_USER, B_FIELDS_Y, KEY_USER, &["user_id"], "inner", FIELDS_XY,
+        A_FIELDS_X,
+        KEY_USER,
+        B_FIELDS_Y,
+        KEY_USER,
+        &["user_id"],
+        "inner",
+        FIELDS_XY,
     );
     push_table(&engine, &store, "A", "u1", &[("x", FeatureValue::Int(1))]);
     push_table(&engine, &store, "B", "u1", &[("y", FeatureValue::Int(2))]);
@@ -162,7 +169,9 @@ fn cascade_migration_inner_right_tombstone_retracts_output() {
     assert!(matches!(j.state, TableRowState::Live));
 
     delete_table(&engine, &store, "B", "u1");
-    let j = store.get_table_row("u1", "J").expect("J row still present as tombstone");
+    let j = store
+        .get_table_row("u1", "J")
+        .expect("J row still present as tombstone");
     assert!(
         matches!(j.state, TableRowState::Tombstoned { .. }),
         "inner + delete-right must tombstone output, got {:?}",
@@ -173,10 +182,18 @@ fn cascade_migration_inner_right_tombstone_retracts_output() {
 #[test]
 fn cascade_migration_left_join_null_pads_missing_right() {
     let (engine, store) = build_engine(
-        A_FIELDS_X, KEY_USER, B_FIELDS_Y, KEY_USER, &["user_id"], "left", FIELDS_XY,
+        A_FIELDS_X,
+        KEY_USER,
+        B_FIELDS_Y,
+        KEY_USER,
+        &["user_id"],
+        "left",
+        FIELDS_XY,
     );
     push_table(&engine, &store, "A", "u1", &[("x", FeatureValue::Int(7))]);
-    let j = store.get_table_row("u1", "J").expect("left join emits on left-only");
+    let j = store
+        .get_table_row("u1", "J")
+        .expect("left join emits on left-only");
     assert!(matches!(j.state, TableRowState::Live));
     assert_eq!(j.fields.get("x"), Some(&FeatureValue::Int(7)));
     assert_eq!(j.fields.get("y"), Some(&FeatureValue::Missing));
@@ -188,7 +205,9 @@ fn cascade_migration_left_join_null_pads_missing_right() {
 
     // Tombstone B → left join keeps left, right fields go back to null.
     delete_table(&engine, &store, "B", "u1");
-    let j = store.get_table_row("u1", "J").expect("left join row still Live");
+    let j = store
+        .get_table_row("u1", "J")
+        .expect("left join row still Live");
     assert!(matches!(j.state, TableRowState::Live));
     assert_eq!(j.fields.get("x"), Some(&FeatureValue::Int(7)));
     assert_eq!(j.fields.get("y"), Some(&FeatureValue::Missing));
@@ -201,18 +220,32 @@ fn cascade_migration_left_join_null_pads_missing_right() {
 
 #[test]
 fn cascade_migration_collision_suffix_through_real_storage() {
-    let a_fields = r#"{"user_id":{"type":"str","optional":false},"status":{"type":"str","optional":false}}"#;
-    let b_fields = r#"{"user_id":{"type":"str","optional":false},"status":{"type":"str","optional":false}}"#;
+    let a_fields =
+        r#"{"user_id":{"type":"str","optional":false},"status":{"type":"str","optional":false}}"#;
+    let b_fields =
+        r#"{"user_id":{"type":"str","optional":false},"status":{"type":"str","optional":false}}"#;
     let joined = r#"{"user_id":{"type":"str","optional":false},"status":{"type":"str","optional":false},"status_right":{"type":"str","optional":false}}"#;
     let (engine, store) = build_engine(
-        a_fields, KEY_USER, b_fields, KEY_USER, &["user_id"], "inner", joined,
+        a_fields,
+        KEY_USER,
+        b_fields,
+        KEY_USER,
+        &["user_id"],
+        "inner",
+        joined,
     );
     push_table(
-        &engine, &store, "A", "u1",
+        &engine,
+        &store,
+        "A",
+        "u1",
         &[("status", FeatureValue::String("left".into()))],
     );
     push_table(
-        &engine, &store, "B", "u1",
+        &engine,
+        &store,
+        "B",
+        "u1",
         &[("status", FeatureValue::String("right".into()))],
     );
     let j = store.get_table_row("u1", "J").expect("J live");
@@ -296,7 +329,11 @@ fn cascade_migration_recurses_through_chain_a_b_j1_c_j2() {
 
     register_join(&mut engine, &mut raws, "J1", "A", "B", FIELDS_XY);
     register_join(
-        &mut engine, &mut raws, "J2", "J1", "C",
+        &mut engine,
+        &mut raws,
+        "J2",
+        "J1",
+        "C",
         r#"{"user_id":{"type":"str","optional":false},"x":{"type":"int","optional":false},"y":{"type":"int","optional":false},"z":{"type":"int","optional":false}}"#,
     );
 

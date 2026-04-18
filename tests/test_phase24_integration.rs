@@ -37,8 +37,7 @@ use ahash::AHashMap;
 use beava::engine::event_time::WATERMARK_LATENESS;
 use beava::engine::pipeline::PipelineEngine;
 use beava::engine::register::{
-    v0_aggregation_to_stream_def, v0_join_to_stream_def, v0_source_to_stream_def,
-    V0RegisterPayload,
+    v0_aggregation_to_stream_def, v0_join_to_stream_def, v0_source_to_stream_def, V0RegisterPayload,
 };
 use beava::state::store::{StateStore, TableRowState, TOMBSTONE_GRACE};
 use beava::types::FeatureValue;
@@ -163,11 +162,7 @@ fn build_full_dag() -> (PipelineEngine, StateStore) {
     };
     let fl = |name: &str| -> Option<Vec<String>> {
         match name {
-            "UserProfile" => Some(vec![
-                "user_id".into(),
-                "country".into(),
-                "tier".into(),
-            ]),
+            "UserProfile" => Some(vec!["user_id".into(), "country".into(), "tier".into()]),
             "RiskScore" => Some(vec!["user_id".into(), "score".into()]),
             _ => None,
         }
@@ -188,10 +183,7 @@ fn push_purchase(
     amount: f64,
     event_time: SystemTime,
 ) {
-    let et_ms = event_time
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64;
+    let et_ms = event_time.duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
 
     let wm_opt = engine.watermarks.watermark("Purchases");
     if let Some(wm) = wm_opt {
@@ -221,10 +213,7 @@ fn upsert_profile(
     now: SystemTime,
 ) {
     let mut fields = AHashMap::new();
-    fields.insert(
-        "country".into(),
-        FeatureValue::String(country.into()),
-    );
+    fields.insert("country".into(), FeatureValue::String(country.into()));
     if let Some(t) = tier {
         fields.insert("tier".into(), FeatureValue::String(t.into()));
     }
@@ -249,12 +238,7 @@ fn upsert_risk(
         .expect("cascade upsert RiskScore");
 }
 
-fn tombstone_profile(
-    engine: &PipelineEngine,
-    store: &StateStore,
-    user_id: &str,
-    now: SystemTime,
-) {
+fn tombstone_profile(engine: &PipelineEngine, store: &StateStore, user_id: &str, now: SystemTime) {
     store.tombstone_table_row(user_id, "UserProfile", now);
     engine
         .cascade_tt_after_delete("UserProfile", user_id, store, now)
@@ -285,9 +269,7 @@ fn integ_full_dag_in_order_happy_path() {
     upsert_risk(&engine, &store, "u1", 42, t0);
 
     // UserRisk must be Live now — both TT-join inputs are Live.
-    let ur = store
-        .get_table_row("u1", "UserRisk")
-        .expect("UserRisk row");
+    let ur = store.get_table_row("u1", "UserRisk").expect("UserRisk row");
     assert!(
         matches!(ur.state, TableRowState::Live),
         "UserRisk should be Live after both TT inputs upserted, got {:?}",
@@ -338,7 +320,8 @@ fn integ_full_dag_in_order_happy_path() {
     // γ propagation: PurchasesAgg.wm attached from Purchases.wm.
     let agg_wm = engine.watermarks.watermark("PurchasesAgg");
     assert_eq!(
-        agg_wm, Some(wm),
+        agg_wm,
+        Some(wm),
         "γ: aggregation Table inherits source Stream watermark"
     );
 }
@@ -357,23 +340,11 @@ fn integ_out_of_order_within_5s_lands_in_bucket() {
     upsert_risk(&engine, &store, "u1", 7, t0);
 
     for amt in [10.0, 20.0, 30.0] {
-        push_purchase(
-            &engine,
-            &store,
-            "u1",
-            amt,
-            t0 + Duration::from_secs(100),
-        );
+        push_purchase(&engine, &store, "u1", amt, t0 + Duration::from_secs(100));
     }
 
     // Straggler at t+97 — wm = 100 − 5 = 95, so 97 ≥ 95 → accepted.
-    push_purchase(
-        &engine,
-        &store,
-        "u1",
-        40.0,
-        t0 + Duration::from_secs(97),
-    );
+    push_purchase(&engine, &store, "u1", 40.0, t0 + Duration::from_secs(97));
 
     assert_eq!(
         engine.late_drops.get("Purchases"),
@@ -510,10 +481,18 @@ fn integ_gc_tombstones_after_7d_grace_removes_rows() {
     upsert_risk(&engine, &store, "u_live", 10, t0);
 
     push_purchase(
-        &engine, &store, "u_tomb", 10.0, t0 + Duration::from_secs(100),
+        &engine,
+        &store,
+        "u_tomb",
+        10.0,
+        t0 + Duration::from_secs(100),
     );
     push_purchase(
-        &engine, &store, "u_live", 20.0, t0 + Duration::from_secs(101),
+        &engine,
+        &store,
+        "u_live",
+        20.0,
+        t0 + Duration::from_secs(101),
     );
 
     // Tombstone u_tomb's UserProfile → UserRisk tombstones via cascade.

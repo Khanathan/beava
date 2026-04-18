@@ -33,9 +33,7 @@ use tower::ServiceExt;
 use beava::engine::event_time::{parse_event_time, WATERMARK_LATENESS};
 use beava::engine::pipeline::PipelineEngine;
 use beava::server::http::build_router;
-use beava::server::protocol::{
-    self, OP_PUSH, OP_REGISTER, STATUS_OK, TYPE_I64, TYPE_STR,
-};
+use beava::server::protocol::{self, OP_PUSH, OP_REGISTER, STATUS_OK, TYPE_I64, TYPE_STR};
 use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
 use beava::state::store::StateStore;
 
@@ -192,22 +190,12 @@ async fn late_event_dropped_with_counter_increment() {
     register_clicks_stream(&mut s, "Clicks").await;
 
     // First event at t=100 → wm=95.
-    let (status, _) = send_frame(
-        &mut s,
-        OP_PUSH,
-        &build_push_with_et("Clicks", "u1", 100),
-    )
-    .await;
+    let (status, _) = send_frame(&mut s, OP_PUSH, &build_push_with_et("Clicks", "u1", 100)).await;
     assert_eq!(status, STATUS_OK);
 
     // Now push at t=94 (< watermark=95) → dropped. Response is still OK
     // (silent drop per plan); the counter captures the event.
-    let (status, _) = send_frame(
-        &mut s,
-        OP_PUSH,
-        &build_push_with_et("Clicks", "u1", 94),
-    )
-    .await;
+    let (status, _) = send_frame(&mut s, OP_PUSH, &build_push_with_et("Clicks", "u1", 94)).await;
     assert_eq!(status, STATUS_OK);
 
     let engine = state.engine.read();
@@ -222,30 +210,17 @@ async fn late_event_within_5s_window_accepted() {
     register_clicks_stream(&mut s, "Clicks").await;
 
     // First event at t=100 → wm=95.
-    let (status, _) = send_frame(
-        &mut s,
-        OP_PUSH,
-        &build_push_with_et("Clicks", "u1", 100),
-    )
-    .await;
+    let (status, _) = send_frame(&mut s, OP_PUSH, &build_push_with_et("Clicks", "u1", 100)).await;
     assert_eq!(status, STATUS_OK);
 
     // Out-of-order event at t=96 (>= wm=95) → accepted.
-    let (status, _) = send_frame(
-        &mut s,
-        OP_PUSH,
-        &build_push_with_et("Clicks", "u1", 96),
-    )
-    .await;
+    let (status, _) = send_frame(&mut s, OP_PUSH, &build_push_with_et("Clicks", "u1", 96)).await;
     assert_eq!(status, STATUS_OK);
 
     let engine = state.engine.read();
     assert_eq!(engine.late_drops.get("Clicks"), 0);
     // observed_max stays at 100 (96 < 100).
-    assert_eq!(
-        engine.watermarks.observed_max("Clicks"),
-        Some(sec(100))
-    );
+    assert_eq!(engine.watermarks.observed_max("Clicks"), Some(sec(100)));
 }
 
 #[tokio::test]
@@ -256,40 +231,20 @@ async fn per_stream_watermark_isolation() {
     register_clicks_stream(&mut s, "StreamB").await;
 
     // StreamA advances to t=1000 → wm=995.
-    let (status, _) = send_frame(
-        &mut s,
-        OP_PUSH,
-        &build_push_with_et("StreamA", "u1", 1000),
-    )
-    .await;
+    let (status, _) = send_frame(&mut s, OP_PUSH, &build_push_with_et("StreamA", "u1", 1000)).await;
     assert_eq!(status, STATUS_OK);
 
     // StreamB at t=50 — only the first observation; wm set to 50-5=45.
-    let (status, _) = send_frame(
-        &mut s,
-        OP_PUSH,
-        &build_push_with_et("StreamB", "u1", 50),
-    )
-    .await;
+    let (status, _) = send_frame(&mut s, OP_PUSH, &build_push_with_et("StreamB", "u1", 50)).await;
     assert_eq!(status, STATUS_OK);
 
     // A second StreamA push at t=500 must be dropped (500 < 995); StreamB
     // is unaffected.
-    let (status, _) = send_frame(
-        &mut s,
-        OP_PUSH,
-        &build_push_with_et("StreamA", "u1", 500),
-    )
-    .await;
+    let (status, _) = send_frame(&mut s, OP_PUSH, &build_push_with_et("StreamA", "u1", 500)).await;
     assert_eq!(status, STATUS_OK);
 
     // A StreamB push at t=60 must be accepted (60 > 45).
-    let (status, _) = send_frame(
-        &mut s,
-        OP_PUSH,
-        &build_push_with_et("StreamB", "u1", 60),
-    )
-    .await;
+    let (status, _) = send_frame(&mut s, OP_PUSH, &build_push_with_et("StreamB", "u1", 60)).await;
     assert_eq!(status, STATUS_OK);
 
     let engine = state.engine.read();

@@ -9,9 +9,7 @@ use serde_json::json;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use beava::engine::hll::DistinctCountOp;
-use beava::engine::operators::{
-    Operator, PercentileOp, TopKOp, PERCENTILE_EXACT_THRESHOLD,
-};
+use beava::engine::operators::{Operator, PercentileOp, TopKOp, PERCENTILE_EXACT_THRESHOLD};
 use beava::types::FeatureValue;
 
 fn ts(secs: u64) -> SystemTime {
@@ -38,7 +36,8 @@ fn percentile_transition_preserves_prior_values() {
     };
     assert_eq!(op.mode_name(), "exact");
     // One more event tips to Sketch.
-    op.push(&json!({ "v": PERCENTILE_EXACT_THRESHOLD as f64 }), None, t).unwrap();
+    op.push(&json!({ "v": PERCENTILE_EXACT_THRESHOLD as f64 }), None, t)
+        .unwrap();
     assert_eq!(op.mode_name(), "sketch");
     let post = match op.read(t) {
         FeatureValue::Float(f) => f,
@@ -97,7 +96,8 @@ fn distinct_count_transition_preserves_cardinality_within_tolerance() {
     let t = ts(1_000_000);
     // Just under threshold → exact.
     for i in 0..1000 {
-        op.push(&json!({ "d": format!("u{}", i) }), None, t).unwrap();
+        op.push(&json!({ "d": format!("u{}", i) }), None, t)
+            .unwrap();
     }
     assert_eq!(op.mode_name(), "exact");
     let pre = match op.read(t) {
@@ -107,7 +107,8 @@ fn distinct_count_transition_preserves_cardinality_within_tolerance() {
     assert!((pre - 1000.0).abs() < 1e-9);
     // Cross threshold.
     for i in 1000..1500 {
-        op.push(&json!({ "d": format!("u{}", i) }), None, t).unwrap();
+        op.push(&json!({ "d": format!("u{}", i) }), None, t)
+            .unwrap();
     }
     assert_eq!(op.mode_name(), "sketch");
     let post = match op.read(t) {

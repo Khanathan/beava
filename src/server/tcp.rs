@@ -232,8 +232,7 @@ pub struct ConcurrentAppState {
     /// is `entity_key -> {feature_name: feature_value}` JSON. Exposed via
     /// `GET /extracts`. Empty for non-replica servers and for replicas
     /// launched without `--replica-extract-at`.
-    pub extracted_history:
-        dashmap::DashMap<u64, dashmap::DashMap<String, serde_json::Value>>,
+    pub extracted_history: dashmap::DashMap<u64, dashmap::DashMap<String, serde_json::Value>>,
 }
 
 /// Phase 41-01 T4: only every Nth PUSH records into the latency histogram.
@@ -379,8 +378,8 @@ pub fn make_concurrent_state_full(
         replica_mode: AtomicBool::new(false),
         replica_last_applied_ts_ms: std::sync::atomic::AtomicU64::new(0),
         events_total: std::sync::atomic::AtomicU64::new(0),
-        events_http: std::sync::atomic::AtomicU64::new(0),   // Phase 45-04 A5
-        events_tcp: std::sync::atomic::AtomicU64::new(0),    // Phase 45-04 A5
+        events_http: std::sync::atomic::AtomicU64::new(0), // Phase 45-04 A5
+        events_tcp: std::sync::atomic::AtomicU64::new(0),  // Phase 45-04 A5
         last_push_latency_nanos: std::sync::atomic::AtomicU64::new(0),
         atomic_throughput: crate::server::throughput::AtomicThroughput::new(),
         latency_sample_counter: std::sync::atomic::AtomicU64::new(0),
@@ -459,7 +458,9 @@ async fn handle_connection(
         let n_ok = results.iter().filter(|r| r.is_ok()).count() as u64;
         // Phase 45-04 A5: TCP async-batch path — bump labeled counter.
         if n_ok > 0 {
-            state.events_tcp.fetch_add(n_ok, std::sync::atomic::Ordering::Relaxed);
+            state
+                .events_tcp
+                .fetch_add(n_ok, std::sync::atomic::Ordering::Relaxed);
         }
         for (ev, res) in batch.iter().zip(results.iter()) {
             if let Err(err) = res {
@@ -674,7 +675,9 @@ async fn handle_connection(
                                 // Phase 45-04 A5: TCP MSET-batch path — bump labeled counter.
                                 let n_ok_tcp = results.iter().filter(|r| r.is_ok()).count() as u64;
                                 if n_ok_tcp > 0 {
-                                    state.events_tcp.fetch_add(n_ok_tcp, std::sync::atomic::Ordering::Relaxed);
+                                    state
+                                        .events_tcp
+                                        .fetch_add(n_ok_tcp, std::sync::atomic::Ordering::Relaxed);
                                 }
                                 for (i, (ev, res)) in batch.iter().zip(results.iter()).enumerate() {
                                     if let Err(err) = res {
@@ -762,15 +765,9 @@ async fn handle_connection(
         // read loop — the handler writes both response frames itself and
         // may also write a single STATUS_ERROR envelope on validation /
         // auth failure.
-        if let Command::SnapshotFetch {
-            admin_token,
-            scope,
-        } = cmd
-        {
+        if let Command::SnapshotFetch { admin_token, scope } = cmd {
             flush_drain(&mut writer, &mut pending_drain).await?;
-            if let Err(e) =
-                handle_snapshot_fetch(&mut writer, &admin_token, scope, &state).await
-            {
+            if let Err(e) = handle_snapshot_fetch(&mut writer, &admin_token, scope, &state).await {
                 let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
                 writer.write_all(&resp).await?;
                 writer.flush().await?;
@@ -785,11 +782,7 @@ async fn handle_connection(
         // notification-drain and reader-EOF). When it returns, the
         // connection is done — we return from `handle_connection` rather
         // than re-entering the main read loop.
-        if let Command::Subscribe {
-            admin_token,
-            scope,
-        } = cmd
-        {
+        if let Command::Subscribe { admin_token, scope } = cmd {
             flush_drain(&mut writer, &mut pending_drain).await?;
             handle_subscribe(&mut reader, &mut writer, &admin_token, scope, &state).await?;
             return Ok(());
@@ -850,7 +843,9 @@ async fn handle_connection(
                 // Phase 45-04 A5: TCP async-batch path (second site) — bump labeled counter.
                 let n_ok_tcp2 = results.iter().filter(|r| r.is_ok()).count() as u64;
                 if n_ok_tcp2 > 0 {
-                    state.events_tcp.fetch_add(n_ok_tcp2, std::sync::atomic::Ordering::Relaxed);
+                    state
+                        .events_tcp
+                        .fetch_add(n_ok_tcp2, std::sync::atomic::Ordering::Relaxed);
                 }
                 for (i, (ev, res)) in batch.iter().zip(results.iter()).enumerate() {
                     if let Err(err) = res {
@@ -975,9 +970,8 @@ pub fn replica_ingest(
                 BeavaError::Protocol(format!("replica_ingest: binary decode: {}", e))
             })?
         }
-        LOG_FMT_JSON => serde_json::from_slice(body).map_err(|e| {
-            BeavaError::Protocol(format!("replica_ingest: json decode: {}", e))
-        })?,
+        LOG_FMT_JSON => serde_json::from_slice(body)
+            .map_err(|e| BeavaError::Protocol(format!("replica_ingest: json decode: {}", e)))?,
         other => {
             return Err(BeavaError::Protocol(format!(
                 "replica_ingest: unknown log fmt byte 0x{:02x}",
@@ -1097,8 +1091,7 @@ pub fn replica_ingest_batch(
             }
         };
 
-        let event_time =
-            SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(*ts_ms);
+        let event_time = SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(*ts_ms);
 
         // Primary + cascade push (no features — replica semantics).
         if let Err(e) =
@@ -1130,9 +1123,7 @@ pub fn replica_ingest_batch(
                 }
             }
         }
-        let entry = per_stream_log
-            .entry(stream_name.clone())
-            .or_default();
+        let entry = per_stream_log.entry(stream_name.clone()).or_default();
         entry.0.push(log_payload.clone());
         entry.1.push(event_time);
         *per_stream_counts.entry(stream_name.clone()).or_insert(0) += 1;
@@ -1151,17 +1142,12 @@ pub fn replica_ingest_batch(
                     None => (true, None),
                 };
                 if should_log {
-                    let ds_entry = per_stream_log
-                        .entry(ds_name.clone())
-                        .or_default();
+                    let ds_entry = per_stream_log.entry(ds_name.clone()).or_default();
                     ds_entry.0.push(log_payload.clone());
                     ds_entry.1.push(event_time);
                 }
                 if let Some(k) = dirty_key {
-                    per_stream_dirty
-                        .entry(ds_name.clone())
-                        .or_default()
-                        .push(k);
+                    per_stream_dirty.entry(ds_name.clone()).or_default().push(k);
                 }
             }
         }
@@ -1177,23 +1163,15 @@ pub fn replica_ingest_batch(
             if cascade_targets.iter().any(|ct| ct == target_name) {
                 continue;
             }
-            if let Some(serde_json::Value::String(k)) =
-                payload_value.get(target_key_field.as_str())
+            if let Some(serde_json::Value::String(k)) = payload_value.get(target_key_field.as_str())
             {
                 if !k.is_empty() {
-                    let _ = engine.push_no_features(
-                        target_name,
-                        &payload_value,
-                        store,
-                        event_time,
-                    );
+                    let _ = engine.push_no_features(target_name, &payload_value, store, event_time);
                     per_stream_dirty
                         .entry(target_name.clone())
                         .or_default()
                         .push(k.clone());
-                    let tgt_entry = per_stream_log
-                        .entry(target_name.clone())
-                        .or_default();
+                    let tgt_entry = per_stream_log.entry(target_name.clone()).or_default();
                     tgt_entry.0.push(log_payload.clone());
                     tgt_entry.1.push(event_time);
                 }
@@ -1764,8 +1742,7 @@ pub fn handle_push_batch(
             kept_idxs.push(idx);
         }
 
-        let per_event =
-            engine.push_batch_with_cascade_no_features(stream_name, &kept, store);
+        let per_event = engine.push_batch_with_cascade_no_features(stream_name, &kept, store);
 
         // Scatter errors to result slots.
         for (k_idx, res) in per_event.into_iter().enumerate() {
@@ -1831,8 +1808,7 @@ pub fn handle_push_batch(
             // D-01 (CORR-01): kept now holds (&Value, SystemTime) pairs so
             // push_batch_with_cascade_no_features receives a per-event
             // event-time. The old `min_et` collapse is removed entirely.
-            let mut kept: Vec<(&serde_json::Value, SystemTime)> =
-                Vec::with_capacity(indices.len());
+            let mut kept: Vec<(&serde_json::Value, SystemTime)> = Vec::with_capacity(indices.len());
             let mut kept_orig: Vec<usize> = Vec::with_capacity(indices.len());
             for &i in indices {
                 let et =
@@ -1849,8 +1825,7 @@ pub fn handle_push_batch(
                 kept_orig.push(i);
             }
 
-            let per_event =
-                engine.push_batch_with_cascade_no_features(stream_name, &kept, store);
+            let per_event = engine.push_batch_with_cascade_no_features(stream_name, &kept, store);
 
             for (k_idx, res) in per_event.into_iter().enumerate() {
                 if let Err(e) = res {
@@ -2638,9 +2613,8 @@ fn handle_get_multi(
         body.push(b':');
         match state.store.collect_table_row_view(key, name, now) {
             Some(row) => {
-                let row_bytes = serde_json::to_vec(&row).map_err(|e| {
-                    BeavaError::Protocol(format!("GET_MULTI row serialize: {}", e))
-                })?;
+                let row_bytes = serde_json::to_vec(&row)
+                    .map_err(|e| BeavaError::Protocol(format!("GET_MULTI row serialize: {}", e)))?;
                 body.extend_from_slice(&row_bytes);
             }
             None => body.extend_from_slice(b"null"),
@@ -2742,7 +2716,8 @@ pub async fn run_backfill(
                 // falling back to entry.timestamp only when the payload has no _event_time.
                 // This matches live-ingest semantics exactly so crash-replay produces
                 // bit-identical feature values.
-                let event_time = crate::engine::event_time::parse_event_time(&event, entry.timestamp);
+                let event_time =
+                    crate::engine::event_time::parse_event_time(&event, entry.timestamp);
                 let _ = engine.push_for_backfill(
                     &stream_name,
                     &event,
@@ -2874,20 +2849,21 @@ async fn handle_snapshot_fetch(
     let mut header_body = Vec::with_capacity(12);
     header_body.extend_from_slice(&ts_secs.to_be_bytes());
     header_body.extend_from_slice(&ts_nanos.to_be_bytes());
-    let header_frame =
-        protocol::encode_frame(protocol::REPLICA_FRAME_TAG_HEADER, &header_body);
-    writer.write_all(&header_frame).await.map_err(|e| {
-        BeavaError::Protocol(format!("write snapshot header frame failed: {}", e))
-    })?;
+    let header_frame = protocol::encode_frame(protocol::REPLICA_FRAME_TAG_HEADER, &header_body);
+    writer
+        .write_all(&header_frame)
+        .await
+        .map_err(|e| BeavaError::Protocol(format!("write snapshot header frame failed: {}", e)))?;
 
-    let payload_frame =
-        protocol::encode_frame(protocol::REPLICA_FRAME_TAG_PAYLOAD, &payload_bytes);
-    writer.write_all(&payload_frame).await.map_err(|e| {
-        BeavaError::Protocol(format!("write snapshot payload frame failed: {}", e))
-    })?;
-    writer.flush().await.map_err(|e| {
-        BeavaError::Protocol(format!("flush snapshot response failed: {}", e))
-    })?;
+    let payload_frame = protocol::encode_frame(protocol::REPLICA_FRAME_TAG_PAYLOAD, &payload_bytes);
+    writer
+        .write_all(&payload_frame)
+        .await
+        .map_err(|e| BeavaError::Protocol(format!("write snapshot payload frame failed: {}", e)))?;
+    writer
+        .flush()
+        .await
+        .map_err(|e| BeavaError::Protocol(format!("flush snapshot response failed: {}", e)))?;
 
     // (7c) Metric bump.
     crate::server::replica::record_snapshot_bytes_sent(payload_bytes.len() as u64);
@@ -2960,9 +2936,9 @@ async fn handle_subscribe(
     }
 
     // (3) Register session.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<
-        crate::server::replica::ReplicaEvent,
-    >(crate::server::replica::SUBSCRIBER_CHANNEL_CAPACITY);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::server::replica::ReplicaEvent>(
+        crate::server::replica::SUBSCRIBER_CHANNEL_CAPACITY,
+    );
     let conn_id = state.subscriber_registry.register(scope, tx);
 
     // (4) Drain loop. We use a tokio::select! over:
@@ -3180,11 +3156,7 @@ async fn handle_log_fetch(
                         Some(serde_json::Value::String(s)) if !s.is_empty() => s.as_str(),
                         _ => continue,
                     };
-                    if !crate::server::replica::entity_matches_scope(
-                        &stream_arr,
-                        key,
-                        &scope,
-                    ) {
+                    if !crate::server::replica::entity_matches_scope(&stream_arr, key, &scope) {
                         continue;
                     }
                 }

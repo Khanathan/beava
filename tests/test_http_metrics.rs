@@ -64,7 +64,7 @@ fn build_state_with_stream() -> SharedState {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
     state
@@ -96,7 +96,11 @@ async fn get_metrics(app: axum::Router) -> String {
         .unwrap();
     inject_loopback(&mut req);
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "GET /metrics should return 200");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "GET /metrics should return 200"
+    );
     let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
         .await
         .unwrap();
@@ -116,9 +120,8 @@ async fn test_proto_labeled_events_total() {
     // Push 5 events via HTTP.
     let mut cur_app = app;
     for i in 0..5u32 {
-        let payload =
-            json!({"id": format!("u{}", i), "_event_time": 1700000000000u64 + i as u64})
-                .to_string();
+        let payload = json!({"id": format!("u{}", i), "_event_time": 1700000000000u64 + i as u64})
+            .to_string();
         let (next_app, status) = http_push_one(cur_app, "metrics_test", &payload).await;
         cur_app = next_app;
         assert_eq!(status, StatusCode::OK, "HTTP push {} failed", i);

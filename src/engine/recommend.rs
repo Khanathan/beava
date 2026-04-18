@@ -76,10 +76,7 @@ pub fn recommend_config(
         let suggested_secs = (current_secs * 2).min(365 * 86400);
         let suggested_human = humanize_duration_secs(suggested_secs);
         let confidence = (rate * 10.0).min(1.0);
-        let copy_paste = format!(
-            "@tl.table(key=..., ttl=\"{}\")",
-            suggested_human
-        );
+        let copy_paste = format!("@tl.table(key=..., ttl=\"{}\")", suggested_human);
         let rec = ConfigRecommendation {
             knob: format!("{}.ttl", stream.name),
             current: current_human,
@@ -112,7 +109,9 @@ pub fn recommend_config(
         if !engine.has_registered_table(&table.name) {
             continue;
         }
-        let Some(ttl) = table.entity_ttl else { continue };
+        let Some(ttl) = table.entity_ttl else {
+            continue;
+        };
         if let Some(deps) = &table.depends_on {
             for dep in deps {
                 let slot = upstream_to_downstream_ttl

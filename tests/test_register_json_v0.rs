@@ -40,9 +40,14 @@ fn parse_and_get_features(payload: &str) -> Vec<beava::engine::register::Aggrega
 
 #[test]
 fn count_dispatches() {
-    let p = aggregation_payload(r#"{"name":"n","type":"count","supports_retraction":true,"window":"1h"}"#);
+    let p = aggregation_payload(
+        r#"{"name":"n","type":"count","supports_retraction":true,"window":"1h"}"#,
+    );
     let f = parse_and_get_features(&p);
-    assert!(matches!(build_operator(&f[0]).unwrap(), OperatorState::Count(_)));
+    assert!(matches!(
+        build_operator(&f[0]).unwrap(),
+        OperatorState::Count(_)
+    ));
 }
 
 #[test]
@@ -51,7 +56,10 @@ fn sum_dispatches() {
         r#"{"name":"total","type":"sum","supports_retraction":true,"field":"amount","window":"1h"}"#,
     );
     let f = parse_and_get_features(&p);
-    assert!(matches!(build_operator(&f[0]).unwrap(), OperatorState::Sum(_)));
+    assert!(matches!(
+        build_operator(&f[0]).unwrap(),
+        OperatorState::Sum(_)
+    ));
 }
 
 #[test]
@@ -60,7 +68,10 @@ fn avg_dispatches() {
         r#"{"name":"mean","type":"avg","supports_retraction":true,"field":"amount","window":"24h"}"#,
     );
     let f = parse_and_get_features(&p);
-    assert!(matches!(build_operator(&f[0]).unwrap(), OperatorState::Avg(_)));
+    assert!(matches!(
+        build_operator(&f[0]).unwrap(),
+        OperatorState::Avg(_)
+    ));
 }
 
 #[test]
@@ -70,8 +81,14 @@ fn min_max_dispatch() {
            {"name":"hi","type":"max","supports_retraction":false,"field":"amount","window":"1h"}"#,
     );
     let f = parse_and_get_features(&p);
-    assert!(matches!(build_operator(&f[0]).unwrap(), OperatorState::Min(_)));
-    assert!(matches!(build_operator(&f[1]).unwrap(), OperatorState::Max(_)));
+    assert!(matches!(
+        build_operator(&f[0]).unwrap(),
+        OperatorState::Min(_)
+    ));
+    assert!(matches!(
+        build_operator(&f[1]).unwrap(),
+        OperatorState::Max(_)
+    ));
 }
 
 #[test]
@@ -81,8 +98,14 @@ fn variance_stddev_dispatch() {
            {"name":"s","type":"stddev","supports_retraction":true,"field":"amount","window":"1h"}"#,
     );
     let f = parse_and_get_features(&p);
-    assert!(matches!(build_operator(&f[0]).unwrap(), OperatorState::Variance(_)));
-    assert!(matches!(build_operator(&f[1]).unwrap(), OperatorState::Stddev(_)));
+    assert!(matches!(
+        build_operator(&f[0]).unwrap(),
+        OperatorState::Variance(_)
+    ));
+    assert!(matches!(
+        build_operator(&f[1]).unwrap(),
+        OperatorState::Stddev(_)
+    ));
 }
 
 #[test]
@@ -93,7 +116,10 @@ fn percentile_dispatches_with_hybrid_params() {
             "exact_threshold":256,"hybrid_alpha":0.01}"#,
     );
     let f = parse_and_get_features(&p);
-    assert!(matches!(build_operator(&f[0]).unwrap(), OperatorState::Percentile(_)));
+    assert!(matches!(
+        build_operator(&f[0]).unwrap(),
+        OperatorState::Percentile(_)
+    ));
 }
 
 #[test]
@@ -104,7 +130,10 @@ fn count_distinct_dispatches_with_hybrid_params() {
             "exact_threshold":1024,"hybrid_precision":14}"#,
     );
     let f = parse_and_get_features(&p);
-    assert!(matches!(build_operator(&f[0]).unwrap(), OperatorState::DistinctCount(_)));
+    assert!(matches!(
+        build_operator(&f[0]).unwrap(),
+        OperatorState::DistinctCount(_)
+    ));
 }
 
 #[test]
@@ -115,7 +144,10 @@ fn top_k_dispatches_with_hybrid_params() {
             "exact_threshold":1024,"hybrid_width":2048,"hybrid_depth":4}"#,
     );
     let f = parse_and_get_features(&p);
-    assert!(matches!(build_operator(&f[0]).unwrap(), OperatorState::TopK(_)));
+    assert!(matches!(
+        build_operator(&f[0]).unwrap(),
+        OperatorState::TopK(_)
+    ));
 }
 
 #[test]
@@ -125,8 +157,14 @@ fn first_last_dispatch() {
            {"name":"last_cty","type":"last","supports_retraction":false,"field":"country"}"#,
     );
     let f = parse_and_get_features(&p);
-    assert!(matches!(build_operator(&f[0]).unwrap(), OperatorState::First(_)));
-    assert!(matches!(build_operator(&f[1]).unwrap(), OperatorState::Last(_)));
+    assert!(matches!(
+        build_operator(&f[0]).unwrap(),
+        OperatorState::First(_)
+    ));
+    assert!(matches!(
+        build_operator(&f[1]).unwrap(),
+        OperatorState::Last(_)
+    ));
 }
 
 #[test]
@@ -136,8 +174,14 @@ fn first_n_last_n_dispatch() {
            {"name":"last5","type":"last_n","supports_retraction":false,"field":"country","n":5}"#,
     );
     let f = parse_and_get_features(&p);
-    assert!(matches!(build_operator(&f[0]).unwrap(), OperatorState::FirstN(_)));
-    assert!(matches!(build_operator(&f[1]).unwrap(), OperatorState::LastN(_)));
+    assert!(matches!(
+        build_operator(&f[0]).unwrap(),
+        OperatorState::FirstN(_)
+    ));
+    assert!(matches!(
+        build_operator(&f[1]).unwrap(),
+        OperatorState::LastN(_)
+    ));
 }
 
 #[test]
@@ -147,8 +191,14 @@ fn ema_lag_dispatch() {
            {"name":"prev","type":"lag","supports_retraction":false,"field":"amount","n":3}"#,
     );
     let f = parse_and_get_features(&p);
-    assert!(matches!(build_operator(&f[0]).unwrap(), OperatorState::Ema(_)));
-    assert!(matches!(build_operator(&f[1]).unwrap(), OperatorState::Lag(_)));
+    assert!(matches!(
+        build_operator(&f[0]).unwrap(),
+        OperatorState::Ema(_)
+    ));
+    assert!(matches!(
+        build_operator(&f[1]).unwrap(),
+        OperatorState::Lag(_)
+    ));
 }
 
 // ---- Full 16-op shot: every AggOp in one payload ----
@@ -195,7 +245,11 @@ fn rejects_legacy_v2_payload_shape() {
     let err = V0RegisterPayload::parse(legacy).unwrap_err();
     match err {
         beava::error::BeavaError::Protocol(msg) => {
-            assert!(msg.contains("legacy top-level 'features'"), "msg was: {}", msg);
+            assert!(
+                msg.contains("legacy top-level 'features'"),
+                "msg was: {}",
+                msg
+            );
         }
         other => panic!("expected Protocol error, got {:?}", other),
     }

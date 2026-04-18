@@ -128,10 +128,7 @@ async fn send_log_fetch_frame(
 
 #[derive(Debug)]
 enum LogFetchFrame {
-    Event {
-        timestamp_ms: u64,
-        payload: Vec<u8>,
-    },
+    Event { timestamp_ms: u64, payload: Vec<u8> },
     End,
     Error(String),
 }
@@ -140,7 +137,10 @@ enum LogFetchFrame {
 /// 0x03 → event, 0x04 → end, 0x01 → STATUS_ERROR envelope.
 async fn read_log_fetch_frame(stream: &mut TcpStream) -> LogFetchFrame {
     let frame_len = stream.read_u32().await.unwrap() as usize;
-    assert!(frame_len >= 1, "frame_len must include at least the tag byte");
+    assert!(
+        frame_len >= 1,
+        "frame_len must include at least the tag byte"
+    );
     let tag = stream.read_u8().await.unwrap();
     match tag {
         t if t == REPLICA_FRAME_TAG_EVENT => {
@@ -277,7 +277,10 @@ async fn happy_path_returns_all_events_then_end() {
         .expect("timed out");
     match first {
         LogFetchFrame::End => {}
-        other => panic!("expected immediate END with far-future cursor, got {:?}", other),
+        other => panic!(
+            "expected immediate END with far-future cursor, got {:?}",
+            other
+        ),
     }
 
     // (3) from_ts = midpoint between first and last events → subset ≤ total.

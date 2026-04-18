@@ -36,7 +36,7 @@ fn build_test_engine_with_count_op() -> (PipelineEngine, StateStore) {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
     let store = StateStore::new();

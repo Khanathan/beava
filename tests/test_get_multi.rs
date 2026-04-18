@@ -324,7 +324,12 @@ async fn get_multi_tombstoned_returns_null() {
     assert_eq!(status, STATUS_OK);
 
     // Tombstone
-    let (status, _) = send_frame(&mut s, OP_DELETE_TABLE, &build_delete_table_payload("A", "u1")).await;
+    let (status, _) = send_frame(
+        &mut s,
+        OP_DELETE_TABLE,
+        &build_delete_table_payload("A", "u1"),
+    )
+    .await;
     assert_eq!(status, STATUS_OK);
 
     let payload = build_get_multi_payload(&["A"], "u1");
@@ -395,7 +400,8 @@ async fn get_multi_unknown_table_returns_atomic_error() {
     let payload = build_get_multi_payload(&["A", "DoesNotExist"], "u1");
     let (status, resp) = send_frame(&mut s, OP_GET_MULTI, &payload).await;
     assert_eq!(
-        status, STATUS_ERROR,
+        status,
+        STATUS_ERROR,
         "unknown table must abort whole request, got status={} resp={}",
         status,
         String::from_utf8_lossy(&resp)

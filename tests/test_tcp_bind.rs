@@ -32,5 +32,8 @@ fn test_explicit_bind_override() {
     );
     // Empty strings fall back to the loopback default.
     assert_eq!(resolve_tcp_bind(Some(""), None, "6400"), "127.0.0.1:6400");
-    assert_eq!(resolve_tcp_bind(None, Some("   "), "6400"), "127.0.0.1:6400");
+    assert_eq!(
+        resolve_tcp_bind(None, Some("   "), "6400"),
+        "127.0.0.1:6400"
+    );
 }

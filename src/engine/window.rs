@@ -178,11 +178,7 @@ impl<T: Default + Clone> RingBuffer<T> {
     /// containing `event_time` (see `add_at_event_time` for routing
     /// semantics). If the event_time is out-of-window, the closure
     /// is NOT invoked — the event is dropped at the ring level.
-    pub fn update_at_event_time<F: FnOnce(&mut T)>(
-        &mut self,
-        f: F,
-        event_time: SystemTime,
-    ) {
+    pub fn update_at_event_time<F: FnOnce(&mut T)>(&mut self, f: F, event_time: SystemTime) {
         if let Some(idx) = self.bucket_index_for(event_time) {
             f(&mut self.buckets[idx]);
         }

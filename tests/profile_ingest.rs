@@ -72,19 +72,27 @@ fn make_state() -> SharedState {
     // keyed on user_id, plus three fan-out tables keyed on independent
     // fields that appear in every event. Every PUSH touches ~4 shards —
     // this is the actual server shape we're trying to profile.
-    engine.register(count_stream("Transactions", "user_id")).unwrap();
-    engine.register(count_stream("MerchantSummary", "merchant_id")).unwrap();
-    engine.register(count_stream("DeviceSummary", "device_id")).unwrap();
-    engine.register(count_stream("IPSummary", "ip_address")).unwrap();
+    engine
+        .register(count_stream("Transactions", "user_id"))
+        .unwrap();
+    engine
+        .register(count_stream("MerchantSummary", "merchant_id"))
+        .unwrap();
+    engine
+        .register(count_stream("DeviceSummary", "device_id"))
+        .unwrap();
+    engine
+        .register(count_stream("IPSummary", "ip_address"))
+        .unwrap();
     let tmp = tempfile::tempdir().unwrap();
     make_concurrent_state_full(
         engine,
         StateStore::new(),
-        None,                     // event_log off — we want pure in-memory hot path
+        None, // event_log off — we want pure in-memory hot path
         tmp.path().join("snap"),
         Arc::new(BackfillTracker::default()),
-        false,                    // snapshot disabled
-        false,                    // event_log disabled
+        false, // snapshot disabled
+        false, // event_log disabled
         None,
         false,
     )
@@ -96,15 +104,16 @@ fn make_state() -> SharedState {
 /// distribution, the 66% contention is hot-shard-specific, not
 /// an architectural problem.
 fn zipf_key(rng_state: &mut u64, prefix: &str, n: u64) -> String {
-    *rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *rng_state = rng_state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     let u = (*rng_state >> 33) as f64 / (1u64 << 31) as f64;
     // Uniform keys when BENCH_UNIFORM_KEYS=1. Cached via OnceLock to avoid
     // per-event env lookups.
     use std::sync::OnceLock;
     static UNIFORM: OnceLock<bool> = OnceLock::new();
-    let uniform = *UNIFORM.get_or_init(|| {
-        std::env::var("BENCH_UNIFORM_KEYS").ok().as_deref() == Some("1")
-    });
+    let uniform =
+        *UNIFORM.get_or_init(|| std::env::var("BENCH_UNIFORM_KEYS").ok().as_deref() == Some("1"));
     let rank = if uniform {
         (u * n as f64) as u64 + 1
     } else {
@@ -256,7 +265,10 @@ fn profile_ingest_hot_path() {
     ));
     text_report.push_str("## Top 40 leaf functions (self-samples, on-CPU time)\n\n");
     text_report.push_str("```\n");
-    text_report.push_str(&format!("{:>7}  {:>6}   {}\n", "samples", "self %", "function"));
+    text_report.push_str(&format!(
+        "{:>7}  {:>6}   {}\n",
+        "samples", "self %", "function"
+    ));
     text_report.push_str(&format!("{:-<7}  {:-<6}   {:-<80}\n", "", "", ""));
     for (name, count) in leaf.iter().take(40) {
         let pct = 100.0 * *count as f64 / total_samples.max(1) as f64;
@@ -264,7 +276,10 @@ fn profile_ingest_hot_path() {
     }
     text_report.push_str("```\n\n## Top 40 functions by inclusive samples (time in this function OR anything it called)\n\n");
     text_report.push_str("```\n");
-    text_report.push_str(&format!("{:>7}  {:>6}   {}\n", "samples", "incl %", "function"));
+    text_report.push_str(&format!(
+        "{:>7}  {:>6}   {}\n",
+        "samples", "incl %", "function"
+    ));
     text_report.push_str(&format!("{:-<7}  {:-<6}   {:-<80}\n", "", "", ""));
     for (name, count) in incl.iter().take(40) {
         let pct = 100.0 * *count as f64 / total_samples.max(1) as f64;

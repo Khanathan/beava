@@ -19,8 +19,7 @@ use std::time::{Duration, SystemTime};
 
 use beava::engine::pipeline::PipelineEngine;
 use beava::engine::register::{
-    v0_aggregation_to_stream_def, v0_join_to_stream_def, v0_source_to_stream_def,
-    V0RegisterPayload,
+    v0_aggregation_to_stream_def, v0_join_to_stream_def, v0_source_to_stream_def, V0RegisterPayload,
 };
 use beava::state::store::StateStore;
 use beava::types::FeatureValue;
@@ -92,8 +91,18 @@ fn dag_enrich_then_aggregate() {
     engine.register(agg_def).unwrap();
 
     let store = StateStore::new();
-    store.set_static("u1", "country", FeatureValue::String("US".into()), SystemTime::now());
-    store.set_static("u2", "country", FeatureValue::String("UK".into()), SystemTime::now());
+    store.set_static(
+        "u1",
+        "country",
+        FeatureValue::String("US".into()),
+        SystemTime::now(),
+    );
+    store.set_static(
+        "u2",
+        "country",
+        FeatureValue::String("UK".into()),
+        SystemTime::now(),
+    );
 
     let now = SystemTime::now();
     for (uid, page) in [("u1", "/home"), ("u1", "/about"), ("u2", "/home")] {

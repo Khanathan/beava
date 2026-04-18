@@ -64,7 +64,12 @@ fn loopback_get(uri: &str) -> Request<Body> {
 async fn get_json(state: SharedState, uri: &str) -> serde_json::Value {
     let app = build_router(state);
     let resp = app.oneshot(loopback_get(uri)).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "GET {} returned non-200", uri);
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "GET {} returned non-200",
+        uri
+    );
     let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
         .await
         .unwrap();

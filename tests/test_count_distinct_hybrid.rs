@@ -31,7 +31,8 @@ fn exact_up_to_threshold_is_zero_error() {
     );
     let t = ts(1_000_000);
     for i in 0..500 {
-        op.push(&json!({ "d": format!("u{}", i) }), None, t).unwrap();
+        op.push(&json!({ "d": format!("u{}", i) }), None, t)
+            .unwrap();
     }
     let c = count_of(&mut op, t);
     assert!((c - 500.0).abs() < 1e-9, "got {}", c);
@@ -51,7 +52,8 @@ fn hll_mode_within_2_percent_on_100k() {
     // threshold, which triggers HLL promotion for the current bucket.
     let n = 20_000u64;
     for i in 0..n {
-        op.push(&json!({ "d": format!("u{}", i) }), None, t).unwrap();
+        op.push(&json!({ "d": format!("u{}", i) }), None, t)
+            .unwrap();
     }
     assert_eq!(op.mode_name(), "sketch");
     let est = count_of(&mut op, t);
@@ -72,7 +74,8 @@ fn transition_at_1025th_unique() {
     let t = ts(1_000_000);
     // The per-bucket hashset promotes to HLL *on insert* past 1024 uniques.
     for i in 0..=1024 {
-        op.push(&json!({ "d": format!("u{}", i) }), None, t).unwrap();
+        op.push(&json!({ "d": format!("u{}", i) }), None, t)
+            .unwrap();
     }
     // After inserting 1025 uniques, at least one bucket should have
     // promoted.
@@ -91,7 +94,8 @@ fn bucket_expiry_drops_distinct_count() {
     );
     let t0 = ts(1_000_000);
     for i in 0..50 {
-        op.push(&json!({ "d": format!("u{}", i) }), None, t0).unwrap();
+        op.push(&json!({ "d": format!("u{}", i) }), None, t0)
+            .unwrap();
     }
     assert_eq!(count_of(&mut op, t0), 50.0);
     let t_far = t0 + Duration::from_secs(5_000);
@@ -122,4 +126,3 @@ fn telemetry_reports_exact_and_sketch_modes() {
     let tel2 = op.hybrid_telemetry().expect("telemetry");
     assert_eq!(tel2.mode, "sketch");
 }
-

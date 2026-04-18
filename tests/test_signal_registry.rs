@@ -151,18 +151,8 @@ fn test_filter_by_category() {
     let mut r = SignalRegistry::new_default();
     let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     r.record(mk_signal("s1", Severity::Warning, Category::Safety, t));
-    r.record(mk_signal(
-        "d1",
-        Severity::Warning,
-        Category::DataQuality,
-        t,
-    ));
-    r.record(mk_signal(
-        "o1",
-        Severity::Warning,
-        Category::Operational,
-        t,
-    ));
+    r.record(mk_signal("d1", Severity::Warning, Category::DataQuality, t));
+    r.record(mk_signal("o1", Severity::Warning, Category::Operational, t));
     let only_safety = r.snapshot_sorted(t, Some(Category::Safety));
     assert_eq!(only_safety.len(), 1);
     assert_eq!(only_safety[0].id, "s1");
@@ -241,11 +231,7 @@ fn test_rate_since_last_computes_per_second_rate() {
     assert_eq!(r.rate_since_last("late_drop.s", 100, t0), None);
     let rate = r.rate_since_last("late_drop.s", 200, t1).unwrap();
     // 100 drops over 10s = 10/s.
-    assert!(
-        (rate - 10.0).abs() < 1e-9,
-        "expected 10.0, got {}",
-        rate
-    );
+    assert!((rate - 10.0).abs() < 1e-9, "expected 10.0, got {}", rate);
 }
 
 #[test]
@@ -260,10 +246,7 @@ fn test_rate_since_last_handles_counter_reset() {
 
 #[test]
 fn test_default_observation_window_is_7_days() {
-    assert_eq!(
-        DEFAULT_OBSERVATION_WINDOW,
-        Duration::from_secs(7 * 86400)
-    );
+    assert_eq!(DEFAULT_OBSERVATION_WINDOW, Duration::from_secs(7 * 86400));
     let r = SignalRegistry::new_default();
     assert_eq!(r.observation_window(), Duration::from_secs(7 * 86400));
 }

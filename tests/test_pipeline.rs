@@ -4,12 +4,12 @@
 //! create StateStore, push events, verify returned features.
 
 use ahash::AHashSet;
-use serde_json::json;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use beava::engine::expression::parse_expr;
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, Projection, StreamDefinition};
 use beava::state::store::StateStore;
 use beava::types::FeatureValue;
+use serde_json::json;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn ts(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)
@@ -783,15 +783,15 @@ fn test_feature_value_json_round_trip() {
 
 // ======================== Phase 8 Plan 02: Backfill Integration Tests ========================
 
-use std::collections::HashSet;
-use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
 use beava::server::protocol::{convert_register_request, RegisterRequest};
 use beava::server::tcp::{
     make_concurrent_state, run_backfill, BackfillStatus, BackfillTracker, SharedState,
 };
 use beava::state::event_log::EventLog;
 use beava::state::snapshot::{load_snapshot, save_snapshot, SerializablePipeline, SnapshotState};
+use std::collections::HashSet;
+use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 
 /// Helper: create a SharedState with event log enabled in a temp dir.
 fn make_state_with_event_log(log_dir: &std::path::Path) -> SharedState {
@@ -1589,7 +1589,7 @@ fn test_enriched_derive_to_downstream_sum() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -1613,7 +1613,7 @@ fn test_enriched_derive_to_downstream_sum() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -1642,7 +1642,7 @@ fn test_enriched_derive_to_downstream_sum() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -1692,7 +1692,7 @@ fn test_enriched_multi_hop_cascade() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -1716,7 +1716,7 @@ fn test_enriched_multi_hop_cascade() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -1753,7 +1753,7 @@ fn test_enriched_multi_hop_cascade() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -1782,7 +1782,7 @@ fn test_enriched_multi_hop_cascade() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -1840,7 +1840,7 @@ fn test_enriched_cascade_async_mode() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -1863,7 +1863,7 @@ fn test_enriched_cascade_async_mode() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -1891,7 +1891,7 @@ fn test_enriched_cascade_async_mode() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -1954,7 +1954,7 @@ fn test_enriched_where_clause() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -1977,7 +1977,7 @@ fn test_enriched_where_clause() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -2004,7 +2004,7 @@ fn test_enriched_where_clause() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -2068,7 +2068,7 @@ fn test_enriched_field_resolution_qualified() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -2091,7 +2091,7 @@ fn test_enriched_field_resolution_qualified() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -2119,7 +2119,7 @@ fn test_enriched_field_resolution_qualified() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -2163,7 +2163,7 @@ fn test_enriched_field_resolution_unqualified() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -2186,7 +2186,7 @@ fn test_enriched_field_resolution_unqualified() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -2215,7 +2215,7 @@ fn test_enriched_field_resolution_unqualified() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -2286,7 +2286,7 @@ fn test_enriched_no_cascade_unchanged() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -2378,7 +2378,7 @@ fn test_projection_select_push() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -2453,7 +2453,7 @@ fn test_projection_drop_push() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -2515,7 +2515,7 @@ fn test_projection_select_get() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -2572,7 +2572,7 @@ fn test_projection_drop_get() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -2638,7 +2638,7 @@ fn test_projection_derive_still_evaluates() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 

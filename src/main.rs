@@ -46,7 +46,7 @@ fn poll_signal_sources(state: &SharedState) {
     //    Threshold: 1 drop/sec default (placeholder SLO per CONTEXT).
     let drops: Vec<(String, u64)> = {
         let engine = state.engine.read();
-        
+
         engine.late_drops.snapshot()
     };
     signals::emit_late_drop_signals(&state.signals, &drops, now, 1.0);
@@ -112,7 +112,9 @@ fn main() {
             .find_map(|(i, a)| {
                 if a == "--local-port" {
                     args.get(i + 3).cloned()
-                } else { a.strip_prefix("--local-port=").map(|rest| rest.to_string()) }
+                } else {
+                    a.strip_prefix("--local-port=").map(|rest| rest.to_string())
+                }
             })
             .unwrap_or_else(|| "7400".into());
         // `--local-port` is the scientist-facing HTTP port (tl.Client,
@@ -202,17 +204,15 @@ fn parse_fork_args_from(args: &[String]) -> Result<ReplicaBootConfig, String> {
         None
     }
     fn has_help(args: &[String]) -> bool {
-        args.iter()
-            .skip(2)
-            .any(|a| a == "--help" || a == "-h")
+        args.iter().skip(2).any(|a| a == "--help" || a == "-h")
     }
 
     if has_help(args) {
         return Err("__HELP__".into());
     }
 
-    let remote = get(args, "remote")
-        .ok_or_else(|| "beava fork: --remote HOST:PORT required".to_string())?;
+    let remote =
+        get(args, "remote").ok_or_else(|| "beava fork: --remote HOST:PORT required".to_string())?;
     let streams_raw = get(args, "streams")
         .ok_or_else(|| "beava fork: --streams s1,s2,... required".to_string())?;
     let streams: Vec<String> = streams_raw
@@ -225,8 +225,8 @@ fn parse_fork_args_from(args: &[String]) -> Result<ReplicaBootConfig, String> {
     }
     // `--since` defaults to full history.
     let since_raw = get(args, "since").unwrap_or_else(|| "1970-01-01T00:00:00Z".into());
-    let since_millis = parse_replica_since(&since_raw)
-        .map_err(|e| format!("beava fork: bad --since: {}", e))?;
+    let since_millis =
+        parse_replica_since(&since_raw).map_err(|e| format!("beava fork: bad --since: {}", e))?;
     let keys = get(args, "keys").map(|s| {
         s.split(',')
             .map(|k| k.trim().to_string())
@@ -263,9 +263,8 @@ fn parse_fork_args_from(args: &[String]) -> Result<ReplicaBootConfig, String> {
                 if t.is_empty() {
                     continue;
                 }
-                let ms = parse_replica_since(t).map_err(|e| {
-                    format!("beava fork: bad --extract-at entry '{}': {}", t, e)
-                })?;
+                let ms = parse_replica_since(t)
+                    .map_err(|e| format!("beava fork: bad --extract-at entry '{}': {}", t, e))?;
                 out.push(ms);
             }
             out.sort_unstable();
@@ -395,10 +394,8 @@ fn parse_replica_since(input: &str) -> Result<u64, String> {
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day as i32 - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy as u32;
     let days_since_epoch: i64 = (era * 146_097 + doe as i32 - 719_468) as i64;
-    let secs: i64 = days_since_epoch * 86_400
-        + hour as i64 * 3600
-        + minute as i64 * 60
-        + second as i64;
+    let secs: i64 =
+        days_since_epoch * 86_400 + hour as i64 * 3600 + minute as i64 * 60 + second as i64;
     if secs < 0 {
         return Err(format!("--replica-since: pre-epoch timestamp '{}'", input));
     }
@@ -464,9 +461,8 @@ fn parse_replica_boot_config() -> Result<Option<ReplicaBootConfig>, String> {
                 if t.is_empty() {
                     continue;
                 }
-                let ms = parse_replica_since(t).map_err(|e| {
-                    format!("--replica-extract-at: bad entry '{}': {}", t, e)
-                })?;
+                let ms = parse_replica_since(t)
+                    .map_err(|e| format!("--replica-extract-at: bad entry '{}': {}", t, e))?;
                 out.push(ms);
             }
             out.sort_unstable();
@@ -489,14 +485,10 @@ fn parse_replica_boot_config() -> Result<Option<ReplicaBootConfig>, String> {
 
 /// Phase 36-01: register pipelines from a JSON file before catchup begins.
 /// Accepts either a single REGISTER object or a JSON array of them.
-fn seed_pipelines_from_file(
-    state: &SharedState,
-    path: &std::path::Path,
-) -> Result<usize, String> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| format!("read {}: {}", path.display(), e))?;
-    let doc: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("parse {}: {}", path.display(), e))?;
+fn seed_pipelines_from_file(state: &SharedState, path: &std::path::Path) -> Result<usize, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let doc: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("parse {}: {}", path.display(), e))?;
     let items: Vec<serde_json::Value> = match doc {
         serde_json::Value::Array(a) => a,
         other @ serde_json::Value::Object(_) => vec![other],
@@ -555,15 +547,13 @@ fn seed_pipelines_from_file(
                     .register_view(view_def)
                     .map_err(|e| format!("register view {}: {}", name, e))?;
             } else {
-                let stream_def = convert_register_request(req)
-                    .map_err(|e| format!("convert stream: {}", e))?;
+                let stream_def =
+                    convert_register_request(req).map_err(|e| format!("convert stream: {}", e))?;
                 engine
                     .register(stream_def)
                     .map_err(|e| format!("register stream {}: {}", name, e))?;
                 // Also register with the event log so replicated PUSHes persist.
-                let history_ttl = engine
-                    .get_stream(&name)
-                    .and_then(|s| s.history_ttl);
+                let history_ttl = engine.get_stream(&name).and_then(|s| s.history_ttl);
                 if let Some(ref log) = state.event_log {
                     let _ = log.register_stream(&name, history_ttl);
                 }
@@ -607,7 +597,9 @@ async fn async_main() {
     // Phase 20: admin bearer token (TRAC-05). Presence is optional — without
     // one, admin routes only work from loopback. Public demo hosts set this so
     // ops can call admin routes through the Caddy reverse-proxy.
-    let admin_token = std::env::var("BEAVA_ADMIN_TOKEN").ok().filter(|s| !s.is_empty());
+    let admin_token = std::env::var("BEAVA_ADMIN_TOKEN")
+        .ok()
+        .filter(|s| !s.is_empty());
     // Phase 20: public-mode toggle (TRAC-06). When set, `GET /` serves
     // `demo.html` from the embed root. Otherwise it serves the debug UI.
     let public_mode = arg_flag("public-mode")
@@ -804,8 +796,7 @@ async fn async_main() {
             }
         }
     };
-    let catchup_rx: Option<tokio::sync::oneshot::Receiver<()>> = if let Some(ref cfg) =
-        replica_boot
+    let catchup_rx: Option<tokio::sync::oneshot::Receiver<()>> = if let Some(ref cfg) = replica_boot
     {
         // Intentional: startup banner (Phase 47 audit)
         eprintln!(
@@ -985,7 +976,8 @@ async fn async_main() {
                         // frozen Arc<DashSet> to clone_dirty_for_snapshot_with_gc
                         // so the snapshot never observes the post-swap active set.
                         let frozen = store.take_dirty_and_advance_gen();
-                        let changed = store.clone_dirty_for_snapshot_with_gc(&frozen, &valid_features);
+                        let changed =
+                            store.clone_dirty_for_snapshot_with_gc(&frozen, &valid_features);
                         let deleted = store.take_deleted();
 
                         if changed.is_empty() && deleted.is_empty() {
@@ -1213,8 +1205,7 @@ async fn async_main() {
     // Prometheus.
     {
         let engine = state.engine.read();
-        let recs =
-            beava::engine::recommend::recommend_config(&engine, &state.eviction_tracker);
+        let recs = beava::engine::recommend::recommend_config(&engine, &state.eviction_tracker);
         drop(engine);
         if !recs.is_empty() {
             if recs.len() > 3 {
@@ -1459,13 +1450,7 @@ mod fork_cli_tests {
 
     #[test]
     fn accepts_eq_form() {
-        let args = argv(&[
-            "beava",
-            "fork",
-            "--remote=h:1",
-            "--streams=s",
-            "--token=t",
-        ]);
+        let args = argv(&["beava", "fork", "--remote=h:1", "--streams=s", "--token=t"]);
         let cfg = parse_fork_args_from(&args).unwrap();
         assert_eq!(cfg.remote, "h:1");
     }
@@ -1629,7 +1614,14 @@ mod fork_cli_tests {
     #[test]
     fn extract_at_default_empty_when_absent() {
         let args = argv(&[
-            "beava", "fork", "--remote", "h:1", "--streams", "s", "--token", "t",
+            "beava",
+            "fork",
+            "--remote",
+            "h:1",
+            "--streams",
+            "s",
+            "--token",
+            "t",
         ]);
         let cfg = parse_fork_args_from(&args).unwrap();
         assert!(cfg.extract_at_millis.is_empty());
@@ -1659,11 +1651,11 @@ mod fork_cli_tests {
 #[cfg(test)]
 mod seed_pipelines_tests {
     use super::seed_pipelines_from_file;
-    use std::io::Write;
-    use std::sync::Arc;
     use beava::engine::pipeline::PipelineEngine;
     use beava::server::tcp::{make_concurrent_state, BackfillTracker};
     use beava::state::store::StateStore;
+    use std::io::Write;
+    use std::sync::Arc;
 
     fn fresh_state() -> beava::server::tcp::SharedState {
         let tmp = tempfile::tempdir().unwrap();
@@ -1748,8 +1740,8 @@ mod seed_pipelines_tests {
         ]);
         let file = write_tmp(&doc.to_string());
         let state = fresh_state();
-        let n = seed_pipelines_from_file(&state, file.path())
-            .expect("mixed array should load both");
+        let n =
+            seed_pipelines_from_file(&state, file.path()).expect("mixed array should load both");
         assert_eq!(n, 2);
         let engine = state.engine.read();
         assert!(engine.get_stream("S1").is_some());

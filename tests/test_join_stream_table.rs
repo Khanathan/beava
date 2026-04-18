@@ -15,8 +15,7 @@ use std::time::{Duration, SystemTime};
 
 use beava::engine::pipeline::PipelineEngine;
 use beava::engine::register::{
-    v0_aggregation_to_stream_def, v0_join_to_stream_def, v0_source_to_stream_def,
-    V0RegisterPayload,
+    v0_aggregation_to_stream_def, v0_join_to_stream_def, v0_source_to_stream_def, V0RegisterPayload,
 };
 use beava::state::store::StateStore;
 use beava::types::FeatureValue;
@@ -79,8 +78,7 @@ fn build_engine(
 
     // 3. Enriched join.
     let on_arr =
-        serde_json::to_string(&join_on.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-            .unwrap();
+        serde_json::to_string(&join_on.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap();
     let join_json = format!(
         r#"{{"name":"Enriched","kind":"stream","key_field":null,"fields":{},
             "join":{{"op":"join","left":"Clicks","right":"UserProfile","on":{},"type":"{}","shape":"stream_table"}},
@@ -111,8 +109,7 @@ fn build_engine(
 
     // 4. EnrichedAgg = group_by(agg_keys).count()
     let keys_arr =
-        serde_json::to_string(&agg_keys.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-            .unwrap();
+        serde_json::to_string(&agg_keys.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap();
     let agg_key_field = agg_keys[0];
     let agg_json = format!(
         r#"{{"name":"EnrichedAgg","kind":"table","key_field":"{}","mode":"overwrite","fields":{{}},
@@ -178,7 +175,11 @@ fn enrich_inner_hit() {
         )
         .unwrap();
     let after = now + Duration::from_millis(1);
-    assert_eq!(agg_count(&store, "u1", after), 1, "enriched inner-hit must reach aggregation");
+    assert_eq!(
+        agg_count(&store, "u1", after),
+        1,
+        "enriched inner-hit must reach aggregation"
+    );
 }
 
 // (2) Inner miss — event dropped, downstream count stays at 0.
@@ -205,7 +206,11 @@ fn enrich_inner_miss_drops() {
         )
         .unwrap();
     let after = now + Duration::from_millis(1);
-    assert_eq!(agg_count(&store, "u2", after), 0, "inner-miss must drop the event");
+    assert_eq!(
+        agg_count(&store, "u2", after),
+        0,
+        "inner-miss must drop the event"
+    );
 }
 
 // (3) Left miss — event passes through; right-side fields null in enriched event.
@@ -231,7 +236,11 @@ fn enrich_left_miss_nulls() {
         )
         .unwrap();
     let after = now + Duration::from_millis(1);
-    assert_eq!(agg_count(&store, "u2", after), 1, "left-miss must still cascade the event");
+    assert_eq!(
+        agg_count(&store, "u2", after),
+        1,
+        "left-miss must still cascade the event"
+    );
 }
 
 // (4) `_right` collision: left has `status`, right has `status` → SDK names

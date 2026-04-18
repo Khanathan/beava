@@ -22,9 +22,14 @@ fn per_stream_override_honored() {
     // Observe an event at a known time and verify watermark subtracts 600s.
     let event_time = UNIX_EPOCH + Duration::from_secs(1_000_000);
     tracker.observe("Txns", event_time);
-    let wm = tracker.watermark("Txns").expect("watermark should be Some after observe");
+    let wm = tracker
+        .watermark("Txns")
+        .expect("watermark should be Some after observe");
     let expected = event_time - Duration::from_secs(600);
-    assert_eq!(wm, expected, "watermark should equal observed_max - 600s override");
+    assert_eq!(
+        wm, expected,
+        "watermark should equal observed_max - 600s override"
+    );
 }
 
 #[test]
@@ -47,9 +52,14 @@ fn absent_field_defaults_to_5s() {
     // Observe an event and verify watermark subtracts 5s.
     let event_time = UNIX_EPOCH + Duration::from_secs(1_000_000);
     tracker.observe("AnyStream", event_time);
-    let wm = tracker.watermark("AnyStream").expect("watermark should be Some after observe");
+    let wm = tracker
+        .watermark("AnyStream")
+        .expect("watermark should be Some after observe");
     let expected = event_time - Duration::from_secs(5);
-    assert_eq!(wm, expected, "watermark should equal observed_max - 5s default");
+    assert_eq!(
+        wm, expected,
+        "watermark should equal observed_max - 5s default"
+    );
 }
 
 #[test]

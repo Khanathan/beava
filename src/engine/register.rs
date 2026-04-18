@@ -245,9 +245,8 @@ impl V0RegisterPayload {
         // `features: [...]` without `aggregation`. The new shape always
         // carries `kind` and either `aggregation`, `ops`, `join`, or
         // `union` (or is a bare Source).
-        let raw: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| {
-            BeavaError::Protocol(format!("v0 REGISTER: invalid JSON: {}", e))
-        })?;
+        let raw: serde_json::Value = serde_json::from_slice(bytes)
+            .map_err(|e| BeavaError::Protocol(format!("v0 REGISTER: invalid JSON: {}", e)))?;
         if raw.get("features").is_some() && raw.get("aggregation").is_none() {
             return Err(BeavaError::Protocol(
                 "v0 REGISTER: legacy top-level 'features' array rejected — \
@@ -416,9 +415,8 @@ pub fn build_operator(feat: &AggregationFeature) -> Result<OperatorState, BeavaE
             .ok_or_else(|| BeavaError::Protocol(format!("v0 REGISTER: {} requires 'field'", ctx)))
     };
     let require_window = |ctx: &str| -> Result<(Duration, Duration), BeavaError> {
-        window_bucket.ok_or_else(|| {
-            BeavaError::Protocol(format!("v0 REGISTER: {} requires 'window'", ctx))
-        })
+        window_bucket
+            .ok_or_else(|| BeavaError::Protocol(format!("v0 REGISTER: {} requires 'window'", ctx)))
     };
 
     // Absent events: engine v0 treats missing fields as a soft skip here;
@@ -508,9 +506,9 @@ pub fn build_operator(feat: &AggregationFeature) -> Result<OperatorState, BeavaE
         }
         "first_n" => {
             let field = require_field("first_n")?;
-            let n = feat.n.ok_or_else(|| {
-                BeavaError::Protocol("v0 REGISTER: first_n requires 'n'".into())
-            })?;
+            let n = feat
+                .n
+                .ok_or_else(|| BeavaError::Protocol("v0 REGISTER: first_n requires 'n'".into()))?;
             OperatorState::FirstN(FirstNOp::new(field, n, optional))
         }
         "last_n" => {
@@ -560,10 +558,7 @@ pub fn build_operator(feat: &AggregationFeature) -> Result<OperatorState, BeavaE
 ///
 /// Single-key: the raw field value (stringified). Composite: `'|'`-joined.
 /// Returns `Err` if any group_by key is missing from the event.
-pub fn encode_group_by(
-    keys: &[String],
-    event: &serde_json::Value,
-) -> Result<String, BeavaError> {
+pub fn encode_group_by(keys: &[String], event: &serde_json::Value) -> Result<String, BeavaError> {
     if keys.is_empty() {
         return Err(BeavaError::Protocol(
             "v0 REGISTER: aggregation.keys must be non-empty".into(),
@@ -628,9 +623,8 @@ pub fn v0_feature_to_feature_def(
             .ok_or_else(|| BeavaError::Protocol(format!("v0→v2 xlate: {} requires 'field'", ctx)))
     };
     let require_window = |ctx: &str| -> Result<(Duration, Duration), BeavaError> {
-        window_bucket.ok_or_else(|| {
-            BeavaError::Protocol(format!("v0→v2 xlate: {} requires 'window'", ctx))
-        })
+        window_bucket
+            .ok_or_else(|| BeavaError::Protocol(format!("v0→v2 xlate: {} requires 'window'", ctx)))
     };
     let where_expr = match feat.r#where.as_deref() {
         Some(expr_str) if !expr_str.is_empty() => Some(parse_expr(expr_str).map_err(|e| {
@@ -769,10 +763,9 @@ pub fn v0_feature_to_feature_def(
         }
         "ema" => {
             let field = require_field("ema")?;
-            let hl = feat
-                .half_life
-                .as_deref()
-                .ok_or_else(|| BeavaError::Protocol("v0→v2 xlate: ema requires 'half_life'".into()))?;
+            let hl = feat.half_life.as_deref().ok_or_else(|| {
+                BeavaError::Protocol("v0→v2 xlate: ema requires 'half_life'".into())
+            })?;
             let half_life_secs = parse_window(hl, "ema.half_life")?.as_secs_f64();
             FeatureDef::Ema {
                 field,
@@ -900,10 +893,7 @@ pub fn v0_source_to_stream_def(
     // The SDK may emit "forever" / "0" — those flow through unchanged.
     use crate::duration::parse_duration_str;
     let entity_ttl = if desc.kind == "table" {
-        let s = desc
-            .entity_ttl
-            .as_deref()
-            .unwrap_or(DEFAULT_TABLE_TTL);
+        let s = desc.entity_ttl.as_deref().unwrap_or(DEFAULT_TABLE_TTL);
         Some(parse_duration_str(s)?)
     } else {
         // For stream sources, entity_ttl is orthogonal to history_ttl and
@@ -1010,9 +1000,7 @@ pub fn v0_join_to_stream_def_with_keys(
 pub fn v0_join_to_stream_def_with_meta(
     desc: &JoinDescriptor,
     left_fields_lookup: Option<&dyn Fn(&str) -> Option<Vec<String>>>,
-    source_meta_lookup: Option<
-        &dyn Fn(&str) -> Option<(Vec<String>, Vec<(String, String)>)>,
-    >,
+    source_meta_lookup: Option<&dyn Fn(&str) -> Option<(Vec<String>, Vec<(String, String)>)>>,
 ) -> Result<crate::engine::pipeline::StreamDefinition, BeavaError> {
     use crate::engine::pipeline::{FeatureDef, JoinType, StreamDefinition};
 
@@ -1435,11 +1423,23 @@ mod tests {
 
     #[test]
     fn parse_window_all_suffixes() {
-        assert_eq!(parse_window("500ms", "w").unwrap(), Duration::from_millis(500));
+        assert_eq!(
+            parse_window("500ms", "w").unwrap(),
+            Duration::from_millis(500)
+        );
         assert_eq!(parse_window("30s", "w").unwrap(), Duration::from_secs(30));
-        assert_eq!(parse_window("15m", "w").unwrap(), Duration::from_secs(15 * 60));
-        assert_eq!(parse_window("2h", "w").unwrap(), Duration::from_secs(2 * 3600));
-        assert_eq!(parse_window("7d", "w").unwrap(), Duration::from_secs(7 * 86_400));
+        assert_eq!(
+            parse_window("15m", "w").unwrap(),
+            Duration::from_secs(15 * 60)
+        );
+        assert_eq!(
+            parse_window("2h", "w").unwrap(),
+            Duration::from_secs(2 * 3600)
+        );
+        assert_eq!(
+            parse_window("7d", "w").unwrap(),
+            Duration::from_secs(7 * 86_400)
+        );
     }
 
     #[test]
@@ -1449,9 +1449,18 @@ mod tests {
 
     #[test]
     fn default_bucket_rules() {
-        assert_eq!(default_bucket(Duration::from_secs(30 * 60)), Duration::from_secs(1));
-        assert_eq!(default_bucket(Duration::from_secs(3600)), Duration::from_secs(60));
-        assert_eq!(default_bucket(Duration::from_secs(24 * 3600)), Duration::from_secs(60));
+        assert_eq!(
+            default_bucket(Duration::from_secs(30 * 60)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            default_bucket(Duration::from_secs(3600)),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            default_bucket(Duration::from_secs(24 * 3600)),
+            Duration::from_secs(60)
+        );
     }
 
     #[test]
@@ -1459,20 +1468,22 @@ mod tests {
         // count — no field
         let mut f = mk_feat("count");
         f.field = None;
-        assert!(matches!(build_operator(&f).unwrap(), OperatorState::Count(_)));
+        assert!(matches!(
+            build_operator(&f).unwrap(),
+            OperatorState::Count(_)
+        ));
 
         for op in ["sum", "avg", "min", "max", "variance", "stddev"] {
-            assert!(
-                build_operator(&mk_feat(op)).is_ok(),
-                "failed for op {}",
-                op
-            );
+            assert!(build_operator(&mk_feat(op)).is_ok(), "failed for op {}", op);
         }
 
         // percentile
         let mut f = mk_feat("percentile");
         f.quantile = Some(0.95);
-        assert!(matches!(build_operator(&f).unwrap(), OperatorState::Percentile(_)));
+        assert!(matches!(
+            build_operator(&f).unwrap(),
+            OperatorState::Percentile(_)
+        ));
 
         // count_distinct
         assert!(matches!(
@@ -1483,25 +1494,40 @@ mod tests {
         // top_k
         let mut f = mk_feat("top_k");
         f.k = Some(10);
-        assert!(matches!(build_operator(&f).unwrap(), OperatorState::TopK(_)));
+        assert!(matches!(
+            build_operator(&f).unwrap(),
+            OperatorState::TopK(_)
+        ));
 
         // first / last — no window
         let mut f = mk_feat("first");
         f.window = None;
-        assert!(matches!(build_operator(&f).unwrap(), OperatorState::First(_)));
+        assert!(matches!(
+            build_operator(&f).unwrap(),
+            OperatorState::First(_)
+        ));
         let mut f = mk_feat("last");
         f.window = None;
-        assert!(matches!(build_operator(&f).unwrap(), OperatorState::Last(_)));
+        assert!(matches!(
+            build_operator(&f).unwrap(),
+            OperatorState::Last(_)
+        ));
 
         // first_n / last_n — no window, needs n
         let mut f = mk_feat("first_n");
         f.window = None;
         f.n = Some(5);
-        assert!(matches!(build_operator(&f).unwrap(), OperatorState::FirstN(_)));
+        assert!(matches!(
+            build_operator(&f).unwrap(),
+            OperatorState::FirstN(_)
+        ));
         let mut f = mk_feat("last_n");
         f.window = None;
         f.n = Some(5);
-        assert!(matches!(build_operator(&f).unwrap(), OperatorState::LastN(_)));
+        assert!(matches!(
+            build_operator(&f).unwrap(),
+            OperatorState::LastN(_)
+        ));
 
         // ema
         let mut f = mk_feat("ema");
@@ -1541,10 +1567,7 @@ mod tests {
     #[test]
     fn encode_group_by_single_key() {
         let ev = serde_json::json!({"user_id": "u1", "amount": 50});
-        assert_eq!(
-            encode_group_by(&["user_id".into()], &ev).unwrap(),
-            "u1"
-        );
+        assert_eq!(encode_group_by(&["user_id".into()], &ev).unwrap(), "u1");
     }
 
     #[test]

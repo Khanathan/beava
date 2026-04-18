@@ -1032,9 +1032,11 @@ impl Operator for PercentileOp {
     fn hybrid_telemetry(&self) -> Option<HybridTelemetry> {
         let (mode, exact_count, sketch_alpha_current) = match &self.mode {
             PercentileMode::Exact { total_count } => ("exact", *total_count, None),
-            PercentileMode::Sketch { sketch } => {
-                ("sketch", PERCENTILE_EXACT_THRESHOLD, Some(sketch.current_alpha()))
-            }
+            PercentileMode::Sketch { sketch } => (
+                "sketch",
+                PERCENTILE_EXACT_THRESHOLD,
+                Some(sketch.current_alpha()),
+            ),
         };
         Some(HybridTelemetry {
             op: "percentile",
@@ -1680,11 +1682,9 @@ fn merge_welford(a: WelfordBucket, b: WelfordBucket) -> WelfordBucket {
     }
     let combined_count = a.count + b.count;
     let delta = b.mean - a.mean;
-    let combined_mean =
-        a.mean + delta * (b.count as f64) / (combined_count as f64);
-    let combined_m2 = a.m2
-        + b.m2
-        + delta * delta * (a.count as f64) * (b.count as f64) / (combined_count as f64);
+    let combined_mean = a.mean + delta * (b.count as f64) / (combined_count as f64);
+    let combined_m2 =
+        a.m2 + b.m2 + delta * delta * (a.count as f64) * (b.count as f64) / (combined_count as f64);
     WelfordBucket {
         count: combined_count,
         mean: combined_mean,
@@ -2027,10 +2027,8 @@ impl Operator for TopKOp {
                 if counts.is_empty() {
                     return FeatureValue::Missing;
                 }
-                let mut pairs: Vec<(TopKValue, u64)> = counts
-                    .iter()
-                    .map(|(v, c)| (v.clone(), *c))
-                    .collect();
+                let mut pairs: Vec<(TopKValue, u64)> =
+                    counts.iter().map(|(v, c)| (v.clone(), *c)).collect();
                 pairs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
                 pairs.truncate(self.k);
                 pairs
@@ -2173,9 +2171,7 @@ pub fn parse_event_time(event: &serde_json::Value) -> Option<SystemTime> {
                     );
                 }
                 if i >= 0 {
-                    return Some(
-                        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(i as u64),
-                    );
+                    return Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(i as u64));
                 }
             }
             // ISO-8601 deferred — Phase 24 brings a proper parser. Accept
@@ -2424,8 +2420,8 @@ impl Operator for StreamJoinBuffer {
         // the real size depends on event shape but this is good enough for
         // `/debug/memory` reporting.
         const PER_EVENT_BYTES: usize = 128;
-        (self.total_len()) * PER_EVENT_BYTES
-            + (self.left.len() + self.right.len()) * 48 // BTreeMap node overhead
+        (self.total_len()) * PER_EVENT_BYTES + (self.left.len() + self.right.len()) * 48
+        // BTreeMap node overhead
     }
 
     fn num_buckets(&self) -> usize {

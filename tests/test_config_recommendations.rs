@@ -7,12 +7,12 @@
 //! - Clean signals → empty recommendations.
 //! - Schema correctness (copy_paste / knob / confidence).
 
-use std::sync::atomic::Ordering;
-use std::time::Duration;
 use beava::engine::pipeline::PipelineEngine;
-use beava::engine::recommend::{recommend_config, humanize_duration_secs};
+use beava::engine::recommend::{humanize_duration_secs, recommend_config};
 use beava::engine::register::{v0_source_to_stream_def, SourceDescriptor};
 use beava::state::eviction_tracker::EvictionTracker;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 fn table(name: &str, ttl: Option<&str>) -> SourceDescriptor {
     SourceDescriptor {
@@ -88,8 +88,14 @@ fn ttl_too_short_triggers_recommendation() {
     assert!(r.confidence > 0.0 && r.confidence <= 1.0);
     assert!(r.copy_paste.contains("ttl=\"60d\""));
     // Evidence carries the raw counters.
-    assert_eq!(r.evidence.get("evictions").and_then(|v| v.as_u64()), Some(1000));
-    assert_eq!(r.evidence.get("reinits").and_then(|v| v.as_u64()), Some(100));
+    assert_eq!(
+        r.evidence.get("evictions").and_then(|v| v.as_u64()),
+        Some(1000)
+    );
+    assert_eq!(
+        r.evidence.get("reinits").and_then(|v| v.as_u64()),
+        Some(100)
+    );
 }
 
 #[test]
@@ -107,10 +113,7 @@ fn history_ttl_lt_downstream_table_ttl_triggers() {
     def.depends_on = Some(vec!["Clicks".to_string()]);
     let name = def.name.clone();
     engine.register(def).unwrap();
-    engine.store_raw_register_json(
-        &name,
-        serde_json::json!({"kind": "table", "name": name}),
-    );
+    engine.store_raw_register_json(&name, serde_json::json!({"kind": "table", "name": name}));
     let _ = table_desc; // silence unused
 
     let tracker = EvictionTracker::new();
@@ -120,7 +123,10 @@ fn history_ttl_lt_downstream_table_ttl_triggers() {
         "expected a Clicks.history_ttl recommendation; got {:?}",
         recs.iter().map(|r| &r.knob).collect::<Vec<_>>()
     );
-    let r = recs.iter().find(|r| r.knob == "Clicks.history_ttl").unwrap();
+    let r = recs
+        .iter()
+        .find(|r| r.knob == "Clicks.history_ttl")
+        .unwrap();
     assert_eq!(r.current, "30d");
     assert_eq!(r.suggested, "60d");
     assert!(r.copy_paste.contains("history_ttl=\"60d\""));

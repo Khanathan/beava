@@ -175,7 +175,10 @@ fn raw_throughput_bench() {
 
     // ------- PATH C: one giant batch call (upper bound — no batching overhead) -------
     let (state_c, _tmp_c) = make_state(event_log);
-    eprintln!("\n[C] replica_ingest_batch @ batch={} (single mega-batch)", n);
+    eprintln!(
+        "\n[C] replica_ingest_batch @ batch={} (single mega-batch)",
+        n
+    );
     let t_c = Instant::now();
     replica_ingest_batch(&state_c, &events).unwrap();
     let c_elapsed = t_c.elapsed();

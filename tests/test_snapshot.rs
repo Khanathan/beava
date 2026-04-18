@@ -3,12 +3,12 @@
 //! Tests PERS-01 (periodic snapshot), PERS-02 (postcard + versioned format),
 //! PERS-03 (crash recovery), PERS-04 (non-blocking write), PERS-05 (TTL eviction).
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::state::eviction::evict_expired_keys;
 use beava::state::snapshot::{load_snapshot, save_snapshot, SerializablePipeline, SnapshotState};
 use beava::state::store::StateStore;
 use beava::types::FeatureValue;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn ts(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)
@@ -163,7 +163,7 @@ fn test_eviction_removes_old_entity() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 
@@ -226,7 +226,7 @@ fn test_eviction_preserves_entity_with_no_events() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 

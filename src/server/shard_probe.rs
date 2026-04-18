@@ -43,10 +43,22 @@ static HIST: [AtomicU64; HIST_MAX + 1] = {
     // Can't use [AtomicU64::new(0); N] in const context without copy, so
     // expand manually. 17 entries.
     [
-        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
         AtomicU64::new(0),
     ]
 };
@@ -176,7 +188,11 @@ pub fn snapshot() -> ShardProbeSnapshot {
     let histogram: Vec<(usize, u64)> = (1..=HIST_MAX)
         .filter_map(|i| {
             let c = HIST[i].load(Ordering::Relaxed);
-            if c > 0 { Some((i, c)) } else { None }
+            if c > 0 {
+                Some((i, c))
+            } else {
+                None
+            }
         })
         .collect();
     ShardProbeSnapshot {
@@ -230,7 +246,11 @@ mod tests {
         assert_eq!(counts.len(), 16, "all 16 shards should be hit");
         for (_shard, c) in counts {
             // Uniform distribution: expect ~625 per shard, allow ±30%.
-            assert!(c > 400 && c < 900, "shard count out of expected range: {}", c);
+            assert!(
+                c > 400 && c < 900,
+                "shard count out of expected range: {}",
+                c
+            );
         }
     }
 

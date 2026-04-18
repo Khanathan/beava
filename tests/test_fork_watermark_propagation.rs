@@ -92,7 +92,8 @@ fn replica_batch_advances_watermark() {
     let largest_ts_ms = events.iter().map(|(_, t, _)| *t).max().unwrap();
 
     // Ingest via replica batch path.
-    let n_applied = replica_ingest_batch(&state, &events).expect("replica_ingest_batch must succeed");
+    let n_applied =
+        replica_ingest_batch(&state, &events).expect("replica_ingest_batch must succeed");
     assert_eq!(n_applied, events.len(), "all 10 events must be applied");
 
     // CORR-08: observed_max must be Some and >= largest ts_ms in the batch.
@@ -102,10 +103,7 @@ fn replica_batch_advances_watermark() {
         .observed_max("Txns")
         .expect("CORR-08: watermarks.observed_max(Txns) must be Some after replica_ingest_batch");
 
-    let observed_ms = observed
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+    let observed_ms = observed.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
 
     assert!(
         observed_ms >= largest_ts_ms,

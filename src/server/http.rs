@@ -244,8 +244,7 @@ async fn create_pipeline(
             // always called `log.register_stream` after a successful engine
             // registration.
             if !is_view {
-                let history_ttl =
-                    engine.get_stream(&def_name).and_then(|s| s.history_ttl);
+                let history_ttl = engine.get_stream(&def_name).and_then(|s| s.history_ttl);
                 if let Some(ref log) = state.event_log {
                     let _ = log.register_stream(&def_name, history_ttl);
                 }
@@ -298,12 +297,8 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
         .events_total
         .load(std::sync::atomic::Ordering::Relaxed);
     // Phase 45-04 A5: per-protocol labeled counters for dual-emit transition.
-    let events_http = state
-        .events_http
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let events_tcp = state
-        .events_tcp
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let events_http = state.events_http.load(std::sync::atomic::Ordering::Relaxed);
+    let events_tcp = state.events_tcp.load(std::sync::atomic::Ordering::Relaxed);
     let push_latency = state
         .last_push_latency_nanos
         .load(std::sync::atomic::Ordering::Relaxed) as f64
@@ -706,8 +701,8 @@ async fn debug_key(State(state): State<SharedState>, Path(key): Path<String>) ->
                 // Plan 22-03: hybrid-op telemetry for percentile / top_k /
                 // distinct_count. Default None; serialized when present.
                 if let Some(tel) = op.hybrid_telemetry() {
-                    entry["hybrid_telemetry"] = serde_json::to_value(&tel)
-                        .unwrap_or(serde_json::Value::Null);
+                    entry["hybrid_telemetry"] =
+                        serde_json::to_value(&tel).unwrap_or(serde_json::Value::Null);
                 }
                 live_ops.push(entry);
             }
@@ -1057,9 +1052,7 @@ async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Valu
     for key in &keys {
         if let Some(entity) = store.get_entity(key) {
             for (stream_name, stream_state) in &entity.streams {
-                let stats = stream_stats
-                    .entry(stream_name.clone())
-                    .or_default();
+                let stats = stream_stats.entry(stream_name.clone()).or_default();
                 stats.key_count += 1;
 
                 for (feature_name, op) in &stream_state.operators {
@@ -1069,17 +1062,11 @@ async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Valu
 
                     stats.total_bytes += op_bytes;
 
-                    let type_stats = stats
-                        .operator_types
-                        .entry(op_type)
-                        .or_default();
+                    let type_stats = stats.operator_types.entry(op_type).or_default();
                     type_stats.count += 1;
                     type_stats.total_bytes += op_bytes;
 
-                    let feat_stats = stats
-                        .features
-                        .entry(feature_name.clone())
-                        .or_default();
+                    let feat_stats = stats.features.entry(feature_name.clone()).or_default();
                     feat_stats.operator_type = op_type;
                     feat_stats.num_buckets = buckets;
                     feat_stats.total_bytes += op_bytes;
@@ -1388,9 +1375,7 @@ async fn trigger_snapshot(
 /// Wire schema (see `25-CONTEXT.md §Suggestion engine`):
 /// `{ "generated_at": RFC3339, "observation_window": "7d",
 ///    "recommendations": [ConfigRecommendation, ...] }`
-async fn debug_config_recommendations(
-    State(state): State<SharedState>,
-) -> Json<serde_json::Value> {
+async fn debug_config_recommendations(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let engine = state.engine.read();
     let recs = crate::engine::recommend::recommend_config(&engine, &state.eviction_tracker);
     drop(engine);
@@ -1468,10 +1453,7 @@ fn format_rfc3339_utc(secs: u64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m_cal = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = y + if m_cal <= 2 { 1 } else { 0 };
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        y, m_cal, d, h, m, s
-    )
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m_cal, d, h, m, s)
 }
 
 /// Phase 44-01: `GET /extracts` — return the historical-extraction registry

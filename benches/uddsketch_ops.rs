@@ -3,8 +3,8 @@
 //! Ported from the old std::time::Instant harness in `tests/bench_hybrid_ops.rs`
 //! (22-03 Decision C=1). Runs via `cargo bench --bench uddsketch_ops`.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use beava::engine::uddsketch::UDDSketch;
+use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 
 fn bench_insert(c: &mut Criterion) {
     let mut group = c.benchmark_group("uddsketch");

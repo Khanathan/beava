@@ -59,7 +59,10 @@ fn test_same_id_preserves_first_seen() {
     let reg = state.signals.read();
     let snap = reg.snapshot_sorted(SystemTime::now(), None);
     assert_eq!(snap.len(), 1, "dedupe must collapse to one entry");
-    assert_eq!(snap[0].first_seen, first_seen, "first_seen must be preserved");
+    assert_eq!(
+        snap[0].first_seen, first_seen,
+        "first_seen must be preserved"
+    );
     // last_seen advances. We compare by RFC3339 serialization because
     // SystemTime's direct sub-ms comparisons can be fragile on some clocks.
     assert!(
@@ -156,8 +159,14 @@ fn test_config_emitter_updates_suggestion_on_redup() {
     let reg = state.signals.read();
     let snap = reg.snapshot_sorted(SystemTime::now(), None);
     assert_eq!(snap.len(), 1);
-    let action = snap[0].action.as_ref().expect("config action payload missing");
-    assert_eq!(action["suggested"], "120d", "suggestion must update on re-emit");
+    let action = snap[0]
+        .action
+        .as_ref()
+        .expect("config action payload missing");
+    assert_eq!(
+        action["suggested"], "120d",
+        "suggestion must update on re-emit"
+    );
     assert_eq!(snap[0].detail, "9% reinit rate — signal strengthened");
 }
 

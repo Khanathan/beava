@@ -120,7 +120,11 @@ fn upstream_log_fetch_bench() {
     let t_read = Instant::now();
     let entries = log.read_entries("events").unwrap();
     let read_elapsed = t_read.elapsed();
-    eprintln!("    entries: {} · {}", entries.len(), fmt_eps(n, read_elapsed));
+    eprintln!(
+        "    entries: {} · {}",
+        entries.len(),
+        fmt_eps(n, read_elapsed)
+    );
 
     // ========================================================================
     // Phase (2): filter + encode + write loop (sink = Vec<u8>)

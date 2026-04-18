@@ -250,7 +250,9 @@ async fn trigger_and_wait_backfill(state: &SharedState, stream_name: &str) {
                 "Backfill for stream '{}' did not complete within 5 seconds \
                  (processed {} / {} events)",
                 stream_name,
-                status.processed_events.load(std::sync::atomic::Ordering::Relaxed),
+                status
+                    .processed_events
+                    .load(std::sync::atomic::Ordering::Relaxed),
                 total,
             );
         }
@@ -367,9 +369,7 @@ async fn test_ship_gate_backfill_crash_recover() {
     );
 
     let mut mismatches = 0usize;
-    for ((live_key, live_fm), (rec_key, rec_fm)) in
-        live_features.iter().zip(rec_features.iter())
-    {
+    for ((live_key, live_fm), (rec_key, rec_fm)) in live_features.iter().zip(rec_features.iter()) {
         assert_eq!(
             live_key, rec_key,
             "SHIP-01: key ordering mismatch between live and recovered runs"
@@ -383,8 +383,7 @@ async fn test_ship_gate_backfill_crash_recover() {
     }
 
     assert_eq!(
-        mismatches,
-        0,
+        mismatches, 0,
         "SHIP-01 / CORR-06: {mismatches} key(s) have different features between live and \
          recovered runs. run_backfill must use parse_event_time(&payload, entry.timestamp) \
          (D-15) to bucket by payload _event_time, not entry.timestamp wall-clock."

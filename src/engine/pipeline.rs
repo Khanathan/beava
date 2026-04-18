@@ -356,8 +356,7 @@ impl Projection {
 }
 
 /// A stream definition: a named stream with a key field and a list of named features.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct StreamDefinition {
     pub name: String,
     /// Key field for entity extraction. None = keyless stream (raw event ingestion).
@@ -398,7 +397,6 @@ pub struct StreamDefinition {
     /// Absent in older snapshots → None → 5 s default (CORR-04 forward-compat).
     pub watermark_lateness: Option<Duration>,
 }
-
 
 /// The pipeline engine. Holds registered stream definitions and coordinates
 /// the push-through flow.
@@ -446,8 +444,7 @@ pub struct PipelineEngine {
     /// on every successful push — primary or cascade — so there is one
     /// hook site regardless of dispatch path (user direction §3).
     #[cfg(feature = "server")]
-    pub subscriber_registry:
-        Option<std::sync::Arc<crate::server::replica::SubscriberRegistry>>,
+    pub subscriber_registry: Option<std::sync::Arc<crate::server::replica::SubscriberRegistry>>,
 }
 
 /// Create an operator instance from a FeatureDef (non-derive only).
@@ -1046,8 +1043,7 @@ impl PipelineEngine {
                     // before we read it.
                     if let Some(reason) = op.ring_buffer_drop_reason() {
                         if let Some(kind) = ring_buffer_operator_kind(def) {
-                            self.ring_buffer_drops
-                                .increment(stream_name, kind, reason);
+                            self.ring_buffer_drops.increment(stream_name, kind, reason);
                         }
                     }
                 }
@@ -1326,7 +1322,13 @@ impl PipelineEngine {
                     left_fields,
                     right_fields,
                     ..
-                } => (left_table, right_table, join_type, left_fields, right_fields),
+                } => (
+                    left_table,
+                    right_table,
+                    join_type,
+                    left_fields,
+                    right_fields,
+                ),
                 _ => continue,
             };
 
@@ -1369,11 +1371,7 @@ impl PipelineEngine {
                 // Left side: copy every declared left_field from left_row.fields.
                 if let Some(lr) = left_row.as_ref() {
                     for lf in &left_fields {
-                        let v = lr
-                            .fields
-                            .get(lf)
-                            .cloned()
-                            .unwrap_or(FeatureValue::Missing);
+                        let v = lr.fields.get(lf).cloned().unwrap_or(FeatureValue::Missing);
                         merged.insert(lf.clone(), v);
                     }
                 }
@@ -1406,7 +1404,6 @@ impl PipelineEngine {
         }
         Ok(())
     }
-
 
     /// Async-mode cascade push: skips feature read + derive evaluation for
     /// primary AND cascade targets. Returns empty FeatureMap. See
@@ -1525,8 +1522,9 @@ impl PipelineEngine {
             groups.entry(*et).or_default().push(i);
         }
 
-        let mut out: Vec<Result<FeatureMap, BeavaError>> =
-            (0..events.len()).map(|_| Ok(FeatureMap::default())).collect();
+        let mut out: Vec<Result<FeatureMap, BeavaError>> = (0..events.len())
+            .map(|_| Ok(FeatureMap::default()))
+            .collect();
 
         for (group_now, indices) in groups {
             for i in indices {
@@ -1534,8 +1532,7 @@ impl PipelineEngine {
 
                 // 1. Primary + cascade via the existing single-event worker.
                 //    Preserves depends_on DAG cascade semantics EXACTLY (D-06).
-                let res =
-                    self.push_with_cascade_no_features(stream_name, event, store, group_now);
+                let res = self.push_with_cascade_no_features(stream_name, event, store, group_now);
 
                 // 2. Fan-out dispatch mirrors the TCP handler's per-event fan-out
                 //    block. Each qualifying target receives exactly ONE push per
@@ -1546,8 +1543,7 @@ impl PipelineEngine {
                             event.get(target_key_field.as_str())
                         {
                             if !key_val.is_empty() {
-                                let _ =
-                                    self.push_no_features(target_name, event, store, group_now);
+                                let _ = self.push_no_features(target_name, event, store, group_now);
                             }
                         }
                     }
@@ -1573,8 +1569,15 @@ impl PipelineEngine {
         let cascade = match self.cascade_plan.get(stream_name) {
             Some(plan) if !plan.is_empty() => plan,
             _ => {
-                return self
-                    .push_internal(stream_name, event, None, None, store, now, read_features)
+                return self.push_internal(
+                    stream_name,
+                    event,
+                    None,
+                    None,
+                    store,
+                    now,
+                    read_features,
+                )
             }
         };
 
@@ -1637,9 +1640,7 @@ impl PipelineEngine {
             let effective_event: serde_json::Value = downstream_def
                 .depends_on
                 .as_ref()
-                .and_then(|deps| {
-                    deps.iter().find_map(|d| effective_events.get(d).cloned())
-                })
+                .and_then(|deps| deps.iter().find_map(|d| effective_events.get(d).cloned()))
                 .unwrap_or_else(|| event.clone());
 
             // Phase 23-01: if THIS stream carries an EnrichFromTable feature,
@@ -1653,7 +1654,12 @@ impl PipelineEngine {
                     right_fields,
                 } = def
                 {
-                    Some((right_table.clone(), on.clone(), *join_type, right_fields.clone()))
+                    Some((
+                        right_table.clone(),
+                        on.clone(),
+                        *join_type,
+                        right_fields.clone(),
+                    ))
                 } else {
                     None
                 }
@@ -1694,9 +1700,7 @@ impl PipelineEngine {
                 // Build enriched event.
                 let mut enriched = effective_event.clone();
                 let enriched_map = enriched.as_object_mut().ok_or_else(|| {
-                    BeavaError::Protocol(
-                        "EnrichFromTable: event is not a JSON object".into(),
-                    )
+                    BeavaError::Protocol("EnrichFromTable: event is not a JSON object".into())
                 })?;
                 for (right_src, emitted) in &right_fields {
                     // Defense-in-depth: refuse to clobber a pre-existing left
@@ -1762,11 +1766,8 @@ impl PipelineEngine {
                 // Phase 24-04 γ: Stream↔Stream join output watermark =
                 // min(left_wm, right_wm). Applied before match work so
                 // the output's wm reflects BOTH inputs as of right now.
-                self.watermarks.propagate_join(
-                    &left_stream,
-                    &right_stream,
-                    stream_in_order,
-                );
+                self.watermarks
+                    .propagate_join(&left_stream, &right_stream, stream_in_order);
                 // Determine which side the arrival came from. The primary
                 // stream (`stream_name`) is the origin of the push.
                 let side_opt: Option<crate::engine::operators::JoinSide> =
@@ -1799,8 +1800,8 @@ impl PipelineEngine {
                 // Event-time: parse_event_time returns SystemTime; fall back
                 // to wall-clock `now` when `_event_time` is absent.
                 let event_time_ms: u64 = {
-                    let st = crate::engine::operators::parse_event_time(&effective_event)
-                        .unwrap_or(now);
+                    let st =
+                        crate::engine::operators::parse_event_time(&effective_event).unwrap_or(now);
                     st.duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_millis() as u64)
                         .unwrap_or(0)
@@ -1881,7 +1882,11 @@ impl PipelineEngine {
                     // join-outer-needed.md §4 (retraction doubling).
                     let null_right: serde_json::Map<String, serde_json::Value> =
                         serde_json::Map::new();
-                    vec![build_joined_event(&arriving_map, &null_right, &right_fields)]
+                    vec![build_joined_event(
+                        &arriving_map,
+                        &null_right,
+                        &right_fields,
+                    )]
                 } else {
                     Vec::new()
                 };
@@ -1903,15 +1908,8 @@ impl PipelineEngine {
                         .unwrap_or_default();
                     for extra in joined_events.iter().skip(1) {
                         for ds_name in &direct_downstreams {
-                            let _ = self.push_internal(
-                                ds_name,
-                                extra,
-                                None,
-                                None,
-                                store,
-                                now,
-                                false,
-                            );
+                            let _ =
+                                self.push_internal(ds_name, extra, None, None, store, now, false);
                         }
                     }
                 }

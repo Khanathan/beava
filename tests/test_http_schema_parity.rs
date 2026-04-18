@@ -10,8 +10,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
-use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::engine::event_time::parse_event_time;
+use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::server::http::build_router;
 use beava::server::tcp::{
     handle_push_core_ex, make_concurrent_state_full, BackfillTracker, SharedState,
@@ -53,7 +53,7 @@ fn fresh_state_with_stream() -> SharedState {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
     state
@@ -86,10 +86,7 @@ async fn same_json_through_http_and_tcp_yields_identical_feature_values() {
     // Near-now event times that are within the 24h window.
     // Both formats encode the same instant; we run two iterations to confirm
     // parse_event_time handles both without schema drift.
-    let unix_ms_now = query_now
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+    let unix_ms_now = query_now.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
     // Subtract 10 minutes to stay well inside the 24h window but differ from
     // fallback wall-clock (proving the parser ran).
     let event_unix_ms = unix_ms_now.saturating_sub(10 * 60 * 1000);
@@ -121,9 +118,8 @@ async fn same_json_through_http_and_tcp_yields_identical_feature_values() {
 
     for (label, et_frag) in &test_cases {
         // ---- Event payload (identical across all four paths) ----
-        let event_json = format!(
-            r#"{{"user":"parity_user","amount":99.5,"_event_time":{et_frag}}}"#
-        );
+        let event_json =
+            format!(r#"{{"user":"parity_user","amount":99.5,"_event_time":{et_frag}}}"#);
         let event: serde_json::Value = serde_json::from_str(&event_json).unwrap();
         let raw = event_json.as_bytes().to_vec();
 
@@ -157,8 +153,9 @@ async fn same_json_through_http_and_tcp_yields_identical_feature_values() {
             StatusCode::OK,
             "[{label}] http_single push failed"
         );
-        let features_http_single =
-            state_http_single.store.get_all_features("parity_user", event_time);
+        let features_http_single = state_http_single
+            .store
+            .get_all_features("parity_user", event_time);
 
         // ----------------------------------------------------------------
         // Path 3: HTTP batch POST /push-batch/{stream} (1-element array)
@@ -179,8 +176,9 @@ async fn same_json_through_http_and_tcp_yields_identical_feature_values() {
             StatusCode::OK,
             "[{label}] http_batch push failed"
         );
-        let features_http_batch =
-            state_http_batch.store.get_all_features("parity_user", event_time);
+        let features_http_batch = state_http_batch
+            .store
+            .get_all_features("parity_user", event_time);
 
         // ----------------------------------------------------------------
         // Path 4: HTTP NDJSON POST /push/{stream}/ndjson (1 line)
@@ -201,8 +199,9 @@ async fn same_json_through_http_and_tcp_yields_identical_feature_values() {
             StatusCode::OK,
             "[{label}] http_ndjson push failed"
         );
-        let features_http_ndjson =
-            state_http_ndjson.store.get_all_features("parity_user", event_time);
+        let features_http_ndjson = state_http_ndjson
+            .store
+            .get_all_features("parity_user", event_time);
 
         // ----------------------------------------------------------------
         // Assert bit-identical feature values across all four paths.
@@ -249,7 +248,9 @@ async fn same_json_through_http_and_tcp_yields_identical_feature_values() {
         );
 
         // Confirm the feature is non-Missing (proves the window is in-range).
-        let total = features_tcp.get("total_amount").expect("total_amount must exist");
+        let total = features_tcp
+            .get("total_amount")
+            .expect("total_amount must exist");
         assert!(
             !total.is_missing(),
             "[{label}] total_amount is Missing — bucket out of window? event_time={event_unix_ms}ms"

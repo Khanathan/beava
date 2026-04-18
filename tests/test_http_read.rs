@@ -148,7 +148,11 @@ async fn features_filtered_by_table() {
         .keys()
         .cloned()
         .collect();
-    assert_eq!(table_keys, vec!["txn_count"], "must return exactly the filtered table");
+    assert_eq!(
+        table_keys,
+        vec!["txn_count"],
+        "must return exactly the filtered table"
+    );
 }
 
 #[tokio::test]
@@ -201,12 +205,20 @@ async fn list_streams_returns_watermark() {
     let json: Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(json["ok"], Value::Bool(true));
-    let streams = json["data"]["streams"].as_array().expect("streams must be an array");
-    assert!(streams.len() >= 1, "must have at least one registered stream");
+    let streams = json["data"]["streams"]
+        .as_array()
+        .expect("streams must be an array");
+    assert!(
+        streams.len() >= 1,
+        "must have at least one registered stream"
+    );
 
     // Every entry must have a "name" field.
     for s in streams {
-        assert!(s["name"].is_string(), "stream entry must have a string name");
+        assert!(
+            s["name"].is_string(),
+            "stream entry must have a string name"
+        );
         // watermark_ms is either a u64 number or null.
         assert!(
             s["watermark_ms"].is_null() || s["watermark_ms"].is_number(),
@@ -215,10 +227,7 @@ async fn list_streams_returns_watermark() {
     }
 
     // Our seeded stream must appear.
-    let names: Vec<&str> = streams
-        .iter()
-        .filter_map(|s| s["name"].as_str())
-        .collect();
+    let names: Vec<&str> = streams.iter().filter_map(|s| s["name"].as_str()).collect();
     assert!(names.contains(&"txn_events"), "txn_events must be listed");
 }
 
@@ -243,7 +252,10 @@ async fn stream_detail_returns_schema() {
     let json: Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(json["ok"], Value::Bool(true));
-    assert_eq!(json["data"]["name"], Value::String("txn_events".to_string()));
+    assert_eq!(
+        json["data"]["name"],
+        Value::String("txn_events".to_string())
+    );
     assert!(
         json["data"]["watermark_ms"].is_null() || json["data"]["watermark_ms"].is_number(),
         "watermark_ms must be null or number"
@@ -253,7 +265,10 @@ async fn stream_detail_returns_schema() {
         .expect("features must be an array");
     assert_eq!(features.len(), 1, "txn_events has exactly one feature");
     assert_eq!(features[0]["name"], Value::String("txn_count".to_string()));
-    assert!(features[0]["type"].is_string(), "feature type must be a string");
+    assert!(
+        features[0]["type"].is_string(),
+        "feature type must be a string"
+    );
 }
 
 #[tokio::test]

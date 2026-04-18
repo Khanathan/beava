@@ -107,7 +107,11 @@ fn composite_keys_bucket_independently_and_merge_on_match() {
     let row_m2 = store.get_all_features("u1|m2", now + Duration::from_millis(1));
 
     // u1|m1 sees events 1 and 3 — count=2, sum=15.
-    assert!(matches!(row_m1.get("n"), Some(FeatureValue::Int(2))), "n={:?}", row_m1.get("n"));
+    assert!(
+        matches!(row_m1.get("n"), Some(FeatureValue::Int(2))),
+        "n={:?}",
+        row_m1.get("n")
+    );
     let sum_m1 = row_m1.get("total").expect("total");
     match sum_m1 {
         FeatureValue::Float(f) => assert!((f - 15.0).abs() < 1e-6, "sum m1 = {}", f),
@@ -125,18 +129,18 @@ fn composite_keys_bucket_independently_and_merge_on_match() {
     }
 
     // The other composite key must not exist.
-    assert!(store.get_entity("u1").is_none(), "composite-only aggregation must not create scalar-keyed row");
+    assert!(
+        store.get_entity("u1").is_none(),
+        "composite-only aggregation must not create scalar-keyed row"
+    );
 }
 
 // (4) Missing composite-key field still surfaces an error (preserved from 22-04).
 #[test]
 fn composite_keys_missing_field_errors() {
     let ev = serde_json::json!({"user_id": "u1", "amount": 10.0}); // merchant_id absent
-    let err = encode_group_by(
-        &["user_id".to_string(), "merchant_id".to_string()],
-        &ev,
-    )
-    .unwrap_err();
+    let err =
+        encode_group_by(&["user_id".to_string(), "merchant_id".to_string()], &ev).unwrap_err();
     // BeavaError::Type { field: "merchant_id", .. }
     let msg = format!("{}", err);
     assert!(msg.contains("merchant_id"), "err msg: {}", msg);

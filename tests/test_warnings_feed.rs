@@ -312,7 +312,12 @@ async fn test_all_five_categories_fire_in_one_feed() {
 
     let body = fetch_body(state, "/debug/warnings").await;
     let warnings = body["warnings"].as_array().unwrap();
-    assert_eq!(warnings.len(), 5, "expected one per category, got {:#?}", warnings);
+    assert_eq!(
+        warnings.len(),
+        5,
+        "expected one per category, got {:#?}",
+        warnings
+    );
 
     // Severity descending: Error, Error, Warning, Warning, Info.
     let sevs: Vec<&str> = warnings
@@ -330,7 +335,13 @@ async fn test_all_five_categories_fire_in_one_feed() {
         .iter()
         .map(|w| w["category"].as_str().unwrap())
         .collect();
-    for expected in ["config", "data_quality", "operational", "safety", "performance"] {
+    for expected in [
+        "config",
+        "data_quality",
+        "operational",
+        "safety",
+        "performance",
+    ] {
         assert!(cats.contains(expected), "missing category '{}'", expected);
     }
 }
@@ -362,7 +373,15 @@ async fn test_schema_shape_matches_context_md() {
     assert_eq!(body["observation_window"], "7d");
     for w in body["warnings"].as_array().unwrap() {
         // Required fields per CONTEXT schema.
-        for f in ["id", "severity", "category", "title", "detail", "first_seen", "last_seen"] {
+        for f in [
+            "id",
+            "severity",
+            "category",
+            "title",
+            "detail",
+            "first_seen",
+            "last_seen",
+        ] {
             assert!(
                 !w[f].is_null(),
                 "required field '{}' missing from warning {:?}",
@@ -373,6 +392,10 @@ async fn test_schema_shape_matches_context_md() {
         }
         // Timestamps parse as RFC3339-ish (YYYY-MM-DDTHH:MM:SSZ).
         let first = w["first_seen"].as_str().unwrap();
-        assert!(first.contains('T') && first.ends_with('Z'), "first_seen: {}", first);
+        assert!(
+            first.contains('T') && first.ends_with('Z'),
+            "first_seen: {}",
+            first
+        );
     }
 }

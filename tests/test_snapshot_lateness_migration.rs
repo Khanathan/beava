@@ -5,7 +5,7 @@
 
 use beava::engine::event_time::WATERMARK_LATENESS;
 use beava::engine::pipeline::{PipelineEngine, StreamDefinition};
-use beava::engine::register::{SourceDescriptor, v0_source_to_stream_def};
+use beava::engine::register::{v0_source_to_stream_def, SourceDescriptor};
 
 #[test]
 fn old_snapshot_loads_with_default_lateness() {
@@ -62,8 +62,8 @@ fn new_payload_with_watermark_lateness_parses_correctly() {
         "watermark_lateness": "10m"
     }"#;
 
-    let desc: SourceDescriptor = serde_json::from_str(new_json)
-        .expect("new JSON with watermark_lateness must deserialize");
+    let desc: SourceDescriptor =
+        serde_json::from_str(new_json).expect("new JSON with watermark_lateness must deserialize");
 
     assert_eq!(
         desc.watermark_lateness.as_deref(),

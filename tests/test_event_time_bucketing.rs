@@ -24,9 +24,7 @@ use tokio::net::TcpStream;
 use beava::engine::event_time::WATERMARK_LATENESS;
 use beava::engine::pipeline::PipelineEngine;
 use beava::engine::window::RingBuffer;
-use beava::server::protocol::{
-    self, OP_PUSH, OP_REGISTER, STATUS_OK, TYPE_I64, TYPE_STR,
-};
+use beava::server::protocol::{self, OP_PUSH, OP_REGISTER, STATUS_OK, TYPE_I64, TYPE_STR};
 use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
 use beava::state::store::StateStore;
 
@@ -71,7 +69,11 @@ fn ring_buffer_routes_by_event_time() {
     rb2.add_at_event_time(1u64, t_hist);
     let totals: Vec<u64> = rb2.buckets_iter().copied().collect();
     // The t_now bucket held 1 direct + 1 historical push = 2.
-    assert!(totals.contains(&2), "expected a bucket with 2 events; got {:?}", totals);
+    assert!(
+        totals.contains(&2),
+        "expected a bucket with 2 events; got {:?}",
+        totals
+    );
 }
 
 #[test]
@@ -307,12 +309,7 @@ async fn out_of_order_within_5s_lands_in_correct_bucket() {
 
     // Push at t_base, t_base-3 (within 5s late), then t_base-6 (past
     // watermark = t_base-5, dropped by the Task 1 path).
-    send_frame(
-        &mut s,
-        OP_PUSH,
-        &build_push_with_et("Clicks", "u1", t_base),
-    )
-    .await;
+    send_frame(&mut s, OP_PUSH, &build_push_with_et("Clicks", "u1", t_base)).await;
     send_frame(
         &mut s,
         OP_PUSH,
@@ -369,9 +366,7 @@ async fn ss_join_watermark_is_min_of_inputs() {
     let engine = PipelineEngine::new();
     engine.watermarks.observe("L", ts(200));
     engine.watermarks.observe("R", ts(100));
-    engine
-        .watermarks
-        .propagate_join("L", "R", "J");
+    engine.watermarks.propagate_join("L", "R", "J");
     let wm = engine.watermarks.watermark("J").unwrap();
     // min(200, 100) = 100; watermark = 100 − 5 = 95.
     assert_eq!(wm, ts(95));

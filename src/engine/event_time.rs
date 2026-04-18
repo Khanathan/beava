@@ -70,10 +70,7 @@ const UNIX_SEC_MS_THRESHOLD: f64 = (1u64 << 31) as f64;
 /// Nested objects, arrays, booleans, null, and garbage strings → fallback.
 /// Never errors — watermarks must be resilient to client-supplied garbage
 /// (T-24-04-01: we accept user timestamps at face value; clamp is post-v0).
-pub fn parse_event_time(
-    payload: &serde_json::Value,
-    fallback: SystemTime,
-) -> SystemTime {
+pub fn parse_event_time(payload: &serde_json::Value, fallback: SystemTime) -> SystemTime {
     let field = match payload.get(EVENT_TIME_FIELD) {
         Some(v) => v,
         None => return fallback,
@@ -86,7 +83,9 @@ pub fn parse_event_time(
                     return fallback;
                 }
                 if (i as f64) < UNIX_SEC_MS_THRESHOLD {
-                    UNIX_EPOCH.checked_add(Duration::from_secs(i as u64)).unwrap_or(fallback)
+                    UNIX_EPOCH
+                        .checked_add(Duration::from_secs(i as u64))
+                        .unwrap_or(fallback)
                 } else {
                     UNIX_EPOCH
                         .checked_add(Duration::from_millis(i as u64))
@@ -106,7 +105,9 @@ pub fn parse_event_time(
                 } else {
                     // milliseconds
                     let ms = f as u64;
-                    UNIX_EPOCH.checked_add(Duration::from_millis(ms)).unwrap_or(fallback)
+                    UNIX_EPOCH
+                        .checked_add(Duration::from_millis(ms))
+                        .unwrap_or(fallback)
                 }
             } else {
                 fallback
@@ -138,10 +139,7 @@ fn parse_iso8601(s: &str) -> Option<SystemTime> {
     if date_iter.next().is_some() {
         return None;
     }
-    if !(1970..=9999).contains(&year)
-        || !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
-    {
+    if !(1970..=9999).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
 
@@ -508,13 +506,21 @@ impl RingBufferDropCounters {
     ) -> (Arc<AtomicU64>, Arc<AtomicU64>, Arc<AtomicU64>) {
         let too_old = Arc::clone(
             self.per_label
-                .entry((stream.to_string(), operator_kind.to_string(), DropReason::TooOld))
+                .entry((
+                    stream.to_string(),
+                    operator_kind.to_string(),
+                    DropReason::TooOld,
+                ))
                 .or_insert_with(|| Arc::new(AtomicU64::new(0)))
                 .value(),
         );
         let too_new = Arc::clone(
             self.per_label
-                .entry((stream.to_string(), operator_kind.to_string(), DropReason::TooNew))
+                .entry((
+                    stream.to_string(),
+                    operator_kind.to_string(),
+                    DropReason::TooNew,
+                ))
                 .or_insert_with(|| Arc::new(AtomicU64::new(0)))
                 .value(),
         );

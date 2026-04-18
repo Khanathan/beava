@@ -92,7 +92,10 @@ fn entity_with_streams(streams: &[&str]) -> SerializableEntityState {
 /// Write a synthetic base snapshot to the file the server will read on
 /// SNAPSHOT_FETCH. Uses the `beava.snapshot.base.NNNNNNNNNN` layout that
 /// `load_base_snapshot_for_fetch` scans for. Returns the written path.
-fn write_base_snapshot(snap_dir: &std::path::Path, entities: Vec<(String, SerializableEntityState)>) -> PathBuf {
+fn write_base_snapshot(
+    snap_dir: &std::path::Path,
+    entities: Vec<(String, SerializableEntityState)>,
+) -> PathBuf {
     let base = BaseSnapshotState {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
@@ -166,7 +169,10 @@ async fn send_snapshot_fetch_frame(stream: &mut TcpStream, token: &str, scope: &
 /// Read one framed response: `[u32 len][u8 tag][body]`. Returns (tag, body).
 async fn read_frame(stream: &mut TcpStream) -> (u8, Vec<u8>) {
     let len = stream.read_u32().await.unwrap() as usize;
-    assert!(len >= 1, "response frame must contain at least the tag byte");
+    assert!(
+        len >= 1,
+        "response frame must contain at least the tag byte"
+    );
     let tag = stream.read_u8().await.unwrap();
     let body_len = len - 1;
     let mut body = vec![0u8; body_len];
@@ -231,8 +237,7 @@ async fn happy_streams_only() {
 
     let (tag, payload) = read_frame(&mut conn).await;
     assert_eq!(tag, REPLICA_FRAME_TAG_PAYLOAD);
-    let filtered: BaseSnapshotState =
-        postcard::from_bytes(&payload).expect("postcard deserialize");
+    let filtered: BaseSnapshotState = postcard::from_bytes(&payload).expect("postcard deserialize");
     // u1 (orders) + u3 (orders, clicks) should pass; u2 (clicks) filtered out.
     let keys: Vec<_> = filtered.entities.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(keys, vec!["u1", "u3"]);
@@ -299,7 +304,11 @@ async fn happy_key_prefix() {
 async fn expect_error_frame_and_close(conn: &mut TcpStream) -> String {
     let len = conn.read_u32().await.unwrap() as usize;
     let tag = conn.read_u8().await.unwrap();
-    assert_eq!(tag, STATUS_ERROR, "expected STATUS_ERROR, got tag 0x{:02x}", tag);
+    assert_eq!(
+        tag, STATUS_ERROR,
+        "expected STATUS_ERROR, got tag 0x{:02x}",
+        tag
+    );
     let body_len = len - 1;
     let mut body = vec![0u8; body_len];
     if body_len > 0 {

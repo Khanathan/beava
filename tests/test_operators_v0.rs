@@ -246,18 +246,10 @@ fn test_first_by_event_time_out_of_order() {
     let mut op = FirstOp::new("country", false);
     let t_now = ts(1_000_000);
     // Arriving order: later event first, then earlier event.
-    op.push(
-        &json!({"country": "UK", "_event_time": 500}),
-        None,
-        t_now,
-    )
-    .unwrap();
-    op.push(
-        &json!({"country": "US", "_event_time": 100}),
-        None,
-        t_now,
-    )
-    .unwrap();
+    op.push(&json!({"country": "UK", "_event_time": 500}), None, t_now)
+        .unwrap();
+    op.push(&json!({"country": "US", "_event_time": 100}), None, t_now)
+        .unwrap();
     // Earlier _event_time wins, regardless of arrival order.
     assert_eq!(op.read(t_now), FeatureValue::String("US".into()));
 }
@@ -323,10 +315,14 @@ fn test_first_n_out_of_order_inserts_correctly() {
     let mut op = FirstNOp::new("v", 3, false);
     let t = ts(1_000_000);
     // Later events arrive first with later _event_time.
-    op.push(&json!({"v": "x", "_event_time": 500}), None, t).unwrap();
-    op.push(&json!({"v": "y", "_event_time": 700}), None, t).unwrap();
-    op.push(&json!({"v": "z", "_event_time": 100}), None, t).unwrap();
-    op.push(&json!({"v": "w", "_event_time": 50}), None, t).unwrap();
+    op.push(&json!({"v": "x", "_event_time": 500}), None, t)
+        .unwrap();
+    op.push(&json!({"v": "y", "_event_time": 700}), None, t)
+        .unwrap();
+    op.push(&json!({"v": "z", "_event_time": 100}), None, t)
+        .unwrap();
+    op.push(&json!({"v": "w", "_event_time": 50}), None, t)
+        .unwrap();
     let out = match op.read(t) {
         FeatureValue::String(s) => s,
         _ => panic!(),
@@ -348,12 +344,8 @@ fn test_first_n_cap_enforced() {
     let mut op = op;
     let t = ts(1_000_000);
     for i in 0..(FIRST_N_CAP + 500) as i64 {
-        op.push(
-            &json!({"v": format!("e{}", i), "_event_time": i}),
-            None,
-            t,
-        )
-        .unwrap();
+        op.push(&json!({"v": format!("e{}", i), "_event_time": i}), None, t)
+            .unwrap();
     }
     let out = match op.read(t) {
         FeatureValue::String(s) => s,

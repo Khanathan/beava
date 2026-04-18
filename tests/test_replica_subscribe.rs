@@ -22,9 +22,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use beava::server::protocol::{
-    self, Scope, OP_SUBSCRIBE, REPLICA_FRAME_TAG_EVENT, STATUS_ERROR,
-};
+use beava::server::protocol::{self, Scope, OP_SUBSCRIBE, REPLICA_FRAME_TAG_EVENT, STATUS_ERROR};
 use beava::server::signals::Category;
 use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
 use beava::state::store::StateStore;
@@ -216,7 +214,10 @@ async fn subscribe_then_push_delivers_events() {
                 .await
                 .expect("timed out reading event frame");
         assert_eq!(tag, REPLICA_FRAME_TAG_EVENT);
-        assert!(ts_secs >= last_ts, "timestamps must be monotonic per connection");
+        assert!(
+            ts_secs >= last_ts,
+            "timestamps must be monotonic per connection"
+        );
         last_ts = ts_secs;
         let v: serde_json::Value = serde_json::from_slice(&payload).unwrap();
         keys_seen.push(v["user_id"].as_str().unwrap().to_string());
@@ -352,7 +353,9 @@ async fn subscribe_rejects_missing_auth() {
         .read()
         .snapshot_sorted(std::time::SystemTime::now(), Some(Category::Safety));
     assert!(
-        signals.iter().any(|s| s.id.starts_with("replica.auth.failure")),
+        signals
+            .iter()
+            .any(|s| s.id.starts_with("replica.auth.failure")),
         "expected a replica.auth.failure safety signal"
     );
 }

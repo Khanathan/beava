@@ -388,11 +388,7 @@ async fn push_table_overwrites_prior_live_row() {
 
     // Second push — different value; whole-row replacement semantics
     // (matching `upsert_table_row` in plan 01).
-    let p = build_push_table_payload(
-        "UserProfile",
-        "u9",
-        &serde_json::json!({"country": "CA"}),
-    );
+    let p = build_push_table_payload("UserProfile", "u9", &serde_json::json!({"country": "CA"}));
     let (status, _) = send_frame(&mut s, OP_PUSH_TABLE, &p).await;
     assert_eq!(status, STATUS_OK);
 
@@ -401,5 +397,10 @@ async fn push_table_overwrites_prior_live_row() {
         .get_table_row("u9", "UserProfile")
         .expect("row exists");
     assert_eq!(row.state, TableRowState::Live);
-    assert_eq!(row.fields.len(), 1, "fields replaced whole; got: {:?}", row.fields);
+    assert_eq!(
+        row.fields.len(),
+        1,
+        "fields replaced whole; got: {:?}",
+        row.fields
+    );
 }

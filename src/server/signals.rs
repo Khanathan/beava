@@ -197,11 +197,8 @@ impl SignalRegistry {
     /// signal) — same pattern as `state/eviction.rs`.
     pub fn age_out(&mut self, now: SystemTime) {
         let window = self.observation_window;
-        self.signals.retain(|_, sig| {
-            now.duration_since(sig.last_seen)
-                .unwrap_or(Duration::ZERO)
-                <= window
-        });
+        self.signals
+            .retain(|_, sig| now.duration_since(sig.last_seen).unwrap_or(Duration::ZERO) <= window);
     }
 
     /// Return every live signal, severity-descending, stable by
@@ -253,20 +250,14 @@ impl SignalRegistry {
     /// call to [`rate_since_last`](Self::rate_since_last) can compute
     /// `(delta_count / delta_seconds)`.
     pub fn record_counter_sample(&mut self, key: &str, value: u64, now: SystemTime) {
-        self.prev_counters
-            .insert(key.to_string(), (value, now));
+        self.prev_counters.insert(key.to_string(), (value, now));
     }
 
     /// Compute the per-second rate since the last sample for `key`, then
     /// update the stored sample. Returns `None` on the first call for a
     /// given key (bootstrap cycle) or if the current value is less than
     /// the stored value (counter reset).
-    pub fn rate_since_last(
-        &mut self,
-        key: &str,
-        current: u64,
-        now: SystemTime,
-    ) -> Option<f64> {
+    pub fn rate_since_last(&mut self, key: &str, current: u64, now: SystemTime) -> Option<f64> {
         let prev = self.prev_counters.insert(key.to_string(), (current, now));
         let (prev_val, prev_ts) = prev?;
         if current < prev_val {
@@ -310,10 +301,7 @@ pub fn format_rfc3339(t: SystemTime) -> String {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let (y, mo, d, h, mi, s) = civil_from_days_seconds(secs);
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        y, mo, d, h, mi, s
-    )
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, mi, s)
 }
 
 /// Convert a Unix timestamp (seconds) to `(year, month, day, hour, min,
@@ -394,10 +382,7 @@ pub fn emit_late_drop_signals(
 /// Memory-pressure emitter. Reads `/proc/self/statm` on Linux; no-op on
 /// other platforms. Emits `memory.pressure` at Warning for >85% and
 /// escalates to Critical for >95%.
-pub fn emit_memory_pressure_signal(
-    registry: &SharedRegistry,
-    configured_limit_bytes: Option<u64>,
-) {
+pub fn emit_memory_pressure_signal(registry: &SharedRegistry, configured_limit_bytes: Option<u64>) {
     let Some(limit) = configured_limit_bytes else {
         return;
     };
@@ -440,11 +425,7 @@ pub fn emit_memory_pressure_signal(
 /// 10× multiplier over the CLAUDE.md design target of 100µs → 1ms, tuned
 /// to avoid noise from GC/JIT warmup. `current_p99_us` is expected to be
 /// sourced from `LatencyTracker::push_percentile_us(99.0, now)`.
-pub fn emit_perf_p99_signal(
-    registry: &SharedRegistry,
-    current_p99_us: f64,
-    threshold_us: f64,
-) {
+pub fn emit_perf_p99_signal(registry: &SharedRegistry, current_p99_us: f64, threshold_us: f64) {
     if !(current_p99_us.is_finite() && current_p99_us > threshold_us) {
         return;
     }

@@ -80,7 +80,10 @@ fn main() {
     let full_path = if path == "/" {
         "/debug/config-recommendations".to_string()
     } else {
-        format!("{}/debug/config-recommendations", path.trim_end_matches('/'))
+        format!(
+            "{}/debug/config-recommendations",
+            path.trim_end_matches('/')
+        )
     };
 
     // Connect + send request.
@@ -175,10 +178,7 @@ fn main() {
     for r in &recs {
         let knob = r.get("knob").and_then(|v| v.as_str()).unwrap_or("?");
         let current = r.get("current").and_then(|v| v.as_str()).unwrap_or("?");
-        let suggested = r
-            .get("suggested")
-            .and_then(|v| v.as_str())
-            .unwrap_or("?");
+        let suggested = r.get("suggested").and_then(|v| v.as_str()).unwrap_or("?");
         let reason = r.get("reason").and_then(|v| v.as_str()).unwrap_or("");
         // Intentional: CLI output (Phase 47 audit)
         println!("{}: '{}' → '{}'  ({})", knob, current, suggested, reason);
@@ -191,9 +191,7 @@ fn main() {
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 fn contains_header(headers: &[u8], name: &[u8]) -> bool {

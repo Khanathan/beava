@@ -8,8 +8,8 @@
 //!     `test_join_stream_table.rs`.
 
 mod primitives {
-    use serde_json::json;
     use beava::engine::operators::{JoinSide, StreamJoinBuffer};
+    use serde_json::json;
 
     fn ev(n: u64) -> serde_json::Map<String, serde_json::Value> {
         // Minimal event payload keyed by "id"=n; event_time is separate.
@@ -173,10 +173,9 @@ mod integration {
         engine.store_raw_register_json("Right", right_val.clone());
 
         // Joined = Left.join(Right, ...).
-        let on_arr = serde_json::to_string(
-            &join_on.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-        )
-        .unwrap();
+        let on_arr =
+            serde_json::to_string(&join_on.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                .unwrap();
         let within_clause = if within.is_empty() {
             "".to_string()
         } else {
@@ -194,31 +193,28 @@ mod integration {
             _ => panic!("expected Join"),
         };
         // Provide left/right schemas so translator can partition fields.
-        let lookup_map: std::collections::HashMap<String, Vec<String>> = [
-            ("Left", &left_val),
-            ("Right", &right_val),
-        ]
-        .iter()
-        .map(|(n, j)| {
-            (
-                n.to_string(),
-                j.get("fields")
-                    .and_then(|f| f.as_object())
-                    .map(|m| m.keys().cloned().collect())
-                    .unwrap_or_default(),
-            )
-        })
-        .collect();
+        let lookup_map: std::collections::HashMap<String, Vec<String>> =
+            [("Left", &left_val), ("Right", &right_val)]
+                .iter()
+                .map(|(n, j)| {
+                    (
+                        n.to_string(),
+                        j.get("fields")
+                            .and_then(|f| f.as_object())
+                            .map(|m| m.keys().cloned().collect())
+                            .unwrap_or_default(),
+                    )
+                })
+                .collect();
         let lookup = |name: &str| -> Option<Vec<String>> { lookup_map.get(name).cloned() };
         let joined_def = v0_join_to_stream_def(&join_desc, Some(&lookup)).unwrap();
         engine.register(joined_def).unwrap();
         engine.store_raw_register_json("Joined", join_val);
 
         // JoinedAgg — observes emissions as a count aggregation.
-        let keys_arr = serde_json::to_string(
-            &agg_keys.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-        )
-        .unwrap();
+        let keys_arr =
+            serde_json::to_string(&agg_keys.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                .unwrap();
         let agg_key_field = agg_keys[0];
         let agg_json = format!(
             r#"{{"name":"JoinedAgg","kind":"table","key_field":"{}","mode":"overwrite","fields":{{}},
@@ -496,21 +492,19 @@ mod integration {
             V0RegisterPayload::Join(d) => d,
             _ => panic!(),
         };
-        let lookup_map: std::collections::HashMap<String, Vec<String>> = [
-            ("Left", &left_val),
-            ("Right", &right_val),
-        ]
-        .iter()
-        .map(|(n, j)| {
-            (
-                n.to_string(),
-                j.get("fields")
-                    .and_then(|f| f.as_object())
-                    .map(|m| m.keys().cloned().collect())
-                    .unwrap_or_default(),
-            )
-        })
-        .collect();
+        let lookup_map: std::collections::HashMap<String, Vec<String>> =
+            [("Left", &left_val), ("Right", &right_val)]
+                .iter()
+                .map(|(n, j)| {
+                    (
+                        n.to_string(),
+                        j.get("fields")
+                            .and_then(|f| f.as_object())
+                            .map(|m| m.keys().cloned().collect())
+                            .unwrap_or_default(),
+                    )
+                })
+                .collect();
         let lookup = |name: &str| -> Option<Vec<String>> { lookup_map.get(name).cloned() };
         let joined_def = v0_join_to_stream_def(&join_desc, Some(&lookup)).unwrap();
         engine.register(joined_def).unwrap();

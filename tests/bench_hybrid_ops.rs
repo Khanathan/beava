@@ -91,11 +91,13 @@ fn bench_distinct_count_sketch_push() {
     let t = ts(1_000_000);
     // Warm past HLL threshold.
     for i in 0..2000 {
-        op.push(&json!({ "d": format!("w{}", i) }), None, t).unwrap();
+        op.push(&json!({ "d": format!("w{}", i) }), None, t)
+            .unwrap();
     }
     let mut i = 2000i64;
     bench_iters("distinct_count.push (HLL mode)", 100_000, || {
-        op.push(&json!({ "d": format!("u{}", i) }), None, t).unwrap();
+        op.push(&json!({ "d": format!("u{}", i) }), None, t)
+            .unwrap();
         i += 1;
     });
 }

@@ -135,10 +135,7 @@ async fn test_severity_sort_order() {
     }
     let body = fetch_warnings(state, "/debug/warnings").await;
     let warnings = body["warnings"].as_array().unwrap();
-    let ids: Vec<&str> = warnings
-        .iter()
-        .map(|w| w["id"].as_str().unwrap())
-        .collect();
+    let ids: Vec<&str> = warnings.iter().map(|w| w["id"].as_str().unwrap()).collect();
     assert_eq!(ids, vec!["crit", "err", "warn", "info"]);
     let sevs: Vec<&str> = warnings
         .iter()
@@ -183,18 +180,8 @@ async fn test_category_query_param_filters() {
     {
         let mut reg = state.signals.write();
         reg.record(mk_signal("s1", Severity::Warning, Category::Safety, t));
-        reg.record(mk_signal(
-            "d1",
-            Severity::Warning,
-            Category::DataQuality,
-            t,
-        ));
-        reg.record(mk_signal(
-            "o1",
-            Severity::Warning,
-            Category::Operational,
-            t,
-        ));
+        reg.record(mk_signal("d1", Severity::Warning, Category::DataQuality, t));
+        reg.record(mk_signal("o1", Severity::Warning, Category::Operational, t));
     }
     let body = fetch_warnings(state.clone(), "/debug/warnings?category=safety").await;
     let warnings = body["warnings"].as_array().unwrap();
@@ -327,10 +314,7 @@ async fn test_within_severity_order_by_first_seen_ascending() {
     }
     let body = fetch_warnings(state, "/debug/warnings").await;
     let warnings = body["warnings"].as_array().unwrap();
-    let ids: Vec<&str> = warnings
-        .iter()
-        .map(|w| w["id"].as_str().unwrap())
-        .collect();
+    let ids: Vec<&str> = warnings.iter().map(|w| w["id"].as_str().unwrap()).collect();
     assert_eq!(ids, vec!["a", "b", "c"]);
 }
 

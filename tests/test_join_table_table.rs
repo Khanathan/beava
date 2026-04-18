@@ -14,9 +14,7 @@ use std::time::SystemTime;
 
 use ahash::AHashMap;
 use beava::engine::pipeline::PipelineEngine;
-use beava::engine::register::{
-    v0_join_to_stream_def, v0_source_to_stream_def, V0RegisterPayload,
-};
+use beava::engine::register::{v0_join_to_stream_def, v0_source_to_stream_def, V0RegisterPayload};
 use beava::state::store::{StateStore, TableRowState};
 use beava::types::FeatureValue;
 
@@ -73,10 +71,8 @@ fn build_engine(
     raw_jsons.push(("B".into(), b_val));
 
     // J = A.join(B)
-    let on_arr = serde_json::to_string(
-        &join_on.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-    )
-    .unwrap();
+    let on_arr =
+        serde_json::to_string(&join_on.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap();
     // Use A's key clause verbatim so output Table shares same key decl.
     let j_json = format!(
         r#"{{"name":"J","kind":"table","mode":"overwrite",{},"fields":{},
@@ -102,9 +98,8 @@ fn build_engine(
             )
         })
         .collect();
-    let fields_lookup = |name: &str| -> Option<Vec<String>> {
-        fields_lookup_table.get(name).cloned()
-    };
+    let fields_lookup =
+        |name: &str| -> Option<Vec<String>> { fields_lookup_table.get(name).cloned() };
     let j_def = v0_join_to_stream_def(&j_desc, Some(&fields_lookup)).unwrap();
     engine.register(j_def).unwrap();
     engine.store_raw_register_json("J", j_val);
@@ -163,12 +158,7 @@ fn set_and_cascade(
 }
 
 // Tombstone a real Table row on `input_table` and run the TT cascade.
-fn delete_and_cascade(
-    engine: &PipelineEngine,
-    store: &StateStore,
-    input_table: &str,
-    key: &str,
-) {
+fn delete_and_cascade(engine: &PipelineEngine, store: &StateStore, input_table: &str, key: &str) {
     let now = SystemTime::now();
     store.tombstone_table_row(key, input_table, now);
     engine
@@ -180,8 +170,7 @@ fn delete_and_cascade(
 // Tests
 // -----------------------------------------------------------------------------
 
-const FIELDS_XY_STR: &str =
-    r#"{"user_id":{"type":"str","optional":false},"x":{"type":"int","optional":false},"y":{"type":"int","optional":false}}"#;
+const FIELDS_XY_STR: &str = r#"{"user_id":{"type":"str","optional":false},"x":{"type":"int","optional":false},"y":{"type":"int","optional":false}}"#;
 const A_FIELDS_X: &str =
     r#"{"user_id":{"type":"str","optional":false},"x":{"type":"int","optional":false}}"#;
 const B_FIELDS_Y: &str =
@@ -317,8 +306,10 @@ fn tt_tombstone_left_deletes_output_inner_and_left() {
 //     `status` (from left) and `status_right` (from right).
 #[test]
 fn tt_collision_suffix_on_output() {
-    let a_fields = r#"{"user_id":{"type":"str","optional":false},"status":{"type":"str","optional":false}}"#;
-    let b_fields = r#"{"user_id":{"type":"str","optional":false},"status":{"type":"str","optional":false}}"#;
+    let a_fields =
+        r#"{"user_id":{"type":"str","optional":false},"status":{"type":"str","optional":false}}"#;
+    let b_fields =
+        r#"{"user_id":{"type":"str","optional":false},"status":{"type":"str","optional":false}}"#;
     let joined = r#"{"user_id":{"type":"str","optional":false},"status":{"type":"str","optional":false},"status_right":{"type":"str","optional":false}}"#;
     let (engine, store) = build_engine(
         a_fields,
@@ -399,7 +390,10 @@ fn tt_composite_key() {
     assert_eq!(j_field(&store, "u1|US", "x"), serde_json::json!(1));
     assert_eq!(j_field(&store, "u1|EU", "y"), serde_json::json!(20));
     delete_and_cascade(&engine, &store, "A", "u1|US");
-    assert!(j_absent(&store, "u1|US"), "deleted composite row tombstoned");
+    assert!(
+        j_absent(&store, "u1|US"),
+        "deleted composite row tombstoned"
+    );
     assert_eq!(
         j_field(&store, "u1|EU", "x"),
         serde_json::json!(2),
@@ -417,17 +411,17 @@ fn tt_rejects_mismatched_keys() {
         KEY_USER, A_FIELDS_X
     );
     match parse(&a_json) {
-        V0RegisterPayload::Source(d) => {
-            engine.register(v0_source_to_stream_def(&d).unwrap()).unwrap()
-        }
+        V0RegisterPayload::Source(d) => engine
+            .register(v0_source_to_stream_def(&d).unwrap())
+            .unwrap(),
         _ => panic!(),
     };
     let b_json = r#"{"name":"B","kind":"table","mode":"overwrite","key_field":"account_id",
         "fields":{"account_id":{"type":"str","optional":false},"y":{"type":"int","optional":false}}}"#;
     match parse(b_json) {
-        V0RegisterPayload::Source(d) => {
-            engine.register(v0_source_to_stream_def(&d).unwrap()).unwrap()
-        }
+        V0RegisterPayload::Source(d) => engine
+            .register(v0_source_to_stream_def(&d).unwrap())
+            .unwrap(),
         _ => panic!(),
     };
 

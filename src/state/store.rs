@@ -462,14 +462,17 @@ impl StateStore {
         let mut removed: usize = 0;
         for mut entry in self.entities.iter_mut() {
             let before = entry.value().table_rows.len();
-            entry.value_mut().table_rows.retain(|_, row| match row.state {
-                TableRowState::Live => true,
-                TableRowState::Tombstoned { since } => match now.duration_since(since) {
-                    Ok(age) => age <= TOMBSTONE_GRACE,
-                    // `now` is before `since` (clock skew) — keep row.
-                    Err(_) => true,
-                },
-            });
+            entry
+                .value_mut()
+                .table_rows
+                .retain(|_, row| match row.state {
+                    TableRowState::Live => true,
+                    TableRowState::Tombstoned { since } => match now.duration_since(since) {
+                        Ok(age) => age <= TOMBSTONE_GRACE,
+                        // `now` is before `since` (clock skew) — keep row.
+                        Err(_) => true,
+                    },
+                });
             removed += before - entry.value().table_rows.len();
         }
         removed
@@ -695,7 +698,11 @@ impl StateStore {
     /// Read-only view of the dirty key set (clone). Primarily for tests and debug APIs.
     #[cfg(test)]
     pub(crate) fn dirty_keys(&self) -> AHashSet<EntityKey> {
-        self.dirty_keys.load().iter().map(|r| r.key().clone()).collect()
+        self.dirty_keys
+            .load()
+            .iter()
+            .map(|r| r.key().clone())
+            .collect()
     }
 
     /// Clone only dirty entities for a delta snapshot, applying the same lazy
@@ -716,10 +723,7 @@ impl StateStore {
         // Snapshot the frozen dirty-key set as a plain HashSet once, to avoid
         // holding DashSet shard locks while iterating `entities` (which
         // would deadlock if a shard overlapped).
-        let dirty: AHashSet<String> = frozen
-            .iter()
-            .map(|r| r.key().clone())
-            .collect();
+        let dirty: AHashSet<String> = frozen.iter().map(|r| r.key().clone()).collect();
         self.entities
             .iter()
             .filter(|entry| dirty.contains(entry.key().as_str()))
@@ -1932,7 +1936,10 @@ mod tests {
 
     // ======================== bulk_load Tests (Phase 28-04) ========================
 
-    fn _entity_with_stream(stream_name: &str, now: SystemTime) -> crate::state::snapshot::SerializableEntityState {
+    fn _entity_with_stream(
+        stream_name: &str,
+        now: SystemTime,
+    ) -> crate::state::snapshot::SerializableEntityState {
         let mut op = OperatorState::Count(CountOp::new(
             Duration::from_secs(3600),
             Duration::from_secs(60),
@@ -1978,7 +1985,10 @@ mod tests {
         let store = StateStore::new();
         let earlier = ts(1000);
         let later = ts(2000);
-        store.bulk_load(vec![("u_a".to_string(), _entity_with_stream("Txn", earlier))]);
+        store.bulk_load(vec![(
+            "u_a".to_string(),
+            _entity_with_stream("Txn", earlier),
+        )]);
         store.bulk_load(vec![("u_a".to_string(), _entity_with_stream("Txn", later))]);
         assert_eq!(store.entity_count(), 1);
         let e = store.get_entity("u_a").unwrap();
@@ -2029,7 +2039,9 @@ mod tests {
         fn never_seen_entity_returns_none() {
             let store = StateStore::new();
             let now = ts(1000);
-            assert!(store.collect_table_row_view("nobody", "UserProfile", now).is_none());
+            assert!(store
+                .collect_table_row_view("nobody", "UserProfile", now)
+                .is_none());
         }
 
         #[test]

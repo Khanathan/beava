@@ -15,9 +15,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
 #[cfg(feature = "demo")]
 use beava::server::tcp::RecentEvent;
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
 use beava::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
@@ -72,7 +72,12 @@ async fn http_get(port: u16, path: &str) -> HttpResponse {
     let body = buf[sep + 4..].to_vec();
     let mut lines = head.lines();
     let status_line = lines.next().unwrap();
-    let status_code: u16 = status_line.split_whitespace().nth(1).unwrap().parse().unwrap();
+    let status_code: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
     let mut headers = std::collections::HashMap::new();
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
@@ -118,7 +123,7 @@ fn register_txns(state: &SharedState) {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .expect("register Transactions");
 }
@@ -176,7 +181,13 @@ async fn public_features_no_operator_state() {
 
     let (_status, _headers, body) = http_get(port, "/public/features/u1").await;
     let text = body_string(&body);
-    for leaky in ["buckets", "hll", "operator_state", "estimated_bytes", "live_operators"] {
+    for leaky in [
+        "buckets",
+        "hll",
+        "operator_state",
+        "estimated_bytes",
+        "live_operators",
+    ] {
         assert!(
             !text.contains(leaky),
             "leaked internal field `{}` in public response: {}",
@@ -208,7 +219,11 @@ async fn public_recent_events_default_limit() {
     assert_eq!(status, 200);
     let json = body_json(&body);
     let events = json["events"].as_array().expect("events array");
-    assert!(events.len() <= 20, "default limit should cap at 20, got {}", events.len());
+    assert!(
+        events.len() <= 20,
+        "default limit should cap at 20, got {}",
+        events.len()
+    );
     assert_eq!(events.len(), 20, "should return exactly 20 with 40 seeded");
 }
 
@@ -248,11 +263,7 @@ async fn public_stats_shape() {
         "keys_total",
     ] {
         assert!(json.get(field).is_some(), "missing field `{}`", field);
-        assert!(
-            json[field].is_number(),
-            "field `{}` must be numeric",
-            field
-        );
+        assert!(json[field].is_number(), "field `{}` must be numeric", field);
     }
     assert!(json["uptime_seconds"].as_u64().unwrap_or(u64::MAX) < 3600);
 }
@@ -262,7 +273,9 @@ async fn public_stats_cors_header() {
     let (port, _state) = start_server().await;
     let (_status, headers, _body) = http_get(port, "/public/stats").await;
     assert_eq!(
-        headers.get("access-control-allow-origin").map(String::as_str),
+        headers
+            .get("access-control-allow-origin")
+            .map(String::as_str),
         Some("*"),
         "CORS header missing on /public/stats; headers: {:?}",
         headers

@@ -419,7 +419,7 @@ async fn topology_nodes_include_operators_field() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         };
         engine.register(tx_def).expect("register Transactions");
         engine.store_raw_register_json(
@@ -506,7 +506,7 @@ async fn topology_operators_pass_through_where_clause() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         };
         engine.register(tx_def).expect("register Transactions");
         engine.store_raw_register_json(
@@ -584,7 +584,7 @@ async fn topology_view_operators_include_lookup_shape() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         };
         engine
             .register(merchant_def)

@@ -6,16 +6,16 @@
 use std::time::Duration;
 
 use axum::{
-    Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
+    Json, Router,
 };
 use axum_extra::json_lines::JsonLines;
-use tokio_stream::StreamExt as _;
 use serde::Deserialize;
 use serde_json::json;
+use tokio_stream::StreamExt as _;
 use tower::ServiceBuilder;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
@@ -169,12 +169,19 @@ async fn http_push_single(
     let now = SystemTime::now();
 
     match crate::server::tcp::handle_push_core_ex(
-        &state, &stream, &payload, &body, now, read_features,
+        &state,
+        &stream,
+        &payload,
+        &body,
+        now,
+        read_features,
     ) {
         Ok(_fm) => {
             // Phase 45-04 A5: HTTP single-event path — bump labeled counter.
             // events_total is already bumped inside handle_push_core_ex.
-            state.events_http.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            state
+                .events_http
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             (StatusCode::OK, Json(json!({"ok": true}))).into_response()
         }
         Err(e) => map_err_to_response(e),
@@ -255,8 +262,7 @@ async fn http_push_batch(
             Err(e) => {
                 rejected += 1;
                 if first_error.is_none() {
-                    first_error =
-                        Some(json!({"code": "schema_error", "message": format!("{e}")}));
+                    first_error = Some(json!({"code": "schema_error", "message": format!("{e}")}));
                 }
             }
         }

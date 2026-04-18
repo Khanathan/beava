@@ -3,8 +3,8 @@
 //! Runs via `cargo bench --bench cms_ops`. The top_k.push bench is the
 //! primary gate for Plan 22-04 Step 4 (O(log k) insert optimization).
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use beava::engine::cms::{CountMinSketch, TopKHeap, TopKValue};
+use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 
 fn bench_cms(c: &mut Criterion) {
     let mut group = c.benchmark_group("cms");
@@ -46,7 +46,7 @@ fn bench_topk(c: &mut Criterion) {
     group.bench_function("observe_rotating_2000_cap_80", |b| {
         let mut cms = CountMinSketch::new(2048, 4);
         let mut heap = TopKHeap::new(10); // max_candidates = 80
-        // Warm past exact threshold.
+                                          // Warm past exact threshold.
         for i in 0..1100i64 {
             let v = TopKValue::Int(i);
             cms.insert(v.hash64());

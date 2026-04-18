@@ -366,7 +366,13 @@ impl TopKHeap {
             .candidates
             .iter()
             .enumerate()
-            .filter_map(|(i, c)| if cms.estimate(c.hash64()) == 0 { Some(i) } else { None })
+            .filter_map(|(i, c)| {
+                if cms.estimate(c.hash64()) == 0 {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
             .collect();
         // swap_remove from highest index so preceding indices stay valid.
         for &i in to_remove.iter().rev() {
@@ -407,10 +413,8 @@ impl TopKHeap {
                 }
             }
         }
-        let mut out: Vec<(TopKValue, i64)> = heap
-            .into_iter()
-            .map(|Reverse((c, v))| (v, c))
-            .collect();
+        let mut out: Vec<(TopKValue, i64)> =
+            heap.into_iter().map(|Reverse((c, v))| (v, c)).collect();
         out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         out
     }

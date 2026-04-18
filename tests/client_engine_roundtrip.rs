@@ -14,11 +14,11 @@
 //! keep the test self-contained and to avoid coupling Phase 28 to any
 //! not-yet-existent helper module.
 
-use serde_json::json;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::state::store::StateStore;
 use beava::types::FeatureValue;
+use serde_json::json;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn ts(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)

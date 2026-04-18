@@ -47,7 +47,7 @@ fn register_events_stream(state: &SharedState) {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 }
@@ -135,7 +135,10 @@ async fn ndjson_summary_response_shape() {
     assert!(data.contains_key("accepted"), "missing 'accepted' key");
     assert!(data.contains_key("rejected"), "missing 'rejected' key");
     assert!(data.contains_key("chunks"), "missing 'chunks' key");
-    assert!(data.contains_key("first_error"), "missing 'first_error' key");
+    assert!(
+        data.contains_key("first_error"),
+        "missing 'first_error' key"
+    );
 
     assert_eq!(v["data"]["accepted"], 3);
     assert_eq!(v["data"]["rejected"], 0);

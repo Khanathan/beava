@@ -215,10 +215,9 @@ impl EvictionTracker {
 
         // Insert into bloom (lazy-create per table)
         let now = SystemTime::now();
-        let entry = self
-            .per_table
-            .entry(table.to_string())
-            .or_insert_with(|| parking_lot::Mutex::new(GenerationalBloom::new(self.num_bits, self.k, now)));
+        let entry = self.per_table.entry(table.to_string()).or_insert_with(|| {
+            parking_lot::Mutex::new(GenerationalBloom::new(self.num_bits, self.k, now))
+        });
         let mut slot = entry.value().lock();
         slot.insert(key);
     }
@@ -393,7 +392,9 @@ mod tests {
         {
             let e = t.per_table.get("Users").unwrap();
             e.value().lock().force_rotate(later);
-            e.value().lock().force_rotate(later + Duration::from_secs(60));
+            e.value()
+                .lock()
+                .force_rotate(later + Duration::from_secs(60));
         }
         // Reset reinit counter before re-check so we observe ONLY the post-rotation result
         t.reinits.get("Users").unwrap().store(0, Ordering::Relaxed);

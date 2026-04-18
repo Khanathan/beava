@@ -135,18 +135,10 @@ fn round_trip_stddev_preserves_state() {
 fn round_trip_first_preserves_state() {
     let mut op = OperatorState::First(FirstOp::new("country", false));
     let t = ts(1_000_000);
-    op.push(
-        &json!({"country": "UK", "_event_time": 500}),
-        None,
-        t,
-    )
-    .unwrap();
-    op.push(
-        &json!({"country": "US", "_event_time": 100}),
-        None,
-        t,
-    )
-    .unwrap();
+    op.push(&json!({"country": "UK", "_event_time": 500}), None, t)
+        .unwrap();
+    op.push(&json!({"country": "US", "_event_time": 100}), None, t)
+        .unwrap();
     let mut restored = round_trip(&op);
     assert_eq!(op.read(t), restored.read(t));
 }
@@ -156,12 +148,8 @@ fn round_trip_last_preserves_state() {
     let mut op = OperatorState::Last(LastOp::new("country", false));
     let t = ts(1_000_000);
     op.push(&json!({"country": "A"}), None, t).unwrap();
-    op.push(
-        &json!({"country": "B"}),
-        None,
-        t + Duration::from_secs(5),
-    )
-    .unwrap();
+    op.push(&json!({"country": "B"}), None, t + Duration::from_secs(5))
+        .unwrap();
     let mut restored = round_trip(&op);
     assert_eq!(
         op.read(t + Duration::from_secs(5)),
@@ -178,12 +166,8 @@ fn round_trip_first_n_preserves_state() {
     let mut op = OperatorState::FirstN(FirstNOp::new("v", 5, false));
     let t = ts(1_000_000);
     for i in 0..20_i64 {
-        op.push(
-            &json!({"v": format!("e{}", i), "_event_time": i}),
-            None,
-            t,
-        )
-        .unwrap();
+        op.push(&json!({"v": format!("e{}", i), "_event_time": i}), None, t)
+            .unwrap();
     }
     let mut restored = round_trip(&op);
     assert_eq!(op.read(t), restored.read(t));
@@ -209,12 +193,8 @@ fn round_trip_ema_preserves_state() {
     let mut op = OperatorState::Ema(EmaOp::new("x", 60.0, false));
     let t = ts(1_000_000);
     op.push(&json!({"x": 100.0}), None, t).unwrap();
-    op.push(
-        &json!({"x": 0.0}),
-        None,
-        t + Duration::from_secs(60),
-    )
-    .unwrap();
+    op.push(&json!({"x": 0.0}), None, t + Duration::from_secs(60))
+        .unwrap();
     let mut restored = round_trip(&op);
     assert_eq!(
         op.read(t + Duration::from_secs(60)),
@@ -271,8 +251,7 @@ fn round_trip_all_operator_states_in_one_blob() {
     }
 
     let bytes = postcard::to_stdvec(&states).expect("serialize Vec");
-    let mut restored: Vec<OperatorState> =
-        postcard::from_bytes(&bytes).expect("deserialize Vec");
+    let mut restored: Vec<OperatorState> = postcard::from_bytes(&bytes).expect("deserialize Vec");
 
     assert_eq!(states.len(), restored.len());
     let read_at = t + Duration::from_secs(6);

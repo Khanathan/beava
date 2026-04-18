@@ -32,8 +32,7 @@ use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 
 use crate::client::wire::{
-    write_scope, Scope as ClientScope, OP_LOG_FETCH, REPLICA_FRAME_TAG_END,
-    REPLICA_FRAME_TAG_EVENT,
+    write_scope, Scope as ClientScope, OP_LOG_FETCH, REPLICA_FRAME_TAG_END, REPLICA_FRAME_TAG_EVENT,
 };
 use crate::server::tcp::{replica_ingest, replica_ingest_batch, SharedState};
 
@@ -201,7 +200,10 @@ impl ReplicaClient {
             // Before re-SUBSCRIBE, re-catchup from last_applied_ts_ms via LOG_FETCH
             // so we don't miss events that landed during the drop window.
             let cursor = self.app.replica_last_applied_ts_ms.load(Ordering::Relaxed);
-            if let Err(e) = self.run_log_fetch_with_retry(cursor, /*max_attempts=*/ 5).await {
+            if let Err(e) = self
+                .run_log_fetch_with_retry(cursor, /*max_attempts=*/ 5)
+                .await
+            {
                 // Intentional: operational error (Phase 47 audit)
                 eprintln!("replica re-catchup LOG_FETCH failed: {}; continuing", e);
             }
@@ -226,10 +228,7 @@ impl ReplicaClient {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     // Intentional: operational error (Phase 47 audit)
-                    eprintln!(
-                        "replica LOG_FETCH attempt {} failed: {}",
-                        attempt, e
-                    );
+                    eprintln!("replica LOG_FETCH attempt {} failed: {}", attempt, e);
                     if attempt >= max_attempts {
                         return Err(ReplicaError::RetryExhausted {
                             target: self.config.remote.clone(),
@@ -250,11 +249,8 @@ impl ReplicaClient {
             .map_err(|e| ReplicaError::ConnectFailed(format!("{}: {}", self.config.remote, e)))?;
 
         // Write the OP_LOG_FETCH request frame.
-        let frame = build_log_fetch_frame(
-            &self.config.token,
-            from_ts_millis,
-            &self.config.to_scope(),
-        );
+        let frame =
+            build_log_fetch_frame(&self.config.token, from_ts_millis, &self.config.to_scope());
         stream.write_all(&frame).await?;
         stream.flush().await?;
 
@@ -269,8 +265,7 @@ impl ReplicaClient {
         // `replica_ingest_batch` at `REPLICA_BATCH_FLUSH_SIZE` events, at
         // END-frame, and **before** any extract_at snapshot so the snapshot
         // sees the correct state.
-        let mut pending: Vec<(String, u64, Vec<u8>)> =
-            Vec::with_capacity(REPLICA_BATCH_FLUSH_SIZE);
+        let mut pending: Vec<(String, u64, Vec<u8>)> = Vec::with_capacity(REPLICA_BATCH_FLUSH_SIZE);
 
         // Lightweight profiling: accumulate wall-clock spent in each phase
         // of the catchup loop. Printed to stderr on END-frame so the
@@ -296,7 +291,11 @@ impl ReplicaClient {
 
         // Read response frames until END (or STATUS_ERROR).
         loop {
-            let t_read0 = if profile { Some(std::time::Instant::now()) } else { None };
+            let t_read0 = if profile {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
             let frame_len = read_u32_be(&mut stream).await?;
             if frame_len == 0 || frame_len > HARD_FRAME_LIMIT {
                 return Err(ReplicaError::Protocol(format!(
@@ -320,10 +319,17 @@ impl ReplicaClient {
                     // extract_at snapshots so "state-at-end-of-log" is
                     // correct.
                     if !pending.is_empty() {
-                        let t_apply0 = if profile { Some(std::time::Instant::now()) } else { None };
+                        let t_apply0 = if profile {
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        };
                         replica_ingest_batch(&self.app, &pending)
                             .map_err(|e| ReplicaError::IngestFailed(e.to_string()))?;
-                        if let Some(t0) = t_apply0 { t_apply_ns += t0.elapsed().as_nanos(); n_batches += 1; }
+                        if let Some(t0) = t_apply0 {
+                            t_apply_ns += t0.elapsed().as_nanos();
+                            n_batches += 1;
+                        }
                         pending.clear();
                     }
                     // Phase 44-01: snapshot any remaining extract_at entries
@@ -338,8 +344,13 @@ impl ReplicaClient {
                     if profile {
                         // Intentional: profile instrumentation (Phase 47 audit)
                         let loop_total = loop_start.elapsed().as_nanos();
-                        let other_ns = loop_total.saturating_sub(t_read_ns + t_parse_ns + t_resolve_ns + t_apply_ns);
-                        let per_event_ns = if n_events > 0 { (loop_total / n_events as u128) as u64 } else { 0 };
+                        let other_ns = loop_total
+                            .saturating_sub(t_read_ns + t_parse_ns + t_resolve_ns + t_apply_ns);
+                        let per_event_ns = if n_events > 0 {
+                            (loop_total / n_events as u128) as u64
+                        } else {
+                            0
+                        };
                         // Intentional: profile instrumentation (Phase 47 audit)
                         eprintln!(
                             "[replica-profile] LOG_FETCH loop summary:\n  \
@@ -364,7 +375,11 @@ impl ReplicaClient {
                     return Ok(());
                 }
                 t if t == REPLICA_FRAME_TAG_EVENT => {
-                    let t_parse0 = if profile { Some(std::time::Instant::now()) } else { None };
+                    let t_parse0 = if profile {
+                        Some(std::time::Instant::now())
+                    } else {
+                        None
+                    };
                     // body = [tag][u64 ts_ms][u32 payload_len][payload]
                     if body.len() < 1 + 8 + 4 {
                         return Err(ReplicaError::Protocol(
@@ -374,8 +389,8 @@ impl ReplicaClient {
                     let ts_ms = u64::from_be_bytes([
                         body[1], body[2], body[3], body[4], body[5], body[6], body[7], body[8],
                     ]);
-                    let payload_len = u32::from_be_bytes([body[9], body[10], body[11], body[12]])
-                        as usize;
+                    let payload_len =
+                        u32::from_be_bytes([body[9], body[10], body[11], body[12]]) as usize;
                     if body.len() < 13 + payload_len {
                         return Err(ReplicaError::Protocol(format!(
                             "event frame payload truncated: expected {}, got {}",
@@ -384,19 +399,26 @@ impl ReplicaClient {
                         )));
                     }
                     let payload = &body[13..13 + payload_len];
-                    if let Some(t0) = t_parse0 { t_parse_ns += t0.elapsed().as_nanos(); }
+                    if let Some(t0) = t_parse0 {
+                        t_parse_ns += t0.elapsed().as_nanos();
+                    }
                     // Phase 44-01: snapshot-before-apply for every cursor
                     // threshold strictly less than this event's ts_ms.
                     // Must flush the pending batch first so the snapshot
                     // sees the state produced by all prior events.
-                    while extract_cursor < extract_at.len()
-                        && ts_ms > extract_at[extract_cursor]
-                    {
+                    while extract_cursor < extract_at.len() && ts_ms > extract_at[extract_cursor] {
                         if !pending.is_empty() {
-                            let t_apply0 = if profile { Some(std::time::Instant::now()) } else { None };
+                            let t_apply0 = if profile {
+                                Some(std::time::Instant::now())
+                            } else {
+                                None
+                            };
                             replica_ingest_batch(&self.app, &pending)
                                 .map_err(|e| ReplicaError::IngestFailed(e.to_string()))?;
-                            if let Some(t0) = t_apply0 { t_apply_ns += t0.elapsed().as_nanos(); n_batches += 1; }
+                            if let Some(t0) = t_apply0 {
+                                t_apply_ns += t0.elapsed().as_nanos();
+                                n_batches += 1;
+                            }
                             pending.clear();
                         }
                         self.snapshot_extract(extract_at[extract_cursor]);
@@ -405,16 +427,29 @@ impl ReplicaClient {
                     // Resolve the stream up-front (same logic single-event
                     // apply_event uses) so the batch path has everything
                     // it needs without re-acquiring the engine lock.
-                    let t_res0 = if profile { Some(std::time::Instant::now()) } else { None };
+                    let t_res0 = if profile {
+                        Some(std::time::Instant::now())
+                    } else {
+                        None
+                    };
                     let stream_name = self.resolve_stream_for_event(payload)?;
-                    if let Some(t0) = t_res0 { t_resolve_ns += t0.elapsed().as_nanos(); }
+                    if let Some(t0) = t_res0 {
+                        t_resolve_ns += t0.elapsed().as_nanos();
+                    }
                     pending.push((stream_name, ts_ms, payload.to_vec()));
                     n_events += 1;
                     if pending.len() >= REPLICA_BATCH_FLUSH_SIZE {
-                        let t_apply0 = if profile { Some(std::time::Instant::now()) } else { None };
+                        let t_apply0 = if profile {
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        };
                         replica_ingest_batch(&self.app, &pending)
                             .map_err(|e| ReplicaError::IngestFailed(e.to_string()))?;
-                        if let Some(t0) = t_apply0 { t_apply_ns += t0.elapsed().as_nanos(); n_batches += 1; }
+                        if let Some(t0) = t_apply0 {
+                            t_apply_ns += t0.elapsed().as_nanos();
+                            n_batches += 1;
+                        }
                         pending.clear();
                     }
                 }
@@ -424,10 +459,7 @@ impl ReplicaClient {
                     if msg.contains("unauthorized") {
                         return Err(ReplicaError::Unauthorized);
                     }
-                    return Err(ReplicaError::Protocol(format!(
-                        "upstream error: {}",
-                        msg
-                    )));
+                    return Err(ReplicaError::Protocol(format!("upstream error: {}", msg)));
                 }
                 other => {
                     return Err(ReplicaError::Protocol(format!(
@@ -479,10 +511,7 @@ impl ReplicaClient {
                 if msg.contains("unauthorized") {
                     return Err(ReplicaError::Unauthorized);
                 }
-                return Err(ReplicaError::Protocol(format!(
-                    "upstream error: {}",
-                    msg
-                )));
+                return Err(ReplicaError::Protocol(format!("upstream error: {}", msg)));
             }
             if tag != REPLICA_FRAME_TAG_EVENT {
                 return Err(ReplicaError::Protocol(format!(
@@ -496,10 +525,8 @@ impl ReplicaClient {
             let secs = u64::from_be_bytes([
                 body[1], body[2], body[3], body[4], body[5], body[6], body[7], body[8],
             ]);
-            let nanos =
-                u32::from_be_bytes([body[9], body[10], body[11], body[12]]);
-            let payload_len =
-                u32::from_be_bytes([body[13], body[14], body[15], body[16]]) as usize;
+            let nanos = u32::from_be_bytes([body[9], body[10], body[11], body[12]]);
+            let payload_len = u32::from_be_bytes([body[13], body[14], body[15], body[16]]) as usize;
             if body.len() < 17 + payload_len {
                 return Err(ReplicaError::Protocol("subscribe payload truncated".into()));
             }
@@ -520,7 +547,6 @@ impl ReplicaClient {
     /// to every entity currently in the StateStore. Keys with no features
     /// yet are skipped (consistent with the "missing key → None" semantics).
     fn snapshot_extract(&self, ts_ms: u64) {
-        
         let now = std::time::SystemTime::now();
         let keys: Vec<String> = match &self.config.keys {
             Some(ks) if !ks.is_empty() => ks.clone(),
@@ -528,11 +554,7 @@ impl ReplicaClient {
         };
         // Outer get-or-insert is lock-free per DashMap; inner inserts are
         // per-key and rare (one write per key per extract_at threshold).
-        let inner = self
-            .app
-            .extracted_history
-            .entry(ts_ms)
-            .or_default();
+        let inner = self.app.extracted_history.entry(ts_ms).or_default();
         for key in keys {
             let feats = self.app.store.get_all_features(&key, now);
             if feats.is_empty() {
@@ -588,11 +610,7 @@ impl ReplicaClient {
             }
             LOG_FMT_JSON => serde_json::from_slice(body)
                 .map_err(|e| ReplicaError::Protocol(format!("json decode: {}", e)))?,
-            _ => {
-                return Err(ReplicaError::Protocol(
-                    "unknown log payload format".into(),
-                ))
-            }
+            _ => return Err(ReplicaError::Protocol("unknown log payload format".into())),
         };
         // Attribute to first stream whose key_field is present as a String.
         let engine = self.app.engine.read();
@@ -732,10 +750,7 @@ mod tests {
 
     // ---- Mock upstream for full LOG_FETCH loop ----
 
-    async fn serve_fake_log_fetch(
-        listener: tokio::net::TcpListener,
-        event_frames: Vec<Vec<u8>>,
-    ) {
+    async fn serve_fake_log_fetch(listener: tokio::net::TcpListener, event_frames: Vec<Vec<u8>>) {
         let (mut sock, _) = listener.accept().await.unwrap();
         // Drain the request frame (we don't validate in the mock).
         let mut len_buf = [0u8; 4];

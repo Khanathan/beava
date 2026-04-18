@@ -338,7 +338,7 @@ fn test_eviction_marks_deleted_and_delta_includes_it() {
             ephemeral: None,
             pipeline_ttl: None,
             max_keys: None,
-        watermark_lateness: None,
+            watermark_lateness: None,
         })
         .unwrap();
 

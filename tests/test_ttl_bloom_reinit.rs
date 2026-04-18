@@ -2,9 +2,9 @@
 //! detection bumps the counter; false-positive rate is bounded; generation
 //! rotation drops keys beyond the 7d window.
 
+use beava::state::eviction_tracker::{EvictionTracker, ROTATE_INTERVAL};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime};
-use beava::state::eviction_tracker::{EvictionTracker, ROTATE_INTERVAL};
 
 #[test]
 fn evicted_then_reinit_bumps_counter_within_window() {
