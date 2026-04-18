@@ -1751,6 +1751,10 @@ pub fn handle_push_batch(
             let wm = engine.watermarks.watermark(stream_name);
             if let Some(wm) = wm {
                 if et < wm {
+                    // OBS-02: late-drop gate fires here — the event never
+                    // reaches the ring-buffer bucket router, so
+                    // beava_ring_buffer_drops_total and
+                    // beava_late_events_dropped_total are mutually exclusive.
                     engine.late_drops.increment(stream_name);
                     continue;
                 }

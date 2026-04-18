@@ -385,6 +385,32 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
         }
     }
 
+    // OBS-01 / Phase 46-06: ring-buffer drop counter with three-variant
+    // reason label. Cardinality is bounded: stream × operator_kind × reason
+    // where operator_kind and reason are compile-time enums.
+    // OBS-02: mutually exclusive with beava_late_events_dropped_total — the
+    // late-drop gate in tcp.rs fires `continue` before the event reaches the
+    // ring-buffer bucket router.
+    body.push_str(
+        "# HELP beava_ring_buffer_drops_total Events rejected by the sliding-window \
+         ring buffer, labelled by reason (too_old | too_new | pre_epoch)\n\
+         # TYPE beava_ring_buffer_drops_total counter\n",
+    );
+    {
+        let engine = state.engine.read();
+        let rb_escape = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+        let drops = engine.ring_buffer_drops.snapshot();
+        for ((stream, operator_kind, reason), count) in drops {
+            body.push_str(&format!(
+                "beava_ring_buffer_drops_total{{stream=\"{}\",operator_kind=\"{}\",reason=\"{}\"}} {}\n",
+                rb_escape(&stream),
+                rb_escape(&operator_kind),
+                reason.as_label(),
+                count
+            ));
+        }
+    }
+
     // Phase 25-02: TTL eviction + history retention counters.
     let escape = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     body.push_str(
