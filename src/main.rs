@@ -573,6 +573,10 @@ fn seed_pipelines_from_file(state: &SharedState, path: &std::path::Path) -> Resu
 }
 
 async fn async_main() {
+    // Phase 50-01: install global Prometheus recorder (D-06 parallel period).
+    // Must be called before any metrics! macro invocations.
+    beava::metrics::install_prometheus_recorder();
+
     // Phase 49-05: resolve n_shards inside async_main so it's in scope for
     // make_concurrent_state_full. Wave 1 always returns 1.
     let n_shards: u16 = beava::config::shards::resolve_shard_count(

@@ -55,3 +55,8 @@ pub mod state;
 // Phase 47 audit: deferred sub-module docs to post-launch (D-11 scope: crate root only)
 #[allow(missing_docs)]
 pub mod types;
+
+/// Prometheus metrics recorder wiring (Phase 50-01, D-06 parallel period).
+/// Installs global metrics-exporter-prometheus recorder alongside hand-rolled /metrics.
+#[allow(missing_docs)]
+pub mod metrics;

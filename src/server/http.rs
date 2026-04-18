@@ -535,6 +535,17 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
         CROSS_SHARD_FANOUT_LIST_STREAMS.load(Ordering::Relaxed)
     ));
 
+    // Phase 50-01 (D-06): Append metrics-exporter-prometheus scrape output in parallel
+    // with the hand-rolled text above. If no metrics recorder is installed (e.g. in tests
+    // that don't call install_prometheus_recorder), this is a no-op.
+    if let Some(handle) = crate::metrics::handle() {
+        let prom_output = handle.scrape();
+        if !prom_output.is_empty() {
+            body.push('\n');
+            body.push_str(&prom_output);
+        }
+    }
+
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4")],
