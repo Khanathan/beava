@@ -7,7 +7,7 @@
 - [x] **v2.0 -- API & Engine** (Phases 16-19) -- Complete 2026-04-13 -- `.planning/milestones/v2.0-ROADMAP.md`
 - [x] **v2.1 -- Launch** (Phase 20) -- Engineering complete 2026-04-14 (live-run ops pending, calendar-gated) -- `.planning/milestones/v2.1-ROADMAP.md`
 - [ ] **v0 -- Restructure + Data-Scientist Fork** (Phases 21-38) -- Active. Phases 21-26 shipped 2026-04-14 (restructure); Phase 27 shipped 2026-04-15 (server replica opcodes); Option K (phases 28/30/31) SUPERSEDED 2026-04-15 by Option M (phases 35-38) — local server in replica mode. Restructure archive: `.planning/milestones/v0-ROADMAP.md`.
-- [ ] **v1.0-launch -- Public Launch Readiness** (Phases 45-47) -- Active 2026-04-17. Three additive workstreams (HTTP ingest / correctness audit + fixes / repo polish + Docker + CI + docs + examples) gated by a single unified ship test. 49 requirements mapped to 3 phases. See `.planning/PROJECT.md`, `.planning/REQUIREMENTS.md`, `LAUNCH.md`.
+- [x] **v1.0-launch — Public Launch Readiness** (Phases 45-47) — Engineering complete 2026-04-17 (launch-day human-run pending) — `.planning/milestones/v1.0-launch-ROADMAP.md`
 
 ## Phases
 
