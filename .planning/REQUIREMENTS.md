@@ -31,7 +31,7 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 - [x] **CORR-07**: A user ingesting 30-day-old historical events does not see `entity_ttl` immediately evict the entity — eviction clock sources from `WatermarkTracker::observed_max(stream)`, not wall-clock — closes audit item **2d.iii**.
 - [x] **CORR-08**: A user running a fork replica that cascades into downstream tables sees watermarks advance on the downstream — `replica_ingest_batch` calls `watermarks.observe()` per event — closes audit item **2d.iv**.
 - [x] **CORR-09**: A maintainer can close audit item **2d.v** with a one-paragraph note in `docs/event-time.md` documenting that joins require both sides producing events in v1; per-stream idle markers are explicitly deferred to v1.1.
-- [ ] **CORR-10**: A developer can no longer observe a race where a writer calls `mark_dirty(k)` under the old gen while `clear_dirty()` has already advanced the gen — fixed via atomic swap of the dirty set in `take_dirty_and_advance_gen()` — closes audit items **2d.vi** and **2d.vii** together. Regression is within 2% on the 9-cell bench.
+- [x] **CORR-10**: A developer can no longer observe a race where a writer calls `mark_dirty(k)` under the old gen while `clear_dirty()` has already advanced the gen — fixed via atomic swap of the dirty set in `take_dirty_and_advance_gen()` — closes audit items **2d.vi** and **2d.vii** together. Regression is within 2% on the 9-cell bench.
 
 ### OBS — Observability & Correctness Documentation (Phase 46, Block 2 — 2b + 2e docs)
 
@@ -149,7 +149,7 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 | CORR-07 | Phase 46 | Complete |
 | CORR-08 | Phase 46 | Complete |
 | CORR-09 | Phase 46 | Complete |
-| CORR-10 | Phase 46 | Pending |
+| CORR-10 | Phase 46 | Complete |
 | OBS-01 | Phase 46 | Pending |
 | OBS-02 | Phase 46 | Pending |
 | OBS-03 | Phase 46 | Pending |
