@@ -350,6 +350,8 @@ pub fn make_concurrent_state_full(
     // through the server AppState.
     let mut engine = engine;
     engine.install_subscribers(Arc::clone(&subscriber_registry));
+    // Phase 51-04: wire signal registry so register() can emit JoinShardKeyMismatch signals.
+    engine.install_signals(signals.clone());
     Arc::new(ConcurrentAppState {
         engine: RwLock::new(engine),
         store,
@@ -1103,7 +1105,7 @@ pub fn replica_ingest_batch(
         // D-19 / CORR-08: advance the replica's watermark per event so downstream
         // table-cascade γ-propagation fires. Mirrors the live-ingest call at
         // tcp.rs:1750. Atomic fetch_max on AtomicU64 — ~5 ns/call.
-        engine.watermarks.observe(stream_name, event_time);
+        engine.wm_observe(stream_name, event_time);
 
         // Build the log payload once; reused across primary + cascade + fan-out.
         let log_body = if fmt == LOG_FMT_BINARY { body } else { &[] };
@@ -1750,7 +1752,7 @@ pub fn handle_push_batch(
         let mut kept_idxs: Vec<usize> = Vec::with_capacity(batch.len());
         for (idx, ev) in batch.iter().enumerate() {
             let et = crate::engine::event_time::parse_event_time(&ev.payload, ev.now);
-            let wm = engine.watermarks.watermark(stream_name);
+            let wm = engine.wm_watermark(stream_name);
             if let Some(wm) = wm {
                 if et < wm {
                     // OBS-02: late-drop gate fires here — the event never
@@ -1761,7 +1763,7 @@ pub fn handle_push_batch(
                     continue;
                 }
             }
-            engine.watermarks.observe(stream_name, et);
+            engine.wm_observe(stream_name, et);
             kept.push((&ev.payload, et));
             kept_idxs.push(idx);
         }
@@ -1837,14 +1839,14 @@ pub fn handle_push_batch(
             for &i in indices {
                 let et =
                     crate::engine::event_time::parse_event_time(&batch[i].payload, batch[i].now);
-                let wm = engine.watermarks.watermark(stream_name);
+                let wm = engine.wm_watermark(stream_name);
                 if let Some(wm) = wm {
                     if et < wm {
                         engine.late_drops.increment(stream_name);
                         continue;
                     }
                 }
-                engine.watermarks.observe(stream_name, et);
+                engine.wm_observe(stream_name, et);
                 kept.push((&batch[i].payload, et));
                 kept_orig.push(i);
             }
@@ -2028,7 +2030,7 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Bea
             let event_time = crate::engine::event_time::parse_event_time(&payload, now);
             {
                 let engine = state.engine.read();
-                let wm = engine.watermarks.watermark(&stream_name);
+                let wm = engine.wm_watermark(&stream_name);
                 if let Some(wm) = wm {
                     if event_time < wm {
                         // Late event — drop silently with counter increment.
@@ -2036,7 +2038,7 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Bea
                         return Ok(feature_map_to_json(&crate::types::FeatureMap::new()));
                     }
                 }
-                engine.watermarks.observe(&stream_name, event_time);
+                engine.wm_observe(&stream_name, event_time);
             }
             // PERF: sync push path also skips feature read + derive eval. The
             // response is a synchronous ack ({}) confirming the event was
@@ -2494,14 +2496,14 @@ fn handle_push_table(
     let event_time = crate::engine::event_time::parse_event_time(&fields_value, now);
     {
         let engine = state.engine.read();
-        let wm = engine.watermarks.watermark(table_name);
+        let wm = engine.wm_watermark(table_name);
         if let Some(wm) = wm {
             if event_time < wm {
                 engine.late_drops.increment(table_name);
                 return Ok(Vec::new());
             }
         }
-        engine.watermarks.observe(table_name, event_time);
+        engine.wm_observe(table_name, event_time);
     }
     let map = match fields_value {
         serde_json::Value::Object(m) => m,
@@ -2566,14 +2568,14 @@ fn handle_delete_table(
     let event_time = now;
     {
         let engine = state.engine.read();
-        let wm = engine.watermarks.watermark(table_name);
+        let wm = engine.wm_watermark(table_name);
         if let Some(wm) = wm {
             if event_time < wm {
                 engine.late_drops.increment(table_name);
                 return Ok(Vec::new());
             }
         }
-        engine.watermarks.observe(table_name, event_time);
+        engine.wm_observe(table_name, event_time);
     }
 
     state.store.tombstone_table_row(key, table_name, event_time);
@@ -3421,6 +3423,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         };
         state.engine.write().register(stream).unwrap();
     }
@@ -3749,6 +3752,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         };
         state.engine.write().register(stream).unwrap();
     }

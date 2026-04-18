@@ -9,7 +9,7 @@
 //
 // Note: push_with_cascade_no_features applies operator state but does NOT
 // internally advance the watermark (that's the TCP layer's job at tcp.rs:1750).
-// We call engine.watermarks.observe() explicitly here to mirror what the TCP
+// We call engine.wm_observe() explicitly here to mirror what the TCP
 // live-ingest path does.
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
@@ -45,7 +45,7 @@ fn make_ttl_stream(name: &str, entity_ttl_secs: u64) -> StreamDefinition {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
-    }
+        shard_key: None,    }
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn ttl_honors_event_time_not_wall_clock() {
     // Mirror the TCP live-ingest path: advance watermark for this stream.
     // (push_with_cascade_no_features applies operator state but does not
     // call watermarks.observe — the TCP dispatcher does that at tcp.rs:1750.)
-    engine.watermarks.observe("Txns", thirty_days_ago);
+    engine.wm_observe("Txns", thirty_days_ago);
 
     // Watermark observed_max = thirty_days_ago; last_event_at = thirty_days_ago.
     // scan_clock = thirty_days_ago; age = scan_clock - last_event_at = 0 < 7d TTL.
@@ -90,7 +90,7 @@ fn ttl_honors_event_time_not_wall_clock() {
 
     // Advance watermark to now by observing a fresh event_time.
     // After this: scan_clock = now, age = now - thirty_days_ago = 30d > 7d TTL.
-    engine.watermarks.observe("Txns", now);
+    engine.wm_observe("Txns", now);
 
     // Second eviction pass: watermark observed_max = now; age = 30d > 7d TTL.
     // Entity MUST be evicted.

@@ -49,6 +49,7 @@ fn register_events_stream(state: &SharedState) {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 }
@@ -265,7 +266,7 @@ async fn push_batch_buckets_per_event_time() {
     // the handler ran, not the client-supplied _event_time.
     // Phase 46 fixes the min-bucket behavior; this assertion captures Phase 45
     // correct behavior.
-    let wm = state.engine.read().watermarks.watermark("events");
+    let wm = state.engine.read().wm_watermark("events");
     assert!(
         wm.is_some(),
         "watermark for 'events' stream must be set after batch push"

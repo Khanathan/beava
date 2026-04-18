@@ -477,7 +477,7 @@ async fn http_list_streams(State(state): State<SharedState>) -> impl IntoRespons
     let engine = state.engine.read();
     let mut streams: Vec<serde_json::Value> = Vec::new();
     for def in engine.list_streams() {
-        let wm = engine.watermarks.watermark(&def.name);
+        let wm = engine.wm_watermark(&def.name);
         let wm_ms: Option<u64> = wm
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as u64);
@@ -515,7 +515,7 @@ async fn http_get_stream(
                 .into_response();
         }
     };
-    let wm = engine.watermarks.watermark(&name);
+    let wm = engine.wm_watermark(&name);
     let wm_ms: Option<u64> = wm
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64);

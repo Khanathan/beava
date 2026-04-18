@@ -65,6 +65,7 @@ fn build_state_with_stream() -> SharedState {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
     state

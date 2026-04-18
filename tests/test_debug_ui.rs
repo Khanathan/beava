@@ -156,6 +156,7 @@ fn register_test_pipeline(state: &SharedState) {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     };
     engine
         .register(transactions)
@@ -183,6 +184,7 @@ fn register_test_pipeline(state: &SharedState) {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     };
     engine.register(logins).expect("register Logins");
 
@@ -211,6 +213,7 @@ fn register_test_pipeline(state: &SharedState) {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     };
     engine.register(aggregates).expect("register Aggregates");
 
@@ -420,6 +423,7 @@ async fn topology_nodes_include_operators_field() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         };
         engine.register(tx_def).expect("register Transactions");
         engine.store_raw_register_json(
@@ -507,6 +511,7 @@ async fn topology_operators_pass_through_where_clause() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         };
         engine.register(tx_def).expect("register Transactions");
         engine.store_raw_register_json(
@@ -585,6 +590,7 @@ async fn topology_view_operators_include_lookup_shape() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         };
         engine
             .register(merchant_def)

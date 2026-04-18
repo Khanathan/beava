@@ -64,7 +64,7 @@ pub fn evict_expired_stream_entries(
                 // don't immediately evict entities whose event-time is old-by-wall-clock
                 // but alive-by-event-time. Fallback to the wall-clock `now` arg preserves
                 // existing semantics for streams that have never been observed.
-                let scan_clock = engine.watermarks.observed_max(stream_name).unwrap_or(now);
+                let scan_clock = engine.wm_observed_max(stream_name).unwrap_or(now);
 
                 // Check if stream entry is expired
                 let age = scan_clock
@@ -220,6 +220,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         }
     }
 
@@ -331,6 +332,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         }
     }
 
@@ -481,6 +483,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
 

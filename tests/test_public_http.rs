@@ -124,7 +124,7 @@ fn register_txns(state: &SharedState) {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
-        })
+            shard_key: None,        })
         .expect("register Transactions");
 }
 

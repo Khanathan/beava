@@ -2,6 +2,7 @@ pub mod cms;
 pub mod event_time;
 pub mod expression;
 pub mod hll;
+pub mod join_validator;
 pub mod operators;
 pub mod pipeline;
 pub mod recommend;

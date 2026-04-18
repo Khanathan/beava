@@ -856,6 +856,7 @@ pub fn v0_aggregation_to_stream_def(
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+                shard_key: None,
     })
 }
 
@@ -939,6 +940,7 @@ pub fn v0_source_to_stream_def(
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness,
+        shard_key: None,
     })
 }
 
@@ -1109,6 +1111,7 @@ pub fn v0_join_to_stream_def_with_meta(
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
         }
         "stream_stream" => {
@@ -1207,6 +1210,7 @@ pub fn v0_join_to_stream_def_with_meta(
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
         }
         "table_table" => {
@@ -1373,6 +1377,7 @@ pub fn v0_join_to_stream_def_with_meta(
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
         }
         other => Err(BeavaError::Protocol(format!(

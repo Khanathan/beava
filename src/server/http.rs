@@ -13,7 +13,7 @@ use axum::{
     Json, Router,
 };
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 use tokio::net::TcpListener;
 
@@ -524,6 +524,17 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
         ));
     }
 
+    // Phase 51-02: cross-shard scatter-gather fanout counters.
+    body.push_str(
+        "# HELP beava_cross_shard_fanout_total Scatter-gather operations dispatched \
+         across shards, labelled by op\n\
+         # TYPE beava_cross_shard_fanout_total counter\n",
+    );
+    body.push_str(&format!(
+        "beava_cross_shard_fanout_total{{op=\"list_streams\"}} {}\n",
+        CROSS_SHARD_FANOUT_LIST_STREAMS.load(Ordering::Relaxed)
+    ));
+
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4")],
@@ -737,10 +748,9 @@ async fn debug_key(State(state): State<SharedState>, Path(key): Path<String>) ->
     // the other per-key snapshots.
     let watermarks_json: serde_json::Map<String, serde_json::Value> = {
         let engine = state.engine.read();
-        let tracker = &engine.watermarks;
         let mut out = serde_json::Map::new();
-        for (stream, max) in tracker.iter_streams() {
-            if let Some(wm) = tracker.watermark(&stream) {
+        for (stream, max) in engine.wm_iter_streams() {
+            if let Some(wm) = engine.wm_watermark(&stream) {
                 let ms = wm
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
@@ -783,8 +793,7 @@ async fn debug_stream(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     let engine = state.engine.read();
-    let tracker = &engine.watermarks;
-    let observed_max = match tracker.observed_max(&name) {
+    let observed_max = match engine.wm_observed_max(&name) {
         Some(m) => m,
         None => {
             return (
@@ -796,8 +805,8 @@ async fn debug_stream(
                 .into_response();
         }
     };
-    let wm = tracker.watermark(&name).unwrap_or(observed_max);
-    let last_event = tracker.last_event_time(&name).unwrap_or(observed_max);
+    let wm = engine.wm_watermark(&name).unwrap_or(observed_max);
+    let last_event = engine.wm_last_event_time(&name).unwrap_or(observed_max);
     let late_drops = engine.late_drops.get(&name);
 
     let to_ms = |t: std::time::SystemTime| -> u64 {
@@ -1008,6 +1017,52 @@ async fn debug_latency(State(state): State<SharedState>) -> Json<serde_json::Val
 async fn debug_shard_probe(State(_state): State<SharedState>) -> Json<serde_json::Value> {
     let snap = crate::server::shard_probe::snapshot();
     Json(serde_json::to_value(&snap).unwrap_or(serde_json::Value::Null))
+}
+
+/// Phase 51-02: cross-shard fanout counter for list_streams scatter-gather.
+static CROSS_SHARD_FANOUT_LIST_STREAMS: AtomicU64 = AtomicU64::new(0);
+
+/// Phase 51-02: `GET /streams` — scatter-gather across shards (N=1 Wave 1).
+/// Returns JSON array of stream objects with name and watermark_ns.
+async fn list_streams_handler(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    use crate::routing::scatter::{merge_stream_lists, scatter_gather};
+
+    let streams: Vec<String> = scatter_gather(
+        1,
+        |_shard_id| {
+            let engine = state.engine.read();
+            engine.list_streams().map(|s| s.name.clone()).collect()
+        },
+        merge_stream_lists,
+    );
+
+    CROSS_SHARD_FANOUT_LIST_STREAMS.fetch_add(1, Ordering::Relaxed);
+
+    let engine = state.engine.read();
+    let stream_objs: Vec<serde_json::Value> = streams
+        .iter()
+        .map(|name| {
+            let watermark_ns = engine
+                .wm_observed_max(name)
+                .and_then(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|d| d.as_nanos() as u64)
+                })
+                .unwrap_or(0);
+            serde_json::json!({ "name": name, "watermark_ns": watermark_ns })
+        })
+        .collect();
+
+    Json(serde_json::json!(stream_objs))
+}
+
+/// Phase 51-03: `GET /debug/shards` — per-shard diagnostics (D-09 schema).
+async fn debug_shards(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    use crate::server::shard_probe::{collect_shard_diagnostics, HotShardConfig};
+    let config = HotShardConfig::from_env();
+    let report = collect_shard_diagnostics(&state, &config);
+    Json(serde_json::to_value(&report).unwrap_or(serde_json::Value::Null))
 }
 
 /// Per-stream memory accumulator used by `debug_memory`.
@@ -1580,6 +1635,8 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/debug/throughput", get(debug_throughput))
         .route("/debug/latency", get(debug_latency))
         .route("/debug/shard_probe", get(debug_shard_probe))
+        .route("/debug/shards", get(debug_shards))
+        .route("/streams", get(list_streams_handler))
         .route("/snapshot", post(trigger_snapshot));
 
     // Phase 45: register HTTP ingest + read routes.

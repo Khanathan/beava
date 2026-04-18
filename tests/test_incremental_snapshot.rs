@@ -64,6 +64,7 @@ fn tx_stream() -> StreamDefinition {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     }
 }
 
@@ -339,6 +340,7 @@ fn test_eviction_marks_deleted_and_delta_includes_it() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 

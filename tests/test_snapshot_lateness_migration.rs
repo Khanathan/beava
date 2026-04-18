@@ -44,7 +44,7 @@ fn old_snapshot_loads_with_default_lateness() {
     engine.register(stream_def).unwrap();
 
     assert_eq!(
-        engine.watermarks.lateness_for(&stream_name),
+        engine.wm_lateness_for(&stream_name),
         WATERMARK_LATENESS,
         "watermark lateness must fall back to 5s constant for legacy streams"
     );

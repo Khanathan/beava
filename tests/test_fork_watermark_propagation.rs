@@ -1,4 +1,4 @@
-// CORR-08: replica_ingest_batch must call engine.watermarks.observe() per event
+// CORR-08: replica_ingest_batch must call engine.wm_observe() per event
 // so fork-replica watermarks advance and downstream table cascades are not stalled.
 //
 // Verifies that after calling replica_ingest_batch with N events, the engine's
@@ -39,6 +39,7 @@ fn txns_stream() -> StreamDefinition {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     }
 }
 
@@ -99,9 +100,8 @@ fn replica_batch_advances_watermark() {
     // CORR-08: observed_max must be Some and >= largest ts_ms in the batch.
     let engine_guard = state.engine.read();
     let observed = engine_guard
-        .watermarks
-        .observed_max("Txns")
-        .expect("CORR-08: watermarks.observed_max(Txns) must be Some after replica_ingest_batch");
+        .wm_observed_max("Txns")
+        .expect("CORR-08: wm_observed_max(Txns) must be Some after replica_ingest_batch");
 
     let observed_ms = observed.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
 

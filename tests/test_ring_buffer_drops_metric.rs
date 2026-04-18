@@ -90,14 +90,14 @@ fn push_sales(
     let et_ms = event_time.duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
 
     // Watermark gate — mirrors tcp.rs late-drop logic (OBS-02).
-    let wm_opt = engine.watermarks.watermark("Sales");
+    let wm_opt = engine.wm_watermark("Sales");
     if let Some(wm) = wm_opt {
         if event_time < wm {
             engine.late_drops.increment("Sales");
             return false;
         }
     }
-    engine.watermarks.observe("Sales", event_time);
+    engine.wm_observe("Sales", event_time);
 
     let event = serde_json::json!({
         "user_id": user_id,

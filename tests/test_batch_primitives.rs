@@ -51,6 +51,7 @@ fn make_count_stream(name: &str, key: &str) -> StreamDefinition {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     }
 }
 
@@ -77,6 +78,7 @@ fn make_cascade_child(name: &str, key: &str, parent: &str) -> StreamDefinition {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     }
 }
 

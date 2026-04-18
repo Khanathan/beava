@@ -65,7 +65,7 @@ fn txns_stream_def() -> StreamDefinition {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
-    }
+        shard_key: None,    }
 }
 
 // ---------------------------------------------------------------------------

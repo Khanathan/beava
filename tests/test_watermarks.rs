@@ -175,8 +175,8 @@ async fn watermark_tracks_max_minus_5s() {
     }
 
     let engine = state.engine.read();
-    let wm = engine.watermarks.watermark("Clicks").unwrap();
-    let observed_max = engine.watermarks.observed_max("Clicks").unwrap();
+    let wm = engine.wm_watermark("Clicks").unwrap();
+    let observed_max = engine.wm_observed_max("Clicks").unwrap();
     assert_eq!(observed_max, sec(110));
     assert_eq!(wm, sec(110) - WATERMARK_LATENESS);
     // 110 − 5 = 105.
@@ -220,7 +220,7 @@ async fn late_event_within_5s_window_accepted() {
     let engine = state.engine.read();
     assert_eq!(engine.late_drops.get("Clicks"), 0);
     // observed_max stays at 100 (96 < 100).
-    assert_eq!(engine.watermarks.observed_max("Clicks"), Some(sec(100)));
+    assert_eq!(engine.wm_observed_max("Clicks"), Some(sec(100)));
 }
 
 #[tokio::test]
@@ -250,8 +250,8 @@ async fn per_stream_watermark_isolation() {
     let engine = state.engine.read();
     assert_eq!(engine.late_drops.get("StreamA"), 1);
     assert_eq!(engine.late_drops.get("StreamB"), 0);
-    assert_eq!(engine.watermarks.watermark("StreamA"), Some(sec(995)));
-    assert_eq!(engine.watermarks.watermark("StreamB"), Some(sec(55)));
+    assert_eq!(engine.wm_watermark("StreamA"), Some(sec(995)));
+    assert_eq!(engine.wm_watermark("StreamB"), Some(sec(55)));
 }
 
 #[tokio::test]

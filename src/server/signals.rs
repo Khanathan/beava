@@ -141,6 +141,7 @@ impl Signal {
 }
 
 /// Internal in-memory observability bus.
+#[derive(Debug)]
 pub struct SignalRegistry {
     /// Keyed by `Signal.id`. We dedupe on write; never store duplicates.
     signals: AHashMap<String, Signal>,
@@ -448,6 +449,34 @@ pub fn emit_perf_p99_signal(registry: &SharedRegistry, current_p99_us: f64, thre
 
 /// Emit a `safety / error` signal when a REGISTER call fails. Factored
 /// here so every register-error call site uses an identical payload shape.
+/// Phase 51-04: emit a JoinShardKeyMismatch signal (D-12 locked message).
+/// Severity=Error, Category=Safety. Signal id is stable per stream pair so
+/// repeated mis-registration dedupes in the registry.
+pub fn emit_join_shard_key_mismatch(
+    registry: &SharedRegistry,
+    mismatch: &crate::engine::join_validator::JoinShardKeyMismatch,
+) {
+    let id = format!(
+        "join.shard_key_mismatch.{}.{}",
+        mismatch.stream_a, mismatch.stream_b
+    );
+    let sig = Signal::new(
+        id,
+        Severity::Error,
+        Category::Safety,
+        "Join shard_key mismatch",
+        mismatch.message.clone(),
+        serde_json::json!({
+            "stream_a": mismatch.stream_a,
+            "stream_b": mismatch.stream_b,
+            "key_a": mismatch.key_a,
+            "key_b": mismatch.key_b,
+            "suggested_common": mismatch.suggested_common,
+        }),
+    );
+    registry.write().record(sig);
+}
+
 pub fn emit_register_failure(registry: &SharedRegistry, pipeline_name: &str, err: &str) {
     let sig = Signal::new(
         format!("register.failure.{}", pipeline_name),

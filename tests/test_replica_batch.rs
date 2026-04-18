@@ -41,6 +41,7 @@ fn count_stream(name: &str) -> StreamDefinition {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     }
 }
 

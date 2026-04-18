@@ -211,6 +211,161 @@ pub fn snapshot() -> ShardProbeSnapshot {
 #[allow(dead_code)]
 fn _unused_probe_type_check(_: &AtomicUsize) {}
 
+// ---------- Phase 51-03: /debug/shards diagnostics (D-09) ----------
+
+/// Per-shard info returned by `collect_shard_diagnostics`.
+/// Wave 1: inbox_depth, reactor_utilization, inbox_full_total, and down
+/// are stub zeros (no TPC runtime yet). Wave 2 will wire real values.
+#[derive(Debug, serde::Serialize)]
+pub struct ShardInfo {
+    pub id: usize,
+    pub inbox_depth: usize,
+    pub reactor_utilization: f64,
+    pub keys_owned: usize,
+    pub watermark_lag_seconds: f64,
+    pub events_total: u64,
+    pub inbox_full_total: u64,
+    pub down: bool,
+}
+
+/// A shard flagged as hot (keys_owned > threshold × fleet_mean).
+#[derive(Debug, serde::Serialize)]
+pub struct HotShardEntry {
+    pub shard: usize,
+    pub keys_owned: usize,
+    pub fleet_mean: f64,
+    pub ratio: f64,
+}
+
+/// Full diagnostics report for `GET /debug/shards`.
+#[derive(Debug, serde::Serialize)]
+pub struct ShardDiagnosticsReport {
+    pub shard_count: usize,
+    pub shards: Vec<ShardInfo>,
+    pub hot_shards: Vec<HotShardEntry>,
+    pub ready: bool,
+}
+
+/// Configuration for hot-shard detection.
+/// `BEAVA_HOT_SHARD_THRESHOLD` env var; clamped to [1.1, 10.0]; default 1.5.
+pub struct HotShardConfig {
+    pub threshold: f64,
+}
+
+impl HotShardConfig {
+    pub fn from_env() -> Self {
+        let threshold = std::env::var("BEAVA_HOT_SHARD_THRESHOLD")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(1.5)
+            .clamp(1.1, 10.0);
+        HotShardConfig { threshold }
+    }
+}
+
+/// Rate-limit hot-shard warnings: at most once per 60 seconds.
+static LAST_HOT_WARN_SECS: AtomicU64 = AtomicU64::new(0);
+
+/// Collect shard diagnostics for the current state. Wave 1: N=1 shard.
+/// Uses `state.store.entity_count()` for keys_owned and
+/// `state.events_total.load(Relaxed)` for events_total.
+#[cfg(feature = "server")]
+pub fn collect_shard_diagnostics(
+    state: &crate::server::tcp::ConcurrentAppState,
+    config: &HotShardConfig,
+) -> ShardDiagnosticsReport {
+    use std::sync::atomic::Ordering::Relaxed;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let keys_owned = state.store.entity_count();
+    let events_total = state.events_total.load(Relaxed);
+
+    // Watermark lag: wall-clock minus min watermark across all streams.
+    let watermark_lag_seconds = {
+        let wm = state.engine.read();
+        let wm_guard = wm.watermarks.lock().expect("watermarks lock");
+        let now = SystemTime::now();
+        let now_nanos = now
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let streams = wm_guard.iter_streams();
+        drop(wm_guard);
+        if streams.is_empty() {
+            0.0
+        } else {
+            let min_wm = streams
+                .iter()
+                .map(|(_, t)| {
+                    t.duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_nanos() as u64)
+                        .unwrap_or(0)
+                })
+                .min()
+                .unwrap_or(0);
+            if now_nanos >= min_wm {
+                (now_nanos - min_wm) as f64 / 1_000_000_000.0
+            } else {
+                0.0
+            }
+        }
+    };
+
+    let shards = vec![ShardInfo {
+        id: 0,
+        inbox_depth: 0,
+        reactor_utilization: 0.0,
+        keys_owned,
+        watermark_lag_seconds,
+        events_total,
+        inbox_full_total: 0,
+        down: false,
+    }];
+
+    // Hot-shard detection: fleet_mean = keys_owned / shard_count (N=1).
+    let fleet_mean = keys_owned as f64; // N=1 so mean = only shard's count
+    let mut hot_shards = Vec::new();
+    for shard in &shards {
+        let ratio = if fleet_mean > 0.0 {
+            shard.keys_owned as f64 / fleet_mean
+        } else {
+            1.0
+        };
+        if ratio > config.threshold {
+            // Rate-limited warn: at most once per 60 s
+            let now_secs = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let last = LAST_HOT_WARN_SECS.load(Relaxed);
+            if now_secs.saturating_sub(last) >= 60 {
+                if LAST_HOT_WARN_SECS
+                    .compare_exchange(last, now_secs, Relaxed, Relaxed)
+                    .is_ok()
+                {
+                    eprintln!(
+                        "[shard-probe] hot shard detected: shard={} keys={} mean={:.1} ratio={:.2}",
+                        shard.id, shard.keys_owned, fleet_mean, ratio
+                    );
+                }
+            }
+            hot_shards.push(HotShardEntry {
+                shard: shard.id,
+                keys_owned: shard.keys_owned,
+                fleet_mean,
+                ratio,
+            });
+        }
+    }
+
+    ShardDiagnosticsReport {
+        shard_count: 1,
+        shards,
+        hot_shards,
+        ready: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

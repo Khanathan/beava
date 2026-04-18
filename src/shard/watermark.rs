@@ -26,6 +26,9 @@ pub struct WatermarkState {
     watermark_lateness: AHashMap<String, Duration>,
     /// Last event time per stream (for lag metric — separate from max).
     last_event_time: AHashMap<String, u64>,
+    /// Phase 51-01: events-since-last-publish counter per stream.
+    /// Drives the global watermark publish cadence (threshold = 1024 by default).
+    pub events_since_publish: AHashMap<String, u64>,
 }
 
 impl WatermarkState {
@@ -34,6 +37,7 @@ impl WatermarkState {
             observed_max: AHashMap::new(),
             watermark_lateness: AHashMap::new(),
             last_event_time: AHashMap::new(),
+            events_since_publish: AHashMap::new(),
         }
     }
 
@@ -179,6 +183,30 @@ impl WatermarkState {
             .filter(|(_, &v)| v > 0)
             .map(|(k, &v)| (k.as_str(), Self::nanos_to_system_time(v)))
     }
+
+    /// Phase 51-01: increment the event counter for `stream` and publish to
+    /// `store` when the count crosses `threshold` events. Returns the current
+    /// observed_max nanos if a publish occurred, `None` otherwise.
+    pub fn publish_if_due(
+        &mut self,
+        stream: &str,
+        store: &crate::shard::global_watermark::GlobalWatermarkStore,
+        shard_id: usize,
+        threshold: u64,
+    ) -> Option<u64> {
+        let counter = self.events_since_publish.entry(stream.to_string()).or_insert(0);
+        *counter += 1;
+        if *counter >= threshold {
+            *counter = 0;
+            if let Some(&nanos) = self.observed_max.get(stream) {
+                if nanos > 0 {
+                    store.publish(shard_id, stream, nanos);
+                    return Some(nanos);
+                }
+            }
+        }
+        None
+    }
 }
 
 impl Default for WatermarkState {
@@ -293,5 +321,43 @@ mod tests {
         wm.observe("s", sec(110));
         wm.attach_to_table("s", "agg_out");
         assert_eq!(wm.watermark("agg_out"), Some(sec(105)));
+    }
+
+    // Phase 51-01 tests: publish_if_due cadence
+    #[test]
+    fn test_no_publish_before_threshold() {
+        use crate::shard::global_watermark::GlobalWatermarkStore;
+        let mut store = GlobalWatermarkStore::new(1, 16);
+        store.register_stream("s");
+        let mut wm = WatermarkState::new();
+        wm.observe("s", sec(1000));
+        // 1023 events — no publish yet
+        for _ in 0..1023 {
+            let result = wm.publish_if_due("s", &store, 0, 1024);
+            assert!(result.is_none(), "must not publish before threshold");
+        }
+        // 1024th event — publish fires
+        let result = wm.publish_if_due("s", &store, 0, 1024);
+        assert!(result.is_some(), "must publish on threshold crossing");
+    }
+
+    #[test]
+    fn test_publish_cadence_approx_10k_over_threshold() {
+        use crate::shard::global_watermark::GlobalWatermarkStore;
+        let mut store = GlobalWatermarkStore::new(1, 16);
+        store.register_stream("s");
+        let mut wm = WatermarkState::new();
+        wm.observe("s", sec(1000));
+        let mut publishes = 0u32;
+        for _ in 0..10_000 {
+            if wm.publish_if_due("s", &store, 0, 1024).is_some() {
+                publishes += 1;
+            }
+        }
+        // 10000 / 1024 ≈ 9.7 → expect 9 publishes
+        assert!(
+            (9..=11).contains(&publishes),
+            "expected ~9-11 publishes for 10k events at threshold=1024, got {publishes}"
+        );
     }
 }

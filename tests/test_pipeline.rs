@@ -68,6 +68,7 @@ fn make_tx_stream_with_derive() -> StreamDefinition {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     }
 }
 
@@ -201,6 +202,7 @@ fn test_derive_division_by_zero_returns_missing() {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     };
 
     let mut engine = PipelineEngine::new();
@@ -275,6 +277,7 @@ fn test_window_expiration_end_to_end() {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     };
 
     let mut engine = PipelineEngine::new();
@@ -342,6 +345,7 @@ fn test_derive_with_event_field_access() {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     };
 
     let mut engine = PipelineEngine::new();
@@ -425,6 +429,7 @@ fn make_keyless_stream(name: &str) -> StreamDefinition {
         depends_on: None,
         filter: None,
         watermark_lateness: None,
+        shard_key: None,
     }
 }
 
@@ -451,6 +456,7 @@ fn make_keyed_dependent_stream(name: &str, key: &str, deps: Vec<&str>) -> Stream
         depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
         filter: None,
         watermark_lateness: None,
+        shard_key: None,
     }
 }
 
@@ -670,6 +676,7 @@ fn test_keyed_to_keyed_cascade() {
         depends_on: None,
         filter: None,
         watermark_lateness: None,
+        shard_key: None,
     };
     let b = StreamDefinition {
         name: "B".into(),
@@ -693,6 +700,7 @@ fn test_keyed_to_keyed_cascade() {
         depends_on: Some(vec!["A".into()]),
         filter: None,
         watermark_lateness: None,
+        shard_key: None,
     };
     engine.register(a).unwrap();
     engine.register(b).unwrap();
@@ -876,6 +884,7 @@ async fn test_backfill_replay_deterministic() {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     };
     {
         state.engine.write().register(stream1).unwrap();
@@ -938,6 +947,7 @@ async fn test_backfill_replay_deterministic() {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     };
     {
         let mut engine = state.engine.write();
@@ -1022,6 +1032,7 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     };
     {
         state.engine.write().register(stream1).unwrap();
@@ -1076,6 +1087,7 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     };
     {
         let mut engine = state.engine.write();
@@ -1175,6 +1187,7 @@ fn test_schema_evolution_add_remove() {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     };
     engine.register(stream1).unwrap();
 
@@ -1231,6 +1244,7 @@ fn test_schema_evolution_add_remove() {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     };
     let diff = engine.register(stream2).unwrap();
     assert!(diff.removed.contains(&"sum_1h".to_string()));
@@ -1284,6 +1298,7 @@ async fn test_backfill_idempotent_restart() {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     };
     {
         state.engine.write().register(stream1).unwrap();
@@ -1347,6 +1362,7 @@ async fn test_backfill_idempotent_restart() {
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
+        shard_key: None,
     };
 
     {
@@ -1590,6 +1606,7 @@ fn test_enriched_derive_to_downstream_sum() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -1614,6 +1631,7 @@ fn test_enriched_derive_to_downstream_sum() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -1643,6 +1661,7 @@ fn test_enriched_derive_to_downstream_sum() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -1693,6 +1712,7 @@ fn test_enriched_multi_hop_cascade() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -1717,6 +1737,7 @@ fn test_enriched_multi_hop_cascade() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -1754,6 +1775,7 @@ fn test_enriched_multi_hop_cascade() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -1783,6 +1805,7 @@ fn test_enriched_multi_hop_cascade() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -1841,6 +1864,7 @@ fn test_enriched_cascade_async_mode() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -1864,6 +1888,7 @@ fn test_enriched_cascade_async_mode() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -1892,6 +1917,7 @@ fn test_enriched_cascade_async_mode() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -1955,6 +1981,7 @@ fn test_enriched_where_clause() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -1978,6 +2005,7 @@ fn test_enriched_where_clause() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -2005,6 +2033,7 @@ fn test_enriched_where_clause() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -2069,6 +2098,7 @@ fn test_enriched_field_resolution_qualified() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -2092,6 +2122,7 @@ fn test_enriched_field_resolution_qualified() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -2120,6 +2151,7 @@ fn test_enriched_field_resolution_qualified() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -2164,6 +2196,7 @@ fn test_enriched_field_resolution_unqualified() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -2187,6 +2220,7 @@ fn test_enriched_field_resolution_unqualified() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -2216,6 +2250,7 @@ fn test_enriched_field_resolution_unqualified() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -2287,6 +2322,7 @@ fn test_enriched_no_cascade_unchanged() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -2379,6 +2415,7 @@ fn test_projection_select_push() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -2454,6 +2491,7 @@ fn test_projection_drop_push() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -2516,6 +2554,7 @@ fn test_projection_select_get() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -2573,6 +2612,7 @@ fn test_projection_drop_get() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 
@@ -2639,6 +2679,7 @@ fn test_projection_derive_still_evaluates() {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+            shard_key: None,
         })
         .unwrap();
 

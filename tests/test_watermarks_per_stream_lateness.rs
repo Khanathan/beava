@@ -76,7 +76,7 @@ fn register_propagates_watermark_lateness_to_tracker() {
     engine.register(def).unwrap();
     // Engine exposes watermarks field; verify it was set.
     assert_eq!(
-        engine.watermarks.lateness_for("Txns"),
+        engine.wm_lateness_for("Txns"),
         Duration::from_secs(600),
         "PipelineEngine::register must call set_lateness when Some"
     );
@@ -93,7 +93,7 @@ fn register_no_watermark_lateness_keeps_5s_default() {
     };
     engine.register(def).unwrap();
     assert_eq!(
-        engine.watermarks.lateness_for("Events"),
+        engine.wm_lateness_for("Events"),
         Duration::from_secs(5),
         "absent watermark_lateness should leave tracker at 5s default"
     );

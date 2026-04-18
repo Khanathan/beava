@@ -185,14 +185,14 @@ fn push_purchase(
 ) {
     let et_ms = event_time.duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
 
-    let wm_opt = engine.watermarks.watermark("Purchases");
+    let wm_opt = engine.wm_watermark("Purchases");
     if let Some(wm) = wm_opt {
         if event_time < wm {
             engine.late_drops.increment("Purchases");
             return;
         }
     }
-    engine.watermarks.observe("Purchases", event_time);
+    engine.wm_observe("Purchases", event_time);
 
     let event = serde_json::json!({
         "user_id": user_id,
@@ -311,14 +311,14 @@ fn integ_full_dag_in_order_happy_path() {
     );
 
     // Watermark = max(event_time) − 5s. max = t0+102.
-    let wm = engine.watermarks.watermark("Purchases").unwrap();
+    let wm = engine.wm_watermark("Purchases").unwrap();
     assert_eq!(wm, t0 + Duration::from_secs(102) - WATERMARK_LATENESS);
 
     // No late drops.
     assert_eq!(engine.late_drops.get("Purchases"), 0);
 
     // γ propagation: PurchasesAgg.wm attached from Purchases.wm.
-    let agg_wm = engine.watermarks.watermark("PurchasesAgg");
+    let agg_wm = engine.wm_watermark("PurchasesAgg");
     assert_eq!(
         agg_wm,
         Some(wm),
@@ -366,7 +366,7 @@ fn integ_out_of_order_within_5s_lands_in_bucket() {
 
     // observed_max stays at t+100.
     assert_eq!(
-        engine.watermarks.observed_max("Purchases"),
+        engine.wm_observed_max("Purchases"),
         Some(t0 + Duration::from_secs(100))
     );
 }

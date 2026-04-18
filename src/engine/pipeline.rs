@@ -4,9 +4,8 @@
 //! synchronous push-through flow: event -> extract key -> update operators
 //! -> evaluate derives -> return feature map.
 
-use super::event_time::{
-    LateDropCounters, RingBufferDropCounters, SharedLateDrops, SharedWatermarks, WatermarkTracker,
-};
+use super::event_time::{LateDropCounters, RingBufferDropCounters, SharedLateDrops};
+use crate::shard::watermark::WatermarkState;
 use super::expression::{eval, EvalContext, Expr};
 use super::hll::DistinctCountOp;
 use super::operators::{
@@ -396,6 +395,9 @@ pub struct StreamDefinition {
     /// WATERMARK_LATENESS constant (5 s). When None, the 5 s default applies.
     /// Absent in older snapshots → None → 5 s default (CORR-04 forward-compat).
     pub watermark_lateness: Option<Duration>,
+    /// Phase 51-04: shard key declaration for join validation.
+    /// None = no shard key (join validation deferred / not applicable).
+    pub shard_key: Option<crate::engine::join_validator::ShardKeySpec>,
 }
 
 /// The pipeline engine. Holds registered stream definitions and coordinates
@@ -420,11 +422,11 @@ pub struct PipelineEngine {
     /// walk that push_with_cascade_internal used to run per event. Empty
     /// value = leaf stream (no cascade).
     cascade_plan: AHashMap<String, Vec<String>>,
-    /// Phase 24-04 — per-stream watermark state. Wrapped in a `RwLock`
-    /// so the hot path (observe on every PUSH) can acquire a write lock
-    /// for the brief `observe` call while read-heavy debug / γ-lookup
-    /// paths take shared access.
-    pub watermarks: SharedWatermarks,
+    /// Phase 24-04 / 49-03 — per-stream watermark state.
+    /// Wave 1: wrapped in `Mutex<WatermarkState>` (single-writer AHashMap).
+    /// Uncontended at N=1; Wave 2 removes the mutex from the hot path.
+    /// Access via `wm_*()` forwarding methods — do NOT lock directly.
+    pub watermarks: std::sync::Mutex<WatermarkState>,
     /// Phase 24-04 — per-stream late-drop counter. Exported as
     /// `beava_late_events_dropped_total{stream}` via `/metrics`.
     pub late_drops: SharedLateDrops,
@@ -445,6 +447,11 @@ pub struct PipelineEngine {
     /// hook site regardless of dispatch path (user direction §3).
     #[cfg(feature = "server")]
     pub subscriber_registry: Option<std::sync::Arc<crate::server::replica::SubscriberRegistry>>,
+
+    /// Phase 51-04: optional signal registry for emitting JoinShardKeyMismatch signals.
+    /// Set by `install_signals` at server startup. None in unit-test harnesses.
+    #[cfg(feature = "server")]
+    pub signals: Option<crate::server::signals::SharedRegistry>,
 }
 
 /// Create an operator instance from a FeatureDef (non-derive only).
@@ -711,11 +718,13 @@ impl PipelineEngine {
             topo_order: Vec::new(),
             downstream_map: AHashMap::new(),
             cascade_plan: AHashMap::new(),
-            watermarks: WatermarkTracker::new(),
+            watermarks: std::sync::Mutex::new(WatermarkState::new()),
             late_drops: LateDropCounters::new(),
             ring_buffer_drops: RingBufferDropCounters::new(),
             #[cfg(feature = "server")]
             subscriber_registry: None,
+            #[cfg(feature = "server")]
+            signals: None,
         }
     }
 
@@ -732,6 +741,91 @@ impl PipelineEngine {
         registry: std::sync::Arc<crate::server::replica::SubscriberRegistry>,
     ) {
         self.subscriber_registry = Some(registry);
+    }
+
+    /// Phase 51-04: attach a signal registry so `register()` can emit
+    /// `JoinShardKeyMismatch` signals. Called by `make_concurrent_state_full`.
+    #[cfg(feature = "server")]
+    pub fn install_signals(&mut self, registry: crate::server::signals::SharedRegistry) {
+        self.signals = Some(registry);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 49-03: wm_*() forwarding methods — ergonomic access to the
+    // Mutex<WatermarkState> without exposing the lock at call sites.
+    // Uncontended at N=1 (Wave 1). Wave 2 removes the mutex from the hot path.
+    // -----------------------------------------------------------------------
+
+    /// Observe an event time for a stream (updates monotonic max).
+    pub fn wm_observe(&self, stream: &str, event_time: std::time::SystemTime) {
+        self.watermarks
+            .lock()
+            .expect("watermarks mutex poisoned")
+            .observe(stream, event_time);
+    }
+
+    /// Current watermark for a stream (observed_max - lateness).
+    pub fn wm_watermark(&self, stream: &str) -> Option<std::time::SystemTime> {
+        self.watermarks
+            .lock()
+            .expect("watermarks mutex poisoned")
+            .watermark(stream)
+    }
+
+    /// Observed max event time for stream (no lateness subtracted).
+    pub fn wm_observed_max(&self, stream: &str) -> Option<std::time::SystemTime> {
+        self.watermarks
+            .lock()
+            .expect("watermarks mutex poisoned")
+            .observed_max(stream)
+    }
+
+    /// Most recent event_time observed (not necessarily the max).
+    pub fn wm_last_event_time(&self, stream: &str) -> Option<std::time::SystemTime> {
+        self.watermarks
+            .lock()
+            .expect("watermarks mutex poisoned")
+            .last_event_time(stream)
+    }
+
+    /// List all streams with an observed watermark.
+    pub fn wm_iter_streams(&self) -> Vec<(String, std::time::SystemTime)> {
+        self.watermarks
+            .lock()
+            .expect("watermarks mutex poisoned")
+            .iter_streams()
+    }
+
+    /// Per-stream lateness override (falls back to 5s global default).
+    pub fn wm_lateness_for(&self, stream: &str) -> std::time::Duration {
+        self.watermarks
+            .lock()
+            .expect("watermarks mutex poisoned")
+            .lateness_for(stream)
+    }
+
+    /// γ: join watermark propagation — output = min(left, right).
+    pub fn wm_propagate_join(&self, left: &str, right: &str, output: &str) {
+        self.watermarks
+            .lock()
+            .expect("watermarks mutex poisoned")
+            .propagate_join(left, right, output);
+    }
+
+    /// γ: stateless propagation — output inherits input watermark.
+    pub fn wm_propagate_stateless(&self, from: &str, to: &str) {
+        self.watermarks
+            .lock()
+            .expect("watermarks mutex poisoned")
+            .propagate_stateless(from, to);
+    }
+
+    /// γ: aggregation — output table inherits source stream watermark.
+    pub fn wm_attach_to_table(&self, source_stream: &str, output_table: &str) {
+        self.watermarks
+            .lock()
+            .expect("watermarks mutex poisoned")
+            .attach_to_table(source_stream, output_table);
     }
 
     /// Register a stream definition. Validates derive expressions are parseable.
@@ -796,10 +890,13 @@ impl PipelineEngine {
 
         let name_clone = stream.name.clone();
         // D-10 / CORR-03: propagate per-stream watermark lateness override into
-        // WatermarkTracker before inserting the stream. This way any immediate
+        // WatermarkState before inserting the stream. This way any immediate
         // observe() calls during cascade evaluation use the correct lateness.
         if let Some(lateness) = stream.watermark_lateness {
-            self.watermarks.set_lateness(&stream.name, lateness);
+            self.watermarks
+                .lock()
+                .expect("watermarks mutex poisoned")
+                .set_lateness(&stream.name, lateness);
         }
 
         // D-06 / OBS-01: pre-register ring-buffer drop counter handles for
@@ -812,6 +909,15 @@ impl PipelineEngine {
                 // is idempotent — it just returns the existing Arc handles.
                 self.ring_buffer_drops.register(&stream.name, kind);
             }
+        }
+
+        // Phase 51-04: validate shard_key compatibility before inserting.
+        if let Err(mismatch) = crate::engine::join_validator::validate_shard_keys(&self.streams, &stream) {
+            #[cfg(feature = "server")]
+            if let Some(ref registry) = self.signals {
+                crate::server::signals::emit_join_shard_key_mismatch(registry, &mismatch);
+            }
+            return Err(BeavaError::Protocol(mismatch.message.clone()));
         }
 
         self.streams.insert(name_clone.clone(), stream);
@@ -1670,8 +1776,7 @@ impl PipelineEngine {
                 // side does not gate (Table.wm never exceeds the
                 // source Stream.wm for the attached-to-Table case
                 // already covered by aggregation propagation).
-                self.watermarks
-                    .propagate_stateless(stream_name, stream_in_order);
+                self.wm_propagate_stateless(stream_name, stream_in_order);
                 // Compose the right-side lookup key from the effective event.
                 let right_key =
                     crate::engine::register::encode_group_by(&on_keys, &effective_event)?;
@@ -1766,8 +1871,7 @@ impl PipelineEngine {
                 // Phase 24-04 γ: Stream↔Stream join output watermark =
                 // min(left_wm, right_wm). Applied before match work so
                 // the output's wm reflects BOTH inputs as of right now.
-                self.watermarks
-                    .propagate_join(&left_stream, &right_stream, stream_in_order);
+                self.wm_propagate_join(&left_stream, &right_stream, stream_in_order);
                 // Determine which side the arrival came from. The primary
                 // stream (`stream_name`) is the origin of the push.
                 let side_opt: Option<crate::engine::operators::JoinSide> =
@@ -1946,11 +2050,9 @@ impl PipelineEngine {
             //     stream's watermark to the output Table.
             //   - Keyless downstream (stateless derives): pass through.
             if downstream_def.key_field.is_some() {
-                self.watermarks
-                    .attach_to_table(stream_name, stream_in_order);
+                self.wm_attach_to_table(stream_name, stream_in_order);
             } else {
-                self.watermarks
-                    .propagate_stateless(stream_name, stream_in_order);
+                self.wm_propagate_stateless(stream_name, stream_in_order);
             }
 
             if downstream_def.key_field.is_some() {
@@ -2449,6 +2551,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         }
     }
 
@@ -2478,6 +2581,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         assert!(engine.register(stream).is_err());
     }
@@ -2599,6 +2703,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
         engine
@@ -2624,6 +2729,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(3600));
@@ -2658,6 +2764,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
         assert_eq!(engine.max_window_duration(), Duration::ZERO);
@@ -2803,6 +2910,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(stream).unwrap();
         let now = ts(60_000);
@@ -2868,6 +2976,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(stream).unwrap();
         let now = ts(60_000);
@@ -2957,6 +3066,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(86400));
@@ -3037,6 +3147,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
         engine
@@ -3062,6 +3173,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
 
@@ -3142,6 +3254,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
 
@@ -3179,6 +3292,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
 
@@ -3255,6 +3369,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
 
@@ -3281,6 +3396,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
 
@@ -3327,6 +3443,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         assert_eq!(stream.entity_ttl, Some(Duration::from_secs(300)));
     }
@@ -3347,6 +3464,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         assert_eq!(stream.entity_ttl, None);
         assert_eq!(stream.history_ttl, None);
@@ -3370,6 +3488,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
         assert_eq!(
@@ -3396,6 +3515,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
         assert_eq!(engine.get_stream_entity_ttl("Transactions"), None);
@@ -3448,6 +3568,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
         assert_eq!(engine.max_window_duration(), Duration::from_secs(86400));
@@ -3472,6 +3593,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(stream).unwrap();
         assert_eq!(engine.stream_count(), 1);
@@ -3503,6 +3625,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         let result = engine.register(stream);
         assert!(result.is_err());
@@ -3541,6 +3664,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(stream).unwrap();
         assert_eq!(engine.stream_count(), 1);
@@ -3564,6 +3688,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(stream).unwrap();
 
@@ -3602,6 +3727,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(stream).unwrap();
         assert_eq!(engine.stream_count(), 1);
@@ -3640,6 +3766,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(stream).unwrap();
         assert_eq!(engine.stream_count(), 1);
@@ -3673,6 +3800,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(stream).unwrap();
         let now = ts(60_000);
@@ -3726,6 +3854,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
         // Register a keyless stream
@@ -3744,6 +3873,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
 
@@ -3786,6 +3916,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         let b = StreamDefinition {
             name: "B".into(),
@@ -3801,6 +3932,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         let a = StreamDefinition {
             name: "A".into(),
@@ -3816,6 +3948,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(c).unwrap();
         engine.register(b).unwrap();
@@ -3856,6 +3989,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(stream).unwrap();
         let now = ts(60_000);
@@ -3891,6 +4025,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         let diff1 = engine.register(stream1).unwrap();
         assert!(diff1.added.contains(&"tx_count_1h".to_string()));
@@ -3932,6 +4067,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         let diff2 = engine.register(stream2).unwrap();
         assert!(diff2.added.contains(&"tx_sum_1h".to_string()));
@@ -3977,6 +4113,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(stream1).unwrap();
 
@@ -4003,6 +4140,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         let diff = engine.register(stream2).unwrap();
         assert!(diff.removed.contains(&"tx_sum_1h".to_string()));
@@ -4035,6 +4173,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(stream1).unwrap();
 
@@ -4063,6 +4202,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         let result = engine.register(stream2);
         assert!(result.is_err());
@@ -4112,6 +4252,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         let diff = engine.register(stream).unwrap();
         assert_eq!(diff.added.len(), 2);
@@ -4173,6 +4314,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(stream1).unwrap();
 
@@ -4226,6 +4368,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(stream2).unwrap();
 
@@ -4284,6 +4427,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
         engine
@@ -4309,6 +4453,7 @@ mod tests {
                 pipeline_ttl: None,
                 max_keys: None,
                 watermark_lateness: None,
+                shard_key: None,
             })
             .unwrap();
 
@@ -4367,6 +4512,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(stream).unwrap();
 
@@ -4426,6 +4572,7 @@ mod tests {
             pipeline_ttl: None,
             max_keys: None,
             watermark_lateness: None,
+                shard_key: None,
         };
         engine.register(stream).unwrap();
 
