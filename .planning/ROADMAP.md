@@ -8,13 +8,14 @@
 - [x] **v2.1 -- Launch** (Phase 20) -- Engineering complete 2026-04-14 (live-run ops pending, calendar-gated) -- `.planning/milestones/v2.1-ROADMAP.md`
 - [x] **v0 -- Restructure + Data-Scientist Fork** (Phases 21-38) -- Phases 21-27, 36-37 complete; Phases 35, 38 planned.
 - [x] **v1.0-launch -- Public Launch Readiness** (Phases 45-47) -- Engineering complete 2026-04-17 -- `.planning/milestones/v1.0-launch-ROADMAP.md`
-- [ ] **v1.2 -- Thread-Per-Core + Full Key-Shard** (Phases 48-53) -- Active 2026-04-18
+- [ ] **v1.2 -- Thread-Per-Core + Full Key-Shard** (Phases 48, 49, 50, 50.5, 51, 52, 53) -- Active 2026-04-18
 
 ## Phases
 
 - [x] **Phase 48: 48-shard-hint-scaffolding** — Wire `EventSource::shard_hint()` through every push path; establish micro-bench gates (no routing change at N=1) (completed 2026-04-18)
 - [ ] **Phase 49: 49-per-shard-state-store** — Introduce `Shard` struct with per-shard AHashMap state; `BEAVA_SHARDS` env + CLI flag; full test suite green at N=1
-- [ ] **Phase 50: 50-multi-shard-routing** — SO_REUSEPORT shard accept on Linux, SPSC channels, core_affinity pinning, backpressure contract, per-shard labeled metrics; ≥3× baseline on `complex-c8-x8` at N=CPU_COUNT
+- [ ] **Phase 50: 50-multi-shard-routing** — SO_REUSEPORT shard accept on Linux, SPSC channels, core_affinity pinning, backpressure contract, per-shard labeled metrics *(LANDED PARTIAL — dispatch + metrics shipped; shard-thread stub discards events; verification status `gaps_found`; follow-up in Phase 50.5)*
+- [ ] **Phase 50.5: 50.5-shard-thread-completion** — Wire the Phase 50 shard thread receiver to actually own per-shard state (currently a stub that discards SPSC events, per `50-DEBUG-SESSION.md`). Unlocks the real TPC parallelism that Phase 50 promised but never delivered. Split ship-gate: **macOS dev ≥1.5× baseline (~460K EPS)** / **Linux prod ≥3× baseline (~918K EPS)**. Linux CI reference-box run is the merge gate.
 - [ ] **Phase 51: 51-cross-shard-queries-joins** — `GET /streams` scatter-gather, `JoinShardKeyMismatch` at register time, lazy global watermark, `GET /debug/shards` hot-shard visibility
 - [ ] **Phase 52: 52-event-log-recovery-ship-gate** — Per-shard log layout, parallel recovery, `tally reshard` tool, snapshot v8 hard-fail guard, fork/replica re-hash, N=1↔N=8 proptest parity, 1M+ EPS load test, architecture docs
 - [ ] **Phase 53: 53-fjall-state-backend** — Replace per-shard in-memory AHashMap state with `fjall` LSM-tree backend (per-shard partitions); state is durable-by-default, unbounded size, crash-safe without snapshot replay; supersedes snapshot v8 format with fjall checkpoints
@@ -80,6 +81,20 @@ Plans:
 - [ ] 50-08-PLAN.md — Ship-gate: 9-cell matrix at N=CPU_COUNT (≥3× gate) + cross_shard_fraction gate + metrics parity test + human verify (Wave 5)
 **UI hint**: no
 
+### Phase 50.5: 50.5-shard-thread-completion
+**Goal**: Complete the shard-thread side that Phase 50 left as a stub (`src/shard/thread.rs:160 TODO(50-04)`). Currently the SPSC dispatch works but the receiver discards events and real processing still runs on the legacy single-engine path — so BEAVA_SHARDS>1 produces no parallelism. This phase wires the shard thread to own per-shard state and dispatch through the TPC path, unlocking the actual parallelism TPC was designed for.
+**Depends on**: Phase 50 Fix #1 committed (Wave-1 clamp removed, zero-cost N=1 bypass); `50-DEBUG-SESSION.md` + `50.5-FIX-PLAN.md` as source of truth.
+**Requirements**: TPC-PERF-02 (pinning — measurable), TPC-PERF-03 (SPSC receiver — actually reads), TPC-CORR-01 (backpressure end-to-end) — these were claimed by Phase 50 but only partially delivered; Phase 50.5 completes them.
+**Success Criteria** (what must be TRUE):
+  1. Setting `BEAVA_SHARDS=8` produces 8 live shard threads in `/debug/shards`, each showing non-zero `events_total{shard=N}` after a workload — not just shard 0.
+  2. At N=CPU_COUNT the shard threads process their own SPSC-delivered events (no fallback to legacy `engine.push_with_cascade` at N>1).
+  3. `shard_probe` `cross_shard_fraction <40%` on the release workload at N=CPU_COUNT.
+  4. **macOS dev gate**: `complex-c8-x8` at N=CPU_COUNT ≥ **1.5× baseline (~460K EPS)**. Single-accept-thread + BSD-compat SO_REUSEPORT caps dev throughput; this is the macOS dev-mode gate.
+  5. **Linux prod gate (merge criterion)**: `complex-c8-x8` at N=CPU_COUNT ≥ **3× baseline (~918K EPS)** on a Hetzner CX41-class reference box. This is the ship-gate for merging v1.2 to main.
+  6. N=1 regression gate holds: `complex-c8-x8` at N=1 stays within −5% of 314,931 baseline (Fix #1 already reestablishes this).
+**Plans**: TBD (run `/gsd-discuss-phase 50.5` before planning)
+**UI hint**: no
+
 ### Phase 51: 51-cross-shard-queries-joins
 **Goal**: Read paths that touch multiple shards — stream listing, global watermark, and join validation — are correctly scatter-gathered or enforced at register time, with hot-shard visibility via `GET /debug/shards`.
 **Depends on**: Phase 50
@@ -133,8 +148,9 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 48. Shard-hint scaffolding | 3/3 | Complete | 2026-04-18 |
-| 49. Per-shard state store | 3/6 | In Progress|  |
-| 50. Multi-shard routing | 0/8 | Planned | — |
+| 49. Per-shard state store | 6/6 | Complete | 2026-04-18 |
+| 50. Multi-shard routing | 8/8 plans | **Partial — gaps_found** (shard thread stub; see 50-DEBUG-SESSION.md + 50.5-FIX-PLAN.md; Fix #1 restores N=1 parity in progress) | — |
+| 50.5. Shard-thread completion | 0/? | Not started (scaffolded 2026-04-18) | — |
 | 51. Cross-shard queries + joins | 0/5 | Planned | — |
 | 52. Event log, recovery, ship-gate | 0/? | Not started | — |
 | 53. Fjall state backend | 0/? | Not started | — |
