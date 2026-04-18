@@ -43,8 +43,8 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 
 - [ ] **INFRA-01**: A user can run `docker run -p 6900:6900 beavadb/beava:latest` and see a working Beava server — image is published to Docker Hub with `:latest` + `:0.1.0` tags.
 - [ ] **INFRA-02**: A user can `docker compose up` against `examples/docker-compose.yml` to get a Beava container with a mounted data volume and exposed port.
-- [ ] **INFRA-03**: A maintainer sees `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --lib` all green on every push and PR via `.github/workflows/ci.yml` (<5 min run time).
-- [ ] **INFRA-04**: A user sees a green CI badge linked to GitHub Actions at the top of README.md.
+- [x] **INFRA-03**: A maintainer sees `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --lib` all green on every push and PR via `.github/workflows/ci.yml` (<5 min run time).
+- [x] **INFRA-04**: A user sees a green CI badge linked to GitHub Actions at the top of README.md.
 - [ ] **INFRA-05**: A maintainer builds the image from the repo root using a multi-stage Dockerfile (cargo-chef planner/cooker/builder → `gcr.io/distroless/cc-debian12:nonroot`); image runs as non-root.
 - [ ] **INFRA-06**: A maintainer has resolved every `TODO` / `FIXME` / `XXX` in `src/` — each is either fixed, converted to a GitHub issue, or marked load-bearing with a tracking-issue link.
 - [ ] **INFRA-07**: A maintainer has no stray `println!` / `dbg!` / `eprintln!` calls in `src/` except explicitly-intentional startup logging or profile instrumentation.
@@ -156,8 +156,8 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 | SHIP-01 | Phase 46 | Complete |
 | INFRA-01 | Phase 47 | Pending |
 | INFRA-02 | Phase 47 | Pending |
-| INFRA-03 | Phase 47 | Pending |
-| INFRA-04 | Phase 47 | Pending |
+| INFRA-03 | Phase 47 | Complete |
+| INFRA-04 | Phase 47 | Complete |
 | INFRA-05 | Phase 47 | Pending |
 | INFRA-06 | Phase 47 | Pending |
 | INFRA-07 | Phase 47 | Pending |

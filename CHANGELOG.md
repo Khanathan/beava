@@ -2,6 +2,52 @@
 
 All notable changes to Beava. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/) once it reaches `1.0.0`.
 
+## [0.1.0] - 2026-04-17 (v1.0-launch)
+
+First public release. Apache 2.0. Single-binary feature server in Rust.
+
+### Added
+
+- **HTTP Ingest & Read API** (Phase 45): 6 endpoints.
+  - `POST /push/{stream}` — single-event push with schema validation (HTTP-01).
+  - `POST /push-batch/{stream}` — batch push with per-event accept/reject response + correct event-time bucketing (HTTP-02).
+  - `POST /push/{stream}/ndjson` — chunked NDJSON streaming via axum-extra JsonLines (HTTP-03).
+  - `GET /features/{key}` — feature read across all tables; `?table=X` filter (HTTP-04).
+  - `GET /streams` + `GET /streams/{name}` — list and inspect registered streams (HTTP-05).
+  - Loopback-or-token auth inherited unchanged; `--public` exposes read-only routes (HTTP-06/07).
+- **Docker image** `beavadb/beava:latest` + `:0.1.0` — multi-stage cargo-chef to distroless/cc-debian12:nonroot. Under 200 MB, runs non-root.
+- **GitHub Actions CI**: fmt, clippy, nextest, Python SDK 3.10/3.11/3.12 matrix. Green badge on README.
+- **New docs pages**: `docs/getting-started.md`, `docs/concepts.md`, `docs/operations.md`, `docs/architecture.md`, `docs/faq.md`, `docs/comparison.md`, `docs/python-sdk.md` (polish pass), `docs/http-api.md` (polish pass), `docs/event-time.md` (deep reference from Phase 46).
+- **New examples**: `examples/fraud-scoring/`, `examples/session-features/`, `examples/curl-ingest/`.
+
+### Fixed
+
+- **2a batch-path event-time bucketing** (CORR-01): `push_batch_with_cascade_no_features` now accepts `&[(&Value, SystemTime)]` and groups by event-time bucket — no more shared `now` collapsing a batch's distinct event times.
+- **2d.ii backfill event-time** (CORR-06): `run_backfill` uses `parse_event_time(&payload, entry.timestamp)` so replayed events bucket by payload `_event_time`, not log entry wall-clock.
+- **2d.iii TTL clock source** (CORR-07): `entity_ttl` / `history_ttl` sourced from `WatermarkTracker::observed_max(stream)` — 30-day-old historical events no longer evict immediately on replay.
+- **2d.iv fork replica cascade** (CORR-08): `replica_ingest_batch` calls `watermarks.observe()` per event so fork watermarks advance correctly.
+- **2d.vi/vii dirty-set race** (CORR-10): atomic swap of `DashSet<String>` via `take_dirty_and_advance_gen()`.
+
+### Changed
+
+- Per-stream `watermark_lateness` (`@bv.stream(watermark_lateness="10m")`) now supported; default 5 s preserved for backward compat (CORR-03/04).
+
+### Observability
+
+- New Prometheus counter `beava_ring_buffer_drops_total{stream, operator_kind, reason}` with bounded labels (OBS-01).
+- `beava_late_events_dropped_total` and `beava_ring_buffer_drops_total` are mutually exclusive (OBS-02).
+- `docs/event-time.md` is the authoritative event-time reference (OBS-03).
+
+### Security
+
+- No TLS in-process. Terminate at Caddy/nginx/Fly.io edge. Admin-token auth via `BEAVA_ADMIN_TOKEN`.
+
+### Known Limitations
+
+- Single-node only. HA is Beava Cloud (roadmap).
+- At-least-once delivery semantics. Exactly-once is NOT claimed.
+- `tally` binary name preserved for v1.0-launch (rename to `beava` in v1.1).
+
 ## [Unreleased]
 
 ### Added
