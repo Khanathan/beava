@@ -1,76 +1,56 @@
-# curl-ingest example
+# curl-ingest — zero-SDK HTTP demo
 
-Demonstrates all six Phase 45 HTTP endpoints against a running Beava server
-using only `curl` and the Python SDK. Exit code 0 = full end-to-end smoke pass.
+Exercises the full Beava HTTP surface using only curl and bash — no Python
+required for ingest. Useful as a smoke test against a fresh container and as
+a reference for the shape of each HTTP endpoint.
 
-## What this demonstrates
+## What it demonstrates
 
-| Step | Endpoint                              | What it shows                                  |
-| ---- | ------------------------------------- | ---------------------------------------------- |
-| 1    | Python SDK `register_remote`          | Registering a stream + table over HTTP         |
-| 2    | `POST /push/Transactions`             | Single-event ingest with `_event_time`         |
-| 3    | `POST /push-batch/Transactions?sync=1`| Batch ingest with in-memory drain wait         |
-| 4    | `POST /push/Transactions/ndjson`      | NDJSON streaming ingest (5 events, one per line)|
-| 5    | `GET /features/alice`                 | Read back all computed features for a key      |
-| 6    | `GET /features/alice?table=Transactions` | Filter features to a single table           |
-| 7    | `GET /streams`                        | List all registered streams + watermarks       |
-| 8    | `GET /streams/Transactions`           | Stream detail: name, watermark, feature schema |
+| Step | Endpoint                                   | What it shows                                  |
+| ---- | ------------------------------------------ | ---------------------------------------------- |
+| 1    | Python stdlib `urllib` + `POST /pipelines` | Registering a stream via the HTTP admin API    |
+| 2    | `POST /push/Transactions`                  | Single-event ingest with `_event_time`         |
+| 3    | `POST /push-batch/Transactions?sync=1`     | Batch ingest with in-memory drain wait         |
+| 4    | `POST /push/Transactions/ndjson`           | NDJSON streaming ingest (5 events)             |
+| 5    | `GET /features/alice`                      | Read back all computed features for a key      |
+| 6    | `GET /features/alice?table=Transactions`   | Filter features to a single table              |
+| 7    | `GET /streams`                             | List all registered streams + watermarks       |
+| 8    | `GET /streams/Transactions`                | Stream detail: name, watermark, feature schema |
+
+All 8 steps pass with exit code 0 = full HTTP smoke pass.
 
 ## Prerequisites
 
-1. **Beava server running** on `localhost:6401` (or set `PORT` env var):
+- Docker (`beavadb/beava:latest`)
+- `curl` (present on most systems)
+- `python3` with only the stdlib (no extra packages needed)
 
-   ```bash
-   cargo build --release
-   ./target/release/beava serve
-   ```
-
-   When Docker ships in Phase 47, you can use:
-
-   ```bash
-   docker run -p 6401:6401 beava/beava:latest
-   ```
-
-2. **Python SDK installed**:
-
-   ```bash
-   pip install -e python/   # from repo root
-   ```
-
-3. **`curl` and `jq`** available on PATH (most systems have `curl`; `jq` is
-   optional — assertions use `grep`).
-
-4. **`BEAVA_ADMIN_TOKEN`** exported if your server requires a token:
-
-   ```bash
-   export BEAVA_ADMIN_TOKEN=your-token-here
-   ```
-
-   Requests from `127.0.0.1` are automatically authenticated (loopback bypass),
-   so you can omit the token when running locally against `localhost`.
-
-## Running
+## Run
 
 ```bash
-# From repo root
-bash examples/curl-ingest/run.sh
+# Start Beava
+docker run -d --rm -p 6900:6900 -p 6400:6400 --name beava beavadb/beava:latest
 
-# With a custom port and token
-PORT=7001 BEAVA_ADMIN_TOKEN=secret bash examples/curl-ingest/run.sh
+# Run the smoke test
+PORT=6900 bash examples/curl-ingest/run.sh
+
+# Or let run.sh wait for the server (it polls /health)
+PORT=6900 BEAVA_ADMIN_TOKEN=test-admin bash examples/curl-ingest/run.sh
 ```
 
-Expected output (truncated):
+The default port is `6401`. Set `PORT=6900` when using the Docker image
+(which exposes HTTP on 6900).
+
+Expected output:
 
 ```
-== 0. Wait for server on :6401 ==
+== 0. Wait for server on :6900 ==
    server ready
-== 1. Register pipeline (requires Python SDK installed) ==
-registered Transactions + txn_summary on localhost:6401
+== 1. Register Transactions stream via HTTP /pipelines ==
+registered Transactions on localhost:6900: ...
+   PASS
 == 2. POST /push/Transactions (single event) ==
 {"ok":true}
-   PASS
-== 3. POST /push-batch/Transactions?sync=1 (3-event batch) ==
-{"ok":true,"data":{"accepted":3,"rejected":0,"first_error":null}}
    PASS
 ...
 ============================================
@@ -78,38 +58,28 @@ registered Transactions + txn_summary on localhost:6401
 ============================================
 ```
 
-Expected run time: **under 5 seconds** on localhost.
+Expected run time: under 5 seconds on localhost.
 
-## Sample pipeline
+## Cleanup
 
-`sample-pipeline.py` registers:
-- `Transactions` stream with `user: str` and `amount: float` fields
-- `txn_summary` table that computes `count` and `total` grouped by `user`
-
-After running, features for key `alice` will look like:
-
-```json
-{
-  "ok": true,
-  "data": {
-    "key": "alice",
-    "tables": {
-      "Transactions": {
-        "txn_summary.count": 5,
-        "txn_summary.total": 24.5
-      }
-    }
-  }
-}
+```bash
+docker stop beava    # if you started it above
 ```
 
 ## Troubleshooting
 
-**"server not ready after 30s"** — check that `beava serve` is running on the
-correct port. Use `curl http://localhost:6401/health` to test manually.
+**"server not ready after 30s"** — check that the container is running:
+`docker ps | grep beava`. Try `curl http://localhost:6900/health` manually.
 
-**"python3: No module named tally"** — the Python SDK is not installed.
-Run `pip install -e python/` from the repo root.
+**"401 Unauthorized"** — export `BEAVA_ADMIN_TOKEN` matching your server token,
+or connect from loopback (127.0.0.1) where the admin bypass applies.
 
-**401 responses** — the server requires a token. Export `BEAVA_ADMIN_TOKEN`
-matching the value the server was started with, or run on loopback (127.0.0.1).
+**"python3: command not found"** — install Python 3 (stdlib only; no pip needed).
+
+## See also
+
+- [../session-features/](../session-features/) — simplest full pipeline: one
+  stream, one table, last-N + count + sum. Start here to understand the data model.
+- [../fraud-scoring/](../fraud-scoring/) — multi-stream pipeline with Python SDK
+  and HTTP ingest at scale.
+- [../../docs/http-api.md](../../docs/http-api.md) — full HTTP API reference.
