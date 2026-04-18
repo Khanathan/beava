@@ -28,4 +28,10 @@ pub enum BeavaError {
     /// "malformed frame".
     #[error("not implemented in v0: {0}")]
     NotImplemented(String),
+
+    /// Phase 50-06 (D-10, TPC-CORR-03): One or more tuple shard_key fields were
+    /// absent from the event payload. Rejected BEFORE routing — shard threads
+    /// never see malformed events. HTTP: 400; TCP: SHARD_KEY_MISSING (0x12).
+    #[error("shard_key field(s) missing from event payload: {missing:?}")]
+    ShardKeyMissing { missing: Vec<String> },
 }

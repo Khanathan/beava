@@ -116,6 +116,19 @@ fn map_err_to_response(e: crate::error::BeavaError) -> axum::response::Response 
             })),
         )
             .into_response(),
+        // Phase 50-06 (D-10, TPC-CORR-03): tuple shard_key field missing → 400.
+        BeavaError::ShardKeyMissing { ref missing } => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "error": {
+                    "code": "shard_key_missing",
+                    "missing": missing,
+                    "message": format!("{e}"),
+                }
+            })),
+        )
+            .into_response(),
         _ => (
             StatusCode::BAD_REQUEST,
             Json(json!({

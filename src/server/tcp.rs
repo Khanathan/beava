@@ -957,6 +957,22 @@ async fn handle_connection(
                 writer.write_all(&resp).await?;
                 writer.flush().await?;
             }
+            Err(crate::error::BeavaError::ShardKeyMissing { ref missing }) => {
+                // Phase 50-06 (D-10, TPC-CORR-03): dedicated 0x12 status so
+                // clients can distinguish shard_key rejection from generic errors.
+                // Connection stays open — NOT torn down.
+                let body = serde_json::json!({
+                    "error": "shard_key_missing",
+                    "missing": missing,
+                });
+                let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+                let resp = protocol::encode_response(
+                    protocol::STATUS_SHARD_KEY_MISSING,
+                    &body_bytes,
+                );
+                writer.write_all(&resp).await?;
+                writer.flush().await?;
+            }
             Err(e) => {
                 let resp = protocol::encode_response(STATUS_ERROR, e.to_string().as_bytes());
                 writer.write_all(&resp).await?;
@@ -1335,6 +1351,34 @@ fn make_log_payload(payload: &serde_json::Value, raw_payload: &[u8]) -> Vec<u8> 
     }
 }
 
+/// Phase 50-06 (D-10, TPC-CORR-03): Check that all fields declared in the
+/// stream's tuple shard_key are present in the event payload.
+///
+/// Returns the list of missing field names. Empty = all fields present = OK.
+/// Rejection happens BEFORE shard routing so no shard thread ever sees a
+/// malformed event.
+pub fn check_shard_key_fields(
+    stream_def: &crate::engine::pipeline::StreamDefinition,
+    payload: &serde_json::Value,
+) -> Vec<String> {
+    use crate::engine::join_validator::ShardKeySpec;
+    match &stream_def.shard_key {
+        None => vec![],
+        Some(ShardKeySpec::Single(field)) => {
+            if payload.get(field.as_str()).is_none() {
+                vec![field.clone()]
+            } else {
+                vec![]
+            }
+        }
+        Some(ShardKeySpec::Tuple(fields)) => fields
+            .iter()
+            .filter(|f| payload.get(f.as_str()).is_none())
+            .cloned()
+            .collect(),
+    }
+}
+
 pub fn handle_push_core_ex(
     state: &SharedState,
     stream_name: &str,
@@ -1346,6 +1390,16 @@ pub fn handle_push_core_ex(
     let push_start = std::time::Instant::now();
     let engine = state.engine.read();
     let store = &state.store;
+
+    // Phase 50-06 (D-10, TPC-CORR-03): reject BEFORE routing if any tuple shard_key
+    // field is missing from the event payload. Shard threads never see malformed events.
+    if let Some(stream_def) = engine.get_stream(stream_name) {
+        let missing = check_shard_key_fields(stream_def, payload);
+        if !missing.is_empty() {
+            crate::shard::metrics::record_shard_key_missing();
+            return Err(BeavaError::ShardKeyMissing { missing });
+        }
+    }
 
     // Phase 50-04 (Wave 2): compute shard_index from shard_hint.
     // shard_hint % N routes to the correct shard (D-08).
@@ -2391,6 +2445,21 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Bea
                     let _ = log.register_stream(&def_name, history_ttl);
                 }
                 engine.store_raw_register_json(&def_name, raw_json);
+                // Phase 50-06 (D-11/D-12): warn if stream has no shard_key at N>1.
+                {
+                    let no_shard_key = engine
+                        .get_stream(&def_name)
+                        .map(|s| s.shard_key.is_none())
+                        .unwrap_or(false);
+                    if no_shard_key {
+                        let shard_count = state.shard_handles.read().len();
+                        crate::server::signals::emit_shard_key_missing_warning(
+                            &state.signals,
+                            &def_name,
+                            shard_count,
+                        );
+                    }
+                }
                 let diff_json = serde_json::json!({
                     "status": "ok",
                     "kind": "v0",
@@ -2422,6 +2491,21 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Bea
                     let _ = log.register_stream(&def_name, history_ttl);
                 }
                 engine.store_raw_register_json(&def_name, raw_json);
+                // Phase 50-06 (D-11/D-12): warn if stream has no shard_key at N>1.
+                {
+                    let no_shard_key = engine
+                        .get_stream(&def_name)
+                        .map(|s| s.shard_key.is_none())
+                        .unwrap_or(false);
+                    if no_shard_key {
+                        let shard_count = state.shard_handles.read().len();
+                        crate::server::signals::emit_shard_key_missing_warning(
+                            &state.signals,
+                            &def_name,
+                            shard_count,
+                        );
+                    }
+                }
 
                 // If there are features to backfill, spawn async task (SCHM-03)
                 if !diff.backfilling.is_empty() {

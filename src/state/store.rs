@@ -253,8 +253,19 @@ impl Default for StateStore {
         // lock-exclusive contention under Zipfian hot-key traffic.
         // When unset, falls through to DashMap's default
         // (num_cpus * 4, rounded up to power of two = 64 on 10-core M4).
-        let entities = if let Some(n) = std::env::var("BEAVA_ENTITIES_SHARDS")
-            .ok()
+        // Phase 50-06 (D-13): soft-deprecation warn-once for BEAVA_ENTITIES_SHARDS.
+        // This env var tunes DashMap internal bucket count — unrelated to BEAVA_SHARDS
+        // (TPC shard count). Operator confusion is likely; warn and continue.
+        // Removal scheduled for v1.3 with DashMap deletion in Wave 4.
+        let entities_shards_val = std::env::var("BEAVA_ENTITIES_SHARDS").ok();
+        if entities_shards_val.is_some() {
+            eprintln!(
+                "[beava] WARN: BEAVA_ENTITIES_SHARDS is deprecated; \
+                 see BEAVA_SHARDS for the TPC shard count. \
+                 This var will be removed in v1.3."
+            );
+        }
+        let entities = if let Some(n) = entities_shards_val
             .and_then(|s| s.parse::<usize>().ok())
             .filter(|n| n.is_power_of_two() && *n >= 1)
         {

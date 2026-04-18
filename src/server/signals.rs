@@ -640,3 +640,65 @@ fn sample_rss_bytes() -> Option<u64> {
 fn sample_rss_bytes() -> Option<u64> {
     None
 }
+
+/// Phase 50-06 (D-11/D-12, TPC-DX-02): emit a ShardKeyMissingWarning for
+/// `stream_name` at most ONCE per stream (deduped by stable signal id).
+///
+/// No-op if `shard_count <= 1` (D-12: silent at N=1 so single-shard operators
+/// never see this warning).
+///
+/// Called at stream registration time when the stream has no declared shard_key
+/// and `BEAVA_SHARDS > 1`. The warning fires once per stream, not per event.
+pub fn emit_shard_key_missing_warning(
+    registry: &SharedRegistry,
+    stream_name: &str,
+    shard_count: usize,
+) {
+    if shard_count <= 1 {
+        return; // D-12: silent at N=1
+    }
+    let id = format!("shard_key_missing:{}", stream_name);
+    let detail = format!(
+        "ShardKeyMissingWarning: stream \"{}\" has no shard_key; \
+         all events routing to shard 0. \
+         Declare @bv.stream(shard_key=\"<fieldname>\") to distribute.",
+        stream_name
+    );
+    let sig = Signal::new(
+        id,
+        Severity::Warning,
+        Category::Operational,
+        format!("ShardKeyMissingWarning: stream \"{}\"", stream_name),
+        detail,
+        serde_json::json!({ "stream": stream_name, "shard_count": shard_count }),
+    );
+    registry.write().record(sig);
+}
+
+#[cfg(test)]
+mod shard_key_warning_tests {
+    use super::*;
+
+    #[test]
+    fn warning_silent_at_n1() {
+        let reg = SignalRegistry::new_default().into_shared();
+        emit_shard_key_missing_warning(&reg, "my_stream", 1);
+        assert!(reg.read().is_empty(), "no warning should fire at N=1 (D-12)");
+    }
+
+    #[test]
+    fn warning_fires_at_n2() {
+        let reg = SignalRegistry::new_default().into_shared();
+        emit_shard_key_missing_warning(&reg, "orders", 2);
+        assert!(!reg.read().is_empty(), "warning should fire at N=2");
+    }
+
+    #[test]
+    fn warning_deduped_on_second_call() {
+        let reg = SignalRegistry::new_default().into_shared();
+        emit_shard_key_missing_warning(&reg, "orders", 2);
+        emit_shard_key_missing_warning(&reg, "orders", 2);
+        // Registry dedupes by id — still only 1 signal after 2 calls.
+        assert_eq!(reg.read().len(), 1, "second call should dedupe");
+    }
+}

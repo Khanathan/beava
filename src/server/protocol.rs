@@ -168,6 +168,9 @@ pub const OP_LOG_FETCH: u8 = 0x13;
 // Response status codes
 pub const STATUS_OK: u8 = 0x00;
 pub const STATUS_ERROR: u8 = 0x01;
+/// Phase 50-06 (D-10, TPC-CORR-03): Returned when a tuple shard_key field is absent from
+/// the event payload. Connection stays open (not torn down). Value 0x12 per plan spec.
+pub const STATUS_SHARD_KEY_MISSING: u8 = 0x12;
 
 // Binary event payload type tags (PERF-02)
 pub const TYPE_NULL: u8 = 0x00;

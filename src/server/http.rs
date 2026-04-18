@@ -248,6 +248,19 @@ async fn create_pipeline(
                 if let Some(ref log) = state.event_log {
                     let _ = log.register_stream(&def_name, history_ttl);
                 }
+                // Phase 50-06 (D-11/D-12): warn if stream has no shard_key at N>1.
+                let no_shard_key = engine
+                    .get_stream(&def_name)
+                    .map(|s| s.shard_key.is_none())
+                    .unwrap_or(false);
+                if no_shard_key {
+                    let shard_count = state.shard_handles.read().len();
+                    crate::server::signals::emit_shard_key_missing_warning(
+                        &state.signals,
+                        &def_name,
+                        shard_count,
+                    );
+                }
             }
             (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
         }
