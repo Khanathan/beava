@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: tpc-full-shard
-status: defining-requirements
+status: roadmap-complete
 stopped_at: ""
 last_updated: "2026-04-18T00:00:00.000Z"
-last_activity: 2026-04-18 — Started milestone v1.2 Thread-Per-Core + Full Key-Shard. Design doc hardened against 2026 research (commit 2a8d8fd). Running 4-agent domain research before requirements/roadmap. v1.0-launch launch-day checklist still pending (§ Launch Day Checklist below).
+last_activity: 2026-04-18 — Roadmap written for v1.2 Thread-Per-Core + Full Key-Shard (Phases 48-52, 24 requirements, 0% complete). Ready for /gsd-plan-phase 48.
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -21,14 +21,16 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 **Core value:** A skeptical engineer evaluating Beava on github.com can go from landing on the repo to correct, live feature values in under 60 seconds — from any language.
-**Current focus:** Milestone v1.2 — Thread-Per-Core + Full Key-Shard. Defining requirements; roadmap next.
+**Current focus:** Milestone v1.2 — Thread-Per-Core + Full Key-Shard. Roadmap complete; ready to plan Phase 48.
 
 ## Current Position
 
-**Phase:** Not started (defining requirements for v1.2 TPC)
+**Phase:** 48 (not started)
 **Plan:** —
-**Status:** Defining requirements
-**Last activity:** 2026-04-18 — Milestone v1.2 Thread-Per-Core + Full Key-Shard started. Design doc + research committed (2a8d8fd). PROJECT.md updated with 5-wave scope. Domain research in flight.
+**Status:** Roadmap written; awaiting phase planning
+**Progress:** ░░░░░░░░░░ 0% (0/5 phases)
+
+**Last activity:** 2026-04-18 — v1.2 roadmap created. 5 phases (48–52), 24 requirements mapped, 0 plans executed. Dependency graph: 48 → 49 → 50 → 51 → 52 (Phases 51 and the Wave 4 work within 52 can parallelize after Phase 50 ships — see ROADMAP.md).
 
 ## Milestone Status
 
@@ -43,7 +45,27 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 | v0 Restructure (21-26) | Complete | 2026-04-14 |
 | v0 Data-Scientist Fork (27, 35-38) | Engineering complete | 2026-04-15 |
 | v1.0-launch — Public Launch Readiness | Engineering complete — launch-day human-run pending | 2026-04-17 (eng) |
-| **v1.2 — Thread-Per-Core + Full Key-Shard** | **Defining requirements** | **2026-04-18 (started)** |
+| **v1.2 — Thread-Per-Core + Full Key-Shard** | **Roadmap complete; Phase 48 not started** | **2026-04-18 (started)** |
+
+## v1.2 Roadmap Summary
+
+**Goal:** Intra-node scaling via thread-per-core + full key-shard — eliminate DashMap contention and cross-core cache-line bouncing to reach 1.5M–2.5M EPS on a 16-core box (5-6× current baseline), preserving correctness and migration-compat with today's single-shard state format.
+
+**Ship gate for merging to main:**
+1. Every 9-cell matrix cell within −5% of baseline at N=1 (migration-compat gate)
+2. ≥3× baseline on `complex-c8-x8` at N=CPU_COUNT (architecture gate)
+3. `shard_probe` cross_shard_fraction <40% on the release benchmark workload (architectural-fit gate)
+
+| Phase | Name | Goal | Requirements |
+|-------|------|------|--------------|
+| 48 | shard-hint-scaffolding | Wire `shard_hint()` no-op at N=1; micro-bench gates | TPC-INFRA-01 |
+| 49 | per-shard-state-store | `Shard` struct, `BEAVA_SHARDS` config, full test suite green at N=1 | TPC-INFRA-02, TPC-PERF-01, TPC-DX-01 |
+| 50 | multi-shard-routing | SO_REUSEPORT, SPSC, pinning, backpressure, metrics, ≥3× gate | TPC-INFRA-03, TPC-INFRA-04, TPC-INFRA-07, TPC-PERF-02, TPC-PERF-03, TPC-PERF-04, TPC-CORR-01, TPC-CORR-03, TPC-DX-02 |
+| 51 | cross-shard-queries-joins | Scatter-gather, JoinShardKeyMismatch, global watermark, /debug/shards | TPC-INFRA-05, TPC-PERF-05, TPC-PERF-06, TPC-CORR-04 |
+| 52 | event-log-recovery-ship-gate | Per-shard log, parallel recovery, reshard tool, snapshot v8, parity test, 1M+ EPS, docs | TPC-INFRA-06, TPC-CORR-02, TPC-CORR-05, TPC-CORR-06, TPC-PERF-07, TPC-DX-03, TPC-DX-04 |
+
+**Total requirements:** 24/24 mapped (100% coverage)
+**Source of truth:** `.planning/arch/TPC-SHARD-DESIGN.md` + `.planning/arch/TPC-RESEARCH.md` + `.planning/research/SUMMARY.md`
 
 ## Launch Day Checklist
 
@@ -67,108 +89,80 @@ depend on item 1 (Docker Hub image live). Full detail in
    `.planning/phases/47-repo-polish/OUTREACH-AUDIT-CHECKLIST.md` — 10-item VC checklist
    + final package at `.planning/outreach/LAUNCH-PACKAGE-V8.md`.
 
-### Deferred to v1.1 backlog (user decision)
-
-Three code-hygiene items were explicitly deferred by user during Phase 47. They do not
-block launch. The de-facto state of the codebase is clean on all three (audit confirms);
-the plan was simply not executed.
-
-| Req | Item | De-facto state | v1.1 action |
-|-----|------|---------------|-------------|
-| INFRA-06 | TODO/FIXME/XXX sweep | Clean: 0 naked TODOs outside vendor; 2 `TODO(gh-TBD)` annotated items; `TODO-AUDIT.md` documents dispositions | File 2 GitHub issues at repo-go-public time |
-| INFRA-07 | `println!`/`dbg!`/`eprintln!` audit | Clean: all non-vendor prints annotated `// Intentional: ... (Phase 47 audit)`; zero bare `dbg!` | Confirm annotation survey in v1.1 cleanup pass |
-| INFRA-08 | `#![warn(missing_docs)]` + pub re-export docs | `#![warn(missing_docs)]` IS present in `src/lib.rs`; per-export coverage not fully verified | Complete doc-comment pass on `src/lib.rs` exports in v1.1 |
-
 ## Performance Metrics
 
-| Metric | Baseline (v2.0) | Target (v1.0-launch) | Notes |
-|--------|-----------------|-----------------------|-------|
-| 9-cell benchmark matrix | BASELINE committed | Within −5% of BASELINE | CORR-02 hard merge gate for 2a fix |
-| Single-stream TCP push (baseline) | ~350 K EPS | Unchanged | Regression gate |
-| HTTP `/push-batch/{stream}` throughput | N/A | >100 K EPS sustained (oha, reference box) | HTTP-09 ship criterion — measurement pending (launch Step 5) |
-| Ring-buffer drop counter hot-path overhead | N/A | <100 ns per drop (cached Counter handle) | OBS-01 pitfall-4 mitigation |
-| 2d.vi/vii atomic DashSet swap regression | N/A | Within 2% on 9-cell | CORR-10 ceiling |
-| Docker image size (distroless/cc-debian12:nonroot) | N/A | <200 MB target (~80 MB expected) | INFRA-05 |
-| CI pipeline (fmt + clippy + test) | N/A | <5 min | INFRA-03 |
-| Fresh-VM time-to-first-feature-read | N/A | <60 s | SHIP-02 / CONTENT-02 / core-value gate — measurement pending (launch Step 3) |
+| Metric | Baseline (v1.0-launch) | Target (v1.2 N=CPU_COUNT) | Notes |
+|--------|------------------------|---------------------------|-------|
+| 9-cell benchmark matrix | Committed v1.0-launch BASELINE | Within −5% of baseline at N=1 | Migration-compat gate — Phase 48 onward |
+| Single-stream TCP push EPS | ~350 K EPS | 1.5M–2.5M EPS (16-core) | Architecture gate via Phase 52 load test |
+| 9-cell `complex-c8-x8` cell | baseline | ≥3× baseline at N=CPU_COUNT | Phase 50 ship-gate |
+| shard_probe cross_shard_fraction | N/A | <40% on release workload | Phase 50 + Phase 52 gate |
+| Recovery time (4.7 GB state) | ~7 s | ~1.5 s (parallel, N-thread) | Phase 52 parallel recovery gate |
+| N=1 ↔ N=8 proptest parity | N/A | All operators identical | Phase 52 hard pre-merge gate |
+| Pareto-workload Pareto cell | N/A | cross_shard_fraction <40% | Phase 52 ship-gate |
 
 ## Accumulated Context
 
-### Decisions locked this milestone (2026-04-17)
+### Architecture decisions locked 2026-04-18
 
-- **One milestone (not three)** for all three LAUNCH.md blocks — unified ship gate.
-- **Continue phase numbering from 45** (no reset; phase_dir_count=32; archive-target unsafe).
-- **HTTP ingest reuses `handle_push_core_ex` + `require_loopback_or_token`** — zero duplicated ingest logic. HTTP and TCP inherit the 2a fix together.
-- **Fix 2a via `&[(&Value, SystemTime)]` signature + group-by-bucket** (NOT per-event loop). Per-event revert history: commits `3818880` → `1cefc45`. 9-cell bench within −5% is the hard merge gate.
-- **2d.i closes as "not a bug" + verification test** — `run_backfill` uses `push_for_backfill`, not `handle_push_batch`.
-- **2d.ii/2d.iii/2d.iv confirmed HIGH-confidence bugs** with named code locations (tcp.rs:2703, eviction.rs:63, tcp.rs:1012-1222). Each has fit-on-one-screen fixes.
-- **2d.v closes docs-only** — joins require both sides producing in v1; per-stream idle markers defer to v1.1 (DX-06).
-- **2d.vi + 2d.vii combined as one fix** — atomic swap of `DashSet<String>` via `take_dirty_and_advance_gen()`.
-- **Option A docs (flat markdown)** — dedicated site deferred post-launch. 8 docs pages under `docs/`.
-- **Docker base: `gcr.io/distroless/cc-debian12:nonroot`** — NOT Alpine (MUSL allocator regression; Pitfall 14). Multi-stage via `cargo-chef`.
-- **Load tester: `oha`** on reference box (NOT GitHub Actions runners) for HTTP >100 K EPS verification.
-- **Keep Python SDK TCP path unchanged** — HTTP is additive. Single canonical event schema locked BEFORE Block 1 ships.
-- **Keep `tally` binary name for v1.0-launch**; rename to `beava` in v1.1 to avoid doc churn.
-- **Single ship-gate integration test** covers CORR-01 (2a) + CORR-05 (2d.i) + CORR-06 (2d.ii) simultaneously: `HTTP push → crash → recover → read features`.
-- **46-03 decision: hashmap identity-key bucket coalescing** — `bucket_of(t) = t` (raw SystemTime as key); operators re-align per feature internally. Spot bench (complex-c8-x8, 30s): +10.48% above baseline.
-- **47-03 DEFERRED by user decision** — code-hygiene (INFRA-06/07/08) deferred to v1.1; de-facto state confirmed clean by audit.
+- **Runtime:** tokio `current_thread` via `Builder::new_current_thread().build()` + `block_on()` per pinned shard thread (not `build_local()`). compio is the v1.3/Beava Cloud endpoint.
+- **Default N_SHARDS:** `num_cpus::get_physical()` in release, 1 in debug builds (`cfg!(debug_assertions)` at startup).
+- **Env wins over CLI:** `BEAVA_SHARDS` always beats `--shards N` (consistent with all other `BEAVA_*` vars).
+- **Backpressure contract:** SPSC bounded queue, non-blocking `try_send`, drop on full, increment `beava_shard_inbox_full_total{shard}`, return HTTP 503 / TCP SHARD_OVERLOAD. Never block the listener thread.
+- **Snapshot mismatch:** Hard-fail at boot with actionable error. No silent boot-empty.
+- **Tuple shard_key missing field:** Reject at ingest (HTTP 400 / TCP SHARD_KEY_MISSING), increment `beava_events_dropped_total{reason="shard_key_missing"}`. Never panic.
+- **Fork/replica:** Always re-hashes by downstream N. Upstream shard_hint is a fast-path hint only. No `--reshard-from` flag.
+- **DashMap / ArcSwap:** Retained as compat shims through Waves 1-3; deleted at Wave 4 (Phase 52).
+- **Channel primitive:** `crossbeam-channel::bounded` (MPSC in practice; single consumer per shard = SPSC semantics). Not rtrb or kanal.
+- **SO_REUSEPORT:** Linux only (kernel 4-tuple-hash distribution). macOS falls back to single-listener + dispatcher.
+- **N=1↔N=8 parity test:** proptest-driven; pre-merge gate for Phase 52.
+- **Snapshot format v8:** `shard_count: u16` appended to `SnapshotHeader` via `#[serde(default = "default_shard_count")]`; default = 1 for v7 snapshots.
 
-### Key design decisions (inherited, locked)
+### Pitfall guards built into roadmap
 
-- Stream vs Table as sole public types
-- `@tl.stream` / `@tl.table` decorators with class=source / function=derivation convention
-- Table aggregation disabled in v0 restructure (sidesteps Case 3 retraction complexity; deferred)
-- UDDSketch for percentile, CMS+heap for top_k, HLL for count_distinct — all hybrid exact-first
-- Fixed 5s watermark default, per-stream configurable in this milestone (Block 2c / CORR-03)
-- γ-model watermark propagation
-- `/debug/warnings` unified observability; `tally suggest-config` CLI for tuning
-- Local replica is scope-driven, not whole-cluster
-- Data scientists fork via `tally fork --remote ... --streams ... --pipeline-file ...` running a local Beava server in replica mode
+| Pitfall | Severity | Phase | Guard |
+|---------|----------|-------|-------|
+| Cascading overload / inbox full | Launch-gate | 50 | TPC-CORR-01 backpressure contract |
+| Silent empty-state on shard_count mismatch | Launch-gate | 52 | TPC-CORR-02 hard-fail guard |
+| Tuple shard_key missing field crash | Launch-gate | 50 | TPC-CORR-03 reject + counter |
+| Inter-shard join ordering non-determinism | Launch-gate | 51 | TPC-CORR-04 co-location guard at register |
+| Hot-shard blind spot | Ship-gate | 51 | TPC-INFRA-05 /debug/shards |
+| N=1↔N=8 parity | Ship-gate | 52 | TPC-CORR-05 proptest harness (pre-merge gate) |
+| Uniform hash conceals Pareto imbalance | Ship-gate | 52 | TPC-PERF-07 Pareto workload cell |
+| Legacy unlabeled metrics go dark | Ship-gate | 50 | TPC-INFRA-03/04 double-emit global sum |
+
+### New Cargo deps by wave
+
+| Crate | Wave / Phase | Type |
+|-------|-------------|------|
+| `rstest = "0.26"` | Wave 0 / Phase 48 | dev-dependency |
+| `num_cpus = "1.17"` | Wave 1 / Phase 49 | dependency |
+| `core_affinity = "0.8"` | Wave 2 / Phase 50 | dependency |
+| `crossbeam-channel = "0.5"` | Wave 2 / Phase 50 | dependency |
+| `metrics = "0.24"` | Wave 2 / Phase 50 | dependency |
+| `metrics-exporter-prometheus = "0.16"` | Wave 2 / Phase 50 | dependency |
+| `futures = "0.3"` | Wave 3 / Phase 51 | dependency |
+| `proptest` | Wave 5 / Phase 52 | already in dev-deps |
 
 ### Outstanding todos
 
-Launch-day human-run items only (see Launch Day Checklist above). No engineering work remaining.
-
-### Blockers
-
-None. Engineering complete. Launch-day items are orchestration-only.
-
-### v2.1 Launch — Remaining ops (async, independent)
-
-Runbook in `.planning/phases/26-test-migration-bench-docs-demo/26-04-SUMMARY.md § Resuming v2.1 Launch`. Not engineering-gated; Hetzner VM provision + 5-day live observation only. Independent of v1.0-launch.
-
-### Deferred (explicitly post-launch)
-
-- Table-input aggregation + full retraction propagation through DAG
-- Outer joins (right/full)
-- Session windows
-- CEP / `match_recognize` patterns
-- Horizontal scale-out / key-partitioned multi-threading
-- Thread-per-core runtime (v1.2)
-- Multi-node via Kafka (v1.3+)
-- UDF / stateful scripting (Rhai / WASM)
-- CI/CD regression-gate integration
-- Multi-platform testing (macOS / Linux / Windows)
-- Predicate-level replica scoping
-- OpenAPI / Swagger UI, deploy-button integrations, Web UI for `/debug`
-- CLI subcommands (`beava push/get/tail`)
-- Per-stream idle markers for join watermark stalls (DX-06, v1.1)
-- `tally` → `beava` binary rename (v1.1)
-- INFRA-06 / INFRA-07 / INFRA-08 formal plan execution (v1.1 code hygiene)
+- v1.0-launch 6-item human-run checklist (independent of v1.2 engineering)
+- Phase 47-03 code hygiene (INFRA-06/07/08) deferred to v1.1; de-facto state clean
 
 ## Phase History
 
-- v1.x phases: `.planning/milestones/v1.0-ROADMAP.md`, `.planning/milestones/v2.0-ROADMAP.md`
+- v1.x phases: `.planning/milestones/v1.0-ROADMAP.md`
 - v2.0: `.planning/milestones/v2.0-ROADMAP.md`
 - v2.1 Launch (Phase 20): `.planning/milestones/v2.1-ROADMAP.md`
 - v0 Restructure (Phases 21-26): `.planning/milestones/v0-ROADMAP.md`
-- v0 Data-Scientist Fork (Phases 27, 35-38): in-flight archival pending `/gsd-complete-milestone` run
+- v0 Data-Scientist Fork (Phases 27, 35-38): in-flight archival pending
 - **v1.0-launch (Phases 45-47): `.planning/milestones/v1.0-launch-ROADMAP.md`** — archived 2026-04-17
+- **v1.2 TPC (Phases 48-52): `.planning/ROADMAP.md`** — active
 
 ## Session Continuity
 
-**Stopped at:** Milestone v1.2 Thread-Per-Core + Full Key-Shard in flight 2026-04-18. Design doc + research committed (2a8d8fd). PROJECT.md updated. Running 4-agent domain research, then REQUIREMENTS, then ROADMAP.
+**Stopped at:** v1.2 roadmap written (2026-04-18). 5 phases, 24 requirements, no plans yet.
 
-**Next action (engineering):** Finish v1.2 new-milestone scaffolding — research → REQUIREMENTS.md → ROADMAP.md → `/gsd-discuss-phase` on the first phase (Wave 0 scaffolding).
+**Next action (engineering):** `/gsd-plan-phase 48` — Phase 48: shard-hint scaffolding (Wave 0).
 
-**Orthogonal ops (launch day — still pending):** v1.0-launch 6-item human-run checklist above remains outstanding. Items 3 and 4 depend on item 1. Run independently of v1.2 engineering work.
+**Orthogonal ops (launch day — still pending):** v1.0-launch 6-item human-run checklist above remains outstanding. Run independently of v1.2 engineering work.

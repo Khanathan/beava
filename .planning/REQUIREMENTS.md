@@ -70,8 +70,14 @@ Explicitly excluded from v1.2:
 
 ## Traceability
 
-Filled by the roadmapper — maps each REQ-ID to the phase that delivers it.
+Filled by roadmapper 2026-04-18. Maps each REQ-ID to the phase that delivers it.
 
 | Phase | Name | Delivers |
 |-------|------|----------|
-| (TBD) | (TBD) | (TBD) |
+| 48 | shard-hint-scaffolding | TPC-INFRA-01 |
+| 49 | per-shard-state-store | TPC-INFRA-02, TPC-PERF-01, TPC-DX-01 |
+| 50 | multi-shard-routing | TPC-INFRA-03, TPC-INFRA-04, TPC-INFRA-07, TPC-PERF-02, TPC-PERF-03, TPC-PERF-04, TPC-CORR-01, TPC-CORR-03, TPC-DX-02 |
+| 51 | cross-shard-queries-joins | TPC-INFRA-05, TPC-PERF-05, TPC-PERF-06, TPC-CORR-04 |
+| 52 | event-log-recovery-ship-gate | TPC-INFRA-06, TPC-CORR-02, TPC-CORR-05, TPC-CORR-06, TPC-PERF-07, TPC-DX-03, TPC-DX-04 |
+
+**Coverage:** 24/24 requirements mapped (1 + 3 + 9 + 4 + 7 = 24)
