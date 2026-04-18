@@ -5,6 +5,11 @@
 //! `docs/architecture.md` for the system design and `docs/http-api.md` for
 //! the public HTTP surface.
 
+/// Runtime configuration modules (v1.2 TPC Wave 1: BEAVA_SHARDS, shard count resolution).
+// Phase 49: Wave 1 config surface — D-10/D-11.
+#[allow(missing_docs)]
+pub mod config;
+
 /// Client library for connecting to a Beava server (snapshot fetch, subscribe).
 // Phase 47 audit: deferred sub-module docs to post-launch (D-11 scope: crate root only)
 #[allow(missing_docs)]

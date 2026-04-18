@@ -146,6 +146,12 @@ fn main() {
     // Intentional: startup banner (Phase 47 audit)
     eprintln!("Worker threads: {}", worker_threads);
     beava::server::shard_probe::init_from_env();
+    // Phase 49 (TPC Wave 1) — D-10/D-11: resolve BEAVA_SHARDS + --shards CLI.
+    // Env wins over CLI. Wave 1 clamps to 1 and warn-once if N>1 requested.
+    let _shards_raw = beava::config::shards::resolve_shard_count(arg_value("shards").as_deref());
+    let n_shards: u16 = _shards_raw.wave1_enforced();
+    // Intentional: startup INFO log (Phase 49 / D-10 requirement).
+    eprintln!("Shard count: {} (resolved; Wave 1 enforces N=1)", n_shards);
     runtime.block_on(async_main());
 }
 
