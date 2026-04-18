@@ -210,12 +210,22 @@ Channel choice: start with **`crossbeam-channel::bounded()` in SPSC configuratio
 
 One risk: latency from the extra hop. Measure carefully. If listener → shard adds >50μs, co-locate the listener on the shard thread: shard owns the HTTP accept for its slice of connections via SO_REUSEPORT (see §Q3 resolution).
 
+**Backpressure contract (locked 2026-04-18):** SPSC channel is **bounded**. On overflow (hot shard falling behind):
+- Drop the event at the listener boundary.
+- Increment `beava_shard_inbox_full_total{shard="N"}` counter.
+- Return HTTP **503 Service Unavailable** (HTTP push) or TCP error response code (TCP push) to the client.
+- Client-side retries handle recovery. Matches Beava's existing ring-buffer-drop precedent from Phase 46 / CORR-10.
+
+Bounded-queue size is tunable via `BEAVA_SHARD_INBOX_SIZE` (default: 64k events, resized-at-startup based on measured steady-state throughput). Do **not** block the listener thread — blocking any listener on a hot shard stalls all other shards when the dispatcher is shared.
+
 ### 7. Migration compatibility
 
 **Single-shard mode (`BEAVA_SHARDS=1`) must be byte-compatible with current state format.**
 - State directory layout: `data/shard-0/` contains what `data/` contains today.
 - Event log format: unchanged.
 - Snapshot format: extended with a `shard_count: u16` field at the top. N=1 snapshots load cleanly.
+
+**Mismatch at boot (locked 2026-04-18):** if snapshot `shard_count != BEAVA_SHARDS`, the server **refuses to boot**. Actionable error message: `"snapshot shard_count=N but BEAVA_SHARDS=K — run 'tally reshard --from N --to K' then restart"`. No silent boot-empty (would cause data loss); no auto-reshard on first boot (would hide migrations from operators).
 - Wire format: unchanged. TCP opcodes unchanged. HTTP endpoints unchanged.
 
 Transition:
@@ -334,7 +344,7 @@ class Transactions:
 
 - Omitted `shard_key=`: fall back to the stream's primary-key field (first dataclass field). Preserves current ergonomics for simple cases.
 - Joins: require **explicit** `shard_key=` agreement across all joined streams; error at registration time with an actionable message.
-- Multi-field shard keys supported as tuple (`shard_key=("region", "user_id")`); hashed via `ahash` server-side for determinism.
+- Multi-field shard keys supported as tuple (`shard_key=("region", "user_id")`); hashed via `ahash` server-side for determinism. **Missing-field behavior (locked 2026-04-18):** if any tuple field is absent on an event, the event is **rejected at ingest** (not routed to shard 0, not panicked) — increment `beava_events_dropped_total{reason="shard_key_missing"}` and return HTTP 400 / TCP error. Prevents shard-thread panic (Iggy RefCell lesson applied to Beava's field-extraction path).
 - `shard_hint` is an internal wire-format field only (see Q4); Python users see `shard_key`.
 - Pattern matches Faust/Bytewax prior art (both shard state by user-declared key at registration time).
 
@@ -348,6 +358,8 @@ class Transactions:
 | `beava_cross_shard_fanout_total{op="list_streams\|global_watermark\|scatter_read"}` | counter | Operations touching all shards. Should stay low. |
 | `beava_shard_keys_owned{shard="N"}` | gauge | Distinct keys currently routed to shard. Exposes hot-shard imbalance. |
 | `beava_shard_watermark_lag_seconds{shard="N"}` | gauge | Per-shard max-event-time − wall-clock. Global = min across shards. |
+| `beava_shard_inbox_full_total{shard="N"}` | counter | Events dropped because shard SPSC inbox was full. Pairs with HTTP 503 / TCP error. (Backpressure contract — see §6.) |
+| `beava_events_dropped_total{reason="..."}` | counter | Events rejected at ingest. Reasons: `shard_key_missing` (tuple field absent), `malformed_routing`, `payload_too_large`, `inbox_full`. |
 
 The global `beava_watermark_lag_seconds` (unlabeled, requested by SRE-STREAM persona review) stays; it becomes a derived `min(beava_shard_watermark_lag_seconds)`. Generic name `beava_shard_lag_seconds` dropped as too vague.
 
