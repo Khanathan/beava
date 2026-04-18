@@ -4,8 +4,8 @@
 #     6400 → binary TCP protocol (PUSH / GET / SET / MSET / REGISTER).
 #            Used by the Python SDK (`bv.App("localhost:6400")`) and any
 #            custom client built against `docs/protocol.md`.
-#     6401 → HTTP management API (/health, /pipelines, /debug/*, /metrics).
-#            Used by `examples/fraud/demo.sh` and the Debug UI at /.
+#     6900 → HTTP API (/push/*, /features/*, /health, /pipelines, /debug/*).
+#            Used by `examples/fraud/demo.sh`, the Debug UI at /, and curl demos.
 #
 #   Volumes:
 #     ./data  — event log + snapshot directory. Persists across restarts.
@@ -25,12 +25,12 @@ services:
     container_name: beava
     ports:
       - "6400:6400"   # TCP protocol — Python SDK + any custom client
-      - "6401:6401"   # HTTP management — /pipelines, /debug/*, /health
+      - "6900:6900"   # HTTP API — /push/*, /features/*, /health, /pipelines, /debug/*
     volumes:
       - ./data:/data  # snapshots + event log land here, persisted across restarts
     environment:
       - BEAVA_TCP_PORT=6400
-      - BEAVA_HTTP_PORT=6401
+      - BEAVA_HTTP_PORT=6900
       # Accept TCP connections from outside the container so the Python SDK
       # on the host can push events. Default is 127.0.0.1 inside the
       # container, which would reject the Docker bridge peer IP.

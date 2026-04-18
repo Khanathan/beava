@@ -1,0 +1,38 @@
+# Minimal "it works out of the box" compose for the public README demo.
+# NOT production-ready — for local evaluation only.
+#
+# Decision lock: D-02 (Phase 47, 47-CONTEXT.md) — minimal compose,
+# port 6900 + /data volume, runs as non-root (distroless nonroot uid 65532).
+#
+# Usage:
+#   cd examples
+#   docker compose up
+#   # Beava is now serving on http://localhost:6900
+#   curl -X POST http://localhost:6900/push/clicks -d '{"user":"alice"}'
+#   curl http://localhost:6900/features/clicks
+
+services:
+  beava:
+    image: beavadb/beava:latest
+    container_name: beava
+    restart: unless-stopped
+    ports:
+      - "6900:6900"   # HTTP (push + read)
+      - "6400:6400"   # TCP (Python SDK; binary protocol)
+    volumes:
+      - beava-data:/data
+    environment:
+      # Leave BEAVA_ADMIN_TOKEN unset for loopback-only dev; set for remote access.
+      BEAVA_HTTP_PORT: "6900"
+      BEAVA_TCP_PORT: "6400"
+      BEAVA_DATA_DIR: "/data"
+      BEAVA_TCP_BIND: "0.0.0.0"
+      BEAVA_SNAPSHOT: "true"
+      BEAVA_EVENT_LOG: "true"
+    # Non-root is enforced by the distroless base image (user: nonroot, uid 65532).
+    # No `user:` key needed — the image already sets USER nonroot.
+
+volumes:
+  beava-data:
+    # Named volume persists event log + snapshots across container restarts.
+    # Run `docker compose down -v` to delete data and reset state.
