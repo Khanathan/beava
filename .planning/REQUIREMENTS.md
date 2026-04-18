@@ -49,8 +49,8 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 - [ ] **INFRA-06**: A maintainer has resolved every `TODO` / `FIXME` / `XXX` in `src/` — each is either fixed, converted to a GitHub issue, or marked load-bearing with a tracking-issue link.
 - [ ] **INFRA-07**: A maintainer has no stray `println!` / `dbg!` / `eprintln!` calls in `src/` except explicitly-intentional startup logging or profile instrumentation.
 - [ ] **INFRA-08**: A maintainer sees `#![warn(missing_docs)]` enabled on the crate root and every `pub fn` / `pub struct` in `src/lib.rs` exports has at least a one-line doc comment.
-- [ ] **INFRA-09**: A visitor browsing the GitHub repo sees an accurate repo description, 5–8 topics (`feature-server`, `real-time`, `rust`, `streaming`, `ml`, `apache-2-0`, …), and a 1280×640 social preview PNG.
-- [ ] **INFRA-10**: A maintainer has audited `LICENSE`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `CONTRIBUTING.md`, `GOVERNANCE.md`, `MAINTAINERS.md` — each is present, current, and accurate (especially the "bus factor 1" disclosure).
+- [x] **INFRA-09**: A visitor browsing the GitHub repo sees an accurate repo description, 5–8 topics (`feature-server`, `real-time`, `rust`, `streaming`, `ml`, `apache-2-0`, …), and a 1280×640 social preview PNG.
+- [x] **INFRA-10**: A maintainer has audited `LICENSE`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `CONTRIBUTING.md`, `GOVERNANCE.md`, `MAINTAINERS.md` — each is present, current, and accurate (especially the "bus factor 1" disclosure).
 
 ### CONTENT — Docs, README, Examples (Phase 47, Block 3 — 3a/3b/3d/3f)
 
@@ -162,8 +162,8 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 | INFRA-06 | Phase 47 | Pending |
 | INFRA-07 | Phase 47 | Pending |
 | INFRA-08 | Phase 47 | Pending |
-| INFRA-09 | Phase 47 | Pending |
-| INFRA-10 | Phase 47 | Pending |
+| INFRA-09 | Phase 47 | Complete |
+| INFRA-10 | Phase 47 | Complete |
 | CONTENT-01 | Phase 47 | Pending |
 | CONTENT-02 | Phase 47 | Pending |
 | CONTENT-03 | Phase 47 | Pending |
