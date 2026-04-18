@@ -12,7 +12,7 @@
 # Run:    docker run -p 6900:6900 beavadb/beava:latest
 
 # ─── Stage 1: chef base (cargo-chef installed on rust:bookworm) ───────────────
-FROM rust:1.85-bookworm AS chef
+FROM rust:1.88-bookworm AS chef
 WORKDIR /app
 # Install cargo-chef for dependency-layer caching
 RUN cargo install cargo-chef --locked
