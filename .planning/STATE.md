@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 47-repo-polish-02-PLAN.md
-last_updated: "2026-04-18T00:55:21.052Z"
+stopped_at: Completed 47-05-PLAN.md — directory READMEs
+last_updated: "2026-04-18T00:57:14.512Z"
 last_activity: 2026-04-17 — Phase 46-03 complete. push_batch_with_cascade_no_features takes &[(&Value, SystemTime)]; hashmap bucket coalescing eliminates min_event_time collapse (CORR-01); proptest 256 cases × 3 runs green; spot bench +10.48% above baseline; full 9-cell matrix deferred pending run_matrix.sh tooling fix.
 progress:
   total_phases: 15
   completed_phases: 9
   total_plans: 40
-  completed_plans: 29
-  percent: 73
+  completed_plans: 31
+  percent: 78
 ---
 
 # Project State
@@ -67,6 +67,8 @@ See: `.planning/PROJECT.md` (updated 2026-04-17)
 | Phase 46 P06 | 45 | 3 tasks | 6 files |
 | Phase 46-correctness-audit-fixes P08 | 40 | 3 tasks | 4 files |
 | Phase 47-repo-polish P02 | 41 | 1 tasks | 1 files |
+| Phase 47-repo-polish P05 | 8 | 2 tasks | 4 files |
+| Phase 47-repo-polish P04 | 15 | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -149,7 +151,7 @@ Runbook in `.planning/phases/26-test-migration-bench-docs-demo/26-04-SUMMARY.md 
 
 ## Session Continuity
 
-**Stopped at:** Completed 47-repo-polish-02-PLAN.md
+**Stopped at:** Completed 47-05-PLAN.md — directory READMEs
 
 **Next action:** Execute `45-03-PLAN.md` (Wave 2 — write handlers: `http_push_single`, `http_push_batch`, `http_push_ndjson`).
 

@@ -64,7 +64,7 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 - [ ] **CONTENT-08**: A user can run `examples/fraud-scoring/` — a working fraud-pipeline project defining streams + tables, pushing synthetic traffic, querying features — against a freshly-started Beava Docker container.
 - [ ] **CONTENT-09**: A user can run `examples/session-features/` — a simpler keyed-stream example (last-N-click features, count + sum aggregations).
 - [ ] **CONTENT-10**: A user can run `bash examples/curl-ingest/run.sh` and see the HTTP API exercised end-to-end.
-- [ ] **CONTENT-11**: A visitor can find directory READMEs at `src/server/`, `src/engine/`, `src/state/`, `benchmark/`, `deploy/` — each explaining the module's role in 1–2 paragraphs.
+- [x] **CONTENT-11**: A visitor can find directory READMEs at `src/server/`, `src/engine/`, `src/state/`, `benchmark/`, `deploy/` — each explaining the module's role in 1–2 paragraphs.
 
 ### SHIP — Launch Ship Gate (Phase 46 close + cross-phase)
 
@@ -174,7 +174,7 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 | CONTENT-08 | Phase 47 | Pending |
 | CONTENT-09 | Phase 47 | Pending |
 | CONTENT-10 | Phase 47 | Pending |
-| CONTENT-11 | Phase 47 | Pending |
+| CONTENT-11 | Phase 47 | Complete |
 | SHIP-02 | Phase 47 | Pending |
 | SHIP-03 | Phase 47 | Pending |
 | SHIP-04 | Phase 47 | Pending |
