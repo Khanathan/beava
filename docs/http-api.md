@@ -147,10 +147,6 @@ console.log(res.status, await res.text());
 Push a JSON array of events to a registered stream in one request. Each event's
 `_event_time` is captured individually for per-event watermark gating.
 
-> **Phase 46 note:** Per-event event-time bucketing (`push_batch_with_cascade_no_features`
-> signature change) is a Phase 46 correctness fix. Phase 45 captures per-event
-> timestamps in `PendingAsync.now`; Phase 46 drops the internal wrapping.
-
 **Path parameters**
 
 | Param    | Description                             |
@@ -626,7 +622,6 @@ feature definitions.
 ```
 
 > Note: the `type` field is the Rust debug representation of the `FeatureDef` variant.
-> This will be replaced with a structured schema in Phase 47.
 
 **Response (404 — stream not found)**
 
@@ -780,16 +775,15 @@ curl http://localhost:6401/features/alice \
 `?sync=1` is useful for tests and CLI tooling. Expect a throughput drop (from
 >100 K EPS to ~10-50 K EPS) because each request now waits for queue drain.
 
-### Durable-ack (fsync) — Phase 46
+### Durable-ack (fsync)
 
-**Durable write-acknowledgment (waiting for `fsync` to the SSD event log) is
-deferred to Phase 46.** When Phase 46 ships, a new `?durable=1` query param (or a
-separate endpoint) will provide crash-safe write acknowledgment. Until then, `?sync=1`
-is the strongest guarantee available.
+A `?sync=1,durable=1` upgrade path is scaffolded in `EventLog::append_with_fsync`
+but not wired in v1.0-launch. When wired, it will provide crash-safe write acknowledgment
+by waiting for `fdatasync` to the SSD event log before returning 200. Until then,
+`?sync=1` (in-memory queue drain) is the strongest available guarantee.
 
-> Orchestrator decision A7: in-memory sync semantics in Phase 45; durable-ack in Phase 46.
-
-See [docs/event-time.md § Crash-replay determinism](event-time.md#crash-replay-determinism) for the at-least-once vs durable-ack tradeoff.
+See [docs/event-time.md § Crash-replay determinism](event-time.md#crash-replay-determinism)
+for the at-least-once vs. durable-ack tradeoff.
 
 ---
 
@@ -814,9 +808,8 @@ beava_events_total{proto="tcp"}  790041
 ```
 
 > **Deprecation notice:** The unlabeled `beava_events_total` counter (no `proto`
-> label) is **deprecated and will be removed in Phase 47**. Consumers should
-> migrate to `beava_events_total{proto="http"}` and `beava_events_total{proto="tcp"}`
-> to distinguish ingest path throughput.
+> label) is **deprecated**. Migrate to `beava_events_total{proto="http"}` and
+> `beava_events_total{proto="tcp"}` to distinguish ingest path throughput.
 
 **Other metrics**
 
@@ -905,7 +898,7 @@ See [Observability](#observability) above for the full metric reference.
 ### POST /pipelines
 
 Register a new stream or view pipeline definition. Used by the Python SDK
-`tl.register_remote()` call internally.
+`app.register()` call internally.
 
 **Request body**
 
@@ -1111,3 +1104,34 @@ curl -s -X POST "http://localhost:6401/snapshot?wait=true&timeout_ms=10000" | jq
 
 A 409 response means a snapshot is already in progress. Monitor
 `beava_snapshots_skipped_total` in `/metrics` if periodic snapshots are being skipped.
+
+---
+
+## Error Codes Reference
+
+Consolidated status codes returned by all Beava HTTP endpoints.
+
+| Status | Meaning | Emitted by |
+|--------|---------|-----------|
+| 200 OK | Request accepted and processed | All endpoints |
+| 400 Bad Request | Malformed JSON, missing required field, schema mismatch, or stream not registered | `/push/*`, `/push-batch/*`, `/push/*/ndjson`, `/pipelines` |
+| 401 Unauthorized | Missing or invalid `Authorization: Bearer <token>` from a non-loopback source | All endpoints when `BEAVA_ADMIN_TOKEN` is set |
+| 404 Not Found | Unknown key for `/features/{key}`; unknown stream for `/streams/{name}` | `/features/*`, `/streams/{name}` |
+| 408 Request Timeout | Handler did not complete within the server-side timeout (30 s default) | `/push/{stream}` with `?sync=1` |
+| 409 Conflict | Snapshot already in progress | `/snapshot` |
+| 413 Payload Too Large | Request body exceeds `BEAVA_HTTP_MAX_BODY` (default 16 MiB) | `/push/*`, `/push-batch/*` |
+| 415 Unsupported Media Type | `Content-Type` is not `application/json` (or `application/x-ndjson` for the ndjson endpoint) | `/push/*`, `/push/*/ndjson` |
+| 422 Unprocessable Entity | Per-event rejection in `/push-batch/{stream}` — partial failure reported in response body | `/push-batch/{stream}` |
+| 429 Too Many Requests | Reserved; not emitted in v1.0-launch (listed for forward compatibility) | — |
+| 500 Internal Server Error | Engine-side failure (WAL full, snapshot error); check `/metrics` for diagnostics | All |
+| 503 Service Unavailable | Server is in recovery (`/debug/ready` has not yet returned 200) | All |
+
+**Notes:**
+
+- All error responses use the same JSON envelope: `{"ok": false, "error": {"code": "...", "message": "..."}}`.
+- Loopback requests (`127.0.0.1` or `::1`) bypass the 401 check entirely — no token required.
+- NDJSON endpoints (`/push/{stream}/ndjson`) do not enforce the 16 MiB body limit; they stream line-by-line.
+- The `/push-batch/{stream}` endpoint returns 200 even for partial failures; check `rejected` and `first_error` in the response body.
+
+See [docs/event-time.md](event-time.md) for the durability semantics behind `?sync=1`.
+See [docs/operations.md](operations.md) for sizing, tuning, and snapshot configuration.
