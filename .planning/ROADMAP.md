@@ -68,7 +68,16 @@ Plans:
   4. A user running at N>1 without a declared `shard_key=` on a stream sees `ShardKeyMissingWarning` on `GET /debug/warnings`; at N=1 no warning fires.
   5. A developer running the 9-cell benchmark matrix at N=CPU_COUNT sees `complex-c8-x8` at ≥3× the v1.0-launch baseline, and `shard_probe` reports `cross_shard_fraction <40%` on the release workload.
   6. An operator who previously used `BEAVA_ENTITIES_SHARDS` sees a warn-once log message at startup pointing to `BEAVA_SHARDS` docs; the legacy var is deprecated but does not crash the server.
-**Plans**: TBD
+**Plans**: 8 plans
+Plans:
+- [ ] 50-01-PLAN.md — Cargo.toml Wave 2 deps (core_affinity, crossbeam-channel, metrics, metrics-exporter-prometheus) + metrics module + parallel /metrics emit (Wave 1)
+- [ ] 50-02-PLAN.md — Per-shard labeled metric series: 7 labeled + 2 unlabeled; record_shard_event wired into TCP + HTTP (Wave 2)
+- [ ] 50-03-PLAN.md — Shard thread spawn + core_affinity pinning + catch_unwind quarantine + ready-barrier (Wave 2)
+- [ ] 50-04-PLAN.md — SPSC channels + ShardEvent + backpressure contract (drop + counter + HTTP 503 / TCP SHARD_OVERLOAD 0x10) (Wave 3)
+- [ ] 50-05-PLAN.md — SO_REUSEPORT per-shard TCP + HTTP accept on Linux; single-listener macOS fallback; AxumServerSet (Wave 3)
+- [ ] 50-06-PLAN.md — Tuple shard_key missing-field reject (HTTP 400 / TCP 0x12) + ShardKeyMissingWarning + BEAVA_ENTITIES_SHARDS deprecation (Wave 3)
+- [ ] 50-07-PLAN.md — Shard loop gauge emission + shard_probe extension + N=2 integration test (Wave 4)
+- [ ] 50-08-PLAN.md — Ship-gate: 9-cell matrix at N=CPU_COUNT (≥3× gate) + cross_shard_fraction gate + metrics parity test + human verify (Wave 5)
 **UI hint**: no
 
 ### Phase 51: 51-cross-shard-queries-joins
@@ -125,7 +134,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 48. Shard-hint scaffolding | 3/3 | Complete | 2026-04-18 |
 | 49. Per-shard state store | 3/6 | In Progress|  |
-| 50. Multi-shard routing | 0/? | Not started | — |
+| 50. Multi-shard routing | 0/8 | Planned | — |
 | 51. Cross-shard queries + joins | 0/5 | Planned | — |
 | 52. Event log, recovery, ship-gate | 0/? | Not started | — |
 | 53. Fjall state backend | 0/? | Not started | — |
