@@ -12,7 +12,7 @@ Requirements scoped to the v1.2 milestone. Each maps to a roadmap phase (48–52
 
 ### TPC-INFRA — Plumbing, Config, Observability
 
-- [ ] **TPC-INFRA-01**: A developer running the test suite sees `EventSource::shard_hint(&self, event) -> u32` wired through TCP and HTTP parsers on every push path; default impl hashes the primary key. At `N_SHARDS=1` the value is always 0 and routing is a no-op. (Wave 0)
+- [x] **TPC-INFRA-01**: A developer running the test suite sees `EventSource::shard_hint(&self, event) -> u32` wired through TCP and HTTP parsers on every push path; default impl hashes the primary key. At `N_SHARDS=1` the value is always 0 and routing is a no-op. (Wave 0)
 - [ ] **TPC-INFRA-02**: An operator can set `BEAVA_SHARDS=N` via env or `tally serve --shards N` via CLI; debug builds default to 1, release builds default to `num_cpus::get_physical()`; env wins over CLI when both are set. (Wave 1)
 - [ ] **TPC-INFRA-03**: An operator can scrape `GET /metrics` and receive Prometheus-format metrics emitted via the `metrics` + `metrics-exporter-prometheus` crates; existing hand-rolled `/metrics` is migrated without regressing any current metric. (Wave 2)
 - [ ] **TPC-INFRA-04**: An operator observes six per-shard labeled series — `beava_shard_reactor_utilization{shard}`, `beava_shard_inbox_depth{shard}`, `beava_shard_events_total{shard,outcome}`, `beava_shard_keys_owned{shard}`, `beava_shard_watermark_lag_seconds{shard}`, `beava_shard_inbox_full_total{shard}` — plus `beava_events_dropped_total{reason}` and `beava_cross_shard_fanout_total{op}`. (Wave 2)

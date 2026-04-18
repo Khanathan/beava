@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.2
-milestone_name: tpc-full-shard
-status: roadmap-complete
-stopped_at: ""
-last_updated: "2026-04-18T00:00:00.000Z"
-last_activity: 2026-04-18 — Roadmap written for v1.2 Thread-Per-Core + Full Key-Shard (Phases 48-52, 24 requirements, 0% complete). Ready for /gsd-plan-phase 48.
+milestone_name: milestone
+status: planning
+stopped_at: Completed 48-01, 48-02, 48-03 plans
+last_updated: "2026-04-18T12:39:17.683Z"
+last_activity: "2026-04-18 — v1.2 roadmap created. 5 phases (48–52), 24 requirements mapped, 0 plans executed. Dependency graph: 48 → 49 → 50 → 51 → 52 (Phases 51 and the Wave 4 work within 52 can parallelize after Phase 50 ships — see ROADMAP.md)."
 progress:
   total_phases: 5
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  completed_phases: 1
+  total_plans: 9
+  completed_plans: 3
+  percent: 33
 ---
 
 # Project State
@@ -52,6 +52,7 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 **Goal:** Intra-node scaling via thread-per-core + full key-shard — eliminate DashMap contention and cross-core cache-line bouncing to reach 1.5M–2.5M EPS on a 16-core box (5-6× current baseline), preserving correctness and migration-compat with today's single-shard state format.
 
 **Ship gate for merging to main:**
+
 1. Every 9-cell matrix cell within −5% of baseline at N=1 (migration-compat gate)
 2. ≥3× baseline on `complex-c8-x8` at N=CPU_COUNT (architecture gate)
 3. `shard_probe` cross_shard_fraction <40% on the release benchmark workload (architectural-fit gate)
@@ -75,18 +76,24 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 1. **Docker Hub push** — `docs/docker-publish-runbook.md` — build and push
    `beavadb/beava:latest` + `beavadb/beava:0.1.0`. Prerequisite for items 3, 4.
+
 2. **GitHub repo settings wire-up** — `docs/github-repo-surface-runbook.md` — set
    description, topics (8 items), upload `site/assets/social-preview.png`.
+
 3. **Fresh-VM smoke test (SHIP-02)** — `.planning/phases/47-repo-polish/SHIP-VM-SMOKE.md`
    — depends on Docker Hub image (item 1). 6-step runbook, SC-1/SC-2/SC-3 checklist.
+
 4. **Quickstart GIF recording (SHIP-05)** —
    `.planning/phases/47-repo-polish/QUICKSTART-RECORDING-RUNBOOK.md` — depends on
    Docker Hub image (item 1). asciinema + agg, <3 MB output.
+
 5. **HTTP EPS measurement (HTTP-09, CORR-02, OUTREACH precondition)** —
    `LOAD_TEST_REFERENCE_BOX_REQUIRED=1 bash benchmark/http_load.sh` — commits measured
    number to `benchmark/README.md`. Required before citing "100K+ EPS over HTTP".
+
 6. **Outreach sign-off (SHIP-04)** —
    `.planning/phases/47-repo-polish/OUTREACH-AUDIT-CHECKLIST.md` — 10-item VC checklist
+
    + final package at `.planning/outreach/LAUNCH-PACKAGE-V8.md`.
 
 ## Performance Metrics
@@ -161,7 +168,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** v1.2 roadmap written (2026-04-18). 5 phases, 24 requirements, no plans yet.
+**Stopped at:** Completed 48-01, 48-02, 48-03 plans
 
 **Next action (engineering):** `/gsd-plan-phase 48` — Phase 48: shard-hint scaffolding (Wave 0).
 
