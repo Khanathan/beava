@@ -789,6 +789,8 @@ is the strongest guarantee available.
 
 > Orchestrator decision A7: in-memory sync semantics in Phase 45; durable-ack in Phase 46.
 
+See [docs/event-time.md § Crash-replay determinism](event-time.md#crash-replay-determinism) for the at-least-once vs durable-ack tradeoff.
+
 ---
 
 ## Observability
