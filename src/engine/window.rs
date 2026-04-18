@@ -5,6 +5,7 @@
 //! fixed-duration buckets arranged in a ring, lazily expiring old buckets
 //! on access rather than using background timers.
 
+use crate::engine::event_time::DropReason;
 use serde::{Deserialize, Serialize};
 use std::iter::Sum;
 use std::ops::AddAssign;
@@ -21,6 +22,17 @@ pub struct RingBuffer<T: Default + Clone> {
     bucket_duration: Duration,
     window_duration: Duration,
     current_bucket_start: Option<SystemTime>,
+    /// Last drop reason from `bucket_index_for`. Set on each drop; cleared on
+    /// success. Not serialized — resets to None after snapshot reload (we lose
+    /// at most the first N drops after crash-recovery; counters restart from
+    /// zero, which is acceptable since they are observability-only).
+    ///
+    /// OBS-02 note: this field is set AFTER the late-drop gate at tcp.rs fires
+    /// a `continue`, so the same event can never increment both
+    /// `beava_late_events_dropped_total` and `beava_ring_buffer_drops_total`.
+    /// At most one fires per dropped event.
+    #[serde(skip)]
+    pub last_drop: Option<DropReason>,
 }
 
 impl<T: Default + Clone> RingBuffer<T> {
@@ -37,7 +49,15 @@ impl<T: Default + Clone> RingBuffer<T> {
             bucket_duration,
             window_duration,
             current_bucket_start: None,
+            last_drop: None,
         }
+    }
+
+    /// Consume and return the last drop reason recorded by `bucket_index_for`.
+    /// Clears `last_drop` so the next call starts fresh.
+    /// Returns `None` if the most recent bucket resolution succeeded (no drop).
+    pub fn take_last_drop(&mut self) -> Option<DropReason> {
+        self.last_drop.take()
     }
 
     /// Return the number of buckets in this ring buffer.
@@ -169,15 +189,38 @@ impl<T: Default + Clone> RingBuffer<T> {
     }
 
     /// Resolve the ring slot corresponding to `event_time`. Returns
-    /// `None` if the event is older than the full window. Side effect:
-    /// if `event_time > current_bucket_start + bucket_duration`, the
-    /// head is advanced forward (new head slot is zeroed per existing
-    /// `advance_to` semantics) and the returned index is the new head.
+    /// `None` if the event must be dropped. Side effect: sets
+    /// `self.last_drop` to the drop reason on a drop, or `None` on
+    /// success. Callers use `take_last_drop()` to retrieve the reason.
+    ///
+    /// Drop reasons (D-05 / OBS-01):
+    /// - `PreEpoch`: `event_time < UNIX_EPOCH`.
+    /// - `TooNew`: `et_bucket_start > current_bucket_start` (overflow).
+    /// - `TooOld`: event is older than the full retained window.
+    ///
+    /// OBS-02: at most one of `beava_late_events_dropped_total` or
+    /// `beava_ring_buffer_drops_total` fires per event. The late-drop
+    /// gate at `tcp.rs:~1753` fires a `continue` before reaching this
+    /// code, so both counters cannot fire for the same event.
     fn bucket_index_for(&mut self, event_time: SystemTime) -> Option<usize> {
+        use std::time::UNIX_EPOCH;
+
+        // PreEpoch check: event_time before UNIX_EPOCH produces a zero
+        // `since_epoch` in `bucket_start_for` (unwrap_or(ZERO)), which
+        // maps to UNIX_EPOCH. That would silently fold into a large
+        // delta_buckets drop. Detect it explicitly so the reason is
+        // accurate.
+        if event_time < UNIX_EPOCH {
+            // OBS-02: exclusive with beava_late_events_dropped_total by path.
+            self.last_drop = Some(DropReason::PreEpoch);
+            return None;
+        }
+
         // Fresh ring — use existing path to initialize.
         let start = match self.current_bucket_start {
             Some(s) => s,
             None => {
+                self.last_drop = None;
                 self.advance_to(event_time);
                 return Some(self.head);
             }
@@ -186,6 +229,7 @@ impl<T: Default + Clone> RingBuffer<T> {
         // Forward case: event_time is in the head bucket or beyond →
         // existing advance_to handles bucket expiry.
         if event_time >= start {
+            self.last_drop = None;
             self.advance_to(event_time);
             return Some(self.head);
         }
@@ -196,18 +240,28 @@ impl<T: Default + Clone> RingBuffer<T> {
         let et_bucket_start = self.bucket_start_for(event_time);
         let delta = match start.duration_since(et_bucket_start) {
             Ok(d) => d,
-            Err(_) => return None,
+            Err(_) => {
+                // et_bucket_start > start: event time rounds up past the
+                // current head — treat as TooNew.
+                // OBS-02: exclusive with beava_late_events_dropped_total by path.
+                self.last_drop = Some(DropReason::TooNew);
+                return None;
+            }
         };
         let bucket_secs = self.bucket_duration.as_secs();
         if bucket_secs == 0 {
+            self.last_drop = None;
             return Some(self.head);
         }
         let delta_buckets = (delta.as_secs() / bucket_secs) as usize;
         let num_buckets = self.buckets.len();
         if delta_buckets >= num_buckets {
             // Past the full window → drop.
+            // OBS-02: exclusive with beava_late_events_dropped_total by path.
+            self.last_drop = Some(DropReason::TooOld);
             return None;
         }
+        self.last_drop = None;
         // Walk back from the head. Add num_buckets to avoid negative
         // wrap under modular subtraction.
         let idx = (self.head + num_buckets - delta_buckets) % num_buckets;

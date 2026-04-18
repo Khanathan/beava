@@ -28,6 +28,7 @@
 
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Convert a `SystemTime` to nanoseconds since UNIX_EPOCH. Values before
@@ -429,6 +430,143 @@ impl LateDropCounters {
             .iter()
             .map(|e| (e.key().clone(), e.value().load(Ordering::Relaxed)))
             .collect()
+    }
+}
+
+/// Reason a ring-buffer operator dropped an event (D-05 / OBS-01).
+///
+/// Hard compile-time enum — keeps label cardinality bounded at 3 regardless
+/// of event count or stream count (Pitfall 3 / D-05 guard).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DropReason {
+    /// event_time falls before the ring's earliest retained bucket (event is
+    /// too far in the past). This is redundant with the watermark late-drop
+    /// gate at `tcp.rs:~1753` but can fire for backfill paths that bypass
+    /// the gate.
+    TooOld,
+    /// event_time is so far in the future that computing the bucket offset
+    /// overflows (et_bucket_start > current_bucket_start after alignment).
+    /// Extremely rare in practice; included for completeness.
+    TooNew,
+    /// event_time is before UNIX_EPOCH (negative timestamp). The ring buffer
+    /// alignment arithmetic uses `unwrap_or(Duration::ZERO)` which maps these
+    /// to epoch, producing a large `delta_buckets` and thus a TooOld drop in
+    /// most rings — but we detect the root cause explicitly here.
+    PreEpoch,
+}
+
+impl DropReason {
+    /// Returns the Prometheus label string for this reason.
+    /// Exactly one of "too_old" | "too_new" | "pre_epoch" — never a dynamic
+    /// string, so label cardinality is compile-time bounded.
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::TooOld => "too_old",
+            Self::TooNew => "too_new",
+            Self::PreEpoch => "pre_epoch",
+        }
+    }
+}
+
+/// Per `(stream, operator_kind, DropReason)` drop counter for ring-buffer
+/// operators (OBS-01). Mirrors `LateDropCounters` but with a 3-element
+/// tuple key.
+///
+/// `operator_kind` is the operator CLASS (e.g. `"count"`, `"sum"`) — NOT a
+/// per-instance UUID (Pitfall 3 / D-05). This keeps label cardinality bounded
+/// by `num_streams × num_operator_kinds × 3`.
+///
+/// D-06: Counter handles are pre-allocated at stream registration time via
+/// `register()`. The hot drop path calls `fetch_add(1, Relaxed)` on a cached
+/// `Arc<AtomicU64>` — zero DashMap lookup overhead.
+#[derive(Debug)]
+pub struct RingBufferDropCounters {
+    /// Key = (stream_name, operator_kind, reason).
+    per_label: DashMap<(String, String, DropReason), Arc<AtomicU64>>,
+}
+
+impl Default for RingBufferDropCounters {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RingBufferDropCounters {
+    pub fn new() -> Self {
+        Self {
+            per_label: DashMap::new(),
+        }
+    }
+
+    /// Pre-allocate and cache the three drop-reason `Arc<AtomicU64>` handles
+    /// for a `(stream, operator_kind)` pair. Call once at stream/operator
+    /// registration time (D-06). Returns `(too_old, too_new, pre_epoch)`.
+    pub fn register(
+        &self,
+        stream: &str,
+        operator_kind: &str,
+    ) -> (Arc<AtomicU64>, Arc<AtomicU64>, Arc<AtomicU64>) {
+        let too_old = Arc::clone(
+            self.per_label
+                .entry((stream.to_string(), operator_kind.to_string(), DropReason::TooOld))
+                .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+                .value(),
+        );
+        let too_new = Arc::clone(
+            self.per_label
+                .entry((stream.to_string(), operator_kind.to_string(), DropReason::TooNew))
+                .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+                .value(),
+        );
+        let pre_epoch = Arc::clone(
+            self.per_label
+                .entry((
+                    stream.to_string(),
+                    operator_kind.to_string(),
+                    DropReason::PreEpoch,
+                ))
+                .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+                .value(),
+        );
+        (too_old, too_new, pre_epoch)
+    }
+
+    /// Increment a specific `(stream, operator_kind, reason)` counter.
+    /// Used on the drop path (cold path); DashMap lookup is acceptable here.
+    pub fn increment(&self, stream: &str, operator_kind: &str, reason: DropReason) {
+        match self
+            .per_label
+            .get(&(stream.to_string(), operator_kind.to_string(), reason))
+        {
+            Some(entry) => {
+                entry.value().fetch_add(1, Ordering::Relaxed);
+            }
+            None => {
+                // Not pre-registered (e.g. backfill path before registration).
+                // Insert lazily.
+                self.per_label
+                    .entry((stream.to_string(), operator_kind.to_string(), reason))
+                    .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+                    .value()
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Snapshot all non-zero counters. Used by the `/metrics` endpoint.
+    pub fn snapshot(&self) -> Vec<((String, String, DropReason), u64)> {
+        self.per_label
+            .iter()
+            .map(|e| (e.key().clone(), e.value().load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    /// Total drops across all labels. Useful for integration tests.
+    pub fn total(&self) -> u64 {
+        self.per_label
+            .iter()
+            .map(|e| e.value().load(Ordering::Relaxed))
+            .sum()
     }
 }
 
