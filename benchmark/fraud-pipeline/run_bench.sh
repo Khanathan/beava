@@ -72,7 +72,11 @@ CPUS="${CPUS:-$(( CPUS_HOST < 8 ? CPUS_HOST : 8 ))}"
 CLIENTS="${CLIENTS:-$CPUS}"
 
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
-RESULTS_DIR="$BENCH_DIR/results/$TS"
+# OUTPUT_DIR override lets callers (e.g. run_matrix.sh) aim per-cell results at
+# a specific directory instead of the auto-timestamped default. Matrix runner
+# expects ${CELL_DIR}/summary.json — without this override it silently landed
+# in results/<ts>/ and the matrix's existence check failed.
+RESULTS_DIR="${OUTPUT_DIR:-$BENCH_DIR/results/$TS}"
 mkdir -p "$RESULTS_DIR"
 STDOUT_LOG="$RESULTS_DIR/stdout.log"
 SUMMARY_JSON="$RESULTS_DIR/summary.json"
