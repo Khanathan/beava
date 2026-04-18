@@ -1,8 +1,39 @@
 # Beava Architecture
 
+See also: [docs/operators.md](operators.md) · [docs/event-time.md](event-time.md) · [docs/comparison.md](comparison.md) · [benchmark/](../benchmark/)
+
 ## Overview
 
 Beava is a real-time feature server that ingests events over a custom binary TCP protocol, computes stateful streaming features (windowed aggregations, derived expressions, cross-stream cascades), and serves them with sub-millisecond latency. It ships as a single Rust binary with zero external dependencies -- no Kafka, no Flink, no cluster. Push an event, get updated features back in the same response. All state lives in memory, with periodic snapshots and an append-only event log for crash recovery.
+
+## Single-Node by Design
+
+Beava deliberately ships as one binary running on one machine. This is not a limitation waiting to be fixed -- it is a deliberate design choice for a specific workload:
+
+**What it buys:**
+- Zero operational overhead. No Kafka cluster, no ZooKeeper, no Flink JobManager, no Redis Sentinel. Start with `docker run beavadb/beava:latest`.
+- Predictable latency. All state is in memory on the same process. Feature reads are pointer dereferences, not network round-trips.
+- Training/serving parity. Data scientists define pipelines in Python; the same pipeline runs in production. No separate offline-to-online sync.
+- Simple recovery. One process crashes, one process restarts. State recovery is 7 seconds for 4.7 GB of state (snapshot + WAL replay).
+
+**Why not Kafka + Flink + Redis?**
+If you need multi-node horizontal scale today, Kafka + Flink + Redis is the right choice. Beava is for the team that does not have a streaming platform engineer, whose working set fits in RAM, and who wants features running in minutes. See [docs/comparison.md](comparison.md) for the honest pairwise.
+
+**What it sacrifices:**
+- No horizontal scale-out in v1.0. One machine is the ceiling.
+- No exactly-once. At-least-once with client-side `event_id` dedup.
+- No connector ecosystem. TCP push protocol + HTTP API only.
+
+## Scaling Posture
+
+| Tier | When | Mechanism |
+|------|------|-----------|
+| v1.0 (now) | Single node, vertical | 4-worker Tokio runtime, DashMap shard concurrency |
+| v1.2 (planned) | Thread-per-core | Replace Tokio with a single-threaded-per-core reactor; eliminate cross-thread lock contention for 2-4× throughput gain per core |
+| v1.3+ (planned) | Multi-node | Partition by key across nodes via Kafka; each node runs an independent Beava shard |
+| Beava Cloud (Q4 2026) | Managed HA | Multi-node with automated failover; managed by the Beava team |
+
+The published baseline is 315 K events/sec sustained TCP push on a 10-core Apple M4 laptop (fraud-pipeline, 47 features, 5 entity types). HTTP push-batch exceeds 100 K EPS on the same hardware. See [benchmark/](../benchmark/) for the full 9-cell matrix.
 
 ## System Architecture
 
@@ -372,6 +403,87 @@ The event log (`src/state/event_log.rs`) provides per-stream append-only files f
 - **Fsync**: background timer every 1 second (Redis `everysec` pattern)
 - **Compaction**: background timer every 60 seconds removes entries older than `history_ttl` (default: 72 hours)
 - **Payload format**: tagged with `LOG_FMT_BINARY` (0x01) or `LOG_FMT_JSON` (0x00) prefix byte for zero-copy forwarding of wire-format payloads
+
+## Fork Replica Model
+
+The `beava fork` command lets data scientists run a scoped local replica of a production server. The replica receives the production event stream and runs independent local pipelines against the live feed -- enabling "shadow mode" experiments without touching production state.
+
+### How it works
+
+```
+Production server                     Local replica (scientist's laptop)
+──────────────────                    ──────────────────────────────────
+EventLog (per-stream files)  ──LOG_FETCH──►  Phase 1: Historical catchup
+                                              replay all events from disk
+
+Live ingest path             ──SUBSCRIBE──►  Phase 2: Live-tail
+                                              each incoming event forwarded
+                                              to replica in real time
+
+                                         Local pipelines run on every event:
+                                         watermarks advance, features update
+                                         Scientists read via /debug/key/{key}
+```
+
+**Phase 1 — LOG_FETCH catchup:** The replica requests the upstream server's event log for each configured stream. Events are replayed from disk using the same `run_backfill` path as crash recovery. Watermarks advance per event.
+
+**Phase 2 — SUBSCRIBE live-tail:** After catchup, the replica subscribes to the live event stream. `replica_ingest_batch` at `src/server/tcp.rs` processes each incoming event and advances watermarks.
+
+**Local pipelines:** Any `@bv.table` definitions passed via `--pipeline-file` (or `bv.fork(pipelines=[...])`) are registered on the replica. They fire as watermarks advance -- exactly as they would on the production server.
+
+### Python usage
+
+```python
+import beava as bv
+
+@bv.stream
+class Transactions:
+    user_id: str
+    amount: float
+
+@bv.table(key="user_id")
+def TxnSummary(t: Transactions) -> bv.Table:
+    return t.group_by("user_id").agg(
+        count_1h=bv.count(window="1h"),
+        sum_1h=bv.sum("amount", window="1h"),
+    )
+
+with bv.fork(
+    remote="prod.beava.dev:6400",
+    streams=[Transactions],
+    keys=["u1", "u2"],
+    token="replica-token",
+    pipelines=[TxnSummary],
+) as fork:
+    print(fork.get(TxnSummary, key="u1"))
+```
+
+See [docs/event-time.md § Fork Watermark Propagation](event-time.md#fork-watermark-propagation) for the watermark correctness guarantee on the replica.
+
+### Key properties
+
+- **Read-only.** The replica never writes back to the production server.
+- **Scoped.** You can filter to a subset of keys (`keys=["u1", "u2"]`) or a key prefix.
+- **Independent pipelines.** The replica runs its own local `@bv.table` definitions; they can differ from production.
+- **Deterministic.** Because the replica uses payload `_event_time` as the event-time clock (not wall-clock), it reproduces the same feature values as the production server for the same event sequence.
+
+## Security Model
+
+Beava's security model is intentionally minimal for v1.0.
+
+**Loopback bypass.** Requests from `127.0.0.1` or `::1` are automatically authenticated. Run Beava on localhost with no token for local development.
+
+**Bearer token.** Set `BEAVA_ADMIN_TOKEN` to require a token on all write endpoints and (by default) read endpoints:
+```bash
+BEAVA_ADMIN_TOKEN=my-secret beava serve
+```
+Pass `Authorization: Bearer my-secret` in requests.
+
+**Public read mode.** `beava serve --public` makes `/features/*` and `/streams/*` available without authentication. Write endpoints always require a token when `BEAVA_ADMIN_TOKEN` is set.
+
+**TLS.** Beava does not terminate TLS. Put it behind a reverse proxy (Caddy, nginx, or a cloud load balancer) that terminates TLS at the edge. See `deploy/` for a Caddy example.
+
+**Admin token scope.** The admin token is a single shared secret -- no per-user tokens, no RBAC, no audit log. For v1.0, the expected deployment is: one Beava instance per service, one token per service.
 
 ## HTTP Management API
 
