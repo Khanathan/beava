@@ -25,8 +25,9 @@
 //! the identical layout from Python. Any future divergence would break that
 //! test first.
 //!
-//! v0.2 TODO: once Phase 29/31 re-plans the protocol module, collapse this
+//! NOTE: once Phase 29/31 re-plans the protocol module, collapse this
 //! file and `src/server/protocol.rs`'s Scope/codec into a shared module.
+//! Phase 47 audit: keep — intentional duplication; design note, not a bug.
 
 /// Snapshot-fetch opcode. MUST equal `crate::server::protocol::OP_SNAPSHOT_FETCH`.
 pub const OP_SNAPSHOT_FETCH: u8 = 0x12;

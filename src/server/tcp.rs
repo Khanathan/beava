@@ -199,8 +199,8 @@ pub struct ConcurrentAppState {
     /// `beava_events_total{proto="http"|"tcp"}` labeled series. Bumped by HTTP
     /// handlers (`events_http`) and TCP push sites (`events_tcp`). The unlabeled
     /// `events_total` is preserved for backward compat and equals their sum.
-    /// TODO(Phase 47): remove unlabeled beava_events_total and these fields if
-    /// dashboards have migrated to the labeled series.
+    /// TODO(gh-TBD): remove unlabeled beava_events_total and these fields if
+    /// dashboards have migrated to the labeled series — tracked for v1.0-launch follow-up.
     pub events_http: std::sync::atomic::AtomicU64,
     /// Phase 45-04 A5: TCP-originated event counter. See `events_http` doc.
     pub events_tcp: std::sync::atomic::AtomicU64,

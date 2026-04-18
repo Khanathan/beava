@@ -353,7 +353,7 @@ async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse
          # TYPE beava_snapshots_skipped_total counter\n\
          beava_snapshots_skipped_total {}\n",
         keys_total,
-        events_total,           // TODO(Phase 47): remove unlabeled beava_events_total emission
+        events_total,           // TODO(gh-TBD): remove unlabeled beava_events_total emission — tracked for v1.0-launch follow-up
         events_http,
         events_tcp,
         push_latency,
