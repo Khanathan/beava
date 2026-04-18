@@ -7,6 +7,8 @@
 //! - `event_log: Option<EventLog>` — points at data/logs/{stream}.bin in Wave 1 (D-03)
 
 pub mod global_watermark;
+/// Per-shard Prometheus metrics (Phase 50-02, D-07).
+pub mod metrics;
 pub mod store;
 pub mod traits;
 pub mod watermark;

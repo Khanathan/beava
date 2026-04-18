@@ -193,6 +193,11 @@ async fn http_push_single(
             state
                 .events_http
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // Phase 50-02: per-shard event counter. shard_index wired in Plan 50-04.
+            crate::shard::metrics::record_shard_event(
+                0,
+                crate::shard::metrics::Outcome::Accepted,
+            );
             (StatusCode::OK, Json(json!({"ok": true}))).into_response()
         }
         Err(e) => map_err_to_response(e),

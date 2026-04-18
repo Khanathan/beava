@@ -1498,6 +1498,12 @@ pub fn handle_push_core_ex(
         }
     }
 
+    // Phase 50-02: per-shard event counter. shard_index wired in Plan 50-04.
+    crate::shard::metrics::record_shard_event(
+        0,
+        crate::shard::metrics::Outcome::Accepted,
+    );
+
     Ok(features)
 }
 
