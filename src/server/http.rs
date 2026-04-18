@@ -1634,6 +1634,21 @@ pub fn build_router(state: SharedState) -> Router {
     public_router.merge(admin_router).with_state(state)
 }
 
+/// Phase 50-05 (D-09): build a per-shard axum Router.
+///
+/// Identical to `build_router` — same middleware stack including
+/// `require_loopback_or_token` applied in the same position. The shard_index
+/// parameter is reserved for future per-shard state routing; currently the
+/// full SharedState is shared across shards (Wave 2 transition period).
+///
+/// On Linux, one AxumServerSet instance is created per shard with its own
+/// SO_REUSEPORT socket. On macOS, a single server serves all shards (D-04).
+pub fn build_shard_router(state: SharedState, _shard_index: usize) -> Router {
+    // D-09: identical middleware stack on every per-shard router.
+    // require_loopback_or_token MUST be applied — no auth regression.
+    build_router(state)
+}
+
 /// Start the HTTP management server on the given address.
 ///
 /// Phase 20: uses `into_make_service_with_connect_info::<SocketAddr>()` so the

@@ -426,6 +426,31 @@ pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::i
     run_tcp_server_with_listener(listener, state).await
 }
 
+/// Phase 50-05 (D-09, Linux only): bind a TCP socket on `addr` with SO_REUSEPORT set.
+///
+/// Allows multiple shard threads to each bind their own accept socket to the
+/// same port. The Linux kernel distributes new connections across sockets via
+/// its 4-tuple hash — providing near-zero accept-lock contention at N shards.
+///
+/// On non-Linux platforms (macOS dev, Windows) this function is not compiled;
+/// the single-listener accept loop in `run_tcp_server` handles dispatch inline.
+#[cfg(target_os = "linux")]
+pub fn bind_reuseport_tcp(addr: std::net::SocketAddr) -> std::io::Result<std::net::TcpListener> {
+    use std::os::unix::io::FromRawFd;
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        None,
+    )?;
+    socket.set_reuse_port(true)?;
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(1024)?;
+    // Safety: socket2::Socket::into_raw_fd() transfers ownership; FromRawFd takes it.
+    Ok(unsafe { std::net::TcpListener::from_raw_fd(socket.into_raw_fd()) })
+}
+
 /// Start the TCP server from a pre-bound listener (for tests with random ports).
 pub async fn run_tcp_server_with_listener(
     listener: TcpListener,
@@ -4154,5 +4179,21 @@ mod tests {
             json["merchant_tx_count_1h"], 3,
             "fan-out should have 3 merchant events"
         );
+    }
+
+    /// Phase 50-05 (D-09): verify that two SO_REUSEPORT sockets can bind to the
+    /// same port on Linux without EADDRINUSE. This test is compiled and run only
+    /// on Linux; macOS uses the single-listener dispatch path (D-04).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn two_reuseport_sockets_bind_same_port() {
+        let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let s1 = super::bind_reuseport_tcp(addr).expect("first reuseport bind should succeed");
+        let port = s1.local_addr().unwrap().port();
+        let addr2: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+        let s2 = super::bind_reuseport_tcp(addr2)
+            .expect("second reuseport bind to same port should not return EADDRINUSE");
+        drop(s1);
+        drop(s2);
     }
 }
