@@ -1,34 +1,34 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0-launch-complete
-milestone_name: milestone
-status: completed-pending-launch-day-humanrun
-stopped_at: "v1.0-launch engineering-complete 2026-04-17 — awaiting launch-day human-run items (Docker push, GitHub repo wire-up, fresh-VM smoke, quickstart GIF, HTTP EPS measurement, outreach sign-off)"
-last_updated: "2026-04-17T00:00:00.000Z"
-last_activity: 2026-04-17 — Milestone v1.0-launch engineering-complete. All three phases (45 HTTP, 46 correctness, 47 polish) shipped; 49 requirements closed or deferred (40 code-shipped, 6 runbook-delivered, 3 DEFERRED to v1.1 by user decision). ROADMAP archived at .planning/milestones/v1.0-launch-ROADMAP.md.
+milestone: v1.2
+milestone_name: tpc-full-shard
+status: defining-requirements
+stopped_at: ""
+last_updated: "2026-04-18T00:00:00.000Z"
+last_activity: 2026-04-18 — Started milestone v1.2 Thread-Per-Core + Full Key-Shard. Design doc hardened against 2026 research (commit 2a8d8fd). Running 4-agent domain research before requirements/roadmap. v1.0-launch launch-day checklist still pending (§ Launch Day Checklist below).
 progress:
-  total_phases: 15
-  completed_phases: 12
-  total_plans: 40
-  completed_plans: 40
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: `.planning/PROJECT.md` (updated 2026-04-17)
+See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 **Core value:** A skeptical engineer evaluating Beava on github.com can go from landing on the repo to correct, live feature values in under 60 seconds — from any language.
-**Current focus:** Milestone v1.0-launch — engineering-complete; awaiting launch-day human-run items.
+**Current focus:** Milestone v1.2 — Thread-Per-Core + Full Key-Shard. Defining requirements; roadmap next.
 
 ## Current Position
 
-**Phase:** none (milestone v1.0-launch engineering-complete; awaiting launch-day human-run items)
-**Plan:** n/a
-**Status:** Engineering complete — launch-day human-run pending
-**Last activity:** 2026-04-17 — Milestone v1.0-launch engineering-complete. All three phases (45 HTTP, 46 correctness, 47 polish) shipped; 49 requirements closed or deferred (40 code-shipped, 6 runbook-delivered, 3 DEFERRED to v1.1 by user decision). ROADMAP archived at .planning/milestones/v1.0-launch-ROADMAP.md.
+**Phase:** Not started (defining requirements for v1.2 TPC)
+**Plan:** —
+**Status:** Defining requirements
+**Last activity:** 2026-04-18 — Milestone v1.2 Thread-Per-Core + Full Key-Shard started. Design doc + research committed (2a8d8fd). PROJECT.md updated with 5-wave scope. Domain research in flight.
 
 ## Milestone Status
 
@@ -42,7 +42,8 @@ See: `.planning/PROJECT.md` (updated 2026-04-17)
 | v2.1 Launch | Engineering complete; live-run ops pending | 2026-04-14 (eng) |
 | v0 Restructure (21-26) | Complete | 2026-04-14 |
 | v0 Data-Scientist Fork (27, 35-38) | Engineering complete | 2026-04-15 |
-| **v1.0-launch — Public Launch Readiness** | **Engineering complete — launch-day human-run pending** | **2026-04-17** |
+| v1.0-launch — Public Launch Readiness | Engineering complete — launch-day human-run pending | 2026-04-17 (eng) |
+| **v1.2 — Thread-Per-Core + Full Key-Shard** | **Defining requirements** | **2026-04-18 (started)** |
 
 ## Launch Day Checklist
 
@@ -166,8 +167,8 @@ Runbook in `.planning/phases/26-test-migration-bench-docs-demo/26-04-SUMMARY.md 
 
 ## Session Continuity
 
-**Stopped at:** Milestone v1.0-launch engineering-complete 2026-04-17. All three phases shipped; ROADMAP archived; REQUIREMENTS checkboxes housekept; STATE updated.
+**Stopped at:** Milestone v1.2 Thread-Per-Core + Full Key-Shard in flight 2026-04-18. Design doc + research committed (2a8d8fd). PROJECT.md updated. Running 4-agent domain research, then REQUIREMENTS, then ROADMAP.
 
-**Next action:** Launch day — execute the 6-item human-run checklist above, in order. Items 3 and 4 depend on item 1.
+**Next action (engineering):** Finish v1.2 new-milestone scaffolding — research → REQUIREMENTS.md → ROADMAP.md → `/gsd-discuss-phase` on the first phase (Wave 0 scaffolding).
 
-**Next engineering milestone:** TBD. Candidates include v1.1 (binary rename to `beava`, per-stream idle markers, code-hygiene backlog INFRA-06/07/08), or resume v0 stretch phases (35 OP_LOG_FETCH, 38 mothball Option K).
+**Orthogonal ops (launch day — still pending):** v1.0-launch 6-item human-run checklist above remains outstanding. Items 3 and 4 depend on item 1. Run independently of v1.2 engineering work.
