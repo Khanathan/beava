@@ -35,6 +35,7 @@ fn make_test_state() -> SharedState {
         false,
         Some("secret".into()),
         false,
+        1,
     )
 }
 

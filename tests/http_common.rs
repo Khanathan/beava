@@ -38,6 +38,7 @@ pub fn build_test_state(public_mode: bool) -> SharedState {
         false, // event_log_enabled
         Some(TEST_ADMIN_TOKEN.to_string()),
         public_mode,
+        1,
     )
 }
 

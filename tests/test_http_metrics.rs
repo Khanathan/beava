@@ -39,6 +39,7 @@ fn build_state_with_stream() -> SharedState {
         false, // event_log_enabled
         Some(TEST_ADMIN_TOKEN.to_string()),
         false, // public_mode — /metrics is admin-gated
+        1,
     );
     state
         .engine

@@ -21,6 +21,14 @@ pub struct ShardedStateStoreV1 {
     shards: Vec<Arc<Mutex<Shard>>>,
 }
 
+impl std::fmt::Debug for ShardedStateStoreV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShardedStateStoreV1")
+            .field("shard_count", &self.shards.len())
+            .finish()
+    }
+}
+
 impl ShardedStateStoreV1 {
     /// Allocate `n` empty shards.
     pub fn new(n: u16) -> Self {

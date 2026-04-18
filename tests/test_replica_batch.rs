@@ -61,6 +61,7 @@ fn make_state(log_dir: &std::path::Path) -> SharedState {
         true,  // event_log_enabled
         None,
         false,
+        1,
     )
 }
 

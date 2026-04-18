@@ -58,6 +58,7 @@ fn seeded_state() -> beava::server::tcp::SharedState {
         false,
         Some(TEST_ADMIN_TOKEN.to_string()),
         false, // public_mode = false: reads stay on admin router
+        1,
     )
 }
 

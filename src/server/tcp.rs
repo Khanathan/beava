@@ -233,6 +233,10 @@ pub struct ConcurrentAppState {
     /// `GET /extracts`. Empty for non-replica servers and for replicas
     /// launched without `--replica-extract-at`.
     pub extracted_history: dashmap::DashMap<u64, dashmap::DashMap<String, serde_json::Value>>,
+
+    /// Phase 49-05 (TPC Wave 1): sharded state store alongside the DashMap compat shim.
+    /// At N=1, all state lives in Shard-0. Wave 4 (Phase 52) removes the DashMap `store`.
+    pub sharded_store: std::sync::Arc<std::sync::Mutex<crate::shard::store::ShardedStateStoreV1>>,
 }
 
 /// Phase 41-01 T4: only every Nth PUSH records into the latency histogram.
@@ -323,12 +327,16 @@ pub fn make_concurrent_state(
         event_log_enabled,
         None,
         false,
+        1, // Wave 1: N=1 default for legacy callers
     )
 }
 
 /// Phase 20: full constructor that accepts the admin token and public-mode
 /// flag. The legacy `make_concurrent_state` delegates here with `None`/`false`
 /// so existing callers keep working.
+///
+/// Phase 49-05: added `n_shards: u16` to wire `ShardedStateStoreV1` at startup.
+/// Wave 1 always passes 1; Wave 2 will pass `num_cpus::get_physical()` (Phase 50).
 #[allow(clippy::too_many_arguments)]
 pub fn make_concurrent_state_full(
     engine: PipelineEngine,
@@ -340,6 +348,7 @@ pub fn make_concurrent_state_full(
     event_log_enabled: bool,
     admin_token: Option<String>,
     public_mode: bool,
+    n_shards: u16,
 ) -> SharedState {
     let signals = crate::server::signals::SignalRegistry::new_default().into_shared();
     let subscriber_registry = Arc::new(crate::server::replica::SubscriberRegistry::new(
@@ -386,6 +395,9 @@ pub fn make_concurrent_state_full(
         atomic_throughput: crate::server::throughput::AtomicThroughput::new(),
         latency_sample_counter: std::sync::atomic::AtomicU64::new(0),
         extracted_history: dashmap::DashMap::new(),
+        sharded_store: std::sync::Arc::new(std::sync::Mutex::new(
+            crate::shard::store::ShardedStateStoreV1::new(n_shards),
+        )),
     })
 }
 

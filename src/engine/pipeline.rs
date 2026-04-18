@@ -452,6 +452,12 @@ pub struct PipelineEngine {
     /// Set by `install_signals` at server startup. None in unit-test harnesses.
     #[cfg(feature = "server")]
     pub signals: Option<crate::server::signals::SharedRegistry>,
+
+    /// Phase 49-05 (TPC Wave 1): per-shard state store at N=1.
+    /// All state lives in Shard-0's AHashMap. Replaces DashMap hot path for
+    /// callers that use shard_store(). StateStore (DashMap) compat shim remains
+    /// in ConcurrentAppState — not deleted until Wave 4.
+    pub sharded_store: crate::shard::store::ShardedStateStoreV1,
 }
 
 /// Create an operator instance from a FeatureDef (non-derive only).
@@ -725,7 +731,16 @@ impl PipelineEngine {
             subscriber_registry: None,
             #[cfg(feature = "server")]
             signals: None,
+            sharded_store: crate::shard::store::ShardedStateStoreV1::new(1),
         }
+    }
+
+    /// Phase 49-05: construct engine with a specific shard count.
+    /// Wave 1: always called with n=1 from main.rs. Wave 2 will pass n=CPU_COUNT.
+    pub fn with_shards(n: u16) -> Self {
+        let mut engine = PipelineEngine::new();
+        engine.sharded_store = crate::shard::store::ShardedStateStoreV1::new(n);
+        engine
     }
 
     /// Phase 27-02: attach a `SubscriberRegistry` to this engine. Called

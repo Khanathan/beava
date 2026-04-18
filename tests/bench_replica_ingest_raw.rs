@@ -78,6 +78,7 @@ fn make_state(event_log_enabled: bool) -> (SharedState, tempfile::TempDir) {
         event_log_enabled,
         None,
         false,
+        1,
     );
     (state, tmp)
 }

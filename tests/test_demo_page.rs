@@ -26,6 +26,7 @@ fn state_with_mode(public_mode: bool) -> SharedState {
         false,
         Some("secret".into()),
         public_mode,
+        1,
     )
 }
 

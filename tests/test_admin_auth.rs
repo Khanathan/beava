@@ -33,6 +33,7 @@ fn state_with_token(token: Option<&str>) -> SharedState {
         false,
         token.map(str::to_string),
         false,
+        1,
     )
 }
 

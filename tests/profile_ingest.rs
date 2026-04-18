@@ -96,6 +96,7 @@ fn make_state() -> SharedState {
         false, // event_log disabled
         None,
         false,
+        1,
     )
 }
 

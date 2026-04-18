@@ -573,6 +573,21 @@ fn seed_pipelines_from_file(state: &SharedState, path: &std::path::Path) -> Resu
 }
 
 async fn async_main() {
+    // Phase 49-05: resolve n_shards inside async_main so it's in scope for
+    // make_concurrent_state_full. Wave 1 always returns 1.
+    let n_shards: u16 = beava::config::shards::resolve_shard_count(
+        std::env::args().skip(1).zip(std::env::args().skip(2))
+            .find(|(a, _)| a == "--shards" || a.starts_with("--shards="))
+            .and_then(|(a, b)| {
+                if a.starts_with("--shards=") {
+                    a.strip_prefix("--shards=").map(str::to_string)
+                } else {
+                    Some(b)
+                }
+            })
+            .as_deref(),
+    ).wave1_enforced();
+
     let tcp_port = std::env::var("BEAVA_TCP_PORT").unwrap_or_else(|_| "6400".into());
     let http_port = std::env::var("BEAVA_HTTP_PORT").unwrap_or_else(|_| "6401".into());
     let snapshot_path = PathBuf::from(
@@ -631,6 +646,7 @@ async fn async_main() {
 
     // Phase 14: ConcurrentAppState with per-field locking.
     // Phase 20: also carries admin_token + public_mode.
+    // Phase 49-05: pass n_shards so ShardedStateStoreV1 is sized at startup.
     let state: SharedState = make_concurrent_state_full(
         PipelineEngine::new(),
         StateStore::new(),
@@ -641,6 +657,7 @@ async fn async_main() {
         event_log_enabled,
         admin_token,
         public_mode,
+        n_shards,
     );
 
     // Phase 9: how often to write a full base snapshot. Every Nth cycle is a

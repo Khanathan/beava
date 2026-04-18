@@ -83,6 +83,7 @@ async fn start_test_server(stream_names: &[&str]) -> (u16, SharedState) {
         false,
         Some(ADMIN_TOKEN.to_string()),
         false,
+        1,
     );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

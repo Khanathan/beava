@@ -47,6 +47,7 @@ fn test_state() -> SharedState {
         false,
         None,
         false,
+        1,
     )
 }
 

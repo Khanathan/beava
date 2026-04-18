@@ -130,6 +130,7 @@ async fn start_test_server(
         false, // event_log_enabled
         Some(ADMIN_TOKEN.to_string()),
         false,
+        1,
     );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

@@ -77,6 +77,7 @@ fn replica_batch_advances_watermark() {
         true,
         None,
         false,
+        1,
     );
 
     // Build 10 events spanning 1 hour, each 6 minutes apart.
