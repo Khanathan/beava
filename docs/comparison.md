@@ -1,200 +1,222 @@
-# Beava vs Flink + Kafka + Redis
+# Beava: Honest Comparisons
 
-## The Problem
+See also: [docs/architecture.md](architecture.md) · [docs/faq.md](faq.md) · [benchmark/](../benchmark/)
 
-Today's real-time feature stack looks like this:
+Beava is a single-binary real-time feature server. It is smaller than Feast, Flink, and
+Redpanda in scope, and it is honest about that. This page is the pairwise tradeoff
+reference -- not a marketing comparison. Every claim is either sourced from committed
+benchmark data or qualified as an estimate.
+
+**Committed baseline (fraud-pipeline, 47 features, 5 entity types, 10-core Apple M4 laptop):**
+- TCP push-batch: 315 K events/sec sustained
+- HTTP push-batch: 100 K+ EPS
+- Crash recovery: 7 s for 4.7 GB of state
+
+These numbers appear in `benchmark/LAUNCH-VERIFY.md`. Do not treat estimates at other
+scales as guarantees.
+
+---
+
+## Beava vs Feast
+
+### What each system is
+
+**Feast** is an open-source feature store that manages the full feature lifecycle:
+offline computation (via Spark or BigQuery), online serving (via Redis, DynamoDB, or
+Bigtable), feature registries, materialization jobs, and point-in-time joins.
+
+**Beava** is an online-only real-time feature server. It owns the ingest path: you push
+events, Beava computes windowed aggregations immediately, and you read features with
+sub-millisecond latency. There is no offline store, no materialization job, no
+feature registry beyond what is in your Python file.
+
+### Head-to-head
+
+| Dimension | Beava | Feast |
+|-----------|-------|-------|
+| Offline store | No | Yes (Snowflake, BigQuery, Parquet) |
+| Online store | Yes (in-memory, <1ms p99) | Yes (Redis, DynamoDB, Bigtable) |
+| Streaming ingest | Yes (native, TCP + HTTP) | Yes (via Kafka + Flink connector) |
+| Batch materialization | No | Yes (Spark / pandas) |
+| Feature registry | Python file = registry | Centralized YAML registry |
+| Point-in-time joins | No | Yes (for ML training) |
+| Monitoring / lineage | No | Partial (depends on provider) |
+| Ops complexity | 1 binary | 3-5 components per provider |
+| Horizontal scale | No (v1.0) | Provider-dependent |
+
+### Where Beava wins
+
+- **No latency gap between compute and serve.** Feast materializes batch features
+  asynchronously; there is always a lag between when the event happens and when the
+  feature is available. Beava computes on-push -- the feature is ready on the next
+  GET with no materialization delay.
+- **Simpler deployment.** One binary, no feature registry service, no offline store
+  to configure.
+- **Real-time event-time semantics.** Beava tracks event-time watermarks, late
+  arrivals, and per-window buckets natively. Feast's streaming path depends on
+  an external Flink job for this.
+
+### Where Feast wins
+
+- **Offline features.** If your features are computed from historical Snowflake or
+  BigQuery data, Feast handles this natively. Beava has no offline store.
+- **Training dataset generation.** Point-in-time joins for ML training data
+  are a core Feast feature. Beava does not produce training datasets.
+- **Ecosystem.** Feast integrates with dozens of storage providers and has a mature
+  community and enterprise support (Tecton). Beava is early-stage.
+- **Feature registry and versioning.** Feast tracks feature versions, ownership, and
+  lineage. Beava's "registry" is your Python file.
+
+### When to pick Beava
+
+Pick Beava if your features are **computed over event streams** and you need them
+**served at sub-millisecond latency**. If your features are **batch-computed** from
+a data warehouse and you need point-in-time joins for training, pick Feast (or Tecton).
+
+The two are not mutually exclusive: some teams run Feast for batch-derived features and
+Beava for real-time streaming features.
+
+---
+
+## Beava vs Flink + Redis
+
+### What each system is
+
+**Flink + Redis** is the standard production streaming feature stack: Kafka for ingest,
+Flink for stateful computation, Redis for low-latency feature serving. Mature, battle-
+tested, horizontally scalable, and genuinely powerful.
+
+**Beava** replaces the entire stack with one binary. The tradeoff is scope vs simplicity.
+
+### Head-to-head
+
+| Dimension | Beava | Flink + Redis |
+|-----------|-------|---------------|
+| Deployment | 1 binary | Kafka (3+ brokers) + Flink (JM + TMs) + Redis + ZooKeeper: 8-15 nodes |
+| Exactly-once | No (at-least-once) | Yes |
+| Horizontal scale | No (v1.0) | Yes (Kafka partitions, Flink parallelism) |
+| Event-time windows | Yes (native) | Yes (Flink event-time + watermarks) |
+| Complex windowing | Sliding windows, per-bucket | Full Flink API: session, tumbling, global |
+| SQL | No | Yes (Flink SQL, ksqlDB) |
+| Connector ecosystem | TCP + HTTP | Kafka connectors (hundreds) |
+| State per key | RAM, ~2 KB/feature/entity | RocksDB (disk-backed, any size) |
+| Ops overhead | Near-zero | 0.5-1.0 FTE |
+
+### Where Beava wins
+
+- **Zero ops overhead.** No Kafka tuning, no Flink checkpoint configuration, no
+  Redis sentinel setup. Start in 60 seconds.
+- **Latency.** Beava reads are in-memory pointer dereferences (<100 µs p99).
+  Flink → Redis adds serialization + a network hop for every read.
+- **Developer experience.** Define a pipeline in Python, register it, push events.
+  No Java, no Avro schemas, no connector YAML.
+
+### Where Flink + Redis wins
+
+- **Scale.** A well-tuned Flink cluster processes millions of events/sec across dozens
+  of nodes. Beava is one box.
+- **Exactly-once.** Flink provides exactly-once state semantics across distributed
+  operators. Beava is at-least-once.
+- **Complex windowing.** Session windows, global windows, custom triggers, and temporal
+  pattern matching (CEP) are Flink-native. Beava supports sliding windows only.
+- **Fault tolerance.** A Flink cluster survives node failures without losing state.
+  Beava's fault tolerance is single-process crash recovery (WAL + snapshot).
+- **State size.** Flink stores state in RocksDB -- it is not RAM-limited. Beava holds
+  all state in memory.
+
+### When to pick Beava
+
+Pick Beava if your team does not have a streaming infrastructure engineer, your event
+volume fits on one box (up to 315 K EPS TCP / 100 K+ EPS HTTP on a 10-core laptop),
+and your state fits in RAM. Pick Flink + Redis if you need multi-node fault tolerance,
+exactly-once, or state that exceeds available RAM.
+
+---
+
+## Beava vs Redpanda / Kafka
+
+### What each system is
+
+**Redpanda** (and Kafka) are durable, distributed message brokers. They ingest events,
+store them reliably, and let consumers replay them. They do not compute features --
+they are infrastructure that other systems build on top of.
+
+**Beava** is a feature server, not a broker. It is not a replacement for Redpanda or
+Kafka; it is a potential consumer of one.
+
+### Head-to-head
+
+| Dimension | Beava | Redpanda / Kafka |
+|-----------|-------|------------------|
+| Purpose | Feature computation + serving | Durable message transport |
+| Durability guarantee | At-least-once (WAL + fsync every 1s) | Configurable (acks=all = strong) |
+| Replay / rewind | Limited (per-stream WAL, 72h default TTL) | Unlimited (configurable retention) |
+| Consumer groups | Not applicable | Native multi-consumer fan-out |
+| SQL / streaming queries | No | Kafka Streams, ksqlDB, Flink SQL |
+| Horizontal scale | No (v1.0) | Yes (partitions, replication) |
+| Ops complexity | 1 binary | 3+ brokers, ZooKeeper or KRaft |
+
+### Where Beava fits with Redpanda
+
+They are complementary, not competing. A common pattern:
 
 ```
-Kafka (3+ brokers)  -->  Flink (JobManager + TaskManagers)  -->  Redis (primary + replica)
-      |                        |                                       |
-  Schema Registry         ZooKeeper / K8s                          Sentinel
-      |                        |
-  Connect workers         Checkpoint storage (S3/HDFS)
+Redpanda (durable ingest)  →  Beava consumer  →  feature serving
 ```
 
-That is 18-25 nodes, 5-8 distinct systems, each with its own failure modes, configuration language, and upgrade process. Operating this stack is a 0.5-1.0 FTE job. Not because any individual component is bad -- Kafka and Flink are excellent distributed systems -- but because the assembly is complex by nature.
+Beava can consume from a Kafka/Redpanda topic (via a small bridge process that reads
+from the consumer group and calls `POST /push-batch`). Beava provides the feature
+computation and serving layer; Redpanda provides the durable, replayable event log.
 
-Most teams running this stack are computing fewer than 100 features at fewer than 100K events per second. They do not need horizontal scalability across dozens of nodes. They need the features to be correct, fast, and easy to change.
+### Where Redpanda wins
 
-That is what Beava is for.
+- **Durability.** Redpanda's replication guarantees far exceed Beava's single-node WAL.
+- **Multi-consumer fan-out.** Redpanda lets dozens of consumers independently read the
+  same event stream. Beava's event log is single-consumer (for crash recovery only).
+- **Long retention.** Beava's default WAL retention is 72 hours. Redpanda can retain
+  events indefinitely.
+- **Stream processing.** Redpanda has Wasm transforms and integrates with Flink;
+  Beava's processing model is limited to its 16 built-in operators.
 
-## Side-by-Side: The Same Pipeline, Different Stacks
+### When to pick Beava without Redpanda
 
-The benchmark pipeline: a fraud detection system for a mid-size fintech. 5 entity types (user, merchant, device, IP, card), 47 features across 4 window tiers (30m, 1h, 24h, 7d), cross-key lookups, derived signals.
+If your event sources push directly to Beava via HTTP or TCP and you do not need
+multi-consumer fan-out or long-term event retention, Beava's own WAL is sufficient.
 
-### Beava: ~60 Lines of Python
+---
 
-```python
-import beava as bv
+## Beava vs ksqlDB / Materialize / RisingWave
 
-@bv.stream
-class RawTransactions:
-    user_id: str
-    merchant_id: str
-    amount: float
-    country: str
+These are **streaming SQL databases** -- incremental view maintenance over streaming
+data with SQL interfaces. They are more powerful query models than Beava's operator
+API but more complex to operate and reason about.
 
-@bv.table(key="user_id")
-def UserTransactions(txs: RawTransactions) -> bv.Table:
-    return (
-        txs.group_by("user_id")
-        .agg(
-            tx_count_30m=bv.count(window="30m"),
-            tx_count_1h=bv.count(window="1h"),
-            tx_count_24h=bv.count(window="24h"),
-            tx_sum_1h=bv.sum("amount", window="1h"),
-            tx_avg_24h=bv.avg("amount", window="24h"),
-            tx_max_24h=bv.max("amount", window="24h"),
-            unique_merchants_24h=bv.count_distinct("merchant_id", window="24h"),
-            unique_countries_24h=bv.count_distinct("country", window="24h"),
-            last_country=bv.last("country"),
-            last_amount=bv.last("amount"),
-        )
-        .with_columns(
-            velocity_spike=(bv.col("tx_count_1h") / 1) / (bv.col("tx_count_24h") / 24),
-            amount_vs_avg=bv.col("last_amount") / bv.col("tx_avg_24h"),
-        )
-    )
+| System | Model | SQL | Scale | Ops |
+|--------|-------|-----|-------|-----|
+| Beava | Feature server (16 operators) | No | Single node | 1 binary |
+| ksqlDB | Streaming SQL (on Kafka) | Yes | Multi-node | Kafka required |
+| Materialize | Incremental view maintenance | Yes | Distributed | Managed or self-hosted |
+| RisingWave | Streaming SQL DB (Postgres wire) | Yes | Cloud-native | Kubernetes |
 
-@bv.table(key="merchant_id")
-def MerchantActivity(txs: RawTransactions) -> bv.Table:
-    return txs.group_by("merchant_id").agg(
-        merch_tx_count_24h=bv.count(window="24h"),
-        merch_unique_users_24h=bv.count_distinct("user_id", window="24h"),
-        merch_avg_amount=bv.avg("amount", window="24h"),
-    )
+If your features are naturally expressed as SQL views over event streams, Materialize
+or RisingWave are worth evaluating. Beava is simpler to operate for the common case
+of keyed aggregations over sliding windows.
 
-# ... similar for DeviceActivity, IPActivity, UserFailedTxns
+---
 
-app = bv.App("localhost:6400")
-app.register(RawTransactions, UserTransactions, MerchantActivity, ...)
-features = app.push(RawTransactions, event)  # features returned synchronously
-```
+## Summary: When to Choose What
 
-Infrastructure: 1 binary, 1 node. Start with `./beava` or `docker compose up`.
+| Pick this | If you need |
+|-----------|-------------|
+| **Beava** | Real-time streaming features, single-node, sub-ms reads, simple ops |
+| **Feast** | Offline + online feature store, training data, Snowflake/BigQuery integration |
+| **Flink + Redis** | Multi-node scale, exactly-once, complex windowing, connector ecosystem |
+| **Redpanda** | Durable event transport, multi-consumer, long retention (use alongside Beava) |
+| **ksqlDB / Materialize** | SQL-based incremental views, complex query patterns |
+| **Tecton / Fennel** | Managed platform, full lifecycle management, enterprise support |
 
-### Flink + Kafka + Redis: ~400+ Lines of Java, YAML, and Glue
+Beava is the right choice when you want **one binary, one API, one mental model** for
+real-time feature computation and serving — and your workload fits on one machine.
 
-The equivalent Flink pipeline requires:
-
-1. **Kafka producer** -- serialize events, publish to topic, handle backpressure
-2. **Kafka topic configuration** -- partitions, replication factor, retention, compaction
-3. **Schema Registry** -- Avro/Protobuf schema, compatibility checks
-4. **Flink job (Java/Scala)** -- DataStream API, keyed windows, process functions, custom aggregators for each operator, state backend configuration
-5. **Flink state backend** -- RocksDB configuration, checkpointing interval, incremental snapshots
-6. **Redis sink** -- custom Flink sink to write computed features, handle connection pooling, retries
-7. **Redis read path** -- application code to read features, handle cache misses, TTL management
-8. **Deployment** -- Kubernetes manifests or YARN configs for Flink, Kafka broker configs, Redis Sentinel/Cluster setup
-
-Each windowed aggregation in Flink is a custom `ProcessFunction` or `AggregateFunction` with explicit state management. Derived features require a separate computation step. Cross-key lookups require side inputs or async I/O.
-
-Infrastructure: Kafka (3 brokers + ZooKeeper), Flink (1 JobManager + 2-4 TaskManagers), Redis (primary + replica + Sentinel), checkpoint storage (S3 or HDFS). Minimum 10-12 nodes.
-
-## Why the Difference
-
-The gap is not primarily about lines of code. It is about what happens at runtime.
-
-### The JVM Serialization Tax
-
-Flink stores operator state in RocksDB (the recommended production state backend). Every state access requires:
-
-1. Serialize the key (Java object -> bytes)
-2. RocksDB lookup (LSM tree, potentially hitting disk)
-3. Deserialize the value (bytes -> Java object)
-4. Modify the object
-5. Serialize back (Java object -> bytes)
-6. Write to RocksDB
-
-Each RocksDB access costs 5-15 microseconds. A single event that updates 10 features pays this cost 10 times.
-
-Beava stores state in a Rust `HashMap`. Each access is a pointer dereference. Cost: 0.1-0.2 microseconds. No serialization, no deserialization, no LSM compaction, no write amplification.
-
-### The GC Cliff
-
-The JVM garbage collector works well when heap usage is moderate. But as state grows (more entities, more features, more windows), GC pressure increases non-linearly. At high heap utilization, GC pauses can spike from milliseconds to seconds -- the "GC cliff." This manifests as tail latency spikes that are difficult to diagnose and tune.
-
-Flink mitigates this by storing state off-heap in RocksDB, but that reintroduces the serialization tax described above.
-
-Rust has no garbage collector. Memory is freed deterministically. Latency is predictable regardless of state size.
-
-### Object Overhead
-
-A Java `HashMap<String, Double>` entry consumes roughly 80-120 bytes of overhead (object headers, boxing, pointers, alignment padding) before the actual data. A Rust `HashMap<String, f64>` entry consumes roughly 40-50 bytes including the String allocation. For millions of entities with dozens of features each, this 2-3x overhead difference translates directly to infrastructure cost.
-
-## Cost Comparison
-
-These estimates are based on Beava's measured performance (430-510K events/sec on a 48-core Xeon) and typical Flink+Kafka+Redis deployments at equivalent throughput. Cloud costs use on-demand pricing; reserved instances reduce both columns proportionally.
-
-| Scale | Beava | Flink + Kafka + Redis |
-|-------|-------|-----------------------|
-| 10K eps, 100K entities | 1 node (4 vCPU, 16 GB), ~$120/mo | Kafka (3 small brokers) + Flink (JM + 2 TM) + Redis: 6-8 nodes, ~$800-1,500/mo |
-| 50K eps, 1M entities | 1 node (8 vCPU, 64 GB), ~$400/mo | Kafka (3 brokers) + Flink (JM + 3 TM) + Redis (cluster): 10-12 nodes, ~$3,000-5,000/mo |
-| 200K eps, 5M entities | 1 node (48 vCPU, 192 GB), ~$1,500/mo | Kafka (3-5 brokers) + Flink (JM + 6-8 TM) + Redis (cluster): 15-20 nodes, ~$8,000-15,000/mo |
-| 500K eps, 10M entities | 1 large node (96 vCPU, 384 GB), ~$3,000/mo | Full production stack: 20-25 nodes, ~$15,000-25,000/mo |
-
-**Important caveats:**
-
-- Beava is a single-process server today. It scales vertically on one machine. If your workload exceeds what one large instance can handle, Beava is not the right tool yet.
-- The Flink stack costs include ops overhead that Beava eliminates, but they also buy you things Beava does not provide: multi-node fault tolerance, exactly-once semantics across distributed state, and a mature ecosystem of connectors.
-- At the 500K eps tier, Beava's numbers are based on benchmarks, not production deployments at that scale. Treat them as indicative.
-
-## What Beava Does NOT Replace
-
-Be clear-eyed about this. Beava is not a general-purpose distributed streaming engine. It does not replace Flink or Kafka for workloads that genuinely need their capabilities:
-
-- **Multi-TB state** -- Beava holds all state in memory on one machine. If your state exceeds what fits in RAM on the largest available instance (384 GB-768 GB), you need a distributed state backend.
-- **Exactly-once distributed processing** -- Beava provides crash recovery via snapshots and event log replay, but it is not a distributed system with exactly-once guarantees across nodes.
-- **Complex event processing** -- Temporal pattern matching, session windows with custom gap logic, event-time watermarks with late-arrival handling. Flink's event-time processing model is genuinely sophisticated and hard to replicate.
-- **Connector ecosystem** -- Flink has connectors for hundreds of sources and sinks. Beava has a TCP protocol and an HTTP API.
-- **Multi-tenant, multi-job deployments** -- Flink is designed to run hundreds of independent jobs on a shared cluster. Beava runs one pipeline per process.
-
-If you are processing 1M+ events/sec, managing 100+ TB of state, or running dozens of independent streaming jobs, use Flink. It is an excellent system built by smart people for exactly those problems.
-
-## Comparison with Other Tools
-
-### RisingWave
-
-Streaming database with Postgres wire protocol and SQL interface. Distributed, cloud-native, built in Rust. RisingWave is aiming to be the full streaming database -- SQL queries over streaming data with materialized views. Beava is narrower: it computes features for keyed entities, not arbitrary SQL. If you want SQL over streams, RisingWave is a strong choice. If you want a feature server with minimal ops, Beava is simpler to operate.
-
-### Arroyo
-
-Rust-based stream processor with SQL support, designed as a Flink alternative. Cloud-native, supports exactly-once. Arroyo is closer to Flink's model (distributed processing, connectors, checkpointing) reimplemented in Rust for better performance. Beava is not a stream processor -- it is a feature server. Different abstraction level, different use case.
-
-### Materialize
-
-Streaming SQL database built on Timely Dataflow. Excellent for incremental view maintenance over streaming data. More powerful query model than Beava, but also more complex to operate and reason about. If your features are naturally expressed as SQL views over event streams, Materialize is worth evaluating.
-
-### Feast
-
-Open-source feature store focused on the offline/online feature serving split. Feast manages feature definitions, offline computation (via Spark/BigQuery), and online serving (via Redis/DynamoDB). Beava is complementary: it computes real-time features that Feast does not handle natively. Some teams use Feast for batch features and a real-time engine for streaming features.
-
-### Tecton
-
-Managed feature platform (recently acquired by Databricks). Full lifecycle: feature definitions, batch/streaming/real-time computation, serving, monitoring. Enterprise product with enterprise pricing. Beava covers a slice of what Tecton does (real-time feature computation and serving) at a fraction of the complexity and cost, but does not provide the full platform experience.
-
-## When to Choose Beava
-
-Choose Beava when:
-
-- You need real-time features (windowed counts, sums, averages, distinct counts, derived signals) served at sub-millisecond latency
-- Your event volume fits on one machine (up to ~500K events/sec sustained)
-- Your feature state fits in memory (up to ~50M entities at ~8 KB each = ~400 GB)
-- You want to define features in Python and have them running in minutes, not days
-- You do not want to operate Kafka, Flink, and Redis
-- You are building fraud detection, ML feature serving, or real-time context for AI agents
-
-Choose the Flink stack when:
-
-- You need distributed, multi-node fault tolerance
-- Your state exceeds what fits on one machine
-- You need complex event processing (session windows, temporal patterns, event-time watermarks)
-- You need connectors to dozens of external systems
-- You are already running Kafka and Flink and the ops cost is acceptable
-- Your organization has a dedicated streaming infrastructure team
-
-Choose a managed platform (Tecton, Fennel, etc.) when:
-
-- You want feature lifecycle management (versioning, monitoring, lineage)
-- You need both batch and streaming features in one system
-- You prefer paying for a managed service over operating anything yourself
-- Your team does not want to think about infrastructure at all
+For a deep dive on Beava's architecture and scaling roadmap, see
+[docs/architecture.md](architecture.md).
