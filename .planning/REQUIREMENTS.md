@@ -9,9 +9,9 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 
 ### HTTP — HTTP Ingest & Read API (Phase 45, Block 1)
 
-- [ ] **HTTP-01**: A user can create a single event via `POST /push/{stream}` with a JSON body and receive a 2xx on accept, a structured 4xx on schema mismatch, and a 413 when the body exceeds `BEAVA_HTTP_MAX_BODY`.
-- [ ] **HTTP-02**: A user can push a JSON array of events via `POST /push-batch/{stream}`, receive one response summarizing per-event accept/reject, and observe each event appear under its correct event-time bucket (validates the 2a fix from the client side).
-- [ ] **HTTP-03**: A user can stream events via `POST /push/{stream}/ndjson` using chunked transfer, parsed line-by-line via `axum-extra::JsonLines`, without the 2 MiB default body limit truncating the upload.
+- [x] **HTTP-01**: A user can create a single event via `POST /push/{stream}` with a JSON body and receive a 2xx on accept, a structured 4xx on schema mismatch, and a 413 when the body exceeds `BEAVA_HTTP_MAX_BODY`.
+- [x] **HTTP-02**: A user can push a JSON array of events via `POST /push-batch/{stream}`, receive one response summarizing per-event accept/reject, and observe each event appear under its correct event-time bucket (validates the 2a fix from the client side).
+- [x] **HTTP-03**: A user can stream events via `POST /push/{stream}/ndjson` using chunked transfer, parsed line-by-line via `axum-extra::JsonLines`, without the 2 MiB default body limit truncating the upload.
 - [x] **HTTP-04**: A user can query features for an entity via `GET /features/{key}` and receive the current values across all tables, with optional `?table=X` to filter to a single table.
 - [x] **HTTP-05**: A user can list registered streams via `GET /streams` and inspect one via `GET /streams/{name}`, returning the stream's schema and current watermark.
 - [x] **HTTP-06**: A user's write requests to `/push*` are rejected with 401 when the admin token is missing and accepted from loopback without a token — inheriting the existing `require_loopback_or_token` middleware unchanged.
@@ -26,7 +26,7 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 - [x] **CORR-02**: A user running the 9-cell benchmark matrix after the 2a fix sees results within **−5%** of the committed v2.0 BASELINE; if not, the fix is not merged. *(Spot check complex-c8-x8 +10.48%; full matrix deferred pending run_matrix.sh OUTPUT_DIR fix)*
 - [x] **CORR-03**: A user defining a stream can set a per-stream `watermark_lateness` (`@bv.stream(watermark_lateness="10m")`), stored in `StreamDefinition`, propagating through the engine; absent field defaults to 5 s.
 - [x] **CORR-04**: A stream-definition snapshot from before this change loads cleanly with the default 5 s lateness (schema-migration tolerance).
-- [ ] **CORR-05**: A maintainer can close audit item **2d.i** with a verification test proving `run_backfill` uses `push_for_backfill` (single-event path), **not** `handle_push_batch` — closes as "not a bug, verified."
+- [x] **CORR-05**: A maintainer can close audit item **2d.i** with a verification test proving `run_backfill` uses `push_for_backfill` (single-event path), **not** `handle_push_batch` — closes as "not a bug, verified."
 - [x] **CORR-06**: A user running backfill via the event log sees each event bucketed by its payload `_event_time`, not by the log entry's wall-clock timestamp — closes audit item **2d.ii**. Validated by property test: push → crash → recover → feature values identical to a live-ingest baseline.
 - [x] **CORR-07**: A user ingesting 30-day-old historical events does not see `entity_ttl` immediately evict the entity — eviction clock sources from `WatermarkTracker::observed_max(stream)`, not wall-clock — closes audit item **2d.iii**.
 - [x] **CORR-08**: A user running a fork replica that cascades into downstream tables sees watermarks advance on the downstream — `replica_ingest_batch` calls `watermarks.observe()` per event — closes audit item **2d.iv**.
@@ -130,9 +130,9 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| HTTP-01 | Phase 45 | Pending |
-| HTTP-02 | Phase 45 | Pending |
-| HTTP-03 | Phase 45 | Pending |
+| HTTP-01 | Phase 45 | Complete |
+| HTTP-02 | Phase 45 | Complete |
+| HTTP-03 | Phase 45 | Complete |
 | HTTP-04 | Phase 45 | Complete |
 | HTTP-05 | Phase 45 | Complete |
 | HTTP-06 | Phase 45 | Complete |
@@ -144,7 +144,7 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 | CORR-02 | Phase 46 | Complete (spot check; full matrix deferred) |
 | CORR-03 | Phase 46 | Complete |
 | CORR-04 | Phase 46 | Complete |
-| CORR-05 | Phase 46 | Pending |
+| CORR-05 | Phase 46 | Complete |
 | CORR-06 | Phase 46 | Complete |
 | CORR-07 | Phase 46 | Complete |
 | CORR-08 | Phase 46 | Complete |
