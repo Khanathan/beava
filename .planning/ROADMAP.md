@@ -52,9 +52,9 @@ Plans:
 - [ ] 49-01-PLAN.md — num_cpus dep + BEAVA_SHARDS/--shards config surface; warn-once + N=1 enforcement; startup INFO log (Wave 1)
 - [ ] 49-02-PLAN.md — TDD: ShardedStateStore trait + Shard struct skeleton (AHashMap, HashSet dirty, EventLog) + ShardedStateStoreV1 (Wave 2)
 - [ ] 49-03-PLAN.md — TDD: WatermarkTracker relocation to WatermarkState in Shard; DashMap type deleted; golden N=1 regression test (Wave 3)
-- [ ] 49-04-PLAN.md — TDD: StreamDefinition.shard_key + #[serde(default)]; Python @bv.stream(shard_key=...) surface (Wave 2, parallel with 49-02)
-- [ ] 49-05-PLAN.md — Integration: ShardedStateStoreV1 wired into push path at N=1; full test suite green (Wave 4)
-- [ ] 49-06-PLAN.md — Ship-gate: golden watermark integration test + 9-cell matrix within -5% baseline; human verify (Wave 5)
+- [x] 49-04-PLAN.md — TDD: StreamDefinition.shard_key + #[serde(default)]; Python @bv.stream(shard_key=...) surface (Wave 2, parallel with 49-02)
+- [x] 49-05-PLAN.md — Integration: ShardedStateStoreV1 wired into push path at N=1; full test suite green (Wave 4)
+- [x] 49-06-PLAN.md — Ship-gate: golden watermark integration test + 9-cell matrix within -5% baseline; human verify (Wave 5)
 **UI hint**: no
 
 ### Phase 50: 50-multi-shard-routing
@@ -124,7 +124,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 48. Shard-hint scaffolding | 3/3 | Complete | 2026-04-18 |
-| 49. Per-shard state store | 0/6 | Planned | — |
+| 49. Per-shard state store | 3/6 | In Progress|  |
 | 50. Multi-shard routing | 0/? | Not started | — |
 | 51. Cross-shard queries + joins | 0/5 | Planned | — |
 | 52. Event log, recovery, ship-gate | 0/? | Not started | — |

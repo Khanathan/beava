@@ -13,7 +13,7 @@ Requirements scoped to the v1.2 milestone. Each maps to a roadmap phase (48–52
 ### TPC-INFRA — Plumbing, Config, Observability
 
 - [x] **TPC-INFRA-01**: A developer running the test suite sees `EventSource::shard_hint(&self, event) -> u32` wired through TCP and HTTP parsers on every push path; default impl hashes the primary key. At `N_SHARDS=1` the value is always 0 and routing is a no-op. (Wave 0)
-- [ ] **TPC-INFRA-02**: An operator can set `BEAVA_SHARDS=N` via env or `tally serve --shards N` via CLI; debug builds default to 1, release builds default to `num_cpus::get_physical()`; env wins over CLI when both are set. (Wave 1)
+- [x] **TPC-INFRA-02**: An operator can set `BEAVA_SHARDS=N` via env or `tally serve --shards N` via CLI; debug builds default to 1, release builds default to `num_cpus::get_physical()`; env wins over CLI when both are set. (Wave 1)
 - [ ] **TPC-INFRA-03**: An operator can scrape `GET /metrics` and receive Prometheus-format metrics emitted via the `metrics` + `metrics-exporter-prometheus` crates; existing hand-rolled `/metrics` is migrated without regressing any current metric. (Wave 2)
 - [ ] **TPC-INFRA-04**: An operator observes six per-shard labeled series — `beava_shard_reactor_utilization{shard}`, `beava_shard_inbox_depth{shard}`, `beava_shard_events_total{shard,outcome}`, `beava_shard_keys_owned{shard}`, `beava_shard_watermark_lag_seconds{shard}`, `beava_shard_inbox_full_total{shard}` — plus `beava_events_dropped_total{reason}` and `beava_cross_shard_fanout_total{op}`. (Wave 2)
 - [ ] **TPC-INFRA-05**: A user calls `GET /debug/shards` and receives per-shard diagnostics (inbox depth, reactor utilization, keys owned, hot-shard warning when a shard's `keys_owned` exceeds 2× the fleet mean). (Wave 3)
@@ -22,7 +22,7 @@ Requirements scoped to the v1.2 milestone. Each maps to a roadmap phase (48–52
 
 ### TPC-PERF — Throughput, Routing, Pinning
 
-- [ ] **TPC-PERF-01**: A per-shard `Shard` struct owns its state (`AHashMap<Entity, Row>`, plain `HashSet<String>` dirty-set, `WatermarkState`, per-shard `EventLog` handle) with zero shared-mutable access from other shards. DashMap and ArcSwap remain as StateStore compat shims until Wave 4 then are deleted. (Wave 1)
+- [x] **TPC-PERF-01**: A per-shard `Shard` struct owns its state (`AHashMap<Entity, Row>`, plain `HashSet<String>` dirty-set, `WatermarkState`, per-shard `EventLog` handle) with zero shared-mutable access from other shards. DashMap and ArcSwap remain as StateStore compat shims until Wave 4 then are deleted. (Wave 1)
 - [ ] **TPC-PERF-02**: On Linux, every shard thread is pinned via `core_affinity::set_for_current` to a specific physical core at startup; on macOS, pinning is attempted and a warn-once fires if the kernel silently ignores it (Apple Silicon P/E-core QoS). (Wave 2)
 - [ ] **TPC-PERF-03**: Listener threads hand events to shard threads via `crossbeam-channel::bounded` SPSC queues (one queue per listener→shard pair); default capacity is `BEAVA_SHARD_INBOX_SIZE=65536`, overridable via env. Zero-copy handoff via `bytes::Bytes`. (Wave 2)
 - [ ] **TPC-PERF-04**: On Linux, each shard binds its own TCP + HTTP accept socket to the shared port via `SO_REUSEPORT`; the kernel 4-tuple-hashes new connections across shards. On macOS, a single listener thread + dispatcher is used (no `SO_REUSEPORT_LB` on Darwin). (Wave 2)
@@ -41,7 +41,7 @@ Requirements scoped to the v1.2 milestone. Each maps to a roadmap phase (48–52
 
 ### TPC-DX — User-Facing Surfaces
 
-- [ ] **TPC-DX-01**: A Python SDK user can declare `@bv.stream(shard_key="user_id")` or `@bv.stream(shard_key=("region", "user_id"))`; if `shard_key=` is omitted, the stream falls back to the dataclass's first field (primary-key heuristic). Tuple keys are hashed server-side via `ahash` for deterministic shard assignment. (Wave 1)
+- [x] **TPC-DX-01**: A Python SDK user can declare `@bv.stream(shard_key="user_id")` or `@bv.stream(shard_key=("region", "user_id"))`; if `shard_key=` is omitted, the stream falls back to the dataclass's first field (primary-key heuristic). Tuple keys are hashed server-side via `ahash` for deterministic shard assignment. (Wave 1)
 - [ ] **TPC-DX-02**: At `N_SHARDS > 1`, a stream with no declared `shard_key=` emits a `ShardKeyMissingWarning` on `/debug/warnings` naming the stream and recommending `@bv.stream(shard_key=...)`; the stream still runs (all events route to shard 0 deterministically). At `N=1`, no warning fires. (Wave 2)
 - [ ] **TPC-DX-03**: An operator runs `tally reshard --from N --to K --data-dir /var/lib/beava --output /var/lib/beava-new` and receives an atomic, offline-safe migration of per-shard logs and snapshot; downtime = tool runtime; the original data dir is untouched until a `--replace` flag is passed. (Wave 4)
 - [ ] **TPC-DX-04**: A user reading `docs/architecture-tpc.md` (new) can understand the shard model, routing, joins, and operational posture end-to-end; `docs/operations.md` gains a "Shard sizing & hot-shard diagnosis" section citing `beava_shard_keys_owned` and `shard_probe`. (Wave 5)
