@@ -7,11 +7,11 @@ stopped_at: Completed 48-01, 48-02, 48-03 plans
 last_updated: "2026-04-18T12:39:17.683Z"
 last_activity: "2026-04-18 — v1.2 roadmap created. 5 phases (48–52), 24 requirements mapped, 0 plans executed. Dependency graph: 48 → 49 → 50 → 51 → 52 (Phases 51 and the Wave 4 work within 52 can parallelize after Phase 50 ships — see ROADMAP.md)."
 progress:
-  total_phases: 5
+  total_phases: 6
   completed_phases: 1
   total_plans: 9
   completed_plans: 3
-  percent: 33
+  percent: 16
 ---
 
 # Project State
@@ -64,8 +64,9 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 | 50 | multi-shard-routing | SO_REUSEPORT, SPSC, pinning, backpressure, metrics, ≥3× gate | TPC-INFRA-03, TPC-INFRA-04, TPC-INFRA-07, TPC-PERF-02, TPC-PERF-03, TPC-PERF-04, TPC-CORR-01, TPC-CORR-03, TPC-DX-02 |
 | 51 | cross-shard-queries-joins | Scatter-gather, JoinShardKeyMismatch, global watermark, /debug/shards | TPC-INFRA-05, TPC-PERF-05, TPC-PERF-06, TPC-CORR-04 |
 | 52 | event-log-recovery-ship-gate | Per-shard log, parallel recovery, reshard tool, snapshot v8, parity test, 1M+ EPS, docs | TPC-INFRA-06, TPC-CORR-02, TPC-CORR-05, TPC-CORR-06, TPC-PERF-07, TPC-DX-03, TPC-DX-04 |
+| 53 | fjall-state-backend | Replace in-memory AHashMap with fjall LSM per-shard partitions; durable-by-default, unbounded state, crash-safe via WAL; `tally migrate-to-fjall` tool | TPC-PERSIST-01..06 |
 
-**Total requirements:** 24/24 mapped (100% coverage)
+**Total requirements:** 30/30 mapped (100% coverage — 24 TPC-* + 6 TPC-PERSIST-*)
 **Source of truth:** `.planning/arch/TPC-SHARD-DESIGN.md` + `.planning/arch/TPC-RESEARCH.md` + `.planning/research/SUMMARY.md`
 
 ## Launch Day Checklist

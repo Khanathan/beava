@@ -8,7 +8,7 @@
 - [x] **v2.1 -- Launch** (Phase 20) -- Engineering complete 2026-04-14 (live-run ops pending, calendar-gated) -- `.planning/milestones/v2.1-ROADMAP.md`
 - [x] **v0 -- Restructure + Data-Scientist Fork** (Phases 21-38) -- Phases 21-27, 36-37 complete; Phases 35, 38 planned.
 - [x] **v1.0-launch -- Public Launch Readiness** (Phases 45-47) -- Engineering complete 2026-04-17 -- `.planning/milestones/v1.0-launch-ROADMAP.md`
-- [ ] **v1.2 -- Thread-Per-Core + Full Key-Shard** (Phases 48-52) -- Active 2026-04-18
+- [ ] **v1.2 -- Thread-Per-Core + Full Key-Shard** (Phases 48-53) -- Active 2026-04-18
 
 ## Phases
 
@@ -17,6 +17,7 @@
 - [ ] **Phase 50: 50-multi-shard-routing** — SO_REUSEPORT shard accept on Linux, SPSC channels, core_affinity pinning, backpressure contract, per-shard labeled metrics; ≥3× baseline on `complex-c8-x8` at N=CPU_COUNT
 - [ ] **Phase 51: 51-cross-shard-queries-joins** — `GET /streams` scatter-gather, `JoinShardKeyMismatch` at register time, lazy global watermark, `GET /debug/shards` hot-shard visibility
 - [ ] **Phase 52: 52-event-log-recovery-ship-gate** — Per-shard log layout, parallel recovery, `tally reshard` tool, snapshot v8 hard-fail guard, fork/replica re-hash, N=1↔N=8 proptest parity, 1M+ EPS load test, architecture docs
+- [ ] **Phase 53: 53-fjall-state-backend** — Replace per-shard in-memory AHashMap state with `fjall` LSM-tree backend (per-shard partitions); state is durable-by-default, unbounded size, crash-safe without snapshot replay; supersedes snapshot v8 format with fjall checkpoints
 
 ## Phase Details
 
@@ -103,6 +104,21 @@ Plans:
 **Plans**: TBD
 **UI hint**: no
 
+### Phase 53: 53-fjall-state-backend
+**Goal**: Per-shard state moves from in-memory `AHashMap` to the `fjall` LSM-tree (per-shard partitions under `data/shard-N/fjall/`). State is durable on write, unbounded in size, and crash-safe via fjall's WAL — snapshots become fjall checkpoints. A `tally migrate-to-fjall` tool converts v8 in-memory snapshots to fjall partitions in place. Process kill + restart produces byte-identical state within the last-acknowledged LSN.
+**Depends on**: Phase 52 (ship-gate green — fjall lands atop the TPC architecture, not underneath it; final v1.2 phase)
+**Requirements**: TPC-PERSIST-01, TPC-PERSIST-02, TPC-PERSIST-03, TPC-PERSIST-04, TPC-PERSIST-05, TPC-PERSIST-06
+**Success Criteria** (what must be TRUE):
+  1. A developer inspecting `Shard` sees `state: fjall::Partition` (not `AHashMap`); get/set/iterate operations go through fjall with identical semantics to the pre-Phase-53 HashMap path.
+  2. An operator SIGKILLs the server mid-workload and restarts it; the process comes up reading fjall's WAL and restores feature values identical to the last acknowledged write — **no snapshot replay needed**.
+  3. A developer runs a soak test pushing 100 GB of state on a 32 GB RAM box; feature-read p99 stays sub-ms (validates fjall's bloom filters + block cache hold up on out-of-RAM state).
+  4. An operator runs `tally migrate-to-fjall --data-dir ./data` and receives an in-place conversion of v8 in-memory snapshots to per-shard fjall partitions; downtime = tool runtime; the original v8 snapshot is preserved as `snapshot.v8.bak` until `--replace` is passed.
+  5. The 9-cell matrix and Pareto cell at N=CPU_COUNT with fjall-backed state regress by at most **−15%** vs the Phase 52 in-memory baseline (fjall has intrinsic overhead vs HashMap; bounded regression accepted for the durability + unbounded-state wins).
+  6. The N=1↔N=8 proptest parity harness (from Phase 52) runs green against fjall-backed state for every operator.
+  7. `docs/architecture-tpc.md` gains a "State durability (fjall)" section; `docs/operations.md` documents `BEAVA_FJALL_*` tuning knobs and recovery semantics.
+**Plans**: TBD (run `/gsd-discuss-phase 53` to lock the design decisions before planning)
+**UI hint**: no
+
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
@@ -112,3 +128,4 @@ Plans:
 | 50. Multi-shard routing | 0/? | Not started | — |
 | 51. Cross-shard queries + joins | 0/5 | Planned | — |
 | 52. Event log, recovery, ship-gate | 0/? | Not started | — |
+| 53. Fjall state backend | 0/? | Not started | — |

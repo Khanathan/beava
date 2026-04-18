@@ -46,6 +46,15 @@ Requirements scoped to the v1.2 milestone. Each maps to a roadmap phase (48–52
 - [ ] **TPC-DX-03**: An operator runs `tally reshard --from N --to K --data-dir /var/lib/beava --output /var/lib/beava-new` and receives an atomic, offline-safe migration of per-shard logs and snapshot; downtime = tool runtime; the original data dir is untouched until a `--replace` flag is passed. (Wave 4)
 - [ ] **TPC-DX-04**: A user reading `docs/architecture-tpc.md` (new) can understand the shard model, routing, joins, and operational posture end-to-end; `docs/operations.md` gains a "Shard sizing & hot-shard diagnosis" section citing `beava_shard_keys_owned` and `shard_probe`. (Wave 5)
 
+### TPC-PERSIST — Durable Per-Shard State (fjall backend, Phase 53)
+
+- [ ] **TPC-PERSIST-01**: Every `Shard` instance owns a `fjall::Partition` at `data/shard-N/fjall/` for entity state; get/set/iterate go through fjall with identical semantics to the pre-Phase-53 AHashMap path; no cross-shard fjall contention (each shard has its own partition or keyspace). (Phase 53)
+- [ ] **TPC-PERSIST-02**: A process killed with SIGKILL mid-workload restarts, replays fjall's WAL, and serves reads with feature values identical to the last-acknowledged write — **without running the event-log replay path**. Snapshot-replay becomes optional diagnostic, not the crash-recovery critical path. (Phase 53)
+- [ ] **TPC-PERSIST-03**: Operator runs `tally migrate-to-fjall --data-dir ./data [--replace]`; tool converts v8 in-memory snapshots to per-shard fjall partitions in-place; original v8 snapshot preserved as `snapshot.v8.bak` until `--replace` passes; downtime = tool runtime. (Phase 53)
+- [ ] **TPC-PERSIST-04**: A soak test with 100 GB of entity state on a 32 GB RAM box sustains sub-ms p99 feature-read latency; validates fjall bloom filters + block cache behavior for out-of-RAM workloads. (Phase 53)
+- [ ] **TPC-PERSIST-05**: Performance regression vs Phase 52 in-memory baseline is bounded: 9-cell matrix + Pareto cell at N=CPU_COUNT regress by at most **−15%**; fork/replica parity tests (N=1↔N=8 proptest from Phase 52) remain green with fjall-backed state. (Phase 53)
+- [ ] **TPC-PERSIST-06**: `docs/architecture-tpc.md` gains a "State durability (fjall)" section; `docs/operations.md` documents `BEAVA_FJALL_*` tuning knobs (block cache size, compaction threads, WAL fsync cadence) and restart/recovery semantics. (Phase 53)
+
 ## Future Requirements
 
 Deferred to a future v1.2.x polish milestone or v1.3+:
