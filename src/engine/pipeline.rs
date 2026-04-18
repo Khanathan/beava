@@ -4,7 +4,9 @@
 //! synchronous push-through flow: event -> extract key -> update operators
 //! -> evaluate derives -> return feature map.
 
-use super::event_time::{LateDropCounters, SharedLateDrops, SharedWatermarks, WatermarkTracker};
+use super::event_time::{
+    LateDropCounters, RingBufferDropCounters, SharedLateDrops, SharedWatermarks, WatermarkTracker,
+};
 use super::expression::{eval, EvalContext, Expr};
 use super::hll::DistinctCountOp;
 use super::operators::{
@@ -429,6 +431,13 @@ pub struct PipelineEngine {
     /// `beava_late_events_dropped_total{stream}` via `/metrics`.
     pub late_drops: SharedLateDrops,
 
+    /// Phase 46-06 — per `(stream, operator_kind, reason)` ring-buffer drop
+    /// counter. Exported as `beava_ring_buffer_drops_total` via `/metrics`.
+    /// Handles are pre-registered at stream registration time (D-06) so
+    /// the drop path calls only `fetch_add(1, Relaxed)` on a cached
+    /// `Arc<AtomicU64>`.
+    pub ring_buffer_drops: RingBufferDropCounters,
+
     /// Phase 27-02 — optional handle to the process-wide subscriber
     /// registry. Set by `install_subscribers` at server startup (see
     /// `make_concurrent_state_full`); `None` in unit-test harnesses that
@@ -653,6 +662,40 @@ fn get_where_expr(def: &FeatureDef) -> Option<&Expr> {
     }
 }
 
+/// Return the operator_kind label for ring-buffer-owning operators (D-05 / OBS-01).
+/// Returns `None` for non-ring-buffer operators (Derive, Lag, Ema, Last, etc.)
+/// so that `register()` only pre-allocates counters where drops can actually occur.
+///
+/// The string is the label that appears in `beava_ring_buffer_drops_total{operator_kind="..."}`.
+/// Using the operator CLASS rather than a per-instance UUID keeps label cardinality
+/// bounded by `num_streams × num_operator_kinds × 3` (D-05 / Pitfall 3 guard).
+fn ring_buffer_operator_kind(def: &FeatureDef) -> Option<&'static str> {
+    match def {
+        FeatureDef::Count { .. } => Some("count"),
+        FeatureDef::Sum { .. } => Some("sum"),
+        FeatureDef::Avg { .. } => Some("avg"),
+        FeatureDef::Min { .. } => Some("min"),
+        FeatureDef::Max { .. } => Some("max"),
+        FeatureDef::Stddev { .. } => Some("stddev"),
+        FeatureDef::DistinctCount { .. } => Some("distinct_count"),
+        FeatureDef::ExactMin { .. } => Some("exact_min"),
+        FeatureDef::ExactMax { .. } => Some("exact_max"),
+        // Percentile and TopK use RetractingRingBuffer which never drops.
+        // Last, Lag, Ema, LastN, First, FirstN, StreamStreamJoin, TableTableJoin,
+        // EnrichFromTable, and Derive have no ring buffer at all.
+        FeatureDef::Percentile { .. }
+        | FeatureDef::Last { .. }
+        | FeatureDef::Lag { .. }
+        | FeatureDef::Ema { .. }
+        | FeatureDef::LastN { .. }
+        | FeatureDef::First { .. }
+        | FeatureDef::Derive { .. }
+        | FeatureDef::EnrichFromTable { .. }
+        | FeatureDef::StreamStreamJoin { .. }
+        | FeatureDef::TableTableJoin { .. } => None,
+    }
+}
+
 impl Default for PipelineEngine {
     fn default() -> Self {
         Self::new()
@@ -673,6 +716,7 @@ impl PipelineEngine {
             cascade_plan: AHashMap::new(),
             watermarks: WatermarkTracker::new(),
             late_drops: LateDropCounters::new(),
+            ring_buffer_drops: RingBufferDropCounters::new(),
             #[cfg(feature = "server")]
             subscriber_registry: None,
         }
@@ -760,6 +804,19 @@ impl PipelineEngine {
         if let Some(lateness) = stream.watermark_lateness {
             self.watermarks.set_lateness(&stream.name, lateness);
         }
+
+        // D-06 / OBS-01: pre-register ring-buffer drop counter handles for
+        // each ring-buffer-owning operator kind in this stream. This caches
+        // the Arc<AtomicU64> handles so the drop path calls only
+        // fetch_add(1, Relaxed) — zero DashMap lookup overhead.
+        for (_, def) in &stream.features {
+            if let Some(kind) = ring_buffer_operator_kind(def) {
+                // Calling register() for an already-registered (stream, kind)
+                // is idempotent — it just returns the existing Arc handles.
+                self.ring_buffer_drops.register(&stream.name, kind);
+            }
+        }
+
         self.streams.insert(name_clone.clone(), stream);
         // Rebuild DAG and validate (cycle detection)
         if let Err(e) = self.rebuild_dag() {
@@ -982,6 +1039,17 @@ impl PipelineEngine {
                         }
                     }
                     op.push(event, enrichment_json, now)?;
+                    // OBS-01 / D-06: check whether the ring buffer rejected this
+                    // event and, if so, increment the bounded-cardinality counter.
+                    // This fires AFTER a successful operator push so the
+                    // `take_ring_buffer_drop()` side-channel is always populated
+                    // before we read it.
+                    if let Some(reason) = op.ring_buffer_drop_reason() {
+                        if let Some(kind) = ring_buffer_operator_kind(def) {
+                            self.ring_buffer_drops
+                                .increment(stream_name, kind, reason);
+                        }
+                    }
                 }
             }
         } // stream_state borrow dropped here
