@@ -421,6 +421,8 @@ pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::i
     // D-01: shard ready-barrier passed. Safe to bind listener.
     // Store handles in shared state so push paths can route via try_send (D-08).
     *state.shard_handles.write() = shard_handles;
+    // Phase 50-07 (TPC-PERF-03): initialize per-shard routing counters for cross_shard_fraction.
+    crate::server::shard_probe::init_route_counters(shard_count);
 
     let listener = TcpListener::bind(addr).await?;
     run_tcp_server_with_listener(listener, state).await
@@ -1414,6 +1416,8 @@ pub fn handle_push_core_ex(
         let n = handles.len().max(1);
         (shard_hint as usize) % n
     };
+    // Phase 50-07 (TPC-PERF-03): record routing decision for cross_shard_fraction probe.
+    crate::server::shard_probe::record_routed_event(shard_index);
 
     // D-08: fire-and-forget try_send to shard inbox.
     // The existing synchronous processing path handles correctness;
