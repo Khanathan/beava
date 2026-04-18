@@ -61,9 +61,9 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 - [x] **CONTENT-05**: A user can read `docs/operations.md` and plan sizing, durability guarantees, crash-recovery, and tuning before deploying Beava.
 - [ ] **CONTENT-06**: A user can read `docs/architecture.md` and understand Beava's single-node design, why it's single-binary, and the scaling posture (thread-per-core / multi-node as v1.2+).
 - [ ] **CONTENT-07**: A user can read `docs/faq.md` and find honest answers to "will it scale?", "what about Flink?", and "is this production-ready?"
-- [ ] **CONTENT-08**: A user can run `examples/fraud-scoring/` — a working fraud-pipeline project defining streams + tables, pushing synthetic traffic, querying features — against a freshly-started Beava Docker container.
-- [ ] **CONTENT-09**: A user can run `examples/session-features/` — a simpler keyed-stream example (last-N-click features, count + sum aggregations).
-- [ ] **CONTENT-10**: A user can run `bash examples/curl-ingest/run.sh` and see the HTTP API exercised end-to-end.
+- [x] **CONTENT-08**: A user can run `examples/fraud-scoring/` — a working fraud-pipeline project defining streams + tables, pushing synthetic traffic, querying features — against a freshly-started Beava Docker container.
+- [x] **CONTENT-09**: A user can run `examples/session-features/` — a simpler keyed-stream example (last-N-click features, count + sum aggregations).
+- [x] **CONTENT-10**: A user can run `bash examples/curl-ingest/run.sh` and see the HTTP API exercised end-to-end.
 - [x] **CONTENT-11**: A visitor can find directory READMEs at `src/server/`, `src/engine/`, `src/state/`, `benchmark/`, `deploy/` — each explaining the module's role in 1–2 paragraphs.
 
 ### SHIP — Launch Ship Gate (Phase 46 close + cross-phase)
@@ -171,9 +171,9 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 | CONTENT-05 | Phase 47 | Complete |
 | CONTENT-06 | Phase 47 | Pending |
 | CONTENT-07 | Phase 47 | Pending |
-| CONTENT-08 | Phase 47 | Pending |
-| CONTENT-09 | Phase 47 | Pending |
-| CONTENT-10 | Phase 47 | Pending |
+| CONTENT-08 | Phase 47 | Complete |
+| CONTENT-09 | Phase 47 | Complete |
+| CONTENT-10 | Phase 47 | Complete |
 | CONTENT-11 | Phase 47 | Complete |
 | SHIP-02 | Phase 47 | Pending |
 | SHIP-03 | Phase 47 | Pending |
