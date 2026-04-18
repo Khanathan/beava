@@ -82,3 +82,7 @@ harness = false
 [[bench]]
 name = "dirty_swap"
 harness = false
+
+[[bench]]
+name = "shard_scaffold"
+harness = false
