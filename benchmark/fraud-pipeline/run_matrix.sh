@@ -12,16 +12,36 @@
 # Usage:
 #   bash benchmark/fraud-pipeline/run_matrix.sh
 #   DURATION=30 bash benchmark/fraud-pipeline/run_matrix.sh
+#
+# Phase 50 TPC multi-shard support:
+#   Set BEAVA_SHARDS=N to run with N shard threads (default: 1, preserves Phase 49 behavior).
+#   Set BEAVA_SHARDS=auto to use physical CPU count (ship-gate workload):
+#     BEAVA_SHARDS=auto DURATION=30 bash benchmark/fraud-pipeline/run_matrix.sh
+#
+# Ship-gate criteria (Phase 50):
+#   complex-c8-x8 at N=CPU_COUNT: >= 918,621 EPS (3× Phase 49 baseline of 306,207 EPS)
+#   shard_probe cross_shard_fraction: < 0.40
 
 set -euo pipefail
 cd "$(dirname "$0")"
+
+# Phase 50: resolve BEAVA_SHARDS.
+# "auto" → physical CPU count; unset → 1 (regression baseline).
+_RAW_SHARDS="${BEAVA_SHARDS:-1}"
+if [ "$_RAW_SHARDS" = "auto" ]; then
+    BEAVA_SHARDS="$(nproc 2>/dev/null || sysctl -n hw.physicalcpu 2>/dev/null || echo 1)"
+    echo "[run_matrix] BEAVA_SHARDS=auto resolved to ${BEAVA_SHARDS} (physical CPU count)"
+else
+    BEAVA_SHARDS="$_RAW_SHARDS"
+fi
+export BEAVA_SHARDS
 
 DURATION="${DURATION:-60}"
 TS="$(date +%Y%m%d-%H%M%S)"
 OUT="results/matrix-${TS}"
 mkdir -p "$OUT"
 
-echo "=== Phase 46 9-cell benchmark matrix (duration=${DURATION}s) ==="
+echo "=== Phase 46 9-cell benchmark matrix (duration=${DURATION}s, BEAVA_SHARDS=${BEAVA_SHARDS}) ==="
 echo "    results -> ${OUT}"
 echo
 
