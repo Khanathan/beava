@@ -29,7 +29,11 @@
   2. A developer running the Wave 0 micro-bench suite sees `hash(key)` overhead reported as <100 ns per event and SPSC channel roundtrip as <10 μs.
   3. A developer inspecting TCP (`handle_push_core_ex`) and HTTP (`http_push_single`, `http_push_batch`) push paths can verify `shard_hint()` is computed immediately after parse on every event.
   4. The 9-cell benchmark matrix run at N=1 after scaffolding is within ±1% of the committed v1.0-launch baseline (no performance regression from the annotation).
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 48-01-PLAN.md — TDD: `src/routing/shard_hint.rs` trait + ahash default impl + TCP/HTTP call-site wiring (Wave 1)
+- [ ] 48-02-PLAN.md — Criterion bench `benches/shard_scaffold.rs` with 3 event shapes, <100 ns gate (Wave 2)
+- [ ] 48-03-PLAN.md — Nightly CI workflow `bench-nightly.yml` + committed baseline `benchmark/shard_scaffold/README.md` (Wave 3)
 **UI hint**: no
 
 ### Phase 49: 49-per-shard-state-store
@@ -90,7 +94,7 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 48. Shard-hint scaffolding | 0/? | Not started | — |
+| 48. Shard-hint scaffolding | 0/3 | Planned | — |
 | 49. Per-shard state store | 0/? | Not started | — |
 | 50. Multi-shard routing | 0/? | Not started | — |
 | 51. Cross-shard queries + joins | 0/? | Not started | — |
