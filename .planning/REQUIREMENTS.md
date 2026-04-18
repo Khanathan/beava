@@ -69,10 +69,10 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 ### SHIP — Launch Ship Gate (Phase 46 close + cross-phase)
 
 - [x] **SHIP-01**: A maintainer can run a single integration test that exercises `HTTP push → crash → recover → read features` and confirms feature values match a live-ingest baseline (validates CORR-01, CORR-05, CORR-06 simultaneously).
-- [ ] **SHIP-02**: A maintainer can reproduce an end-to-end smoke test on a fresh AWS/Fly.io VM: install from public source → run one example → push events via HTTP → read features → kill process → recover → confirm data survived. Time-to-first-success recorded; target <60 seconds.
-- [ ] **SHIP-03**: A maintainer has re-verified `benchmark/` numbers (ingest, recovery, fork-replay) on the current tree and they reproduce the committed v2.0 BASELINE within −5%.
-- [ ] **SHIP-04**: A maintainer has re-audited `.planning/outreach/LAUNCH-PACKAGE-V8.md` against `AUDIT-V11.md` for fabricated claims — no unverifiable benchmark, no overpromised scaling story.
-- [ ] **SHIP-05**: A maintainer has recorded a ~3-minute video or GIF of the 60-second quickstart and linked it from README.
+- [x] **SHIP-02**: A maintainer can reproduce an end-to-end smoke test on a fresh AWS/Fly.io VM: install from public source → run one example → push events via HTTP → read features → kill process → recover → confirm data survived. Time-to-first-success recorded; target <60 seconds.
+- [x] **SHIP-03**: A maintainer has re-verified `benchmark/` numbers (ingest, recovery, fork-replay) on the current tree and they reproduce the committed v2.0 BASELINE within −5%.
+- [x] **SHIP-04**: A maintainer has re-audited `.planning/outreach/LAUNCH-PACKAGE-V8.md` against `AUDIT-V11.md` for fabricated claims — no unverifiable benchmark, no overpromised scaling story.
+- [x] **SHIP-05**: A maintainer has recorded a ~3-minute video or GIF of the 60-second quickstart and linked it from README.
 
 ## v2 Requirements
 
@@ -175,10 +175,10 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 | CONTENT-09 | Phase 47 | Complete |
 | CONTENT-10 | Phase 47 | Complete |
 | CONTENT-11 | Phase 47 | Complete |
-| SHIP-02 | Phase 47 | Pending |
-| SHIP-03 | Phase 47 | Pending |
-| SHIP-04 | Phase 47 | Pending |
-| SHIP-05 | Phase 47 | Pending |
+| SHIP-02 | Phase 47 | Complete |
+| SHIP-03 | Phase 47 | Complete |
+| SHIP-04 | Phase 47 | Complete |
+| SHIP-05 | Phase 47 | Complete |
 
 **Coverage:**
 - v1 requirements: 49 total (10 HTTP + 10 CORR + 3 OBS + 10 INFRA + 11 CONTENT + 5 SHIP)
