@@ -95,14 +95,11 @@ pub fn shard_count() -> usize {
 #[inline]
 pub fn shard_of(key: &str, n: usize) -> usize {
     use ahash::RandomState;
-    use std::hash::{BuildHasher, Hash, Hasher};
     // Deterministic hash across runs: use a fixed seed so different runs
     // produce the same distribution (easier to compare).
     static STATE: OnceLock<RandomState> = OnceLock::new();
     let state = STATE.get_or_init(|| RandomState::with_seeds(0x01, 0x02, 0x03, 0x04));
-    let mut h = state.build_hasher();
-    key.hash(&mut h);
-    (h.finish() as usize) % n.max(1)
+    (state.hash_one(key) as usize) % n.max(1)
 }
 
 /// Record a single event. `touched_keys` is the list of key-string slices
@@ -264,8 +261,8 @@ mod tests {
         EVENTS_TOTAL.store(0, Ordering::Relaxed);
         EVENTS_SINGLE_SHARD.store(0, Ordering::Relaxed);
         EVENTS_CROSS_SHARD.store(0, Ordering::Relaxed);
-        for i in 0..=HIST_MAX {
-            HIST[i].store(0, Ordering::Relaxed);
+        for entry in HIST.iter() {
+            entry.store(0, Ordering::Relaxed);
         }
         record_event(&["u1", "u1", "u1"]);
         assert_eq!(EVENTS_TOTAL.load(Ordering::Relaxed), 1);

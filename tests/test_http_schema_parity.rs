@@ -11,14 +11,10 @@ use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
 use beava::engine::event_time::parse_event_time;
-use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
+use beava::engine::pipeline::{FeatureDef, StreamDefinition};
 use beava::server::http::build_router;
-use beava::server::tcp::{
-    handle_push_core_ex, make_concurrent_state_full, BackfillTracker, SharedState,
-};
-use beava::state::store::StateStore;
+use beava::server::tcp::{handle_push_core_ex, SharedState};
 use http_common::{build_test_state, inject_loopback};
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------

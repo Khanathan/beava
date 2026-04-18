@@ -58,3 +58,4 @@ Thumbs.db
 
 # MCP server config (personal, points to local gbrain instance)
 .mcp.json
+.gstack/

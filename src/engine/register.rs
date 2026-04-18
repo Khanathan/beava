@@ -958,6 +958,9 @@ pub fn v0_source_to_stream_def(
 /// translator falls back to a conservative heuristic: fields with a
 /// `_right*` suffix are right-side; everything else is left-side (and thus
 /// does NOT need to be materialized by the enrichment).
+// Phase 47: the closure trait-object types are necessary for the test-harness
+// API; introducing a newtype wrapper would break all existing call sites.
+#[allow(clippy::type_complexity)]
 pub fn v0_join_to_stream_def(
     desc: &JoinDescriptor,
     left_fields_lookup: Option<&dyn Fn(&str) -> Option<Vec<String>>>,
@@ -971,17 +974,22 @@ pub fn v0_join_to_stream_def(
 /// closure returning the ordered key declaration for a named source. The
 /// field-type dimension is omitted — tests that need key-type mismatch
 /// validation use `v0_join_to_stream_def_with_meta` directly.
+// Phase 47: complex closure trait-object types required for test-harness API;
+// type aliases would add indirection without improving call-site ergonomics.
+#[allow(clippy::type_complexity)]
 pub fn v0_join_to_stream_def_with_keys(
     desc: &JoinDescriptor,
     fields_lookup: Option<&dyn Fn(&str) -> Option<Vec<String>>>,
     key_lookup: Option<&dyn Fn(&str) -> Option<Vec<String>>>,
 ) -> Result<crate::engine::pipeline::StreamDefinition, BeavaError> {
     let meta_adapter = key_lookup.map(|kl| {
+        #[allow(clippy::type_complexity)]
         move |name: &str| -> Option<(Vec<String>, Vec<(String, String)>)> {
             kl(name).map(|keys| (keys, Vec::new()))
         }
     });
     // Borrow the adapter as a trait object for the call.
+    #[allow(clippy::type_complexity)]
     let meta_ref: Option<&dyn Fn(&str) -> Option<(Vec<String>, Vec<(String, String)>)>> =
         meta_adapter.as_ref().map(|f| f as &dyn Fn(&str) -> _);
     v0_join_to_stream_def_with_meta(desc, fields_lookup, meta_ref)

@@ -90,7 +90,7 @@ async fn features_by_key_all_tables() {
     let tables = &json["data"]["tables"];
     assert!(tables.is_object(), "tables must be an object");
     assert!(
-        tables.as_object().unwrap().len() >= 1,
+        !tables.as_object().unwrap().is_empty(),
         "tables must have at least one entry after seeding"
     );
 }
@@ -209,7 +209,7 @@ async fn list_streams_returns_watermark() {
         .as_array()
         .expect("streams must be an array");
     assert!(
-        streams.len() >= 1,
+        !streams.is_empty(),
         "must have at least one registered stream"
     );
 

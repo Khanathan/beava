@@ -12,7 +12,7 @@ use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
 use beava::server::http::build_router;
-use http_common::{build_test_state, inject_peer, public_addr, TEST_ADMIN_TOKEN};
+use http_common::{build_test_state, inject_peer, public_addr};
 
 // ---------------------------------------------------------------------------
 // Wave 0 passing: writes are always admin-only regardless of public_mode

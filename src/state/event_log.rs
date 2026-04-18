@@ -553,7 +553,7 @@ impl EventLog {
             }
         })
         .await
-        .map_err(|join_err| std::io::Error::new(std::io::ErrorKind::Other, join_err))??;
+        .map_err(std::io::Error::other)??;
 
         Ok(true)
     }

@@ -54,7 +54,12 @@ pub struct AtomicThroughput {
 impl AtomicThroughput {
     pub fn new() -> Self {
         // `[AtomicU64; N]` cannot be built from `[0u64; N]` directly since
-        // AtomicU64 is not Copy. Use an array from a const fn.
+        // AtomicU64 is not Copy. The const is a local array-fill sentinel only;
+        // it is never read back through the const name after array construction.
+        // Phase 47: this is the idiomatic array-init pattern; the lint fires
+        // because const with interior mutability could alias in other contexts,
+        // but here the const is purely a local copy-constructor seed.
+        #[allow(clippy::declare_interior_mutable_const)]
         const ZERO: AtomicU64 = AtomicU64::new(0);
         Self {
             buckets: [ZERO; ATOMIC_WINDOW_SECS],

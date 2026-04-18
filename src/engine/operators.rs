@@ -1849,6 +1849,10 @@ pub struct TopKOp {
 }
 
 impl TopKOp {
+    // Phase 47: TopK needs all 8 config dimensions (field, k, window, bucket,
+    // exact_threshold, hybrid_width, hybrid_depth, optional); factoring into a
+    // builder or config struct would worsen ergonomics at every call site.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         field: impl Into<String>,
         k: usize,
@@ -1943,7 +1947,7 @@ impl TopKOp {
             TopKMode::Exact { counts } => counts,
             _ => unreachable!(),
         };
-        let mut sketch = CountMinSketch::new(self.hybrid_width, self.hybrid_depth.min(8).max(1));
+        let mut sketch = CountMinSketch::new(self.hybrid_width, self.hybrid_depth.clamp(1, 8));
         let mut heap = TopKHeap::new(self.k.max(1));
         for (v, c) in &old_counts {
             let h = v.hash64();
@@ -2123,7 +2127,7 @@ pub const FIRST_N_CAP: usize = 1000;
 
 impl FirstNOp {
     pub fn new(field: impl Into<String>, n: usize, optional: bool) -> Self {
-        let n = n.min(FIRST_N_CAP).max(1);
+        let n = n.clamp(1, FIRST_N_CAP);
         Self {
             field: field.into(),
             n,

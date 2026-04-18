@@ -8,7 +8,8 @@
 //! (matching `benchmark/fork-replay` shape), then times:
 //!   1. single-event `replica_ingest` — baseline
 //!   2. `replica_ingest_batch` @ batch=1000 — post-perf path
-//! and prints EPS, ns/event, and wall-clock split.
+//!
+//! Prints EPS, ns/event, and wall-clock split for each.
 //!
 //! Run with:
 //!   cargo test --release --test bench_replica_ingest_raw \

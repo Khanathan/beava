@@ -223,7 +223,7 @@ mod push_batch_no_features {
         let e0 = json!({"user_id": "u1"});
         let e1 = json!({"user_id": "u2"});
         let e2 = json!({"user_id": "u3"});
-        let events = vec![&e0, &e1, &e2];
+        let events = [&e0, &e1, &e2];
 
         let out = engine.push_batch_no_features("Txns", &events, &store, ts(1000));
         assert_eq!(out.len(), 3);
@@ -242,7 +242,7 @@ mod push_batch_no_features {
         let e0 = json!({"user_id": "u1"});
         let e1 = json!({"user_id": ""}); // empty key -> Protocol error
         let e2 = json!({"user_id": "u2"});
-        let events = vec![&e0, &e1, &e2];
+        let events = [&e0, &e1, &e2];
 
         let out = engine.push_batch_no_features("Txns", &events, &store, ts(1000));
         assert_eq!(out.len(), 3);
@@ -264,7 +264,7 @@ mod push_batch_no_features {
         let engine = PipelineEngine::new();
         let store = StateStore::new();
         let e = json!({"user_id": "u1"});
-        let events = vec![&e, &e, &e];
+        let events = [&e, &e, &e];
 
         let out = engine.push_batch_no_features("nonexistent", &events, &store, ts(1000));
         assert_eq!(out.len(), 3);
@@ -306,7 +306,7 @@ mod push_batch_with_cascade_no_features {
         let engine = build_cascade_engine();
         let store = StateStore::new();
         let e = json!({"user_id": "u1"});
-        let events = vec![&e, &e];
+        let events = [&e, &e];
         let pairs: Vec<(&serde_json::Value, SystemTime)> =
             events.iter().map(|e| (*e, ts(1000))).collect();
         let out = engine.push_batch_with_cascade_no_features("ghost", &pairs, &store);
@@ -328,7 +328,7 @@ mod push_batch_with_cascade_no_features {
         let e0 = json!({"user_id": "u1"});
         let e1 = json!({"user_id": "u2"});
         let e2 = json!({"user_id": "u1"});
-        let events = vec![&e0, &e1, &e2];
+        let events = [&e0, &e1, &e2];
         let now = ts(1000);
 
         // Batch path on A
@@ -377,7 +377,7 @@ mod push_batch_with_cascade_no_features {
         let e1 = json!({"user_id": "u2", "merchant_id": "m1"});
         let e2 = json!({"user_id": "u3", "merchant_id": "m1"});
         let e3 = json!({"user_id": "u4", "merchant_id": "m1"});
-        let events = vec![&e0, &e1, &e2, &e3];
+        let events = [&e0, &e1, &e2, &e3];
         let now = ts(1000);
 
         let pairs: Vec<(&serde_json::Value, SystemTime)> =
@@ -409,7 +409,7 @@ mod push_batch_with_cascade_no_features {
         let e0 = json!({"user_id": "u1"});
         let e1 = json!({"user_id": ""}); // bad
         let e2 = json!({"user_id": "u2"});
-        let events = vec![&e0, &e1, &e2];
+        let events = [&e0, &e1, &e2];
         let now = ts(1000);
 
         let pairs: Vec<(&serde_json::Value, SystemTime)> =
@@ -432,7 +432,7 @@ mod push_batch_with_cascade_no_features {
         let engine = build_cascade_engine();
         let store = StateStore::new();
         let e = json!({"user_id": "u1"});
-        let events = vec![&e, &e, &e];
+        let events = [&e, &e, &e];
 
         let pairs: Vec<(&serde_json::Value, SystemTime)> =
             events.iter().map(|e| (*e, ts(1000))).collect();

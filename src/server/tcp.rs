@@ -2178,6 +2178,9 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Bea
                                     .map(|m| m.keys().cloned().collect())
                             })
                         };
+                        // Phase 47: complex return type is required for the join-meta API;
+                        // a type alias would not simplify the call site.
+                        #[allow(clippy::type_complexity)]
                         let meta_lookup =
                             |name: &str| -> Option<(Vec<String>, Vec<(String, String)>)> {
                                 let j = engine_ref.get_raw_register_json(name)?;

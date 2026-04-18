@@ -32,7 +32,7 @@ fn push_request_with_body(size_bytes: usize) -> Request<Body> {
 #[tokio::test]
 async fn body_1mib_returns_200_or_501() {
     let app = build_router(build_test_state(false));
-    let mut req = push_request_with_body(1 * 1024 * 1024);
+    let mut req = push_request_with_body(1024 * 1024);
     inject_loopback(&mut req);
     let resp = app.oneshot(req).await.unwrap();
     assert_ne!(

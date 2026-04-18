@@ -26,6 +26,7 @@ pub const TEST_ADMIN_TOKEN: &str = "test-admin";
 
 /// Build a minimal in-memory SharedState.
 /// `public_mode = true` mounts read routes on the public router.
+#[allow(dead_code)]
 pub fn build_test_state(public_mode: bool) -> SharedState {
     make_concurrent_state_full(
         PipelineEngine::new(),
@@ -45,6 +46,7 @@ pub fn build_test_state(public_mode: bool) -> SharedState {
 /// The JoinHandle runs indefinitely; callers should abort it at test end.
 /// Uses `into_make_service_with_connect_info` so `ConnectInfo<SocketAddr>` is
 /// populated for the `require_loopback_or_token` middleware.
+#[allow(dead_code)]
 pub async fn spawn_test_server(public_mode: bool) -> (SocketAddr, JoinHandle<()>) {
     let state = build_test_state(public_mode);
     let app = build_router(state);
@@ -65,17 +67,20 @@ pub async fn spawn_test_server(public_mode: bool) -> (SocketAddr, JoinHandle<()>
 ///
 /// Required when dispatching via `tower::ServiceExt::oneshot` because axum
 /// does not populate ConnectInfo in that path.
+#[allow(dead_code)]
 pub fn inject_loopback(req: &mut Request<Body>) {
     let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
     req.extensions_mut().insert(ConnectInfo(addr));
 }
 
 /// Inject an arbitrary peer address ConnectInfo extension into a request.
+#[allow(dead_code)]
 pub fn inject_peer(req: &mut Request<Body>, addr: SocketAddr) {
     req.extensions_mut().insert(ConnectInfo(addr));
 }
 
 /// A non-loopback address to use in auth-rejection tests.
+#[allow(dead_code)]
 pub fn public_addr() -> SocketAddr {
     "8.8.8.8:12345".parse().unwrap()
 }

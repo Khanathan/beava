@@ -15,13 +15,13 @@
 //!   cargo test --release --test profile_ingest -- --nocapture --ignored
 //!
 //! Reading the output:
-//!   - `top.txt` shows which symbols burned the most CPU. Lines near the
-//!     top are the bottleneck. Look for entries like:
-//!       `dashmap::...` — DashMap shard lock contention
-//!       `parking_lot::...park` — RwLock/Mutex wait
-//!       `libc::write` / `__write_nocancel` — event log syscall (but we
-//!       have event_log disabled in this bench so shouldn't appear)
-//!       `core::sync::atomic::...` — cache-line bouncing on hot atomics
+//! - `top.txt` shows which symbols burned the most CPU. Lines near the
+//!   top are the bottleneck. Look for entries like:
+//!   - `dashmap::...` — DashMap shard lock contention
+//!   - `parking_lot::...park` — RwLock/Mutex wait
+//!   - `libc::write` / `__write_nocancel` — event log syscall (but we
+//!     have event_log disabled in this bench so shouldn't appear)
+//!   - `core::sync::atomic::...` — cache-line bouncing on hot atomics
 //!
 //!   - SVG: load in a browser for the interactive flamegraph.
 //!
@@ -239,7 +239,7 @@ fn profile_ingest_hot_path() {
     for (frames, &count) in report.data.iter() {
         let count = count as i64;
         total_samples += count;
-        if let Some(leaf) = frames.frames.iter().next().and_then(|frame| frame.first()) {
+        if let Some(leaf) = frames.frames.first().and_then(|frame| frame.first()) {
             *leaf_counts.entry(leaf.name()).or_insert(0) += count;
         }
         // Inclusive: every distinct symbol in the stack gets credited.
@@ -335,8 +335,8 @@ fn profile_ingest_thread_per_core_simulation() {
     let start = Instant::now();
 
     let mut handles = Vec::with_capacity(N_WORKERS);
-    for tid in 0..N_WORKERS {
-        let state = states[tid].clone();
+    for (tid, state_entry) in states.iter().enumerate().take(N_WORKERS) {
+        let state = state_entry.clone();
         let total_events = total_events.clone();
         let stop = stop.clone();
         handles.push(thread::spawn(move || {
@@ -380,7 +380,7 @@ fn profile_ingest_thread_per_core_simulation() {
     for (frames, &count) in report.data.iter() {
         let count = count as i64;
         total_samples += count;
-        if let Some(leaf) = frames.frames.iter().next().and_then(|frame| frame.first()) {
+        if let Some(leaf) = frames.frames.first().and_then(|frame| frame.first()) {
             *leaf_counts.entry(leaf.name()).or_insert(0) += count;
         }
     }

@@ -31,6 +31,8 @@ fn parse(json: &str) -> V0RegisterPayload {
 ///   - `EnrichedAgg` = Enriched.group_by([user_id, ...]).agg(n=count())
 ///
 /// Returns (engine, store).
+// Phase 47: test helper needs all 8 config dimensions for fixture variety.
+#[allow(clippy::too_many_arguments)]
 fn build_engine(
     left_fields_json: &str,
     table_fields_json: &str,
