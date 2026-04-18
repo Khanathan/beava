@@ -1289,6 +1289,17 @@ pub fn handle_push_core_ex(
     let engine = state.engine.read();
     let store = &state.store;
 
+    // TPC-INFRA-01 (Wave 0): compute shard hint at ingest; at N=1 always routes to shard 0.
+    // Value is discarded here — no downstream propagation (CONTEXT.md D-01).
+    let _shard_hint: u32 = {
+        let key_field_ref = engine
+            .get_stream(stream_name)
+            .and_then(|s| s.key_field.as_deref());
+        crate::routing::shard_hint_for_event(payload, key_field_ref)
+    };
+    // TODO(Wave 1): replace `let _` with `let slot = _shard_hint % N_SHARDS` when
+    // ShardRouter is introduced (Phase 49).
+
     // Phase 14 fix: Do NOT acquire event_log lock during entity state work.
     // Entity state mutations use DashMap (lock-free per key). Event log
     // append is deferred to after all state work completes so the event_log
@@ -1625,6 +1636,19 @@ pub fn handle_push_batch(
                 ))
             })
             .collect();
+    }
+
+    // TPC-INFRA-01 (Wave 0): compute shard hint per event; at N=1 always 0.
+    // Discarded here — routing wired in Wave 1 (Phase 49).
+    {
+        let engine_guard = state.engine.read();
+        for ev in batch {
+            let key_field_ref = engine_guard
+                .get_stream(&ev.stream_name)
+                .and_then(|s| s.key_field.as_deref());
+            let _shard_hint: u32 =
+                crate::routing::shard_hint_for_event(&ev.payload, key_field_ref);
+        }
     }
 
     // Cross-shard probe: if `BEAVA_SHARD_PROBE=N` is set, enumerate each

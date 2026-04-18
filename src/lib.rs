@@ -25,6 +25,11 @@ pub mod engine;
 #[allow(missing_docs)]
 pub mod error;
 
+/// Shard routing: `shard_hint` trait and hash-based routing primitive (v1.2 TPC Wave 0).
+// Phase 48: Wave 0 scaffolding — call-and-discard at N=1. Full routing lands in Wave 2.
+#[allow(missing_docs)]
+pub mod routing;
+
 /// HTTP + TCP server, auth, replica, and observability surfaces (feature = "server").
 // Phase 47 audit: deferred sub-module docs to post-launch (D-11 scope: crate root only)
 #[cfg(feature = "server")]

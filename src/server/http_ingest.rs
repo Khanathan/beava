@@ -168,6 +168,17 @@ async fn http_push_single(
     let read_features = matches!(q.sync, Some(1));
     let now = SystemTime::now();
 
+    // TPC-INFRA-01 (Wave 0): shard hint computed at HTTP ingest entry point.
+    // At N=1: always 0. Discarded — routing wired in Wave 1 (Phase 49).
+    {
+        let engine_guard = state.engine.read();
+        let key_field_ref = engine_guard
+            .get_stream(&stream)
+            .and_then(|s| s.key_field.as_deref());
+        let _shard_hint: u32 =
+            crate::routing::shard_hint_for_event(&payload, key_field_ref);
+    }
+
     match crate::server::tcp::handle_push_core_ex(
         &state,
         &stream,
@@ -250,6 +261,19 @@ async fn http_push_batch(
             raw_payload: raw,
             now: et,
         });
+    }
+
+    // TPC-INFRA-01 (Wave 0): shard hint computed per event at HTTP batch entry point.
+    // At N=1: always 0. Discarded — routing wired in Wave 1 (Phase 49).
+    {
+        let engine_guard = state.engine.read();
+        for pending in &batch {
+            let key_field_ref = engine_guard
+                .get_stream(&pending.stream_name)
+                .and_then(|s| s.key_field.as_deref());
+            let _shard_hint: u32 =
+                crate::routing::shard_hint_for_event(&pending.payload, key_field_ref);
+        }
     }
 
     let results = crate::server::tcp::handle_push_batch(&state, &batch);
