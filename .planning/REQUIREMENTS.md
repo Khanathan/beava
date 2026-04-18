@@ -54,7 +54,7 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 
 ### CONTENT — Docs, README, Examples (Phase 47, Block 3 — 3a/3b/3d/3f)
 
-- [ ] **CONTENT-01**: A visitor opens `README.md` and sees a <60-line document leading with a 5-line HTTP copy-paste demo (`curl -X POST http://localhost:6900/push/...`), followed by the fork demo, then links to docs + architecture.
+- [x] **CONTENT-01**: A visitor opens `README.md` and sees a <60-line document leading with a 5-line HTTP copy-paste demo (`curl -X POST http://localhost:6900/push/...`), followed by the fork demo, then links to docs + architecture.
 - [ ] **CONTENT-02**: A user can open `docs/getting-started.md` and go from `docker run` → pushing an event → reading a feature value in under 60 seconds on a fresh machine.
 - [ ] **CONTENT-03**: A user can read `docs/concepts.md` and understand streams, tables, operators, and the fork model in one sitting.
 - [ ] **CONTENT-04**: A user can reference `docs/python-sdk.md` and find the Python API reference (decorators, client, types) for the existing SDK.
@@ -164,7 +164,7 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 | INFRA-08 | Phase 47 | Pending |
 | INFRA-09 | Phase 47 | Complete |
 | INFRA-10 | Phase 47 | Complete |
-| CONTENT-01 | Phase 47 | Pending |
+| CONTENT-01 | Phase 47 | Complete |
 | CONTENT-02 | Phase 47 | Pending |
 | CONTENT-03 | Phase 47 | Pending |
 | CONTENT-04 | Phase 47 | Pending |
