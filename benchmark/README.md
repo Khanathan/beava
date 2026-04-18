@@ -1,13 +1,31 @@
 # Beava Benchmarks
 
-Two reproducible benchmarks live in this directory. Both drive a real
-server process (not a mock) and talk to it through the public TCP
-protocol via the Python SDK.
+## Module role (orientation)
 
-| Directory | What it measures | Headline |
+The `benchmark/` directory is the reproducible performance harness for Beava.
+Every benchmark script here can be run from a fresh clone with no external
+data dependencies — synthetic traffic generators bake in the inputs. All
+sub-harnesses drive a real server process (not a mock) through the public TCP
+or HTTP protocol.
+
+### Sub-harnesses
+
+| Directory / script | What it measures | Headline |
 |---|---|---|
-| [`fraud-pipeline/`](fraud-pipeline/) | Sustained ingest into the 47-feature fraud pipeline cited in the launch copy. | 544K eps on 16-core Hetzner (Phase 42); 314K eps on a 10-core laptop (this repo's baseline). |
-| [`replay/`](replay/) | Deterministic 30-day event replay — a smaller pipeline (5 features), pinned RNG seed, used to produce the blog-post headline number and to back-fill scoped replicas from JSONL traces. | 1.1M eps on Hetzner, deterministic byte-identical event stream for a given seed. |
+| [`fraud-pipeline/`](fraud-pipeline/) | Sustained ingest into the 47-feature fraud pipeline cited in the launch copy. 10K-key Zipfian distribution, 60 s × up to 8 clients. | 544K EPS on 16-core Hetzner (Phase 42); 314K EPS on a 10-core laptop (this repo's baseline). |
+| [`replay/`](replay/) | Deterministic 30-day event replay — 5-feature pipeline, pinned RNG seed. Used to produce blog-post headline numbers and back-fill scoped replicas from JSONL traces. | 1.1M EPS on Hetzner; byte-identical stream for a given seed. |
+| [`recovery/`](recovery/) | Snapshot-load timing harness. Builds realistic on-disk state, then measures wall-clock from process start to `/debug/ready` returning 200. Run this when testing snapshot or WAL changes. | See `recovery/results/` for committed baselines. |
+| [`fork-replay/`](fork-replay/) | Fork-replica replay throughput — drives `replica_ingest_batch` at full speed to verify the fork path does not regress. Entry point: `run_replay_bench.sh`. | |
+| [`http_load.sh`](http_load.sh) | Phase 45 HTTP load test using `oha`. Drives `POST /push-batch/{stream}` to verify the >100 K EPS HTTP target (HTTP-09). Reference results in `benchmark/LAUNCH-VERIFY.md` (produced in Phase 47). | Target: EPS ≥ 100,000 on `/push-batch` with 1000-event batches. |
+
+### Read order for new contributors
+
+Start at `fraud-pipeline/run_bench.sh` — that is the canonical Beava
+performance story. Run `recovery/run_recovery_bench.sh` only when
+state-size scaling or restart-time matters. The `http_load.sh` script
+validates the HTTP ingest path independently from the TCP baseline.
+
+---
 
 If you are here to reproduce the launch number, run the fraud pipeline.
 If you want deterministic numbers you can diff across machines, run
