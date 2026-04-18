@@ -96,6 +96,7 @@ fn main() {
                 std::process::exit(0);
             }
             Err(e) => {
+                // Intentional: startup error (Phase 47 audit)
                 eprintln!("{}", e);
                 eprintln!("Run `beava fork --help` for usage.");
                 std::process::exit(2);
@@ -121,6 +122,7 @@ fn main() {
         let local_tcp = local_http.saturating_add(1);
         std::env::set_var("BEAVA_HTTP_PORT", &local_port_raw);
         std::env::set_var("BEAVA_TCP_PORT", local_tcp.to_string());
+        // Intentional: startup banner (Phase 47 audit)
         eprintln!(
             "beava fork — remote={} scope={:?} since_ms={} -> http://localhost:{} (tcp :{})",
             cfg.remote, cfg.streams, cfg.since_millis, local_http, local_tcp
@@ -139,6 +141,7 @@ fn main() {
     builder.worker_threads(worker_threads);
     builder.enable_all();
     let runtime = builder.build().expect("failed to build tokio runtime");
+    // Intentional: startup banner (Phase 47 audit)
     eprintln!("Worker threads: {}", worker_threads);
     beava::server::shard_probe::init_from_env();
     runtime.block_on(async_main());
@@ -285,6 +288,7 @@ fn parse_fork_args_from(args: &[String]) -> Result<ReplicaBootConfig, String> {
 }
 
 fn print_fork_help() {
+    // Intentional: startup help text (Phase 47 audit)
     eprintln!(
         "usage: beava fork --remote HOST:PORT --streams s1,s2 [OPTIONS]\n\
          \n\
@@ -617,10 +621,12 @@ async fn async_main() {
             PathBuf::from(std::env::var("BEAVA_DATA_DIR").unwrap_or_else(|_| ".".into()))
                 .join("events");
         EventLog::new(event_log_dir).map(Some).unwrap_or_else(|e| {
+            // Intentional: startup error (Phase 47 audit)
             eprintln!("Failed to initialize event log: {}", e);
             None
         })
     } else {
+        // Intentional: startup status (Phase 47 audit)
         eprintln!("Event log: disabled");
         None
     };
@@ -656,6 +662,7 @@ async fn async_main() {
             .to_path_buf();
         load_incremental_snapshots(&snap_dir_startup, &snapshot_path)
     } else {
+        // Intentional: startup status (Phase 47 audit)
         eprintln!("Snapshots: disabled");
         None
     };
@@ -738,6 +745,7 @@ async fn async_main() {
             }
         }
 
+        // Intentional: startup status (Phase 47 audit)
         eprintln!("Loaded snapshot (next_seq={})", next_seq);
 
         // Spawn backfill tasks for incomplete backfills
@@ -762,6 +770,7 @@ async fn async_main() {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push(Arc::clone(&status));
+                // Intentional: startup status (Phase 47 audit)
                 eprintln!(
                     "Resuming incomplete backfill for {} features: {:?}",
                     stream_name, features
@@ -789,6 +798,7 @@ async fn async_main() {
         match parse_replica_boot_config() {
             Ok(cfg) => cfg,
             Err(e) => {
+                // Intentional: startup error (Phase 47 audit)
                 eprintln!("Replica-mode CLI error: {}", e);
                 std::process::exit(1);
             }
@@ -797,6 +807,7 @@ async fn async_main() {
     let catchup_rx: Option<tokio::sync::oneshot::Receiver<()>> = if let Some(ref cfg) =
         replica_boot
     {
+        // Intentional: startup banner (Phase 47 audit)
         eprintln!(
             "Replica mode: from={} since_ms={} streams={:?} keys={:?} key_prefix={:?} block_until_catchup={}",
             cfg.remote,
@@ -813,8 +824,10 @@ async fn async_main() {
         // events flow through the scientist's registered aggregates.
         if let Some(ref pf) = cfg.pipeline_file {
             match seed_pipelines_from_file(&state, pf) {
+                // Intentional: startup status (Phase 47 audit)
                 Ok(n) => eprintln!("Replica: seeded {} pipelines from {}", n, pf.display()),
                 Err(e) => {
+                    // Intentional: startup error (Phase 47 audit)
                     eprintln!("Replica: pipeline-file error: {}", e);
                     std::process::exit(1);
                 }
@@ -825,6 +838,7 @@ async fn async_main() {
         let client = ReplicaClient::new(cfg.clone(), state.clone(), catchup_tx);
         tokio::spawn(async move {
             if let Err(e) = client.run().await {
+                // Intentional: fatal runtime error (Phase 47 audit)
                 eprintln!("Replica client FATAL: {}", e);
                 std::process::exit(1);
             }
@@ -846,6 +860,7 @@ async fn async_main() {
     let tcp_state = state.clone();
     let tcp_handle = tokio::spawn(async move {
         if let Err(e) = run_tcp_server(&tcp_addr, tcp_state).await {
+            // Intentional: runtime error (Phase 47 audit)
             eprintln!("TCP server error: {}", e);
         }
     });
@@ -853,6 +868,7 @@ async fn async_main() {
     let http_state = state.clone();
     let http_handle = tokio::spawn(async move {
         if let Err(e) = run_http_server(&http_addr, http_state).await {
+            // Intentional: runtime error (Phase 47 audit)
             eprintln!("HTTP server error: {}", e);
         }
     });
@@ -880,6 +896,7 @@ async fn async_main() {
                     .is_err()
                 {
                     snap_state.metrics.lock().snapshots_skipped += 1;
+                    // Intentional: operational status (Phase 47 audit)
                     eprintln!("Snapshot cycle skipped: previous write still in progress");
                     continue;
                 }
@@ -1047,6 +1064,7 @@ async fn async_main() {
                         let snap_elapsed = snap_start.elapsed();
                         snap_state.metrics.lock().snapshot_duration_ms =
                             snap_elapsed.as_millis() as u64;
+                        // Intentional: operational status (Phase 47 audit)
                         eprintln!(
                             "Snapshot saved ({} bytes, {}ms, {})",
                             size,
@@ -1055,6 +1073,7 @@ async fn async_main() {
                         );
                     }
                     Ok(Err(e)) => {
+                        // Intentional: operational error (Phase 47 audit)
                         eprintln!("Snapshot write failed: {}", e);
                         // Phase 25-02: emit operational signal so the failure
                         // surfaces on /debug/warnings. record() does no disk
@@ -1065,6 +1084,7 @@ async fn async_main() {
                         );
                     }
                     Err(e) => {
+                        // Intentional: operational error (Phase 47 audit)
                         eprintln!("Snapshot task panicked: {}", e);
                         beava::server::signals::emit_snapshot_failure(
                             &snap_state.signals,
@@ -1104,6 +1124,7 @@ async fn async_main() {
             // actually rolls.
             evict_state.eviction_tracker.rotate_generation(now);
             if evicted > 0 || table_evicted > 0 {
+                // Intentional: operational status (Phase 47 audit)
                 eprintln!(
                     "Evicted {} expired stream entries, {} expired Table rows",
                     evicted, table_evicted
@@ -1126,6 +1147,7 @@ async fn async_main() {
                     None => Ok(()),
                 };
                 if let Err(e) = result {
+                    // Intentional: operational error (Phase 47 audit)
                     eprintln!("Event log fsync failed: {}", e);
                 }
             }
@@ -1158,12 +1180,14 @@ async fn async_main() {
                                     .entry(stream_name.clone())
                                     .or_insert(0) += 1;
                                 drop(m);
+                                // Intentional: operational status (Phase 47 audit)
                                 eprintln!(
                                     "Compacted {}: removed {} expired entries",
                                     stream_name, removed
                                 );
                             }
                             Err(e) => {
+                                // Intentional: operational error (Phase 47 audit)
                                 eprintln!("Compaction failed for {}: {}", stream_name, e);
                             }
                             _ => {}
@@ -1178,6 +1202,7 @@ async fn async_main() {
 
     // Log ephemeral mode if both persistence mechanisms are disabled
     if !snapshot_enabled && !event_log_enabled {
+        // Intentional: startup status (Phase 47 audit)
         eprintln!("Running in ephemeral mode (no persistence)");
     }
 
@@ -1193,6 +1218,7 @@ async fn async_main() {
         drop(engine);
         if !recs.is_empty() {
             if recs.len() > 3 {
+                // Intentional: startup advisory (Phase 47 audit)
                 eprintln!(
                     "advisory: {} config recommendations available; run \
                      'beava suggest-config' or query /debug/config-recommendations",
@@ -1200,6 +1226,7 @@ async fn async_main() {
                 );
             } else {
                 for r in &recs {
+                    // Intentional: startup advisory (Phase 47 audit)
                     eprintln!(
                         "advisory: {} '{}' → '{}' ({})",
                         r.knob, r.current, r.suggested, r.reason
@@ -1312,6 +1339,7 @@ pub(crate) fn load_incremental_snapshots(
     if legacy_path.exists() {
         let bytes = std::fs::read(legacy_path).ok()?;
         let legacy = load_legacy_v5(&bytes)?;
+        // Intentional: startup status (Phase 47 audit)
         eprintln!("Loaded legacy v5 snapshot from {}", legacy_path.display());
         return Some((legacy, 1, 0));
     }

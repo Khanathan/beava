@@ -59,6 +59,7 @@ pub fn init_from_env() {
         .unwrap_or(0);
     let _ = SHARD_COUNT.set(n);
     if n > 0 {
+        // Intentional: startup status (Phase 47 audit)
         eprintln!(
             "[shard-probe] enabled with shard_count={}; readout at /debug/shard_probe",
             n

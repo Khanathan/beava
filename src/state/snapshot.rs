@@ -475,6 +475,7 @@ pub fn load_snapshot(bytes: &[u8]) -> Option<SnapshotState> {
         });
     }
     if version != SNAPSHOT_FORMAT_VERSION {
+        // Intentional: startup status (Phase 47 audit)
         eprintln!(
             "Snapshot version mismatch: found {}, expected {}. Starting fresh.",
             version, SNAPSHOT_FORMAT_VERSION

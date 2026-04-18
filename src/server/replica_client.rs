@@ -156,6 +156,7 @@ impl ReplicaClient {
         if let Some(tx) = self.catchup_done_tx.take() {
             let _ = tx.send(());
         }
+        // Intentional: startup status (Phase 47 audit)
         eprintln!(
             "replica caught up to ts_ms={}; opening listeners",
             self.app.replica_last_applied_ts_ms.load(Ordering::Relaxed)
@@ -170,9 +171,11 @@ impl ReplicaClient {
             match result {
                 Ok(()) => {
                     // Clean EOF — treat as a drop, reconnect.
+                    // Intentional: operational status (Phase 47 audit)
                     eprintln!("replica SUBSCRIBE stream closed; reconnecting");
                 }
                 Err(e) => {
+                    // Intentional: operational error (Phase 47 audit)
                     eprintln!("replica SUBSCRIBE error: {}; reconnecting", e);
                 }
             }
@@ -184,6 +187,7 @@ impl ReplicaClient {
             }
             consecutive_failures += 1;
             if consecutive_failures >= 10 {
+                // Intentional: fatal operational error (Phase 47 audit)
                 eprintln!(
                     "replica FATAL: {} consecutive SUBSCRIBE failures within 1 minute",
                     consecutive_failures
@@ -198,6 +202,7 @@ impl ReplicaClient {
             // so we don't miss events that landed during the drop window.
             let cursor = self.app.replica_last_applied_ts_ms.load(Ordering::Relaxed);
             if let Err(e) = self.run_log_fetch_with_retry(cursor, /*max_attempts=*/ 5).await {
+                // Intentional: operational error (Phase 47 audit)
                 eprintln!("replica re-catchup LOG_FETCH failed: {}; continuing", e);
             }
 
@@ -220,6 +225,7 @@ impl ReplicaClient {
             match self.run_log_fetch_once(from_ts_millis).await {
                 Ok(()) => return Ok(()),
                 Err(e) => {
+                    // Intentional: operational error (Phase 47 audit)
                     eprintln!(
                         "replica LOG_FETCH attempt {} failed: {}",
                         attempt, e
@@ -330,9 +336,11 @@ impl ReplicaClient {
                         extract_cursor += 1;
                     }
                     if profile {
+                        // Intentional: profile instrumentation (Phase 47 audit)
                         let loop_total = loop_start.elapsed().as_nanos();
                         let other_ns = loop_total.saturating_sub(t_read_ns + t_parse_ns + t_resolve_ns + t_apply_ns);
                         let per_event_ns = if n_events > 0 { (loop_total / n_events as u128) as u64 } else { 0 };
+                        // Intentional: profile instrumentation (Phase 47 audit)
                         eprintln!(
                             "[replica-profile] LOG_FETCH loop summary:\n  \
                              events={} batches={} bytes={} wall={:.3}s ({:.0} EPS, {} ns/event, {:.1} MiB/s)\n  \

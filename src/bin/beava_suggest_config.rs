@@ -11,6 +11,7 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 fn print_usage() {
+    // Intentional: CLI usage text (Phase 47 audit)
     eprintln!(
         "usage: beava_suggest_config [--addr URL] [--token TOKEN]\n\
          \n\
@@ -48,6 +49,7 @@ fn main() {
                 std::process::exit(0);
             }
             other => {
+                // Intentional: CLI error (Phase 47 audit)
                 eprintln!("unknown argument: {}", other);
                 print_usage();
                 std::process::exit(2);
@@ -60,6 +62,7 @@ fn main() {
     let rest = match url.strip_prefix("http://") {
         Some(r) => r,
         None => {
+            // Intentional: CLI error (Phase 47 audit)
             eprintln!("only http:// addresses are supported, got {}", url);
             std::process::exit(2);
         }
@@ -92,6 +95,7 @@ fn main() {
     {
         Ok(s) => s,
         Err(e) => {
+            // Intentional: CLI error (Phase 47 audit)
             eprintln!("connection error to {}: {}", port_stripped, e);
             std::process::exit(1);
         }
@@ -107,12 +111,14 @@ fn main() {
     }
     req.push_str("\r\n");
     if let Err(e) = stream.write_all(req.as_bytes()) {
+        // Intentional: CLI error (Phase 47 audit)
         eprintln!("write error: {}", e);
         std::process::exit(1);
     }
 
     let mut buf = Vec::new();
     if let Err(e) = stream.read_to_end(&mut buf) {
+        // Intentional: CLI error (Phase 47 audit)
         eprintln!("read error: {}", e);
         std::process::exit(1);
     }
@@ -120,6 +126,7 @@ fn main() {
     let body_start = match find_subslice(&buf, b"\r\n\r\n") {
         Some(idx) => idx + 4,
         None => {
+            // Intentional: CLI error (Phase 47 audit)
             eprintln!("malformed response: no header/body separator");
             std::process::exit(1);
         }
@@ -132,6 +139,7 @@ fn main() {
         match dechunk(body) {
             Ok(v) => v,
             Err(e) => {
+                // Intentional: CLI error (Phase 47 audit)
                 eprintln!("dechunk error: {}", e);
                 std::process::exit(1);
             }
@@ -143,6 +151,7 @@ fn main() {
     let parsed: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {
+            // Intentional: CLI error (Phase 47 audit)
             eprintln!("response was not valid JSON: {}", e);
             eprintln!("body: {}", String::from_utf8_lossy(&body));
             std::process::exit(1);
@@ -156,10 +165,12 @@ fn main() {
         .unwrap_or_default();
 
     if recs.is_empty() {
+        // Intentional: CLI output (Phase 47 audit)
         println!("No recommendations — configuration looks healthy.");
         std::process::exit(0);
     }
 
+    // Intentional: CLI output (Phase 47 audit)
     println!("# beava suggest-config — {} recommendation(s)", recs.len());
     for r in &recs {
         let knob = r.get("knob").and_then(|v| v.as_str()).unwrap_or("?");
@@ -169,8 +180,10 @@ fn main() {
             .and_then(|v| v.as_str())
             .unwrap_or("?");
         let reason = r.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+        // Intentional: CLI output (Phase 47 audit)
         println!("{}: '{}' → '{}'  ({})", knob, current, suggested, reason);
         if let Some(cp) = r.get("copy_paste").and_then(|v| v.as_str()) {
+            // Intentional: CLI output (Phase 47 audit)
             println!("  {}", cp);
         }
     }
