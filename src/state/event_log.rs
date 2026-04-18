@@ -511,6 +511,58 @@ impl EventLog {
     pub fn registered_streams(&self) -> Vec<String> {
         self.writers.iter().map(|e| e.key().clone()).collect()
     }
+
+    /// D-27 / A7: scaffolded hook for durable-ack HTTP push (future `?sync=1,durable=1`).
+    ///
+    /// Appends the entry and awaits `fdatasync` completion before returning.
+    /// NOT YET WIRED — the HTTP `?sync=1` handler continues to use the in-memory
+    /// drain path (Phase 45 behavior). A follow-up phase will add a `?sync=1,durable=1`
+    /// flag that opts into this method.
+    ///
+    /// Returns `Ok(false)` if the stream is not registered (mirrors `append` contract).
+    /// Errors from the underlying write or fsync are surfaced as `std::io::Error`.
+    pub async fn append_with_fsync(
+        &self,
+        stream_name: &str,
+        event_bytes: &[u8],
+        now: SystemTime,
+    ) -> std::io::Result<bool> {
+        // Step 1: perform the normal synchronous append.
+        let written = self.append(stream_name, event_bytes, now)?;
+        if !written {
+            return Ok(false);
+        }
+
+        // Step 2: fsync the backing fd for this stream.
+        // We extract the raw fd while holding the DashMap reference, then
+        // release it before the blocking call so DashMap is not held across
+        // an await point.
+        let raw_fd = {
+            match self.writers.get(stream_name) {
+                Some(w) => w.fd.as_raw_fd(),
+                None => return Ok(false), // writer was concurrently removed
+            }
+        };
+
+        // Offload the blocking fdatasync to the tokio blocking thread pool.
+        // spawn_blocking returns a JoinError only if the task panics; map
+        // that to an io::Error so the return type stays clean.
+        tokio::task::spawn_blocking(move || {
+            #[cfg(target_os = "linux")]
+            let rc = unsafe { libc::fdatasync(raw_fd) };
+            #[cfg(not(target_os = "linux"))]
+            let rc = unsafe { libc::fsync(raw_fd) };
+            if rc < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        })
+        .await
+        .map_err(|join_err| std::io::Error::new(std::io::ErrorKind::Other, join_err))??;
+
+        Ok(true)
+    }
 }
 
 /// Sanitize a stream name for filesystem safety (T-06-04 mitigation).
@@ -1089,5 +1141,42 @@ mod tests {
         for e in &entries {
             assert_eq!(e.payload.len(), 128);
         }
+    }
+
+    // ---------- D-27: append_with_fsync smoke test ----------
+
+    /// Verifies that `append_with_fsync` writes the entry and fsyncs without error.
+    /// This is a smoke test — it proves the method compiles and runs successfully;
+    /// it does NOT test durability semantics (that is post-launch work).
+    #[tokio::test]
+    async fn append_with_fsync_writes_and_fsyncs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        log.register_stream("FsyncStream", None).unwrap();
+
+        let now = ts(2000);
+        let result = log
+            .append_with_fsync("FsyncStream", b"durable_payload", now)
+            .await;
+        assert!(result.is_ok(), "append_with_fsync returned error: {:?}", result);
+        assert!(result.unwrap(), "append_with_fsync returned false (stream not registered?)");
+
+        // Entry must be readable after fsync.
+        let entries = log.read_entries("FsyncStream").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].payload, b"durable_payload");
+        assert_eq!(entries[0].timestamp, now);
+    }
+
+    /// Verifies that `append_with_fsync` returns Ok(false) for an unregistered stream.
+    #[tokio::test]
+    async fn append_with_fsync_unregistered_returns_false() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
+        let result = log
+            .append_with_fsync("NoSuchStream", b"data", ts(1000))
+            .await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
     }
 }
