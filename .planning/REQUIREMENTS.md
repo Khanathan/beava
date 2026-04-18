@@ -35,8 +35,8 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 
 ### OBS — Observability & Correctness Documentation (Phase 46, Block 2 — 2b + 2e docs)
 
-- [ ] **OBS-01**: A user can observe a new Prometheus counter `beava_ring_buffer_drops_total{stream, operator_kind, reason}` with bounded labels (`reason ∈ {too_old, too_new, pre_epoch}`; `operator_kind` not per-instance UUID); counters are cached at operator registration to keep hot-path overhead below 100 ns.
-- [ ] **OBS-02**: A user can tell from metrics alone whether an event was dropped by the watermark (existing `beava_late_events_dropped_total`) or the ring buffer (new `beava_ring_buffer_drops_total`) — the two counters are mutually exclusive; an integration test asserts exclusivity.
+- [x] **OBS-01**: A user can observe a new Prometheus counter `beava_ring_buffer_drops_total{stream, operator_kind, reason}` with bounded labels (`reason ∈ {too_old, too_new, pre_epoch}`; `operator_kind` not per-instance UUID); counters are cached at operator registration to keep hot-path overhead below 100 ns.
+- [x] **OBS-02**: A user can tell from metrics alone whether an event was dropped by the watermark (existing `beava_late_events_dropped_total`) or the ring buffer (new `beava_ring_buffer_drops_total`) — the two counters are mutually exclusive; an integration test asserts exclusivity.
 - [ ] **OBS-03**: A user can open `docs/event-time.md` and understand event-time semantics (bucket assignment, watermark lateness, crash-replay determinism, TTL vs event-time, join idle-input behavior, fork watermark propagation) in one page.
 
 ### INFRA — Docker, CI, Repo Hygiene (Phase 47, Block 3 — 3a/3c/3e/3g)
@@ -150,8 +150,8 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 | CORR-08 | Phase 46 | Complete |
 | CORR-09 | Phase 46 | Complete |
 | CORR-10 | Phase 46 | Complete |
-| OBS-01 | Phase 46 | Pending |
-| OBS-02 | Phase 46 | Pending |
+| OBS-01 | Phase 46 | Complete |
+| OBS-02 | Phase 46 | Complete |
 | OBS-03 | Phase 46 | Pending |
 | SHIP-01 | Phase 46 | Pending |
 | INFRA-01 | Phase 47 | Pending |
