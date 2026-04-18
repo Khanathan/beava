@@ -37,7 +37,7 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 
 - [x] **OBS-01**: A user can observe a new Prometheus counter `beava_ring_buffer_drops_total{stream, operator_kind, reason}` with bounded labels (`reason ∈ {too_old, too_new, pre_epoch}`; `operator_kind` not per-instance UUID); counters are cached at operator registration to keep hot-path overhead below 100 ns.
 - [x] **OBS-02**: A user can tell from metrics alone whether an event was dropped by the watermark (existing `beava_late_events_dropped_total`) or the ring buffer (new `beava_ring_buffer_drops_total`) — the two counters are mutually exclusive; an integration test asserts exclusivity.
-- [ ] **OBS-03**: A user can open `docs/event-time.md` and understand event-time semantics (bucket assignment, watermark lateness, crash-replay determinism, TTL vs event-time, join idle-input behavior, fork watermark propagation) in one page.
+- [x] **OBS-03**: A user can open `docs/event-time.md` and understand event-time semantics (bucket assignment, watermark lateness, crash-replay determinism, TTL vs event-time, join idle-input behavior, fork watermark propagation) in one page.
 
 ### INFRA — Docker, CI, Repo Hygiene (Phase 47, Block 3 — 3a/3c/3e/3g)
 
@@ -68,7 +68,7 @@ Requirements for the **v1.0-launch** milestone (Public Launch Readiness). Each m
 
 ### SHIP — Launch Ship Gate (Phase 46 close + cross-phase)
 
-- [ ] **SHIP-01**: A maintainer can run a single integration test that exercises `HTTP push → crash → recover → read features` and confirms feature values match a live-ingest baseline (validates CORR-01, CORR-05, CORR-06 simultaneously).
+- [x] **SHIP-01**: A maintainer can run a single integration test that exercises `HTTP push → crash → recover → read features` and confirms feature values match a live-ingest baseline (validates CORR-01, CORR-05, CORR-06 simultaneously).
 - [ ] **SHIP-02**: A maintainer can reproduce an end-to-end smoke test on a fresh AWS/Fly.io VM: install from public source → run one example → push events via HTTP → read features → kill process → recover → confirm data survived. Time-to-first-success recorded; target <60 seconds.
 - [ ] **SHIP-03**: A maintainer has re-verified `benchmark/` numbers (ingest, recovery, fork-replay) on the current tree and they reproduce the committed v2.0 BASELINE within −5%.
 - [ ] **SHIP-04**: A maintainer has re-audited `.planning/outreach/LAUNCH-PACKAGE-V8.md` against `AUDIT-V11.md` for fabricated claims — no unverifiable benchmark, no overpromised scaling story.
@@ -152,8 +152,8 @@ Each v1 requirement maps to exactly one phase. Roadmap populated 2026-04-17.
 | CORR-10 | Phase 46 | Complete |
 | OBS-01 | Phase 46 | Complete |
 | OBS-02 | Phase 46 | Complete |
-| OBS-03 | Phase 46 | Pending |
-| SHIP-01 | Phase 46 | Pending |
+| OBS-03 | Phase 46 | Complete |
+| SHIP-01 | Phase 46 | Complete |
 | INFRA-01 | Phase 47 | Pending |
 | INFRA-02 | Phase 47 | Pending |
 | INFRA-03 | Phase 47 | Pending |

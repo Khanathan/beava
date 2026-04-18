@@ -58,7 +58,7 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
 
 **Phase summary:**
 - [x] **Phase 45: HTTP Ingest & Read API** — 6 HTTP endpoints (3 push, 3 read) + curl/Go/Node examples + >100 K EPS load-test harness. Covers HTTP-01..HTTP-10 (10 requirements). (completed 2026-04-17)
-- [ ] **Phase 46: Correctness Audit, Fixes & Ship-Gate Integration Test** — 2a batch-`now` fix, 2b ring-buffer-drops metric, 2c per-stream watermark lateness, 2d.i–vii audit closures (some code, some docs), `docs/event-time.md`, single backfill→crash→recover→verify integration test. Covers CORR-01..CORR-10 + OBS-01..OBS-03 + SHIP-01 (14 requirements).
+- [x] **Phase 46: Correctness Audit, Fixes & Ship-Gate Integration Test** — 2a batch-`now` fix, 2b ring-buffer-drops metric, 2c per-stream watermark lateness, 2d.i–vii audit closures (some code, some docs), `docs/event-time.md`, single backfill→crash→recover→verify integration test. Covers CORR-01..CORR-10 + OBS-01..OBS-03 + SHIP-01 (14 requirements). (completed 2026-04-18)
 - [ ] **Phase 47: Repo Polish, Docker, CI, Docs, Examples** — multi-stage distroless Docker image + Docker Hub publish, GitHub Actions CI (fmt/clippy/test <5 min), <60-line HTTP-first README rewrite, 8 flat-markdown docs pages, 3 example projects, community files audit, directory READMEs, TODO/FIXME sweep, social preview + topics, fresh-VM smoke test, outreach re-audit, benchmarks re-verified, quickstart GIF. Covers INFRA-01..INFRA-10 + CONTENT-01..CONTENT-11 + SHIP-02..SHIP-05 (25 requirements).
 
 ## Phase Details
@@ -171,7 +171,7 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
   6. A user defines `@bv.stream(watermark_lateness="10m")` and sees that value honored; streams without the field keep defaulting to 5 s with no snapshot-migration churn (validates CORR-03/CORR-04).
   7. A user or maintainer opens `docs/event-time.md` and understands bucket assignment, watermark lateness, crash-replay determinism, TTL semantics, join idle-input behavior, and fork watermark propagation in one page (validates OBS-03; closes 2d.v + 2d.i as docs-only).
   8. A maintainer runs the full 9-cell benchmark matrix after all Phase 46 merges and every cell is within −5% of the committed v2.0 BASELINE (validates CORR-02 — hard merge gate for the 2a fix).
-**Plans:** 7/8 plans executed
+**Plans:** 8/8 plans complete
 - [x] 46-01-PLAN.md — Wave 0 deps + 9-cell bench shims + 10 test scaffolds + CORR-05 verification test
 - [x] 46-02-PLAN.md — Wave 1 docs/event-time.md stub (CORR-09 2d.i + 2d.v one-line closures)
 - [x] 46-03-PLAN.md — Wave 2 2a batch-path fix (D-01/D-02/D-26) + CORR-01 proptest + 9-cell merge gate (CORR-02)
@@ -179,7 +179,7 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
 - [x] 46-05-PLAN.md — Wave 3 (parallel) 2d.ii backfill event-time + 2d.iii TTL clock + 2d.iv replica observe (CORR-06/07/08)
 - [x] 46-06-PLAN.md — Wave 4 ring-buffer drops metric with bounded cardinality + mutual-exclusivity (OBS-01/02)
 - [x] 46-07-PLAN.md — Wave 4 (parallel) ArcSwap<DashSet> atomic dirty-set swap + busy-racer + <2% bench gate (CORR-10)
-- [ ] 46-08-PLAN.md — Wave 5 full docs/event-time.md (OBS-03) + fsync hook scaffold (D-27) + ship-gate test (SHIP-01)
+- [x] 46-08-PLAN.md — Wave 5 full docs/event-time.md (OBS-03) + fsync hook scaffold (D-27) + ship-gate test (SHIP-01)
 
 ### Phase 47: Repo Polish, Docker, CI, Docs, Examples
 **Goal**: Turn the GitHub repo into a surface that earns the "let me try the quickstart" click in the first 10 seconds and delivers correct, live feature values in the next 50. `docker run beavadb/beava:latest` + a copy-pasteable `curl` from a <60-line README is the single published onboarding path. Close the ship-gate (fresh-VM smoke, outreach re-audit, benchmarks re-verified, quickstart GIF).
@@ -221,5 +221,5 @@ SUPERSEDED Option K phases preserved as historical record (SUMMARY files stay; C
 | 37. `tally fork` CLI + E2E demo | v0 | 1/1 | Complete   | 2026-04-15 |
 | 38. Mothball Option K surfaces | v0 | 0/1 | **Planned (Option M)** | — |
 | 45. HTTP Ingest & Read API | v1.0-launch | 5/5 | Complete   | 2026-04-17 |
-| 46. Correctness Audit, Fixes & Ship-Gate Integration Test | v1.0-launch | 7/8 | In Progress|  |
+| 46. Correctness Audit, Fixes & Ship-Gate Integration Test | v1.0-launch | 8/8 | Complete   | 2026-04-18 |
 | 44. Repo Polish, Docker, CI, Docs, Examples | v1.0-launch | 0/? | Planned (items unblock as 42 / 43 land) | — |
