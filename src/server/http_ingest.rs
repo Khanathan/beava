@@ -473,7 +473,10 @@ async fn http_get_features(
 }
 
 async fn http_list_streams(State(state): State<SharedState>) -> impl IntoResponse {
+    use std::sync::atomic::Ordering;
     use std::time::UNIX_EPOCH;
+    // Phase 51-02: increment cross-shard fanout counter (scatter-gather wave 1).
+    crate::server::http::CROSS_SHARD_FANOUT_LIST_STREAMS.fetch_add(1, Ordering::Relaxed);
     let engine = state.engine.read();
     let mut streams: Vec<serde_json::Value> = Vec::new();
     for def in engine.list_streams() {

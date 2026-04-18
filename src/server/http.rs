@@ -1019,43 +1019,9 @@ async fn debug_shard_probe(State(_state): State<SharedState>) -> Json<serde_json
     Json(serde_json::to_value(&snap).unwrap_or(serde_json::Value::Null))
 }
 
-/// Phase 51-02: cross-shard fanout counter for list_streams scatter-gather.
-static CROSS_SHARD_FANOUT_LIST_STREAMS: AtomicU64 = AtomicU64::new(0);
-
-/// Phase 51-02: `GET /streams` — scatter-gather across shards (N=1 Wave 1).
-/// Returns JSON array of stream objects with name and watermark_ns.
-async fn list_streams_handler(State(state): State<SharedState>) -> Json<serde_json::Value> {
-    use crate::routing::scatter::{merge_stream_lists, scatter_gather};
-
-    let streams: Vec<String> = scatter_gather(
-        1,
-        |_shard_id| {
-            let engine = state.engine.read();
-            engine.list_streams().map(|s| s.name.clone()).collect()
-        },
-        merge_stream_lists,
-    );
-
-    CROSS_SHARD_FANOUT_LIST_STREAMS.fetch_add(1, Ordering::Relaxed);
-
-    let engine = state.engine.read();
-    let stream_objs: Vec<serde_json::Value> = streams
-        .iter()
-        .map(|name| {
-            let watermark_ns = engine
-                .wm_observed_max(name)
-                .and_then(|t| {
-                    t.duration_since(std::time::UNIX_EPOCH)
-                        .ok()
-                        .map(|d| d.as_nanos() as u64)
-                })
-                .unwrap_or(0);
-            serde_json::json!({ "name": name, "watermark_ns": watermark_ns })
-        })
-        .collect();
-
-    Json(serde_json::json!(stream_objs))
-}
+/// Phase 51-02: cross-shard fanout counter incremented by /streams handler.
+/// Exported via /metrics as beava_cross_shard_fanout_total{op="list_streams"}.
+pub(crate) static CROSS_SHARD_FANOUT_LIST_STREAMS: AtomicU64 = AtomicU64::new(0);
 
 /// Phase 51-03: `GET /debug/shards` — per-shard diagnostics (D-09 schema).
 async fn debug_shards(State(state): State<SharedState>) -> Json<serde_json::Value> {
@@ -1636,7 +1602,6 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/debug/latency", get(debug_latency))
         .route("/debug/shard_probe", get(debug_shard_probe))
         .route("/debug/shards", get(debug_shards))
-        .route("/streams", get(list_streams_handler))
         .route("/snapshot", post(trigger_snapshot));
 
     // Phase 45: register HTTP ingest + read routes.
