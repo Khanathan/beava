@@ -5,34 +5,14 @@
 //! 2. `--shards <N>` CLI flag — used when env is absent
 //! 3. Default: 1 on debug builds (`cfg(debug_assertions)`), `num_cpus::get_physical()` on release
 //!
-//! Wave 1 enforcement: if the resolved count > 1, emit a warn-once and clamp to 1.
-//! Wave 2 (Phase 50) removes the clamp.
-
-use std::sync::OnceLock;
-
-static WARN_ONCE: OnceLock<()> = OnceLock::new();
+//! Phase 50.5: the Wave-1 clamp (`wave1_enforced()`) has been removed. The
+//! resolved `BEAVA_SHARDS` value now flows through unclamped — callers read
+//! `ShardConfig.count` directly.
 
 /// Resolved shard count. Valid range: 1..=256.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShardConfig {
     pub count: u16,
-}
-
-impl ShardConfig {
-    /// Wave 1: enforced to 1 regardless of resolved value. Emits a warn-once
-    /// if the user set a higher value.
-    pub fn wave1_enforced(self) -> u16 {
-        if self.count > 1 {
-            WARN_ONCE.get_or_init(|| {
-                eprintln!(
-                    "[WARN] BEAVA_SHARDS={} requested but Wave 1 (Phase 49) enforces N=1. \
-                     Set BEAVA_SHARDS=1 to suppress this warning. N>1 routing lands in Phase 50.",
-                    self.count
-                );
-            });
-        }
-        1
-    }
 }
 
 /// Resolve the shard count from environment + CLI arguments.
@@ -133,14 +113,15 @@ mod tests {
     }
 
     #[test]
-    fn wave1_enforced_clamps_to_1_and_warns_once() {
-        let high = ShardConfig { count: 8 };
-        assert_eq!(high.wave1_enforced(), 1, "Wave 1 clamps to 1");
+    fn resolved_count_flows_through_unclamped() {
+        // Phase 50.5: Wave-1 clamp removed; BEAVA_SHARDS value is honored as-is.
+        let cfg = resolve_shard_count_with_env(Some("8"), None);
+        assert_eq!(cfg.count, 8, "BEAVA_SHARDS=8 must flow through unclamped");
     }
 
     #[test]
-    fn wave1_enforced_no_clamp_when_already_1() {
-        let one = ShardConfig { count: 1 };
-        assert_eq!(one.wave1_enforced(), 1, "N=1 passes through unchanged");
+    fn resolved_count_one_passes_through() {
+        let cfg = resolve_shard_count_with_env(Some("1"), None);
+        assert_eq!(cfg.count, 1, "N=1 passes through unchanged");
     }
 }

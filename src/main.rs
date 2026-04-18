@@ -146,12 +146,12 @@ fn main() {
     // Intentional: startup banner (Phase 47 audit)
     eprintln!("Worker threads: {}", worker_threads);
     beava::server::shard_probe::init_from_env();
-    // Phase 49 (TPC Wave 1) — D-10/D-11: resolve BEAVA_SHARDS + --shards CLI.
-    // Env wins over CLI. Wave 1 clamps to 1 and warn-once if N>1 requested.
+    // Phase 50.5: resolve BEAVA_SHARDS + --shards CLI (D-10/D-11). Env wins
+    // over CLI. Wave-1 clamp removed — resolved count flows through unclamped.
     let _shards_raw = beava::config::shards::resolve_shard_count(arg_value("shards").as_deref());
-    let n_shards: u16 = _shards_raw.wave1_enforced();
+    let n_shards: u16 = _shards_raw.count;
     // Intentional: startup INFO log (Phase 49 / D-10 requirement).
-    eprintln!("Shard count: {} (resolved; Wave 1 enforces N=1)", n_shards);
+    eprintln!("Shard count: {} (resolved)", n_shards);
     runtime.block_on(async_main());
 }
 
@@ -577,8 +577,8 @@ async fn async_main() {
     // Must be called before any metrics! macro invocations.
     beava::metrics::install_prometheus_recorder();
 
-    // Phase 49-05: resolve n_shards inside async_main so it's in scope for
-    // make_concurrent_state_full. Wave 1 always returns 1.
+    // Phase 50.5: resolve n_shards inside async_main so it's in scope for
+    // make_concurrent_state_full. Wave-1 clamp removed — count flows unclamped.
     let n_shards: u16 = beava::config::shards::resolve_shard_count(
         std::env::args().skip(1).zip(std::env::args().skip(2))
             .find(|(a, _)| a == "--shards" || a.starts_with("--shards="))
@@ -590,7 +590,7 @@ async fn async_main() {
                 }
             })
             .as_deref(),
-    ).wave1_enforced();
+    ).count;
 
     let tcp_port = std::env::var("BEAVA_TCP_PORT").unwrap_or_else(|_| "6400".into());
     let http_port = std::env::var("BEAVA_HTTP_PORT").unwrap_or_else(|_| "6401".into());
