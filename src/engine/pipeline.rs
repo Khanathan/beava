@@ -457,6 +457,10 @@ pub struct PipelineEngine {
     /// All state lives in Shard-0's AHashMap. Replaces DashMap hot path for
     /// callers that use shard_store(). StateStore (DashMap) compat shim remains
     /// in ConcurrentAppState — not deleted until Wave 4.
+    ///
+    /// Phase 53-03 (D-03): gated behind `state-inmem`. The default (fjall)
+    /// build uses Plan 03B's `ShardedStateStoreFjall` sibling, not this field.
+    #[cfg(feature = "state-inmem")]
     pub sharded_store: crate::shard::store::ShardedStateStoreV1,
 }
 
@@ -731,16 +735,27 @@ impl PipelineEngine {
             subscriber_registry: None,
             #[cfg(feature = "server")]
             signals: None,
+            #[cfg(feature = "state-inmem")]
             sharded_store: crate::shard::store::ShardedStateStoreV1::new(1),
         }
     }
 
     /// Phase 49-05: construct engine with a specific shard count.
     /// Wave 1: always called with n=1 from main.rs. Wave 2 will pass n=CPU_COUNT.
-    pub fn with_shards(n: u16) -> Self {
-        let mut engine = PipelineEngine::new();
-        engine.sharded_store = crate::shard::store::ShardedStateStoreV1::new(n);
-        engine
+    ///
+    /// Phase 53-03: `n` is ignored in the default (fjall) build — the sharded
+    /// store lives in `ConcurrentAppState` / Plan 03B's `ShardedStateStoreFjall`.
+    pub fn with_shards(_n: u16) -> Self {
+        #[cfg(feature = "state-inmem")]
+        {
+            let mut engine = PipelineEngine::new();
+            engine.sharded_store = crate::shard::store::ShardedStateStoreV1::new(_n);
+            engine
+        }
+        #[cfg(not(feature = "state-inmem"))]
+        {
+            PipelineEngine::new()
+        }
     }
 
     /// Phase 27-02: attach a `SubscriberRegistry` to this engine. Called
@@ -1634,7 +1649,19 @@ impl PipelineEngine {
                 self.wm_propagate_stateless(stream_name, stream_in_order);
                 let right_key =
                     crate::engine::register::encode_group_by(&on_keys, &effective_event)?;
-                // Read from shard AHashMap (read-only — no DashMap).
+                // Read from shard state (read-only). Under default (fjall)
+                // build route through `read_entity_from_shard`; under
+                // `state-inmem` use the AHashMap direct lookup.
+                #[cfg(not(feature = "state-inmem"))]
+                let right_row: Option<AHashMap<String, serde_json::Value>> =
+                    crate::shard::read_entity_from_shard(shard, &right_key, |entity_ref| {
+                        entity_ref
+                            .static_features
+                            .iter()
+                            .map(|(n, sf)| (n.clone(), sf.value.to_json_value()))
+                            .collect()
+                    });
+                #[cfg(feature = "state-inmem")]
                 let right_row: Option<AHashMap<String, serde_json::Value>> =
                     shard.state.get(&right_key).map(|entity_ref| {
                         entity_ref
@@ -1737,39 +1764,44 @@ impl PipelineEngine {
                         }
                     };
 
-                // Probe + insert join buffer in shard.state (AHashMap).
+                // Probe + insert join buffer in shard.state. Under default
+                // (fjall) build, route through StoreView::Sharded for the RMW
+                // so the partition fsyncs the updated EntityState. Under
+                // state-inmem, use the AHashMap entry() API directly.
                 let matches: Vec<serde_json::Map<String, serde_json::Value>> = {
-                    let entity = shard.state.entry(state_key.clone()).or_default();
-                    entity.get_or_create_stream(stream_in_order);
-                    let stream_state = entity.streams.get_mut(stream_in_order).unwrap();
-                    if !stream_state.operators.iter().any(|(n, _)| *n == feat_name) {
-                        stream_state.operators.push((
-                            feat_name.clone(),
-                            crate::state::snapshot::OperatorState::StreamJoinBuffer(
-                                crate::engine::operators::StreamJoinBuffer::new(within_ms),
-                            ),
-                        ));
-                    }
-                    let buf = stream_state
-                        .operators
-                        .iter_mut()
-                        .find_map(|(n, op)| {
-                            if *n != feat_name {
-                                return None;
-                            }
-                            match op {
-                                crate::state::snapshot::OperatorState::StreamJoinBuffer(b) => {
-                                    Some(b)
+                    let mut view = crate::shard::StoreView::Sharded(shard);
+                    view.with_entity_mut(&state_key, |entity| {
+                        entity.get_or_create_stream(stream_in_order);
+                        let stream_state = entity.streams.get_mut(stream_in_order).unwrap();
+                        if !stream_state.operators.iter().any(|(n, _)| *n == feat_name) {
+                            stream_state.operators.push((
+                                feat_name.clone(),
+                                crate::state::snapshot::OperatorState::StreamJoinBuffer(
+                                    crate::engine::operators::StreamJoinBuffer::new(within_ms),
+                                ),
+                            ));
+                        }
+                        let buf = stream_state
+                            .operators
+                            .iter_mut()
+                            .find_map(|(n, op)| {
+                                if *n != feat_name {
+                                    return None;
                                 }
-                                _ => None,
-                            }
-                        })
-                        .expect("StreamJoinBuffer present");
-                    let probed = buf.probe(side, event_time_ms);
-                    buf.insert(side, event_time_ms, arriving_map.clone());
-                    buf.evict();
-                    stream_state.last_event_at = Some(now);
-                    probed
+                                match op {
+                                    crate::state::snapshot::OperatorState::StreamJoinBuffer(b) => {
+                                        Some(b)
+                                    }
+                                    _ => None,
+                                }
+                            })
+                            .expect("StreamJoinBuffer present");
+                        let probed = buf.probe(side, event_time_ms);
+                        buf.insert(side, event_time_ms, arriving_map.clone());
+                        buf.evict();
+                        stream_state.last_event_at = Some(now);
+                        probed
+                    })
                 };
 
                 let joined_events: Vec<serde_json::Value> = if !matches.is_empty() {
@@ -1973,12 +2005,9 @@ impl PipelineEngine {
             }
         };
 
-        // 3. Get or create EntityState in the shard's AHashMap (no DashMap).
-        let entity = shard.state.entry(key.clone()).or_default();
-
-        // 4. Get or create stream state within entity.
-        entity.get_or_create_stream(stream_name);
-
+        // 3. RMW the per-shard entity state. Under default (fjall) build the
+        // RMW round-trips through postcard + fjall via `StoreView::Sharded`.
+        // Under state-inmem the closure mutates the AHashMap in place.
         let op_features: Vec<(String, FeatureDef)> = stream
             .features
             .iter()
@@ -1986,91 +2015,120 @@ impl PipelineEngine {
             .cloned()
             .collect();
 
-        {
-            let stream_state = entity.streams.get_mut(stream_name).unwrap();
-            for (name, def) in &op_features {
-                let exists = stream_state.operators.iter().any(|(n, _)| *n == *name);
-                if !exists {
-                    if let Some(op) = create_operator(def) {
-                        stream_state.operators.push((name.clone(), op));
-                    }
-                }
-            }
-            for (fname, def) in &op_features {
-                if let Some((_, op)) = stream_state
-                    .operators
-                    .iter_mut()
-                    .find(|(n, _)| *n == *fname)
+        // Collect ring-buffer drop reasons inside the closure so metrics can
+        // be recorded AFTER the borrow on `shard` is released.
+        let mut rb_drops: Vec<(&'static str, crate::engine::event_time::DropReason)> = Vec::new();
+        // Capture push errors to bubble out of the closure.
+        let mut push_err: Option<BeavaError> = None;
+
+        let features_opt: Option<FeatureMap> = {
+            let mut view = crate::shard::StoreView::Sharded(shard);
+            view.with_entity_mut(&key, |entity| {
+                entity.get_or_create_stream(stream_name);
                 {
-                    if let Some(where_expr) = get_where_expr(def) {
-                        let ctx = EvalContext {
-                            features: &ahash::AHashMap::new(),
-                            event: Some(event),
-                            enrichment: enrichment_fv,
-                            event_time: Some(now),
-                        };
-                        let result = eval(where_expr, &ctx);
-                        match result {
-                            FeatureValue::Int(0) | FeatureValue::Missing => continue,
-                            FeatureValue::Float(0.0) => continue,
-                            _ => {}
+                    let stream_state = entity.streams.get_mut(stream_name).unwrap();
+                    for (name, def) in &op_features {
+                        let exists = stream_state.operators.iter().any(|(n, _)| *n == *name);
+                        if !exists {
+                            if let Some(op) = create_operator(def) {
+                                stream_state.operators.push((name.clone(), op));
+                            }
                         }
                     }
-                    op.push(event, enrichment_json, now)?;
-                    if let Some(reason) = op.ring_buffer_drop_reason() {
-                        if let Some(kind) = ring_buffer_operator_kind(def) {
-                            self.ring_buffer_drops.increment(stream_name, kind, reason);
+                    for (fname, def) in &op_features {
+                        if let Some((_, op)) = stream_state
+                            .operators
+                            .iter_mut()
+                            .find(|(n, _)| *n == *fname)
+                        {
+                            if let Some(where_expr) = get_where_expr(def) {
+                                let ctx = EvalContext {
+                                    features: &ahash::AHashMap::new(),
+                                    event: Some(event),
+                                    enrichment: enrichment_fv,
+                                    event_time: Some(now),
+                                };
+                                let result = eval(where_expr, &ctx);
+                                match result {
+                                    FeatureValue::Int(0) | FeatureValue::Missing => continue,
+                                    FeatureValue::Float(0.0) => continue,
+                                    _ => {}
+                                }
+                            }
+                            if let Err(e) = op.push(event, enrichment_json, now) {
+                                push_err = Some(e);
+                                return None;
+                            }
+                            if let Some(reason) = op.ring_buffer_drop_reason() {
+                                if let Some(kind) = ring_buffer_operator_kind(def) {
+                                    rb_drops.push((kind, reason));
+                                }
+                            }
                         }
                     }
                 }
-            }
-        }
 
-        // 5. Collect features (skip if !read_features).
-        if !read_features {
-            entity.streams.get_mut(stream_name).unwrap().last_event_at = Some(now);
-            // Mark key dirty in shard's dirty_set.
-            shard.dirty_set.insert(key);
-            return Ok(FeatureMap::new());
-        }
+                // Collect features. If !read_features, just bump last_event_at
+                // and return None to signal "no feature collection".
+                if !read_features {
+                    entity.streams.get_mut(stream_name).unwrap().last_event_at = Some(now);
+                    return None;
+                }
 
-        let mut features = FeatureMap::new();
-        {
-            let stream_state = entity.streams.get_mut(stream_name).unwrap();
-            for (name, op) in stream_state.operators.iter_mut() {
-                features.insert(name.clone(), op.read(now));
-            }
-        }
-        for (name, sf) in &entity.static_features {
-            features.insert(name.clone(), sf.value.clone());
-        }
-        let derived: Vec<(String, FeatureValue)> = {
-            let ctx = EvalContext {
-                features: &features,
-                event: Some(event),
-                enrichment: enrichment_fv,
-                event_time: Some(now),
-            };
-            stream
-                .features
-                .iter()
-                .filter_map(|(name, def)| {
-                    if let FeatureDef::Derive { expr } = def {
-                        Some((name.clone(), eval(expr, &ctx)))
-                    } else {
-                        None
+                let mut features = FeatureMap::new();
+                {
+                    let stream_state = entity.streams.get_mut(stream_name).unwrap();
+                    for (name, op) in stream_state.operators.iter_mut() {
+                        features.insert(name.clone(), op.read(now));
                     }
-                })
-                .collect()
+                }
+                for (name, sf) in &entity.static_features {
+                    features.insert(name.clone(), sf.value.clone());
+                }
+                let derived: Vec<(String, FeatureValue)> = {
+                    let ctx = EvalContext {
+                        features: &features,
+                        event: Some(event),
+                        enrichment: enrichment_fv,
+                        event_time: Some(now),
+                    };
+                    stream
+                        .features
+                        .iter()
+                        .filter_map(|(name, def)| {
+                            if let FeatureDef::Derive { expr } = def {
+                                Some((name.clone(), eval(expr, &ctx)))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                };
+                for (name, value) in derived {
+                    features.insert(name, value);
+                }
+                entity.streams.get_mut(stream_name).unwrap().last_event_at = Some(now);
+                Some(features)
+            })
         };
-        for (name, value) in derived {
-            features.insert(name, value);
+
+        if let Some(err) = push_err {
+            return Err(err);
         }
-        entity.streams.get_mut(stream_name).unwrap().last_event_at = Some(now);
+        for (kind, reason) in rb_drops {
+            self.ring_buffer_drops.increment(stream_name, kind, reason);
+        }
+
+        // Mark key dirty in shard's dirty_set.
+        shard.dirty_set.insert(key);
+
+        let mut features = match features_opt {
+            Some(f) => f,
+            None => return Ok(FeatureMap::new()),
+        };
         if let Some(ref proj) = stream.projection {
             proj.apply(&mut features);
         }
-        shard.dirty_set.insert(key);
         Ok(features)
     }
 
@@ -2901,14 +2959,37 @@ impl PipelineEngine {
         // cloning the operator state snapshot. For 53-01 WIP, fall back to a
         // static-only view (no live operator reads). Correct operator reads
         // will be added alongside the full engine migration.
-        let Some(entity) = shard.state.get(key) else {
-            return FeatureMap::default();
+        //
+        // Phase 53-03: route through `read_entity_from_shard` so the default
+        // build reads via postcard + fjall and the state-inmem build reads
+        // via AHashMap. Either way we materialize a local copy of the fields
+        // we need, then drop the borrow.
+        let entity_view: Option<(
+            Vec<(String, FeatureValue)>,                        // static features
+            Vec<(String, crate::state::store::TableRow)>,       // table rows
+        )> = crate::shard::read_entity_from_shard(shard, key, |entity| {
+            let st: Vec<(String, FeatureValue)> = entity
+                .static_features
+                .iter()
+                .map(|(n, sf)| (n.clone(), sf.value.clone()))
+                .collect();
+            let tr: Vec<(String, crate::state::store::TableRow)> = entity
+                .table_rows
+                .iter()
+                .map(|(n, r)| (n.clone(), r.clone()))
+                .collect();
+            (st, tr)
+        });
+
+        let (static_features, table_rows) = match entity_view {
+            Some(v) => v,
+            None => return FeatureMap::default(),
         };
 
         let mut features = FeatureMap::new();
 
         // Flattened Live table_rows as `TableName.field`.
-        for (table_name, row) in entity.table_rows.iter() {
+        for (table_name, row) in table_rows.iter() {
             if matches!(row.state, TableRowState::Live) {
                 for (field_name, value) in row.fields.iter() {
                     features.insert(format!("{}.{}", table_name, field_name), value.clone());
@@ -2917,8 +2998,8 @@ impl PipelineEngine {
         }
 
         // Static features overlay (last writer wins).
-        for (name, sf) in &entity.static_features {
-            features.insert(name.clone(), sf.value.clone());
+        for (name, sf_value) in &static_features {
+            features.insert(name.clone(), sf_value.clone());
         }
 
         // Qualified names so derives can reference {StreamName}.{feature}.

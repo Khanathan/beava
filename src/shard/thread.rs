@@ -231,6 +231,38 @@ fn pin_to_core(shard_index: usize) {
 
 /// Shard event loop. Runs a tokio current_thread runtime on the pinned OS thread.
 /// Phase 50.5-01 Task 3: real dispatch via push_with_cascade_on_shard.
+///
+/// Phase 53-03 (D-03): under the default (fjall) build this loop needs a
+/// `PartitionHandle` sourced from `ConcurrentAppState.fjall_keyspace`, but
+/// that plumbing is Plan 03B's responsibility. Until 03B lands, the
+/// default-build implementation is a stub that drains the inbox without
+/// processing — enough to satisfy the library's typechecker and link
+/// integration tests that call `Shard::with_partition` directly.
+#[cfg(not(feature = "state-inmem"))]
+fn shard_event_loop(
+    shard_index: usize,
+    rx: Receiver<ShardEvent>,
+    _state: std::sync::Arc<crate::server::tcp::ConcurrentAppState>,
+) {
+    // Phase 53-03 stub: drain inbox, acknowledge with a quarantine error so
+    // callers don't block on oneshot receivers. Plan 03B replaces this body
+    // with the full fjall-backed dispatch loop.
+    eprintln!(
+        "[beava-shard-{}] running Phase-53-03 stub event loop — Plan 03B finishes fjall plumbing",
+        shard_index
+    );
+    while let Ok(event) = rx.recv() {
+        if let Some(tx) = event.response_tx {
+            let _ = tx.send(ShardResult::Err(ShardDispatchError::ProcessingError(
+                "shard thread in Phase-53-03 stub mode; fjall plumbing pending Plan 03B".into(),
+            )));
+        }
+    }
+}
+
+/// Legacy (state-inmem) shard event loop — AHashMap-backed hot path preserved
+/// from Phase 50.5-01 Task 3.
+#[cfg(feature = "state-inmem")]
 fn shard_event_loop(
     shard_index: usize,
     rx: Receiver<ShardEvent>,
@@ -437,6 +469,11 @@ fn shard_event_loop(
 /// `&mut Shard` — this helper currently mutates `shard.state` directly for
 /// the static_features update but skips the cascade fan-out. That step is
 /// deferred to a follow-up (engine-side API addition).
+///
+/// Phase 53-03: gated behind `state-inmem` — only called from the legacy
+/// (AHashMap-backed) shard event loop. Plan 03B ships the fjall-aware
+/// replacement.
+#[cfg(feature = "state-inmem")]
 fn apply_set_on_shard(
     _state: &std::sync::Arc<crate::server::tcp::ConcurrentAppState>,
     shard: &mut crate::shard::Shard,
@@ -482,6 +519,10 @@ fn apply_set_on_shard(
 ///
 /// Returns `Value::Null` if the entity or table_row is absent or tombstoned
 /// (matches the null-collapse contract of OP_GET_MULTI).
+///
+/// Phase 53-03: gated behind `state-inmem`. Default build uses
+/// `read_entity_from_shard` inline in the fjall event loop (Plan 03B).
+#[cfg(feature = "state-inmem")]
 fn get_table_row_on_shard(
     shard: &crate::shard::Shard,
     table_name: &str,
@@ -507,6 +548,9 @@ fn get_table_row_on_shard(
 
 /// Local helper mirroring `crate::server::tcp::json_to_feature_value` for
 /// shard-side SET. Avoids a cross-module dep + keeps this file self-contained.
+///
+/// Phase 53-03: gated behind `state-inmem` — only used by the legacy SET path.
+#[cfg(feature = "state-inmem")]
 fn json_to_feature_value_local(v: &serde_json::Value) -> crate::types::FeatureValue {
     use crate::types::FeatureValue;
     // CONTEXT.md: FeatureValue variants are Float / Int / String / Missing.

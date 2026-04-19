@@ -3,6 +3,17 @@
 //! At N=1, the router always returns index 0. The `shard_for_event` method
 //! computes `shard_hint_for_event(event, key_field) % shard_count` to pick
 //! the owning shard. At N=1 this is `hint % 1 == 0` — always shard 0.
+//!
+//! ## Phase 53-03 (D-03): state-inmem feature gate
+//!
+//! The entire Phase 49 legacy path is gated behind the `state-inmem` Cargo
+//! feature. Production / default builds ship the fjall-backed
+//! `ShardedStateStoreFjall` (Plan 03B) instead. This file's file-level
+//! attribute below ensures the default build skips compiling this module
+//! entirely — avoiding both the `Shard::new()` dependency (now gated) and
+//! any accidental routing through AHashMap code in a fjall build.
+
+#![cfg(feature = "state-inmem")]
 
 use std::sync::{Arc, Mutex};
 

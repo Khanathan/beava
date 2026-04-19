@@ -236,6 +236,11 @@ pub struct ConcurrentAppState {
 
     /// Phase 49-05 (TPC Wave 1): sharded state store alongside the DashMap compat shim.
     /// At N=1, all state lives in Shard-0. Wave 4 (Phase 52) removes the DashMap `store`.
+    ///
+    /// Phase 53-03 (D-03): gated behind `state-inmem`. The default (fjall)
+    /// build uses Plan 03B's `ShardedStateStoreFjall` instead — that field
+    /// lands in the same struct when Plan 03B wires it.
+    #[cfg(feature = "state-inmem")]
     pub sharded_store: std::sync::Arc<std::sync::Mutex<crate::shard::store::ShardedStateStoreV1>>,
 
     /// Phase 50-03/04 (TPC Wave 2): per-shard thread handles. Populated by run_tcp_server
@@ -385,7 +390,7 @@ pub fn make_concurrent_state_full(
     event_log_enabled: bool,
     admin_token: Option<String>,
     public_mode: bool,
-    n_shards: u16,
+    #[cfg_attr(not(feature = "state-inmem"), allow(unused_variables))] n_shards: u16,
 ) -> SharedState {
     let signals = crate::server::signals::SignalRegistry::new_default().into_shared();
     let subscriber_registry = Arc::new(crate::server::replica::SubscriberRegistry::new(
@@ -432,6 +437,7 @@ pub fn make_concurrent_state_full(
         atomic_throughput: crate::server::throughput::AtomicThroughput::new(),
         latency_sample_counter: std::sync::atomic::AtomicU64::new(0),
         extracted_history: dashmap::DashMap::new(),
+        #[cfg(feature = "state-inmem")]
         sharded_store: std::sync::Arc::new(std::sync::Mutex::new(
             crate::shard::store::ShardedStateStoreV1::new(n_shards),
         )),
@@ -455,10 +461,17 @@ pub fn make_concurrent_state_full(
 pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::io::Error> {
     // D-01: spawn-all-at-boot + ready-barrier. All N shard threads must signal
     // ready before any listener socket binds.
+    //
+    // Phase 53-03 (D-03): under `state-inmem` the shard count comes from the
+    // legacy `sharded_store` field; in the default (fjall) build, read
+    // `BEAVA_SHARDS` directly until Plan 03B wires `ConcurrentAppState.fjall_*`.
+    #[cfg(feature = "state-inmem")]
     let shard_count = {
         let ss = state.sharded_store.lock().expect("sharded_store mutex poisoned");
         crate::shard::traits::ShardedStateStore::shard_count(&*ss) as usize
     };
+    #[cfg(not(feature = "state-inmem"))]
+    let shard_count = crate::state::store::read_beava_shards() as usize;
     let inbox_size = crate::shard::thread::inbox_size_from_env();
     let shard_handles = crate::shard::thread::spawn_shard_threads(shard_count, inbox_size, state.clone());
     // D-01: shard ready-barrier passed. Safe to bind listener.
@@ -1787,6 +1800,11 @@ pub fn handle_push_core_ex(
     // synchronous block — no `.await` inside the guard scope (T-49-05-01).
     // Wave 2 (Phase 50) will make the shard path PRIMARY and remove the
     // StateStore write from the hot path.
+    //
+    // Phase 53-03 (D-03): shadow write is dev-mode-only. Default (fjall) build
+    // writes via `ShardedStateStoreFjall` (Plan 03B); this block compiles only
+    // under `--features state-inmem`.
+    #[cfg(feature = "state-inmem")]
     {
         let sharded = state.sharded_store.lock().expect("sharded_store mutex poisoned");
         let stream_def_opt = engine.get_stream(stream_name).cloned();

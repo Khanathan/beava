@@ -864,7 +864,14 @@ async fn async_main() {
         }
 
         // Step 2: parallel per-shard log recovery.
+        // Phase 53-03 (D-03): the AHashMap-backed recovery path is gated behind
+        // `state-inmem`. The default (fjall) build does NOT need event-log
+        // replay on the critical path — fjall's journal auto-replays on
+        // `Keyspace::open`. Plans 03B (boot plumbing) and 05 (SIGKILL test)
+        // close out the fjall crash-recovery story.
+        #[cfg(feature = "state-inmem")]
         let n_recovery_shards = n_shards as usize;
+        #[cfg(feature = "state-inmem")]
         if n_recovery_shards > 0 {
             // Build Arc<Mutex<Shard>> slice from the sharded store.
             // We need one Arc<Mutex<Shard>> per shard for the recovery threads to hold

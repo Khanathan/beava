@@ -504,10 +504,16 @@ async fn http_list_streams(State(state): State<SharedState>) -> impl IntoRespons
     // Use scatter_gather to fan out to all N shards (Wave 1: N=1, synchronous).
     // collect stream names via engine (all shards hold identical StreamDefinition).
     let stream_names: Vec<String> = engine.list_streams().map(|s| s.name.clone()).collect();
+    // Phase 53-03 (D-03): shard count under state-inmem comes from the
+    // legacy `sharded_store` field; under default (fjall) read BEAVA_SHARDS
+    // directly (Plan 03B will route via `ConcurrentAppState.shard_partitions`).
+    #[cfg(feature = "state-inmem")]
     let n_shards = {
         let ss = state.sharded_store.lock().expect("sharded_store mutex poisoned");
         crate::shard::traits::ShardedStateStore::shard_count(&*ss) as usize
     };
+    #[cfg(not(feature = "state-inmem"))]
+    let n_shards = crate::state::store::read_beava_shards() as usize;
     // scatter_gather deduplicates names across N shards (all identical at Wave 1).
     let merged_names = crate::routing::scatter::scatter_gather(
         n_shards,

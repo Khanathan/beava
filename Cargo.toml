@@ -23,6 +23,11 @@ client = []
 # without the per-push ring-buffer mutex that the ring requires. Enable
 # only when compiling for the launch/demo UI.
 demo = ["server"]
+# Phase 53-03 (D-03): dev-only fallback to Phase 49 AHashMap-backed
+# ShardedStateStoreV1. OFF by default — production binary ships with the
+# fjall backend only. Enable via `cargo build --features state-inmem` to
+# run A/B benchmarks against the pre-Phase-53 legacy path.
+state-inmem = []
 
 [dependencies]
 ahash = "0.8"
