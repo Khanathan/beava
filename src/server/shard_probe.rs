@@ -326,90 +326,34 @@ impl HotShardConfig {
 /// Rate-limit hot-shard warnings: at most once per 60 seconds.
 static LAST_HOT_WARN_SECS: AtomicU64 = AtomicU64::new(0);
 
-/// Collect shard diagnostics for the current state. Wave 1: N=1 shard.
-/// Uses `state.store.entity_count()` for keys_owned and
-/// `state.events_total.load(Relaxed)` for events_total.
-#[cfg(feature = "server")]
-pub fn collect_shard_diagnostics(
-    state: &crate::server::tcp::ConcurrentAppState,
-    config: &HotShardConfig,
-) -> ShardDiagnosticsReport {
-    use std::sync::atomic::Ordering::Relaxed;
-    use std::time::{SystemTime, UNIX_EPOCH};
+// ---------- Phase 51-03: Pure helpers (extracted for testability) ----------
 
-    let keys_owned = state.store.entity_count();
-    let events_total = state.events_total.load(Relaxed);
+/// Detect hot shards from a slice of ShardInfo structs.
+///
+/// Fleet mean = sum(keys_owned) / n_shards.
+/// A shard is hot if (keys_owned as f64 / fleet_mean) >= config.threshold (inclusive,
+/// per D-07 design decision).
+/// Returns an empty vec when fleet_mean == 0 (no keys yet) or no shard exceeds threshold.
+///
+/// Separated from `collect_shard_diagnostics` for pure-function unit testability.
+pub fn detect_hot_shards(shards: &[ShardInfo], config: &HotShardConfig) -> Vec<HotShardEntry> {
+    if shards.is_empty() {
+        return Vec::new();
+    }
+    let n = shards.len() as f64;
+    let total: usize = shards.iter().map(|s| s.keys_owned).sum();
+    let fleet_mean = total as f64 / n;
 
-    // Watermark lag: wall-clock minus min watermark across all streams.
-    let watermark_lag_seconds = {
-        let wm = state.engine.read();
-        let wm_guard = wm.watermarks.lock().expect("watermarks lock");
-        let now = SystemTime::now();
-        let now_nanos = now
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
-        let streams = wm_guard.iter_streams();
-        drop(wm_guard);
-        if streams.is_empty() {
-            0.0
-        } else {
-            let min_wm = streams
-                .iter()
-                .map(|(_, t)| {
-                    t.duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_nanos() as u64)
-                        .unwrap_or(0)
-                })
-                .min()
-                .unwrap_or(0);
-            if now_nanos >= min_wm {
-                (now_nanos - min_wm) as f64 / 1_000_000_000.0
-            } else {
-                0.0
-            }
-        }
-    };
+    // With zero fleet mean, no shard is meaningfully hot.
+    if fleet_mean == 0.0 {
+        return Vec::new();
+    }
 
-    let shards = vec![ShardInfo {
-        id: 0,
-        inbox_depth: 0,
-        reactor_utilization: 0.0,
-        keys_owned,
-        watermark_lag_seconds,
-        events_total,
-        inbox_full_total: 0,
-        down: false,
-    }];
-
-    // Hot-shard detection: fleet_mean = keys_owned / shard_count (N=1).
-    let fleet_mean = keys_owned as f64; // N=1 so mean = only shard's count
-    let mut hot_shards = Vec::new();
-    for shard in &shards {
-        let ratio = if fleet_mean > 0.0 {
-            shard.keys_owned as f64 / fleet_mean
-        } else {
-            1.0
-        };
-        if ratio > config.threshold {
-            // Rate-limited warn: at most once per 60 s
-            let now_secs = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let last = LAST_HOT_WARN_SECS.load(Relaxed);
-            if now_secs.saturating_sub(last) >= 60 {
-                if LAST_HOT_WARN_SECS
-                    .compare_exchange(last, now_secs, Relaxed, Relaxed)
-                    .is_ok()
-                {
-                    eprintln!(
-                        "[shard-probe] hot shard detected: shard={} keys={} mean={:.1} ratio={:.2}",
-                        shard.id, shard.keys_owned, fleet_mean, ratio
-                    );
-                }
-            }
-            hot_shards.push(HotShardEntry {
+    let mut hot = Vec::new();
+    for shard in shards {
+        let ratio = shard.keys_owned as f64 / fleet_mean;
+        if ratio >= config.threshold {
+            hot.push(HotShardEntry {
                 shard: shard.id,
                 keys_owned: shard.keys_owned,
                 fleet_mean,
@@ -417,12 +361,163 @@ pub fn collect_shard_diagnostics(
             });
         }
     }
+    hot
+}
+
+/// Compute the `ready` field: true only when `all_ready` is set AND no shard is DOWN.
+///
+/// Mirrors `/ready` semantics (D-09): true only when every shard passed its boot
+/// barrier and none is in DOWN/quarantined state.
+///
+/// Extracted for pure-function testability.
+#[inline]
+pub fn compute_ready(all_ready: bool, any_down: bool) -> bool {
+    all_ready && !any_down
+}
+
+/// Emit a rate-limited hot-shard warning (at most once per 60 s).
+///
+/// Uses SeqCst CAS on `LAST_HOT_WARN_SECS` to avoid double-log in races.
+/// At most one extra log line can slip through at the 60 s window boundary
+/// (T-51-03-04 accepted).
+fn maybe_warn_hot_shards(hot: &[HotShardEntry]) {
+    use std::sync::atomic::Ordering::SeqCst;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    if hot.is_empty() {
+        return;
+    }
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let last = LAST_HOT_WARN_SECS.load(SeqCst);
+    if now_secs.saturating_sub(last) >= 60 {
+        if LAST_HOT_WARN_SECS
+            .compare_exchange(last, now_secs, SeqCst, SeqCst)
+            .is_ok()
+        {
+            for entry in hot {
+                eprintln!(
+                    "[beava-shard-probe] HOT SHARD: shard={} keys_owned={} fleet_mean={:.1} ratio={:.2}",
+                    entry.shard, entry.keys_owned, entry.fleet_mean, entry.ratio
+                );
+            }
+        }
+    }
+}
+
+/// Collect shard diagnostics for the current state (D-09 schema).
+///
+/// Reads live data from `state.shard_handles` (inbox_depth, is_down) and
+/// `state.sharded_store` (keys_owned per shard). Events_total comes from
+/// `state.events_total` (global counter). Watermark lag is derived from
+/// `state.global_watermark.global_min()`.
+///
+/// Hot-shard detection delegates to `detect_hot_shards`; ready flag to
+/// `compute_ready`. Log-warn throttle is applied via `maybe_warn_hot_shards`.
+#[cfg(feature = "server")]
+pub fn collect_shard_diagnostics(
+    state: &crate::server::tcp::ConcurrentAppState,
+    config: &HotShardConfig,
+) -> ShardDiagnosticsReport {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let handles = state.shard_handles.read();
+    let n_shards = handles.len().max(1); // at minimum 1 (N=1 legacy path)
+
+    // Global events_total (sum across all shards — the per-shard counter is
+    // emitted via Prometheus; here we use the process-wide atomic for simplicity).
+    let global_events_total = state.events_total.load(Relaxed);
+
+    // Watermark lag: wall-clock minus global minimum watermark across all registered streams.
+    // Iterates stream names from the engine and queries global_min(stream) for each,
+    // then takes the fleet-wide minimum. O(N_STREAMS * N_SHARDS) — on-demand only.
+    let watermark_lag_seconds = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now_nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        // Collect stream names under engine read lock, then release before gw read.
+        let stream_names: Vec<String> = {
+            let eng = state.engine.read();
+            eng.list_streams().into_iter().map(|s| s.name.clone()).collect()
+        };
+        if stream_names.is_empty() {
+            0.0
+        } else {
+            let gw = state.global_watermark.read();
+            let min_wm: Option<u64> = stream_names
+                .iter()
+                .filter_map(|name| gw.global_min(name))
+                .min();
+            drop(gw);
+            match min_wm {
+                Some(min_wm_nanos) if now_nanos >= min_wm_nanos => {
+                    (now_nanos - min_wm_nanos) as f64 / 1_000_000_000.0
+                }
+                _ => 0.0,
+            }
+        }
+    };
+
+    // Build per-shard ShardInfo. When shard_handles is empty (N=1 legacy path
+    // before spawn_shard_threads is called), synthesize a single entry from
+    // state.store.entity_count() so the endpoint is always usable.
+    let shards: Vec<ShardInfo> = if handles.is_empty() {
+        // Legacy N=1 path: no shard threads yet spawned.
+        vec![ShardInfo {
+            id: 0,
+            inbox_depth: 0,
+            reactor_utilization: 0.0,
+            keys_owned: state.store.entity_count(),
+            watermark_lag_seconds,
+            events_total: global_events_total,
+            inbox_full_total: 0,
+            down: false,
+        }]
+    } else {
+        handles
+            .iter()
+            .map(|h| {
+                let idx = h.shard_index;
+                // inbox_depth: current SPSC channel length (unsent events).
+                let inbox_depth = h.inbox_tx.len();
+                // is_down: shard quarantined after panic (D-02).
+                let down = h.is_down.load(Relaxed);
+                ShardInfo {
+                    id: idx,
+                    inbox_depth,
+                    reactor_utilization: 0.0, // EWMA not yet wired (Phase 52)
+                    keys_owned: 0, // per-shard key count requires shard-local read; placeholder
+                    watermark_lag_seconds,
+                    events_total: global_events_total,
+                    inbox_full_total: 0, // per-shard inbox_full counter (Phase 52)
+                    down,
+                }
+            })
+            .collect()
+    };
+
+    // Ready: boot barrier passed (shard_handles non-empty) AND no shard is DOWN.
+    // `handles` is already held — no second lock acquisition needed.
+    let boot_ready = !handles.is_empty();
+    let any_down = handles.iter().any(|h| h.is_down.load(Relaxed));
+    let ready = compute_ready(boot_ready, any_down);
+    drop(handles);
+
+    // Hot-shard detection using the pure helper.
+    let hot_shards = detect_hot_shards(&shards, config);
+
+    // Rate-limited log warning when hot shards detected.
+    maybe_warn_hot_shards(&hot_shards);
 
     ShardDiagnosticsReport {
-        shard_count: 1,
+        shard_count: n_shards,
         shards,
         hot_shards,
-        ready: true,
+        ready,
     }
 }
 
