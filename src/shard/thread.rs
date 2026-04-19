@@ -171,6 +171,12 @@ fn shard_event_loop(
     // Each shard owns its own Shard struct — single writer, no lock.
     let mut shard = crate::shard::Shard::new();
 
+    // Phase 51-02: read publish threshold once at shard boot — avoids repeated
+    // env-var parsing on the hot event loop. BEAVA_WATERMARK_PUBLISH_INTERVAL
+    // is clamped [64, 65536] by from_env(); defaults to 1024.
+    let wm_publish_threshold =
+        crate::shard::global_watermark::GlobalWatermarkConfig::from_env().publish_interval;
+
     rt.block_on(async move {
         let mut event_count: u64 = 0;
         let mut last_gauge_update = std::time::Instant::now();
@@ -214,8 +220,15 @@ fn shard_event_loop(
             };
 
             // Advance per-shard watermark if payload carries _event_time.
+            // Phase 51-02: call publish_if_due on every observation so the
+            // shard publishes its observed_max to the global store after every
+            // `wm_publish_threshold` events (default 1024). The read lock on
+            // global_watermark is uncontended on the hot path — publish/global_min
+            // only access the AtomicU64 array, not the stream_ord map.
             if let Some(et) = crate::engine::operators::parse_event_time(&payload) {
                 shard.watermark.observe(stream_name, et);
+                let gw = state.global_watermark.read();
+                shard.watermark.publish_if_due(stream_name, &gw, shard_index, wm_publish_threshold);
             }
 
             crate::shard::metrics::record_shard_event(

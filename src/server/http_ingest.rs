@@ -491,18 +491,43 @@ async fn http_get_features(
 async fn http_list_streams(State(state): State<SharedState>) -> impl IntoResponse {
     use std::sync::atomic::Ordering;
     use std::time::UNIX_EPOCH;
-    // Phase 51-02: increment cross-shard fanout counter (scatter-gather wave 1).
+
+    // Phase 51-02: increment cross-shard fanout counter (TPC-PERF-05).
     crate::server::http::CROSS_SHARD_FANOUT_LIST_STREAMS.fetch_add(1, Ordering::Relaxed);
+
+    // Phase 51-02: acquire global watermark read lock once for the whole listing.
+    // Uncontended on hot path — publish/global_min only touch the AtomicU64 array.
+    let gw = state.global_watermark.read();
+
     let engine = state.engine.read();
+
+    // Use scatter_gather to fan out to all N shards (Wave 1: N=1, synchronous).
+    // collect stream names via engine (all shards hold identical StreamDefinition).
+    let stream_names: Vec<String> = engine.list_streams().map(|s| s.name.clone()).collect();
+    let n_shards = {
+        let ss = state.sharded_store.lock().expect("sharded_store mutex poisoned");
+        crate::shard::traits::ShardedStateStore::shard_count(&*ss) as usize
+    };
+    // scatter_gather deduplicates names across N shards (all identical at Wave 1).
+    let merged_names = crate::routing::scatter::scatter_gather(
+        n_shards,
+        |_shard_id| stream_names.clone(),
+        crate::routing::scatter::merge_stream_lists,
+    );
+
     let mut streams: Vec<serde_json::Value> = Vec::new();
-    for def in engine.list_streams() {
-        let wm = engine.wm_watermark(&def.name);
+    for name in &merged_names {
+        // Shard-local legacy watermark (ms resolution, lateness-adjusted).
+        let wm = engine.wm_watermark(name);
         let wm_ms: Option<u64> = wm
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as u64);
+        // Global watermark: min across all shard atomics (ns, no lateness).
+        let global_wm_ns: Option<u64> = gw.global_min(name);
         streams.push(json!({
-            "name": def.name,
+            "name": name,
             "watermark_ms": wm_ms,
+            "watermark_ns": global_wm_ns,
         }));
     }
     (
@@ -640,20 +665,28 @@ mod tests {
         use axum::Router;
 
         let state = test_state();
-        // Register stream in engine
+        // Register stream in engine using StreamDefinition directly.
         {
             let mut engine = state.engine.write();
-            let req = crate::server::protocol::RegisterRequest {
+            let _ = engine.register(crate::engine::pipeline::StreamDefinition {
                 name: "orders".to_string(),
                 key_field: Some("id".to_string()),
+                group_by_keys: None,
                 features: vec![],
                 depends_on: None,
+                filter: None,
+                entity_ttl: None,
+                history_ttl: None,
+                projection: None,
+                ephemeral: None,
+                pipeline_ttl: None,
+                max_keys: None,
+                watermark_lateness: None,
                 shard_key: None,
-            };
-            let _ = engine.register_stream(req);
+            });
         }
 
-        // Register stream in global watermark store and publish a value
+        // Register stream in global watermark store and publish a value.
         {
             state.global_watermark.write().register_stream("orders");
             state.global_watermark.read().publish(0, "orders", 12345_u64);

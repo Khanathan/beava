@@ -250,6 +250,18 @@ pub struct ConcurrentAppState {
     /// Incremented inside `intern_stream` on every first-intern for a (conn, stream) pair.
     /// Always-on AtomicU64 (zero overhead in production — never read on the hot path).
     pub conn_interns_total: std::sync::atomic::AtomicU64,
+
+    /// Phase 51-02 (TPC-PERF-05): flat lock-free global watermark store.
+    ///
+    /// Indexed as shard_id × stream_capacity + stream_ord. All N shards publish
+    /// their per-stream observed_max here via `WatermarkState::publish_if_due`
+    /// (called in `shard_event_loop`). The HTTP handlers read `global_min` under
+    /// a read lock — contention is near-zero because publish/global_min only
+    /// need the AtomicU64 array, not the stream_ord map.
+    ///
+    /// `register_stream` (write lock) is called once per stream at registration
+    /// time, far from the hot event path.
+    pub global_watermark: parking_lot::RwLock<crate::shard::global_watermark::GlobalWatermarkStore>,
 }
 
 /// Phase 41-01 T4: only every Nth PUSH records into the latency histogram.
@@ -415,6 +427,11 @@ pub fn make_concurrent_state_full(
         shard_handles: parking_lot::RwLock::new(Vec::new()),
         // Phase 50.5-02: per-connection intern counter (always-on, zero overhead when not read).
         conn_interns_total: std::sync::atomic::AtomicU64::new(0),
+        // Phase 51-02: global watermark store. n_shards rows × 64 stream-ordinal columns.
+        // stream_capacity=64 matches GlobalWatermarkStore default; panics on overflow (T-51-01-03).
+        global_watermark: parking_lot::RwLock::new(
+            crate::shard::global_watermark::GlobalWatermarkStore::new(n_shards as usize, 64),
+        ),
     })
 }
 

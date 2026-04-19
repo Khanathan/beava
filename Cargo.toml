@@ -53,6 +53,9 @@ crossbeam-utils = "0.8"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
 socket2 = { version = "0.5", features = ["all"] }
+# Phase 51-02 (TPC-PERF-05): futures::join_all for scatter-gather over N shards.
+# Wave 1 uses the synchronous scatter_gather; Wave 2+ will use join_all.
+futures = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
