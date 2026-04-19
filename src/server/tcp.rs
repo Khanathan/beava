@@ -438,7 +438,7 @@ pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::i
 /// the single-listener accept loop in `run_tcp_server` handles dispatch inline.
 #[cfg(target_os = "linux")]
 pub fn bind_reuseport_tcp(addr: std::net::SocketAddr) -> std::io::Result<std::net::TcpListener> {
-    use std::os::unix::io::FromRawFd;
+    use std::os::unix::io::{FromRawFd, IntoRawFd};
     let socket = socket2::Socket::new(
         socket2::Domain::IPV4,
         socket2::Type::STREAM,
