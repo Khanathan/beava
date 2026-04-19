@@ -417,7 +417,7 @@ pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::i
         crate::shard::traits::ShardedStateStore::shard_count(&*ss) as usize
     };
     let inbox_size = crate::shard::thread::inbox_size_from_env();
-    let shard_handles = crate::shard::thread::spawn_shard_threads(shard_count, inbox_size);
+    let shard_handles = crate::shard::thread::spawn_shard_threads(shard_count, inbox_size, state.clone());
     // D-01: shard ready-barrier passed. Safe to bind listener.
     // Store handles in shared state so push paths can route via try_send (D-08).
     *state.shard_handles.write() = shard_handles;
@@ -1404,15 +1404,12 @@ pub fn handle_push_core_ex(
     }
 
     // Phase 50.5 Fix #1: zero-cost N=1 fast path.
-    // Acquire shard_handles lock once and inspect the count. At N=1 there is
-    // exactly one shard — skip shard_hint compute, Bytes::copy_from_slice,
-    // Arc::from(stream_name), try_send, and the cross-shard probe. This
-    // restores Phase 49 hot-path parity. At N>1 we still fire-and-forget to
-    // the SPSC inbox (shard thread body lands in Phase 50.5 follow-up).
+    // At N=1: legacy DashMap path (Phase 49 hot-path, preserved).
+    // At N>1: shard thread exclusively owns mutations. Listener sends to the
+    //   shard inbox and does NOT write to the DashMap store. Phase 50.5-01 Task 3.
     let shard_count = state.shard_handles.read().len();
     let shard_index: usize = if shard_count > 1 {
         // Phase 50-04 (Wave 2): compute shard_index from shard_hint.
-        // shard_hint % N routes to the correct shard (D-08).
         let shard_hint: u32 = {
             let key_field_ref = engine
                 .get_stream(stream_name)
@@ -1420,37 +1417,59 @@ pub fn handle_push_core_ex(
             crate::routing::shard_hint_for_event(payload, key_field_ref)
         };
         let idx: usize = (shard_hint as usize) % shard_count;
-        // Phase 50-07 (TPC-PERF-03): record routing decision for cross_shard_fraction probe.
+        // Phase 50-07 (TPC-PERF-03): record routing decision.
         crate::server::shard_probe::record_routed_event(idx);
 
-        // D-08: fire-and-forget try_send to shard inbox.
-        // The existing synchronous processing path handles correctness;
-        // the SPSC send delivers a notification for the shard's metrics.
-        // Full routing (shard thread owns state) lands in Phase 50.5 follow-up.
+        // Phase 50.5-01 Task 3: shard thread is the ONLY mutation path at N>1.
+        // Send fire-and-forget (response_tx=None); listener does NOT fall through
+        // to engine.push_with_cascade, so the DashMap store is never written.
         let handles = state.shard_handles.read();
         if let Some(handle) = handles.get(idx) {
             if handle.is_down.load(std::sync::atomic::Ordering::Relaxed) {
-                // Shard is DOWN — still process via legacy path but mark it.
                 crate::shard::metrics::record_shard_down(idx);
+                // Shard DOWN — return error so the client knows.
+                return Err(BeavaError::Protocol(format!(
+                    "shard {} is down (quarantined after panic)",
+                    idx
+                )));
+            }
+            // Serialize payload for shard. Use raw_payload if available (zero JSON work),
+            // otherwise re-serialize from the already-parsed Value.
+            let payload_bytes = if !raw_payload.is_empty() {
+                bytes::Bytes::copy_from_slice(raw_payload)
             } else {
-                let ev = crate::shard::thread::ShardEvent {
-                    payload: bytes::Bytes::copy_from_slice(raw_payload),
-                    stream_name: Arc::from(stream_name),
-                    shard_hint,
-                    response_tx: None, // fire-and-forget; legacy path handles the response
-                };
-                if handle.inbox_tx.try_send(ev).is_err() {
-                    // D-08: inbox full — increment backpressure counter.
-                    crate::shard::metrics::record_inbox_full(idx);
-                    // Note: legacy processing continues regardless — Phase 50 Wave 2
-                    // keeps the old path for correctness; SPSC is additive here.
-                }
+                bytes::Bytes::from(serde_json::to_vec(payload).unwrap_or_default())
+            };
+            let ev = crate::shard::thread::ShardEvent {
+                payload: payload_bytes,
+                stream_name: Arc::from(stream_name),
+                shard_hint,
+                response_tx: None, // fire-and-forget; shard owns the mutation
+            };
+            if handle.inbox_tx.try_send(ev).is_err() {
+                crate::shard::metrics::record_inbox_full(idx);
+                return Err(BeavaError::Protocol(
+                    "shard inbox full — backpressure".to_string(),
+                ));
             }
         }
-        idx
+        // Drop engine read guard before early return so we don't hold it longer than needed.
+        drop(engine);
+
+        // At N>1 the shard thread owns state — return immediately with empty features.
+        // The shard processes the event asynchronously from its SPSC inbox.
+        // Metrics, latency, and event_log are skipped on the N>1 path for now
+        // (they are shard-thread responsibilities in Phase 51).
+        state
+            .events_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::shard::metrics::record_shard_event(
+            idx,
+            crate::shard::metrics::Outcome::Accepted,
+        );
+        return Ok(crate::types::FeatureMap::new());
     } else {
-        // N==0 or N==1: skip routing entirely. Legacy engine.push_with_cascade
-        // below handles the event. This is the Phase 49 hot path, preserved.
+        // N==0 or N==1: legacy engine.push_with_cascade path (Phase 49 hot path, preserved).
         0
     };
 

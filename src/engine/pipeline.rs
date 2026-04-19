@@ -1539,6 +1539,541 @@ impl PipelineEngine {
         self.push_with_cascade_internal(stream_name, event, store, now, false)
     }
 
+    /// Phase 50.5-01: Cascade-aware push against a per-shard AHashMap partition.
+    ///
+    /// This is the N>1 entry point — parameterized on `&mut Shard` instead of
+    /// `&StateStore`. The shard thread calls this to process events against its
+    /// own partition without touching the legacy DashMap `store`.
+    ///
+    /// The cascade shape (StoreView enum) was chosen by the Wave 0 grep-and-count
+    /// in `50.5-01-CASCADE-SHAPE.md`: 4 call sites, 2 distinct methods → enum.
+    pub fn push_with_cascade_on_shard(
+        &self,
+        stream_name: &str,
+        payload: &serde_json::Value,
+        shard: &mut crate::shard::Shard,
+        _event_log: Option<&std::sync::Arc<crate::state::event_log::EventLog>>,
+        now: SystemTime,
+        read_features: bool,
+    ) -> Result<FeatureMap, BeavaError> {
+        // Determine if downstream cascade exists (same fast path as push_with_cascade_internal).
+        let cascade = match self.cascade_plan.get(stream_name) {
+            Some(plan) if !plan.is_empty() => plan.clone(),
+            _ => {
+                // Leaf stream: delegate directly to push_internal_on_shard.
+                return self.push_internal_on_shard(
+                    stream_name,
+                    payload,
+                    None,
+                    None,
+                    shard,
+                    now,
+                    read_features,
+                );
+            }
+        };
+
+        // Stack-local enrichment accumulators (mirror push_with_cascade_internal).
+        let mut enrichment_json: AHashMap<String, serde_json::Value> = AHashMap::new();
+        let mut enrichment_fv: AHashMap<String, FeatureValue> = AHashMap::new();
+        let mut effective_events: AHashMap<String, serde_json::Value> = AHashMap::new();
+        let mut dropped: AHashSet<String> = AHashSet::new();
+
+        // Primary push (always read features when cascade exists — same as cascade_internal).
+        let primary_features =
+            self.push_internal_on_shard(stream_name, payload, None, None, shard, now, true)?;
+
+        // Populate enrichment from primary results.
+        for (name, value) in &primary_features {
+            let qualified = format!("{}.{}", stream_name, name);
+            enrichment_json.insert(qualified.clone(), value.to_json_value());
+            enrichment_json.insert(name.clone(), value.to_json_value());
+            enrichment_fv.insert(qualified, value.clone());
+            enrichment_fv.insert(name.clone(), value.clone());
+        }
+
+        // Walk cascade plan in topological order.
+        for stream_in_order in &cascade {
+            let downstream_def = match self.streams.get(stream_in_order) {
+                Some(d) => d,
+                None => continue,
+            };
+
+            let upstream_dropped = downstream_def
+                .depends_on
+                .as_ref()
+                .map(|deps| deps.iter().any(|d| dropped.contains(d)))
+                .unwrap_or(false);
+            if upstream_dropped {
+                dropped.insert(stream_in_order.clone());
+                continue;
+            }
+
+            let effective_event: serde_json::Value = downstream_def
+                .depends_on
+                .as_ref()
+                .and_then(|deps| deps.iter().find_map(|d| effective_events.get(d).cloned()))
+                .unwrap_or_else(|| payload.clone());
+
+            // EnrichFromTable: read-only lookup in shard.state, then skip push.
+            let enrich_feat = downstream_def.features.iter().find_map(|(_n, def)| {
+                if let FeatureDef::EnrichFromTable {
+                    right_table,
+                    on,
+                    join_type,
+                    right_fields,
+                } = def
+                {
+                    Some((right_table.clone(), on.clone(), *join_type, right_fields.clone()))
+                } else {
+                    None
+                }
+            });
+            if let Some((right_table, on_keys, join_type, right_fields)) = enrich_feat {
+                let _ = right_table;
+                self.wm_propagate_stateless(stream_name, stream_in_order);
+                let right_key =
+                    crate::engine::register::encode_group_by(&on_keys, &effective_event)?;
+                // Read from shard AHashMap (read-only — no DashMap).
+                let right_row: Option<AHashMap<String, serde_json::Value>> =
+                    shard.state.get(&right_key).map(|entity_ref| {
+                        entity_ref
+                            .static_features
+                            .iter()
+                            .map(|(n, sf)| (n.clone(), sf.value.to_json_value()))
+                            .collect()
+                    });
+                if right_row.is_none() && join_type == JoinType::Inner {
+                    dropped.insert(stream_in_order.clone());
+                    continue;
+                }
+                let mut enriched = effective_event.clone();
+                let enriched_map = enriched.as_object_mut().ok_or_else(|| {
+                    BeavaError::Protocol("EnrichFromTable: event is not a JSON object".into())
+                })?;
+                for (right_src, emitted) in &right_fields {
+                    if enriched_map.contains_key(emitted) && emitted != right_src {
+                        continue;
+                    }
+                    let v = right_row
+                        .as_ref()
+                        .and_then(|r| r.get(right_src).cloned())
+                        .unwrap_or(serde_json::Value::Null);
+                    enriched_map.insert(emitted.clone(), v);
+                }
+                effective_events.insert(stream_in_order.clone(), enriched);
+                continue;
+            }
+
+            // StreamStreamJoin: read+write join buffer in shard.state.
+            let ss_join = downstream_def.features.iter().find_map(|(fname, def)| {
+                if let FeatureDef::StreamStreamJoin {
+                    left_stream,
+                    right_stream,
+                    on,
+                    within_ms,
+                    join_type,
+                    left_fields,
+                    right_fields,
+                } = def
+                {
+                    Some((
+                        fname.clone(),
+                        left_stream.clone(),
+                        right_stream.clone(),
+                        on.clone(),
+                        *within_ms,
+                        *join_type,
+                        left_fields.clone(),
+                        right_fields.clone(),
+                    ))
+                } else {
+                    None
+                }
+            });
+            if let Some((
+                feat_name,
+                left_stream,
+                right_stream,
+                on_keys,
+                within_ms,
+                join_type,
+                _left_fields,
+                right_fields,
+            )) = ss_join
+            {
+                self.wm_propagate_join(&left_stream, &right_stream, stream_in_order);
+                let side_opt: Option<crate::engine::operators::JoinSide> =
+                    if stream_name == left_stream {
+                        Some(crate::engine::operators::JoinSide::Left)
+                    } else if stream_name == right_stream {
+                        Some(crate::engine::operators::JoinSide::Right)
+                    } else {
+                        None
+                    };
+                let side = match side_opt {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let state_key =
+                    match crate::engine::register::encode_group_by(&on_keys, &effective_event) {
+                        Ok(k) => k,
+                        Err(_) => continue,
+                    };
+                let event_time_ms: u64 = {
+                    let st =
+                        crate::engine::operators::parse_event_time(&effective_event).unwrap_or(now);
+                    st.duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0)
+                };
+                let arriving_map: serde_json::Map<String, serde_json::Value> =
+                    match effective_event.as_object() {
+                        Some(m) => m.clone(),
+                        None => {
+                            return Err(BeavaError::Protocol(
+                                "StreamStreamJoin: event is not a JSON object".into(),
+                            ));
+                        }
+                    };
+
+                // Probe + insert join buffer in shard.state (AHashMap).
+                let matches: Vec<serde_json::Map<String, serde_json::Value>> = {
+                    let entity = shard.state.entry(state_key.clone()).or_default();
+                    entity.get_or_create_stream(stream_in_order);
+                    let stream_state = entity.streams.get_mut(stream_in_order).unwrap();
+                    if !stream_state.operators.iter().any(|(n, _)| *n == feat_name) {
+                        stream_state.operators.push((
+                            feat_name.clone(),
+                            crate::state::snapshot::OperatorState::StreamJoinBuffer(
+                                crate::engine::operators::StreamJoinBuffer::new(within_ms),
+                            ),
+                        ));
+                    }
+                    let buf = stream_state
+                        .operators
+                        .iter_mut()
+                        .find_map(|(n, op)| {
+                            if *n != feat_name {
+                                return None;
+                            }
+                            match op {
+                                crate::state::snapshot::OperatorState::StreamJoinBuffer(b) => {
+                                    Some(b)
+                                }
+                                _ => None,
+                            }
+                        })
+                        .expect("StreamJoinBuffer present");
+                    let probed = buf.probe(side, event_time_ms);
+                    buf.insert(side, event_time_ms, arriving_map.clone());
+                    buf.evict();
+                    stream_state.last_event_at = Some(now);
+                    probed
+                };
+
+                let joined_events: Vec<serde_json::Value> = if !matches.is_empty() {
+                    matches
+                        .into_iter()
+                        .map(|matched| {
+                            let (left_map, right_map) = match side {
+                                crate::engine::operators::JoinSide::Left => {
+                                    (arriving_map.clone(), matched)
+                                }
+                                crate::engine::operators::JoinSide::Right => {
+                                    (matched, arriving_map.clone())
+                                }
+                            };
+                            build_joined_event(&left_map, &right_map, &right_fields)
+                        })
+                        .collect()
+                } else if join_type == JoinType::Left
+                    && side == crate::engine::operators::JoinSide::Left
+                {
+                    let null_right: serde_json::Map<String, serde_json::Value> =
+                        serde_json::Map::new();
+                    vec![build_joined_event(&arriving_map, &null_right, &right_fields)]
+                } else {
+                    Vec::new()
+                };
+
+                if let Some(first) = joined_events.first() {
+                    effective_events.insert(stream_in_order.clone(), first.clone());
+                }
+                if joined_events.len() > 1 {
+                    let direct_downstreams: Vec<String> = self
+                        .downstream_map
+                        .get(stream_in_order.as_str())
+                        .cloned()
+                        .unwrap_or_default();
+                    for extra in joined_events.iter().skip(1) {
+                        for ds_name in &direct_downstreams {
+                            let _ = self.push_internal_on_shard(
+                                ds_name, extra, None, None, shard, now, false,
+                            );
+                        }
+                    }
+                }
+                if joined_events.is_empty() {
+                    dropped.insert(stream_in_order.clone());
+                }
+                continue;
+            }
+
+            // Regular keyed/keyless downstream push.
+            let has_further_downstream =
+                self.downstream_map.contains_key(stream_in_order.as_str());
+            let ds_read_features = read_features || has_further_downstream;
+
+            let keyed_ready = if let Some(gb_keys) = &downstream_def.group_by_keys {
+                gb_keys.iter().all(|k| match effective_event.get(k) {
+                    Some(serde_json::Value::String(s)) => !s.is_empty(),
+                    Some(serde_json::Value::Number(_)) => true,
+                    Some(serde_json::Value::Bool(_)) => true,
+                    _ => false,
+                })
+            } else if let Some(kf) = &downstream_def.key_field {
+                matches!(
+                    effective_event.get(kf),
+                    Some(serde_json::Value::String(k)) if !k.is_empty()
+                )
+            } else {
+                false
+            };
+
+            if downstream_def.key_field.is_some() {
+                self.wm_attach_to_table(stream_name, stream_in_order);
+            } else {
+                self.wm_propagate_stateless(stream_name, stream_in_order);
+            }
+
+            if downstream_def.key_field.is_some() {
+                if !keyed_ready {
+                    continue;
+                }
+                let ds_features = self.push_internal_on_shard(
+                    stream_in_order,
+                    &effective_event,
+                    Some(&enrichment_json),
+                    Some(&enrichment_fv),
+                    shard,
+                    now,
+                    ds_read_features,
+                )?;
+                if has_further_downstream {
+                    for (name, value) in &ds_features {
+                        let qualified = format!("{}.{}", stream_in_order, name);
+                        enrichment_json.insert(qualified.clone(), value.to_json_value());
+                        enrichment_json.insert(name.clone(), value.to_json_value());
+                        enrichment_fv.insert(qualified, value.clone());
+                        enrichment_fv.insert(name.clone(), value.clone());
+                    }
+                }
+            } else {
+                let ds_features = self.push_internal_on_shard(
+                    stream_in_order,
+                    &effective_event,
+                    Some(&enrichment_json),
+                    Some(&enrichment_fv),
+                    shard,
+                    now,
+                    ds_read_features,
+                )?;
+                if has_further_downstream {
+                    for (name, value) in &ds_features {
+                        let qualified = format!("{}.{}", stream_in_order, name);
+                        enrichment_json.insert(qualified.clone(), value.to_json_value());
+                        enrichment_json.insert(name.clone(), value.to_json_value());
+                        enrichment_fv.insert(qualified, value.clone());
+                        enrichment_fv.insert(name.clone(), value.clone());
+                    }
+                }
+            }
+        }
+
+        if read_features {
+            Ok(primary_features)
+        } else {
+            Ok(FeatureMap::new())
+        }
+    }
+
+    /// Phase 50.5-01: Per-shard variant of `push_internal`.
+    ///
+    /// Identical semantics to `push_internal` but writes entity state into
+    /// `shard.state: AHashMap<EntityKey, EntityState>` instead of the DashMap
+    /// `StateStore`. No DashMap locks are acquired on the shard path.
+    #[allow(clippy::too_many_arguments)]
+    fn push_internal_on_shard(
+        &self,
+        stream_name: &str,
+        event: &serde_json::Value,
+        enrichment_json: Option<&ahash::AHashMap<String, serde_json::Value>>,
+        enrichment_fv: Option<&ahash::AHashMap<String, FeatureValue>>,
+        shard: &mut crate::shard::Shard,
+        now: SystemTime,
+        read_features: bool,
+    ) -> Result<FeatureMap, BeavaError> {
+        // 1. Look up stream definition.
+        let stream = self
+            .streams
+            .get(stream_name)
+            .ok_or_else(|| BeavaError::Protocol(format!("unknown stream: {}", stream_name)))?;
+
+        // Apply stream-level filter.
+        if let Some(ref filter_expr) = stream.filter {
+            let ctx = EvalContext {
+                features: &ahash::AHashMap::new(),
+                event: Some(event),
+                enrichment: enrichment_fv,
+                event_time: Some(now),
+            };
+            let result = eval(filter_expr, &ctx);
+            match result {
+                FeatureValue::Int(0) | FeatureValue::Missing => return Ok(FeatureMap::new()),
+                FeatureValue::Float(0.0) => return Ok(FeatureMap::new()),
+                _ => {}
+            }
+        }
+
+        // Keyless stream: no entity state.
+        if stream.key_field.is_none() {
+            return Ok(FeatureMap::new());
+        }
+
+        // 2. Extract entity key.
+        let key = if let Some(gb_keys) = &stream.group_by_keys {
+            crate::engine::register::encode_group_by(gb_keys, event)?
+        } else {
+            let key_field = stream.key_field.as_ref().unwrap();
+            match event.get(key_field) {
+                Some(serde_json::Value::String(s)) => {
+                    if s.is_empty() {
+                        return Err(BeavaError::Protocol(format!(
+                            "empty key field '{}'",
+                            key_field
+                        )));
+                    }
+                    s.clone()
+                }
+                Some(other) => {
+                    return Err(BeavaError::Type {
+                        field: key_field.clone(),
+                        expected: "string".into(),
+                        got: format!("{}", other),
+                    });
+                }
+                None => {
+                    return Err(BeavaError::Type {
+                        field: key_field.clone(),
+                        expected: "string".into(),
+                        got: "absent".into(),
+                    });
+                }
+            }
+        };
+
+        // 3. Get or create EntityState in the shard's AHashMap (no DashMap).
+        let entity = shard.state.entry(key.clone()).or_default();
+
+        // 4. Get or create stream state within entity.
+        entity.get_or_create_stream(stream_name);
+
+        let op_features: Vec<(String, FeatureDef)> = stream
+            .features
+            .iter()
+            .filter(|(_, def)| !matches!(def, FeatureDef::Derive { .. }))
+            .cloned()
+            .collect();
+
+        {
+            let stream_state = entity.streams.get_mut(stream_name).unwrap();
+            for (name, def) in &op_features {
+                let exists = stream_state.operators.iter().any(|(n, _)| *n == *name);
+                if !exists {
+                    if let Some(op) = create_operator(def) {
+                        stream_state.operators.push((name.clone(), op));
+                    }
+                }
+            }
+            for (fname, def) in &op_features {
+                if let Some((_, op)) = stream_state
+                    .operators
+                    .iter_mut()
+                    .find(|(n, _)| *n == *fname)
+                {
+                    if let Some(where_expr) = get_where_expr(def) {
+                        let ctx = EvalContext {
+                            features: &ahash::AHashMap::new(),
+                            event: Some(event),
+                            enrichment: enrichment_fv,
+                            event_time: Some(now),
+                        };
+                        let result = eval(where_expr, &ctx);
+                        match result {
+                            FeatureValue::Int(0) | FeatureValue::Missing => continue,
+                            FeatureValue::Float(0.0) => continue,
+                            _ => {}
+                        }
+                    }
+                    op.push(event, enrichment_json, now)?;
+                    if let Some(reason) = op.ring_buffer_drop_reason() {
+                        if let Some(kind) = ring_buffer_operator_kind(def) {
+                            self.ring_buffer_drops.increment(stream_name, kind, reason);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. Collect features (skip if !read_features).
+        if !read_features {
+            entity.streams.get_mut(stream_name).unwrap().last_event_at = Some(now);
+            // Mark key dirty in shard's dirty_set.
+            shard.dirty_set.insert(key);
+            return Ok(FeatureMap::new());
+        }
+
+        let mut features = FeatureMap::new();
+        {
+            let stream_state = entity.streams.get_mut(stream_name).unwrap();
+            for (name, op) in stream_state.operators.iter_mut() {
+                features.insert(name.clone(), op.read(now));
+            }
+        }
+        for (name, sf) in &entity.static_features {
+            features.insert(name.clone(), sf.value.clone());
+        }
+        let derived: Vec<(String, FeatureValue)> = {
+            let ctx = EvalContext {
+                features: &features,
+                event: Some(event),
+                enrichment: enrichment_fv,
+                event_time: Some(now),
+            };
+            stream
+                .features
+                .iter()
+                .filter_map(|(name, def)| {
+                    if let FeatureDef::Derive { expr } = def {
+                        Some((name.clone(), eval(expr, &ctx)))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+        for (name, value) in derived {
+            features.insert(name, value);
+        }
+        entity.streams.get_mut(stream_name).unwrap().last_event_at = Some(now);
+        if let Some(ref proj) = stream.projection {
+            proj.apply(&mut features);
+        }
+        shard.dirty_set.insert(key);
+        Ok(features)
+    }
+
     /// Batch cascade-aware push with no feature read. This is the hot-path
     /// primitive used by `handle_push_batch` (Phase 12) under the coalescer.
     ///
