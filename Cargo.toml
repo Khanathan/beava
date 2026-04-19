@@ -62,7 +62,12 @@ fs2 = "0.4"
 # `(read_sys_mem_mb() / num_shards / 2).min(512).max(16)`. Pure-Rust,
 # cross-platform; default-features disabled to keep the dep footprint
 # minimal — we only consume `System::total_memory()`.
-sysinfo = { version = "0.33", default-features = false }
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+# Phase 53-02: fjall 2.11 promoted from [dev-dependencies] to [dependencies].
+# Production hot-path dep — `src/shard/fjall_backend.rs` uses `fjall::Config`,
+# `fjall::Keyspace`, and `fjall::PartitionHandle` to host per-shard entity
+# state. Pinned to the 2.x line (CONTEXT D-04 rejects 3.x for v1.2).
+fjall = "2.11"
 
 [dev-dependencies]
 tempfile = "3"
@@ -74,10 +79,6 @@ papaya = "0.2"
 flurry = "0.5"
 proptest = "1.11"
 rstest = "0.26"
-# Phase 53-01 spike gate: fjall 2.11 (latest 2.x line; 3.x is default but rejected per CONTEXT D-04).
-# Dev-dep scoped because Plan 53-02 lands fjall in `[dependencies]` for the production hot path;
-# Plan 53-01 only needs it for the Criterion spike bench + API probe, which is dev-time tooling.
-fjall = "2.11"
 
 [[bin]]
 name = "beava"

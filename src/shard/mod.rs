@@ -6,6 +6,9 @@
 //! - `watermark: WatermarkState` — per-shard; replaces WatermarkTracker (Plan 49-03)
 //! - `event_log: Option<EventLog>` — points at data/logs/{stream}.bin in Wave 1 (D-03)
 
+/// fjall 2.11 keyspace + partition lifecycle (Phase 53 Plan 02, D-01
+/// one-keyspace layout). New surface: Plan 03 will wire `Shard.state` in.
+pub mod fjall_backend;
 pub mod global_watermark;
 /// Per-shard Prometheus metrics (Phase 50-02, D-07).
 pub mod metrics;
