@@ -1,0 +1,132 @@
+{
+  "timestamp": "20260419T235518Z",
+  "host": {
+    "hostname": "Hoangs-MacBook-Pro.local",
+    "platform": "darwin"
+  },
+  "config": {
+    "mode": "complex",
+    "clients": 8,
+    "worker_threads": 8,
+    "warmup_seconds": 5.0,
+    "duration_seconds": 60.0
+  },
+  "throughput": {
+    "total_events": 12053000,
+    "wall_seconds": 61.145,
+    "aggregate_eps": 197122,
+    "per_event_us": 5.07
+  },
+  "client_push_latency_us": {
+    "note": "per-push_many call time in microseconds (batch=1000 events). Each client samples every 64th call.",
+    "p50_across_clients": {
+      "min": 2510.29,
+      "median": 2629.96,
+      "max": 32631.0
+    },
+    "p99_across_clients": {
+      "min": 107724.96,
+      "median": 210656.79,
+      "max": 3211711.38
+    },
+    "p999_across_clients": {
+      "min": 107724.96,
+      "median": 210656.79,
+      "max": 3211711.38
+    },
+    "sample_counts": [
+      23,
+      24,
+      20,
+      23,
+      23,
+      23,
+      24,
+      23
+    ]
+  },
+  "server_push_latency_us": {
+    "p50_us": 32.94171227723075,
+    "p95_us": 59.33596867984667,
+    "p99_us": 91.30066815069412,
+    "count": 13109
+  },
+  "memory": {
+    "estimated_bytes": 6145781140,
+    "entity_count": 9979
+  },
+  "per_client": [
+    {
+      "proc_id": 0,
+      "events": 1555000,
+      "t_seconds": 60.227,
+      "eps": 25819,
+      "p50_us": 32631.0,
+      "p99_us": 107724.96,
+      "p999_us": 107724.96
+    },
+    {
+      "proc_id": 1,
+      "events": 1572000,
+      "t_seconds": 60.447,
+      "eps": 26006,
+      "p50_us": 2510.29,
+      "p99_us": 3211711.38,
+      "p999_us": 3211711.38
+    },
+    {
+      "proc_id": 2,
+      "events": 1360000,
+      "t_seconds": 61.145,
+      "eps": 22242,
+      "p50_us": 2609.67,
+      "p99_us": 200250.5,
+      "p999_us": 200250.5
+    },
+    {
+      "proc_id": 3,
+      "events": 1504000,
+      "t_seconds": 60.336,
+      "eps": 24926,
+      "p50_us": 32100.17,
+      "p99_us": 116371.25,
+      "p999_us": 116371.25
+    },
+    {
+      "proc_id": 4,
+      "events": 1501000,
+      "t_seconds": 60.42,
+      "eps": 24842,
+      "p50_us": 2514.62,
+      "p99_us": 209285.29,
+      "p999_us": 209285.29
+    },
+    {
+      "proc_id": 5,
+      "events": 1500000,
+      "t_seconds": 60.422,
+      "eps": 24825,
+      "p50_us": 2713.33,
+      "p99_us": 288285.12,
+      "p999_us": 288285.12
+    },
+    {
+      "proc_id": 6,
+      "events": 1560000,
+      "t_seconds": 60.398,
+      "eps": 25828,
+      "p50_us": 2558.38,
+      "p99_us": 235531.83,
+      "p999_us": 235531.83
+    },
+    {
+      "proc_id": 7,
+      "events": 1501000,
+      "t_seconds": 60.41,
+      "eps": 24846,
+      "p50_us": 2629.96,
+      "p99_us": 210656.79,
+      "p999_us": 210656.79
+    }
+  ]
+}
