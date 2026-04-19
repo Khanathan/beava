@@ -538,6 +538,9 @@ async fn http_get_stream(
     let wm_ms: Option<u64> = wm
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64);
+    // Phase 51-02: global watermark min from GlobalWatermarkStore (all shards, atomic reads).
+    // Read lock is uncontended on the hot path (publish/global_min use AtomicU64 internally).
+    let global_wm_ns: Option<u64> = state.global_watermark.read().global_min(&name);
     // feature type: use Debug repr of FeatureDef variant — polished in Phase 47.
     let features: Vec<serde_json::Value> = def
         .features
@@ -556,9 +559,158 @@ async fn http_get_stream(
             "data": {
                 "name": def.name,
                 "watermark_ms": wm_ms,
+                "watermark_ns": global_wm_ns,
                 "features": features,
             }
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::pipeline::PipelineEngine;
+    use crate::server::tcp::{make_concurrent_state_full, BackfillTracker};
+    use crate::shard::global_watermark::GlobalWatermarkStore;
+    use crate::state::store::StateStore;
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    fn test_state() -> crate::server::tcp::SharedState {
+        make_concurrent_state_full(
+            PipelineEngine::new(),
+            StateStore::new(),
+            None,
+            std::path::PathBuf::from("/tmp/beava-test-http-ingest"),
+            Arc::new(BackfillTracker::default()),
+            false,
+            false,
+            None,
+            false,
+            1,
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 1: ConcurrentAppState exposes a global_watermark field.
+    //
+    // TDD RED: ConcurrentAppState does not yet have global_watermark → compile error.
+    // GREEN: field is parking_lot::RwLock<GlobalWatermarkStore>, readable via .read().
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_global_watermark_field_on_state() {
+        let state = test_state();
+        // global_watermark field must exist and be readable
+        let store = state.global_watermark.read();
+        // global_min for an unknown stream returns None (not panic)
+        assert_eq!(store.global_min("nonexistent"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 2: global_min returns min across 3 shards (integration invariant).
+    // N=3 shards publish watermarks 10/20/30 → global_min == 10.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_global_watermark_min_across_3_shards() {
+        let mut store = GlobalWatermarkStore::new(3, 16);
+        store.register_stream("txn");
+
+        store.publish(0, "txn", 10);
+        store.publish(1, "txn", 20);
+        store.publish(2, "txn", 30);
+
+        assert_eq!(
+            store.global_min("txn"),
+            Some(10),
+            "global min must be the minimum across all shards"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 3: GET /streams/{name} returns watermark_ns from GlobalWatermarkStore.
+    //
+    // TDD RED: handler does not yet read from state.global_watermark.
+    // GREEN: handler calls state.global_watermark.read().global_min(&name).
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_get_stream_returns_watermark_ns() {
+        use axum::Router;
+
+        let state = test_state();
+        // Register stream in engine
+        {
+            let mut engine = state.engine.write();
+            let req = crate::server::protocol::RegisterRequest {
+                name: "orders".to_string(),
+                key_field: Some("id".to_string()),
+                features: vec![],
+                depends_on: None,
+                shard_key: None,
+            };
+            let _ = engine.register_stream(req);
+        }
+
+        // Register stream in global watermark store and publish a value
+        {
+            state.global_watermark.write().register_stream("orders");
+            state.global_watermark.read().publish(0, "orders", 12345_u64);
+        }
+
+        let (pub_r, admin_r) = register_ingest_routes(Router::new(), Router::new(), false);
+        let app = pub_r.merge(admin_r).with_state(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/streams/orders")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // watermark_ns must be present and equal the published value
+        assert_eq!(
+            json["data"]["watermark_ns"],
+            serde_json::Value::Number(serde_json::Number::from(12345u64)),
+            "watermark_ns must come from global watermark store global_min"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 4: publish_if_due integrates with GlobalWatermarkStore.
+    // After threshold events, shard publishes to global store.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_publish_if_due_integrates_with_global_store() {
+        use crate::shard::watermark::WatermarkState;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let mut store = GlobalWatermarkStore::new(1, 16);
+        store.register_stream("events");
+
+        let mut wm = WatermarkState::new();
+        let t = UNIX_EPOCH + Duration::from_nanos(999_000);
+        wm.observe("events", t);
+
+        // 1023 events — no publish yet
+        for _ in 0..1023 {
+            wm.publish_if_due("events", &store, 0, 1024);
+        }
+        assert_eq!(store.global_min("events"), None, "no publish before threshold");
+
+        // 1024th event — publish fires
+        let result = wm.publish_if_due("events", &store, 0, 1024);
+        assert!(result.is_some(), "publish must occur on threshold crossing");
+        assert_eq!(
+            store.global_min("events"),
+            Some(999_000),
+            "global min must match the published shard watermark"
+        );
+    }
 }
