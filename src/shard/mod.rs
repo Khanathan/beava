@@ -126,3 +126,57 @@ impl<'a> StoreView<'a> {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 53-03 — Plan 03 tests (Test 4: approximate_len; Test 5: state-inmem)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    #[cfg(not(feature = "state-inmem"))]
+    #[test]
+    fn shard_state_approximate_len_returns_usize_not_result() {
+        // Pitfall 4: metrics must use `approximate_len()` (O(1), usize) instead
+        // of `len()` (expensive Result<usize>). This test asserts the cheap API
+        // exists and returns a plain usize — Plan 03B wires it into the
+        // per-shard event-loop gauges.
+        use crate::shard::fjall_backend::{
+            fjall_config_from_env, open_keyspace_from_env, open_shard_partition,
+        };
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _g = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        std::env::set_var("BEAVA_FJALL_FSYNC_DISABLE", "1");
+        std::env::set_var("BEAVA_FJALL_CACHE_MB", "32");
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let cfg = fjall_config_from_env(1);
+        let ks = open_keyspace_from_env(tmp.path(), &cfg).expect("open keyspace");
+        let partition = open_shard_partition(&ks, 0, &cfg).expect("open partition");
+
+        let shard = super::Shard::with_partition(partition);
+        for i in 0..10 {
+            shard
+                .state
+                .insert(format!("k{}", i).as_bytes(), b"v".as_slice())
+                .expect("insert");
+        }
+        let approx = shard.state.approximate_len();
+        // `approximate_len()` returns `usize`, not `Result<usize>`; this line
+        // will fail to compile if the backing type is `AHashMap` (which has no
+        // such method) — RED signal for Task 1.
+        let _check: usize = approx;
+        assert!(approx <= 10, "approximate_len returns usize <= insert count");
+        std::env::remove_var("BEAVA_FJALL_FSYNC_DISABLE");
+        std::env::remove_var("BEAVA_FJALL_CACHE_MB");
+    }
+
+    #[cfg(feature = "state-inmem")]
+    #[test]
+    fn inmem_build_compiles_and_uses_ahashmap() {
+        // D-03: when compiled with `--features state-inmem`, Shard.state remains
+        // the legacy AHashMap path. This test exists to guarantee the dev-mode
+        // fallback still compiles + behaves as before.
+        let s = super::Shard::new();
+        assert_eq!(s.state.len(), 0);
+    }
+}
