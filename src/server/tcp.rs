@@ -242,6 +242,14 @@ pub struct ConcurrentAppState {
     /// after spawn_shard_threads() completes the ready-barrier. Empty until server starts.
     /// RwLock: written once at startup, then read-only on every push (D-08).
     pub shard_handles: parking_lot::RwLock<Vec<crate::shard::thread::ShardHandle>>,
+
+    /// Phase 50.5-02 Task 1 (TDD contract probe):
+    /// counts the number of unique (connection, stream_name) interns performed
+    /// by `ConnAccumulator::intern_stream`. After Task 2 (GREEN), each connection
+    /// should intern a given stream name exactly once and reuse the `Arc<str>`.
+    /// Incremented inside `intern_stream` on every first-intern for a (conn, stream) pair.
+    /// Always-on AtomicU64 (zero overhead in production — never read on the hot path).
+    pub conn_interns_total: std::sync::atomic::AtomicU64,
 }
 
 /// Phase 41-01 T4: only every Nth PUSH records into the latency histogram.
@@ -405,6 +413,8 @@ pub fn make_concurrent_state_full(
         )),
         // Phase 50-03/04: populated by run_tcp_server after spawn_shard_threads.
         shard_handles: parking_lot::RwLock::new(Vec::new()),
+        // Phase 50.5-02: per-connection intern counter (always-on, zero overhead when not read).
+        conn_interns_total: std::sync::atomic::AtomicU64::new(0),
     })
 }
 

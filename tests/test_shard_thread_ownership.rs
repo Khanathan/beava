@@ -306,6 +306,86 @@ async fn backpressure_returns_503_on_full_inbox() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 5: macos_accept_path_interns_stream_name_per_connection
+// (Plan 50.5-02-01 RED — per-connection Arc<str> interning contract)
+// ---------------------------------------------------------------------------
+
+/// Phase 50.5-02 Task 1 (RED) — Asserts per-connection stream_name interning.
+///
+/// Pushes 10 events on the SAME stream from the SAME TCP connection. After
+/// Task 2 adds the `ConnAccumulator::stream_name_cache` intern helper, the
+/// `ConcurrentAppState::conn_interns_total` test-only counter should increment
+/// exactly ONCE for the first event (subsequent events reuse the cached Arc<str>).
+///
+/// MUST FAIL before Task 2: `conn_interns_total` is not a field of
+/// ConcurrentAppState (compile error), OR equals 10 (one Arc::from per event,
+/// no caching). After Task 2: `conn_interns_total == 1`.
+///
+/// The test name uses "macos" in the prefix because the design context (CONTEXT.md)
+/// scopes this to macOS as the primary dev platform, but the interning behaviour
+/// applies on both platforms.
+#[tokio::test]
+#[cfg(test)]
+async fn macos_accept_path_interns_stream_name_per_connection() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+    use beava::server::protocol::{write_string, OP_PUSH, TYPE_STR};
+
+    let (addr, state) = make_n_shard_server(2).await;
+
+    // Reset the counter before the test.
+    state
+        .conn_interns_total
+        .store(0, std::sync::atomic::Ordering::SeqCst);
+
+    // Open ONE persistent TCP connection and push 10 events for the same stream.
+    let mut conn = TcpStream::connect(addr).await.unwrap();
+
+    for i in 0u32..10 {
+        let user_id = format!("intern_user_{:04}", i);
+        let mut payload = write_string("events");
+        payload.extend_from_slice(&1u16.to_be_bytes());
+        payload.extend_from_slice(&write_string("user_id"));
+        payload.push(TYPE_STR);
+        payload.extend_from_slice(&write_string(&user_id));
+
+        let total_len = (1 + payload.len()) as u32;
+        conn.write_u32(total_len).await.unwrap();
+        conn.write_u8(OP_PUSH).await.unwrap();
+        conn.write_all(&payload).await.unwrap();
+        conn.flush().await.unwrap();
+
+        // Read response.
+        let resp_len = conn.read_u32().await.unwrap() as usize;
+        let _status = conn.read_u8().await.unwrap();
+        let mut body = vec![0u8; resp_len - 1];
+        if !body.is_empty() {
+            conn.read_exact(&mut body).await.unwrap();
+        }
+    }
+
+    // Give threads time to process any remaining events.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Assert: conn_interns_total == 1.
+    // "events" stream was interned ONCE for this connection; subsequent events reused the Arc.
+    //
+    // MUST FAIL before Task 2: conn_interns_total does not exist (compile error)
+    // OR equals 0 (no intern counter) OR equals 10 (no caching).
+    // PASSES after Task 2: exactly 1.
+    let interns = state
+        .conn_interns_total
+        .load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        interns, 1,
+        "Expected conn_interns_total == 1 for 10 events on stream 'events' from one connection, \
+         but got {}. ConnAccumulator::stream_name_cache must intern stream_name once per \
+         connection and reuse the Arc<str> for subsequent events (Task 2 not yet landed).",
+        interns
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Test 4: read_features_round_trip_at_n_gt_1
 // ---------------------------------------------------------------------------
 
