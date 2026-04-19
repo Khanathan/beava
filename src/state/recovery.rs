@@ -298,7 +298,7 @@ fn recover_single_shard(
                 apply_log_entry_to_shard(&entry.payload, stream_name, &mut shard, eng, now)?;
             }
         }
-        // else: no engine — entries are "replayed" for count purposes only.
+        // else: no engine — entries are counted for isolation verification only.
 
         total_replayed += n_entries;
     }
@@ -326,8 +326,12 @@ fn apply_log_entry_to_shard(
     // Handle format-tagged payloads from Phase 11-06.
     let (_, body) = crate::state::event_log::decode_log_payload(payload);
 
-    let event: serde_json::Value = serde_json::from_slice(body)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("log entry JSON parse error: {}", e)))?;
+    let event: serde_json::Value = serde_json::from_slice(body).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("log entry JSON parse error: {}", e),
+        )
+    })?;
 
     // Push through the pipeline engine (read lock — engine is read-only after registration).
     let eng = engine.read();
