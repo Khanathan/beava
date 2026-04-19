@@ -70,6 +70,12 @@ pub struct Shard {
     pub event_log: Option<EventLog>,
     /// Per-shard watermark state (replaces WatermarkTracker on PipelineEngine — Plan 49-03).
     pub watermark: WatermarkState,
+    /// Phase 53-05 (W-4): accumulated postcard byte count written into
+    /// `state` since the last `take_write_bytes()` sample. The shard event
+    /// loop drains this counter every gauge tick and emits
+    /// `beava_fjall_write_bytes_total{shard=N}`. Non-atomic because the
+    /// shard is single-writer (thread owns it exclusively).
+    pub write_bytes_since_sample: u64,
 }
 
 /// Per-shard state container (dev-only `state-inmem` build). Single writer.
@@ -102,7 +108,16 @@ impl Shard {
             dirty_set: HashSet::new(),
             event_log: None,
             watermark: WatermarkState::new(),
+            write_bytes_since_sample: 0,
         }
+    }
+
+    /// Phase 53-05 (W-4): drain the accumulated write-bytes counter and
+    /// return its prior value. Called once per gauge-sample tick from the
+    /// shard event loop to feed `beava_fjall_write_bytes_total{shard=N}`.
+    #[cfg(not(feature = "state-inmem"))]
+    pub fn take_write_bytes(&mut self) -> u64 {
+        std::mem::replace(&mut self.write_bytes_since_sample, 0)
     }
 
     /// Create a new empty Shard (state-inmem only — AHashMap backend).
@@ -253,10 +268,18 @@ impl<'a> StoreView<'a> {
                     .unwrap_or_default();
                 let r = f(&mut entity);
                 let bytes = entity_to_bytes(&entity);
+                let byte_count = bytes.len() as u64;
                 shard
                     .state
                     .insert(key.as_bytes(), bytes)
                     .expect("fjall partition insert");
+                // Phase 53-05 (W-4 revision): accumulate write-bytes in the
+                // shard's per-thread counter. The shard event loop reads
+                // this via `take_write_bytes()` at the next gauge-sample
+                // tick and emits `beava_fjall_write_bytes_total{shard=N}`.
+                shard.write_bytes_since_sample = shard
+                    .write_bytes_since_sample
+                    .saturating_add(byte_count);
                 r
             }
             #[cfg(feature = "state-inmem")]

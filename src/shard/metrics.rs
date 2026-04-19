@@ -27,6 +27,42 @@ pub const EVENTS_DROPPED_TOTAL: &str = "beava_events_dropped_total";
 /// Cross-shard fanout counter — DEFINED here, NOT incremented until Wave 3.
 pub const CROSS_SHARD_FANOUT_TOTAL: &str = "beava_cross_shard_fanout_total";
 
+// ---- Phase 53-05 (W-4 revision): per-shard fjall metrics ----
+//
+// Three UNCONDITIONAL series are emitted per shard:
+//
+//   * `beava_fjall_write_bytes_total{shard=N}`      — counter (sum of
+//     postcard(EntityState) byte counts inserted into partition N).
+//   * `beava_fjall_compaction_bytes_total{shard=N}` — counter (bytes
+//     reclaimed by fjall compaction). Currently always 0 — fjall 2.11
+//     does not expose per-compaction byte counters via its public API.
+//     The helper + counter name are defined so Plan 06's alert rules
+//     have a real metric to target; a follow-up phase can wire the
+//     real number when fjall 3.x lands (or a 2.x patch release adds
+//     the accessor).
+//   * `beava_fjall_fsync_latency_ms{shard=N}`       — gauge (most
+//     recent observed latency of a `persist(SyncData)` call, in ms).
+//     The shard hot path uses `PersistMode::Buffer` so no sync runs
+//     per-insert; the migration tool + explicit admin fsyncs are the
+//     primary emitters. The gauge stays at 0 on shards that have not
+//     yet run an explicit persist.
+//
+// `beava_fjall_cache_hit_ratio{shard=N}` is DELIBERATELY OMITTED
+// (W-4). The Plan 01 spike recorded `cache_stats_available: false`:
+// fjall 2.11 exposes only `Keyspace::cache_capacity()`, not hit/miss
+// counters, so a real ratio cannot be computed. Emitting a hardcoded
+// `1.0` placeholder would make Plan 06's `< 0.8 sustained` alert
+// vacuous. If a future fjall release exposes cache stats, add the
+// gauge + helper then — not now.
+
+/// Per-shard fjall journal+memtable write-bytes counter.
+pub const METRIC_FJALL_WRITE_BYTES: &str = "beava_fjall_write_bytes_total";
+/// Per-shard fjall compaction-bytes counter (currently unincrementable;
+/// fjall 2.11 API exposes no compaction-byte accessor).
+pub const METRIC_FJALL_COMPACTION_BYTES: &str = "beava_fjall_compaction_bytes_total";
+/// Per-shard fjall fsync latency gauge (milliseconds, most recent sample).
+pub const METRIC_FJALL_FSYNC_LATENCY_MS: &str = "beava_fjall_fsync_latency_ms";
+
 /// Outcome of a shard event dispatch.
 #[derive(Clone, Copy, Debug)]
 pub enum Outcome {
@@ -81,7 +117,12 @@ pub fn register_shard_metrics(shard_count: usize) {
         metrics::gauge!(SHARD_KEYS_OWNED, "shard" => s.clone()).set(0.0);
         metrics::gauge!(SHARD_WATERMARK_LAG_SECONDS, "shard" => s.clone()).set(0.0);
         metrics::counter!(SHARD_INBOX_FULL_TOTAL, "shard" => s.clone()).increment(0);
-        metrics::counter!(SHARD_DOWN_TOTAL, "shard" => s).increment(0);
+        metrics::counter!(SHARD_DOWN_TOTAL, "shard" => s.clone()).increment(0);
+        // Phase 53-05 (W-4): touch fjall metrics so they appear in /metrics
+        // from the first scrape. cache_hit_ratio is intentionally absent.
+        metrics::counter!(METRIC_FJALL_WRITE_BYTES, "shard" => s.clone()).increment(0);
+        metrics::counter!(METRIC_FJALL_COMPACTION_BYTES, "shard" => s.clone()).increment(0);
+        metrics::gauge!(METRIC_FJALL_FSYNC_LATENCY_MS, "shard" => s).set(0.0);
     }
     // Global reason-labeled drop counter — touch all label variants.
     for reason in &["shard_key_missing", "inbox_full", "malformed_routing"] {
@@ -137,6 +178,45 @@ pub fn update_shard_gauges(
     metrics::gauge!(SHARD_INBOX_DEPTH, "shard" => s.clone()).set(inbox_depth as f64);
     metrics::gauge!(SHARD_KEYS_OWNED, "shard" => s.clone()).set(keys_owned as f64);
     metrics::gauge!(SHARD_WATERMARK_LAG_SECONDS, "shard" => s).set(watermark_lag_seconds);
+}
+
+// ---- Phase 53-05 (W-4 revision): fjall metric helpers ----
+
+/// Record `bytes` added to the write-bytes counter for `shard_index`.
+///
+/// Call at the point where `postcard::to_stdvec(&EntityState)` is handed to
+/// `PartitionHandle::insert` — `bytes` is the value-byte count, i.e. the
+/// `postcard` blob length. Key bytes are not counted; they are small and
+/// dominated by the value payload.
+#[inline]
+pub fn record_fjall_write_bytes(shard_index: usize, bytes: u64) {
+    let s = shard_index.to_string();
+    metrics::counter!(METRIC_FJALL_WRITE_BYTES, "shard" => s).increment(bytes);
+}
+
+/// Record `bytes` reclaimed by fjall compaction for `shard_index`.
+///
+/// Currently unincrementable — fjall 2.11 does not expose per-compaction
+/// byte counters via its public API. The helper exists so Plan 06's alert
+/// rules have a real metric to target; a follow-up phase will wire the
+/// real bytes when a compaction-events API lands in fjall 2.x / 3.x.
+#[inline]
+pub fn record_fjall_compaction_bytes(shard_index: usize, bytes: u64) {
+    let s = shard_index.to_string();
+    metrics::counter!(METRIC_FJALL_COMPACTION_BYTES, "shard" => s).increment(bytes);
+}
+
+/// Update the fjall fsync-latency gauge for `shard_index` (in ms).
+///
+/// Called at sites that wrap `Keyspace::persist(PersistMode::SyncData |
+/// SyncAll)` — today that is the migrate-to-fjall tool (Plan 04) and the
+/// crash-recovery test harness (Plan 05). The shard hot path uses
+/// `PersistMode::Buffer` (fjall's default for `insert`) so no sync runs per
+/// event; the gauge stays at 0 on shards that have not yet been sync-fenced.
+#[inline]
+pub fn update_fjall_fsync_latency(shard_index: usize, latency_ms: f64) {
+    let s = shard_index.to_string();
+    metrics::gauge!(METRIC_FJALL_FSYNC_LATENCY_MS, "shard" => s).set(latency_ms);
 }
 
 #[cfg(test)]

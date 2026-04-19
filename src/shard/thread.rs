@@ -439,6 +439,23 @@ fn shard_event_loop(
                     keys_owned,
                     0.0,
                 );
+                // Phase 53-05 (W-4 revision): drain accumulated fjall write
+                // bytes on the default build and emit as a counter increment.
+                // `compaction_bytes` stays at 0 until a fjall API exposes it;
+                // the counter series itself is registered at startup so Plan
+                // 06's alert rules work. `fsync_latency_ms` gauge is updated
+                // by explicit fsync sites (migrate tool / admin), not here.
+                #[cfg(not(feature = "state-inmem"))]
+                {
+                    let bytes = shard.take_write_bytes();
+                    if bytes > 0 {
+                        crate::shard::metrics::record_fjall_write_bytes(shard_index, bytes);
+                    }
+                    // Compaction bytes: emit 0 increment so the counter stays
+                    // visible in scrapes. Upgrading this to a real byte count
+                    // requires a fjall API that is not available in 2.11.
+                    crate::shard::metrics::record_fjall_compaction_bytes(shard_index, 0);
+                }
                 last_gauge_update = std::time::Instant::now();
             }
         }
