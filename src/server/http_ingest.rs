@@ -199,6 +199,7 @@ async fn http_push_single(
         &body,
         now,
         read_features,
+        None, // no per-connection intern cache on the HTTP ingest path
     ) {
         Ok(_fm) => {
             // Phase 45-04 A5: HTTP single-event path — bump labeled counter.

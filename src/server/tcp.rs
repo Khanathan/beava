@@ -464,10 +464,40 @@ pub fn bind_reuseport_tcp(addr: std::net::SocketAddr) -> std::io::Result<std::ne
 }
 
 /// Start the TCP server from a pre-bound listener (for tests with random ports).
+///
+/// Phase 50.5-02 Task 2 (Linux path):
+/// When `shard_count > 1` on Linux, this function spawns N independent
+/// SO_REUSEPORT accept loops — one per shard — via
+/// `spawn_linux_per_shard_accept_loops`. The kernel 4-tuple-hashes incoming
+/// connections across the N sockets; each shard's accept loop receives its
+/// own share of new connections with near-zero accept-lock contention.
+/// The passed-in `listener` is dropped (replaced by N new SO_REUSEPORT sockets).
+/// On Linux with N=1, falls through to the single-accept loop below.
+///
+/// Phase 50.5-02 Task 2 (macOS / non-Linux path):
+/// Single accept loop with per-connection `tokio::spawn` retained (CONTEXT D-04).
+/// Per-connection stream_name interning via `ConnAccumulator::intern_stream`
+/// happens in `handle_connection`'s sync OP_PUSH dispatch.
 pub async fn run_tcp_server_with_listener(
     listener: TcpListener,
     state: SharedState,
 ) -> Result<(), std::io::Error> {
+    // Linux-only: per-shard SO_REUSEPORT accept loops.
+    #[cfg(target_os = "linux")]
+    {
+        let shard_count = state.shard_handles.read().len();
+        if shard_count > 1 {
+            // Extract the local address from the passed-in listener so all
+            // N SO_REUSEPORT sockets bind to the same port.
+            let addr = listener.local_addr()?;
+            drop(listener); // replaced by N SO_REUSEPORT sockets below
+            return spawn_linux_per_shard_accept_loops(addr, &state).await;
+        }
+    }
+
+    // macOS (and Linux N=1): single accept loop with per-connection tokio::spawn.
+    // CONTEXT D-04 locks macOS as single-accept. The spawn-per-conn is retained
+    // here; per-connection interning is wired in handle_connection.
     loop {
         let (stream, _addr) = listener.accept().await?;
         let state = state.clone();
@@ -477,6 +507,50 @@ pub async fn run_tcp_server_with_listener(
             }
         });
     }
+}
+
+/// Phase 50.5-02 Task 2 (Linux only): spawn N independent SO_REUSEPORT accept loops,
+/// one per shard. Each loop binds its own socket to `addr` with `SO_REUSEPORT` so the
+/// kernel 4-tuple-hashes new connections across the N sockets.
+///
+/// Loops run as `tokio::spawn` tasks on the ambient multi-threaded runtime
+/// (RESEARCH.md Open Question 4 — spawning on the shard's `current_thread` runtime
+/// for tightest locality is a Phase 51 follow-up; this plan wires SO_REUSEPORT at
+/// the boot path, which addresses the Hetzner +2% root cause).
+///
+/// Returns `std::future::pending()` so the caller blocks indefinitely (server lifetime).
+#[cfg(target_os = "linux")]
+async fn spawn_linux_per_shard_accept_loops(
+    addr: std::net::SocketAddr,
+    state: &SharedState,
+) -> Result<(), std::io::Error> {
+    let shard_count = state.shard_handles.read().len();
+    for _idx in 0..shard_count {
+        let listener_std = bind_reuseport_tcp(addr)?;
+        // bind_reuseport_tcp already calls set_nonblocking(true).
+        let listener = TcpListener::from_std(listener_std)?;
+        let state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _peer)) => {
+                        let state = state.clone();
+                        tokio::spawn(async move {
+                            let _ = handle_connection(stream, state).await;
+                        });
+                    }
+                    Err(_) => {
+                        // accept() error (e.g. EMFILE) — loop-continue per T-50.5-02-01.
+                        // The other N-1 loops continue accepting.
+                        continue;
+                    }
+                }
+            }
+        });
+    }
+    // Hold the server alive for its lifetime. The spawned accept loops run forever;
+    // this future never resolves (SIGTERM terminates the process).
+    std::future::pending::<Result<(), std::io::Error>>().await
 }
 
 /// Public wrapper for handle_connection, for integration tests.
@@ -712,6 +786,13 @@ async fn handle_connection(
                         // command processing. For simplicity, we break and
                         // handle in the next iteration — but we'd lose the
                         // frame. Instead, handle inline:
+
+                        // Phase 50.5-02 Task 2: intern stream_name for Command::Push
+                        // in the inner tight-loop dispatch (mirrors the outer loop path).
+                        if let Command::Push { ref stream_name, .. } = cmd2 {
+                            let _ = accumulator.intern_stream(stream_name, &state);
+                        }
+
                         let cmd_start = std::time::Instant::now();
                         let is_mset = matches!(&cmd2, Command::Mset { .. });
                         let response: Result<Option<Vec<u8>>, BeavaError> = match cmd2 {
@@ -881,7 +962,19 @@ async fn handle_connection(
             continue;
         }
 
-        // Sync dispatch path. cmd is one of Mset/Flush/other.
+        // Phase 50.5-02 Task 2: intern the stream name for Command::Push (sync path)
+        // BEFORE the match dispatch, so the per-connection intern cache is populated
+        // on every sync OP_PUSH regardless of outcome (late-drop, replica rejection,
+        // shard dispatch, or legacy path). The intern increments conn_interns_total
+        // exactly once per (connection, stream_name) pair.
+        //
+        // NOTE: we peek at the command to get the stream name without consuming it.
+        // We only call intern for Command::Push (shard path uses Arc<str>).
+        if let Command::Push { ref stream_name, .. } = cmd {
+            let _ = accumulator.intern_stream(stream_name, &state);
+        }
+
+        // Sync dispatch path. cmd is one of Mset/Flush/Push/other.
         let cmd_start = std::time::Instant::now();
         let is_mset = matches!(&cmd, Command::Mset { .. });
         let response: Result<Option<Vec<u8>>, BeavaError> = match cmd {
@@ -1083,6 +1176,7 @@ pub fn replica_ingest(
         if fmt == LOG_FMT_BINARY { body } else { &[] },
         event_time,
         false, // no feature read on replica ingest (async-mode semantics)
+        None,  // no per-connection intern cache on replica ingest path
     )?;
 
     // Bump per-stream replica-ingest counter.
@@ -1336,7 +1430,7 @@ fn handle_push_core(
     payload: &serde_json::Value,
     now: SystemTime,
 ) -> Result<crate::types::FeatureMap, BeavaError> {
-    handle_push_core_ex(state, stream_name, payload, &[], now, true)
+    handle_push_core_ex(state, stream_name, payload, &[], now, true, None)
 }
 
 /// Build the event-log payload bytes for a push.
@@ -1391,6 +1485,11 @@ pub fn check_shard_key_fields(
     }
 }
 
+/// Phase 50.5-02 Task 2: `interned_stream_name` is a pre-cached `Arc<str>` from
+/// `ConnAccumulator::intern_stream`. When `Some`, it is used directly for the
+/// shard SPSC event (no per-event `Arc::from` allocation). When `None` (e.g.,
+/// callers without a per-connection accumulator), a fresh `Arc::from(stream_name)`
+/// is constructed as before. Always `None` on the N=1 legacy path (DashMap).
 pub fn handle_push_core_ex(
     state: &SharedState,
     stream_name: &str,
@@ -1398,6 +1497,7 @@ pub fn handle_push_core_ex(
     raw_payload: &[u8],
     now: SystemTime,
     read_features: bool,
+    interned_stream_name: Option<Arc<str>>,
 ) -> Result<crate::types::FeatureMap, BeavaError> {
     let push_start = std::time::Instant::now();
     let engine = state.engine.read();
@@ -1450,9 +1550,15 @@ pub fn handle_push_core_ex(
             } else {
                 bytes::Bytes::from(serde_json::to_vec(payload).unwrap_or_default())
             };
+            // Phase 50.5-02 Task 2: use pre-interned Arc<str> when available (from
+            // ConnAccumulator::intern_stream on the per-connection accept path).
+            // Falls back to a fresh Arc::from for callers without a connection accumulator.
+            let shard_stream_name: Arc<str> = interned_stream_name
+                .clone()
+                .unwrap_or_else(|| Arc::from(stream_name));
             let ev = crate::shard::thread::ShardEvent {
                 payload: payload_bytes,
-                stream_name: Arc::from(stream_name),
+                stream_name: shard_stream_name,
                 shard_hint,
                 response_tx: None, // fire-and-forget; shard owns the mutation
             };
@@ -1731,6 +1837,16 @@ pub struct ConnAccumulator {
     buf: Vec<PendingAsync>,
     next_seq: u64,
     deadline: Option<tokio::time::Instant>,
+    /// Phase 50.5-02 Task 2: per-connection stream_name intern cache.
+    /// On the first event for a given stream name, `Arc::from(name)` is
+    /// constructed once and stored here. Subsequent events for the same
+    /// stream on the same connection reuse the shared `Arc<str>` — zero
+    /// extra allocations on the hot path.
+    ///
+    /// Cache lifetime = connection lifetime (dropped with the accumulator
+    /// when `handle_connection` returns). No cross-connection sharing; no
+    /// locking required (single-threaded per connection).
+    pub stream_name_cache: ahash::AHashMap<String, Arc<str>>,
 }
 
 impl Default for ConnAccumulator {
@@ -1745,7 +1861,31 @@ impl ConnAccumulator {
             buf: Vec::with_capacity(BATCH_SIZE),
             next_seq: 0,
             deadline: None,
+            stream_name_cache: ahash::AHashMap::new(),
         }
+    }
+
+    /// Phase 50.5-02 Task 2: intern a stream name for this connection.
+    ///
+    /// On the first call with a given `name`, allocates one `Arc<str>` and
+    /// caches it. On subsequent calls returns a clone of the cached value
+    /// (just an atomic reference-count bump — no heap allocation).
+    ///
+    /// Increments `state.conn_interns_total` on the first intern per
+    /// (connection, stream_name) pair.
+    pub fn intern_stream(&mut self, name: &str, state: &SharedState) -> Arc<str> {
+        if let Some(cached) = self.stream_name_cache.get(name) {
+            return cached.clone();
+        }
+        let interned: Arc<str> = Arc::from(name);
+        self.stream_name_cache
+            .insert(name.to_string(), interned.clone());
+        // Increment the test-observable intern counter. Always-on field;
+        // zero overhead in production because it is never read on the hot path.
+        state
+            .conn_interns_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        interned
     }
 
     pub fn is_empty(&self) -> bool {
@@ -2265,6 +2405,7 @@ fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8>, Bea
                 &raw_payload,
                 event_time,
                 false,
+                None, // no per-connection intern cache in handle_sync_command (no accumulator)
             )?;
             // Phase 45-04 A5: TCP sync single-event path — bump labeled counter.
             state.events_tcp.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

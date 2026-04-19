@@ -137,7 +137,7 @@ async fn test_proto_labeled_events_total() {
         let payload =
             json!({"id": format!("tcp{}", i), "_event_time": 1700000001000u64 + i as u64});
         let raw = serde_json::to_vec(&payload).unwrap();
-        handle_push_core_ex(&state_for_tcp, "metrics_test", &payload, &raw, now, false)
+        handle_push_core_ex(&state_for_tcp, "metrics_test", &payload, &raw, now, false, None)
             .expect("TCP push should succeed");
         // Mirror what the TCP sync-push arm does in tcp.rs (handle_sync_command path).
         state_for_tcp

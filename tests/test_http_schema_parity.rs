@@ -128,7 +128,7 @@ async fn same_json_through_http_and_tcp_yields_identical_feature_values() {
         // read_features=true so the feature map is computed at push time.
         // ----------------------------------------------------------------
         let state_tcp = fresh_state_with_stream();
-        handle_push_core_ex(&state_tcp, "parity", &event, &raw, event_time, true).unwrap();
+        handle_push_core_ex(&state_tcp, "parity", &event, &raw, event_time, true, None).unwrap();
         // Query at event_time so the bucket is in-window.
         let features_tcp = state_tcp.store.get_all_features("parity_user", event_time);
 
