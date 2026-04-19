@@ -13,6 +13,14 @@
 //! `DeltaSnapshotStateV6` and migrated on read by initializing `table_rows`
 //! to empty for each entity. No other field changes — streams, static
 //! features, pipelines, and backfill markers all carry over as-is.
+//!
+//! Phase 52-01 (v7 → v8): `BaseSnapshotStateV8` adds `shard_count: u16` and
+//! `replica_lsn_map: HashMap<(StreamName, UpstreamShardId), u64>` for TPC
+//! shard-count boot guard (TPC-CORR-02) and LSN-based dedup (D-11). Reads
+//! both v7 and v8; writes v8 only. v7 snapshots promote with shard_count=1
+//! and an empty replica_lsn_map. The `check_shard_count_guard` function in
+//! `store.rs` triggers a hard-fail boot refusal when `snapshot.shard_count !=
+//! BEAVA_SHARDS`.
 
 use crate::engine::hll::DistinctCountOp;
 use crate::engine::operators::{
@@ -23,6 +31,7 @@ use crate::error::BeavaError;
 use crate::state::store::{SerializableTableRow, StaticFeature};
 use crate::types::FeatureValue;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 /// Snapshot format version byte. Prepended to serialized data.
@@ -31,7 +40,10 @@ use std::time::SystemTime;
 /// for incremental snapshots.
 /// v7 (Phase 24): `SerializableEntityState` grows `table_rows` for first-class
 /// Table row storage. v6 snapshots migrate transparently — see `load_snapshot`.
-pub const SNAPSHOT_FORMAT_VERSION: u8 = 7;
+/// v8 (Phase 52-01): `BaseSnapshotStateV8` adds `shard_count: u16` and
+/// `replica_lsn_map` for TPC shard-count boot guard (TPC-CORR-02) and LSN dedup.
+/// v7 snapshots read and promoted with shard_count=1. Writer always emits v8.
+pub const SNAPSHOT_FORMAT_VERSION: u8 = 8;
 
 /// Legacy v5 format version byte. Used by `load_legacy_v5` to migrate
 /// existing single-file snapshots to v6 on first startup.
@@ -41,6 +53,11 @@ pub const LEGACY_V5_FORMAT: u8 = 5;
 /// `SerializableEntityState`; v6 snapshots are migrated on read by
 /// initializing each entity's `table_rows` to empty.
 pub const LEGACY_V6_FORMAT: u8 = 6;
+
+/// Legacy v7 format version byte. Phase 52-01 added `shard_count` and
+/// `replica_lsn_map` to `BaseSnapshotStateV8`; v7 snapshots are promoted on
+/// read with shard_count=1 and an empty replica_lsn_map.
+pub const LEGACY_V7_FORMAT: u8 = 7;
 
 /// Type tag byte following the version byte in a v6 snapshot file.
 /// 0x00 = full base snapshot, 0x01 = incremental delta snapshot.
@@ -386,6 +403,42 @@ pub struct DeltaSnapshotStateV6 {
     pub deleted_keys: Vec<String>,
 }
 
+// ================ Phase 52-01: v7 legacy types and v8 new types ================
+
+/// Phase 52-01: Legacy v7 base snapshot layout. Identical to `BaseSnapshotState`
+/// (v7 = current before this phase). Used only to deserialize v7 snapshots before
+/// promoting them to v8 with `shard_count=1` and empty `replica_lsn_map`.
+///
+/// `BaseSnapshotState` (the current type without v8 fields) serves as v7 on-disk
+/// layout. We alias it here for clarity in the migration path.
+pub type BaseSnapshotStateV7 = BaseSnapshotState;
+
+/// Phase 52-01: v8 base snapshot layout. Extends v7 with:
+/// - `shard_count: u16` — TPC shard count at snapshot write time. Used by
+///   the boot guard (TPC-CORR-02) to refuse boot when `shard_count !=
+///   BEAVA_SHARDS`.
+/// - `replica_lsn_map: HashMap<(StreamName, UpstreamShardId), u64>` — per
+///   (stream, upstream shard) LSN watermark for dedup on reconnect (D-11).
+///   `#[serde(default)]` so older-era v8 snapshots (before the map was
+///   populated) load cleanly with an empty map.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaseSnapshotStateV8 {
+    pub header: SnapshotHeader,
+    pub entities: Vec<(String, SerializableEntityState)>,
+    pub pipelines: Vec<SerializablePipeline>,
+    #[serde(default)]
+    pub backfill_complete: Vec<(String, String)>,
+    /// TPC shard count at snapshot write time. Defaults to 1 for v7-promoted
+    /// snapshots (added via `#[serde(default = "default_shard_count")]` during
+    /// v7→v8 promotion, not stored in v7 bytes).
+    pub shard_count: u16,
+    /// Per-(stream, upstream_shard_id) LSN watermark for LSN-based dedup (D-11).
+    /// `#[serde(default)]` so snapshots written before LSN population (e.g. v8
+    /// snapshots from 52-01 before 52-06 lands) load cleanly with an empty map.
+    #[serde(default)]
+    pub replica_lsn_map: HashMap<(String, u8), u64>,
+}
+
 impl From<BaseSnapshotStateV6> for BaseSnapshotState {
     fn from(v6: BaseSnapshotStateV6) -> Self {
         BaseSnapshotState {
@@ -416,9 +469,11 @@ impl From<DeltaSnapshotStateV6> for DeltaSnapshotState {
 }
 
 /// Wrapper returned by `load_snapshot_file` that preserves the on-disk type.
+/// Phase 52-01: Base variant now carries `BaseSnapshotStateV8` to expose
+/// `shard_count` and `replica_lsn_map` to the boot guard and LSN dedup paths.
 #[derive(Debug, Clone)]
 pub enum SnapshotFile {
-    Base(BaseSnapshotState),
+    Base(BaseSnapshotStateV8),
     Delta(DeltaSnapshotState),
 }
 
@@ -442,14 +497,14 @@ pub fn save_snapshot(data: &SnapshotState) -> Result<Vec<u8>, postcard::Error> {
     save_base_snapshot(&base)
 }
 
-/// Deserialize a `SnapshotState` from bytes. Accepts either a legacy v5
-/// single-file snapshot or a v6 base snapshot. Delta snapshots are rejected
-/// by this legacy API (use `load_snapshot_file` for the generic path).
+/// Deserialize a `SnapshotState` from bytes. Accepts v5, v6, v7, and v8 base
+/// snapshots. Delta snapshots are rejected by this legacy API (use
+/// `load_snapshot_file` for the generic path).
 ///
 /// Returns None if:
 /// - bytes is empty
-/// - version byte is not v5 or v6
-/// - v6 type tag is not base (0x00)
+/// - version byte is not v5, v6, v7, or v8
+/// - type tag is not base (0x00)
 /// - postcard deserialization fails (corrupt data)
 pub fn load_snapshot(bytes: &[u8]) -> Option<SnapshotState> {
     if bytes.is_empty() {
@@ -474,6 +529,21 @@ pub fn load_snapshot(bytes: &[u8]) -> Option<SnapshotState> {
             backfill_complete: base.backfill_complete,
         });
     }
+    // Phase 52-01: Legacy v7 path — decode as BaseSnapshotState (v7 layout).
+    if version == LEGACY_V7_FORMAT {
+        if bytes.len() < 2 {
+            return None;
+        }
+        if bytes[1] != TYPE_TAG_BASE {
+            return None;
+        }
+        let base: BaseSnapshotState = postcard::from_bytes(&bytes[2..]).ok()?;
+        return Some(SnapshotState {
+            entities: base.entities,
+            pipelines: base.pipelines,
+            backfill_complete: base.backfill_complete,
+        });
+    }
     if version != SNAPSHOT_FORMAT_VERSION {
         // Intentional: startup status (Phase 47 audit)
         eprintln!(
@@ -482,7 +552,7 @@ pub fn load_snapshot(bytes: &[u8]) -> Option<SnapshotState> {
         );
         return None;
     }
-    // v7 path: must be a base snapshot for this legacy API.
+    // v8 path: must be a base snapshot for this legacy API.
     if bytes.len() < 2 {
         return None;
     }
@@ -490,7 +560,7 @@ pub fn load_snapshot(bytes: &[u8]) -> Option<SnapshotState> {
         // Delta snapshots must go through load_snapshot_file.
         return None;
     }
-    let base: BaseSnapshotState = postcard::from_bytes(&bytes[2..]).ok()?;
+    let base: BaseSnapshotStateV8 = postcard::from_bytes(&bytes[2..]).ok()?;
     Some(SnapshotState {
         entities: base.entities,
         pipelines: base.pipelines,
@@ -500,28 +570,55 @@ pub fn load_snapshot(bytes: &[u8]) -> Option<SnapshotState> {
 
 // ================ Phase 9: v6 Save/Load Functions ================
 
-/// Serialize a `BaseSnapshotState` in v6 format.
-/// Format: `[version=6][type_tag=0x00][postcard(BaseSnapshotState)]`
+/// Serialize a `BaseSnapshotState` (v7 layout) wrapped in v8 envelope.
+/// Phase 52-01: this function promotes a v7-era `BaseSnapshotState` to a
+/// `BaseSnapshotStateV8` with `shard_count=1` and empty `replica_lsn_map`,
+/// then writes it as v8.  All new writes are v8; this entry point preserves
+/// the existing call sites in tests and callers that build a `BaseSnapshotState`.
+///
+/// Format: `[version=8][type_tag=0x00][postcard(BaseSnapshotStateV8)]`
 pub fn save_base_snapshot(data: &BaseSnapshotState) -> Result<Vec<u8>, postcard::Error> {
+    let v8 = BaseSnapshotStateV8 {
+        header: data.header.clone(),
+        entities: data.entities.clone(),
+        pipelines: data.pipelines.clone(),
+        backfill_complete: data.backfill_complete.clone(),
+        shard_count: 1,
+        replica_lsn_map: HashMap::new(),
+    };
+    save_base_snapshot_v8(&v8)
+}
+
+/// Serialize a `BaseSnapshotStateV8` in v8 format.
+/// Format: `[version=8][type_tag=0x00][postcard(BaseSnapshotStateV8)]`
+pub fn save_base_snapshot_v8(data: &BaseSnapshotStateV8) -> Result<Vec<u8>, postcard::Error> {
     let mut buf = vec![SNAPSHOT_FORMAT_VERSION, TYPE_TAG_BASE];
     buf.extend_from_slice(&postcard::to_stdvec(data)?);
     Ok(buf)
 }
 
-/// Serialize a `DeltaSnapshotState` in v6 format.
-/// Format: `[version=6][type_tag=0x01][postcard(DeltaSnapshotState)]`
+/// Serialize a `DeltaSnapshotState` in v8 format.
+/// Format: `[version=8][type_tag=0x01][postcard(DeltaSnapshotState)]`
 pub fn save_delta_snapshot(data: &DeltaSnapshotState) -> Result<Vec<u8>, postcard::Error> {
     let mut buf = vec![SNAPSHOT_FORMAT_VERSION, TYPE_TAG_DELTA];
     buf.extend_from_slice(&postcard::to_stdvec(data)?);
     Ok(buf)
 }
 
-/// Load a v6 snapshot file (base or delta) from bytes. Returns None on
-/// version mismatch, unknown type tag, or corrupt data.
+/// Load a snapshot file (base or delta) from bytes. Accepts v6, v7, and v8.
+/// Returns None on unknown version, unknown type tag, or corrupt data.
+///
+/// Version dispatch:
+/// - v6: decode as BaseSnapshotStateV6 / DeltaSnapshotStateV6, promote entities
+///       (add empty table_rows), then wrap in BaseSnapshotStateV8 with shard_count=1.
+/// - v7: decode as BaseSnapshotState (v7 layout), promote to BaseSnapshotStateV8
+///       with shard_count=1 and empty replica_lsn_map.
+/// - v8: decode directly as BaseSnapshotStateV8 / DeltaSnapshotState.
+/// - unknown: return None (T-52-01-01: unknown version → Err, not panic).
 ///
 /// Security: postcard deserialization rejects malformed input via Result;
 /// we convert any error to None to match the rest of the snapshot module's
-/// "fail closed, start fresh" policy. (Threat register T-09-01.)
+/// "fail closed, start fresh" policy. (Threat register T-09-01, T-52-01-01.)
 pub fn load_snapshot_file(bytes: &[u8]) -> Option<SnapshotFile> {
     if bytes.len() < 2 {
         return None;
@@ -529,20 +626,54 @@ pub fn load_snapshot_file(bytes: &[u8]) -> Option<SnapshotFile> {
     // Phase 24: Accept legacy v6 files and migrate them on read.
     if bytes[0] == LEGACY_V6_FORMAT {
         return match bytes[1] {
-            TYPE_TAG_BASE => postcard::from_bytes::<BaseSnapshotStateV6>(&bytes[2..])
-                .ok()
-                .map(|b| SnapshotFile::Base(b.into())),
+            TYPE_TAG_BASE => {
+                let v6: BaseSnapshotStateV6 = postcard::from_bytes(&bytes[2..]).ok()?;
+                // Promote v6 → BaseSnapshotState (v7: add table_rows) → BaseSnapshotStateV8.
+                let v7: BaseSnapshotState = v6.into();
+                let v8 = BaseSnapshotStateV8 {
+                    header: v7.header,
+                    entities: v7.entities,
+                    pipelines: v7.pipelines,
+                    backfill_complete: v7.backfill_complete,
+                    shard_count: 1,
+                    replica_lsn_map: HashMap::new(),
+                };
+                Some(SnapshotFile::Base(v8))
+            }
             TYPE_TAG_DELTA => postcard::from_bytes::<DeltaSnapshotStateV6>(&bytes[2..])
                 .ok()
                 .map(|d| SnapshotFile::Delta(d.into())),
             _ => None,
         };
     }
+    // Phase 52-01: Accept legacy v7 files and promote them to v8.
+    if bytes[0] == LEGACY_V7_FORMAT {
+        return match bytes[1] {
+            TYPE_TAG_BASE => {
+                let v7: BaseSnapshotState = postcard::from_bytes(&bytes[2..]).ok()?;
+                let v8 = BaseSnapshotStateV8 {
+                    header: v7.header,
+                    entities: v7.entities,
+                    pipelines: v7.pipelines,
+                    backfill_complete: v7.backfill_complete,
+                    shard_count: 1,
+                    replica_lsn_map: HashMap::new(),
+                };
+                Some(SnapshotFile::Base(v8))
+            }
+            TYPE_TAG_DELTA => postcard::from_bytes::<DeltaSnapshotState>(&bytes[2..])
+                .ok()
+                .map(SnapshotFile::Delta),
+            _ => None,
+        };
+    }
     if bytes[0] != SNAPSHOT_FORMAT_VERSION {
+        // T-52-01-01: unknown version → return None, not panic.
         return None;
     }
+    // v8 path.
     match bytes[1] {
-        TYPE_TAG_BASE => postcard::from_bytes::<BaseSnapshotState>(&bytes[2..])
+        TYPE_TAG_BASE => postcard::from_bytes::<BaseSnapshotStateV8>(&bytes[2..])
             .ok()
             .map(SnapshotFile::Base),
         TYPE_TAG_DELTA => postcard::from_bytes::<DeltaSnapshotState>(&bytes[2..])
@@ -571,6 +702,21 @@ pub fn save_delta_snapshot_v6_for_test(
     data: &DeltaSnapshotStateV6,
 ) -> Result<Vec<u8>, postcard::Error> {
     let mut buf = vec![LEGACY_V6_FORMAT, TYPE_TAG_DELTA];
+    buf.extend_from_slice(&postcard::to_stdvec(data)?);
+    Ok(buf)
+}
+
+/// Phase 52-01 test helper: serialize a v7 base snapshot using the legacy v7
+/// layout (`[0x07][0x00][postcard(BaseSnapshotState)]`). Used by the v7→v8
+/// migration tests to exercise the read promotion path. Not used at runtime —
+/// v7 writes stopped when `SNAPSHOT_FORMAT_VERSION` moved to 8.
+///
+/// `BaseSnapshotStateV7` is a type alias for `BaseSnapshotState` (the v7
+/// on-disk layout is identical to `BaseSnapshotState`).
+pub fn save_base_snapshot_v7_for_test(
+    data: &BaseSnapshotStateV7,
+) -> Result<Vec<u8>, postcard::Error> {
+    let mut buf = vec![LEGACY_V7_FORMAT, TYPE_TAG_BASE];
     buf.extend_from_slice(&postcard::to_stdvec(data)?);
     Ok(buf)
 }
@@ -746,11 +892,11 @@ mod tests {
         };
         let bytes = save_snapshot(&state).expect("save_snapshot should succeed");
         assert_eq!(bytes[0], SNAPSHOT_FORMAT_VERSION);
-        assert_eq!(bytes[0], 0x07);
+        assert_eq!(bytes[0], 0x08, "Phase 52-01: save_snapshot must now emit v8");
         // v6+ layouts carry a type tag byte after the version byte.
         assert_eq!(
             bytes[1], 0x00,
-            "legacy save_snapshot must emit base type tag"
+            "save_snapshot must emit base type tag"
         );
     }
 
@@ -941,8 +1087,8 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_format_version_is_7() {
-        assert_eq!(SNAPSHOT_FORMAT_VERSION, 7);
+    fn test_snapshot_format_version_is_8() {
+        assert_eq!(SNAPSHOT_FORMAT_VERSION, 8);
     }
 
     #[test]
