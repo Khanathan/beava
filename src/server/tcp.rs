@@ -3693,11 +3693,14 @@ async fn handle_log_fetch(
 /// Note: this deliberately does NOT apply delta snapshots on top of the base.
 /// The v0 replica contract is "ship the latest persisted base"; delta-aware
 /// replication is out of scope for 27-01 per `27-01-PLAN.md §objective`.
-fn load_base_snapshot_for_fetch(state: &SharedState) -> crate::state::snapshot::BaseSnapshotState {
+fn load_base_snapshot_for_fetch(
+    state: &SharedState,
+) -> crate::state::snapshot::BaseSnapshotStateV8 {
     use crate::state::snapshot::{
-        load_snapshot_file, BaseSnapshotState, SnapshotFile, SnapshotHeader, SnapshotType,
+        load_snapshot_file, BaseSnapshotStateV8, SnapshotFile, SnapshotHeader, SnapshotType,
     };
-    let empty = || BaseSnapshotState {
+    use std::collections::HashMap;
+    let empty = || BaseSnapshotStateV8 {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 0,
@@ -3705,6 +3708,8 @@ fn load_base_snapshot_for_fetch(state: &SharedState) -> crate::state::snapshot::
         entities: vec![],
         pipelines: vec![],
         backfill_complete: vec![],
+        shard_count: 1,
+        replica_lsn_map: HashMap::new(),
     };
 
     // (1) Scan parent dir for `beava.snapshot.base.*` — pick the highest seq.

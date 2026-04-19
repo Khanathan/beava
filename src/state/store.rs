@@ -22,6 +22,50 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 
+// ============================================================
+// Phase 52-01: Shard-count boot guard (TPC-CORR-02)
+// ============================================================
+
+/// Hard-fail boot guard: compare the shard_count stored in a loaded snapshot
+/// against the current `BEAVA_SHARDS` environment variable value.
+///
+/// This is a pure function (not a method) so tests can call it without
+/// constructing a `StateStore` or loading a snapshot from disk.
+///
+/// Returns `Ok(())` when the counts match or `Err(msg)` with the exact
+/// TPC-CORR-02 error string when they differ. The caller (boot path) must
+/// propagate the error to `main` and exit the process — no silent empty boot.
+///
+/// Env parsing: non-numeric `BEAVA_SHARDS` values default to 1 (T-52-01-03:
+/// malformed env var → no panic, treat as N=1).
+///
+/// # Arguments
+/// - `snapshot_shard_count` — the `shard_count` field from the loaded snapshot
+///   (1 for v7-promoted snapshots, explicit for v8 snapshots).
+/// - `beava_shards` — the current operator-configured shard count, already
+///   parsed by the caller (use `read_beava_shards()` in the boot path).
+pub fn check_shard_count_guard(snapshot_shard_count: u16, beava_shards: u16) -> Result<(), String> {
+    if snapshot_shard_count != beava_shards {
+        return Err(format!(
+            "snapshot shard_count={} but BEAVA_SHARDS={} \u{2014} run 'tally reshard --from {} --to {}' then restart",
+            snapshot_shard_count, beava_shards, snapshot_shard_count, beava_shards
+        ));
+    }
+    Ok(())
+}
+
+/// Read the current `BEAVA_SHARDS` env var value as a `u16`.
+///
+/// Defaults to 1 if the variable is absent or contains a non-numeric value.
+/// (T-52-01-03: internal env var; malformed → default to 1, no panic.)
+pub fn read_beava_shards() -> u16 {
+    std::env::var("BEAVA_SHARDS")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(1)
+}
+
 /// A directly-written feature value (from SET/MSET commands).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StaticFeature {

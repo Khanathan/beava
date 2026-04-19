@@ -17,10 +17,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::state::eviction::evict_expired_keys;
 use beava::state::snapshot::{
-    load_legacy_v5, load_snapshot_file, save_base_snapshot, save_delta_snapshot, BaseSnapshotState,
-    DeltaSnapshotState, SerializablePipeline, SnapshotFile, SnapshotHeader, SnapshotState,
-    SnapshotType, LEGACY_V5_FORMAT, SNAPSHOT_FORMAT_VERSION,
+    load_legacy_v5, load_snapshot_file, save_base_snapshot_v8, save_delta_snapshot,
+    BaseSnapshotStateV8, DeltaSnapshotState, SerializablePipeline, SnapshotFile, SnapshotHeader,
+    SnapshotState, SnapshotType, LEGACY_V5_FORMAT, SNAPSHOT_FORMAT_VERSION,
 };
+use std::collections::HashMap;
 use beava::state::store::StateStore;
 use beava::types::FeatureValue;
 
@@ -129,7 +130,7 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
     push(&store, &engine, "u2", 20.0, now);
 
     let entities = store.clone_for_snapshot_with_gc(&engine.valid_features_map());
-    let base = BaseSnapshotState {
+    let base = BaseSnapshotStateV8 {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 0,
@@ -141,8 +142,10 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
             raw_register_json: "{}".into(),
         }],
         backfill_complete: vec![],
+        shard_count: 1,
+        replica_lsn_map: HashMap::new(),
     };
-    let bytes = save_base_snapshot(&base).unwrap();
+    let bytes = save_base_snapshot_v8(&base).unwrap();
     std::fs::write(snap_dir.join("beava.snapshot.base.0000000000"), &bytes).unwrap();
     store.clear_dirty();
     let _ = store.take_deleted();
@@ -221,7 +224,7 @@ fn test_incremental_snapshot_deleted_keys_removed_on_recovery() {
     push(&store, &engine, "u2", 20.0, now);
     push(&store, &engine, "u3", 30.0, now);
     let entities = store.clone_for_snapshot_with_gc(&engine.valid_features_map());
-    let base = BaseSnapshotState {
+    let base = BaseSnapshotStateV8 {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 0,
@@ -229,8 +232,10 @@ fn test_incremental_snapshot_deleted_keys_removed_on_recovery() {
         entities,
         pipelines: vec![],
         backfill_complete: vec![],
+        shard_count: 1,
+        replica_lsn_map: HashMap::new(),
     };
-    let bytes = save_base_snapshot(&base).unwrap();
+    let bytes = save_base_snapshot_v8(&base).unwrap();
     std::fs::write(snap_dir.join("beava.snapshot.base.0000000000"), &bytes).unwrap();
 
     // Delta marks u2 as deleted.

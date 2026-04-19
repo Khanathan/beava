@@ -33,7 +33,7 @@ use tokio::sync::mpsc;
 
 use crate::server::protocol::Scope;
 use crate::server::signals::SharedRegistry;
-use crate::state::snapshot::BaseSnapshotState;
+use crate::state::snapshot::BaseSnapshotStateV8;
 
 /// Phase 27-02: bounded mpsc capacity for per-subscriber notification
 /// channels. When this buffer fills, `notify_subscribers` drops the
@@ -246,7 +246,7 @@ pub fn entity_matches_scope(entity_streams: &[&str], entity_key: &str, scope: &S
 ///
 /// Snapshot size is ≤100MB in v0 (`27-CONTEXT.md §specifics`); cloning
 /// filtered entities is acceptable.
-pub fn filter_base_snapshot(snap: &BaseSnapshotState, scope: &Scope) -> BaseSnapshotState {
+pub fn filter_base_snapshot(snap: &BaseSnapshotStateV8, scope: &Scope) -> BaseSnapshotStateV8 {
     let entities: Vec<_> = snap
         .entities
         .iter()
@@ -256,11 +256,13 @@ pub fn filter_base_snapshot(snap: &BaseSnapshotState, scope: &Scope) -> BaseSnap
         })
         .cloned()
         .collect();
-    BaseSnapshotState {
+    BaseSnapshotStateV8 {
         header: snap.header.clone(),
         entities,
         pipelines: snap.pipelines.clone(),
         backfill_complete: snap.backfill_complete.clone(),
+        shard_count: snap.shard_count,
+        replica_lsn_map: snap.replica_lsn_map.clone(),
     }
 }
 
@@ -445,9 +447,10 @@ pub type SharedSubscriberRegistry = Arc<SubscriberRegistry>;
 mod tests {
     use super::*;
     use crate::state::snapshot::{
-        load_snapshot_file, save_base_snapshot, SerializableEntityState,
+        load_snapshot_file, save_base_snapshot_v8, BaseSnapshotStateV8, SerializableEntityState,
         SerializableStreamEntityState, SnapshotFile, SnapshotHeader, SnapshotType,
     };
+    use std::collections::HashMap;
 
     fn stream_state() -> SerializableStreamEntityState {
         SerializableStreamEntityState {
@@ -467,8 +470,8 @@ mod tests {
         }
     }
 
-    fn base_snapshot(entities: Vec<(String, SerializableEntityState)>) -> BaseSnapshotState {
-        BaseSnapshotState {
+    fn base_snapshot(entities: Vec<(String, SerializableEntityState)>) -> BaseSnapshotStateV8 {
+        BaseSnapshotStateV8 {
             header: SnapshotHeader {
                 snapshot_type: SnapshotType::Base,
                 sequence: 1,
@@ -476,6 +479,8 @@ mod tests {
             entities,
             pipelines: vec![],
             backfill_complete: vec![],
+            shard_count: 1,
+            replica_lsn_map: HashMap::new(),
         }
     }
 
@@ -545,7 +550,7 @@ mod tests {
             ("k2".into(), entity(&["clicks"])),
         ]);
         let out = filter_base_snapshot(&snap, &scope(&["orders"]));
-        let bytes = save_base_snapshot(&out).expect("serialize");
+        let bytes = save_base_snapshot_v8(&out).expect("serialize");
         match load_snapshot_file(&bytes) {
             Some(SnapshotFile::Base(reloaded)) => {
                 assert_eq!(reloaded.entities.len(), out.entities.len());

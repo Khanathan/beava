@@ -34,9 +34,10 @@ use beava::server::protocol::{
 };
 use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
 use beava::state::snapshot::{
-    save_base_snapshot, BaseSnapshotState, SerializableEntityState, SerializableStreamEntityState,
+    save_base_snapshot, BaseSnapshotStateV8, SerializableEntityState, SerializableStreamEntityState,
     SnapshotHeader, SnapshotType,
 };
+use std::collections::HashMap;
 use beava::state::store::StateStore;
 
 const ADMIN_TOKEN: &str = "test-admin-token";
@@ -97,7 +98,7 @@ fn write_base_snapshot(
     snap_dir: &std::path::Path,
     entities: Vec<(String, SerializableEntityState)>,
 ) -> PathBuf {
-    let base = BaseSnapshotState {
+    let base = BaseSnapshotStateV8 {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 1,
@@ -105,8 +106,11 @@ fn write_base_snapshot(
         entities,
         pipelines: vec![],
         backfill_complete: vec![],
+        shard_count: 1,
+        replica_lsn_map: HashMap::new(),
     };
-    let bytes = save_base_snapshot(&base).expect("save_base_snapshot");
+    use beava::state::snapshot::save_base_snapshot_v8;
+    let bytes = save_base_snapshot_v8(&base).expect("save_base_snapshot_v8");
     let path = snap_dir.join("beava.snapshot.base.0000000001");
     std::fs::write(&path, &bytes).expect("write snapshot");
     path
@@ -239,7 +243,7 @@ async fn happy_streams_only() {
 
     let (tag, payload) = read_frame(&mut conn).await;
     assert_eq!(tag, REPLICA_FRAME_TAG_PAYLOAD);
-    let filtered: BaseSnapshotState = postcard::from_bytes(&payload).expect("postcard deserialize");
+    let filtered: BaseSnapshotStateV8 = postcard::from_bytes(&payload).expect("postcard deserialize");
     // u1 (orders) + u3 (orders, clicks) should pass; u2 (clicks) filtered out.
     let keys: Vec<_> = filtered.entities.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(keys, vec!["u1", "u3"]);
@@ -267,7 +271,7 @@ async fn happy_keys() {
     assert_eq!(tag, REPLICA_FRAME_TAG_HEADER);
     let (tag, payload) = read_frame(&mut conn).await;
     assert_eq!(tag, REPLICA_FRAME_TAG_PAYLOAD);
-    let filtered: BaseSnapshotState = postcard::from_bytes(&payload).unwrap();
+    let filtered: BaseSnapshotStateV8 = postcard::from_bytes(&payload).unwrap();
     let keys: Vec<_> = filtered.entities.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(keys, vec!["u1", "u3"]);
 }
@@ -294,7 +298,7 @@ async fn happy_key_prefix() {
     assert_eq!(tag, REPLICA_FRAME_TAG_HEADER);
     let (tag, payload) = read_frame(&mut conn).await;
     assert_eq!(tag, REPLICA_FRAME_TAG_PAYLOAD);
-    let filtered: BaseSnapshotState = postcard::from_bytes(&payload).unwrap();
+    let filtered: BaseSnapshotStateV8 = postcard::from_bytes(&payload).unwrap();
     let keys: Vec<_> = filtered.entities.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(keys, vec!["user_1", "user_2"]);
 }
