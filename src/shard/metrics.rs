@@ -190,4 +190,19 @@ mod tests {
         // register_shard_metrics must not panic even without a global recorder.
         register_shard_metrics(4);
     }
+
+    /// Phase 53-05 Task 2 (W-4 revision): the three unconditional fjall
+    /// metric helpers must exist and not panic without a global recorder.
+    ///
+    /// `beava_fjall_cache_hit_ratio` is deliberately absent — the Plan 01
+    /// spike recorded `cache_stats_available: false` (fjall 2.11 exposes
+    /// only `Keyspace::cache_capacity()`, not hit/miss counters). Emitting
+    /// a hardcoded `1.0` placeholder would make Plan 06's alert vacuous, so
+    /// the gauge is omitted entirely. See W-4 comment in metrics.rs.
+    #[test]
+    fn fjall_metrics_helpers_do_not_panic() {
+        record_fjall_write_bytes(0, 1024);
+        record_fjall_compaction_bytes(1, 2048);
+        update_fjall_fsync_latency(2, 1.23);
+    }
 }

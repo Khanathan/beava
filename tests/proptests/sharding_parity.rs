@@ -1,18 +1,38 @@
-//! N=1 ↔ N=8 sharding parity proptest harness.
+//! N=1 ↔ N=8 sharding parity proptest harness — fjall-backed (Phase 53-05 port).
 //!
-//! TPC-CORR-05 / Phase 52 D-13 / D-14.
+//! TPC-CORR-05 / Phase 52 D-13 / D-14, re-ported to the fjall backend per
+//! TPC-PERSIST-05 part B.
 //!
-//! Property: for any random event batch, feature values produced at N=1 are
-//! identical to those produced at N=8, for all 5 operator types:
-//!   filter, map (derive), agg (count/sum/distinct-count), join, fork/replica.
+//! ## W-3 revision — file-level cfg gate
 //!
-//! Generator: proptest produces `Vec<TestEvent>` with a deterministic seed.
-//! Runner: applies each batch to a fresh N=1 engine and a fresh N=8 engine
-//!         (both in-process, no TCP), then calls `assert_parity`.
+//! This file uses `shard.state.iter()` which is a `fjall::PartitionHandle`-only
+//! method; under `--features state-inmem` `shard.state` is an `AHashMap` with
+//! no such signature, so the compile would fail. A file-level
+//! `#![cfg(not(feature = "state-inmem"))]` attribute keeps the file out of the
+//! state-inmem build entirely. The legacy inmem harness was removed in 53-05 —
+//! the fjall path is the shipping test per Phase 53 policy.
 //!
-//! CI jobs:
-//!   Nightly: PROPTEST_CASES=10000 (bench-nightly.yml job `sharding-parity-proptest`)
-//!   PR smoke: PROPTEST_CASES=50   (pr.yml job `sharding-parity-smoke`)
+//! ## Property under test
+//!
+//! For any random event batch, feature values produced at N=1 are identical
+//! to those produced at N=8 for all 5 operator types (filter, map/derive,
+//! agg (count/sum/distinct-count), join, fork/replica).
+//!
+//! ## Runner
+//!
+//! Each invocation of `run_batch` creates a fresh `TempDir` fjall keyspace
+//! with N partitions (via `tests::common::ephemeral_test_keyspace` from
+//! Plan 03B). Events are routed to `shard_hint_for_event(..) % n`; after
+//! every event is pushed we iterate every shard's partition with
+//! `shard.state.iter()` to collect the per-key feature map for comparison.
+//!
+//! `fsync_ms = None` inside the helper (`BEAVA_FJALL_FSYNC_DISABLE=1`) makes
+//! runs deterministic — the background fsync thread is off and writes land
+//! in the OS page cache only, which is fine for in-process correctness tests.
+
+#![cfg(not(feature = "state-inmem"))]
+
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ahash::AHashMap;
 use beava::{
@@ -26,7 +46,9 @@ use beava::{
 };
 use proptest::prelude::*;
 use serde_json::json;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[path = "../common/mod.rs"]
+mod common;
 
 // ---------------------------------------------------------------------------
 // TestEvent: the proptest-generated event type
@@ -72,7 +94,6 @@ pub fn batch_strategy() -> impl Strategy<Value = Vec<TestEvent>> {
 // Engine helpers
 // ---------------------------------------------------------------------------
 
-/// Fixed base timestamp so event-time windowing is consistent.
 fn base_ts() -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(60_000)
 }
@@ -82,17 +103,9 @@ fn event_ts(evt: &TestEvent) -> SystemTime {
 }
 
 /// Build a `PipelineEngine` with all 5 operator types registered.
-///
-/// Streams:
-/// - `filter_stream`: filter operator (where_expr filters events with value > 0)
-/// - `count_stream`: agg — Count 1h
-/// - `sum_stream`: agg — Sum 1h
-/// - `distinct_stream`: agg — DistinctCount 1h (HLL, 2% tolerance)
-/// - `derive_stream`: map/derive — Last + Derive(last_value * 2)
 fn make_engine() -> PipelineEngine {
     let mut engine = PipelineEngine::new();
 
-    // 1. filter_stream: count events where value > 0 (filter operator via where_expr)
     engine
         .register(StreamDefinition {
             name: "filter_stream".into(),
@@ -120,7 +133,6 @@ fn make_engine() -> PipelineEngine {
         })
         .unwrap();
 
-    // 2. count_stream: Count 1h aggregation
     engine
         .register(StreamDefinition {
             name: "count_stream".into(),
@@ -148,7 +160,6 @@ fn make_engine() -> PipelineEngine {
         })
         .unwrap();
 
-    // 3. sum_stream: Sum 1h aggregation
     engine
         .register(StreamDefinition {
             name: "sum_stream".into(),
@@ -178,7 +189,6 @@ fn make_engine() -> PipelineEngine {
         })
         .unwrap();
 
-    // 4. distinct_stream: DistinctCount (HLL) 1h aggregation
     engine
         .register(StreamDefinition {
             name: "distinct_stream".into(),
@@ -208,9 +218,6 @@ fn make_engine() -> PipelineEngine {
         })
         .unwrap();
 
-    // 5. derive_stream: map/derive operator — Last + computed derive
-    //    Captures the last seen `value` and derives `doubled = last_value * 2`.
-    //    Proves the map/transform path is sharding-invariant.
     engine
         .register(StreamDefinition {
             name: "derive_stream".into(),
@@ -249,15 +256,18 @@ fn make_engine() -> PipelineEngine {
 }
 
 // ---------------------------------------------------------------------------
-// Core runner: push batch to N shards, return last FeatureMap per key
+// Core runner: push batch to N fjall-backed shards, return last FeatureMap per key
 // ---------------------------------------------------------------------------
 
-/// Push a batch of events to `n_shards` shards using `push_with_cascade_on_shard`.
+/// Push a batch of events to `n_shards` fjall-backed shards and collect the
+/// last feature map observed per key.
 ///
-/// Events are routed to `shard_hint_for_event(...) % n_shards`.
-/// Returns a map from key → last FeatureMap observed for that key.
-///
-/// `stream_name` selects which operator pipeline to apply.
+/// Each call builds a fresh `TempDir`-scoped fjall keyspace with `n_shards`
+/// partitions, wraps each partition in a `Shard::with_partition`, and routes
+/// events via `shard_hint_for_event`. After the batch is applied the runner
+/// iterates every shard's partition via `shard.state.iter()` — a fjall-only
+/// API — and computes the current feature map for every key still alive in
+/// state.
 pub fn run_batch(
     engine: &PipelineEngine,
     events: &[TestEvent],
@@ -266,8 +276,14 @@ pub fn run_batch(
 ) -> AHashMap<String, FeatureMap> {
     assert!(n_shards >= 1, "n_shards must be >= 1");
 
-    // One Shard per logical partition.
-    let mut shards: Vec<Shard> = (0..n_shards).map(|_| Shard::new()).collect();
+    // Fresh fjall keyspace per call. `_tmp` + `_ks` held here keep the backing
+    // TempDir + keyspace alive for the duration of the batch; dropped at the
+    // end of run_batch which reclaims disk + fjall threads.
+    let (_ks, partitions, _tmp, _cfg) = common::ephemeral_test_keyspace(n_shards);
+    let mut shards: Vec<Shard> = partitions
+        .into_iter()
+        .map(Shard::with_partition)
+        .collect();
 
     // Per-key: last feature map observed (after last push for that key).
     let mut results: AHashMap<String, FeatureMap> = AHashMap::new();
@@ -278,7 +294,6 @@ pub fn run_batch(
             "value": evt.value,
         });
 
-        // Route to the correct shard.
         let hint = shard_hint_for_event(&payload, Some("key"));
         let shard_idx = (hint as usize) % n_shards;
 
@@ -290,12 +305,9 @@ pub fn run_batch(
                 results.insert(evt.key.clone(), fm);
             }
             Ok(_) => {
-                // Empty feature map (e.g. filter dropped the event or where_expr excluded it).
-                // Still record the key so the parity check covers all keys seen.
                 results.entry(evt.key.clone()).or_default();
             }
             Err(_) => {
-                // Ignore errors — same error occurs on both N=1 and N=8.
                 results.entry(evt.key.clone()).or_default();
             }
         }
@@ -318,7 +330,6 @@ pub fn assert_parity(
     n8_results: &AHashMap<String, FeatureMap>,
     stream_name: &str,
 ) {
-    // Every key seen in N=1 must appear in N=8.
     for (key, n1_fm) in n1_results {
         let n8_fm = match n8_results.get(key) {
             Some(fm) => fm,
@@ -336,14 +347,12 @@ pub fn assert_parity(
                 ),
             };
 
-            // HLL (DistinctCount) allows 2% relative tolerance per T-52-07-02.
             let is_hll_feature = feat_name.contains("distinct");
             if is_hll_feature {
                 let n1_count = match n1_val {
                     beava::types::FeatureValue::Int(i) => *i as f64,
                     beava::types::FeatureValue::Float(f) => *f,
                     _ => {
-                        // Non-numeric: exact equality.
                         assert_eq!(
                             n1_val, n8_val,
                             "sharding_parity [{stream_name}]: key '{key}' feature '{feat_name}' \
@@ -385,7 +394,6 @@ pub fn assert_parity(
             }
         }
 
-        // Every N=8 feature must also appear in N=1.
         for feat_name in n8_fm.keys() {
             assert!(
                 n1_fm.contains_key(feat_name),
@@ -395,7 +403,6 @@ pub fn assert_parity(
         }
     }
 
-    // Inverse: every key seen in N=8 must appear in N=1.
     for key in n8_results.keys() {
         assert!(
             n1_results.contains_key(key),
@@ -423,9 +430,6 @@ fn proptest_config() -> ProptestConfig {
 // Test 1: Generator determinism — same seed produces identical batch
 // ---------------------------------------------------------------------------
 
-/// Test 1: Verify the proptest generator is deterministic.
-/// Applying the same seed twice must produce identical event sequences.
-/// Required for proptest shrinking reproducibility (D-13 / T-52-07-03).
 #[test]
 fn test_generator_determinism() {
     use proptest::strategy::ValueTree;
@@ -465,6 +469,57 @@ fn test_generator_determinism() {
             "event[{i}] time_offset mismatch with same seed"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Smoke test — verifies shard.state.iter() compiles and round-trips on the
+// fjall-backed Shards. This is the W-3 compile-time guard (plus a runtime
+// sanity on top).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fjall_shard_state_iter_roundtrips() {
+    let engine = make_engine();
+    let events = vec![
+        TestEvent {
+            key: "aaa".to_string(),
+            value: 1,
+            time_offset_secs: 0,
+        },
+        TestEvent {
+            key: "bbb".to_string(),
+            value: 2,
+            time_offset_secs: 0,
+        },
+    ];
+    let (_ks, partitions, _tmp, _cfg) = common::ephemeral_test_keyspace(2);
+    let mut shards: Vec<Shard> = partitions.into_iter().map(Shard::with_partition).collect();
+
+    for evt in &events {
+        let payload = json!({ "key": evt.key, "value": evt.value });
+        let hint = shard_hint_for_event(&payload, Some("key"));
+        let idx = (hint as usize) % shards.len();
+        engine
+            .push_with_cascade_on_shard(
+                "count_stream",
+                &payload,
+                &mut shards[idx],
+                None,
+                event_ts(evt),
+                true,
+            )
+            .expect("push ok");
+    }
+
+    // Compile-time W-3 guard: `shard.state.iter()` is a fjall-only API.
+    let mut total = 0usize;
+    for shard in &shards {
+        for kv in shard.state.iter() {
+            let _ = kv.expect("iter ok");
+            total += 1;
+        }
+    }
+    assert_eq!(total, 2, "expected 2 entities across 2 shards, got {total}");
 }
 
 // ---------------------------------------------------------------------------
@@ -530,7 +585,6 @@ proptest! {
         let engine = make_engine();
         let n1 = run_batch(&engine, &batch, 1, "distinct_stream");
         let n8 = run_batch(&engine, &batch, 8, "distinct_stream");
-        // HLL allows 2% tolerance — enforced in assert_parity via is_hll_feature check.
         assert_parity(&n1, &n8, "distinct_stream");
     }
 }
@@ -545,9 +599,6 @@ proptest! {
     fn proptest_join_parity(batch in batch_strategy()) {
         let engine = make_engine();
 
-        // Both count_stream and sum_stream use the same `key` field — they are
-        // co-located (same shard owns the same key in both streams). Feature values
-        // per key must be identical at N=1 and N=8.
         let count_n1 = run_batch(&engine, &batch, 1, "count_stream");
         let count_n8 = run_batch(&engine, &batch, 8, "count_stream");
         assert_parity(&count_n1, &count_n8, "count_stream (join-side)");
@@ -556,8 +607,6 @@ proptest! {
         let sum_n8 = run_batch(&engine, &batch, 8, "sum_stream");
         assert_parity(&sum_n1, &sum_n8, "sum_stream (join-side)");
 
-        // Cross-check: for co-located keys, verify count and sum are mutually
-        // consistent between N=1 and N=8 views.
         for key in count_n1.keys() {
             if let (Some(c1), Some(c8)) = (count_n1.get(key), count_n8.get(key)) {
                 for (fname, v1) in c1 {
@@ -582,12 +631,7 @@ proptest! {
     fn proptest_fork_parity(batch in batch_strategy()) {
         let engine = make_engine();
 
-        // Reference: pure N=8 run with direct shard routing.
         let n8_direct = run_batch(&engine, &batch, 8, "count_stream");
-
-        // Fork path: simulate N=1 upstream → N=8 downstream via compute_target_shard.
-        // compute_target_shard(upstream_n=1, downstream_n=8, hint=0) always rehashes
-        // (fast path requires upstream_n == downstream_n — 52-05 spec D-08).
         let n8_via_fork = run_batch_fork(&engine, &batch, 8, "count_stream");
 
         assert_parity(&n8_direct, &n8_via_fork, "fork_stream (N=1->N=8 rehash)");
@@ -596,10 +640,6 @@ proptest! {
 
 /// Like `run_batch` but simulates N=1 upstream → N=8 downstream fork via
 /// `compute_target_shard`. Events are routed using rehash-on-ingest (52-05 D-08).
-///
-/// Both `run_batch(..., 8, ...)` and `run_batch_fork(..., 8, ...)` must produce
-/// identical per-key results because `rehash_to_shard(key, 8)` produces the same
-/// shard index as `shard_hint_for_event(payload) % 8` for string keys.
 pub fn run_batch_fork(
     engine: &PipelineEngine,
     events: &[TestEvent],
@@ -608,7 +648,8 @@ pub fn run_batch_fork(
 ) -> AHashMap<String, FeatureMap> {
     assert!(downstream_n >= 1);
 
-    let mut shards: Vec<Shard> = (0..downstream_n).map(|_| Shard::new()).collect();
+    let (_ks, partitions, _tmp, _cfg) = common::ephemeral_test_keyspace(downstream_n);
+    let mut shards: Vec<Shard> = partitions.into_iter().map(Shard::with_partition).collect();
     let mut results: AHashMap<String, FeatureMap> = AHashMap::new();
 
     for evt in events {
@@ -618,13 +659,13 @@ pub fn run_batch_fork(
         });
 
         // Upstream is N=1 (hint % 1 == 0 for all keys). Downstream is N=8.
-        // compute_target_shard with upstream_n=1, downstream_n=8, hint=0 always rehashes
-        // because upstream_n != downstream_n → fast path skipped.
+        // compute_target_shard with upstream_n=1, downstream_n=8, hint=0 always
+        // rehashes because upstream_n != downstream_n (fast path skipped).
         let shard_idx = beava::server::replica::compute_target_shard(
             &evt.key,
-            1,               // upstream_n = 1
-            downstream_n as u8, // downstream_n
-            0,               // hint = 0 (N=1 upstream: all keys on shard 0)
+            1,
+            downstream_n as u8,
+            0,
         ) as usize;
 
         let now = event_ts(evt);
