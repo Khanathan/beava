@@ -82,11 +82,44 @@ pub fn decode_log_payload(payload: &[u8]) -> (u8, &[u8]) {
     }
 }
 
+/// Pack an LSN from its three components.
+///
+/// Bit layout (CONTEXT D-10):
+/// - bits 63-56: `upstream_shard_id` (u8)
+/// - bits 55-40: `stream_ord` (u16)
+/// - bits  39-0: `seq` (u40, max ~1 trillion)
+///
+/// `seq` is clamped to 40 bits; values above 2^40-1 wrap silently.
+/// In practice no stream will reach 1 trillion events, so this is safe.
+pub fn lsn_pack(upstream_shard_id: u8, stream_ord: u16, seq: u64) -> u64 {
+    ((upstream_shard_id as u64) << 56)
+        | ((stream_ord as u64) << 40)
+        | (seq & 0x00FF_FFFF_FFFF)
+}
+
+/// Unpack an LSN into its three components.
+/// Returns `(upstream_shard_id, stream_ord, seq)`.
+/// A value of `0` means "no LSN" (pre-v1.2 entry); callers must treat
+/// `lsn == 0` as a bypass signal (per CONTEXT D-09).
+pub fn lsn_unpack(lsn: u64) -> (u8, u16, u64) {
+    let upstream_shard_id = (lsn >> 56) as u8;
+    let stream_ord = ((lsn >> 40) & 0xFFFF) as u16;
+    let seq = lsn & 0x00FF_FFFF_FFFF;
+    (upstream_shard_id, stream_ord, seq)
+}
+
 /// A single log entry: timestamp + raw event payload bytes.
+///
+/// Phase 52-06: adds `lsn: u64` packed as `(upstream_shard_id: u8) |
+/// (stream_ord: u16) | (seq: u40)` per CONTEXT D-10. `lsn == 0` means a
+/// pre-v1.2 entry — replicas bypass dedup for these (T-52-06-04 mitigated).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LogEntry {
     pub timestamp: SystemTime,
     pub payload: Vec<u8>,
+    /// Phase 52-06: packed LSN. `0` = pre-v1.2 (no dedup for legacy entries).
+    #[serde(default)]
+    pub lsn: u64,
 }
 
 /// Lock-free per-stream log writer.
@@ -237,6 +270,11 @@ pub struct EventLog {
     writers: DashMap<String, LockFreeStreamLog>,
     /// Per-stream history TTL for compaction. Streams not in this map are not logged.
     history_ttls: DashMap<String, Duration>,
+    /// Phase 52-06: per-(stream_name, upstream_shard_id) monotonic seq counter.
+    /// Keyed by `(stream_name, upstream_shard_id)`. Loaded from
+    /// `SnapshotV8.replica_lsn_map` at startup via `load_seq_counters`.
+    /// Stores the *next* seq to assign (i.e. the count of events appended so far).
+    seq_counters: DashMap<(String, u8), u64>,
 }
 
 impl EventLog {
@@ -257,13 +295,102 @@ impl EventLog {
             shard_id,
             writers: DashMap::new(),
             history_ttls: DashMap::new(),
+            seq_counters: DashMap::new(),
         })
+    }
+
+    /// Phase 52-06: Load per-(stream, upstream_shard_id) seq counters from a
+    /// snapshot's `replica_lsn_map`. Must be called after construction and
+    /// before the first `append_lsn_tagged` call to restore monotonicity
+    /// across restarts.
+    ///
+    /// The map value is the *next* seq to assign (stored by `current_lsn_map`).
+    /// After loading, the next `append_lsn_tagged` call for `(stream, shard_id)`
+    /// will use this value as seq, then increment it.
+    pub fn load_seq_counters(&mut self, lsn_map: &std::collections::HashMap<(String, u8), u64>) {
+        for ((stream, shard_id), &next_seq) in lsn_map {
+            self.seq_counters
+                .insert((stream.clone(), *shard_id), next_seq);
+        }
+    }
+
+    /// Phase 52-06: Append a raw event to the stream's log file with LSN tagging.
+    ///
+    /// Assigns a monotonic LSN packed as `lsn_pack(upstream_shard_id, stream_ord, seq)`.
+    /// The seq counter for `(stream_name, upstream_shard_id)` is incremented atomically.
+    ///
+    /// Returns `Ok(lsn)` on success, where `lsn` is the assigned packed LSN.
+    /// Returns `Ok(0)` if the stream is not registered (mirrors `append` contract).
+    pub fn append_lsn_tagged(
+        &self,
+        stream_name: &str,
+        event_bytes: &[u8],
+        now: SystemTime,
+        upstream_shard_id: u8,
+        stream_ord: u16,
+    ) -> std::io::Result<u64> {
+        let log_ref = match self.writers.get(stream_name) {
+            Some(w) => w,
+            None => return Ok(0),
+        };
+
+        // Atomically fetch-and-increment the seq counter.
+        let seq = {
+            let mut entry = self
+                .seq_counters
+                .entry((stream_name.to_string(), upstream_shard_id))
+                .or_insert(0);
+            let current = *entry;
+            *entry = current + 1;
+            current
+        };
+
+        let lsn = lsn_pack(upstream_shard_id, stream_ord, seq);
+        let entry = LogEntry {
+            timestamp: now,
+            payload: event_bytes.to_vec(),
+            lsn,
+        };
+        let encoded = postcard::to_stdvec(&entry).map_err(std::io::Error::other)?;
+        let mut frame = Vec::with_capacity(4 + encoded.len());
+        frame.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&encoded);
+        debug_assert!(
+            frame.len() < 1_048_576,
+            "event-log LSN-tagged frame exceeds 1 MiB"
+        );
+        log_ref.append_raw(&frame)?;
+        Ok(lsn)
+    }
+
+    /// Phase 52-06: Return the current seq counter map as a `replica_lsn_map`
+    /// suitable for writing into a `SnapshotV8`.
+    ///
+    /// The value stored is the *next* seq to assign for each
+    /// `(stream_name, upstream_shard_id)` pair. `load_seq_counters` reads
+    /// this value back directly as the starting counter — no +1 adjustment.
+    ///
+    /// Called on clean shutdown / snapshot write to persist seq counters so
+    /// monotonicity is preserved across restarts.
+    pub fn current_lsn_map(&self) -> std::collections::HashMap<(String, u8), u64> {
+        self.seq_counters
+            .iter()
+            .map(|entry| {
+                let key = entry.key().clone();
+                let next_seq = *entry.value();
+                (key, next_seq)
+            })
+            .collect()
     }
 
     /// Create a new EventLog at `log_dir` for shard 0.
     ///
     /// Kept for backward compatibility — all existing callers pass a path
     /// directly; internally this calls `new_for_shard(log_dir, 0)`.
+    ///
+    /// Note: `seq_counters` starts empty. Call `load_seq_counters` with the
+    /// snapshot's `replica_lsn_map` before the first `append_lsn_tagged` if
+    /// monotonicity across restart is required (Phase 52-06).
     pub fn new(log_dir: PathBuf) -> std::io::Result<Self> {
         Self::new_for_shard(log_dir, 0)
     }
@@ -333,6 +460,7 @@ impl EventLog {
         let entry = LogEntry {
             timestamp: now,
             payload: event_bytes.to_vec(),
+            lsn: 0, // pre-v1.2 path; replicas bypass dedup for lsn==0 (T-52-06-04)
         };
         let encoded = postcard::to_stdvec(&entry).map_err(std::io::Error::other)?;
         // Build one contiguous frame: [u32 BE len][postcard bytes].
@@ -384,6 +512,7 @@ impl EventLog {
             let entry = LogEntry {
                 timestamp: now,
                 payload: bytes.to_vec(),
+                lsn: 0, // pre-v1.2 path; replicas bypass dedup for lsn==0 (T-52-06-04)
             };
             let encoded = postcard::to_stdvec(&entry).map_err(std::io::Error::other)?;
             buf.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
@@ -432,6 +561,7 @@ impl EventLog {
             let entry = LogEntry {
                 timestamp: *ts,
                 payload: bytes.to_vec(),
+                lsn: 0, // pre-v1.2 path; replicas bypass dedup for lsn==0 (T-52-06-04)
             };
             let encoded = postcard::to_stdvec(&entry).map_err(std::io::Error::other)?;
             buf.extend_from_slice(&(encoded.len() as u32).to_be_bytes());

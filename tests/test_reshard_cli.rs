@@ -81,6 +81,7 @@ fn write_log_entries(dir: &Path, shard_id: u8, stream_name: &str, keys: &[&str])
         let entry = LogEntry {
             timestamp: SystemTime::now(),
             payload,
+            lsn: 0, // pre-v1.2 path; dedup bypassed for lsn==0 (T-52-06-04)
         };
         let encoded = postcard::to_stdvec(&entry).expect("postcard encode");
         writer

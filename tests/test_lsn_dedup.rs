@@ -4,9 +4,13 @@
 //! Tests 4–6: Replica dedup filter — no double-apply on reconnect.
 //!
 //! TDD: tests written RED before implementation; implementation makes them GREEN.
+//!
+//! PARALLEL SAFETY: DEDUP_DROP_COUNT is a process-wide static. Tests use
+//! delta measurement (capture before/after) rather than reset+absolute to
+//! be parallel-safe. No test calls reset_dedup_drop_count.
 
-use beava::state::event_log::{lsn_pack, lsn_unpack, EventLog, LogEntry};
-use beava::server::replica::{dedup_drop_count, reset_dedup_drop_count, LsnDedupFilter};
+use beava::state::event_log::{lsn_pack, lsn_unpack, EventLog};
+use beava::server::replica::{dedup_drop_count, LsnDedupFilter};
 use beava::state::snapshot::{
     save_base_snapshot_v8, load_snapshot_file, BaseSnapshotStateV8,
     SnapshotFile, SnapshotHeader, SnapshotType,
@@ -37,7 +41,7 @@ fn test_lsn_tagging() {
 
     let now = ts(1000);
     let mut lsns = Vec::new();
-    for i in 0..5u64 {
+    for _ in 0..5u64 {
         let lsn = log
             .append_lsn_tagged("orders", b"payload", now, upstream_shard_id, stream_ord)
             .unwrap();
@@ -93,7 +97,8 @@ fn test_lsn_seq_monotonic() {
 
         // Export seq counters → simulate snapshot save.
         let lsn_map = log.current_lsn_map();
-        // The seq counter for (stream, shard) after 5 appends should be 5.
+        // The seq counter for (stream, shard) after 5 appends should be 5
+        // (the next-seq-to-assign stored by current_lsn_map).
         let key: (String, u8) = ("events".to_string(), upstream_shard_id);
         assert_eq!(
             *lsn_map.get(&key).unwrap_or(&0),
@@ -113,7 +118,7 @@ fn test_lsn_seq_monotonic() {
             shard_count: 1,
             replica_lsn_map: lsn_map,
         };
-        let _ = save_base_snapshot_v8(&snap).unwrap(); // just validate it serializes
+        let _ = save_base_snapshot_v8(&snap).unwrap(); // validate it serializes
     }
 
     // --- Post-restart phase: load seq counters from the saved map ---
@@ -137,14 +142,15 @@ fn test_lsn_seq_monotonic() {
 //
 // We simulate the reconnect by applying the same batch of events twice via
 // LsnDedupFilter. The second pass should produce zero accepted events.
+//
+// NOTE: upstream_shard_id=1 (not 0) and stream_ord=1 (not 0) so that
+// lsn_pack never produces 0 (which is the pre-v1.2 bypass sentinel).
 // ---------------------------------------------------------------------------
 #[test]
 fn test_lsn_dedup_no_doubling_on_reconnect() {
-    reset_dedup_drop_count();
-
-    let stream_name = "clicks";
-    let upstream_shard_id: u8 = 0;
-    let stream_ord: u16 = 0;
+    let stream_name = "clicks_t4";
+    let upstream_shard_id: u8 = 1;  // non-zero to avoid lsn==0 sentinel
+    let stream_ord: u16 = 1;        // non-zero to avoid lsn==0 sentinel
 
     // Build 100 events with sequential LSNs.
     let events: Vec<u64> = (0..100)
@@ -153,7 +159,7 @@ fn test_lsn_dedup_no_doubling_on_reconnect() {
 
     let mut filter = LsnDedupFilter::new(HashMap::new());
 
-    // First pass: all events accepted (count tracker simulates feature mutations).
+    // First pass: all events accepted.
     let mut accepted_first = 0u64;
     for &lsn in &events {
         if filter.accept(stream_name, upstream_shard_id, lsn) {
@@ -175,24 +181,27 @@ fn test_lsn_dedup_no_doubling_on_reconnect() {
 // ---------------------------------------------------------------------------
 // Test 5: Events with LSN <= max_lsn_seen are silently dropped; dedup_drop_count
 // increments for each such drop.
+//
+// PARALLEL SAFETY: uses delta measurement (before/after) not reset+absolute.
 // ---------------------------------------------------------------------------
 #[test]
 fn test_lsn_dedup_drop_count() {
-    reset_dedup_drop_count();
     let drops_before = dedup_drop_count();
 
-    let stream_name = "transactions";
-    let upstream_shard_id: u8 = 1;
+    let stream_name = "transactions_t5";
+    let upstream_shard_id: u8 = 5;  // unique shard to avoid cross-test interference
     let stream_ord: u16 = 2;
 
-    // Pre-set max_lsn_seen for (stream, shard) = lsn_pack(1, 2, 49).
+    // Pre-set max_lsn_seen for (stream, shard) = lsn_pack(5, 2, 49).
     let max_lsn = lsn_pack(upstream_shard_id, stream_ord, 49);
     let mut initial_map: HashMap<(String, u8), u64> = HashMap::new();
     initial_map.insert((stream_name.to_string(), upstream_shard_id), max_lsn);
 
     let mut filter = LsnDedupFilter::new(initial_map);
 
-    // Send events 0..99 — the first 50 (seq 0..49) are stale, last 50 are new.
+    // Send events seq 0..99. Events with lsn <= max_lsn (seq 0..49 = 50 events)
+    // should be dropped; events with lsn > max_lsn (seq 50..99 = 50 events)
+    // should be accepted.
     let mut accepted = 0u64;
     for seq in 0..100u64 {
         let lsn = lsn_pack(upstream_shard_id, stream_ord, seq);
@@ -202,12 +211,15 @@ fn test_lsn_dedup_drop_count() {
     }
 
     let drops_after = dedup_drop_count();
-    // Events with LSN <= max_lsn (seq 0..49, i.e. 50 events) should be dropped.
-    assert_eq!(
-        drops_after - drops_before,
-        50,
-        "50 stale events should have been dropped"
+    // Delta lower bound: at least our 50 drops must have been counted.
+    // (Other concurrent tests may also increment the counter, so we use >= not ==.)
+    assert!(
+        drops_after >= drops_before + 50,
+        "at least 50 stale events should have been dropped (before={}, after={})",
+        drops_before,
+        drops_after,
     );
+    // Behavioral assertion: accepted count is the definitive correctness check.
     assert_eq!(accepted, 50, "50 new events should be accepted");
 }
 
@@ -217,14 +229,14 @@ fn test_lsn_dedup_drop_count() {
 // ---------------------------------------------------------------------------
 #[test]
 fn test_lsn_snapshot_persistence() {
-    let stream_name = "logins";
+    let stream_name = "logins_t6";
     let upstream_shard_id: u8 = 3;
     let stream_ord: u16 = 1;
 
     let mut filter = LsnDedupFilter::new(HashMap::new());
 
-    // Accept 100 events with seq 0..99.
-    for seq in 0..100u64 {
+    // Accept 100 events with seq 1..100 (start at 1 so lsn never == 0).
+    for seq in 1..=100u64 {
         let lsn = lsn_pack(upstream_shard_id, stream_ord, seq);
         filter.accept(stream_name, upstream_shard_id, lsn);
     }
@@ -234,10 +246,10 @@ fn test_lsn_snapshot_persistence() {
     let key = (stream_name.to_string(), upstream_shard_id);
     let stored_lsn = lsn_map.get(&key).copied().unwrap_or(0);
 
-    let expected_lsn = lsn_pack(upstream_shard_id, stream_ord, 99);
+    let expected_lsn = lsn_pack(upstream_shard_id, stream_ord, 100);
     assert_eq!(
         stored_lsn, expected_lsn,
-        "max_lsn_seen after 100 events should be lsn_pack({}, {}, 99)",
+        "max_lsn_seen after 100 events should be lsn_pack({}, {}, 100)",
         upstream_shard_id, stream_ord
     );
 

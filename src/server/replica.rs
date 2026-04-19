@@ -24,6 +24,7 @@
 //! when the full replica metric surface is rounded out. The counter is
 //! still readable via `snapshot_bytes_sent_total()` for tests.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -69,6 +70,86 @@ static DROPPED_DISCONNECT: AtomicU64 = AtomicU64::new(0);
 // Exposed for test introspection via `rehash_skip_count()`.
 // ---------------------------------------------------------------------------
 static REHASH_SKIP_COUNT: AtomicU64 = AtomicU64::new(0);
+
+// ---------------------------------------------------------------------------
+// Phase 52-06: LSN-based dedup drop counter (TPC-CORR-06).
+//
+// Tracks how many events were silently dropped because their LSN was <=
+// max_lsn_seen for the (stream, upstream_shard_id) pair. Incremented by
+// `LsnDedupFilter::accept` on each drop. Exposed for test introspection via
+// `dedup_drop_count()` / `reset_dedup_drop_count()`.
+// ---------------------------------------------------------------------------
+static DEDUP_DROP_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Read the current LSN dedup drop counter.
+///
+/// Incremented each time an event is silently dropped because its LSN is
+/// <= `max_lsn_seen` for the (stream, upstream_shard_id) pair (Phase 52-06).
+pub fn dedup_drop_count() -> u64 {
+    DEDUP_DROP_COUNT.load(Ordering::Relaxed)
+}
+
+/// Reset the dedup drop counter to zero. Intended for test isolation only.
+pub fn reset_dedup_drop_count() {
+    DEDUP_DROP_COUNT.store(0, Ordering::Relaxed);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 52-06: LsnDedupFilter — per-(stream, upstream_shard_id) dedup state.
+//
+// Tracks `max_lsn_seen` per (stream_name, upstream_shard_id) pair. On
+// OP_SUBSCRIBE reconnect, events with LSN <= max_lsn_seen are silently
+// dropped (T-52-06-04: lsn==0 bypasses dedup for pre-v1.2 upstreams).
+// ---------------------------------------------------------------------------
+
+/// LSN dedup filter for the replica ingest path (Phase 52-06, TPC-CORR-06).
+///
+/// Initialized from `SnapshotV8.replica_lsn_map` at startup. On clean
+/// shutdown, call `current_lsn_map()` to get the updated map for persistence
+/// back into the snapshot. This closes the upstream-rolling-restart
+/// double-emit window identified in PITFALLS.md §5.2.
+pub struct LsnDedupFilter {
+    /// Per-(stream_name, upstream_shard_id) maximum LSN seen so far.
+    max_lsn_seen: HashMap<(String, u8), u64>,
+}
+
+impl LsnDedupFilter {
+    /// Create a new filter, initializing `max_lsn_seen` from a snapshot's
+    /// `replica_lsn_map`. Pass an empty map for fresh replicas (no prior state).
+    pub fn new(initial_map: HashMap<(String, u8), u64>) -> Self {
+        Self {
+            max_lsn_seen: initial_map,
+        }
+    }
+
+    /// Evaluate whether `lsn` should be accepted for `(stream_name, upstream_shard_id)`.
+    ///
+    /// # Dedup rules
+    ///
+    /// - `lsn == 0`: bypass dedup (pre-v1.2 upstream; apply directly). Returns `true`.
+    /// - `lsn <= max_lsn_seen`: drop silently. Increments `DEDUP_DROP_COUNT`. Returns `false`.
+    /// - `lsn > max_lsn_seen`: accept, update `max_lsn_seen`. Returns `true`.
+    pub fn accept(&mut self, stream_name: &str, upstream_shard_id: u8, lsn: u64) -> bool {
+        // T-52-06-04: lsn==0 means pre-v1.2 upstream — bypass dedup.
+        if lsn == 0 {
+            return true;
+        }
+        let key = (stream_name.to_string(), upstream_shard_id);
+        let max = self.max_lsn_seen.get(&key).copied().unwrap_or(0);
+        if lsn <= max {
+            DEDUP_DROP_COUNT.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        self.max_lsn_seen.insert(key, lsn);
+        true
+    }
+
+    /// Return the current `max_lsn_seen` map for snapshot persistence.
+    /// Write this into `SnapshotV8.replica_lsn_map` on clean shutdown.
+    pub fn current_lsn_map(&self) -> HashMap<(String, u8), u64> {
+        self.max_lsn_seen.clone()
+    }
+}
 
 /// Read the current fast-path (rehash-skip) counter.
 ///
