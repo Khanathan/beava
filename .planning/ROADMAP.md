@@ -92,7 +92,11 @@ Plans:
   4. **macOS dev gate**: `complex-c8-x8` at N=CPU_COUNT ≥ **1.5× baseline (~460K EPS)**. Single-accept-thread + BSD-compat SO_REUSEPORT caps dev throughput; this is the macOS dev-mode gate.
   5. **Linux prod gate (merge criterion)**: `complex-c8-x8` at N=CPU_COUNT ≥ **3× baseline (~918K EPS)** on a Hetzner CX41-class reference box. This is the ship-gate for merging v1.2 to main.
   6. N=1 regression gate holds: `complex-c8-x8` at N=1 stays within −5% of 314,931 baseline (Fix #1 already reestablishes this).
-**Plans**: TBD (run `/gsd-discuss-phase 50.5` before planning)
+**Plans**: 3 plans
+Plans:
+- [ ] 50.5-01-PLAN.md — TDD: Wave 0 cascade-shape grep + widen ShardResult::Ok(FeatureMap) + shard thread owns per-shard state via push_with_cascade_on_shard; handle_push_core_ex at N>1 awaits oneshot and skips legacy cascade (Wave 1)
+- [ ] 50.5-02-PLAN.md — TDD: Linux bind_reuseport_tcp wired into boot path; macOS per-connection Arc<str> interning; N=2 per-shard metrics parity (Wave 2)
+- [ ] 50.5-03-PLAN.md — Ship-gate measurement: N=1 regression (auto) + macOS dev-gate (auto) + Linux Hetzner CCX43 prod-gate (human-run merge criterion); benchmark README update (Wave 3)
 **UI hint**: no
 
 ### Phase 51: 51-cross-shard-queries-joins
@@ -150,7 +154,7 @@ Plans:
 | 48. Shard-hint scaffolding | 3/3 | Complete | 2026-04-18 |
 | 49. Per-shard state store | 6/6 | Complete | 2026-04-18 |
 | 50. Multi-shard routing | 8/8 plans | **Partial — gaps_found** (shard thread stub; see 50-DEBUG-SESSION.md + 50.5-FIX-PLAN.md; Fix #1 restores N=1 parity in progress) | — |
-| 50.5. Shard-thread completion | 0/? | Not started (scaffolded 2026-04-18) | — |
+| 50.5. Shard-thread completion | 0/3 | Planned (2026-04-18) | — |
 | 51. Cross-shard queries + joins | 0/5 | Planned | — |
 | 52. Event log, recovery, ship-gate | 0/? | Not started | — |
 | 53. Fjall state backend | 0/? | Not started | — |
