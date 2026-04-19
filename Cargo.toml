@@ -97,3 +97,7 @@ harness = false
 [[bench]]
 name = "shard_scaffold"
 harness = false
+
+[[bench]]
+name = "pareto_workload"
+harness = false

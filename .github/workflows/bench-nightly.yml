@@ -49,6 +49,33 @@ jobs:
         # 90-day retention: keeps a rolling 3-month window of nightly results
         # without consuming excessive storage.
 
+  pareto-benchmark:
+    name: "pareto-c8-x8 benchmark (nightly)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-nightly
+
+      - name: Run pareto workload benchmark
+        run: cargo bench -p beava --bench pareto_workload -- --nocapture
+        # Ship-gate assertion (cross_shard_fraction < 0.40) is in the bench code.
+        # A panic here means TPC-PERF-07 is failing — do not merge.
+
+      - name: Upload pareto criterion output
+        uses: actions/upload-artifact@v4
+        with:
+          name: pareto-bench-${{ github.run_id }}
+          path: |
+            target/criterion/pareto-c8-x8/
+          retention-days: 90
+
   sharding-parity-proptest:
     name: "N=1 vs N=8 parity proptest (nightly)"
     runs-on: ubuntu-latest
