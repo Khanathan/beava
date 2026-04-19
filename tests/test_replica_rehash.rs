@@ -26,7 +26,7 @@ use serde_json::json;
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::reshard::rehash_to_shard;
-use beava::server::replica::{compute_target_shard, rehash_skip_count, reset_rehash_skip_count};
+use beava::server::replica::{compute_target_shard, rehash_skip_count};
 use beava::server::tcp::{
     make_concurrent_state_full, replica_ingest, BackfillTracker, SharedState,
 };
@@ -334,10 +334,9 @@ fn test_replica_rehash_parity_n1_500events_30keys() {
 
 #[test]
 fn test_replica_rehash_fast_path_counter_positive() {
-    // Reset the counter before this test to get a clean baseline
-    reset_rehash_skip_count();
+    // Measure delta from the baseline to avoid cross-test interference
+    // (REHASH_SKIP_COUNT is a process-wide static; parallel tests may increment it).
     let before = rehash_skip_count();
-    assert_eq!(before, 0, "after reset, skip count must be 0");
 
     let n: u8 = 8;
     let keys = ["alice", "bob", "carol", "dave", "eve"];
@@ -354,13 +353,14 @@ fn test_replica_rehash_fast_path_counter_positive() {
     }
 
     let after = rehash_skip_count();
+    let delta = after.saturating_sub(before);
     assert_eq!(
-        after, fast_path_calls,
-        "rehash_skip_count must equal number of fast-path calls: expected {} got {}",
-        fast_path_calls, after
+        delta, fast_path_calls,
+        "rehash_skip_count delta must equal number of fast-path calls: expected {} got {}",
+        fast_path_calls, delta
     );
     assert!(
-        after > 0,
+        delta > 0,
         "at least one key must trigger the fast path (hint > 0) in a set of 5 varied keys"
     );
 }

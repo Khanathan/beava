@@ -60,6 +60,61 @@ static SNAPSHOT_BYTES_SENT: AtomicU64 = AtomicU64::new(0);
 static DROPPED_BACKPRESSURE: AtomicU64 = AtomicU64::new(0);
 static DROPPED_DISCONNECT: AtomicU64 = AtomicU64::new(0);
 
+// ---------------------------------------------------------------------------
+// Phase 52-05: rehash-on-ingest fast-path counter (TPC-CORR-06).
+//
+// Tracks how many times the upstream shard_hint was accepted directly (fast
+// path) instead of re-hashing via rehash_to_shard. Incremented by
+// `compute_target_shard` when upstream_n == downstream_n AND hint > 0.
+// Exposed for test introspection via `rehash_skip_count()`.
+// ---------------------------------------------------------------------------
+static REHASH_SKIP_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Read the current fast-path (rehash-skip) counter.
+///
+/// Incremented each time `compute_target_shard` takes the fast path
+/// (upstream_n == downstream_n AND hint > 0). Exposed for test introspection.
+pub fn rehash_skip_count() -> u64 {
+    REHASH_SKIP_COUNT.load(Ordering::Relaxed)
+}
+
+/// Reset the fast-path counter to zero. Intended for test isolation only.
+pub fn reset_rehash_skip_count() {
+    REHASH_SKIP_COUNT.store(0, Ordering::Relaxed);
+}
+
+/// Compute the target shard for a replica-ingest event (TPC-CORR-06).
+///
+/// # Routing policy
+///
+/// - **Fast path** (safe optimization): when `upstream_n == downstream_n` AND
+///   `shard_hint > 0`, the wire hint is accepted directly — no rehash needed
+///   because the key-space partition is already aligned.
+///
+/// - **Rehash path** (always correct): all other cases call
+///   `rehash_to_shard(key, downstream_n)`. This covers:
+///   - `upstream_n != downstream_n` (N=1→N=8 fork, etc.)
+///   - `shard_hint == 0` (unknown/pre-v1.2 upstream — conservative)
+///
+/// The upstream `shard_hint` is treated as **metadata only**; it is never a
+/// routing authority when shard counts differ (T-52-05-01).
+///
+/// # Panics
+///
+/// Panics if `downstream_n == 0` (forwarded from `rehash_to_shard` —
+/// modulo by zero). Callers must ensure `downstream_n >= 1`.
+pub fn compute_target_shard(key: &str, upstream_n: u8, downstream_n: u8, shard_hint: u8) -> u8 {
+    assert!(downstream_n > 0, "downstream_n must be >= 1");
+    if upstream_n == downstream_n && shard_hint > 0 {
+        // Fast path: key-space partition is aligned; trust the wire hint.
+        REHASH_SKIP_COUNT.fetch_add(1, Ordering::Relaxed);
+        shard_hint
+    } else {
+        // Rehash path: compute deterministic shard from key + downstream count.
+        crate::reshard::rehash_to_shard(key, downstream_n)
+    }
+}
+
 /// Per-stream `beava_replica_events_pushed_total{stream}` counter.
 /// Lock-free reads via DashMap; init-on-first-push via `entry(..).or_insert`.
 /// Backed by a `OnceLock` because `DashMap::new` is not `const fn` on the
