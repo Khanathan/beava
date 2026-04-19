@@ -13,6 +13,12 @@
 //! Scope note (W-1 revision): this file intentionally calls `Shard::with_partition`
 //! directly — it does NOT exercise `src/shard/thread.rs`, `src/server/tcp.rs`,
 //! or the proptest harness. Those callsites are Plan 03B's job.
+//!
+//! Phase 53-03B Rule 3 auto-fix: gate the whole file behind
+//! `#![cfg(not(feature = "state-inmem"))]` so the state-inmem build skips it.
+//! Under `--features state-inmem` the `Shard::with_partition` constructor
+//! does not exist (the legacy AHashMap path uses `Shard::new()`).
+#![cfg(not(feature = "state-inmem"))]
 
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;

@@ -1,6 +1,11 @@
 //! Phase 53-03B Task 1 — TDD RED integration tests for `ShardedStateStoreFjall`
 //! and the `ephemeral_test_keyspace` test-keyspace helper.
 //!
+//! Gated behind `#![cfg(not(feature = "state-inmem"))]` because
+//! `store_fjall` is compiled only in the default (fjall) build; under
+//! `--features state-inmem` the module is absent.
+#![cfg(not(feature = "state-inmem"))]
+//!
 //! These tests drive the post-Plan-03B API surface that does NOT yet exist in
 //! the default (fjall) build:
 //!

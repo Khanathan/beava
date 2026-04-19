@@ -238,10 +238,34 @@ pub struct ConcurrentAppState {
     /// At N=1, all state lives in Shard-0. Wave 4 (Phase 52) removes the DashMap `store`.
     ///
     /// Phase 53-03 (D-03): gated behind `state-inmem`. The default (fjall)
-    /// build uses Plan 03B's `ShardedStateStoreFjall` instead — that field
-    /// lands in the same struct when Plan 03B wires it.
+    /// build uses Plan 03B's `ShardedStateStoreFjall` instead — see the
+    /// `fjall_keyspace` / `shard_partitions` pair below.
     #[cfg(feature = "state-inmem")]
     pub sharded_store: std::sync::Arc<std::sync::Mutex<crate::shard::store::ShardedStateStoreV1>>,
+
+    /// Phase 53-03B: shared-owned handle to the single fjall keyspace rooted
+    /// at `data/fjall/`. Opened once by the boot path via
+    /// `shard::fjall_backend::open_keyspace_from_env` (or the ephemeral test
+    /// helper) and cloned into every shard thread's partition handle via
+    /// `shard_partitions` below. Shutdown code can call
+    /// `keyspace.persist(PersistMode::SyncAll)` on this `Arc` for clean
+    /// termination (Pitfall 5 mitigation).
+    ///
+    /// Absent under `--features state-inmem` — the legacy AHashMap path
+    /// handles its own state without fjall.
+    #[cfg(not(feature = "state-inmem"))]
+    pub fjall_keyspace: std::sync::Arc<fjall::Keyspace>,
+
+    /// Phase 53-03B: per-shard `fjall::PartitionHandle`s indexed by
+    /// `shard_index`. Populated at boot time alongside `fjall_keyspace`; the
+    /// shard event loop clones `shard_partitions[shard_index]` into its
+    /// `Shard::with_partition(...)` constructor. `PartitionHandle` is
+    /// `Clone + Send + Sync`, so cloning per-shard-thread is free.
+    ///
+    /// Single-writer invariant: each thread mutates ONLY its own partition.
+    /// See module-level note on `src/shard/mod.rs`.
+    #[cfg(not(feature = "state-inmem"))]
+    pub shard_partitions: Vec<fjall::PartitionHandle>,
 
     /// Phase 50-03/04 (TPC Wave 2): per-shard thread handles. Populated by run_tcp_server
     /// after spawn_shard_threads() completes the ready-barrier. Empty until server starts.
@@ -390,7 +414,7 @@ pub fn make_concurrent_state_full(
     event_log_enabled: bool,
     admin_token: Option<String>,
     public_mode: bool,
-    #[cfg_attr(not(feature = "state-inmem"), allow(unused_variables))] n_shards: u16,
+    n_shards: u16,
 ) -> SharedState {
     let signals = crate::server::signals::SignalRegistry::new_default().into_shared();
     let subscriber_registry = Arc::new(crate::server::replica::SubscriberRegistry::new(
@@ -403,6 +427,17 @@ pub fn make_concurrent_state_full(
     engine.install_subscribers(Arc::clone(&subscriber_registry));
     // Phase 51-04: wire signal registry so register() can emit JoinShardKeyMismatch signals.
     engine.install_signals(signals.clone());
+
+    // Phase 53-03B: open the default-build fjall keyspace + per-shard
+    // partitions up-front so every call to `make_concurrent_state_full`
+    // yields a `ConcurrentAppState` that's ready to hand out partition
+    // handles to `shard_event_loop`. Test callers (make_test_state in
+    // thread.rs::tests) resolve data_dir via BEAVA_DATA_DIR (falling back
+    // to a fresh `TempDir`) so parallel tests don't collide on-disk.
+    #[cfg(not(feature = "state-inmem"))]
+    let (fjall_keyspace, shard_partitions) =
+        open_fjall_keyspace_and_partitions_for_state(n_shards);
+
     Arc::new(ConcurrentAppState {
         engine: RwLock::new(engine),
         store,
@@ -441,6 +476,11 @@ pub fn make_concurrent_state_full(
         sharded_store: std::sync::Arc::new(std::sync::Mutex::new(
             crate::shard::store::ShardedStateStoreV1::new(n_shards),
         )),
+        // Phase 53-03B: fjall keyspace + per-shard partitions (default build only).
+        #[cfg(not(feature = "state-inmem"))]
+        fjall_keyspace,
+        #[cfg(not(feature = "state-inmem"))]
+        shard_partitions,
         // Phase 50-03/04: populated by run_tcp_server after spawn_shard_threads.
         shard_handles: parking_lot::RwLock::new(Vec::new()),
         // Phase 50.5-02: per-connection intern counter (always-on, zero overhead when not read).
@@ -457,21 +497,77 @@ pub fn make_concurrent_state_full(
     })
 }
 
+/// Phase 53-03B: open (or create) the fjall keyspace at `BEAVA_DATA_DIR/fjall/`
+/// and return `N` per-shard partition handles.
+///
+/// If `BEAVA_DATA_DIR` is unset (typical test path), a fresh `TempDir` is
+/// leaked so the keyspace survives for the process lifetime — matches the
+/// existing behavior where tests use an in-memory store scoped to the
+/// AppState's lifetime. Production `main.rs` sets `BEAVA_DATA_DIR` so this
+/// path always lands at the operator-configured data dir.
+///
+/// Tuning / clamping comes from `fjall_backend::fjall_config_from_env`. The
+/// returned `Arc<Keyspace>` is safe to clone into `ConcurrentAppState`; the
+/// `Vec<PartitionHandle>` is indexed by `shard_index`.
+#[cfg(not(feature = "state-inmem"))]
+fn open_fjall_keyspace_and_partitions_for_state(
+    n_shards: u16,
+) -> (
+    std::sync::Arc<fjall::Keyspace>,
+    Vec<fjall::PartitionHandle>,
+) {
+    use crate::shard::fjall_backend::{
+        fjall_config_from_env, open_keyspace_from_env, open_shard_partition,
+    };
+    let n = n_shards.max(1) as usize;
+
+    let cfg = fjall_config_from_env(n as u16);
+
+    let data_dir: std::path::PathBuf = match std::env::var("BEAVA_DATA_DIR").ok() {
+        Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
+        _ => {
+            // Test / no-data-dir path: pick a unique subdir under the system
+            // temp root. Kept alive for the process lifetime (no RAII guard
+            // — tests that want cleanup set BEAVA_DATA_DIR explicitly).
+            // Production always sets BEAVA_DATA_DIR via main.rs.
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let pid = std::process::id();
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0);
+            let dir = std::env::temp_dir()
+                .join(format!("beava-fjall-{}-{}-{}", pid, nanos, n));
+            std::fs::create_dir_all(&dir).expect("create beava fjall tempdir");
+            dir
+        }
+    };
+    let ks = open_keyspace_from_env(&data_dir, &cfg)
+        .expect("open fjall keyspace at data_dir/fjall/");
+    let partitions: Vec<fjall::PartitionHandle> = (0..n)
+        .map(|i| open_shard_partition(&ks, i, &cfg).expect("open shard partition"))
+        .collect();
+    (ks, partitions)
+}
+
 /// Start the TCP server on the given address. Loops forever accepting connections.
 pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::io::Error> {
     // D-01: spawn-all-at-boot + ready-barrier. All N shard threads must signal
     // ready before any listener socket binds.
     //
-    // Phase 53-03 (D-03): under `state-inmem` the shard count comes from the
-    // legacy `sharded_store` field; in the default (fjall) build, read
-    // `BEAVA_SHARDS` directly until Plan 03B wires `ConcurrentAppState.fjall_*`.
+    // Phase 53-03B: default (fjall) build reads shard count from the
+    // pre-opened `shard_partitions` vec (populated by
+    // `open_fjall_keyspace_and_partitions_for_state` at AppState build time);
+    // `state-inmem` still routes through the legacy `sharded_store` field.
     #[cfg(feature = "state-inmem")]
     let shard_count = {
         let ss = state.sharded_store.lock().expect("sharded_store mutex poisoned");
         crate::shard::traits::ShardedStateStore::shard_count(&*ss) as usize
     };
     #[cfg(not(feature = "state-inmem"))]
-    let shard_count = crate::state::store::read_beava_shards() as usize;
+    let shard_count = state.shard_partitions.len();
     let inbox_size = crate::shard::thread::inbox_size_from_env();
     let shard_handles = crate::shard::thread::spawn_shard_threads(shard_count, inbox_size, state.clone());
     // D-01: shard ready-barrier passed. Safe to bind listener.

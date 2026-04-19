@@ -237,13 +237,22 @@ fn route_counters_and_cross_shard_fraction() {
 // Test 4: shard handles length reflects n_shards config
 // ---------------------------------------------------------------------------
 
-/// make_concurrent_state_full with n_shards=2 creates sharded_store with 2 shards.
+/// make_concurrent_state_full with n_shards=2 produces the right shard count.
+/// Phase 53-03B: default (fjall) build reads `shard_partitions.len()`;
+/// state-inmem build reads the legacy `sharded_store`.
 #[test]
 fn two_shard_state_has_correct_shard_count() {
     let state = build_two_shard_state();
-    let ss = state.sharded_store.lock().unwrap();
-    use beava::shard::traits::ShardedStateStore;
-    assert_eq!(ss.shard_count(), 2);
+    #[cfg(feature = "state-inmem")]
+    {
+        let ss = state.sharded_store.lock().unwrap();
+        use beava::shard::traits::ShardedStateStore;
+        assert_eq!(ss.shard_count(), 2);
+    }
+    #[cfg(not(feature = "state-inmem"))]
+    {
+        assert_eq!(state.shard_partitions.len(), 2);
+    }
 }
 
 // ---------------------------------------------------------------------------

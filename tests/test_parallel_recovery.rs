@@ -9,6 +9,13 @@
 //!   Test 6: /ready returns 200 after recovery.
 //!   Test 7: /health returns 200 both during and after recovery.
 //!   Test 8: /debug/shards includes "recovered" field per shard during recovery.
+//!
+//! Phase 53-03B: the recovery path replayed into `Shard::new()` AHashMaps.
+//! Under the default (fjall) build crash recovery is fjall-journal replay on
+//! `Keyspace::open` — no event-log replay on the critical path (TPC-PERSIST-02,
+//! proven by Plan 05's SIGKILL test). This test suite therefore runs only
+//! under `--features state-inmem`.
+#![cfg(feature = "state-inmem")]
 
 use beava::state::event_log::EventLog;
 use beava::state::recovery::{parallel_recover_all_shards, RecoveryBarrier};

@@ -231,38 +231,9 @@ fn pin_to_core(shard_index: usize) {
 
 /// Shard event loop. Runs a tokio current_thread runtime on the pinned OS thread.
 /// Phase 50.5-01 Task 3: real dispatch via push_with_cascade_on_shard.
-///
-/// Phase 53-03 (D-03): under the default (fjall) build this loop needs a
-/// `PartitionHandle` sourced from `ConcurrentAppState.fjall_keyspace`, but
-/// that plumbing is Plan 03B's responsibility. Until 03B lands, the
-/// default-build implementation is a stub that drains the inbox without
-/// processing — enough to satisfy the library's typechecker and link
-/// integration tests that call `Shard::with_partition` directly.
-#[cfg(not(feature = "state-inmem"))]
-fn shard_event_loop(
-    shard_index: usize,
-    rx: Receiver<ShardEvent>,
-    _state: std::sync::Arc<crate::server::tcp::ConcurrentAppState>,
-) {
-    // Phase 53-03 stub: drain inbox, acknowledge with a quarantine error so
-    // callers don't block on oneshot receivers. Plan 03B replaces this body
-    // with the full fjall-backed dispatch loop.
-    eprintln!(
-        "[beava-shard-{}] running Phase-53-03 stub event loop — Plan 03B finishes fjall plumbing",
-        shard_index
-    );
-    while let Ok(event) = rx.recv() {
-        if let Some(tx) = event.response_tx {
-            let _ = tx.send(ShardResult::Err(ShardDispatchError::ProcessingError(
-                "shard thread in Phase-53-03 stub mode; fjall plumbing pending Plan 03B".into(),
-            )));
-        }
-    }
-}
-
-/// Legacy (state-inmem) shard event loop — AHashMap-backed hot path preserved
-/// from Phase 50.5-01 Task 3.
-#[cfg(feature = "state-inmem")]
+/// Phase 53-03B: default (fjall) build now constructs its `Shard` from the
+/// partition handle stashed in `ConcurrentAppState.shard_partitions[shard_index]`.
+/// Under `--features state-inmem` the legacy `Shard::new()` path is preserved.
 fn shard_event_loop(
     shard_index: usize,
     rx: Receiver<ShardEvent>,
@@ -277,6 +248,17 @@ fn shard_event_loop(
         .expect("failed to build per-shard tokio runtime");
 
     // Each shard owns its own Shard struct — single writer, no lock.
+    //
+    // Phase 53-03B: default build pulls the per-shard `PartitionHandle` from
+    // `ConcurrentAppState.shard_partitions` (populated by main.rs on startup
+    // via `open_keyspace_and_partitions`). state-inmem keeps the AHashMap
+    // `Shard::new()` path.
+    #[cfg(not(feature = "state-inmem"))]
+    let mut shard = {
+        let partition = state.shard_partitions[shard_index].clone();
+        crate::shard::Shard::with_partition(partition)
+    };
+    #[cfg(feature = "state-inmem")]
     let mut shard = crate::shard::Shard::new();
 
     // Phase 51-02: read publish threshold once at shard boot — avoids repeated
@@ -442,6 +424,13 @@ fn shard_event_loop(
             // Emit gauges every 1000 events OR every 100ms.
             if event_count % 1000 == 0 || last_gauge_update.elapsed().as_millis() >= 100 {
                 let inbox_depth = rx.len();
+                // Phase 53-03B Pitfall 4: `PartitionHandle::len()` walks the LSM
+                // tree — use `approximate_len()` (O(1), usize, stale estimate)
+                // for the Prometheus `keys_owned` gauge. state-inmem keeps
+                // `AHashMap::len()` because it's already O(1) there.
+                #[cfg(not(feature = "state-inmem"))]
+                let keys_owned = shard.state.approximate_len();
+                #[cfg(feature = "state-inmem")]
                 let keys_owned = shard.state.len();
                 crate::shard::metrics::update_shard_gauges(
                     shard_index,
@@ -456,24 +445,20 @@ fn shard_event_loop(
     });
 }
 
-/// Phase 53-01: apply a SET on shard-owned state.
+/// Apply a SET on shard-owned state.
 ///
-/// Mirrors the logic in `handle_sync_command::Command::Set` but operates
-/// against `shard.state: AHashMap` instead of `state.store: DashMap`. Empty
-/// payload = tombstone (clears static_features + fires TT-cascade with
-/// tombstoned=true); non-empty = upsert (sets each feature + fires
-/// TT-cascade with tombstoned=false).
+/// Empty payload = tombstone (clears `static_features` + marks dirty);
+/// non-empty = upsert (sets each feature + marks dirty).
 ///
-/// **Incomplete (Phase 53-01 WIP):** The Table↔Table cascade
+/// Phase 53-03B: rewritten on top of `StoreView::Sharded(shard).with_entity_mut`
+/// so the default (fjall) build round-trips through postcard + fjall and the
+/// `state-inmem` build keeps its AHashMap entry-API path. Backend-agnostic.
+///
+/// **Incomplete (Phase 53-01 WIP carry-over):** The Table↔Table cascade
 /// (`engine.cascade_table_upsert_on_shard`) is NOT YET IMPLEMENTED against
-/// `&mut Shard` — this helper currently mutates `shard.state` directly for
-/// the static_features update but skips the cascade fan-out. That step is
-/// deferred to a follow-up (engine-side API addition).
-///
-/// Phase 53-03: gated behind `state-inmem` — only called from the legacy
-/// (AHashMap-backed) shard event loop. Plan 03B ships the fjall-aware
-/// replacement.
-#[cfg(feature = "state-inmem")]
+/// `&mut Shard` — this helper mutates the entity's `static_features` but
+/// skips the cascade fan-out. That step is deferred to a follow-up
+/// (engine-side API addition). Tracked as a known gap.
 fn apply_set_on_shard(
     _state: &std::sync::Arc<crate::server::tcp::ConcurrentAppState>,
     shard: &mut crate::shard::Shard,
@@ -481,32 +466,35 @@ fn apply_set_on_shard(
     payload: &serde_json::Value,
     now: std::time::SystemTime,
 ) -> Result<(), crate::error::BeavaError> {
-    use crate::state::store::{EntityState, StaticFeature};
+    use crate::shard::StoreView;
+    use crate::state::store::StaticFeature;
 
     if let serde_json::Value::Object(map) = payload {
         let tombstoned = map.is_empty();
-        let entity = shard.state.entry(key.to_string()).or_insert_with(EntityState::default);
-        if tombstoned {
-            // Tombstone: clear all static features.
-            entity.static_features.clear();
-        } else {
-            for (feat_name, val) in map {
-                let fv = json_to_feature_value_local(val);
-                entity.static_features.insert(
-                    feat_name.clone(),
-                    StaticFeature {
-                        value: fv,
-                        updated_at: now,
-                    },
-                );
-            }
+        {
+            let mut view = StoreView::Sharded(shard);
+            view.with_entity_mut(key, |entity| {
+                if tombstoned {
+                    entity.static_features.clear();
+                } else {
+                    for (feat_name, val) in map {
+                        let fv = json_to_feature_value_local(val);
+                        entity.static_features.insert(
+                            feat_name.clone(),
+                            StaticFeature {
+                                value: fv,
+                                updated_at: now,
+                            },
+                        );
+                    }
+                }
+            });
         }
-        // Mark dirty for incremental snapshots.
+        // Mark dirty for incremental snapshots. `with_entity_mut` already wrote
+        // the entity back through postcard; the dirty_set is an in-memory
+        // per-shard structure that's unchanged by Plan 53-03.
         shard.dirty_set.insert(key.to_string());
-        // NOTE (Phase 53-01 WIP): Table↔Table cascade on shard is deferred —
-        // requires `engine.cascade_table_upsert_on_shard(&mut shard, ...)` which
-        // does not yet exist. Without it, TT-join outputs will not refresh on
-        // SET via the shard path. This is tracked as a known gap.
+        // NOTE (Phase 53-01 WIP): Table↔Table cascade on shard is deferred.
         Ok(())
     } else {
         Err(crate::error::BeavaError::Protocol(
@@ -515,14 +503,14 @@ fn apply_set_on_shard(
     }
 }
 
-/// Phase 53-01: read a table_row as JSON from shard-owned state.
+/// Read a table_row as JSON from shard-owned state.
 ///
 /// Returns `Value::Null` if the entity or table_row is absent or tombstoned
 /// (matches the null-collapse contract of OP_GET_MULTI).
 ///
-/// Phase 53-03: gated behind `state-inmem`. Default build uses
-/// `read_entity_from_shard` inline in the fjall event loop (Plan 03B).
-#[cfg(feature = "state-inmem")]
+/// Phase 53-03B: rewritten on top of the W-6 `read_entity_from_shard` helper
+/// so the default (fjall) build deserializes via postcard and the state-inmem
+/// build reads from AHashMap — both through one code path.
 fn get_table_row_on_shard(
     shard: &crate::shard::Shard,
     table_name: &str,
@@ -530,10 +518,11 @@ fn get_table_row_on_shard(
 ) -> serde_json::Value {
     use crate::state::store::TableRowState;
 
-    let Some(entity) = shard.state.get(key) else {
-        return serde_json::Value::Null;
-    };
-    let Some(row) = entity.table_rows.get(table_name) else {
+    let row_clone = crate::shard::read_entity_from_shard(shard, key, |entity| {
+        entity.table_rows.get(table_name).cloned()
+    });
+
+    let Some(Some(row)) = row_clone else {
         return serde_json::Value::Null;
     };
     if matches!(row.state, TableRowState::Tombstoned { .. }) {
@@ -548,9 +537,6 @@ fn get_table_row_on_shard(
 
 /// Local helper mirroring `crate::server::tcp::json_to_feature_value` for
 /// shard-side SET. Avoids a cross-module dep + keeps this file self-contained.
-///
-/// Phase 53-03: gated behind `state-inmem` — only used by the legacy SET path.
-#[cfg(feature = "state-inmem")]
 fn json_to_feature_value_local(v: &serde_json::Value) -> crate::types::FeatureValue {
     use crate::types::FeatureValue;
     // CONTEXT.md: FeatureValue variants are Float / Int / String / Missing.

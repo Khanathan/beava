@@ -30,6 +30,9 @@ pub mod metrics;
 /// production-build sibling.
 #[cfg(feature = "state-inmem")]
 pub mod store;
+/// Phase 53-03B: fjall-backed `ShardedStateStore` — default (non-state-inmem) build.
+#[cfg(not(feature = "state-inmem"))]
+pub mod store_fjall;
 /// Shard thread lifecycle: spawn, ready-barrier, pinning, quarantine (Phase 50-03).
 pub mod thread;
 pub mod traits;
