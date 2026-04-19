@@ -10,7 +10,7 @@
 //!   Test 7: /health returns 200 both during and after recovery.
 //!   Test 8: /debug/shards includes "recovered" field per shard during recovery.
 
-use beava::state::event_log::{EventLog, LogEntry};
+use beava::state::event_log::EventLog;
 use beava::state::recovery::{parallel_recover_all_shards, RecoveryBarrier};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

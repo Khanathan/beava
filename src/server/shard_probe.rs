@@ -276,6 +276,10 @@ pub fn routed_per_shard() -> Vec<(usize, u64)> {
 /// Per-shard info returned by `collect_shard_diagnostics`.
 /// Wave 1: inbox_depth, reactor_utilization, inbox_full_total, and down
 /// are stub zeros (no TPC runtime yet). Wave 2 will wire real values.
+///
+/// Phase 52-03 (D-09 extension): `recovered` reflects per-shard log-replay
+/// completion sourced from `RecoveryBarrier::shard_is_recovered`. Always
+/// `true` when no recovery barrier is present (no event-log recovery needed).
 #[derive(Debug, serde::Serialize)]
 pub struct ShardInfo {
     pub id: usize,
@@ -286,6 +290,9 @@ pub struct ShardInfo {
     pub events_total: u64,
     pub inbox_full_total: u64,
     pub down: bool,
+    /// Phase 52-03: true once this shard has completed event-log replay.
+    /// Always true when BEAVA_EVENT_LOG is disabled or no per-shard log exists.
+    pub recovered: bool,
 }
 
 /// A shard flagged as hot (keys_owned > threshold × fleet_mean).
@@ -462,11 +469,18 @@ pub fn collect_shard_diagnostics(
         }
     };
 
+    // Phase 52-03: read per-shard recovered state from the RecoveryBarrier (if present).
+    // When no barrier exists (no event-log recovery), all shards are considered recovered.
+    let recovery_barrier = state.recovery_barrier.as_ref();
+
     // Build per-shard ShardInfo. When shard_handles is empty (N=1 legacy path
     // before spawn_shard_threads is called), synthesize a single entry from
     // state.store.entity_count() so the endpoint is always usable.
     let shards: Vec<ShardInfo> = if handles.is_empty() {
         // Legacy N=1 path: no shard threads yet spawned.
+        let recovered = recovery_barrier
+            .map(|b| b.shard_is_recovered(0))
+            .unwrap_or(true);
         vec![ShardInfo {
             id: 0,
             inbox_depth: 0,
@@ -476,6 +490,7 @@ pub fn collect_shard_diagnostics(
             events_total: global_events_total,
             inbox_full_total: 0,
             down: false,
+            recovered,
         }]
     } else {
         handles
@@ -486,6 +501,10 @@ pub fn collect_shard_diagnostics(
                 let inbox_depth = h.inbox_tx.len();
                 // is_down: shard quarantined after panic (D-02).
                 let down = h.is_down.load(Relaxed);
+                // Phase 52-03: per-shard recovery completion (D-09 extension).
+                let recovered = recovery_barrier
+                    .map(|b| b.shard_is_recovered(idx as u8))
+                    .unwrap_or(true);
                 ShardInfo {
                     id: idx,
                     inbox_depth,
@@ -495,6 +514,7 @@ pub fn collect_shard_diagnostics(
                     events_total: global_events_total,
                     inbox_full_total: 0, // per-shard inbox_full counter (Phase 52)
                     down,
+                    recovered,
                 }
             })
             .collect()
@@ -533,11 +553,11 @@ mod tests {
     fn test_hot_shard_detection_skewed_fleet() {
         let shards = vec![
             ShardInfo { id: 0, inbox_depth: 0, reactor_utilization: 0.0, keys_owned: 100,
-                        watermark_lag_seconds: 0.0, events_total: 0, inbox_full_total: 0, down: false },
+                        watermark_lag_seconds: 0.0, events_total: 0, inbox_full_total: 0, down: false, recovered: true },
             ShardInfo { id: 1, inbox_depth: 0, reactor_utilization: 0.0, keys_owned: 100,
-                        watermark_lag_seconds: 0.0, events_total: 0, inbox_full_total: 0, down: false },
+                        watermark_lag_seconds: 0.0, events_total: 0, inbox_full_total: 0, down: false, recovered: true },
             ShardInfo { id: 2, inbox_depth: 0, reactor_utilization: 0.0, keys_owned: 200,
-                        watermark_lag_seconds: 0.0, events_total: 0, inbox_full_total: 0, down: false },
+                        watermark_lag_seconds: 0.0, events_total: 0, inbox_full_total: 0, down: false, recovered: true },
         ];
         let config = HotShardConfig { threshold: 1.5 };
         let hot = detect_hot_shards(&shards, &config);
@@ -560,6 +580,7 @@ mod tests {
             events_total: 0,
             inbox_full_total: 0,
             down: false,
+            recovered: true,
         }).collect();
         let config = HotShardConfig { threshold: 1.5 };
         let hot = detect_hot_shards(&shards, &config);
@@ -624,6 +645,7 @@ mod tests {
                 events_total: 99,
                 inbox_full_total: 3,
                 down: false,
+                recovered: true,
             }],
             hot_shards: vec![],
             ready: true,
@@ -637,14 +659,15 @@ mod tests {
         }
         assert_eq!(obj.len(), 4, "expected exactly 4 top-level keys");
 
-        // shards[0] keys
+        // shards[0] keys — Phase 52-03 adds "recovered" (D-09 extension)
         let shard0 = &v["shards"][0];
         let shard_obj = shard0.as_object().expect("shards[0] must be an object");
         for key in &["id", "inbox_depth", "reactor_utilization", "keys_owned",
-                     "watermark_lag_seconds", "events_total", "inbox_full_total", "down"] {
+                     "watermark_lag_seconds", "events_total", "inbox_full_total", "down",
+                     "recovered"] {
             assert!(shard_obj.contains_key(*key), "missing shard key: {}", key);
         }
-        assert_eq!(shard_obj.len(), 8, "expected exactly 8 shard keys");
+        assert_eq!(shard_obj.len(), 9, "expected exactly 9 shard keys (Phase 52-03 added 'recovered')");
     }
 
     #[test]

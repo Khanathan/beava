@@ -262,6 +262,18 @@ pub struct ConcurrentAppState {
     /// `register_stream` (write lock) is called once per stream at registration
     /// time, far from the hot event path.
     pub global_watermark: parking_lot::RwLock<crate::shard::global_watermark::GlobalWatermarkStore>,
+
+    /// Phase 52-03 (TPC-INFRA-06): per-shard log recovery barrier.
+    ///
+    /// Set to `None` when the server starts without event-log recovery (e.g.
+    /// BEAVA_EVENT_LOG disabled, or fresh install with no per-shard log dirs).
+    /// Set to `Some(Arc<RecoveryBarrier>)` before `parallel_recover_all_shards`
+    /// is called; remains live so `/ready` and `/debug/shards` can read it.
+    ///
+    /// `/ready` returns 503 while `recovery_barrier.as_ref().map(|b|
+    /// !b.all_recovered()).unwrap_or(false)` is true.
+    /// `/health` ignores this field entirely (always 200).
+    pub recovery_barrier: Option<std::sync::Arc<crate::state::recovery::RecoveryBarrier>>,
 }
 
 /// Phase 41-01 T4: only every Nth PUSH records into the latency histogram.
@@ -432,6 +444,10 @@ pub fn make_concurrent_state_full(
         global_watermark: parking_lot::RwLock::new(
             crate::shard::global_watermark::GlobalWatermarkStore::new(n_shards as usize, 64),
         ),
+        // Phase 52-03: recovery barrier — set by the boot path after calling
+        // parallel_recover_all_shards. Starts as None (no recovery in progress);
+        // main.rs sets it before spawning shard threads when BEAVA_EVENT_LOG is on.
+        recovery_barrier: None,
     })
 }
 

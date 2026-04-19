@@ -32,15 +32,56 @@ fn cors_headers() -> [(HeaderName, HeaderValue); 1] {
     )]
 }
 
-async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({"status": "ok"}))
+/// `GET /health` — process-is-alive probe (TPC-INFRA-06).
+///
+/// Returns HTTP 200 with `{"status":"alive"}` unconditionally — from process
+/// start through recovery and steady-state operation. This endpoint is NEVER
+/// gated on recovery state (that is `/ready`'s job). Orchestrators use
+/// `/health` to distinguish "process running" from "process dead".
+async fn health() -> impl IntoResponse {
+    (axum::http::StatusCode::OK, Json(serde_json::json!({"status": "alive"})))
 }
 
-/// Phase 37-01: readiness endpoint. Returns 200 unconditionally once
-/// reachable — in replica/fork mode the HTTP listener only binds after
-/// the catchup-done oneshot fires (see `main.rs::async_main`), so the
-/// endpoint being routable is proof of readiness. In non-replica mode
-/// this is equivalent to `/health`.
+/// `GET /ready` — readiness probe gated on per-shard log recovery (TPC-INFRA-06, Phase 52-03).
+///
+/// Returns HTTP 503 with `{"status":"recovering","shards_recovering":[...]}` while
+/// any shard is still replaying its event log. Returns HTTP 200 with
+/// `{"status":"ready"}` only when `recovery_barrier.all_recovered()` is true
+/// (or when no recovery barrier exists — fresh install / event-log disabled).
+///
+/// The `shards_recovering` list in the 503 body allows probes to report
+/// per-shard progress without polling `/debug/shards`.
+async fn ready(State(state): State<SharedState>) -> impl IntoResponse {
+    let all_recovered = state
+        .recovery_barrier
+        .as_ref()
+        .map(|b| b.all_recovered())
+        .unwrap_or(true); // No barrier → treat as recovered (no recovery needed).
+
+    if all_recovered {
+        (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "ready"})),
+        )
+    } else {
+        let shards_recovering: Vec<u8> = state
+            .recovery_barrier
+            .as_ref()
+            .map(|b| b.recovering_shards())
+            .unwrap_or_default();
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "recovering",
+                "shards_recovering": shards_recovering,
+            })),
+        )
+    }
+}
+
+/// Phase 37-01: `/debug/ready` — legacy readiness endpoint (kept for backward compat).
+/// Returns 200 unconditionally once routable — in replica/fork mode the HTTP
+/// listener only binds after the catchup-done oneshot fires.
 async fn debug_ready(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let replica_mode = state
         .replica_mode
@@ -1596,6 +1637,7 @@ pub fn build_router(state: SharedState) -> Router {
     // route is simply not registered.
     let public_router = Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/debug/ready", get(debug_ready))
         .route("/metrics", get(metrics_endpoint))
         .route("/public/features/{key}", get(public_features))
