@@ -2878,6 +2878,92 @@ impl PipelineEngine {
         features
     }
 
+    /// Phase 53-01: shard-local GET path. Reads features from shard-owned
+    /// state (AHashMap) — no DashMap access.
+    ///
+    /// **Current scope (53-01 WIP):** mirrors the straight-line parts of
+    /// `get_features` but reads operators / static_features / table_rows
+    /// directly from `shard.state`. Derives and view features are evaluated
+    /// against the collected feature map. Cross-key view `Lookup` features
+    /// that target entities in OTHER shards are NOT resolved — they return
+    /// `Missing`. Scatter-gather across shards is deferred (tracked as the
+    /// same gap Phase 51 TPC-PERF-05 documents).
+    pub fn get_features_on_shard(
+        &self,
+        key: &str,
+        shard: &crate::shard::Shard,
+        _now: SystemTime,
+    ) -> FeatureMap {
+        use crate::state::store::TableRowState;
+
+        // Read-only collection. We cannot call op.read(now) here because that
+        // takes &mut — but collecting from shard.state with &Shard requires
+        // cloning the operator state snapshot. For 53-01 WIP, fall back to a
+        // static-only view (no live operator reads). Correct operator reads
+        // will be added alongside the full engine migration.
+        let Some(entity) = shard.state.get(key) else {
+            return FeatureMap::default();
+        };
+
+        let mut features = FeatureMap::new();
+
+        // Flattened Live table_rows as `TableName.field`.
+        for (table_name, row) in entity.table_rows.iter() {
+            if matches!(row.state, TableRowState::Live) {
+                for (field_name, value) in row.fields.iter() {
+                    features.insert(format!("{}.{}", table_name, field_name), value.clone());
+                }
+            }
+        }
+
+        // Static features overlay (last writer wins).
+        for (name, sf) in &entity.static_features {
+            features.insert(name.clone(), sf.value.clone());
+        }
+
+        // Qualified names so derives can reference {StreamName}.{feature}.
+        // Only the features we already have; no live operator eval.
+        let mut qualified: Vec<(String, FeatureValue)> = Vec::new();
+        for stream in self.streams.values() {
+            for (fname, _) in &stream.features {
+                if let Some(val) = features.get(fname) {
+                    qualified.push((format!("{}.{}", stream.name, fname), val.clone()));
+                }
+            }
+        }
+        for (qname, val) in qualified {
+            features.insert(qname, val);
+        }
+
+        // Evaluate derives.
+        let ctx = EvalContext {
+            features: &features,
+            event: None,
+            enrichment: None,
+            event_time: None,
+        };
+        let mut derived: Vec<(String, FeatureValue)> = Vec::new();
+        for stream in self.streams.values() {
+            for (name, def) in &stream.features {
+                if let FeatureDef::Derive { expr } = def {
+                    derived.push((name.clone(), eval(expr, &ctx)));
+                }
+            }
+        }
+        for (name, value) in derived {
+            features.insert(name, value);
+        }
+
+        // Projections.
+        for stream in self.streams.values() {
+            if let Some(ref proj) = stream.projection {
+                proj.apply(&mut features);
+            }
+        }
+
+        features
+    }
+
     /// Get a registered stream definition by name.
     pub fn get_stream(&self, name: &str) -> Option<&StreamDefinition> {
         self.streams.get(name)

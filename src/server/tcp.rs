@@ -1589,12 +1589,12 @@ pub fn handle_push_core_ex(
             let shard_stream_name: Arc<str> = interned_stream_name
                 .clone()
                 .unwrap_or_else(|| Arc::from(stream_name));
-            let ev = crate::shard::thread::ShardEvent {
-                payload: payload_bytes,
-                stream_name: shard_stream_name,
+            let ev = crate::shard::thread::ShardEvent::push(
+                payload_bytes,
+                shard_stream_name,
                 shard_hint,
-                response_tx: None, // fire-and-forget; shard owns the mutation
-            };
+                None, // fire-and-forget; shard owns the mutation
+            );
             if handle.inbox_tx.try_send(ev).is_err() {
                 crate::shard::metrics::record_inbox_full(idx);
                 return Err(BeavaError::Protocol(

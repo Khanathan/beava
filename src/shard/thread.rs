@@ -15,28 +15,104 @@ use std::sync::{
 
 use crossbeam_channel::{Receiver, Sender};
 
-/// Opaque event envelope sent from listener to shard via SPSC inbox (D-08).
-/// Payload type expanded in Plan 50-04; this is the Wave 2 skeleton.
+/// Command envelope sent from listener to shard via SPSC inbox (D-08).
+///
+/// Phase 53-01 (legacy removal): expanded from a push-only `ShardEvent` to
+/// a multi-op `ShardEvent` whose `op` field carries the actual command. The
+/// existing `payload` + `stream_name` + `shard_hint` + `response_tx` fields
+/// are preserved for backwards compatibility with the Push path; new
+/// commands carry their data inside the `op` variant.
+///
+/// **Invariant:** exactly one of `op == ShardOp::Push` OR `op == ShardOp::<other>`
+/// is set per event. The legacy payload/stream_name/shard_hint fields are
+/// only meaningful when `op == ShardOp::Push`.
 pub struct ShardEvent {
     /// Raw event bytes — bytes::Bytes is O(1) clone (Arc-backed). Zero copy.
+    /// Used only for `ShardOp::Push`; empty for non-Push ops.
     pub payload: bytes::Bytes,
     /// Stream name for routing to correct Shard state machine.
+    /// Used only for `ShardOp::Push`; empty Arc<str> for non-Push ops.
     pub stream_name: Arc<str>,
     /// Precomputed shard_hint from ingest parser (Phase 48).
     pub shard_hint: u32,
     /// Response channel — shard sends result back to listener.
-    /// None for fire-and-forget paths.
+    /// None for fire-and-forget paths. Required for Get / Set / Mset / GetMulti
+    /// because the client awaits the result.
     pub response_tx: Option<tokio::sync::oneshot::Sender<ShardResult>>,
+    /// Phase 53-01: command variant. Defaults to Push for backwards compatibility
+    /// with code paths that have not yet been migrated to the expanded enum.
+    pub op: ShardOp,
+}
+
+impl ShardEvent {
+    /// Convenience constructor for the legacy Push path — equivalent to
+    /// constructing with `op: ShardOp::Push`.
+    pub fn push(
+        payload: bytes::Bytes,
+        stream_name: Arc<str>,
+        shard_hint: u32,
+        response_tx: Option<tokio::sync::oneshot::Sender<ShardResult>>,
+    ) -> Self {
+        Self {
+            payload,
+            stream_name,
+            shard_hint,
+            response_tx,
+            op: ShardOp::Push,
+        }
+    }
+}
+
+/// Phase 53-01: shard command variants. Each non-Push variant carries its own
+/// data (key, payload, table list). The Push variant reuses the enclosing
+/// ShardEvent's `payload`/`stream_name`/`shard_hint` to avoid moving bytes.
+///
+/// All mutating commands (`Set`, `Mset`, `Tombstone`, `MarkDirty`) are routed
+/// to a single shard (the one whose partition owns `key`). This is the design
+/// precondition for deleting `StateStore.entities` — every entity has exactly
+/// one owner shard.
+#[derive(Debug)]
+pub enum ShardOp {
+    /// PUSH event: payload + stream_name live on the enclosing ShardEvent.
+    Push,
+    /// GET features for a single entity key. Response carries FeatureMap in `Ok`.
+    Get { key: String },
+    /// SET static features for an entity key. `payload` is the raw fields
+    /// JSON object (empty object = tombstone). Response is `SetOk` on success.
+    Set { key: String, payload: serde_json::Value },
+    /// MSET multiple entities in one batch. `entries: Vec<(key, fields_json)>`.
+    /// Response is `SetOk` on success. Only used when all keys hash to the same
+    /// shard — the caller (tcp.rs) fans out per-shard.
+    Mset { entries: Vec<(String, serde_json::Value)> },
+    /// Tombstone an entity key: clears static_features and fires Table↔Table
+    /// cascade with tombstoned=true.
+    Tombstone { key: String },
+    /// Mark an entity key dirty for incremental snapshots.
+    MarkDirty { key: String },
+    /// MGET multiple keys. Returned features carried in `MgetOk`.
+    /// Only keys hashing to this shard are sent in `keys`.
+    Mget { keys: Vec<String> },
+    /// GET_MULTI: read multiple table_rows for a single entity key.
+    /// Response carries `GetMultiOk` with serialized JSON value.
+    GetMulti { table_names: Vec<String>, key: String },
 }
 
 /// Result sent from shard back to listener via response_tx.
-/// Phase 50.5-01: widened to carry FeatureMap so read_features=true round-trips
-/// features through the oneshot channel.
+/// Phase 50.5-01: widened to carry FeatureMap so read_features=true round-trips.
+/// Phase 53-01: further widened with variants for Get / Set / Mset / Mget / GetMulti.
 #[derive(Debug)]
 pub enum ShardResult {
-    /// Event was processed successfully. Carries computed FeatureMap (may be empty
-    /// if read_features was false on the shard side).
+    /// PUSH ack — carries computed FeatureMap (may be empty).
     Ok(crate::types::FeatureMap),
+    /// GET response — carries the feature map for the requested key.
+    GetOk(crate::types::FeatureMap),
+    /// SET / MSET / Tombstone / MarkDirty ack.
+    SetOk,
+    /// MGET response — `Vec<(key, FeatureMap)>` preserving request order
+    /// for the keys owned by this shard.
+    MgetOk(Vec<(String, crate::types::FeatureMap)>),
+    /// GET_MULTI response — `(table_name, row_json_or_null)` pairs in request order.
+    GetMultiOk(Vec<(String, serde_json::Value)>),
     /// Shard failed to process the event.
     Err(ShardDispatchError),
 }
@@ -181,60 +257,155 @@ fn shard_event_loop(
         let mut event_count: u64 = 0;
         let mut last_gauge_update = std::time::Instant::now();
 
-        while let Ok(event) = rx.recv() {
+        while let Ok(mut event) = rx.recv() {
             event_count += 1;
-
-            // Parse JSON payload from bytes.
-            let payload: serde_json::Value = match serde_json::from_slice(&event.payload) {
-                Ok(v) => v,
-                Err(e) => {
-                    crate::shard::metrics::record_shard_event(
-                        shard_index,
-                        crate::shard::metrics::Outcome::Dropped,
-                    );
-                    if let Some(tx) = event.response_tx {
-                        let _ = tx.send(ShardResult::Err(ShardDispatchError::ProcessingError(
-                            format!("JSON parse error: {}", e),
-                        )));
-                    }
-                    continue;
-                }
-            };
-
-            let stream_name: &str = &event.stream_name;
             let now = std::time::SystemTime::now();
 
-            // Phase 50.5-01: call push_with_cascade_on_shard.
-            // The engine is read-locked (shared readers OK — engine is read-only after registration).
-            let result = {
-                let engine = state.engine.read();
-                let read_features = event.response_tx.is_some();
-                engine.push_with_cascade_on_shard(
-                    stream_name,
-                    &payload,
-                    &mut shard,
-                    None,  // event_log: not wired in Wave 2 (shard-owned log is Phase 51)
-                    now,
-                    read_features,
-                )
-            };
+            // Phase 53-01: dispatch on the new ShardOp enum. Take the op out of
+            // the event (replacing with Push placeholder) so we can still access
+            // event.payload / event.stream_name / event.response_tx by value.
+            let op = std::mem::replace(&mut event.op, ShardOp::Push);
+            match op {
+                ShardOp::Push => {
+                    // Parse JSON payload from bytes.
+                    let payload: serde_json::Value = match serde_json::from_slice(&event.payload) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            crate::shard::metrics::record_shard_event(
+                                shard_index,
+                                crate::shard::metrics::Outcome::Dropped,
+                            );
+                            if let Some(tx) = event.response_tx {
+                                let _ = tx.send(ShardResult::Err(ShardDispatchError::ProcessingError(
+                                    format!("JSON parse error: {}", e),
+                                )));
+                            }
+                            continue;
+                        }
+                    };
 
-            // Advance per-shard watermark if payload carries _event_time.
-            // Phase 51-02: call publish_if_due on every observation so the
-            // shard publishes its observed_max to the global store after every
-            // `wm_publish_threshold` events (default 1024). The read lock on
-            // global_watermark is uncontended on the hot path — publish/global_min
-            // only access the AtomicU64 array, not the stream_ord map.
-            if let Some(et) = crate::engine::operators::parse_event_time(&payload) {
-                shard.watermark.observe(stream_name, et);
-                let gw = state.global_watermark.read();
-                shard.watermark.publish_if_due(stream_name, &gw, shard_index, wm_publish_threshold);
+                    let stream_name: &str = &event.stream_name;
+
+                    let result = {
+                        let engine = state.engine.read();
+                        let read_features = event.response_tx.is_some();
+                        engine.push_with_cascade_on_shard(
+                            stream_name,
+                            &payload,
+                            &mut shard,
+                            None,
+                            now,
+                            read_features,
+                        )
+                    };
+
+                    if let Some(et) = crate::engine::operators::parse_event_time(&payload) {
+                        shard.watermark.observe(stream_name, et);
+                        let gw = state.global_watermark.read();
+                        shard.watermark.publish_if_due(stream_name, &gw, shard_index, wm_publish_threshold);
+                    }
+
+                    crate::shard::metrics::record_shard_event(
+                        shard_index,
+                        crate::shard::metrics::Outcome::Accepted,
+                    );
+
+                    if let Some(tx) = event.response_tx {
+                        let shard_result = match result {
+                            Ok(fm) => ShardResult::Ok(fm),
+                            Err(e) => ShardResult::Err(ShardDispatchError::ProcessingError(
+                                format!("{:?}", e),
+                            )),
+                        };
+                        let _ = tx.send(shard_result);
+                    }
+                }
+                ShardOp::Get { key } => {
+                    // Read features from shard-owned state via engine helper.
+                    let features = {
+                        let engine = state.engine.read();
+                        engine.get_features_on_shard(&key, &shard, now)
+                    };
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::GetOk(features));
+                    }
+                }
+                ShardOp::Set { key, payload } => {
+                    let result = apply_set_on_shard(&state, &mut shard, &key, &payload, now);
+                    if let Some(tx) = event.response_tx {
+                        let r = match result {
+                            Ok(()) => ShardResult::SetOk,
+                            Err(e) => ShardResult::Err(ShardDispatchError::ProcessingError(
+                                format!("{:?}", e),
+                            )),
+                        };
+                        let _ = tx.send(r);
+                    }
+                }
+                ShardOp::Mset { entries } => {
+                    let mut last_err: Option<crate::error::BeavaError> = None;
+                    for (key, payload) in entries {
+                        if let Err(e) = apply_set_on_shard(&state, &mut shard, &key, &payload, now) {
+                            last_err = Some(e);
+                        }
+                    }
+                    if let Some(tx) = event.response_tx {
+                        let r = match last_err {
+                            None => ShardResult::SetOk,
+                            Some(e) => ShardResult::Err(ShardDispatchError::ProcessingError(
+                                format!("{:?}", e),
+                            )),
+                        };
+                        let _ = tx.send(r);
+                    }
+                }
+                ShardOp::Tombstone { key } => {
+                    // Tombstone = SET with empty object.
+                    let empty = serde_json::Value::Object(serde_json::Map::new());
+                    let result = apply_set_on_shard(&state, &mut shard, &key, &empty, now);
+                    if let Some(tx) = event.response_tx {
+                        let r = match result {
+                            Ok(()) => ShardResult::SetOk,
+                            Err(e) => ShardResult::Err(ShardDispatchError::ProcessingError(
+                                format!("{:?}", e),
+                            )),
+                        };
+                        let _ = tx.send(r);
+                    }
+                }
+                ShardOp::MarkDirty { key } => {
+                    shard.dirty_set.insert(key);
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::SetOk);
+                    }
+                }
+                ShardOp::Mget { keys } => {
+                    let results: Vec<(String, crate::types::FeatureMap)> = {
+                        let engine = state.engine.read();
+                        keys.into_iter()
+                            .map(|k| {
+                                let fm = engine.get_features_on_shard(&k, &shard, now);
+                                (k, fm)
+                            })
+                            .collect()
+                    };
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::MgetOk(results));
+                    }
+                }
+                ShardOp::GetMulti { table_names, key } => {
+                    let rows: Vec<(String, serde_json::Value)> = table_names
+                        .iter()
+                        .map(|table| {
+                            let val = get_table_row_on_shard(&shard, table, &key);
+                            (table.clone(), val)
+                        })
+                        .collect();
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::GetMultiOk(rows));
+                    }
+                }
             }
-
-            crate::shard::metrics::record_shard_event(
-                shard_index,
-                crate::shard::metrics::Outcome::Accepted,
-            );
 
             // Emit gauges every 1000 events OR every 100ms.
             if event_count % 1000 == 0 || last_gauge_update.elapsed().as_millis() >= 100 {
@@ -242,26 +413,120 @@ fn shard_event_loop(
                 let keys_owned = shard.state.len();
                 crate::shard::metrics::update_shard_gauges(
                     shard_index,
-                    0.0, // reactor_utilization: not yet measured
+                    0.0,
                     inbox_depth,
                     keys_owned,
-                    0.0, // watermark_lag: placeholder
+                    0.0,
                 );
                 last_gauge_update = std::time::Instant::now();
             }
-
-            // Send result back to listener via oneshot (if response was requested).
-            if let Some(tx) = event.response_tx {
-                let shard_result = match result {
-                    Ok(fm) => ShardResult::Ok(fm),
-                    Err(e) => ShardResult::Err(ShardDispatchError::ProcessingError(
-                        format!("{:?}", e),
-                    )),
-                };
-                let _ = tx.send(shard_result);
-            }
         }
     });
+}
+
+/// Phase 53-01: apply a SET on shard-owned state.
+///
+/// Mirrors the logic in `handle_sync_command::Command::Set` but operates
+/// against `shard.state: AHashMap` instead of `state.store: DashMap`. Empty
+/// payload = tombstone (clears static_features + fires TT-cascade with
+/// tombstoned=true); non-empty = upsert (sets each feature + fires
+/// TT-cascade with tombstoned=false).
+///
+/// **Incomplete (Phase 53-01 WIP):** The Table↔Table cascade
+/// (`engine.cascade_table_upsert_on_shard`) is NOT YET IMPLEMENTED against
+/// `&mut Shard` — this helper currently mutates `shard.state` directly for
+/// the static_features update but skips the cascade fan-out. That step is
+/// deferred to a follow-up (engine-side API addition).
+fn apply_set_on_shard(
+    _state: &std::sync::Arc<crate::server::tcp::ConcurrentAppState>,
+    shard: &mut crate::shard::Shard,
+    key: &str,
+    payload: &serde_json::Value,
+    now: std::time::SystemTime,
+) -> Result<(), crate::error::BeavaError> {
+    use crate::state::store::{EntityState, StaticFeature};
+
+    if let serde_json::Value::Object(map) = payload {
+        let tombstoned = map.is_empty();
+        let entity = shard.state.entry(key.to_string()).or_insert_with(EntityState::default);
+        if tombstoned {
+            // Tombstone: clear all static features.
+            entity.static_features.clear();
+        } else {
+            for (feat_name, val) in map {
+                let fv = json_to_feature_value_local(val);
+                entity.static_features.insert(
+                    feat_name.clone(),
+                    StaticFeature {
+                        value: fv,
+                        updated_at: now,
+                    },
+                );
+            }
+        }
+        // Mark dirty for incremental snapshots.
+        shard.dirty_set.insert(key.to_string());
+        // NOTE (Phase 53-01 WIP): Table↔Table cascade on shard is deferred —
+        // requires `engine.cascade_table_upsert_on_shard(&mut shard, ...)` which
+        // does not yet exist. Without it, TT-join outputs will not refresh on
+        // SET via the shard path. This is tracked as a known gap.
+        Ok(())
+    } else {
+        Err(crate::error::BeavaError::Protocol(
+            "SET payload must be a JSON object".into(),
+        ))
+    }
+}
+
+/// Phase 53-01: read a table_row as JSON from shard-owned state.
+///
+/// Returns `Value::Null` if the entity or table_row is absent or tombstoned
+/// (matches the null-collapse contract of OP_GET_MULTI).
+fn get_table_row_on_shard(
+    shard: &crate::shard::Shard,
+    table_name: &str,
+    key: &str,
+) -> serde_json::Value {
+    use crate::state::store::TableRowState;
+
+    let Some(entity) = shard.state.get(key) else {
+        return serde_json::Value::Null;
+    };
+    let Some(row) = entity.table_rows.get(table_name) else {
+        return serde_json::Value::Null;
+    };
+    if matches!(row.state, TableRowState::Tombstoned { .. }) {
+        return serde_json::Value::Null;
+    }
+    let mut obj = serde_json::Map::new();
+    for (k, v) in &row.fields {
+        obj.insert(k.clone(), v.to_json_value());
+    }
+    serde_json::Value::Object(obj)
+}
+
+/// Local helper mirroring `crate::server::tcp::json_to_feature_value` for
+/// shard-side SET. Avoids a cross-module dep + keeps this file self-contained.
+fn json_to_feature_value_local(v: &serde_json::Value) -> crate::types::FeatureValue {
+    use crate::types::FeatureValue;
+    // CONTEXT.md: FeatureValue variants are Float / Int / String / Missing.
+    // Booleans collapse to Int(0)/Int(1) per Redis convention (see types.rs doc).
+    match v {
+        serde_json::Value::Null => FeatureValue::Missing,
+        serde_json::Value::Bool(b) => FeatureValue::Int(if *b { 1 } else { 0 }),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                FeatureValue::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                FeatureValue::Float(f)
+            } else {
+                FeatureValue::Missing
+            }
+        }
+        serde_json::Value::String(s) => FeatureValue::String(s.clone()),
+        // Arrays / objects: encode as JSON string for fidelity.
+        _ => FeatureValue::String(v.to_string()),
+    }
 }
 
 /// Read inbox capacity from environment with clamping (D-08).
@@ -330,22 +595,22 @@ mod tests {
         // exactly (N-1) try_send calls fail (inbox already full after first).
         let (tx, _rx) = crossbeam_channel::bounded::<ShardEvent>(1);
 
-        let first = ShardEvent {
-            payload: bytes::Bytes::from_static(b"event0"),
-            stream_name: Arc::from("s"),
-            shard_hint: 0,
-            response_tx: None,
-        };
+        let first = ShardEvent::push(
+            bytes::Bytes::from_static(b"event0"),
+            Arc::from("s"),
+            0,
+            None,
+        );
         assert!(tx.try_send(first).is_ok(), "first send should succeed");
 
         let mut drop_count = 0u64;
         for _ in 1..10u64 {
-            let ev = ShardEvent {
-                payload: bytes::Bytes::from_static(b"eventN"),
-                stream_name: Arc::from("s"),
-                shard_hint: 0,
-                response_tx: None,
-            };
+            let ev = ShardEvent::push(
+                bytes::Bytes::from_static(b"eventN"),
+                Arc::from("s"),
+                0,
+                None,
+            );
             if tx.try_send(ev).is_err() {
                 drop_count += 1;
             }
