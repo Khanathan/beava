@@ -34,6 +34,13 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+    match env_lock().lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 fn set_determinism_env() {
     std::env::set_var("BEAVA_FJALL_FSYNC_DISABLE", "1");
     std::env::set_var("BEAVA_FJALL_CACHE_MB", "32");
@@ -128,7 +135,7 @@ fn collect_partition_keys(
 
 #[test]
 fn reshard_from_fjall_data_dir_produces_rehashed_output() {
-    let _g = env_lock().lock().unwrap();
+    let _g = lock_env();
     set_determinism_env();
 
     // Step 1: create a v8 snapshot with 6 entities on stream "txns" (key_field=user_id).
@@ -180,7 +187,7 @@ fn reshard_from_fjall_data_dir_produces_rehashed_output() {
 
 #[test]
 fn reshard_refuses_when_migration_in_progress_marker_exists() {
-    let _g = env_lock().lock().unwrap();
+    let _g = lock_env();
     set_determinism_env();
 
     let tmp_src = TempDir::new().unwrap();
@@ -208,7 +215,7 @@ fn reshard_refuses_when_migration_in_progress_marker_exists() {
 
 #[test]
 fn reshard_back_compat_no_fjall_still_reads_snapshot_entities() {
-    let _g = env_lock().lock().unwrap();
+    let _g = lock_env();
     set_determinism_env();
 
     // Build a v8 snapshot with NO fjall/ directory — i.e. legacy pre-Phase-53

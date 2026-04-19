@@ -65,3 +65,9 @@ pub mod metrics;
 /// Provides `reshard_data_dir`, `rehash_to_shard`, `swap_replace`, and CLI helpers.
 #[allow(missing_docs)]
 pub mod reshard;
+
+/// Phase 53-04: `tally migrate-to-fjall` — convert v8 snapshot entity state to
+/// per-shard fjall partitions in-place. Closes TPC-PERSIST-03.
+#[cfg(not(feature = "state-inmem"))]
+#[allow(missing_docs)]
+pub mod migrate_to_fjall;

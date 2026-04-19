@@ -49,6 +49,17 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Take the env_lock in a way that tolerates prior poison. A panicking test
+/// (e.g. one that legitimately asserts and fails) can otherwise cascade to
+/// all subsequent tests. The env state is still protected: only one test
+/// holds the guard at a time.
+fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+    match env_lock().lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 fn set_determinism_env() {
     std::env::set_var("BEAVA_FJALL_FSYNC_DISABLE", "1");
     std::env::set_var("BEAVA_FJALL_CACHE_MB", "32");
@@ -164,7 +175,7 @@ fn collect_partition_keys(
 
 #[test]
 fn fresh_migration_converts_entities_to_fjall() {
-    let _g = env_lock().lock().unwrap();
+    let _g = lock_env();
     set_determinism_env();
 
     let tmp = TempDir::new().unwrap();
@@ -225,7 +236,7 @@ fn fresh_migration_converts_entities_to_fjall() {
 
 #[test]
 fn idempotent_second_run_exits_with_already_migrated_and_no_changes() {
-    let _g = env_lock().lock().unwrap();
+    let _g = lock_env();
     set_determinism_env();
 
     let tmp = TempDir::new().unwrap();
@@ -260,7 +271,7 @@ fn idempotent_second_run_exits_with_already_migrated_and_no_changes() {
 
 #[test]
 fn resume_from_marker_inserts_missing_entities_only() {
-    let _g = env_lock().lock().unwrap();
+    let _g = lock_env();
     set_determinism_env();
 
     let tmp = TempDir::new().unwrap();
@@ -307,7 +318,7 @@ fn resume_from_marker_inserts_missing_entities_only() {
 
 #[test]
 fn bak_preserved_unless_replace_passed() {
-    let _g = env_lock().lock().unwrap();
+    let _g = lock_env();
     set_determinism_env();
 
     // Case A: replace=false → bak exists after.
@@ -338,7 +349,7 @@ fn bak_preserved_unless_replace_passed() {
 #[test]
 fn lock_contention_returns_would_block() {
     use fs2::FileExt;
-    let _g = env_lock().lock().unwrap();
+    let _g = lock_env();
     set_determinism_env();
 
     let tmp = TempDir::new().unwrap();
@@ -367,7 +378,7 @@ fn lock_contention_returns_would_block() {
 
 #[test]
 fn force_flag_remigrates_overwriting_existing_fjall() {
-    let _g = env_lock().lock().unwrap();
+    let _g = lock_env();
     set_determinism_env();
 
     let tmp = TempDir::new().unwrap();
@@ -413,7 +424,7 @@ fn force_flag_remigrates_overwriting_existing_fjall() {
 
 #[test]
 fn per_stream_shard_key_routing_matches_production() {
-    let _g = env_lock().lock().unwrap();
+    let _g = lock_env();
     set_determinism_env();
 
     let tmp = TempDir::new().unwrap();

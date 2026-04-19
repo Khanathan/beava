@@ -84,6 +84,56 @@ fn poll_signal_sources(state: &SharedState) {
 static FORK_CONFIG: std::sync::OnceLock<ReplicaBootConfig> = std::sync::OnceLock::new();
 
 fn main() {
+    // Phase 53-04: handle `tally migrate-to-fjall` subcommand. This is an
+    // offline tool that converts v8 snapshot entity state to fjall partitions
+    // and exits; it never reaches the async_main / server startup block.
+    #[cfg(not(feature = "state-inmem"))]
+    if beava::migrate_to_fjall::is_migrate_subcommand(&std::env::args().collect::<Vec<_>>()) {
+        let args: Vec<String> = std::env::args().collect();
+        let migrate_args = match beava::migrate_to_fjall::parse_migrate_args(&args) {
+            Ok(a) => a,
+            Err(e) => {
+                // Intentional: startup error (Phase 47 audit)
+                eprintln!("{}", e);
+                beava::migrate_to_fjall::print_migrate_help();
+                std::process::exit(1);
+            }
+        };
+        if migrate_args.help {
+            beava::migrate_to_fjall::print_migrate_help();
+            std::process::exit(0);
+        }
+        match beava::migrate_to_fjall::migrate_to_fjall(
+            &migrate_args.data_dir,
+            migrate_args.force,
+            migrate_args.replace,
+        ) {
+            Ok(report) => {
+                // Intentional: startup banner (Phase 47 audit)
+                eprintln!(
+                    "migrate-to-fjall: {} entities migrated ({} skipped) in {} ms; \
+                     {} streams resolved, {} keyless; bak: {}",
+                    report.entities_migrated,
+                    report.entities_skipped,
+                    report.duration_ms,
+                    report.streams_resolved,
+                    report.streams_keyless,
+                    report
+                        .bak_path
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "(removed by --replace)".to_string()),
+                );
+            }
+            Err(e) => {
+                // Intentional: startup error (Phase 47 audit)
+                eprintln!("migrate-to-fjall failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+        std::process::exit(0);
+    }
+
     // Phase 52-04: handle `tally reshard` / `beava reshard` subcommand.
     // This is an offline migration tool that exits after completion; it never
     // reaches the async_main / server startup block.

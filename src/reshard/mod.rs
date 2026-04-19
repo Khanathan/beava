@@ -44,6 +44,15 @@ use crate::state::snapshot::{
     SnapshotType,
 };
 
+#[cfg(not(feature = "state-inmem"))]
+use crate::routing::shard_hint::shard_hint_for_event;
+#[cfg(not(feature = "state-inmem"))]
+use crate::shard::fjall_backend::{
+    fjall_config_from_env, open_keyspace_from_env, open_shard_partition,
+};
+#[cfg(not(feature = "state-inmem"))]
+use crate::state::snapshot::{SerializableEntityState, SerializablePipeline};
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Public API
 // ──────────────────────────────────────────────────────────────────────────────
@@ -84,6 +93,16 @@ pub fn reshard_data_dir(
             "data-dir is held by a running server",
         )
     })?;
+
+    // Phase 53-04: refuse to reshard while a fjall migration is in progress.
+    // Operator must re-run `tally migrate-to-fjall` first to leave the data-dir
+    // in a consistent state.
+    if data_dir.join(".migration-in-progress").exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "migration in progress: run 'tally migrate-to-fjall --data-dir <path>' first",
+        ));
+    }
 
     // ── Step 2: load and validate snapshot ────────────────────────────────
     let snap_path = data_dir.join("snapshot.bin");
@@ -127,6 +146,28 @@ pub fn reshard_data_dir(
         fs::create_dir_all(&streams_dir)?;
     }
 
+    // Phase 53-04: fjall-aware branch.
+    //
+    // If `data_dir/fjall/` exists, the authoritative entity state lives in
+    // per-shard fjall partitions (not `snapshot.entities`, which is
+    // metadata-only after Plan 04 migration). Enumerate each partition and
+    // re-route entities to target shards using the same W-2 per-stream
+    // `shard_key` resolution used by `migrate-to-fjall`. Emit a fjall-layout
+    // output at `out_dir/fjall/`. The event-log walk below runs unchanged
+    // for event-log artefacts.
+    #[cfg(not(feature = "state-inmem"))]
+    let fjall_source = {
+        let fjall_dir = data_dir.join("fjall");
+        fjall_dir.is_dir()
+    };
+    #[cfg(feature = "state-inmem")]
+    let fjall_source = false;
+
+    #[cfg(not(feature = "state-inmem"))]
+    if fjall_source {
+        reshard_from_fjall(data_dir, out_dir, from_n, to_k, &base_snap)?;
+    }
+
     // ── Step 4: rehash per-source-shard log entries ───────────────────────
     // Collect all stream names seen across all source shards so we know which
     // streams to scan. We walk `shard-{s}/streams/` directories.
@@ -167,12 +208,21 @@ pub fn reshard_data_dir(
     }
 
     // ── Step 5: write output snapshot ─────────────────────────────────────
+    // If the source used fjall, the output is also fjall-layout — `entities`
+    // in the metadata file must be empty (the actual state lives in fjall
+    // partitions at `out_dir/fjall/`). Otherwise preserve the legacy v8 layout
+    // with entities inline in the snapshot.
+    let out_entities = if fjall_source {
+        Vec::new()
+    } else {
+        base_snap.entities
+    };
     let out_snap = BaseSnapshotStateV8 {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: base_snap.header.sequence,
         },
-        entities: base_snap.entities,
+        entities: out_entities,
         pipelines: base_snap.pipelines,
         backfill_complete: base_snap.backfill_complete,
         shard_count: to_k as u16,
@@ -183,6 +233,101 @@ pub fn reshard_data_dir(
     fs::write(&out_snap_path, &out_snap_bytes)?;
 
     println!("Done. Output: {}", out_dir.display());
+    Ok(())
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Phase 53-04: fjall-aware reshard helpers
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Given an entity_key and the snapshot's pipeline registry, reproduce the
+/// W-2 `resolve_shard_key_for_entity` contract from `src/migrate_to_fjall/`.
+/// This is intentionally duplicated (small helper, two call sites) rather than
+/// imported — avoids a pub(crate) cross-module dependency for a 30-line helper
+/// and keeps reshard self-contained.
+#[cfg(not(feature = "state-inmem"))]
+fn resolve_shard_for_reshard(
+    entity_key: &str,
+    entity_state: &SerializableEntityState,
+    pipelines: &[SerializablePipeline],
+    shard_count: u16,
+) -> io::Result<usize> {
+    let first_stream = entity_state.streams.first().map(|(n, _)| n.clone());
+    let Some(stream_name) = first_stream else {
+        return Ok(0); // no streams → keyless → shard 0
+    };
+    let pipeline = pipelines.iter().find(|p| p.name == stream_name);
+    let Some(pipeline) = pipeline else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "entity {} references stream {} not found in pipeline registry",
+                entity_key, stream_name
+            ),
+        ));
+    };
+    let kf = pipeline.key_field.as_str();
+    if kf.is_empty() {
+        return Ok(0);
+    }
+    let payload = serde_json::json!({ kf: entity_key });
+    let hint = shard_hint_for_event(&payload, Some(kf));
+    Ok((hint as usize) % shard_count.max(1) as usize)
+}
+
+/// Re-route entities from `data_dir/fjall/` (N=from_n partitions) into a new
+/// keyspace at `out_dir/fjall/` (K=to_k partitions) using the production W-2
+/// routing. Used when the source data-dir has been migrated to fjall.
+#[cfg(not(feature = "state-inmem"))]
+fn reshard_from_fjall(
+    data_dir: &Path,
+    out_dir: &Path,
+    from_n: u8,
+    to_k: u8,
+    base_snap: &BaseSnapshotStateV8,
+) -> io::Result<()> {
+    // Open source keyspace + partitions.
+    let src_cfg = fjall_config_from_env(from_n as u16);
+    let src_ks = open_keyspace_from_env(data_dir, &src_cfg).map_err(io::Error::other)?;
+
+    // Open destination keyspace + K partitions.
+    let dst_cfg = fjall_config_from_env(to_k as u16);
+    let dst_ks = open_keyspace_from_env(out_dir, &dst_cfg).map_err(io::Error::other)?;
+    let mut dst_partitions = Vec::with_capacity(to_k as usize);
+    for i in 0..to_k as usize {
+        dst_partitions.push(open_shard_partition(&dst_ks, i, &dst_cfg).map_err(io::Error::other)?);
+    }
+
+    // Iterate each source partition and re-route.
+    for s in 0..from_n as usize {
+        let src_partition =
+            open_shard_partition(&src_ks, s, &src_cfg).map_err(io::Error::other)?;
+        for kv in src_partition.iter() {
+            let (k_slice, v_slice) = kv.map_err(io::Error::other)?;
+            let entity_key = std::str::from_utf8(&k_slice)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+            let entity_state: SerializableEntityState = postcard::from_bytes(&v_slice)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+            let target_shard = resolve_shard_for_reshard(
+                entity_key,
+                &entity_state,
+                &base_snap.pipelines,
+                to_k as u16,
+            )?;
+            dst_partitions[target_shard]
+                .insert(entity_key.as_bytes(), v_slice.as_ref())
+                .map_err(io::Error::other)?;
+        }
+    }
+
+    dst_ks
+        .persist(fjall::PersistMode::SyncAll)
+        .map_err(io::Error::other)?;
+
+    drop(dst_partitions);
+    drop(dst_ks);
+    drop(src_ks);
+
     Ok(())
 }
 
