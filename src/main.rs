@@ -84,6 +84,45 @@ fn poll_signal_sources(state: &SharedState) {
 static FORK_CONFIG: std::sync::OnceLock<ReplicaBootConfig> = std::sync::OnceLock::new();
 
 fn main() {
+    // Phase 52-04: handle `tally reshard` / `beava reshard` subcommand.
+    // This is an offline migration tool that exits after completion; it never
+    // reaches the async_main / server startup block.
+    if beava::reshard::is_reshard_subcommand(&std::env::args().collect::<Vec<_>>()) {
+        let args: Vec<String> = std::env::args().collect();
+        let reshard_args = match beava::reshard::parse_reshard_args(&args) {
+            Ok(a) => a,
+            Err(e) => {
+                // Intentional: startup error (Phase 47 audit)
+                eprintln!("{}", e);
+                beava::reshard::print_reshard_help();
+                std::process::exit(1);
+            }
+        };
+        match beava::reshard::reshard_data_dir(
+            reshard_args.from_n,
+            reshard_args.to_k,
+            &reshard_args.data_dir,
+            &reshard_args.out_dir,
+        ) {
+            Ok(()) => {}
+            Err(e) => {
+                // Intentional: startup error (Phase 47 audit)
+                eprintln!("reshard failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+        if reshard_args.replace {
+            if let Err(e) =
+                beava::reshard::swap_replace(&reshard_args.data_dir, &reshard_args.out_dir)
+            {
+                // Intentional: startup error (Phase 47 audit)
+                eprintln!("--replace swap failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+        std::process::exit(0);
+    }
+
     // Phase 37-01: handle `beava fork` subcommand. Parse fork flags, set
     // BEAVA_TCP_PORT / BEAVA_HTTP_PORT for the local-port override, print
     // the banner, and stash the synthesized replica config for async_main.

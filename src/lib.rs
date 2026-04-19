@@ -60,3 +60,8 @@ pub mod types;
 /// Installs global metrics-exporter-prometheus recorder alongside hand-rolled /metrics.
 #[allow(missing_docs)]
 pub mod metrics;
+
+/// Offline reshard migration tool (TPC-DX-03, Phase 52-04).
+/// Provides `reshard_data_dir`, `rehash_to_shard`, `swap_replace`, and CLI helpers.
+#[allow(missing_docs)]
+pub mod reshard;
