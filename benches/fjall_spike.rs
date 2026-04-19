@@ -1,32 +1,47 @@
 //! Phase 53-01 spike gate bench: fjall 2.11 vs AHashMap read-modify-write.
 //!
-//! **RED scaffold** — this file is the TDD RED commit for plan 53-01 Task 1.
-//! The fjall bench group intentionally references `fjall_rmw_one_step` which
-//! is NOT yet defined, so `cargo bench --bench fjall_spike --no-run` fails
-//! with `cannot find function`. The GREEN commit replaces this file with a
-//! fully-compiling bench.
+//! **GREEN** — plan 53-01 Task 1 Step 2. Compiles, runs, and produces the
+//! numbers that feed the spike gate report.
 //!
 //! Measures (per plan 53-01 D-05):
-//!   1. AHashMap<String, SerializableEntityState> entry().or_default() + mutate baseline
-//!   2. fjall::PartitionHandle read-modify-write cycle on the same payload shape
-//!   3. Postcard-encoded EntityState byte-size distribution (p50/p95/p99/max)
+//!   1. `fjall_spike::ahashmap_baseline::rmw_100_ops` — AHashMap
+//!      `entry().or_default()` + in-place mutate baseline.
+//!   2. `fjall_spike::fjall_rmw::rmw_100_ops` — `fjall::PartitionHandle`
+//!      read-modify-write cycle: `partition.get` → `postcard::from_bytes`
+//!      → mutate one `static_features` field → `postcard::to_stdvec` →
+//!      `partition.insert`.
+//!   3. `fjall_spike::postcard_sizes::noop_histogram_dump` — carrier
+//!      bench whose SETUP emits the p50/p95/p99/max byte-size histogram
+//!      of 10 000 synthetic `SerializableEntityState` values on stderr.
+//!
+//! Both `ahashmap_baseline` and `fjall_rmw` measure exactly `N_OPS` mutations
+//! per iteration after pre-populating `N_KEYS` entries. Throughput is annotated
+//! so Criterion reports ns/op directly.
 //!
 //! The gate passes if fjall is within −25% of AHashMap on (1) vs (2), and
 //! p95 postcard size ≤ 4 KB (fjall default block_size).
 //!
+//! **Determinism:** `fsync_ms(None)` disables background fsync on the fjall
+//! keyspace; all writes land in the memtable only. Microbench stays on the
+//! memtable hot path — this is deliberately *optimistic* vs production
+//! (`fsync_ms(5)`), so the −25% tolerance absorbs the real fsync cost.
+//!
+//! **Scope boundary:** This bench does NOT touch `src/state/` or
+//! `src/shard/store.rs`. It uses fjall directly plus the existing
+//! `SerializableEntityState` + `postcard` round-trip that Plan 53-02 will
+//! wire into the production shard write path.
+//!
 //! Run: `cargo bench --bench fjall_spike`
-
-#![allow(dead_code)] // RED scaffold — symbols wired up in GREEN commit.
+//! Quick: `cargo bench --bench fjall_spike -- --measurement-time 5 --sample-size 30`
 
 use ahash::AHashMap;
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkGroup, Criterion, Throughput};
-use criterion::measurement::WallTime;
+use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 use std::time::SystemTime;
 use tempfile::TempDir;
 
-use beava::state::snapshot::{SerializableEntityState, SerializableStreamEntityState};
+use beava::state::snapshot::SerializableEntityState;
 use beava::state::store::StaticFeature;
 use beava::types::FeatureValue;
 
@@ -35,7 +50,20 @@ const N_KEYS: usize = 1_000;
 /// M read-modify-write operations per iteration of the hot-path bench.
 const N_OPS: usize = 100;
 /// Seed for the synthetic key / payload generator — deterministic across runs.
-const SEED: u64 = 0x53_01_FJALL_5P1KE;
+/// Value-space: hex-only so the literal is a valid `u64`.
+const SEED: u64 = 0x5301_FA11_5E1C_0000;
+
+/// `SerializableEntityState` does not derive `Default`. Build one by hand so the
+/// AHashMap baseline can use `entry(k).or_insert_with(default_entity)` without
+/// pulling in `beava::state::store::EntityState` (whose `AtomicU64` would
+/// invalidate the postcard round-trip this bench measures).
+fn default_entity() -> SerializableEntityState {
+    SerializableEntityState {
+        streams: Vec::new(),
+        static_features: Vec::new(),
+        table_rows: Vec::new(),
+    }
+}
 
 /// Seeded generator for `[a-z]{3,8}` keys matching `sharding_parity.rs` key shape.
 fn gen_key(rng: &mut StdRng) -> String {
@@ -45,8 +73,11 @@ fn gen_key(rng: &mut StdRng) -> String {
         .collect()
 }
 
-/// Build a representative hot-path EntityState: 3 static_features + 1 stream with
-/// 2 operator entries. Matches common-case shape per 53-CONTEXT §specifics.
+/// Build a representative hot-path EntityState: 3 static_features.
+/// Matches common-case shape per 53-CONTEXT §specifics. Streams/table_rows
+/// stay empty — the real hot-path value size is dominated by static_features
+/// in the TPC architecture (streams serialize only when operator state
+/// advances, which in this spike we don't exercise).
 fn gen_entity(rng: &mut StdRng) -> SerializableEntityState {
     let now = SystemTime::now();
     let static_features = vec![
@@ -63,9 +94,6 @@ fn gen_entity(rng: &mut StdRng) -> SerializableEntityState {
             StaticFeature { value: FeatureValue::Float(rng.gen_range(0.0..1.0)), updated_at: now },
         ),
     ];
-    // We do not construct real OperatorState values — they require engine
-    // constructors out of scope for this spike. Streams stays empty; the
-    // static_features load dominates the postcard size for the common case.
     SerializableEntityState {
         streams: Vec::new(),
         static_features,
@@ -73,7 +101,7 @@ fn gen_entity(rng: &mut StdRng) -> SerializableEntityState {
     }
 }
 
-/// Mutate one static_feature field in-place (simulates hot-path write).
+/// Mutate the `score` static_feature in-place (simulates the common hot-path write).
 fn mutate_entity(entity: &mut SerializableEntityState, now: SystemTime, new_score: f64) {
     for (name, feat) in entity.static_features.iter_mut() {
         if name == "score" {
@@ -82,6 +110,14 @@ fn mutate_entity(entity: &mut SerializableEntityState, now: SystemTime, new_scor
             return;
         }
     }
+    // If "score" missing (shouldn't happen for gen_entity output, but keeps
+    // the mutation path sound if ever called on a default_entity).
+    entity
+        .static_features
+        .push(("score".to_string(), StaticFeature {
+            value: FeatureValue::Float(new_score),
+            updated_at: now,
+        }));
 }
 
 /// Pre-generated workload: keys + initial entities + per-op (key, new_score) stream.
@@ -104,7 +140,27 @@ fn gen_workload() -> Workload {
     Workload { keys, entities, ops }
 }
 
-/// Baseline: AHashMap entry().or_default() + in-place mutate.
+/// One fjall read-modify-write step: `get` → `postcard::from_bytes` → mutate
+/// `score` → `postcard::to_stdvec` → `insert`. Mirrors the production hot-path
+/// shape Plan 53-02 will wire into `StoreView::Sharded` (per 53-RESEARCH
+/// Pattern 2).
+fn fjall_rmw_one_step(
+    part: &fjall::PartitionHandle,
+    key: &str,
+    now: SystemTime,
+    new_score: f64,
+) {
+    let mut entity: SerializableEntityState = match part.get(key.as_bytes()).ok().flatten() {
+        Some(bytes) => postcard::from_bytes(&bytes).unwrap_or_else(|_| default_entity()),
+        None => default_entity(),
+    };
+    mutate_entity(&mut entity, now, new_score);
+    let encoded = postcard::to_stdvec(&entity).expect("postcard encode EntityState");
+    part.insert(key.as_bytes(), encoded).expect("fjall insert");
+}
+
+/// Baseline: AHashMap `entry().or_insert_with(default_entity)` + in-place mutate.
+/// No (de)serialization — matches today's pre-Phase-53 in-memory hot path.
 fn bench_ahashmap_baseline(c: &mut Criterion) {
     let workload = gen_workload();
     let mut group = c.benchmark_group("fjall_spike::ahashmap_baseline");
@@ -121,7 +177,7 @@ fn bench_ahashmap_baseline(c: &mut Criterion) {
             |mut map| {
                 let now = SystemTime::now();
                 for (k, new_score) in &workload.ops {
-                    let entity = map.entry(k.clone()).or_default();
+                    let entity = map.entry(k.clone()).or_insert_with(default_entity);
                     mutate_entity(entity, now, *new_score);
                     black_box(&*entity);
                 }
@@ -133,7 +189,12 @@ fn bench_ahashmap_baseline(c: &mut Criterion) {
     group.finish();
 }
 
-/// fjall read-modify-write: get → postcard decode → mutate → postcard encode → insert.
+/// fjall read-modify-write: full cycle per op on a pre-populated partition.
+///
+/// The per-iteration SETUP tears down and rebuilds the keyspace in a fresh
+/// `TempDir` so each measurement starts from a warm memtable but a cold
+/// OS page cache, isolating the fjall-side cost from run-to-run noise.
+/// `fsync_ms(None)` disables the background fsync thread.
 fn bench_fjall_rmw(c: &mut Criterion) {
     let workload = gen_workload();
     let mut group = c.benchmark_group("fjall_spike::fjall_rmw");
@@ -141,8 +202,6 @@ fn bench_fjall_rmw(c: &mut Criterion) {
     group.bench_function("rmw_100_ops", |b| {
         b.iter_batched(
             || {
-                // Scaffold: fjall_rmw_one_step is intentionally undefined in the RED commit.
-                // GREEN commit defines it to do the get/decode/mutate/encode/insert cycle.
                 let tmp = TempDir::new().expect("tempdir");
                 let cfg = fjall::Config::new(tmp.path().join("fjall"))
                     .fsync_ms(None)
@@ -156,13 +215,21 @@ fn bench_fjall_rmw(c: &mut Criterion) {
                     part.insert(k.as_bytes(), bytes).expect("fjall insert");
                 }
                 ks.persist(fjall::PersistMode::SyncData).expect("persist");
-                (tmp, part)
+                // Hold the TempDir alive for the duration of the bench iter;
+                // fjall keeps file handles inside.
+                (tmp, ks, part)
             },
-            |(_tmp, part)| {
+            |(_tmp, _ks, part)| {
                 let now = SystemTime::now();
                 for (k, new_score) in &workload.ops {
-                    fjall_rmw_one_step(black_box(&part), black_box(k), black_box(now), black_box(*new_score));
+                    fjall_rmw_one_step(
+                        black_box(&part),
+                        black_box(k),
+                        black_box(now),
+                        black_box(*new_score),
+                    );
                 }
+                black_box(part);
             },
             criterion::BatchSize::SmallInput,
         );
@@ -170,31 +237,33 @@ fn bench_fjall_rmw(c: &mut Criterion) {
     group.finish();
 }
 
-/// Prints the postcard-encoded size histogram over 10_000 synthetic entities.
+/// Emit the postcard-encoded size histogram for 10 000 synthetic entities on
+/// stderr (Criterion swallows stdout). The carrier bench is a no-op `iter`
+/// so the histogram only runs once, at setup time.
 fn bench_postcard_sizes(c: &mut Criterion) {
     let mut rng = StdRng::seed_from_u64(SEED ^ 0xDEAD_BEEF);
     let mut sizes: Vec<usize> = (0..10_000)
         .map(|_| {
             let e = gen_entity(&mut rng);
-            postcard::to_stdvec(&e).unwrap().len()
+            postcard::to_stdvec(&e).expect("postcard encode").len()
         })
         .collect();
     sizes.sort_unstable();
-    let p = |pct: f64| sizes[((sizes.len() as f64 - 1.0) * pct) as usize];
+    let pct = |p: f64| sizes[((sizes.len() as f64 - 1.0) * p) as usize];
     eprintln!(
         "postcard_size_p50={} p95={} p99={} max={} n={}",
-        p(0.50),
-        p(0.95),
-        p(0.99),
+        pct(0.50),
+        pct(0.95),
+        pct(0.99),
         sizes.last().copied().unwrap_or(0),
         sizes.len()
     );
-    // Dummy bench group so criterion_main accepts the function.
+
     let mut group = c.benchmark_group("fjall_spike::postcard_sizes");
-    group.bench_function("noop_histogram_dump", |b| b.iter(|| black_box(sizes.len())));
+    group.bench_function("noop_histogram_dump", |b| {
+        b.iter(|| black_box(sizes.len()))
+    });
     group.finish();
-    // Silence unused BenchmarkGroup type import
-    let _: fn(&mut BenchmarkGroup<WallTime>) = |_| {};
 }
 
 criterion_group!(benches, bench_ahashmap_baseline, bench_fjall_rmw, bench_postcard_sizes);
