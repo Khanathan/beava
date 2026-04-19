@@ -57,6 +57,12 @@ socket2 = { version = "0.5", features = ["all"] }
 # Wave 1 uses the synchronous scatter_gather; Wave 2+ will use join_all.
 futures = "0.3"
 fs2 = "0.4"
+# Phase 53-02 (W-5 revision): real host-memory read used for the
+# `BEAVA_FJALL_CACHE_MB` default formula
+# `(read_sys_mem_mb() / num_shards / 2).min(512).max(16)`. Pure-Rust,
+# cross-platform; default-features disabled to keep the dep footprint
+# minimal — we only consume `System::total_memory()`.
+sysinfo = { version = "0.33", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
