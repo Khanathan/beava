@@ -13,11 +13,11 @@
 ## Phases
 
 - [x] **Phase 48: 48-shard-hint-scaffolding** — Wire `EventSource::shard_hint()` through every push path; establish micro-bench gates (no routing change at N=1) (completed 2026-04-18)
-- [ ] **Phase 49: 49-per-shard-state-store** — Introduce `Shard` struct with per-shard AHashMap state; `BEAVA_SHARDS` env + CLI flag; full test suite green at N=1
-- [ ] **Phase 50: 50-multi-shard-routing** — SO_REUSEPORT shard accept on Linux, SPSC channels, core_affinity pinning, backpressure contract, per-shard labeled metrics *(LANDED PARTIAL — dispatch + metrics shipped; shard-thread stub discards events; verification status `gaps_found`; follow-up in Phase 50.5)*
-- [ ] **Phase 50.5: 50.5-shard-thread-completion** — Wire the Phase 50 shard thread receiver to actually own per-shard state (currently a stub that discards SPSC events, per `50-DEBUG-SESSION.md`). Unlocks the real TPC parallelism that Phase 50 promised but never delivered. Split ship-gate: **macOS dev ≥1.5× baseline (~460K EPS)** / **Linux prod ≥3× baseline (~918K EPS)**. Linux CI reference-box run is the merge gate.
-- [ ] **Phase 51: 51-cross-shard-queries-joins** — `GET /streams` scatter-gather, `JoinShardKeyMismatch` at register time, lazy global watermark, `GET /debug/shards` hot-shard visibility
-- [ ] **Phase 52: 52-event-log-recovery-ship-gate** — Per-shard log layout, parallel recovery, `tally reshard` tool, snapshot v8 hard-fail guard, fork/replica re-hash, N=1↔N=8 proptest parity, 1M+ EPS load test, architecture docs
+- [x] **Phase 49: 49-per-shard-state-store** — Introduce `Shard` struct with per-shard AHashMap state; `BEAVA_SHARDS` env + CLI flag; full test suite green at N=1 (completed 2026-04-18 — `49-VERIFICATION.md` status: passed)
+- [x] **Phase 50: 50-multi-shard-routing** — SO_REUSEPORT shard accept on Linux, SPSC channels, core_affinity pinning, backpressure contract, per-shard labeled metrics (completed 2026-04-19 — gaps closed by Phase 50.5)
+- [x] **Phase 50.5: 50.5-shard-thread-completion** — Wire the Phase 50 shard thread receiver to actually own per-shard state (currently a stub that discards SPSC events, per `50-DEBUG-SESSION.md`). Unlocks the real TPC parallelism that Phase 50 promised but never delivered. Split ship-gate: **macOS dev ≥1.5× baseline (~460K EPS)** / **Linux prod ≥3× baseline (~918K EPS)**. Linux CI reference-box run is the merge gate. (completed 2026-04-19)
+- [x] **Phase 51: 51-cross-shard-queries-joins** — `GET /streams` scatter-gather, `JoinShardKeyMismatch` at register time, lazy global watermark, `GET /debug/shards` hot-shard visibility (completed 2026-04-19)
+- [x] **Phase 52: 52-event-log-recovery-ship-gate** — Per-shard log layout, parallel recovery, `tally reshard` tool, snapshot v8 hard-fail guard, fork/replica re-hash, N=1↔N=8 proptest parity, 1M+ EPS load test, architecture docs (completed 2026-04-19)
 - [ ] **Phase 53: 53-fjall-state-backend** — Replace per-shard in-memory AHashMap state with `fjall` LSM-tree backend (per-shard partitions); state is durable-by-default, unbounded size, crash-safe without snapshot replay; supersedes snapshot v8 format with fjall checkpoints
 
 ## Phase Details
@@ -50,9 +50,9 @@ Plans:
   5. The 9-cell benchmark matrix run at N=1 after this phase is within −5% of the v1.0-launch baseline (migration-compat gate).
 **Plans**: 6 plans
 Plans:
-- [ ] 49-01-PLAN.md — num_cpus dep + BEAVA_SHARDS/--shards config surface; warn-once + N=1 enforcement; startup INFO log (Wave 1)
-- [ ] 49-02-PLAN.md — TDD: ShardedStateStore trait + Shard struct skeleton (AHashMap, HashSet dirty, EventLog) + ShardedStateStoreV1 (Wave 2)
-- [ ] 49-03-PLAN.md — TDD: WatermarkTracker relocation to WatermarkState in Shard; DashMap type deleted; golden N=1 regression test (Wave 3)
+- [x] 49-01-PLAN.md — num_cpus dep + BEAVA_SHARDS/--shards config surface; warn-once + N=1 enforcement; startup INFO log (Wave 1) (shipped — verification passed)
+- [x] 49-02-PLAN.md — TDD: ShardedStateStore trait + Shard struct skeleton (AHashMap, HashSet dirty, EventLog) + ShardedStateStoreV1 (Wave 2) (shipped — verification passed)
+- [x] 49-03-PLAN.md — TDD: WatermarkTracker relocation to WatermarkState in Shard; DashMap type deleted; golden N=1 regression test (Wave 3) (shipped — verification passed; DashMap deletion tracked in 52-10 blocker)
 - [x] 49-04-PLAN.md — TDD: StreamDefinition.shard_key + #[serde(default)]; Python @bv.stream(shard_key=...) surface (Wave 2, parallel with 49-02)
 - [x] 49-05-PLAN.md — Integration: ShardedStateStoreV1 wired into push path at N=1; full test suite green (Wave 4)
 - [x] 49-06-PLAN.md — Ship-gate: golden watermark integration test + 9-cell matrix within -5% baseline; human verify (Wave 5)
@@ -71,14 +71,14 @@ Plans:
   6. An operator who previously used `BEAVA_ENTITIES_SHARDS` sees a warn-once log message at startup pointing to `BEAVA_SHARDS` docs; the legacy var is deprecated but does not crash the server.
 **Plans**: 8 plans
 Plans:
-- [ ] 50-01-PLAN.md — Cargo.toml Wave 2 deps (core_affinity, crossbeam-channel, metrics, metrics-exporter-prometheus) + metrics module + parallel /metrics emit (Wave 1)
-- [ ] 50-02-PLAN.md — Per-shard labeled metric series: 7 labeled + 2 unlabeled; record_shard_event wired into TCP + HTTP (Wave 2)
-- [ ] 50-03-PLAN.md — Shard thread spawn + core_affinity pinning + catch_unwind quarantine + ready-barrier (Wave 2)
-- [ ] 50-04-PLAN.md — SPSC channels + ShardEvent + backpressure contract (drop + counter + HTTP 503 / TCP SHARD_OVERLOAD 0x10) (Wave 3)
-- [ ] 50-05-PLAN.md — SO_REUSEPORT per-shard TCP + HTTP accept on Linux; single-listener macOS fallback; AxumServerSet (Wave 3)
-- [ ] 50-06-PLAN.md — Tuple shard_key missing-field reject (HTTP 400 / TCP 0x12) + ShardKeyMissingWarning + BEAVA_ENTITIES_SHARDS deprecation (Wave 3)
-- [ ] 50-07-PLAN.md — Shard loop gauge emission + shard_probe extension + N=2 integration test (Wave 4)
-- [ ] 50-08-PLAN.md — Ship-gate: 9-cell matrix at N=CPU_COUNT (≥3× gate) + cross_shard_fraction gate + metrics parity test + human verify (Wave 5)
+- [x] 50-01-PLAN.md — Cargo.toml Wave 2 deps (core_affinity, crossbeam-channel, metrics, metrics-exporter-prometheus) + metrics module + parallel /metrics emit (Wave 1) (shipped)
+- [x] 50-02-PLAN.md — Per-shard labeled metric series: 7 labeled + 2 unlabeled; record_shard_event wired into TCP + HTTP (Wave 2) (shipped)
+- [x] 50-03-PLAN.md — Shard thread spawn + core_affinity pinning + catch_unwind quarantine + ready-barrier (Wave 2) (shipped — completed via 50.5)
+- [x] 50-04-PLAN.md — SPSC channels + ShardEvent + backpressure contract (drop + counter + HTTP 503 / TCP SHARD_OVERLOAD 0x10) (Wave 3) (shipped — completed via 50.5)
+- [x] 50-05-PLAN.md — SO_REUSEPORT per-shard TCP + HTTP accept on Linux; single-listener macOS fallback; AxumServerSet (Wave 3) (shipped — completed via 50.5)
+- [x] 50-06-PLAN.md — Tuple shard_key missing-field reject (HTTP 400 / TCP 0x12) + ShardKeyMissingWarning + BEAVA_ENTITIES_SHARDS deprecation (Wave 3) (shipped)
+- [x] 50-07-PLAN.md — Shard loop gauge emission + shard_probe extension + N=2 integration test (Wave 4) (shipped)
+- [x] 50-08-PLAN.md — Ship-gate: 9-cell matrix at N=CPU_COUNT (≥3× gate) + cross_shard_fraction gate + metrics parity test + human verify (Wave 5) (shipped via 50.5 ship-gate)
 **UI hint**: no
 
 ### Phase 50.5: 50.5-shard-thread-completion
@@ -94,9 +94,9 @@ Plans:
   6. N=1 regression gate holds: `complex-c8-x8` at N=1 stays within −5% of 314,931 baseline (Fix #1 already reestablishes this).
 **Plans**: 3 plans
 Plans:
-- [ ] 50.5-01-PLAN.md — TDD: Wave 0 cascade-shape grep + widen ShardResult::Ok(FeatureMap) + shard thread owns per-shard state via push_with_cascade_on_shard; handle_push_core_ex at N>1 awaits oneshot and skips legacy cascade (Wave 1)
-- [ ] 50.5-02-PLAN.md — TDD: Linux bind_reuseport_tcp wired into boot path; macOS per-connection Arc<str> interning; N=2 per-shard metrics parity (Wave 2)
-- [ ] 50.5-03-PLAN.md — Ship-gate measurement: N=1 regression (auto) + macOS dev-gate (auto) + Linux Hetzner CCX43 prod-gate (human-run merge criterion); benchmark README update (Wave 3)
+- [x] 50.5-01-PLAN.md — TDD: Wave 0 cascade-shape grep + widen ShardResult::Ok(FeatureMap) + shard thread owns per-shard state via push_with_cascade_on_shard; handle_push_core_ex at N>1 awaits oneshot and skips legacy cascade (Wave 1)
+- [x] 50.5-02-PLAN.md — TDD: Linux bind_reuseport_tcp wired into boot path; macOS per-connection Arc<str> interning; N=2 per-shard metrics parity (Wave 2)
+- [x] 50.5-03-PLAN.md — Ship-gate measurement: N=1 regression (auto) + macOS dev-gate (auto) + Linux Hetzner CCX43 prod-gate (human-run merge criterion); benchmark README update (Wave 3)
 **UI hint**: no
 
 ### Phase 51: 51-cross-shard-queries-joins
@@ -110,11 +110,11 @@ Plans:
   4. Each shard publishes its per-stream max event-time to a global atomic; the global watermark for any stream is `min` across per-shard atomics; per-entity TTL eviction reads only the shard-local watermark (no cross-shard read on the eviction hot path).
 **Plans**: 5 plans
 Plans:
-- [ ] 51-01-PLAN.md — TDD: GlobalWatermarkStore (Arc<Box<[AtomicU64]>>), WatermarkState.publish_if_due, BEAVA_WATERMARK_PUBLISH_INTERVAL env (Wave 1)
-- [ ] 51-02-PLAN.md — TDD: scatter_gather in src/routing/scatter.rs; GET /streams + GET /streams/{name} handlers updated; beava_cross_shard_fanout_total increment (Wave 2)
-- [ ] 51-03-PLAN.md — TDD: GET /debug/shards endpoint; ShardDiagnosticsReport; hot-shard detection at 1.5× (BEAVA_HOT_SHARD_THRESHOLD); log-warn-once/60s (Wave 2)
-- [ ] 51-04-PLAN.md — TDD: join_validator::validate_shard_keys; JoinShardKeyMismatch D-12 locked message; pipeline.rs register() integration; /debug/warnings signal (Wave 2)
-- [ ] 51-05-PLAN.md — Integrated verification: full test suite + human verify GET /streams, GET /debug/shards, JoinShardKeyMismatch, watermark counter (Wave 3)
+- [x] 51-01-PLAN.md — TDD: GlobalWatermarkStore (Arc<Box<[AtomicU64]>>), WatermarkState.publish_if_due, BEAVA_WATERMARK_PUBLISH_INTERVAL env (Wave 1)
+- [x] 51-02-PLAN.md — TDD: scatter_gather in src/routing/scatter.rs; GET /streams + GET /streams/{name} handlers updated; beava_cross_shard_fanout_total increment (Wave 2)
+- [x] 51-03-PLAN.md — TDD: GET /debug/shards endpoint; ShardDiagnosticsReport; hot-shard detection at 1.5× (BEAVA_HOT_SHARD_THRESHOLD); log-warn-once/60s (Wave 2)
+- [x] 51-04-PLAN.md — TDD: join_validator::validate_shard_keys; JoinShardKeyMismatch D-12 locked message; pipeline.rs register() integration; /debug/warnings signal (Wave 2)
+- [x] 51-05-PLAN.md — Integrated verification: full test suite + human verify GET /streams, GET /debug/shards, JoinShardKeyMismatch, watermark counter (Wave 3)
 **UI hint**: no
 
 ### Phase 52: 52-event-log-recovery-ship-gate
@@ -154,7 +154,7 @@ Plans:
 | 48. Shard-hint scaffolding | 3/3 | Complete | 2026-04-18 |
 | 49. Per-shard state store | 6/6 | Complete | 2026-04-18 |
 | 50. Multi-shard routing | 8/8 plans | **Partial — gaps_found** (shard thread stub; see 50-DEBUG-SESSION.md + 50.5-FIX-PLAN.md; Fix #1 restores N=1 parity in progress) | — |
-| 50.5. Shard-thread completion | 0/3 | Planned (2026-04-18) | — |
-| 51. Cross-shard queries + joins | 0/5 | Planned | — |
-| 52. Event log, recovery, ship-gate | 0/? | Not started | — |
+| 50.5. Shard-thread completion | 3/3 | Complete    | 2026-04-19 |
+| 51. Cross-shard queries + joins | 5/5 | Complete    | 2026-04-19 |
+| 52. Event log, recovery, ship-gate | 10/10 | Complete    | 2026-04-19 |
 | 53. Fjall state backend | 0/? | Not started | — |

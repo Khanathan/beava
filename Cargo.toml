@@ -68,6 +68,10 @@ papaya = "0.2"
 flurry = "0.5"
 proptest = "1.11"
 rstest = "0.26"
+# Phase 53-01 spike gate: fjall 2.11 (latest 2.x line; 3.x is default but rejected per CONTEXT D-04).
+# Dev-dep scoped because Plan 53-02 lands fjall in `[dependencies]` for the production hot path;
+# Plan 53-01 only needs it for the Criterion spike bench + API probe, which is dev-time tooling.
+fjall = "2.11"
 
 [[bin]]
 name = "beava"
@@ -100,4 +104,10 @@ harness = false
 
 [[bench]]
 name = "pareto_workload"
+harness = false
+
+# Phase 53-01 (spike gate): fjall vs AHashMap read-modify-write + postcard sizes + SIGKILL +
+# cache-stats API probe. Criterion harness, no default bench runner. See 53-01-PLAN.md.
+[[bench]]
+name = "fjall_spike"
 harness = false
