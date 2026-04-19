@@ -296,10 +296,136 @@ AES-256 at rest + SOC 2 Type II + HIPAA BAA (Beava Cloud, Q4 2026).
 
 ---
 
+---
+
+## Shard Sizing & Hot-Shard Diagnosis
+
+This section covers the v1.2+ thread-per-core (TPC) shard model. Read
+[docs/architecture-tpc.md](architecture-tpc.md) first for the full design rationale.
+
+### Choosing BEAVA_SHARDS
+
+- Release builds default to `num_cpus::get_physical()` (all physical cores). Debug builds
+  default to `1`.
+- **8-core box:** `BEAVA_SHARDS=4` is a safe starting point. It leaves 4 cores available
+  for the OS, network I/O, and background work. Raise to 8 once the workload is
+  characterized.
+- **16+ core boxes:** use the full physical core count. Each shard is single-threaded and
+  benefits from exclusive L1/L2 cache residency.
+- **Power-of-2 recommendation:** set `BEAVA_SHARDS` to a power of 2 where possible.
+  `ahash mod N` is consistent regardless of N, but powers of 2 make key-distribution
+  reasoning easier (half the keys go to the lower half, etc.).
+- **Shard count mismatch on boot:** if the on-disk snapshot records a different shard
+  count, the server refuses to boot with an actionable error. Run `tally reshard` before
+  restarting with a new count (see below).
+
+### Metrics to Watch
+
+| Metric | Alert condition |
+|--------|----------------|
+| `beava_shard_keys_owned{shard}` | Any shard > 2× the fleet mean indicates a hot-shard condition |
+| `beava_shard_reactor_utilization{shard}` | Sustained values > 0.85 indicate shard saturation |
+| `shard_probe` `cross_shard_fraction` | Sustained values > 40% indicate `shard_key=` misalignment |
+| `beava_shard_inbox_full_total{shard}` | Any nonzero → shard falling behind, clients receiving 503s |
+| `beava_shard_inbox_depth{shard}` | Nonzero steady-state → shard consistently behind ingest rate |
+
+`beava_shard_keys_owned` imbalance > 2× mean is the clearest hot-shard signal. Check this
+before tuning `BEAVA_HOT_SHARD_THRESHOLD`.
+
+### BEAVA_HOT_SHARD_THRESHOLD Tuning
+
+Default: **1.5×** fleet mean `keys_owned`. When any shard exceeds this ratio, the
+`/debug/shards` endpoint includes a `hot_shards` array and a warning log is emitted at
+the `WARN` level.
+
+| Setting | When to use |
+|---------|-------------|
+| 1.2× | Latency-sensitive workloads; catch hot shards early |
+| 1.5× (default) | Balanced workloads; reasonable warning sensitivity |
+| 2.0× | Naturally skewed key distributions where the operator explicitly accepts imbalance |
+
+Raise the threshold only after confirming via `reactor_utilization` that the hot shard is
+not actually saturated.
+
+### Hot-Shard Diagnosis Flow
+
+Follow these steps when you suspect a hot-shard condition:
+
+1. **Inspect `/debug/shards`:**
+   ```bash
+   curl -s http://localhost:6900/debug/shards | jq '.hot_shards'
+   ```
+   A non-empty `hot_shards` array identifies the affected shard IDs.
+
+2. **Run `shard_probe` on the hot shard:**
+   ```bash
+   curl -s "http://localhost:6900/debug/shard_probe?shard=N"
+   ```
+   Observe `cross_shard_fraction` and `keys_owned`.
+
+3. **If hot-shard persists > 5 minutes:** inspect stream `shard_key=` declarations.
+   The two most common causes:
+   - Missing `shard_key=` declaration causes all events to route to shard 0.
+   - Misaligned join declarations (both streams must use the same `shard_key=`).
+
+4. **If the workload is inherently skewed** (e.g., Zipf key distribution, celebrity
+   accounts receiving disproportionate event volume): increasing `BEAVA_SHARDS` spreads
+   the total key space but does not eliminate a single hyper-popular key. In that case,
+   consider application-level key salting. Increasing shard count still reduces contention
+   on all other keys.
+
+### Reshard Workflow
+
+When the shard count needs to change:
+
+1. Stop the server.
+2. Run the reshard tool:
+   ```bash
+   tally reshard --from N --to K \
+     --data-dir /var/lib/beava \
+     --output /var/lib/beava-new \
+     --replace
+   ```
+3. Restart with `BEAVA_SHARDS=K`.
+
+Downtime equals the tool's runtime (primarily NVMe I/O). Online reshard is not available
+in v1.2; it is deferred to v1.3+.
+
+See [docs/architecture-tpc.md § Reshard Workflow](architecture-tpc.md#reshard-workflow)
+for the full CLI reference and atomic swap semantics.
+
+**Important (D-02):** do not manually write files into `data/logs/`. This directory is
+managed exclusively by Beava's migration tooling. The legacy `data/logs/` layout is
+emptied during the v8 snapshot migration and removed on the first clean shutdown after
+migration. Write all data to the server via the HTTP or TCP ingest endpoints; the server
+writes to `data/shard-N/streams/` internally.
+
+### Ship-Gate Criteria as Production Health Indicators
+
+These three criteria were validated before v1.2 shipped. They serve as ongoing health
+baselines — run the benchmark suite against any major configuration change to verify they
+still hold.
+
+| Criterion | Threshold | What it means in production |
+|-----------|-----------|----------------------------|
+| N=1 throughput vs v1.1 baseline | Within −5% | No regression for single-shard deployments; TPC overhead is within budget |
+| `complex-c8-x8` at N=CPU_COUNT | ≥ 3× baseline | Multi-core scaling is delivering; bottleneck is not the routing layer |
+| `pareto-c8-x8` `cross_shard_fraction` | < 40% | Hot-key (Zipf) workloads are handled safely; routing skew is not overwhelming a shard |
+
+If `cross_shard_fraction` exceeds 40% on your workload, inspect `shard_key=` declarations
+and consider whether the application's key distribution is compatible with the current
+shard count. See
+[benchmark/pareto-c8-x8/README.md](../benchmark/pareto-c8-x8/README.md) for how to run
+this cell against your configuration.
+
+---
+
 ## Next reading
 
 - [Architecture](architecture.md) — storage layout, WAL format, fork-replica
   design, and why Beava is single-node.
+- [TPC Architecture](architecture-tpc.md) — thread-per-core shard model, routing,
+  joins, recovery, reshard, fork/replica, and ship-gate rationale.
 - [Event time](event-time.md) — bucket-boundary math, watermark lateness,
   crash-replay determinism, and TTL eviction semantics.
 - [HTTP API](http-api.md) — full endpoint reference, authentication model, and
