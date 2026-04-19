@@ -6,7 +6,6 @@
 
 use beava::state::event_log::{EventLog, migrate_legacy_layout, cleanup_legacy_dir};
 use std::fs;
-use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn ts(secs: u64) -> SystemTime {

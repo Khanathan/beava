@@ -1,4 +1,27 @@
-//! Append-only SSD event log with per-stream files.
+//! Append-only SSD event log with per-shard, per-stream files.
+//!
+//! **Phase 52-02:** Directory layout migrated from the legacy flat
+//! `data/logs/{stream_name}.log` to the per-shard layout:
+//!
+//!   `data/shard-{N}/streams/{stream_name}/log.bin`
+//!
+//! Use `EventLog::new_for_shard(data_dir, shard_id)` for new code.
+//! The legacy `EventLog::new(path)` constructor is retained as a thin wrapper
+//! around `new_for_shard(path, 0)` for backward compatibility.
+//!
+//! Path construction is centralised in `EventLog::stream_log_path`; all
+//! internal callers use that accessor (PITFALLS.md §2.3 — no ad-hoc path
+//! construction outside the accessor).
+//!
+//! **Legacy migration (D-01/D-02):**
+//! - `migrate_legacy_layout(data_dir)` moves `data_dir/logs/*.log` files to
+//!   `data_dir/shard-0/streams/{name}/log.bin`. Idempotent, atomic on same FS.
+//! - `cleanup_legacy_dir(data_dir)` removes `data_dir/logs/` if empty; is a
+//!   no-op if the directory still contains files (safety: never delete data).
+//! - Wire `migrate_legacy_layout` in the boot path after detecting a v7
+//!   snapshot; wire `cleanup_legacy_dir` in the clean-shutdown path.
+//! - `data/logs/` is emptied as part of migration (D-01) and removed on first
+//!   clean shutdown (D-02). Do not manually write to `data/logs/`.
 //!
 //! Events are written to per-stream log files using `O_APPEND` + direct
 //! `libc::write()` syscalls. On Linux, concurrent `write()` calls to an
@@ -203,7 +226,10 @@ impl LockFreeStreamLog {
 }
 
 pub struct EventLog {
-    log_dir: PathBuf,
+    /// Root data directory (e.g. `data/` or a tmp dir in tests).
+    data_dir: PathBuf,
+    /// Which shard owns this log (0 for the N=1 single-shard case).
+    shard_id: u8,
     /// Per-stream lock-free writers. DashMap provides lock-free lookup by
     /// stream name; each entry is a `LockFreeStreamLog` whose `append_raw`
     /// hot path takes no userspace locks (relies on kernel `O_APPEND`
@@ -214,14 +240,54 @@ pub struct EventLog {
 }
 
 impl EventLog {
-    /// Create a new EventLog, creating the log directory if it does not exist.
-    pub fn new(log_dir: PathBuf) -> std::io::Result<Self> {
-        fs::create_dir_all(&log_dir)?;
+    /// Create a new `EventLog` rooted at `data_dir` for the given `shard_id`.
+    ///
+    /// The per-shard stream directory tree is created if it does not exist:
+    /// `data_dir/shard-{shard_id}/streams/`
+    ///
+    /// This is the canonical constructor for new code. Use `shard_id = 0` for
+    /// the N=1 single-shard case.
+    pub fn new_for_shard(data_dir: PathBuf, shard_id: u8) -> std::io::Result<Self> {
+        // Pre-create the streams root for this shard so callers that only
+        // create the EventLog (but register no streams yet) still see the dir.
+        let streams_root = data_dir.join(format!("shard-{}/streams", shard_id));
+        fs::create_dir_all(&streams_root)?;
         Ok(Self {
-            log_dir,
+            data_dir,
+            shard_id,
             writers: DashMap::new(),
             history_ttls: DashMap::new(),
         })
+    }
+
+    /// Create a new EventLog at `log_dir` for shard 0.
+    ///
+    /// Kept for backward compatibility — all existing callers pass a path
+    /// directly; internally this calls `new_for_shard(log_dir, 0)`.
+    pub fn new(log_dir: PathBuf) -> std::io::Result<Self> {
+        Self::new_for_shard(log_dir, 0)
+    }
+
+    /// Return the canonical path for a stream's log file under `data_dir`.
+    ///
+    /// Layout: `data_dir/shard-{shard_id}/streams/{sanitized_stream_name}/log.bin`
+    ///
+    /// This is the single source of truth for path construction (PITFALLS.md §2.3).
+    /// All internal code and callers must use this accessor — never construct
+    /// the path manually.
+    pub fn stream_log_path(data_dir: &Path, shard_id: u8, stream_name: &str) -> PathBuf {
+        let sanitized = sanitize_stream_name(stream_name);
+        data_dir
+            .join(format!("shard-{}/streams/{}", shard_id, sanitized))
+            .join("log.bin")
+    }
+
+    /// Return the path for the `.tmp` compaction file for a stream.
+    fn stream_tmp_path(data_dir: &Path, shard_id: u8, stream_name: &str) -> PathBuf {
+        let sanitized = sanitize_stream_name(stream_name);
+        data_dir
+            .join(format!("shard-{}/streams/{}", shard_id, sanitized))
+            .join("log.bin.tmp")
     }
 
     /// Register a stream for event logging.
@@ -234,8 +300,12 @@ impl EventLog {
         if self.writers.contains_key(stream_name) {
             return Ok(()); // idempotent re-registration
         }
-        let sanitized = sanitize_stream_name(stream_name);
-        let path = self.log_dir.join(format!("{}.log", sanitized));
+        let path = Self::stream_log_path(&self.data_dir, self.shard_id, stream_name);
+        // Ensure the per-stream directory exists (stream_log_path nests the
+        // file inside a stream-named subdirectory).
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         // Only actually open/insert if not already present (race: two
         // registrations for the same stream). We do the open here, outside
         // the DashMap slot, to keep the entry closure simple.
@@ -379,8 +449,7 @@ impl EventLog {
     /// Read all log entries for a stream.
     /// Opens the file independently from the writer.
     pub fn read_entries(&self, stream_name: &str) -> std::io::Result<Vec<LogEntry>> {
-        let sanitized = sanitize_stream_name(stream_name);
-        let path = self.log_dir.join(format!("{}.log", sanitized));
+        let path = Self::stream_log_path(&self.data_dir, self.shard_id, stream_name);
         if !path.exists() {
             return Ok(vec![]);
         }
@@ -453,9 +522,8 @@ impl EventLog {
             return Ok(0);
         }
 
-        let sanitized = sanitize_stream_name(stream_name);
-        let log_path = self.log_dir.join(format!("{}.log", sanitized));
-        let tmp_path = self.log_dir.join(format!("{}.log.tmp", sanitized));
+        let log_path = Self::stream_log_path(&self.data_dir, self.shard_id, stream_name);
+        let tmp_path = Self::stream_tmp_path(&self.data_dir, self.shard_id, stream_name);
 
         // Write surviving entries to tmp file
         {
@@ -570,6 +638,101 @@ fn sanitize_stream_name(name: &str) -> String {
     s
 }
 
+// ============================================================
+// Phase 52-02: Legacy layout migration helpers (D-01, D-02)
+// ============================================================
+
+/// Migrate the legacy `data/logs/*.log` flat layout to the per-shard layout
+/// `data/shard-0/streams/{stream_name}/log.bin`.
+///
+/// - Reads all `*.log` files from `data_dir/logs/` (if it exists).
+/// - For each `{stream_name}.log`, moves it to
+///   `data_dir/shard-0/streams/{stream_name}/log.bin` using `fs::rename`
+///   (atomic on the same filesystem). Falls back to copy + delete if the
+///   rename fails across filesystems.
+/// - Idempotent: if `data_dir/logs/` does not exist (already migrated or
+///   fresh install), returns `Ok(())` immediately.
+/// - T-52-02-01: rename is atomic; fallback copy+delete errors on partial
+///   write before deleting source so data is never lost.
+///
+/// Wire this into the boot path after detecting a v7 snapshot load, before
+/// recovery threads start reading per-shard logs.
+pub fn migrate_legacy_layout(data_dir: &Path) -> std::io::Result<()> {
+    let legacy_dir = data_dir.join("logs");
+    if !legacy_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(&legacy_dir)? {
+        let entry = entry?;
+        let src = entry.path();
+        // Only process files ending in `.log`
+        let file_name = match src.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if !file_name.ends_with(".log") || !src.is_file() {
+            continue;
+        }
+        // Derive stream name by stripping the `.log` suffix.
+        let stream_name = &file_name[..file_name.len() - 4];
+        let dst = EventLog::stream_log_path(data_dir, 0, stream_name);
+
+        // Create target directory tree if absent.
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // If the destination already exists (idempotency: previous partial
+        // migration), skip — data is already in the new location.
+        if dst.exists() {
+            // Remove source so we don't re-process on next boot.
+            let _ = fs::remove_file(&src);
+            continue;
+        }
+
+        // Attempt atomic rename first (same filesystem).
+        if fs::rename(&src, &dst).is_err() {
+            // Cross-filesystem fallback: copy then delete source.
+            // Write to a tmp file first so a crash mid-copy leaves dst clean.
+            let tmp_dst = dst.with_extension("bin.tmp");
+            fs::copy(&src, &tmp_dst)?;
+            fs::rename(&tmp_dst, &dst)?;
+            fs::remove_file(&src)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Remove `data_dir/logs/` if it is empty.
+///
+/// - T-52-02-02: never removes a non-empty directory (safety: operator data).
+///   If files are still present, logs a warning and returns `Ok(())`.
+/// - Called after the first clean shutdown following migration (D-02).
+///
+/// Wire this into the clean-shutdown path after the final snapshot save.
+pub fn cleanup_legacy_dir(data_dir: &Path) -> std::io::Result<()> {
+    let legacy_dir = data_dir.join("logs");
+    if !legacy_dir.exists() {
+        return Ok(());
+    }
+
+    // Check whether the directory is empty before attempting removal.
+    let is_empty = fs::read_dir(&legacy_dir)?.next().is_none();
+    if is_empty {
+        fs::remove_dir(&legacy_dir)?;
+    } else {
+        // T-52-02-02: never delete data. Log a warning; caller proceeds.
+        eprintln!(
+            "cleanup_legacy_dir: {:?} is not empty — skipping removal (data/logs/ still contains files)",
+            legacy_dir
+        );
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -629,7 +792,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let log = EventLog::new(tmp.path().to_path_buf()).unwrap();
         log.register_stream("Transactions", None).unwrap();
-        let log_file = tmp.path().join("Transactions.log");
+        let log_file = EventLog::stream_log_path(tmp.path(), 0, "Transactions");
         assert!(log_file.exists());
     }
 
@@ -802,14 +965,14 @@ mod tests {
         log.compact_stream("S", ts(120)).unwrap();
 
         // tmp file should NOT exist after compaction (renamed away)
-        let tmp_file = tmp.path().join("S.log.tmp");
+        let tmp_file = EventLog::stream_log_path(tmp.path(), 0, "S").with_extension("bin.tmp");
         assert!(
             !tmp_file.exists(),
             "tmp file should be renamed away after compaction"
         );
 
         // Original file should still exist with surviving entries
-        let log_file = tmp.path().join("S.log");
+        let log_file = EventLog::stream_log_path(tmp.path(), 0, "S");
         assert!(log_file.exists());
     }
 
@@ -830,7 +993,7 @@ mod tests {
         assert!(!result);
 
         // But log file should still exist (not deleted)
-        let log_file = tmp.path().join("S.log");
+        let log_file = EventLog::stream_log_path(tmp.path(), 0, "S");
         assert!(log_file.exists());
     }
 
