@@ -430,6 +430,128 @@ pub fn collect_shard_diagnostics(
 mod tests {
     use super::*;
 
+    // ---------- Phase 51-03: TDD tests (D-09 schema correctness) ----------
+
+    /// Test 1: hot-shard detection at 1.5× threshold with skewed fleet.
+    /// Fleet: [100, 100, 200] → mean ≈ 133.3 → shard 2 ratio ≈ 1.5 → flagged (>=).
+    #[test]
+    fn test_hot_shard_detection_skewed_fleet() {
+        let shards = vec![
+            ShardInfo { id: 0, inbox_depth: 0, reactor_utilization: 0.0, keys_owned: 100,
+                        watermark_lag_seconds: 0.0, events_total: 0, inbox_full_total: 0, down: false },
+            ShardInfo { id: 1, inbox_depth: 0, reactor_utilization: 0.0, keys_owned: 100,
+                        watermark_lag_seconds: 0.0, events_total: 0, inbox_full_total: 0, down: false },
+            ShardInfo { id: 2, inbox_depth: 0, reactor_utilization: 0.0, keys_owned: 200,
+                        watermark_lag_seconds: 0.0, events_total: 0, inbox_full_total: 0, down: false },
+        ];
+        let config = HotShardConfig { threshold: 1.5 };
+        let hot = detect_hot_shards(&shards, &config);
+        assert_eq!(hot.len(), 1, "exactly one shard should be flagged");
+        let entry = &hot[0];
+        assert_eq!(entry.shard, 2, "shard 2 should be flagged");
+        assert!(entry.ratio >= 1.49, "ratio should be >= 1.49 (≈ 1.5), got {}", entry.ratio);
+    }
+
+    /// Test 2: balanced fleet — no hot shards.
+    /// 4 shards, keys_owned = [1000, 1000, 1000, 1000] → ratio = 1.0 everywhere.
+    #[test]
+    fn test_no_hot_shards_balanced_fleet() {
+        let shards: Vec<ShardInfo> = (0..4).map(|id| ShardInfo {
+            id,
+            inbox_depth: 0,
+            reactor_utilization: 0.0,
+            keys_owned: 1000,
+            watermark_lag_seconds: 0.0,
+            events_total: 0,
+            inbox_full_total: 0,
+            down: false,
+        }).collect();
+        let config = HotShardConfig { threshold: 1.5 };
+        let hot = detect_hot_shards(&shards, &config);
+        assert!(hot.is_empty(), "balanced fleet should produce no hot shards");
+    }
+
+    /// Test 3: ready field logic.
+    #[test]
+    fn test_ready_field_logic() {
+        // all_ready=true, no shard DOWN → ready=true
+        assert!(compute_ready(true, false), "all_ready+no_down → true");
+        // any shard DOWN → ready=false
+        assert!(!compute_ready(true, true), "any_down → false");
+        // all_ready=false → ready=false
+        assert!(!compute_ready(false, false), "all_ready=false → false");
+        assert!(!compute_ready(false, true), "all_ready=false + any_down → false");
+    }
+
+    /// Test 4: BEAVA_HOT_SHARD_THRESHOLD env clamp.
+    #[test]
+    fn test_env_threshold_clamp() {
+        use std::sync::Mutex;
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // Below floor (1.1) → clamped to 1.1
+        std::env::set_var("BEAVA_HOT_SHARD_THRESHOLD", "0.5");
+        let cfg = HotShardConfig::from_env();
+        assert!((cfg.threshold - 1.1).abs() < 1e-9,
+            "0.5 → clamped to 1.1, got {}", cfg.threshold);
+
+        // Above ceiling (10.0) → clamped to 10.0
+        std::env::set_var("BEAVA_HOT_SHARD_THRESHOLD", "99.0");
+        let cfg = HotShardConfig::from_env();
+        assert!((cfg.threshold - 10.0).abs() < 1e-9,
+            "99.0 → clamped to 10.0, got {}", cfg.threshold);
+
+        // In range (2.0) → exactly 2.0
+        std::env::set_var("BEAVA_HOT_SHARD_THRESHOLD", "2.0");
+        let cfg = HotShardConfig::from_env();
+        assert!((cfg.threshold - 2.0).abs() < 1e-9,
+            "2.0 → 2.0, got {}", cfg.threshold);
+
+        // Unset → default 1.5
+        std::env::remove_var("BEAVA_HOT_SHARD_THRESHOLD");
+        let cfg = HotShardConfig::from_env();
+        assert!((cfg.threshold - 1.5).abs() < 1e-9,
+            "unset → 1.5, got {}", cfg.threshold);
+    }
+
+    /// Test 5: JSON schema shape — top-level keys and shards[0] keys.
+    #[test]
+    fn test_json_schema_shape() {
+        let report = ShardDiagnosticsReport {
+            shard_count: 1,
+            shards: vec![ShardInfo {
+                id: 0,
+                inbox_depth: 42,
+                reactor_utilization: 0.73,
+                keys_owned: 100,
+                watermark_lag_seconds: 1.2,
+                events_total: 99,
+                inbox_full_total: 3,
+                down: false,
+            }],
+            hot_shards: vec![],
+            ready: true,
+        };
+        let v = serde_json::to_value(&report).expect("serialization must succeed");
+        let obj = v.as_object().expect("top-level must be an object");
+
+        // Top-level keys
+        for key in &["shard_count", "shards", "hot_shards", "ready"] {
+            assert!(obj.contains_key(*key), "missing top-level key: {}", key);
+        }
+        assert_eq!(obj.len(), 4, "expected exactly 4 top-level keys");
+
+        // shards[0] keys
+        let shard0 = &v["shards"][0];
+        let shard_obj = shard0.as_object().expect("shards[0] must be an object");
+        for key in &["id", "inbox_depth", "reactor_utilization", "keys_owned",
+                     "watermark_lag_seconds", "events_total", "inbox_full_total", "down"] {
+            assert!(shard_obj.contains_key(*key), "missing shard key: {}", key);
+        }
+        assert_eq!(shard_obj.len(), 8, "expected exactly 8 shard keys");
+    }
+
     #[test]
     fn disabled_by_default() {
         // Not calling init_from_env with BEAVA_SHARD_PROBE — probe is off.
