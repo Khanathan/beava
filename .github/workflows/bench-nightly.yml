@@ -48,3 +48,21 @@ jobs:
           retention-days: 90
         # 90-day retention: keeps a rolling 3-month window of nightly results
         # without consuming excessive storage.
+
+  sharding-parity-proptest:
+    name: "N=1 vs N=8 parity proptest (nightly)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-nightly
+
+      - name: Run sharding parity proptest
+        run: PROPTEST_CASES=10000 cargo test -p beava --test sharding_parity -- --nocapture
+        # Hard pre-merge gate per TPC-CORR-05 / Phase 52 D-14
