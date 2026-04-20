@@ -951,17 +951,31 @@ async fn async_main() {
                     }
                 }
                 if !open_ok {
-                    // Fallback: only use global log for shard 0; other shards
-                    // get no rematerialization this boot. Phase 55-NEXT can
-                    // add multi-shard parity once per-shard log registration
-                    // is guaranteed at boot time.
+                    // Phase 55 HIGH-3: at N>1, we CANNOT fall back to cloning
+                    // the global EventLog Arc into every slot — that would
+                    // cause `rematerialize_tables_from_event_logs` to replay
+                    // the same log N times with different `input_shard_idx`
+                    // attribution, silently mis-placing downstream rows
+                    // rather than cleanly failing. Hard-fail instead with an
+                    // actionable error so the operator knows to run
+                    // `tally rebuild --from-source` (D-C2).
+                    //
+                    // At N=1, the fallback remains safe: a single global log
+                    // fed as shard-0's log replays events with the correct
+                    // `input_shard_idx=0` attribution.
+                    if shard_arcs.len() > 1 {
+                        eprintln!(
+                            "FATAL: pre-v9 rematerialize requires per-shard event logs at \
+                             N>1 (got {} shards). Run 'tally rebuild --from-source' to \
+                             re-ingest from upstream; refusing to boot with inconsistent \
+                             per-shard log state.",
+                            shard_arcs.len()
+                        );
+                        std::process::exit(1);
+                    }
                     per_shard_logs.clear();
                     if let Some(ref log) = state.event_log {
                         per_shard_logs.push(std::sync::Arc::clone(log));
-                        while per_shard_logs.len() < shard_arcs.len() {
-                            // Fill with clones so shard count matches.
-                            per_shard_logs.push(std::sync::Arc::clone(log));
-                        }
                     }
                 }
 
