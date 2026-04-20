@@ -60,6 +60,11 @@ Requirements scoped to the v1.2 milestone. Each maps to a roadmap phase (48–52
 
 - [ ] **TPC-ARCH-01**: Every push entrypoint — TCP `handle_push_batch`, HTTP `http_push_single`/`http_push_batch`, and replica ingest — routes through the shard-thread SPSC dispatch at N=1 as well as N>1, so `push_with_cascade_on_shard` + fjall `PartitionHandle` is the sole hot path. `StateStore`, `PipelineEngine::push_internal`, and `push_batch_with_cascade_no_features` are deleted. `dashmap` and `arc-swap` are removed from `[dependencies]`. Grep-ZERO gates enforce this in CI. (Phase 54)
 
+### TPC-CORR (continued) / TPC-SOURCE — Phase 55
+
+- [x] **TPC-CORR-07**: A primary Stream event whose cascade produces a downstream Table row MUST place that row on the shard owning `hash(output_key) % N`, not on the input event's shard. `shard_key=` on streams becomes a pure source-ingress hint only (which shard accepts the event first); all downstream cascades shuffle by the downstream's own `key_field`. Same-shard fast path + batched cross-shard dispatch (end-of-batch coalesce; one `try_send` per (source_shard, target_shard) pair). Per-source-shard delivery cursor (`last_cascaded_lsn` in per-shard event log header) makes cascade recoverable from event-log replay. Cross-shard target inbox full → source shard blocks new ingress (503 / `SHARD_OVERLOAD`); acked PUSHes remain recoverable. Boot-time rematerialization: snapshot v9 bump triggers event-log replay through new cascade path. Perf gate: `MODE=complex DURATION=60 CPUS=8 CLIENTS=8` ≥ 85% of Phase 54 Wave 5 baseline (1,339,446 EPS) = **≥ 1,138,529 EPS**. (Phase 55)
+- [x] **TPC-SOURCE-01**: Python SDK gains `@bv.source_table(key=K, entity_ttl=...)` decorator declaring a CDC-style keyed input. Explicit wire commands — TCP opcodes `UPSERT_TABLE_ROW` / `DELETE_TABLE_ROW` / `UPSERT_TABLE_BATCH` / `DELETE_TABLE_BATCH`; HTTP routes `POST /table/{name}` (upsert), `DELETE /table/{name}/{key}` (single delete), `POST /table/{name}/batch` (upsert batch), `POST /table/{name}/batch/delete` (delete batch). Batch variants accept ≥ 10K rows/call. UPSERT is full-replace (CDC-native, idempotent); DELETE is hard-delete + pending-retraction marker written to event log (Phase 57 consumes). `source_lsn: u64` (opaque, no monotonicity check) is stored per row and echoed on every ack (array ack on batch, in input order) for resumable replication. Source-table writes do NOT fire cascades in v1.2 (Phase 57 territory); source tables are passive enrichment targets for Phase 56's EnrichFromTable. (Phase 55)
+
 ## Future Requirements
 
 Deferred to a future v1.2.x polish milestone or v1.3+:
@@ -95,5 +100,6 @@ Filled by roadmapper 2026-04-18. Maps each REQ-ID to the phase that delivers it.
 | 52 | event-log-recovery-ship-gate | TPC-INFRA-06, TPC-CORR-02, TPC-CORR-05, TPC-CORR-06, TPC-PERF-07, TPC-DX-03, TPC-DX-04 |
 | 53 | fjall-state-backend | TPC-PERSIST-01, TPC-PERSIST-02, TPC-PERSIST-03, TPC-PERSIST-06 (TPC-PERSIST-04 + TPC-PERSIST-05 deferred to Phase 54) |
 | 54 | legacy-engine-removal | TPC-ARCH-01, TPC-PERSIST-04, TPC-PERSIST-05A (TPC-PERSIST-04 + TPC-PERSIST-05A deferred from Phase 53 — closed here) |
+| 55 | stream-table-cascade-crossshard-and-source-tables | TPC-CORR-07, TPC-SOURCE-01 |
 
-**Coverage:** 31/31 requirements mapped (1 + 3 + 9 + 4 + 7 + 4 + 3 = 31; adds 6 TPC-PERSIST-* + 1 TPC-ARCH-*)
+**Coverage:** 33/33 requirements mapped (1 + 3 + 9 + 4 + 7 + 4 + 3 + 2 = 33; adds 6 TPC-PERSIST-* + 1 TPC-ARCH-* + 2 Phase-55 requirements)

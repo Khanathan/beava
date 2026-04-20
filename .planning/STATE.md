@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: "Completed 54-05-PLAN.md — Wave 5 perf-gates-and-soak-runbook: pprof-after shows ZERO DashMap in top-20 and fjall/crossbeam symbols taking over (vs 61.2% DashMap::_entry at Phase 53 HEAD); MODE=complex N=8 candidate EPS = 1,339,446 (+580% vs 197,122 baseline — 6.8× gain, 7× headroom over the -15% floor); Hetzner CCX43 100GB 8h soak runbook + script + evidence-dir shipped with human_needed verification contract. Phase 54 is engineering-complete; TPC-ARCH-01 + TPC-PERSIST-05A closed; TPC-PERSIST-04 awaits operator soak evidence (deterministic flip via /gsd-verify-work once JSON committed). Commits: 2660478 (Task 1 pprof harness fix) + 56a5a9a (Tasks 2+3 perf+soak artifacts). Next: phase 55 or milestone close."
-last_updated: "2026-04-20T14:15:00.000Z"
+stopped_at: Phase 55 engineering-complete — perf gate PASSED (1,246,190 EPS ≥ 1,138,529 floor); SC-6 N>1 boot fan-out human_needed (55-NEXT #1)
+last_updated: "2026-04-20T22:30:00.000Z"
 last_activity: 2026-04-20
 progress:
-  total_phases: 8
-  completed_phases: 6
-  total_plans: 49
-  completed_plans: 46
+  total_phases: 18
+  completed_phases: 7
+  total_plans: 54
+  completed_plans: 51
   percent: 94
 ---
 
@@ -21,16 +21,16 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 **Core value:** A skeptical engineer evaluating Beava on github.com can go from landing on the repo to correct, live feature values in under 60 seconds — from any language.
-**Current focus:** Phase 54 — legacy-engine-removal
+**Current focus:** Phase 55 — stream-table-cascade-crossshard-and-source-tables
 
 ## Current Position
 
-Phase: 54 (legacy-engine-removal) — ENGINEERING COMPLETE (TPC-PERSIST-04 human_needed)
-Plan: 6 of 6 (All six plans 54-00 through 54-05 complete)
-**Phase:** 54 → closed; next is phase 55 or milestone-close
-**Plan:** 54-05 completed 2026-04-20
-**Status:** Phase 54 engineering-complete; TPC-ARCH-01 + TPC-PERSIST-05A passed; TPC-PERSIST-04 human_needed (operator-run 8h soak)
-**Progress:** [█████████▋] 94%
+Phase: 55 (stream-table-cascade-crossshard-and-source-tables) — ENGINEERING-COMPLETE (human_needed on SC-6 N>1)
+Plan: 5 of 5 (55-04 completed; all Phase 55 plans done)
+**Phase:** 55 → engineering-complete; SC-6 cross-shard boot fan-out deferred to 55-NEXT #1 (user accept/fix decision)
+**Plan:** 55-04 completed 2026-04-20 (commits `9a1a78b`, `29b0e54`); perf gate PASSED at 1,246,190 EPS
+**Status:** Phase 55 engineering-complete; awaiting user decision on SC-6 (accept deferred / request N>1 fix)
+**Progress:** [█████████▊] 94%
 
 **Last activity:** 2026-04-20
 
@@ -248,7 +248,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 54-05-PLAN.md — Wave 5 perf-gates-and-soak-runbook. Phase 54 engineering-complete. pprof-after ZERO DashMap in top-20 (was 61.2%); candidate EPS 1,339,446 (+580% vs 197K baseline, 6.8× gain); Hetzner CCX43 9h soak runbook shipped with evidence-file-gated human_needed verification. TPC-ARCH-01 + TPC-PERSIST-05A closed; TPC-PERSIST-04 awaits operator soak. Commits 2660478 (Task 1 harness fix) + 56a5a9a (Tasks 2+3 perf+soak infrastructure) + docs closing commit.
+**Stopped at:** Phase 55 context gathered — 4 gray areas locked (cascade mechanics, wire format, rematerialization, test scope + perf gate)
 
 **Next action (engineering):** Phase 54 is closed modulo soak evidence. Engineering-facing next action is either (a) operator runs `scripts/soak-hetzner-ccx43.sh` on Hetzner CCX43 to flip TPC-PERSIST-04 to `passed`, or (b) start next phase / close v1.2 milestone. See `.planning/phases/54-legacy-engine-removal/soak-runbook.md` for the operator steps.
 
