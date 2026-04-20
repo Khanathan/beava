@@ -128,6 +128,62 @@ impl<'a> CascadeTarget for LiveCascadeTargets<'a> {
     }
 }
 
+/// Phase 55-03 D-C3: boot-time cascade dispatch. Applies writes directly to
+/// the target shard's state (fjall partition or in-mem) on the calling (main)
+/// thread. Preserves fjall single-writer invariant because shard threads are
+/// NOT yet spawned during rematerialization (see
+/// `src/state/recovery.rs::rematerialize_tables_from_event_logs`).
+///
+/// Unlike `LiveCascadeTargets`, no SPSC, no oneshot, no shard thread — every
+/// `dispatch_batch` call synchronously locks the target shard and applies all
+/// writes inline via `Shard::upsert_table_row`. The `CascadeTarget` trait
+/// abstraction is the seam that lets boot replay reuse the exact same
+/// cascade-buffer + per-batch-flush machinery as live ingest.
+pub struct SyncCascadeTargets<'a> {
+    /// Per-shard mutexes; `shards[target_shard_idx]` is locked in
+    /// `dispatch_batch`. Using `Mutex` (rather than bare `&mut Shard`) lets
+    /// multiple `SyncCascadeTargets` instances coexist when the replay driver
+    /// processes sibling shards sequentially.
+    pub shards: &'a [std::sync::Arc<std::sync::Mutex<crate::shard::Shard>>],
+    pub source_shard_idx: usize,
+}
+
+impl<'a> CascadeTarget for SyncCascadeTargets<'a> {
+    fn dispatch_batch(
+        &self,
+        target_shard_idx: usize,
+        writes: Vec<(String, String, AHashMap<String, FeatureValue>)>,
+        now: SystemTime,
+    ) -> Result<(), BeavaError> {
+        if target_shard_idx >= self.shards.len() {
+            return Err(BeavaError::Protocol(format!(
+                "sync cascade target_shard_idx {} out of range (n_shards={})",
+                target_shard_idx,
+                self.shards.len()
+            )));
+        }
+        let shard_arc = &self.shards[target_shard_idx];
+        let mut shard = shard_arc.lock().map_err(|e| {
+            BeavaError::Protocol(format!(
+                "sync cascade: failed to lock target shard {}: {e}",
+                target_shard_idx
+            ))
+        })?;
+        for (table_name, key, fields) in writes {
+            // `Shard::upsert_table_row` is the same single-writer primitive
+            // the live shard thread uses when applying ShardOp::UpsertTableBatch.
+            // Writes land directly in the fjall partition (or AHashMap in
+            // state-inmem) without going through any SPSC.
+            shard.upsert_table_row(&key, &table_name, fields, now);
+        }
+        Ok(())
+    }
+
+    fn target_count(&self) -> usize {
+        self.shards.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

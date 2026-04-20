@@ -345,6 +345,215 @@ fn apply_log_entry_to_shard(
     Ok(())
 }
 
+// ============================================================
+// Phase 55-03 Task 2 — rematerialize_tables_from_event_logs
+// ============================================================
+
+/// Phase 55-03 Task 2 report: how much replay work the rematerializer did.
+/// Returned by `rematerialize_tables_from_event_logs` for boot-log / test
+/// assertions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RematerializeReport {
+    /// Total count of primary-stream log entries re-driven through the
+    /// cascade path.
+    pub events_replayed: u64,
+    /// Number of shards the rematerializer processed (equals `shards.len()`
+    /// for the default fjall build; `0` in the state-inmem skip path).
+    pub shards_processed: usize,
+}
+
+/// Phase 55-03 D-C1 (TPC-CORR-07): rebuild downstream table state by
+/// replaying every per-shard primary event log through the post-Phase-55
+/// cross-shard cascade path. Must be called on the main thread **before**
+/// `spawn_shard_threads` to preserve the fjall single-writer invariant
+/// (Phase 53 D-01; same discipline as Phase 54 Wave 3 Task 1
+/// `restore_snapshot_to_shards`).
+///
+/// Failure modes:
+/// - Event log truncated past rebuild boundary (an earlier primary entry
+///   was compacted away and cannot be replayed) → returns
+///   `BeavaError::Protocol` whose message contains both
+///   `"Event log truncated before LSN"` AND
+///   `"tally rebuild --from-source"` (D-C2). This is the Phase 52
+///   TPC-CORR-02 guard extended to boot rematerialization.
+/// - Missing partition for a downstream table or unknown shard index →
+///   returns `BeavaError::Protocol`.
+///
+/// Replay order: serial over shards (single-writer), serial over streams
+/// within a shard, in-order over entries within a stream. Cross-shard
+/// cascade dispatch uses `SyncCascadeTargets` which applies writes
+/// directly to the target fjall partition on the calling thread
+/// (D-C3 — parallelism is at the TT fan-out layer, NOT at the replay
+/// layer).
+///
+/// **state-inmem build:** there is no persistent event log on disk, so
+/// this function skips replay unconditionally and returns an empty
+/// report with a debug-log line (Pitfall 7 defensive). A subsequent
+/// snapshot save upgrades the on-disk format to v9 just the same.
+#[cfg(not(feature = "state-inmem"))]
+pub fn rematerialize_tables_from_event_logs(
+    shards: &[std::sync::Arc<std::sync::Mutex<crate::shard::Shard>>],
+    event_logs: &[std::sync::Arc<crate::state::event_log::EventLog>],
+    engine: &crate::engine::pipeline::PipelineEngine,
+) -> Result<RematerializeReport, crate::error::BeavaError> {
+    use crate::engine::cascade_target::SyncCascadeTargets;
+
+    if shards.len() != event_logs.len() {
+        return Err(crate::error::BeavaError::Protocol(format!(
+            "rematerialize: shards.len()={} != event_logs.len()={}",
+            shards.len(),
+            event_logs.len()
+        )));
+    }
+    let n_shards = shards.len();
+
+    // 1. Clear downstream TT output tables on every shard so we rebuild from
+    //    scratch — pre-Phase-55 snapshots planted rows on the INPUT event's
+    //    shard (wrong shard); we want only hash(output_key)%N-owned rows.
+    //    Clearing is a row-level `remove_table_row` walk for every known
+    //    entity on the shard. The PartitionHandle does not expose a prefix-
+    //    delete efficient enough for this, so we iterate entities and drop
+    //    table_rows entries for the downstream tables.
+    let downstream_tables = engine.downstream_tt_output_tables();
+    for shard_arc in shards.iter() {
+        let mut shard = shard_arc.lock().map_err(|e| {
+            crate::error::BeavaError::Protocol(format!(
+                "rematerialize: lock shard: {e}"
+            ))
+        })?;
+        clear_downstream_table_rows(&mut shard, &downstream_tables)?;
+    }
+
+    // 2. For each shard, iterate primary streams and replay events through
+    //    the cascade.
+    let mut total_events: u64 = 0;
+    for (s, event_log) in event_logs.iter().enumerate() {
+        let primary_streams = engine.primary_streams_on_shard(s);
+
+        // Build a SyncCascadeTargets view that lets the cascade dispatch
+        // cross-shard writes directly to sibling shards' partitions. The
+        // target trait object is constructed fresh per source shard so the
+        // `source_shard_idx` field matches the input shard we're replaying
+        // from.
+        let sync_tgt = SyncCascadeTargets {
+            shards,
+            source_shard_idx: s,
+        };
+
+        for p in primary_streams {
+            // Truncation guard: if the stream is registered on disk but its
+            // log file is empty / truncated (zero entries) while the
+            // snapshot expects replay from LSN 1, hard-fail with the D-C2
+            // actionable error. We cannot tell "never-written" from
+            // "truncated" at this layer, so we scope the check to
+            // registered streams whose log file exists but whose first
+            // entry has a non-zero LSN (indicating gap).
+            let entries = event_log.read_entries(&p).map_err(|e| {
+                crate::error::BeavaError::Protocol(format!(
+                    "rematerialize: read_entries({}) on shard {}: {}",
+                    p, s, e
+                ))
+            })?;
+            if let Some(first) = entries.first() {
+                // LSN 0 = pre-v1.2 entry (no packed LSN). Anything else at
+                // position-0 that is > 1 indicates truncation.
+                if first.lsn > 1 {
+                    return Err(crate::error::BeavaError::Protocol(format!(
+                        "Event log truncated before LSN {}; cannot \
+                         rematerialize downstream tables. Run \
+                         'tally rebuild --from-source' to re-ingest.",
+                        first.lsn
+                    )));
+                }
+            }
+
+            // Replay entries in order through the cascade path. The lock
+            // against the source shard is held for the duration of the
+            // per-event push_with_cascade_on_shard call; SyncCascadeTargets
+            // would also attempt to lock this same shard if a same-shard
+            // output resulted — but push_with_cascade_on_shard's
+            // same-shard fast path does the write inline via
+            // `StoreView::Sharded` on `input_shard`, not via the
+            // `CascadeTarget`. Cross-shard writes take the target_shard_idx
+            // path (locks a sibling, not self).
+            let now = std::time::SystemTime::now();
+            let mut shard = shards[s].lock().map_err(|e| {
+                crate::error::BeavaError::Protocol(format!(
+                    "rematerialize: lock shard {}: {e}",
+                    s
+                ))
+            })?;
+            for entry in &entries {
+                engine.replay_one_event_through_cascade(
+                    entry, &sync_tgt, &p, &mut shard, s, now,
+                )?;
+                total_events += 1;
+            }
+            drop(shard);
+        }
+    }
+
+    Ok(RematerializeReport {
+        events_replayed: total_events,
+        shards_processed: n_shards,
+    })
+}
+
+/// state-inmem build: skip rematerialization — no persistent event log.
+#[cfg(feature = "state-inmem")]
+pub fn rematerialize_tables_from_event_logs(
+    _shards: &[std::sync::Arc<std::sync::Mutex<crate::shard::Shard>>],
+    _event_logs: &[std::sync::Arc<crate::state::event_log::EventLog>],
+    _engine: &crate::engine::pipeline::PipelineEngine,
+) -> Result<RematerializeReport, crate::error::BeavaError> {
+    // Intentional: boot status line (Phase 47 audit exemption — startup
+    // informational output consistent with "Snapshot version mismatch"
+    // in state/snapshot.rs).
+    eprintln!(
+        "Rematerialization skipped (state-inmem build — no persistent event log)."
+    );
+    Ok(RematerializeReport {
+        events_replayed: 0,
+        shards_processed: 0,
+    })
+}
+
+/// Phase 55-03 helper: drop every downstream-TT table row from a shard's
+/// partition. Iterates the shard's entity list and removes the named
+/// `table_rows` entries in-place. Used before replay to ensure a clean
+/// slate (pre-Phase-55 snapshots may have planted rows on the wrong shard).
+#[cfg(not(feature = "state-inmem"))]
+fn clear_downstream_table_rows(
+    shard: &mut crate::shard::Shard,
+    tables: &[String],
+) -> Result<(), crate::error::BeavaError> {
+    if tables.is_empty() {
+        return Ok(());
+    }
+    // Snapshot the entity keys first (fjall iteration materializes),
+    // then RMW each.
+    let keys: Vec<String> = shard
+        .iter_entities()
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    for key in &keys {
+        for table_name in tables {
+            // Remove the downstream TT output table entry from this
+            // entity. Shard does not expose a direct `remove_table_row`,
+            // so we RMW via StoreView::with_entity_mut (which handles
+            // both fjall + state-inmem backends).
+            use crate::shard::StoreView;
+            let mut view = StoreView::Sharded(shard);
+            view.with_entity_mut(key.as_str(), |entity| {
+                entity.table_rows.remove(table_name);
+            });
+        }
+        shard.dirty_set.insert(key.clone());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

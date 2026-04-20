@@ -888,6 +888,118 @@ async fn async_main() {
             }
         }
 
+        // Phase 55-03 D-C1 (TPC-CORR-07): boot-time rematerialization of
+        // downstream TT cascade tables if the most recent base snapshot was
+        // written before Phase 55 (schema_version < 9). Rebuilds rows so
+        // they live on `hash(output_key) % N` rather than on the input
+        // event's shard. Runs on the main thread BEFORE shard threads spawn
+        // (`run_tcp_server` below) — preserves fjall single-writer invariant.
+        #[cfg(not(feature = "state-inmem"))]
+        {
+            let snap_dir_check = snapshot_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .to_path_buf();
+            let needs_rematerialize = latest_base_snapshot_schema_version(&snap_dir_check)
+                .map(|v| v < 9)
+                .unwrap_or(false);
+            if needs_rematerialize && event_log_enabled {
+                // Intentional: startup status (Phase 47 audit exemption — pre-listener-bind).
+                eprintln!("Pre-v9 snapshot detected; rematerializing downstream tables.");
+
+                // Wrap every shard partition in an Arc<Mutex<Shard>> for the
+                // replay driver. PartitionHandle is cheaply Clone, so this
+                // does not duplicate storage — it just constructs Shard
+                // wrappers the replay path can lock. No shard threads exist
+                // yet, so locking is uncontended.
+                let shard_arcs: Vec<std::sync::Arc<std::sync::Mutex<beava::shard::Shard>>> =
+                    state
+                        .shard_partitions
+                        .iter()
+                        .cloned()
+                        .map(|p| {
+                            std::sync::Arc::new(std::sync::Mutex::new(
+                                beava::shard::Shard::with_partition(p),
+                            ))
+                        })
+                        .collect();
+
+                // Build per-shard EventLog handles. `state.event_log` is the
+                // global flat log (pre-D-03 layout); the per-shard D-03
+                // layout uses `EventLog::new_for_shard(data_dir, shard_id)`.
+                // Phase 55-03 Task 2 reads from the global log for N=1 and
+                // skips multi-shard gracefully when the global log is the
+                // only backend present.
+                let data_dir = PathBuf::from(
+                    std::env::var("BEAVA_DATA_DIR").unwrap_or_else(|_| ".".into()),
+                );
+                let mut per_shard_logs: Vec<std::sync::Arc<EventLog>> =
+                    Vec::with_capacity(shard_arcs.len());
+                let mut open_ok = true;
+                for shard_id in 0..shard_arcs.len() {
+                    match EventLog::new_for_shard(data_dir.clone(), shard_id as u8) {
+                        Ok(log) => per_shard_logs.push(std::sync::Arc::new(log)),
+                        Err(e) => {
+                            eprintln!(
+                                "Pre-v9 rematerialize: unable to open per-shard event log for \
+                                 shard {}: {} — falling back to global event log for shard 0 only.",
+                                shard_id, e
+                            );
+                            open_ok = false;
+                            break;
+                        }
+                    }
+                }
+                if !open_ok {
+                    // Fallback: only use global log for shard 0; other shards
+                    // get no rematerialization this boot. Phase 55-NEXT can
+                    // add multi-shard parity once per-shard log registration
+                    // is guaranteed at boot time.
+                    per_shard_logs.clear();
+                    if let Some(ref log) = state.event_log {
+                        per_shard_logs.push(std::sync::Arc::clone(log));
+                        while per_shard_logs.len() < shard_arcs.len() {
+                            // Fill with clones so shard count matches.
+                            per_shard_logs.push(std::sync::Arc::clone(log));
+                        }
+                    }
+                }
+
+                // Register all currently-known primary streams against each
+                // per-shard log so read_entries() finds the log file paths.
+                {
+                    let engine = state.engine.read();
+                    for shard_id in 0..per_shard_logs.len() {
+                        for primary in engine.primary_streams_on_shard(shard_id) {
+                            let _ = per_shard_logs[shard_id].register_stream(&primary, None);
+                        }
+                    }
+                }
+
+                let engine_read = state.engine.read();
+                match beava::state::recovery::rematerialize_tables_from_event_logs(
+                    &shard_arcs,
+                    &per_shard_logs,
+                    &engine_read,
+                ) {
+                    Ok(report) => {
+                        eprintln!(
+                            "Rematerialization complete: {} events replayed, {} shards processed.",
+                            report.events_replayed, report.shards_processed
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("FATAL: boot-time rematerialization failed: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                // Shard wrappers drop here; underlying fjall partition
+                // handles live on via `state.shard_partitions` (clones are
+                // ref-counted). A subsequent snapshot save will tag
+                // schema_version=9 so the next boot skips this block.
+            }
+        }
+
         // Phase 9 WR-05: one-shot GC pass.
         //
         // Phase 54-04 Pass A3: only meaningful under `state-inmem`. On the
@@ -1506,6 +1618,37 @@ fn cleanup_old_snapshots(dir: &Path, current_base_seq: u64) {
 }
 
 /// Scan the snapshot directory and load the latest base + subsequent deltas.
+/// Phase 55-03 Task 2 helper: inspect the most recent base snapshot in
+/// `snap_dir` and return its `header.schema_version`. `None` if no base
+/// snapshot is present (fresh boot) or if the file is unreadable.
+///
+/// Used by the boot guard to decide whether to run
+/// `rematerialize_tables_from_event_logs`: v8-era bytes decode with
+/// schema_version=8, triggering rebuild; v9+ returns normally.
+pub(crate) fn latest_base_snapshot_schema_version(snap_dir: &Path) -> Option<u16> {
+    let mut bases: Vec<(u64, PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(snap_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy().into_owned();
+            if let Some(seq_str) = name_str.strip_prefix("beava.snapshot.base.") {
+                if let Ok(seq) = seq_str.parse::<u64>() {
+                    bases.push((seq, entry.path()));
+                }
+            }
+        }
+    }
+    bases.sort_by_key(|(seq, _)| *seq);
+    for (_, path) in bases.iter().rev() {
+        if let Ok(bytes) = std::fs::read(path) {
+            if let Some(SnapshotFile::Base(b)) = load_snapshot_file(&bytes) {
+                return Some(b.header.schema_version);
+            }
+        }
+    }
+    None
+}
+
 pub(crate) fn load_incremental_snapshots(
     snap_dir: &Path,
     legacy_path: &Path,
