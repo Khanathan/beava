@@ -115,6 +115,60 @@ pub enum ShardOp {
         table_name: String,
         now: std::time::SystemTime,
     },
+    /// Phase 54-04 Pass A1: OP_PUSH_TABLE dispatch. Shard performs the
+    /// full handle_push_table sequence on its own state:
+    ///   - pre-existed check (triggers eviction-reinit counter if fresh),
+    ///   - `upsert_table_row`,
+    ///   - `mark_dirty`,
+    ///   - `cascade_table_upsert_on_shard` with tombstoned=false.
+    ///
+    /// Caller (tcp.rs) has already validated `table_name` is a registered
+    /// Table and advanced the Table's watermark by `event_time`.
+    PushTableRow {
+        table_name: String,
+        key: String,
+        fields: ahash::AHashMap<String, crate::types::FeatureValue>,
+        event_time: std::time::SystemTime,
+    },
+    /// Phase 54-04 Pass A1: OP_DELETE_TABLE dispatch. Shard performs the
+    /// handle_delete_table sequence on its own state:
+    ///   - `tombstone_table_row`,
+    ///   - `mark_dirty`,
+    ///   - `cascade_table_upsert_on_shard` with tombstoned=true.
+    ///
+    /// Caller (tcp.rs) has already validated `table_name` is registered
+    /// and advanced the Table's watermark.
+    DeleteTableRow {
+        table_name: String,
+        key: String,
+        event_time: std::time::SystemTime,
+    },
+    /// Phase 54-04 Pass A1: OP_GET dispatch that also fires the full
+    /// TT-cascade fan-out across every registered input Table. Mirrors
+    /// the SET path in TCP (Command::Set) where the Table identity isn't
+    /// known but the cascade must fire for every TT-join downstream.
+    ///
+    /// Currently identical to `Set` dispatch followed by per-input-table
+    /// cascade — a dedicated variant keeps the "SET + cascade fan-out"
+    /// contract explicit rather than entangling cascade logic with the
+    /// plain `Set` path used by legacy callers.
+    SetWithCascade {
+        key: String,
+        payload: serde_json::Value,
+    },
+    /// Phase 54-04 Pass A1: clear-operator-state pass for backfill
+    /// (run_backfill step 1). Shard iterates its own entities and
+    /// drops any operator state whose feature name appears in
+    /// `feature_names` for the given `stream_name`. Idempotent — safe
+    /// to run multiple times.
+    ClearBackfillOperators {
+        stream_name: String,
+        feature_names: Vec<String>,
+    },
+    /// Phase 54-04 Pass A1: enumerate every entity key held by this
+    /// shard. Used by scatter-gather callers (run_backfill) that need
+    /// a global key list without touching `StateStore.entity_keys`.
+    ListEntityKeys,
 }
 
 /// Result sent from shard back to listener via response_tx.
@@ -138,6 +192,9 @@ pub enum ShardResult {
     MgetOk(Vec<(String, crate::types::FeatureMap)>),
     /// GET_MULTI response — `(table_name, row_json_or_null)` pairs in request order.
     GetMultiOk(Vec<(String, serde_json::Value)>),
+    /// Phase 54-04 Pass A1: ListEntityKeys response — entity keys held
+    /// by this shard at the moment of dispatch.
+    EntityKeysOk(Vec<String>),
     /// Shard failed to process the event.
     Err(ShardDispatchError),
 }
@@ -390,7 +447,27 @@ fn shard_event_loop(
                     }
                 }
                 ShardOp::Set { key, payload } => {
-                    let result = apply_set_on_shard(&state, &mut shard, &key, &payload, now);
+                    let result = apply_set_on_shard(
+                        &state, &mut shard, shard_index, &key, &payload, now, false,
+                    );
+                    if let Some(tx) = event.response_tx {
+                        let r = match result {
+                            Ok(()) => ShardResult::SetOk,
+                            Err(e) => ShardResult::Err(ShardDispatchError::ProcessingError(
+                                format!("{:?}", e),
+                            )),
+                        };
+                        let _ = tx.send(r);
+                    }
+                }
+                ShardOp::SetWithCascade { key, payload } => {
+                    // Phase 54-04 Pass A1: TCP Command::Set — SET + TT-cascade
+                    // fan-out. Fires `cascade_table_upsert_on_shard` for every
+                    // registered input Table whose key_field is present (same
+                    // fan-out policy as the legacy DashMap SET path).
+                    let result = apply_set_on_shard(
+                        &state, &mut shard, shard_index, &key, &payload, now, true,
+                    );
                     if let Some(tx) = event.response_tx {
                         let r = match result {
                             Ok(()) => ShardResult::SetOk,
@@ -404,7 +481,9 @@ fn shard_event_loop(
                 ShardOp::Mset { entries } => {
                     let mut last_err: Option<crate::error::BeavaError> = None;
                     for (key, payload) in entries {
-                        if let Err(e) = apply_set_on_shard(&state, &mut shard, &key, &payload, now) {
+                        if let Err(e) = apply_set_on_shard(
+                            &state, &mut shard, shard_index, &key, &payload, now, false,
+                        ) {
                             last_err = Some(e);
                         }
                     }
@@ -421,7 +500,9 @@ fn shard_event_loop(
                 ShardOp::Tombstone { key } => {
                     // Tombstone = SET with empty object.
                     let empty = serde_json::Value::Object(serde_json::Map::new());
-                    let result = apply_set_on_shard(&state, &mut shard, &key, &empty, now);
+                    let result = apply_set_on_shard(
+                        &state, &mut shard, shard_index, &key, &empty, now, false,
+                    );
                     if let Some(tx) = event.response_tx {
                         let r = match result {
                             Ok(()) => ShardResult::SetOk,
@@ -483,6 +564,118 @@ fn shard_event_loop(
                         let _ = tx.send(ShardResult::SetOk);
                     }
                 }
+                ShardOp::PushTableRow { table_name, key, fields, event_time } => {
+                    // Phase 54-04 Pass A1: full handle_push_table sequence
+                    // on-shard. Pre-existed check drives the eviction-reinit
+                    // counter; upsert + mark_dirty live on the shard; cascade
+                    // fan-out uses `cascade_table_upsert_on_shard`.
+                    let pre_existed = crate::shard::read_entity_from_shard(
+                        &shard,
+                        &key,
+                        |entity| entity.table_rows.contains_key(&table_name),
+                    )
+                    .unwrap_or(false);
+                    if !pre_existed {
+                        state.eviction_tracker.check_reinit(&table_name, &key);
+                    }
+                    shard.upsert_table_row(&key, &table_name, fields, event_time);
+                    let cascade_result = {
+                        let engine = state.engine.read();
+                        let handles_guard = state.shard_handles.read();
+                        let handles_slice: Option<&[ShardHandle]> = if handles_guard.is_empty() {
+                            None
+                        } else {
+                            Some(&handles_guard[..])
+                        };
+                        engine.cascade_table_upsert_on_shard(
+                            &table_name,
+                            &key,
+                            false,
+                            None,
+                            &mut shard,
+                            shard_index,
+                            handles_slice,
+                            event_time,
+                        )
+                    };
+                    if let Some(tx) = event.response_tx {
+                        let r = match cascade_result {
+                            Ok(()) => ShardResult::SetOk,
+                            Err(e) => ShardResult::Err(ShardDispatchError::ProcessingError(
+                                format!("{:?}", e),
+                            )),
+                        };
+                        let _ = tx.send(r);
+                    }
+                }
+                ShardOp::DeleteTableRow { table_name, key, event_time } => {
+                    // Phase 54-04 Pass A1: full handle_delete_table sequence
+                    // on-shard. Flips the row to Tombstoned, marks dirty,
+                    // fires cascade with tombstoned=true.
+                    shard.tombstone_table_row(&key, &table_name, event_time);
+                    let cascade_result = {
+                        let engine = state.engine.read();
+                        let handles_guard = state.shard_handles.read();
+                        let handles_slice: Option<&[ShardHandle]> = if handles_guard.is_empty() {
+                            None
+                        } else {
+                            Some(&handles_guard[..])
+                        };
+                        engine.cascade_table_upsert_on_shard(
+                            &table_name,
+                            &key,
+                            true,
+                            None,
+                            &mut shard,
+                            shard_index,
+                            handles_slice,
+                            event_time,
+                        )
+                    };
+                    if let Some(tx) = event.response_tx {
+                        let r = match cascade_result {
+                            Ok(()) => ShardResult::SetOk,
+                            Err(e) => ShardResult::Err(ShardDispatchError::ProcessingError(
+                                format!("{:?}", e),
+                            )),
+                        };
+                        let _ = tx.send(r);
+                    }
+                }
+                ShardOp::ClearBackfillOperators { stream_name, feature_names } => {
+                    // Phase 54-04 Pass A1: iterate shard-owned entities and
+                    // drop any operator state whose feature name appears in
+                    // `feature_names` for `stream_name`. Mirrors the
+                    // run_backfill step-1 reset against a per-shard view.
+                    let keys: Vec<String> = shard
+                        .iter_entities()
+                        .into_iter()
+                        .map(|(k, _)| k)
+                        .collect();
+                    for k in keys {
+                        let mut view = crate::shard::StoreView::Sharded(&mut shard);
+                        view.with_entity_mut(&k, |entity| {
+                            if let Some(stream_state) = entity.streams.get_mut(&stream_name) {
+                                stream_state
+                                    .operators
+                                    .retain(|(name, _)| !feature_names.contains(name));
+                            }
+                        });
+                    }
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::SetOk);
+                    }
+                }
+                ShardOp::ListEntityKeys => {
+                    let keys: Vec<String> = shard
+                        .iter_entities()
+                        .into_iter()
+                        .map(|(k, _)| k)
+                        .collect();
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::EntityKeysOk(keys));
+                    }
+                }
             }
 
             // Emit gauges every 1000 events OR every 100ms.
@@ -535,17 +728,19 @@ fn shard_event_loop(
 /// so the default (fjall) build round-trips through postcard + fjall and the
 /// `state-inmem` build keeps its AHashMap entry-API path. Backend-agnostic.
 ///
-/// **Incomplete (Phase 53-01 WIP carry-over):** The Table↔Table cascade
-/// (`engine.cascade_table_upsert_on_shard`) is NOT YET IMPLEMENTED against
-/// `&mut Shard` — this helper mutates the entity's `static_features` but
-/// skips the cascade fan-out. That step is deferred to a follow-up
-/// (engine-side API addition). Tracked as a known gap.
+/// Phase 54-04 Pass A1: cascade fan-out now lives here — the shard loop
+/// passes `fire_cascade = true` for Command::Set (SetWithCascade) to replay
+/// the TCP handler's per-input-table cascade sweep on-shard. Plain `Set`
+/// (SET without TT-cascade, used by legacy MSET chunks) keeps
+/// `fire_cascade = false`.
 fn apply_set_on_shard(
-    _state: &std::sync::Arc<crate::server::tcp::ConcurrentAppState>,
+    state: &std::sync::Arc<crate::server::tcp::ConcurrentAppState>,
     shard: &mut crate::shard::Shard,
+    shard_index: usize,
     key: &str,
     payload: &serde_json::Value,
     now: std::time::SystemTime,
+    fire_cascade: bool,
 ) -> Result<(), crate::error::BeavaError> {
     use crate::shard::StoreView;
     use crate::state::store::StaticFeature;
@@ -575,7 +770,46 @@ fn apply_set_on_shard(
         // the entity back through postcard; the dirty_set is an in-memory
         // per-shard structure that's unchanged by Plan 53-03.
         shard.dirty_set.insert(key.to_string());
-        // NOTE (Phase 53-01 WIP): Table↔Table cascade on shard is deferred.
+
+        if fire_cascade {
+            // Phase 54-04 Pass A1: TT-cascade fan-out. Mirrors the TCP
+            // Command::Set loop that walks every registered input Table
+            // and calls cascade_table_upsert for the key. The Table
+            // identity isn't carried by the SET protocol (key-only), so
+            // every input-table downstream is visited; engine internals
+            // resolve the right join side. Cascade targets may live on
+            // sibling shards — we pass the shard-handles snapshot so
+            // cross-shard writes dispatch via SPSC.
+            let engine = state.engine.read();
+            let input_tables: Vec<String> = engine
+                .list_streams()
+                .filter_map(|s| {
+                    if s.key_field.is_some() {
+                        Some(s.name.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let handles_guard = state.shard_handles.read();
+            let handles_slice: Option<&[ShardHandle]> = if handles_guard.is_empty() {
+                None
+            } else {
+                Some(&handles_guard[..])
+            };
+            for input_table in input_tables {
+                let _ = engine.cascade_table_upsert_on_shard(
+                    &input_table,
+                    key,
+                    tombstoned,
+                    None,
+                    shard,
+                    shard_index,
+                    handles_slice,
+                    now,
+                );
+            }
+        }
         Ok(())
     } else {
         Err(crate::error::BeavaError::Protocol(
@@ -788,6 +1022,186 @@ pub async fn get_features_via_shard(
         Err(_) => Err(BeavaError::Protocol(
             "shard oneshot channel closed".to_string(),
         )),
+    }
+}
+
+/// Phase 54-04 Pass A1: generic op dispatch helper that awaits a
+/// `ShardResult::SetOk` ack. Used by TCP Command::Set / Command::PushTable /
+/// Command::DeleteTable / MSET chunk / MarkDirty paths whose only ack
+/// expectation is "did the shard apply the mutation successfully".
+///
+/// Errors surface via `BeavaError::Protocol` so callers can keep their
+/// existing error-mapping stacks (TCP STATUS_ERROR envelope, HTTP 400).
+pub async fn send_op_await_setok(
+    handle: &ShardHandle,
+    op: ShardOp,
+) -> Result<(), crate::error::BeavaError> {
+    use crate::error::BeavaError;
+
+    if handle.is_down.load(Ordering::Relaxed) {
+        crate::shard::metrics::record_shard_down(handle.shard_index);
+        return Err(BeavaError::Protocol(format!(
+            "shard {} is down (quarantined after panic)",
+            handle.shard_index
+        )));
+    }
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let evt = ShardEvent {
+        payload: bytes::Bytes::new(),
+        stream_name: std::sync::Arc::from(""),
+        shard_hint: 0,
+        response_tx: Some(tx),
+        op,
+    };
+
+    match handle.inbox_tx.try_send(evt) {
+        Ok(()) => {}
+        Err(crossbeam_channel::TrySendError::Full(_)) => {
+            crate::shard::metrics::record_inbox_full(handle.shard_index);
+            return Err(BeavaError::Protocol(
+                "shard inbox full — backpressure".to_string(),
+            ));
+        }
+        Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+            return Err(BeavaError::Protocol(
+                "shard inbox disconnected".to_string(),
+            ));
+        }
+    }
+
+    match rx.await {
+        Ok(ShardResult::SetOk) => Ok(()),
+        Ok(ShardResult::Err(e)) => {
+            Err(BeavaError::Protocol(format!("shard dispatch: {:?}", e)))
+        }
+        Ok(_) => Err(BeavaError::Protocol(
+            "unexpected ShardResult variant for SetOk path".to_string(),
+        )),
+        Err(_) => Err(BeavaError::Protocol(
+            "shard oneshot channel closed".to_string(),
+        )),
+    }
+}
+
+/// Phase 54-04 Pass A1: dispatch a `ShardOp::GetMulti` and await the
+/// per-table JSON map. Used by TCP Command::GetMulti (handle_get_multi).
+pub async fn get_multi_via_shard(
+    handle: &ShardHandle,
+    table_names: Vec<String>,
+    key: String,
+) -> Result<Vec<(String, serde_json::Value)>, crate::error::BeavaError> {
+    use crate::error::BeavaError;
+
+    if handle.is_down.load(Ordering::Relaxed) {
+        crate::shard::metrics::record_shard_down(handle.shard_index);
+        return Err(BeavaError::Protocol(format!(
+            "shard {} is down (quarantined after panic)",
+            handle.shard_index
+        )));
+    }
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let evt = ShardEvent {
+        payload: bytes::Bytes::new(),
+        stream_name: std::sync::Arc::from(""),
+        shard_hint: 0,
+        response_tx: Some(tx),
+        op: ShardOp::GetMulti { table_names, key },
+    };
+
+    match handle.inbox_tx.try_send(evt) {
+        Ok(()) => {}
+        Err(crossbeam_channel::TrySendError::Full(_)) => {
+            crate::shard::metrics::record_inbox_full(handle.shard_index);
+            return Err(BeavaError::Protocol(
+                "shard inbox full — backpressure".to_string(),
+            ));
+        }
+        Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+            return Err(BeavaError::Protocol(
+                "shard inbox disconnected".to_string(),
+            ));
+        }
+    }
+
+    match rx.await {
+        Ok(ShardResult::GetMultiOk(rows)) => Ok(rows),
+        Ok(ShardResult::Err(e)) => {
+            Err(BeavaError::Protocol(format!("shard dispatch: {:?}", e)))
+        }
+        Ok(_) => Err(BeavaError::Protocol(
+            "unexpected ShardResult variant for GetMulti".to_string(),
+        )),
+        Err(_) => Err(BeavaError::Protocol(
+            "shard oneshot channel closed".to_string(),
+        )),
+    }
+}
+
+/// Phase 54-04 Pass A1: dispatch `ShardOp::ListEntityKeys` and await the
+/// per-shard key vector. Used by scatter-gather callers (run_backfill).
+pub async fn list_entity_keys_via_shard(
+    handle: &ShardHandle,
+) -> Result<Vec<String>, crate::error::BeavaError> {
+    use crate::error::BeavaError;
+
+    if handle.is_down.load(Ordering::Relaxed) {
+        crate::shard::metrics::record_shard_down(handle.shard_index);
+        return Err(BeavaError::Protocol(format!(
+            "shard {} is down (quarantined after panic)",
+            handle.shard_index
+        )));
+    }
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let evt = ShardEvent {
+        payload: bytes::Bytes::new(),
+        stream_name: std::sync::Arc::from(""),
+        shard_hint: 0,
+        response_tx: Some(tx),
+        op: ShardOp::ListEntityKeys,
+    };
+
+    match handle.inbox_tx.try_send(evt) {
+        Ok(()) => {}
+        Err(crossbeam_channel::TrySendError::Full(_)) => {
+            crate::shard::metrics::record_inbox_full(handle.shard_index);
+            return Err(BeavaError::Protocol(
+                "shard inbox full — backpressure".to_string(),
+            ));
+        }
+        Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+            return Err(BeavaError::Protocol(
+                "shard inbox disconnected".to_string(),
+            ));
+        }
+    }
+
+    match rx.await {
+        Ok(ShardResult::EntityKeysOk(keys)) => Ok(keys),
+        Ok(ShardResult::Err(e)) => {
+            Err(BeavaError::Protocol(format!("shard dispatch: {:?}", e)))
+        }
+        Ok(_) => Err(BeavaError::Protocol(
+            "unexpected ShardResult variant for ListEntityKeys".to_string(),
+        )),
+        Err(_) => Err(BeavaError::Protocol(
+            "shard oneshot channel closed".to_string(),
+        )),
+    }
+}
+
+/// Phase 54-04 Pass A1: clone a `ShardHandle` snapshot (Arc-backed inbox_tx,
+/// Arc<AtomicBool> is_down). Used by TCP handlers that need to drop the
+/// `shard_handles` RwLock guard before awaiting on a shard response —
+/// mirrors the clone-before-await pattern in `http_ingest.rs` Pass A.
+#[inline]
+pub fn clone_handle(h: &ShardHandle) -> ShardHandle {
+    ShardHandle {
+        shard_index: h.shard_index,
+        is_down: std::sync::Arc::clone(&h.is_down),
+        inbox_tx: h.inbox_tx.clone(),
     }
 }
 
