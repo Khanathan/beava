@@ -2050,19 +2050,35 @@ impl PipelineEngine {
                 }
 
                 // Phase 55-01 D-A3: advance cascade delivery cursor after
-                // a successful TT-cascade sweep (including flush). We use
-                // a wall-clock-derived monotone value so every successful
-                // sweep moves the cursor forward; boot replay compares
-                // against this to decide whether to re-drive. On-disk
-                // persistence piggy-backs on primary-log fsync (or clean
-                // shutdown fsync). Cursor is NOT advanced if flush errored
-                // above — `?` propagates the error and we never reach here.
+                // a successful TT-cascade sweep (including flush). Boot
+                // replay compares against this cursor to decide whether to
+                // re-drive. On-disk persistence piggy-backs on primary-log
+                // fsync (or clean shutdown fsync). Cursor is NOT advanced
+                // if flush errored above — `?` propagates the error and we
+                // never reach here.
+                //
+                // Phase 55 MED-2 + LOW-1: derive the new LSN from wall-
+                // clock nanos when available, but saturate against the
+                // current cursor so transient clock regressions (NTP
+                // step-back, VM snapshot-restore, misconfigured BIOS) can
+                // never lower the cursor. If `SystemTime::now() <
+                // UNIX_EPOCH` (misconfigured BIOS / testing), fall back to
+                // `current + 1` so the cursor still advances monotonically
+                // — `unwrap_or(0)` would previously latch the cursor.
+                // `EventLog::advance_cascaded_lsn` also enforces `> slot`
+                // internally, but doing the saturation here keeps the
+                // contract visible at the call site.
                 if let Some(el) = event_log {
-                    let lsn = now
+                    let current = el.cascaded_lsn(stream_name);
+                    let wall_nanos = now
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_nanos() as u64)
-                        .unwrap_or(0);
-                    el.advance_cascaded_lsn(stream_name, lsn);
+                        .ok();
+                    let next = match wall_nanos {
+                        Some(n) => std::cmp::max(n, current.saturating_add(1)),
+                        None => current.saturating_add(1),
+                    };
+                    el.advance_cascaded_lsn(stream_name, next);
                 }
             }
         }
