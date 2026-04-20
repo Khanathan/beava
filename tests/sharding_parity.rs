@@ -7,5 +7,83 @@
 //! CI:
 //!   Nightly:  PROPTEST_CASES=10000  (bench-nightly.yml `sharding-parity-proptest`)
 //!   PR smoke: PROPTEST_CASES=50     (pr.yml `sharding-parity-smoke`)
+//!
+//! Phase 55 Wave 0 extension (below): TT cascade parity scenarios —
+//! Txn(shard_key=user_id) → MerchantActivity(key=merchant_id, agg=sum(amount)).
+//! Two proptests verify (1) N=1 ↔ N=8 byte-identical final state under
+//! cross-shard cascade, and (2) same-shard fast path produces identical
+//! output to cross-shard scatter-gather. Marked #[ignore = "55-W1"]
+//! pending Wave 1 coalesce-buffer implementation.
 
 mod proptests;
+
+// ---------------------------------------------------------------------------
+// Phase 55 Wave 0 — TT cascade parity extension (tt_cascade).
+// ---------------------------------------------------------------------------
+//
+// This module lives at the top-level sharding_parity binary (alongside
+// `mod proptests;`) so that the Wave 0 RED tests register under
+// `cargo test --test sharding_parity` without moving any existing file.
+// Wave 1 (plan 55-01) flips both `#[ignore = "55-W1"]` markers and
+// implements the property body via cross-shard cascade + parity compare.
+
+#[cfg(not(feature = "state-inmem"))]
+mod tt_cascade {
+    use proptest::prelude::*;
+
+    /// Generated Txn event. `user_id` drives source-ingress shard;
+    /// `merchant_id` drives the downstream MerchantActivity output key;
+    /// `amount` is the sum-aggregation payload.
+    #[derive(Debug, Clone)]
+    #[allow(dead_code)]
+    struct TtCascadeEvent {
+        user_id: String,
+        merchant_id: String,
+        amount: f64,
+    }
+
+    /// Strategy: user_id ∈ {"u0".."u31"}, merchant_id ∈ {"m0".."m31"},
+    /// amount ∈ [0.0, 1000.0). The small key spaces encourage
+    /// collisions + cross-shard + same-shard scenarios in a single
+    /// generated batch.
+    #[allow(dead_code)]
+    fn arb_tt_cascade_event() -> impl Strategy<Value = TtCascadeEvent> {
+        (0u32..32, 0u32..32, 0.0f64..1000.0).prop_map(|(u, m, a)| TtCascadeEvent {
+            user_id: format!("u{u}"),
+            merchant_id: format!("m{m}"),
+            amount: a,
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        /// N=1 ↔ N=8 parity under TT cascade. For any generated event
+        /// batch replayed into a fresh engine at N=1 vs N=8, the final
+        /// MerchantActivity state grouped by merchant_id MUST be
+        /// byte-identical (sum_amount equal for every merchant_id).
+        /// Additionally, at N=8 every MerchantActivity row MUST live
+        /// on `hash(merchant_id) % 8` and ONLY there.
+        #[test]
+        #[ignore = "55-W1"]
+        fn tt_cascade_parity_n1_vs_n8(events in prop::collection::vec(arb_tt_cascade_event(), 1..64)) {
+            // Preserve `events` reference through prop_assume so the
+            // generator closure is honored; actual replay is Wave 1.
+            prop_assume!(!events.is_empty());
+            unimplemented!("Wave 1 — TT cascade parity (N=1 vs N=8) lands with coalesce buffer");
+        }
+
+        /// Same-shard fast path MUST produce byte-identical downstream
+        /// state to cross-shard scatter-gather. Partition generated
+        /// events at N=8 into bucket-A (hash(user_id)==hash(merchant_id))
+        /// and bucket-B (hash differs); run each bucket against a fresh
+        /// engine; compare MerchantActivity final state grouped by
+        /// merchant_id. Both paths MUST yield identical fields maps.
+        #[test]
+        #[ignore = "55-W1"]
+        fn tt_cascade_same_shard_fastpath_matches_cross_shard_result(events in prop::collection::vec(arb_tt_cascade_event(), 1..64)) {
+            prop_assume!(!events.is_empty());
+            unimplemented!("Wave 1 — fastpath vs scatter-gather parity");
+        }
+    }
+}
