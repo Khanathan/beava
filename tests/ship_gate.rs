@@ -391,3 +391,140 @@ async fn test_ship_gate_backfill_crash_recover() {
 
     // Reaching here means CORR-01, CORR-05, CORR-06 are all GREEN.
 }
+
+// ---------------------------------------------------------------------------
+// Phase 54 TPC-ARCH-01 grep-ZERO gates.
+// Remove #[ignore] in Wave 4 (plan 54-04) once src/ is clean — at that point
+// these must pass as part of the default ship_gate run. Until then they act
+// as a TDD safety net (RED today; GREEN at Wave 4 complete).
+// ---------------------------------------------------------------------------
+
+/// Walk every .rs file under the given directory (recursively) and collect
+/// `(file_path, line_number, line_text)` tuples for lines matching `pred`.
+/// Lines whose trimmed content starts with `//`, `//!`, `*`, or `/*` are
+/// treated as comments and skipped.
+fn collect_violations<F>(src_root: &std::path::Path, pred: F) -> Vec<(String, usize, String)>
+where
+    F: Fn(&str) -> bool,
+{
+    fn walk<F>(
+        dir: &std::path::Path,
+        pred: &F,
+        out: &mut Vec<(String, usize, String)>,
+    ) where
+        F: Fn(&str) -> bool,
+    {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, pred, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                let Ok(contents) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for (lineno, line) in contents.lines().enumerate() {
+                    let trimmed = line.trim_start();
+                    // Skip comment lines.
+                    if trimmed.starts_with("//")
+                        || trimmed.starts_with("*")
+                        || trimmed.starts_with("/*")
+                    {
+                        continue;
+                    }
+                    if pred(line) {
+                        out.push((path.display().to_string(), lineno + 1, line.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    walk(src_root, &pred, &mut out);
+    out
+}
+
+/// Phase 54 Success Criterion #1: no `DashMap` symbol (outside comments) in src/.
+/// Wave 0: RED (Phase 53 HEAD has ~50 hits across state/, server/, engine/).
+/// Wave 4: GREEN.
+#[test]
+#[ignore]
+fn dashmap_not_in_src() {
+    let src_root = std::path::Path::new("src");
+    let hits = collect_violations(src_root, |line| line.contains("DashMap"));
+    assert!(
+        hits.is_empty(),
+        "TPC-ARCH-01 SC#1: DashMap references found in src/ ({} hits). \
+         First 10:\n{}",
+        hits.len(),
+        hits.iter()
+            .take(10)
+            .map(|(f, n, l)| format!("  {f}:{n}: {}", l.trim()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+/// Phase 54 Success Criterion #2: no `struct StateStore` definition in src/.
+/// Type aliases (`type StateStore = ...`) are allowed — only a fresh struct
+/// definition is forbidden.
+/// Wave 0: RED (src/state/store.rs:261 has `pub struct StateStore`).
+/// Wave 4: GREEN.
+#[test]
+#[ignore]
+fn state_store_struct_deleted() {
+    let src_root = std::path::Path::new("src");
+    let hits = collect_violations(src_root, |line| {
+        // Match `struct StateStore` or `pub struct StateStore` (must be
+        // start-of-definition, not any occurrence of the identifier).
+        let trimmed = line.trim_start();
+        trimmed.starts_with("pub struct StateStore")
+            || trimmed.starts_with("struct StateStore")
+            || trimmed.starts_with("pub(crate) struct StateStore")
+    });
+    assert!(
+        hits.is_empty(),
+        "TPC-ARCH-01 SC#2: StateStore struct definition found in src/:\n{}",
+        hits.iter()
+            .map(|(f, n, l)| format!("  {f}:{n}: {}", l.trim()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+/// Phase 54 Success Criterion #3: no legacy push helpers defined in src/.
+/// The three forbidden helpers are:
+///   - `push_internal`
+///   - `push_batch_with_cascade_no_features`
+///   - `push_with_cascade_internal`
+/// Wave 0: RED (all three present in src/engine/pipeline.rs).
+/// Wave 4: GREEN — only `push_with_cascade_on_shard` remains as the shard
+/// thread entry point.
+#[test]
+#[ignore]
+fn legacy_push_helpers_deleted() {
+    let src_root = std::path::Path::new("src");
+    let hits = collect_violations(src_root, |line| {
+        // Match function definitions specifically. `push_internal_on_shard` is
+        // the NEW Phase 50.5 shard-thread helper — NOT legacy — so we guard
+        // against substring match by requiring the name end in `(` (function
+        // opener) or whitespace before `(`.
+        let forbidden = [
+            "fn push_internal(",
+            "fn push_batch_with_cascade_no_features(",
+            "fn push_with_cascade_internal(",
+        ];
+        forbidden.iter().any(|f| line.contains(f))
+    });
+    assert!(
+        hits.is_empty(),
+        "TPC-ARCH-01 SC#3: legacy push helpers still defined in src/:\n{}",
+        hits.iter()
+            .map(|(f, n, l)| format!("  {f}:{n}: {}", l.trim()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
