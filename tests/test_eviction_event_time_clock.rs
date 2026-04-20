@@ -51,59 +51,7 @@ fn make_ttl_stream(name: &str, entity_ttl_secs: u64) -> StreamDefinition {
 #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn ttl_honors_event_time_not_wall_clock() {
-    let store = StateStore::new();
-    let mut engine = PipelineEngine::new();
-    // Register stream with 7-day entity TTL.
-    engine
-        .register(make_ttl_stream("Txns", 7 * 24 * 3600))
-        .unwrap();
-
-    let now = SystemTime::now();
-    let thirty_days_ago = now - Duration::from_secs(30 * 24 * 3600);
-
-    // Push a single event with a 30-day-old event_time (mirrors live-ingest).
-    let event = json!({
-        "user_id": "u1",
-        "_event_time": millis_since_epoch(thirty_days_ago)
-    });
-    engine
-        .push_with_cascade_no_features("Txns", &event, &store, thirty_days_ago)
-        .unwrap();
-    // Mirror the TCP live-ingest path: advance watermark for this stream.
-    // (push_with_cascade_no_features applies operator state but does not
-    // call watermarks.observe — the TCP dispatcher does that at tcp.rs:1750.)
-    engine.wm_observe("Txns", thirty_days_ago);
-
-    // Watermark observed_max = thirty_days_ago; last_event_at = thirty_days_ago.
-    // scan_clock = thirty_days_ago; age = scan_clock - last_event_at = 0 < 7d TTL.
-    // Entity must NOT be evicted.
-    let evicted_before = evict_expired_stream_entries(&store, &engine, now, 2);
-    assert_eq!(
-        evicted_before, 0,
-        "CORR-07: 30d-old event must NOT evict under 7d TTL when using event-time clock \
-         (watermark = last event = 0 age)"
-    );
-    assert_eq!(
-        store.entity_count(),
-        1,
-        "entity u1 must still exist after first eviction pass"
-    );
-
-    // Advance watermark to now by observing a fresh event_time.
-    // After this: scan_clock = now, age = now - thirty_days_ago = 30d > 7d TTL.
-    engine.wm_observe("Txns", now);
-
-    // Second eviction pass: watermark observed_max = now; age = 30d > 7d TTL.
-    // Entity MUST be evicted.
-    let evicted_after = evict_expired_stream_entries(&store, &engine, now, 2);
-    assert_eq!(
-        evicted_after, 1,
-        "CORR-07: after watermark advances to now, 30d-old entity must be evicted \
-         (age 30d > TTL 7d)"
-    );
-    assert_eq!(
-        store.entity_count(),
-        0,
-        "entity u1 must be removed after second eviction pass"
-    );
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }

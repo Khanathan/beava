@@ -2,6 +2,14 @@
 //!
 //! Keys with no events for 2x the largest window are evicted from memory.
 //! Evicted keys re-initialize fresh on next event (CLAUDE.md spec).
+//!
+//! Phase 54-04 Pass B: the legacy `evict_expired_keys` and
+//! `evict_expired_table_rows` `&StateStore` entry points were deleted here.
+//! Production eviction now flows through `evict_expired_{keys,table_rows}_on_shards`
+//! which scatter-gather `ShardOp::EvictExpired{TableRows}` across live shards
+//! (see `src/shard/thread.rs::evict_expired_{stream_entries,table_rows}_on_shard`).
+//! `evict_expired_stream_entries` remains only as a reference body for the
+//! in-file tests and the `state-inmem` feature; production callers are zero.
 
 use crate::engine::pipeline::PipelineEngine;
 use crate::state::store::StateStore;
@@ -17,6 +25,11 @@ use std::time::SystemTime;
 /// (ttl_multiplier * max_window). Streams with last_event_at=None are not evicted.
 ///
 /// Returns the number of stream entries evicted.
+///
+/// Phase 54-04 Pass B: still takes `&StateStore` (tests-only callers remain).
+/// Production eviction flows through
+/// `evict_expired_{keys,table_rows}_on_shards`; Pass C deletes both `StateStore`
+/// and this helper when the `state-inmem` feature is retired.
 pub fn evict_expired_stream_entries(
     store: &StateStore,
     engine: &PipelineEngine,
@@ -105,18 +118,6 @@ pub fn evict_expired_stream_entries(
     store.remove_empty_entities();
 
     total_evicted
-}
-
-/// Legacy wrapper: Evict entity keys whose last_event_at is older than ttl_multiplier * max_window.
-/// Delegates to evict_expired_stream_entries for per-stream eviction behavior.
-/// Returns the number of stream entries evicted.
-pub fn evict_expired_keys(
-    store: &StateStore,
-    engine: &PipelineEngine,
-    now: SystemTime,
-    ttl_multiplier: u32,
-) -> usize {
-    evict_expired_stream_entries(store, engine, now, ttl_multiplier)
 }
 
 /// Phase 54-04 Pass A4: shard-aware counterpart to
@@ -258,74 +259,6 @@ pub fn evict_expired_table_rows_on_shards(
     total
 }
 
-/// Phase 25-02: Evict expired Table rows (not stream entries) based on per-Table
-/// TTL, and record each evicted (table, key) pair in the supplied
-/// [`EvictionTracker`] so the recommendation engine can detect
-/// eviction→reinit patterns. Returns the number of Table rows evicted.
-///
-/// This is the Table-row companion of `evict_expired_stream_entries`. It walks
-/// every `EntityState.table_rows`, checks each row's `updated_at` against the
-/// per-Table `entity_ttl`, and evicts rows whose age exceeds that TTL. Tables
-/// whose TTL is the `FOREVER_TTL` sentinel are skipped unconditionally.
-///
-/// Tombstoned rows are left alone — they are reaped by `gc_tombstones`.
-pub fn evict_expired_table_rows(
-    store: &StateStore,
-    engine: &PipelineEngine,
-    tracker: &crate::state::eviction_tracker::EvictionTracker,
-    now: SystemTime,
-) -> usize {
-    use crate::duration::is_forever_ttl;
-    use crate::state::store::TableRowState;
-
-    let mut total_evicted = 0;
-
-    // Collect (entity_key, table_name) pairs to evict. Two-phase so we don't
-    // hold a read borrow while mutating.
-    let entity_keys: Vec<String> = store.entity_keys();
-    let mut eviction_plan: Vec<(String, String)> = Vec::new();
-
-    for key in &entity_keys {
-        let Some(entity) = store.get_entity(key) else {
-            continue;
-        };
-        for (table_name, row) in entity.table_rows.iter() {
-            // Skip tombstoned — gc_tombstones owns that path.
-            if !matches!(row.state, TableRowState::Live) {
-                continue;
-            }
-            let ttl = match engine.get_stream_entity_ttl(table_name) {
-                Some(t) => t,
-                None => continue, // Table with no TTL configured — skip
-            };
-            if is_forever_ttl(ttl) {
-                continue;
-            }
-            let age = now
-                .duration_since(row.updated_at)
-                .unwrap_or(std::time::Duration::ZERO);
-            if age >= ttl {
-                eviction_plan.push((key.clone(), table_name.clone()));
-            }
-        }
-    }
-
-    for (key, table_name) in &eviction_plan {
-        // Record BEFORE mutating so the tracker sees the eviction even if
-        // we fail to mutate (paranoia: the counter tracks *intent*).
-        tracker.record_eviction(table_name, key);
-        if let Some(mut entity) = store.get_entity_mut(key) {
-            entity.table_rows.remove(table_name);
-        }
-        total_evicted += 1;
-    }
-
-    // Clean up entities that became fully empty.
-    store.remove_empty_entities();
-
-    total_evicted
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,7 +313,7 @@ mod tests {
 
         let now = ts(100_000);
         // TTL = 2 * 3600 = 7200 seconds. Entity is 99000 seconds old -> evicted.
-        let evicted = evict_expired_keys(&store, &engine, now, 2);
+        let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
         assert_eq!(evicted, 1);
         assert_eq!(store.entity_count(), 0);
     }
@@ -402,7 +335,7 @@ mod tests {
 
         let now = ts(100_000);
         // TTL = 2 * 3600 = 7200 seconds. Entity is 1000 seconds old -> kept.
-        let evicted = evict_expired_keys(&store, &engine, now, 2);
+        let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
         assert_eq!(evicted, 0);
         assert_eq!(store.entity_count(), 1);
     }
@@ -422,7 +355,7 @@ mod tests {
         }
 
         let now = ts(100_000);
-        let evicted = evict_expired_keys(&store, &engine, now, 2);
+        let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
         assert_eq!(evicted, 0);
         assert_eq!(store.entity_count(), 1);
     }
@@ -439,7 +372,7 @@ mod tests {
         }
 
         let now = ts(100_000);
-        let evicted = evict_expired_keys(&store, &engine, now, 2);
+        let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
         assert_eq!(evicted, 0);
         assert_eq!(store.entity_count(), 1); // Not evicted because no streams -> no max window
     }
@@ -719,7 +652,7 @@ mod tests {
         }
 
         let now = ts(100_000);
-        let evicted = evict_expired_keys(&store, &engine, now, 2);
+        let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
         assert_eq!(evicted, 1);
         assert_eq!(store.entity_count(), 2);
         assert!(store.get_entity("old_user").is_none());

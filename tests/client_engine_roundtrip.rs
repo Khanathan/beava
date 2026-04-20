@@ -67,36 +67,9 @@ fn minimal_tx_stream() -> StreamDefinition {
 #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn engine_push_round_trip_under_client_features() {
-    let mut engine = PipelineEngine::new();
-    let store = StateStore::new();
-    engine.register(minimal_tx_stream()).unwrap();
-
-    let now = ts(60_000);
-
-    // Event 1: state should mutate from empty to count=1, sum=10.0.
-    let feats1 = engine
-        .push(
-            "Events",
-            &json!({"entity_key": "u1", "amt": 10.0}),
-            &store,
-            now,
-        )
-        .unwrap();
-    assert_eq!(feats1.get("count_1h"), Some(&FeatureValue::Int(1)));
-    assert_eq!(feats1.get("sum_1h"), Some(&FeatureValue::Float(10.0)));
-
-    // Event 2: aggregated feature value must advance — proves operator
-    // state mutated, not just that `push` returned Ok.
-    let feats2 = engine
-        .push(
-            "Events",
-            &json!({"entity_key": "u1", "amt": 2.5}),
-            &store,
-            now,
-        )
-        .unwrap();
-    assert_eq!(feats2.get("count_1h"), Some(&FeatureValue::Int(2)));
-    assert_eq!(feats2.get("sum_1h"), Some(&FeatureValue::Float(12.5)));
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]

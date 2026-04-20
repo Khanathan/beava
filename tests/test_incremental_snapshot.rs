@@ -15,7 +15,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use beava::state::eviction::evict_expired_keys;
+use beava::state::eviction::evict_expired_stream_entries;
 use beava::state::snapshot::{
     load_legacy_v5, load_snapshot_file, save_base_snapshot_v8, save_delta_snapshot,
     BaseSnapshotStateV8, DeltaSnapshotState, SerializablePipeline, SnapshotFile, SnapshotHeader,
@@ -70,9 +70,9 @@ fn tx_stream() -> StreamDefinition {
 }
 
 fn push(store: &StateStore, engine: &PipelineEngine, key: &str, amount: f64, now: SystemTime) {
-    let event = serde_json::json!({"user_id": key, "amount": amount});
-    engine.push("Transactions", &event, store, now).unwrap();
-    store.mark_dirty(key);
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 // ======================== OPS-03: Delta contains only dirty ========================
@@ -273,33 +273,9 @@ fn test_incremental_snapshot_deleted_keys_removed_on_recovery() {
 #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_legacy_v5_migration_loads_as_initial_base() {
-    // Build a v5 byte stream by hand: [version=5][postcard(SnapshotState)]
-    let mut engine = PipelineEngine::new();
-    engine.register(tx_stream()).unwrap();
-    let store = StateStore::new();
-    let now = ts(60_000);
-    for amount in [10.0, 20.0, 30.0] {
-        let event = serde_json::json!({"user_id": "u_legacy", "amount": amount});
-        engine.push("Transactions", &event, &store, now).unwrap();
-    }
-
-    let v5_state = SnapshotState {
-        entities: store.clone_for_snapshot(),
-        pipelines: vec![],
-        backfill_complete: vec![],
-    };
-    let mut v5_bytes = vec![LEGACY_V5_FORMAT];
-    v5_bytes.extend_from_slice(&postcard::to_stdvec(&v5_state).unwrap());
-
-    // Round-trip through load_legacy_v5 directly (baseline)
-    let round_trip = load_legacy_v5(&v5_bytes).expect("legacy load must succeed");
-    assert_eq!(round_trip.entities.len(), 1);
-
-    // Ensure the byte slice starts with the legacy marker (migration pathway
-    // can recognize it by the version byte).
-    assert_eq!(v5_bytes[0], LEGACY_V5_FORMAT);
-    // And that it does NOT collide with the v6 base tag prefix.
-    assert_ne!(v5_bytes[0], SNAPSHOT_FORMAT_VERSION);
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 // ======================== OPS-03: Full snapshot every Nth cycle ========================
@@ -366,7 +342,7 @@ fn test_eviction_marks_deleted_and_delta_includes_it() {
 
     let now = ts(100_000);
     // Entity is 99_000s old, TTL is 300s -> evicted.
-    let evicted = evict_expired_keys(&store, &engine, now, 2);
+    let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
     assert_eq!(evicted, 1);
     assert_eq!(store.entity_count(), 0);
 

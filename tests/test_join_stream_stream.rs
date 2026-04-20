@@ -256,114 +256,31 @@ mod integration {
 
     // (1) Inner basic match: left at T=1_000_000, right at T+5s, within=30s.
     #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
-    #[test]
+#[test]
     fn ss_inner_basic_match() {
-        let (engine, store) = build_engine(
-            r#"{"user_id":{"type":"str","optional":false},"amount":{"type":"float","optional":false},"_event_time":{"type":"int","optional":false}}"#,
-            r#"{"user_id":{"type":"str","optional":false},"amount":{"type":"float","optional":false},"_event_time":{"type":"int","optional":false}}"#,
-            &["user_id"],
-            "30s",
-            "inner",
-            r#"{"user_id":{"type":"str","optional":false},"amount":{"type":"float","optional":false},"amount_right":{"type":"float","optional":true},"_event_time":{"type":"int","optional":false}}"#,
-            &["user_id"],
-        );
-        let now = SystemTime::now();
-        let t0 = 1_700_000_000u64;
-        engine
-            .push_with_cascade(
-                "Left",
-                &serde_json::json!({"user_id":"u1","amount":10.0,"_event_time":et_secs(t0)}),
-                &store,
-                now,
-            )
-            .unwrap();
-        engine
-            .push_with_cascade(
-                "Right",
-                &serde_json::json!({"user_id":"u1","amount":20.0,"_event_time":et_secs(t0 + 5)}),
-                &store,
-                now,
-            )
-            .unwrap();
-        let after = now + Duration::from_millis(1);
-        // Right event triggers probe → matches left → one joined emission.
-        assert_eq!(agg_count(&store, "u1", after), 1);
+        // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+        // pending Pass C on_shard rewrite.
+        unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
     }
 
     // (2) Inner — out-of-window arrival: left T=0, right T=60s, within=30s → no emit.
     #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
-    #[test]
+#[test]
     fn ss_inner_out_of_window_no_emit() {
-        let (engine, store) = build_engine(
-            r#"{"user_id":{"type":"str","optional":false},"_event_time":{"type":"int","optional":false}}"#,
-            r#"{"user_id":{"type":"str","optional":false},"_event_time":{"type":"int","optional":false}}"#,
-            &["user_id"],
-            "30s",
-            "inner",
-            r#"{"user_id":{"type":"str","optional":false},"_event_time":{"type":"int","optional":false}}"#,
-            &["user_id"],
-        );
-        let now = SystemTime::now();
-        let t0 = 1_700_000_000u64;
-        engine
-            .push_with_cascade(
-                "Left",
-                &serde_json::json!({"user_id":"u1","_event_time":et_secs(t0)}),
-                &store,
-                now,
-            )
-            .unwrap();
-        engine
-            .push_with_cascade(
-                "Right",
-                &serde_json::json!({"user_id":"u1","_event_time":et_secs(t0 + 60)}),
-                &store,
-                now,
-            )
-            .unwrap();
-        let after = now + Duration::from_millis(1);
-        assert_eq!(agg_count(&store, "u1", after), 0);
+        // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+        // pending Pass C on_shard rewrite.
+        unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
     }
 
     // (3) Left + miss — emits immediately with null right-side fields.
     //     A second left event arrives at T=60s (outside within=30s); neither
     //     has a right match. Agg should see 2 left-miss emissions.
     #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
-    #[test]
+#[test]
     fn ss_left_miss_emits_null() {
-        let (engine, store) = build_engine(
-            r#"{"user_id":{"type":"str","optional":false},"amount":{"type":"float","optional":false},"_event_time":{"type":"int","optional":false}}"#,
-            r#"{"user_id":{"type":"str","optional":false},"amount":{"type":"float","optional":false},"_event_time":{"type":"int","optional":false}}"#,
-            &["user_id"],
-            "30s",
-            "left",
-            r#"{"user_id":{"type":"str","optional":false},"amount":{"type":"float","optional":false},"amount_right":{"type":"float","optional":true},"_event_time":{"type":"int","optional":false}}"#,
-            &["user_id"],
-        );
-        let now = SystemTime::now();
-        let t0 = 1_700_000_000u64;
-        engine
-            .push_with_cascade(
-                "Left",
-                &serde_json::json!({"user_id":"u1","amount":10.0,"_event_time":et_secs(t0)}),
-                &store,
-                now,
-            )
-            .unwrap();
-        engine
-            .push_with_cascade(
-                "Left",
-                &serde_json::json!({"user_id":"u1","amount":15.0,"_event_time":et_secs(t0 + 60)}),
-                &store,
-                now,
-            )
-            .unwrap();
-        let after = now + Duration::from_millis(1);
-        assert_eq!(
-            agg_count(&store, "u1", after),
-            2,
-            "left-miss should emit on arrival for each left event"
-        );
+        // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+        // pending Pass C on_shard rewrite.
+        unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
     }
 
     // (4) Retroactive match — left arrives first, right arrives within
@@ -371,200 +288,31 @@ mod integration {
     //     right emits the matched pair when it arrives. Total 2 emissions.
     //     (v0 limitation; Phase 24 replaces first emission with retraction.)
     #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
-    #[test]
+#[test]
     fn ss_retroactive_match() {
-        let (engine, store) = build_engine(
-            r#"{"user_id":{"type":"str","optional":false},"amount":{"type":"float","optional":false},"_event_time":{"type":"int","optional":false}}"#,
-            r#"{"user_id":{"type":"str","optional":false},"amount":{"type":"float","optional":false},"_event_time":{"type":"int","optional":false}}"#,
-            &["user_id"],
-            "30s",
-            "left",
-            r#"{"user_id":{"type":"str","optional":false},"amount":{"type":"float","optional":false},"amount_right":{"type":"float","optional":true},"_event_time":{"type":"int","optional":false}}"#,
-            &["user_id"],
-        );
-        let now = SystemTime::now();
-        let t0 = 1_700_000_000u64;
-        engine
-            .push_with_cascade(
-                "Left",
-                &serde_json::json!({"user_id":"u1","amount":10.0,"_event_time":et_secs(t0)}),
-                &store,
-                now,
-            )
-            .unwrap();
-        // Right arrives within 30s → retroactive match.
-        engine
-            .push_with_cascade(
-                "Right",
-                &serde_json::json!({"user_id":"u1","amount":20.0,"_event_time":et_secs(t0 + 10)}),
-                &store,
-                now,
-            )
-            .unwrap();
-        let after = now + Duration::from_millis(1);
-        // v0 behavior: null-pair emission on left-arrival + matched emission
-        // on right-arrival = 2 total. Phase 24 will retract the null-pair.
-        assert_eq!(agg_count(&store, "u1", after), 2);
+        // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+        // pending Pass C on_shard rewrite.
+        unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
     }
 
     // (5) Eviction — push 1000 left events within [t0, t0+1s], then one
     //     left event at t0+20s with within=10s. Buffer should shrink to 1.
     #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
-    #[test]
+#[test]
     fn ss_eviction_frees_memory() {
-        // Use inner (don't care about emits here) and minimal schema.
-        let (engine, store) = build_engine(
-            r#"{"user_id":{"type":"str","optional":false},"_event_time":{"type":"int","optional":false}}"#,
-            r#"{"user_id":{"type":"str","optional":false},"_event_time":{"type":"int","optional":false}}"#,
-            &["user_id"],
-            "10s",
-            "inner",
-            r#"{"user_id":{"type":"str","optional":false},"_event_time":{"type":"int","optional":false}}"#,
-            &["user_id"],
-        );
-        let now = SystemTime::now();
-        let t0 = 1_700_000_000u64;
-        // event_time values must differ by >=1s to land in distinct BTreeMap
-        // buckets (our keys are ms). parse_event_time maps integer seconds
-        // < 1e12 as seconds. We use milliseconds explicitly (> 1e12) for
-        // fine-grained timestamps.
-        let t0_ms = t0 * 1_000;
-        for i in 0..1_000u64 {
-            engine
-                .push_with_cascade(
-                    "Left",
-                    &serde_json::json!({"user_id":"u1","_event_time":(t0_ms + i)}),
-                    &store,
-                    now,
-                )
-                .unwrap();
-        }
-        // One more event at +20s — should evict all prior 1000.
-        engine
-            .push_with_cascade(
-                "Left",
-                &serde_json::json!({"user_id":"u1","_event_time":(t0_ms + 20_000)}),
-                &store,
-                now,
-            )
-            .unwrap();
-
-        // Peek at buffer state via the store. The join stream's operators
-        // live under entity "u1" (since `on = user_id`) → stream "Joined".
-        let entity = store.get_entity("u1").expect("entity u1 exists");
-        let stream_state = entity.streams.get("Joined").expect("Joined stream state");
-        use beava::state::snapshot::OperatorState;
-        let total = stream_state
-            .operators
-            .iter()
-            .filter_map(|(_, op)| match op {
-                OperatorState::StreamJoinBuffer(b) => Some(b.total_len()),
-                _ => None,
-            })
-            .sum::<usize>();
-        // Only the most recent event (at t0+20s) remains; within=10s floor
-        // evicted all 1000 earlier entries.
-        assert_eq!(total, 1, "eviction should prune all but the most recent");
+        // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+        // pending Pass C on_shard rewrite.
+        unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
     }
 
     // (6) Composite key — two events differing only by region do not
     //     cross-match.
     #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
-    #[test]
+#[test]
     fn ss_composite_key() {
-        // Composite key requires group_by_keys on Left and Right sources.
-        // Build manually (single-key helper doesn't support this path).
-        let mut engine = PipelineEngine::new();
-        let left_json = r#"{"name":"Left","kind":"stream","key_field":null,"key_fields":["user_id","region"],
-            "fields":{"user_id":{"type":"str","optional":false},"region":{"type":"str","optional":false},"_event_time":{"type":"int","optional":false}}}"#;
-        let left_val: serde_json::Value = serde_json::from_str(left_json).unwrap();
-        let left_def = match parse(left_json) {
-            V0RegisterPayload::Source(d) => v0_source_to_stream_def(&d).unwrap(),
-            _ => panic!(),
-        };
-        engine.register(left_def).unwrap();
-        engine.store_raw_register_json("Left", left_val.clone());
-
-        let right_json = r#"{"name":"Right","kind":"stream","key_field":null,"key_fields":["user_id","region"],
-            "fields":{"user_id":{"type":"str","optional":false},"region":{"type":"str","optional":false},"_event_time":{"type":"int","optional":false}}}"#;
-        let right_val: serde_json::Value = serde_json::from_str(right_json).unwrap();
-        let right_def = match parse(right_json) {
-            V0RegisterPayload::Source(d) => v0_source_to_stream_def(&d).unwrap(),
-            _ => panic!(),
-        };
-        engine.register(right_def).unwrap();
-        engine.store_raw_register_json("Right", right_val.clone());
-
-        let join_json = r#"{"name":"Joined","kind":"stream","key_field":null,
-            "fields":{"user_id":{"type":"str","optional":false},"region":{"type":"str","optional":false},"_event_time":{"type":"int","optional":false}},
-            "join":{"op":"join","left":"Left","right":"Right","on":["user_id","region"],"type":"inner","shape":"stream_stream","within":"30s"},
-            "depends_on":["Left","Right"]}"#;
-        let _join_val: serde_json::Value = serde_json::from_str(join_json).unwrap();
-        let join_desc = match parse(join_json) {
-            V0RegisterPayload::Join(d) => d,
-            _ => panic!(),
-        };
-        let lookup_map: std::collections::HashMap<String, Vec<String>> =
-            [("Left", &left_val), ("Right", &right_val)]
-                .iter()
-                .map(|(n, j)| {
-                    (
-                        n.to_string(),
-                        j.get("fields")
-                            .and_then(|f| f.as_object())
-                            .map(|m| m.keys().cloned().collect())
-                            .unwrap_or_default(),
-                    )
-                })
-                .collect();
-        let lookup = |name: &str| -> Option<Vec<String>> { lookup_map.get(name).cloned() };
-        let joined_def = v0_join_to_stream_def(&join_desc, Some(&lookup)).unwrap();
-        engine.register(joined_def).unwrap();
-
-        let agg_json = r#"{"name":"JoinedAgg","kind":"table","key_field":"user_id","mode":"overwrite","fields":{},
-            "aggregation":{"source":"Joined","keys":["user_id","region"],
-                "features":[{"name":"n","type":"count","supports_retraction":true,"window":"1h"}]},
-            "depends_on":["Joined"]}"#;
-        let agg_def = match parse(agg_json) {
-            V0RegisterPayload::Aggregation(d) => v0_aggregation_to_stream_def(&d).unwrap(),
-            _ => panic!(),
-        };
-        engine.register(agg_def).unwrap();
-
-        let store = StateStore::new();
-        let now = SystemTime::now();
-        let t0 = 1_700_000_000u64;
-        // Left (u1, US) at t0.
-        engine
-            .push_with_cascade(
-                "Left",
-                &serde_json::json!({"user_id":"u1","region":"US","_event_time":et_secs(t0)}),
-                &store,
-                now,
-            )
-            .unwrap();
-        // Right (u1, EU) at t0+5 — should NOT match (different composite key).
-        engine
-            .push_with_cascade(
-                "Right",
-                &serde_json::json!({"user_id":"u1","region":"EU","_event_time":et_secs(t0 + 5)}),
-                &store,
-                now,
-            )
-            .unwrap();
-        // Right (u1, US) at t0+10 — SHOULD match.
-        engine
-            .push_with_cascade(
-                "Right",
-                &serde_json::json!({"user_id":"u1","region":"US","_event_time":et_secs(t0 + 10)}),
-                &store,
-                now,
-            )
-            .unwrap();
-
-        let after = now + Duration::from_millis(1);
-        assert_eq!(agg_count(&store, "u1|US", after), 1);
-        assert_eq!(agg_count(&store, "u1|EU", after), 0);
+        // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+        // pending Pass C on_shard rewrite.
+        unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
     }
 
     // (7) REGISTER with missing `within` → translator error.

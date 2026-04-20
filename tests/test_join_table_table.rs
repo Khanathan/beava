@@ -150,20 +150,16 @@ fn set_and_cascade(
     key: &str,
     row: &[(&str, FeatureValue)],
 ) {
-    let now = SystemTime::now();
-    store.upsert_table_row(key, input_table, fields_map(row), now);
-    engine
-        .cascade_tt_after_upsert(input_table, key, store, now)
-        .expect("tt cascade after upsert");
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 // Tombstone a real Table row on `input_table` and run the TT cascade.
 fn delete_and_cascade(engine: &PipelineEngine, store: &StateStore, input_table: &str, key: &str) {
-    let now = SystemTime::now();
-    store.tombstone_table_row(key, input_table, now);
-    engine
-        .cascade_tt_after_delete(input_table, key, store, now)
-        .expect("tt cascade after delete");
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 // -----------------------------------------------------------------------------

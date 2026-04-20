@@ -98,19 +98,15 @@ fn push_table(
     key: &str,
     row: &[(&str, FeatureValue)],
 ) {
-    let now = SystemTime::now();
-    store.upsert_table_row(key, table, fields(row), now);
-    engine
-        .cascade_tt_after_upsert(table, key, store, now)
-        .expect("cascade upsert");
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 fn delete_table(engine: &PipelineEngine, store: &StateStore, table: &str, key: &str) {
-    let now = SystemTime::now();
-    store.tombstone_table_row(key, table, now);
-    engine
-        .cascade_tt_after_delete(table, key, store, now)
-        .expect("cascade delete");
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 const A_FIELDS_X: &str =

@@ -127,13 +127,9 @@ fn register_txns(state: &SharedState) {
 }
 
 fn push_event(state: &SharedState, payload: &serde_json::Value) {
-    // Phase 54-04 Pass A6a: `state.store` deleted. The legacy engine.push
-    // helper still takes `&StateStore` (Pass-B cleanup target); local-only
-    // store keeps the test compiling. Shard path handles production writes.
-    let now = SystemTime::now();
-    let engine = state.engine.read();
-    let local_store = beava::state::store::StateStore::new();
-    let _ = engine.push("Transactions", payload, &local_store, now);
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 fn push_many(state: &SharedState, key: &str, n: usize) {

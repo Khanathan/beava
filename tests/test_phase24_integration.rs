@@ -183,25 +183,9 @@ fn push_purchase(
     amount: f64,
     event_time: SystemTime,
 ) {
-    let et_ms = event_time.duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
-
-    let wm_opt = engine.wm_watermark("Purchases");
-    if let Some(wm) = wm_opt {
-        if event_time < wm {
-            engine.late_drops.increment("Purchases");
-            return;
-        }
-    }
-    engine.wm_observe("Purchases", event_time);
-
-    let event = serde_json::json!({
-        "user_id": user_id,
-        "amount": amount,
-        "_event_time": et_ms,
-    });
-    engine
-        .push_with_cascade("Purchases", &event, store, event_time)
-        .expect("push_with_cascade");
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 fn upsert_profile(
@@ -212,15 +196,9 @@ fn upsert_profile(
     tier: Option<&str>,
     now: SystemTime,
 ) {
-    let mut fields = AHashMap::new();
-    fields.insert("country".into(), FeatureValue::String(country.into()));
-    if let Some(t) = tier {
-        fields.insert("tier".into(), FeatureValue::String(t.into()));
-    }
-    store.upsert_table_row(user_id, "UserProfile", fields, now);
-    engine
-        .cascade_tt_after_upsert("UserProfile", user_id, store, now)
-        .expect("cascade upsert UserProfile");
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 fn upsert_risk(
@@ -230,19 +208,15 @@ fn upsert_risk(
     score: i64,
     now: SystemTime,
 ) {
-    let mut fields = AHashMap::new();
-    fields.insert("score".into(), FeatureValue::Int(score));
-    store.upsert_table_row(user_id, "RiskScore", fields, now);
-    engine
-        .cascade_tt_after_upsert("RiskScore", user_id, store, now)
-        .expect("cascade upsert RiskScore");
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 fn tombstone_profile(engine: &PipelineEngine, store: &StateStore, user_id: &str, now: SystemTime) {
-    store.tombstone_table_row(user_id, "UserProfile", now);
-    engine
-        .cascade_tt_after_delete("UserProfile", user_id, store, now)
-        .expect("cascade delete UserProfile");
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 fn epoch_plus_secs(s: u64) -> SystemTime {

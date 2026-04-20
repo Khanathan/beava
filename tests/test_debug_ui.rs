@@ -238,25 +238,9 @@ fn register_test_pipeline(state: &SharedState) {
 // ---------------------------------------------------------------------------
 
 fn push_event(state: &SharedState, stream: &str, event: &serde_json::Value) {
-    use std::time::Instant;
-    let now_ts = SystemTime::now();
-    let now_inst = Instant::now();
-    {
-        let engine = state.engine.read();
-        // Phase 54-04 Pass A6a: `state.store` deleted. The legacy engine.push
-        // helper still takes `&StateStore` (Pass-B cleanup target); a local
-        // scratch store keeps the test compiling until Pass C migrates this
-        // helper onto the shard dispatch.
-        let local_store = beava::state::store::StateStore::new();
-        let _ = engine.push(stream, event, &local_store, now_ts);
-    }
-    // Bump the throughput tracker so the /debug/throughput endpoint observes
-    // the push. We pass a single-element slice of the stream name.
-    let name = stream.to_string();
-    state
-        .throughput
-        .lock()
-        .bump_unique([name.as_str()], now_inst);
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 // ---------------------------------------------------------------------------

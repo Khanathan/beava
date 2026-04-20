@@ -17,11 +17,10 @@ use beava::server::tcp::{
     SharedState,
 };
 use beava::state::event_log::EventLog;
-// Phase 54-04 Pass A3: `evict_expired_keys` (legacy `&StateStore` signature)
-// is only consumed inside the `state-inmem` branch of the periodic eviction
-// timer. The default build dispatches to `evict_expired_keys_on_shards`.
-#[cfg(feature = "state-inmem")]
-use beava::state::eviction::evict_expired_keys;
+// Phase 54-04 Pass B: `evict_expired_keys` (legacy `&StateStore` signature)
+// has been deleted from `src/state/eviction.rs`. The default build dispatches
+// to `evict_expired_keys_on_shards`; the `state-inmem` branch of the periodic
+// eviction timer now goes no-op until Pass C drops the feature.
 // Phase 54-04 Pass A3: `SerializablePipeline` / `SnapshotHeader` / `SnapshotType`
 // are only consumed inside the `#[cfg(feature = "state-inmem")]` snapshot-dump
 // arm below. The default (fjall) build does not construct snapshot payloads

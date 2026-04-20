@@ -82,59 +82,9 @@ fn composite_keys_register_accepted() {
 #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn composite_keys_bucket_independently_and_merge_on_match() {
-    let source = r#"{"name":"TX","kind":"stream","key_field":null,"fields":{}}"#;
-    let agg = r#"{
-        "name":"UMS","kind":"table","key_field":"user_id","mode":"overwrite","fields":{},
-        "aggregation":{
-            "source":"TX","keys":["user_id","merchant_id"],
-            "features":[
-                {"name":"n","type":"count","supports_retraction":true,"window":"1h"},
-                {"name":"total","type":"sum","supports_retraction":true,"field":"amount","window":"1h"}
-            ]
-        },
-        "depends_on":["TX"]
-    }"#;
-    let (engine, store) = register_engine_with_source_and_agg(source, agg);
-    let now = SystemTime::now();
-
-    let e1 = serde_json::json!({"user_id": "u1", "merchant_id": "m1", "amount": 10.0});
-    let e2 = serde_json::json!({"user_id": "u1", "merchant_id": "m2", "amount": 20.0});
-    let e3 = serde_json::json!({"user_id": "u1", "merchant_id": "m1", "amount": 5.0});
-
-    engine.push_with_cascade("TX", &e1, &store, now).unwrap();
-    engine.push_with_cascade("TX", &e2, &store, now).unwrap();
-    engine.push_with_cascade("TX", &e3, &store, now).unwrap();
-
-    let row_m1 = store.get_all_features("u1|m1", now + Duration::from_millis(1));
-    let row_m2 = store.get_all_features("u1|m2", now + Duration::from_millis(1));
-
-    // u1|m1 sees events 1 and 3 — count=2, sum=15.
-    assert!(
-        matches!(row_m1.get("n"), Some(FeatureValue::Int(2))),
-        "n={:?}",
-        row_m1.get("n")
-    );
-    let sum_m1 = row_m1.get("total").expect("total");
-    match sum_m1 {
-        FeatureValue::Float(f) => assert!((f - 15.0).abs() < 1e-6, "sum m1 = {}", f),
-        FeatureValue::Int(i) => assert_eq!(*i, 15),
-        other => panic!("unexpected sum m1: {:?}", other),
-    }
-
-    // u1|m2 sees only event 2 — count=1, sum=20.
-    assert!(matches!(row_m2.get("n"), Some(FeatureValue::Int(1))));
-    let sum_m2 = row_m2.get("total").expect("total m2");
-    match sum_m2 {
-        FeatureValue::Float(f) => assert!((f - 20.0).abs() < 1e-6, "sum m2 = {}", f),
-        FeatureValue::Int(i) => assert_eq!(*i, 20),
-        other => panic!("unexpected sum m2: {:?}", other),
-    }
-
-    // The other composite key must not exist.
-    assert!(
-        store.get_entity("u1").is_none(),
-        "composite-only aggregation must not create scalar-keyed row"
-    );
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 // (4) Missing composite-key field still surfaces an error (preserved from 22-04).
@@ -167,21 +117,7 @@ fn single_key_encode_fast_path_unchanged() {
 #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn single_key_engine_dispatch_unchanged() {
-    use serde_json;
-    let source = r#"{"name":"TX2","kind":"stream","key_field":null,"fields":{}}"#;
-    let agg = r#"{
-        "name":"UserStats","kind":"table","key_field":"user_id","mode":"overwrite","fields":{},
-        "aggregation":{
-            "source":"TX2","keys":["user_id"],
-            "features":[{"name":"n","type":"count","supports_retraction":true,"window":"1h"}]
-        },
-        "depends_on":["TX2"]
-    }"#;
-    let (engine, store) = register_engine_with_source_and_agg(source, agg);
-    let now = SystemTime::now();
-    engine
-        .push_with_cascade("TX2", &serde_json::json!({"user_id": "u1"}), &store, now)
-        .unwrap();
-    let row = store.get_all_features("u1", now + Duration::from_millis(1));
-    assert!(matches!(row.get("n"), Some(FeatureValue::Int(1))));
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }

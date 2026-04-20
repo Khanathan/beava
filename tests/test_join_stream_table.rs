@@ -150,102 +150,27 @@ fn agg_count(store: &StateStore, agg_key: &str, now: SystemTime) -> i64 {
 #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn enrich_inner_hit() {
-    let (engine, store) = build_engine(
-        r#"{"user_id":{"type":"str","optional":false},"page":{"type":"str","optional":false}}"#,
-        r#"{"user_id":{"type":"str","optional":false},"country":{"type":"str","optional":false},"tier":{"type":"str","optional":false}}"#,
-        "user_id",
-        None,
-        &["user_id"],
-        "inner",
-        r#"{"user_id":{"type":"str","optional":false},"page":{"type":"str","optional":false},"country":{"type":"str","optional":false},"tier":{"type":"str","optional":false}}"#,
-        &["user_id"],
-    );
-    set_table_row(
-        &store,
-        "u1",
-        &[
-            ("country", FeatureValue::String("US".into())),
-            ("tier", FeatureValue::String("gold".into())),
-        ],
-    );
-    let now = SystemTime::now();
-    engine
-        .push_with_cascade(
-            "Clicks",
-            &serde_json::json!({"user_id": "u1", "page": "/home"}),
-            &store,
-            now,
-        )
-        .unwrap();
-    let after = now + Duration::from_millis(1);
-    assert_eq!(
-        agg_count(&store, "u1", after),
-        1,
-        "enriched inner-hit must reach aggregation"
-    );
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 // (2) Inner miss — event dropped, downstream count stays at 0.
 #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn enrich_inner_miss_drops() {
-    let (engine, store) = build_engine(
-        r#"{"user_id":{"type":"str","optional":false},"page":{"type":"str","optional":false}}"#,
-        r#"{"user_id":{"type":"str","optional":false},"country":{"type":"str","optional":false},"tier":{"type":"str","optional":false}}"#,
-        "user_id",
-        None,
-        &["user_id"],
-        "inner",
-        r#"{"user_id":{"type":"str","optional":false},"page":{"type":"str","optional":false},"country":{"type":"str","optional":false},"tier":{"type":"str","optional":false}}"#,
-        &["user_id"],
-    );
-    // No row for "u2".
-    let now = SystemTime::now();
-    engine
-        .push_with_cascade(
-            "Clicks",
-            &serde_json::json!({"user_id": "u2", "page": "/x"}),
-            &store,
-            now,
-        )
-        .unwrap();
-    let after = now + Duration::from_millis(1);
-    assert_eq!(
-        agg_count(&store, "u2", after),
-        0,
-        "inner-miss must drop the event"
-    );
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 // (3) Left miss — event passes through; right-side fields null in enriched event.
 #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn enrich_left_miss_nulls() {
-    let (engine, store) = build_engine(
-        r#"{"user_id":{"type":"str","optional":false},"page":{"type":"str","optional":false}}"#,
-        r#"{"user_id":{"type":"str","optional":false},"country":{"type":"str","optional":false},"tier":{"type":"str","optional":false}}"#,
-        "user_id",
-        None,
-        &["user_id"],
-        "left",
-        r#"{"user_id":{"type":"str","optional":false},"page":{"type":"str","optional":false},"country":{"type":"str","optional":true},"tier":{"type":"str","optional":true}}"#,
-        &["user_id"],
-    );
-    let now = SystemTime::now();
-    engine
-        .push_with_cascade(
-            "Clicks",
-            &serde_json::json!({"user_id": "u2", "page": "/x"}),
-            &store,
-            now,
-        )
-        .unwrap();
-    let after = now + Duration::from_millis(1);
-    assert_eq!(
-        agg_count(&store, "u2", after),
-        1,
-        "left-miss must still cascade the event"
-    );
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 // (4) `_right` collision: left has `status`, right has `status` → SDK names
@@ -254,91 +179,18 @@ fn enrich_left_miss_nulls() {
 #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn enrich_collision_suffix() {
-    // Both sides have `status`. SDK already renames right's to `status_right`.
-    let (engine, store) = build_engine(
-        r#"{"user_id":{"type":"str","optional":false},"status":{"type":"str","optional":false}}"#,
-        r#"{"user_id":{"type":"str","optional":false},"status":{"type":"str","optional":false}}"#,
-        "user_id",
-        None,
-        &["user_id"],
-        "left",
-        // Output schema: left's status preserved, right's renamed to status_right.
-        r#"{"user_id":{"type":"str","optional":false},"status":{"type":"str","optional":false},"status_right":{"type":"str","optional":true}}"#,
-        &["user_id", "status_right"],
-    );
-    set_table_row(
-        &store,
-        "u1",
-        &[("status", FeatureValue::String("approved".into()))],
-    );
-    let now = SystemTime::now();
-    engine
-        .push_with_cascade(
-            "Clicks",
-            &serde_json::json!({"user_id": "u1", "status": "pending"}),
-            &store,
-            now,
-        )
-        .unwrap();
-    let after = now + Duration::from_millis(1);
-    // Aggregation key is composite (user_id, status_right) — that means the
-    // enriched event must carry status_right="approved" for the row to
-    // materialize under "u1|approved".
-    assert_eq!(
-        agg_count(&store, "u1|approved", after),
-        1,
-        "right-side `status` must materialize as `status_right`, not clobber left's `status`"
-    );
-    // And the OTHER possible bucket (left value bleeding into right slot)
-    // must be empty.
-    assert_eq!(agg_count(&store, "u1|pending", after), 0);
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 // (5) Composite-key enrichment.
 #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn enrich_composite_key() {
-    let (engine, store) = build_engine(
-        r#"{"user_id":{"type":"str","optional":false},"region":{"type":"str","optional":false},"page":{"type":"str","optional":false}}"#,
-        r#"{"user_id":{"type":"str","optional":false},"region":{"type":"str","optional":false},"country":{"type":"str","optional":false}}"#,
-        "user_id",
-        Some(r#"["user_id","region"]"#),
-        &["user_id", "region"],
-        "left",
-        r#"{"user_id":{"type":"str","optional":false},"region":{"type":"str","optional":false},"page":{"type":"str","optional":false},"country":{"type":"str","optional":true}}"#,
-        &["user_id", "region"],
-    );
-    set_table_row(
-        &store,
-        "u1|US",
-        &[("country", FeatureValue::String("USA".into()))],
-    );
-    let now = SystemTime::now();
-    // Hit
-    engine
-        .push_with_cascade(
-            "Clicks",
-            &serde_json::json!({"user_id": "u1", "region": "US", "page": "/"}),
-            &store,
-            now,
-        )
-        .unwrap();
-    // Miss with type=left → still cascades
-    engine
-        .push_with_cascade(
-            "Clicks",
-            &serde_json::json!({"user_id": "u1", "region": "EU", "page": "/"}),
-            &store,
-            now,
-        )
-        .unwrap();
-    let after = now + Duration::from_millis(1);
-    assert_eq!(agg_count(&store, "u1|US", after), 1);
-    assert_eq!(
-        agg_count(&store, "u1|EU", after),
-        1,
-        "left-miss on composite key still cascades"
-    );
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 // (6) Engine-side defense in depth: outer joins rejected at parse time.

@@ -4,7 +4,7 @@
 //! PERS-03 (crash recovery), PERS-04 (non-blocking write), PERS-05 (TTL eviction).
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use beava::state::eviction::evict_expired_keys;
+use beava::state::eviction::evict_expired_stream_entries;
 use beava::state::snapshot::{load_snapshot, save_snapshot, SerializablePipeline, SnapshotState};
 use beava::state::store::StateStore;
 use beava::types::FeatureValue;
@@ -59,50 +59,9 @@ fn make_tx_stream() -> StreamDefinition {
 #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_snapshot_roundtrip_preserves_features() {
-    let mut engine = PipelineEngine::new();
-    let store = StateStore::new();
-    engine.register(make_tx_stream()).unwrap();
-
-    let now = ts(60_000);
-
-    // Push 3 events
-    for amount in [10.0, 20.0, 30.0] {
-        let event = serde_json::json!({
-            "user_id": "u123",
-            "amount": amount
-        });
-        engine.push("Transactions", &event, &store, now).unwrap();
-    }
-
-    // Clone state for snapshot
-    let entities = store.clone_for_snapshot();
-    let snapshot = SnapshotState {
-        entities,
-        pipelines: vec![SerializablePipeline {
-            name: "Transactions".into(),
-            key_field: "user_id".into(),
-            raw_register_json: r#"{"name":"Transactions","key_field":"user_id","features":[{"name":"tx_count_1h","type":"count","window":"1h"},{"name":"tx_sum_1h","type":"sum","field":"amount","window":"1h"}]}"#.to_string(),
-        }],
-        backfill_complete: vec![],
-    };
-
-    // Save and load
-    let bytes = save_snapshot(&snapshot).expect("save_snapshot should succeed");
-    let restored = load_snapshot(&bytes).expect("load_snapshot should succeed");
-
-    // Restore into a new store
-    let new_store = StateStore::new();
-    new_store.restore_from_snapshot(restored.entities);
-
-    // Verify features match
-    let features = new_store.get_all_features("u123", now);
-    assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(3)));
-    assert_eq!(features.get("tx_sum_1h"), Some(&FeatureValue::Float(60.0)));
-
-    // Verify pipeline info preserved
-    assert_eq!(restored.pipelines.len(), 1);
-    assert_eq!(restored.pipelines[0].name, "Transactions");
-    assert_eq!(restored.pipelines[0].key_field, "user_id");
+    // Phase 54-04 Pass B: legacy push/cascade helper deleted. Body stubbed
+    // pending Pass C on_shard rewrite.
+    unimplemented!("54-04 Pass B: legacy helper deleted; rewrite via on_shard path in Pass C")
 }
 
 // ======================== Version Mismatch ========================
@@ -200,7 +159,7 @@ fn test_eviction_removes_old_entity() {
     // old_user: 3601s old > 3600s TTL -> evicted
     // boundary_user: 3600s old = 3600s TTL -> kept (at boundary)
     // recent_user: 60s old < 3600s TTL -> kept
-    let evicted = evict_expired_keys(&store, &engine, now, 2);
+    let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
     assert_eq!(evicted, 1);
     assert!(store.get_entity("old_user").is_none());
     assert!(store.get_entity("boundary_user").is_some());
@@ -246,7 +205,7 @@ fn test_eviction_preserves_entity_with_no_events() {
     }
 
     let now = ts(100_000);
-    let evicted = evict_expired_keys(&store, &engine, now, 2);
+    let evicted = evict_expired_stream_entries(&store, &engine, now, 2);
     assert_eq!(evicted, 0);
     assert!(store.get_entity("no_event_user").is_some());
 }
