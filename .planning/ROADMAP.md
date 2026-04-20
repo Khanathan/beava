@@ -8,7 +8,7 @@
 - [x] **v2.1 -- Launch** (Phase 20) -- Engineering complete 2026-04-14 (live-run ops pending, calendar-gated) -- `.planning/milestones/v2.1-ROADMAP.md`
 - [x] **v0 -- Restructure + Data-Scientist Fork** (Phases 21-38) -- Phases 21-27, 36-37 complete; Phases 35, 38 planned.
 - [x] **v1.0-launch -- Public Launch Readiness** (Phases 45-47) -- Engineering complete 2026-04-17 -- `.planning/milestones/v1.0-launch-ROADMAP.md`
-- [ ] **v1.2 -- Thread-Per-Core + Full Key-Shard** (Phases 48, 49, 50, 50.5, 51, 52, 53) -- Active 2026-04-18
+- [ ] **v1.2 -- Thread-Per-Core + Full Key-Shard** (Phases 48, 49, 50, 50.5, 51, 52, 53, 54) -- Active 2026-04-18
 
 ## Phases
 
@@ -18,7 +18,8 @@
 - [x] **Phase 50.5: 50.5-shard-thread-completion** — Wire the Phase 50 shard thread receiver to actually own per-shard state (currently a stub that discards SPSC events, per `50-DEBUG-SESSION.md`). Unlocks the real TPC parallelism that Phase 50 promised but never delivered. Split ship-gate: **macOS dev ≥1.5× baseline (~460K EPS)** / **Linux prod ≥3× baseline (~918K EPS)**. Linux CI reference-box run is the merge gate. (completed 2026-04-19)
 - [x] **Phase 51: 51-cross-shard-queries-joins** — `GET /streams` scatter-gather, `JoinShardKeyMismatch` at register time, lazy global watermark, `GET /debug/shards` hot-shard visibility (completed 2026-04-19)
 - [x] **Phase 52: 52-event-log-recovery-ship-gate** — Per-shard log layout, parallel recovery, `tally reshard` tool, snapshot v8 hard-fail guard, fork/replica re-hash, N=1↔N=8 proptest parity, 1M+ EPS load test, architecture docs (completed 2026-04-19)
-- [ ] **Phase 53: 53-fjall-state-backend** — Replace per-shard in-memory AHashMap state with `fjall` LSM-tree backend (per-shard partitions); state is durable-by-default, unbounded size, crash-safe without snapshot replay; supersedes snapshot v8 format with fjall checkpoints
+- [x] **Phase 53: 53-fjall-state-backend** — Replace per-shard in-memory AHashMap state with `fjall` LSM-tree backend (per-shard partitions); state is durable-by-default, unbounded size, crash-safe without snapshot replay (completed 2026-04-19 — engineering-complete; 4/6 TPC-PERSIST-* closed; PERSIST-04 soak + PERSIST-05A bench deferred to Phase 54 because pprof showed legacy `PipelineEngine::push_internal` bypasses the fjall path at N=1 — see `53-VERIFICATION.md`)
+- [ ] **Phase 54: 54-legacy-engine-removal** — Retire the DashMap-backed `StateStore` and `PipelineEngine::push_internal` / `push_batch_with_cascade_no_features` legacy paths. Route every push entrypoint (TCP `handle_push_batch`, HTTP `http_push_*`, replica ingest) through shard-thread SPSC dispatch at N=1 as well as N>1, so `push_with_cascade_on_shard` + fjall is the sole hot path. Closes Phase 52-10 BLOCKER and unlocks the deferred Phase 53 perf gates (`-15%` 9-cell bench + 100 GB soak).
 
 ## Phase Details
 
@@ -144,7 +145,41 @@ Plans:
   5. The 9-cell matrix and Pareto cell at N=CPU_COUNT with fjall-backed state regress by at most **−15%** vs the Phase 52 in-memory baseline (fjall has intrinsic overhead vs HashMap; bounded regression accepted for the durability + unbounded-state wins).
   6. The N=1↔N=8 proptest parity harness (from Phase 52) runs green against fjall-backed state for every operator.
   7. `docs/architecture-tpc.md` gains a "State durability (fjall)" section; `docs/operations.md` documents `BEAVA_FJALL_*` tuning knobs and recovery semantics.
-**Plans**: TBD (run `/gsd-discuss-phase 53` to lock the design decisions before planning)
+**Plans**: 7 plans
+Plans:
+- [x] 53-01-PLAN.md — Wave 0 spike: fjall 2.11 dep + Criterion read-modify-write bench + postcard size histogram + SIGKILL verification + cache-stats API probe (W-4); CONTINUE/STOP gate
+- [x] 53-02-PLAN.md — Wave 1: fjall backend plumbing (`src/shard/fjall_backend.rs`: keyspace + partition lifecycle, FjallConfig, 7 BEAVA_FJALL_* env clamps with real sysinfo-driven CACHE_MB default, smoke round-trip test)
+- [x] 53-03-PLAN.md — Wave 2a: swap `Shard.state` AHashMap → `PartitionHandle`; StoreView fjall RMW arms; `read_entity_from_shard` helper; gate `ShardedStateStoreV1` behind `state-inmem` Cargo feature
+- [x] 53-03B-PLAN.md — Wave 2b (parallel): `ShardedStateStoreFjall` backend + `src/shard/thread.rs` fjall port + ConcurrentAppState plumbing + proptest module gating
+- [x] 53-04-PLAN.md — Wave 3: `tally migrate-to-fjall` CLI with per-stream shard_key routing (W-2) + `tally reshard` fjall awareness
+- [x] 53-05-PLAN.md — Wave 4: SIGKILL crash-recovery integration test with ephemeral port (W-8) + N=1↔N=8 proptest parity port to fjall with file-level cfg gate (W-3) + 3–4 per-shard fjall Prometheus metrics (4th conditional on spike outcome, W-4)
+- [ ] 53-06-PLAN.md — Wave 5: 9-cell + Pareto bench regression gate (automated −15% budget) + 100 GB Hetzner CCX43 soak (human-verify, p99 < 1 ms) + architecture + ops docs with W-4 conditional cache-ratio alert **[DEFERRED to Phase 54 — pprof showed legacy DashMap bypass at N=1; bench would measure noise]**
+**UI hint**: no
+
+
+### Phase 54: 54-legacy-engine-removal
+**Goal**: Retire the DashMap-backed legacy engine path. Every push entrypoint — TCP `handle_push_batch`, HTTP `http_push_single`/`http_push_batch`, replica ingest — routes through the shard-thread SPSC dispatch at N=1 as well as N>1, so `push_with_cascade_on_shard` + fjall `PartitionHandle` is the sole hot path. `StateStore` and `PipelineEngine::push_internal` / `push_batch_with_cascade_no_features` are deleted. DashMap dependency is removed from `[dependencies]`.
+**Depends on**: Phase 53 (fjall backend landed). Source of truth: Phase 52-10 BLOCKER SUMMARY + Phase 53 pprof finding in `53-VERIFICATION.md` + `53-06-SUMMARY.md`.
+**Requirements**: TPC-PERSIST-04 (deferred from 53), TPC-PERSIST-05A (deferred from 53), TPC-ARCH-01 (NEW — single hot path; added to REQUIREMENTS.md in Wave 0).
+**Success Criteria** (what must be TRUE):
+  1. A developer running `grep -r "DashMap" src/` finds ZERO occurrences outside `Cargo.lock` and comments referencing prior architecture. The `dashmap` dependency is removed from `Cargo.toml`.
+  2. A developer running `grep -r "StateStore\b" src/` finds ZERO occurrences of the `StateStore` struct (the DashMap-backed one). `src/state/store.rs` either no longer exists or contains only type aliases that re-export shard-backed types.
+  3. A developer running `grep -rn "push_internal\|push_batch_with_cascade_no_features" src/` finds ZERO occurrences. Those methods are removed from `PipelineEngine`.
+  4. Re-running `cargo test --release --test profile_ingest -- --nocapture --ignored profile_ingest_hot_path` shows ZERO samples in `DashMap::_entry` or `DashMap::_get` in the top-20 leaf functions. `PartitionHandle::insert` or equivalent fjall symbols appear in the inclusive top-20 instead.
+  5. A developer runs `MODE=complex DURATION=60 bash benchmark/fraud-pipeline/run_bench.sh` at N=8 on the reference box and sees EPS within `-15%` of the Phase 52 committed baseline (unlocks deferred TPC-PERSIST-05A gate).
+  6. A developer runs the 100 GB Hetzner CCX43 soak and sees p99 < 1 ms sustained 8 h (unlocks deferred TPC-PERSIST-04 gate; `human_needed` per user decision 2026-04-19 — evidence-file gated).
+  7. Full test suite `cargo test --all -- --test-threads=1` reports zero regressions vs Phase 53 baseline (884 default / 888 state-inmem). The `state-inmem` Cargo feature is removed outright in Wave 4 unless the -15% gate misses (CONTEXT §Area 5 contingency).
+**Locked decisions (2026-04-19)**:
+  - Cross-shard TT-cascade: SCATTER-GATHER (NOT register-time shard_key constraint). `cascade_table_upsert_on_shard` dispatches SPSC sends to every affected shard and joins. Researcher recommendation REJECTED.
+  - Hetzner CCX43 soak: `human_needed` — phase transitions to `passed` on evidence-file commit; Claude prepares the runbook + script.
+**Plans**: 6 plans
+Plans:
+- [x] 54-00-baseline-and-scaffolding-PLAN.md — Wave 0: capture pprof + EPS baseline, grep-ZERO scripts (RED), 3 ingest-routing integration tests (RED), REQUIREMENTS.md TPC-ARCH-01 patch (completed 2026-04-19 — baseline EPS 197,122; −15% floor 167,553; all 6 RED gates in place)
+- [ ] 54-01-rewire-ingest-through-spsc-PLAN.md — Wave 1: send_to_shard helper + unify HTTP/TCP N=1 bypass + port replica.notify_subscribers hook
+- [ ] 54-02-storeview-widening-and-scatter-gather-cascade-PLAN.md — Wave 2: widen StoreView (5 methods) + cascade_table_upsert_on_shard SCATTER-GATHER + migrate operators/register
+- [ ] 54-03-migrate-remaining-statestore-callers-PLAN.md — Wave 3: boot-replay direct fjall insert + 6 non-shim DashMap users → RwLock<AHashMap> + test migration
+- [ ] 54-04-delete-legacy-surface-PLAN.md — Wave 4: delete StateStore + legacy pipeline methods + DashMap/arc-swap deps + state-inmem feature; flip grep-ZERO scripts GREEN
+- [ ] 54-05-perf-gates-and-soak-runbook-PLAN.md — Wave 5: pprof re-run, -15% EPS gate, Hetzner CCX43 100GB 8h soak runbook (human_needed), 54-VERIFICATION.md
 **UI hint**: no
 
 ## Progress
@@ -157,4 +192,5 @@ Plans:
 | 50.5. Shard-thread completion | 3/3 | Complete    | 2026-04-19 |
 | 51. Cross-shard queries + joins | 5/5 | Complete    | 2026-04-19 |
 | 52. Event log, recovery, ship-gate | 10/10 | Complete    | 2026-04-19 |
-| 53. Fjall state backend | 0/? | Not started | — |
+| 53. Fjall state backend | 6/7 plans (06 deferred) | **Engineering-complete** — 4/6 TPC-PERSIST closed; PERSIST-04 + PERSIST-05A gates deferred to Phase 54 (legacy DashMap bypass at N=1) | 2026-04-19 |
+| 54. Legacy engine removal | 1/6 | In progress — Plan 00 complete (baseline + scaffolding + RED gates landed 2026-04-19) | — |

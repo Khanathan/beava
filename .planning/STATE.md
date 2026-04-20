@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
-status: planning
-stopped_at: "checkpoint:human-verify 50-08 Task 2 — benchmark ship-gate pending"
-last_updated: "2026-04-18T15:45:52.619Z"
-last_activity: "2026-04-18 — v1.2 roadmap created. 5 phases (48–52), 24 requirements mapped, 0 plans executed. Dependency graph: 48 → 49 → 50 → 51 → 52 (Phases 51 and the Wave 4 work within 52 can parallelize after Phase 50 ships — see ROADMAP.md)."
+status: executing
+stopped_at: "Completed 54-00-PLAN.md — baseline + RED scaffolding committed"
+last_updated: "2026-04-20T00:10:00Z"
+last_activity: 2026-04-20
 progress:
-  total_phases: 6
-  completed_phases: 2
-  total_plans: 32
-  completed_plans: 14
-  percent: 44
+  total_phases: 8
+  completed_phases: 5
+  total_plans: 55
+  completed_plans: 41
+  percent: 75
 ---
 
 # Project State
@@ -21,16 +21,18 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 **Core value:** A skeptical engineer evaluating Beava on github.com can go from landing on the repo to correct, live feature values in under 60 seconds — from any language.
-**Current focus:** Milestone v1.2 — Thread-Per-Core + Full Key-Shard. Roadmap complete; ready to plan Phase 48.
+**Current focus:** Phase 54 — legacy-engine-removal
 
 ## Current Position
 
-**Phase:** 48 (not started)
-**Plan:** —
-**Status:** Roadmap written; awaiting phase planning
-**Progress:** [██░░░░░░░░] 23%
+Phase: 54 (legacy-engine-removal) — EXECUTING
+Plan: 2 of 6 (Plan 54-00 complete; next: 54-01 rewire-ingest-through-spsc)
+**Phase:** 54
+**Plan:** 54-00 completed 2026-04-19; 54-01 up next
+**Status:** Executing Phase 54
+**Progress:** [████░░░░░░] 38%
 
-**Last activity:** 2026-04-18 — v1.2 roadmap created. 5 phases (48–52), 24 requirements mapped, 0 plans executed. Dependency graph: 48 → 49 → 50 → 51 → 52 (Phases 51 and the Wave 4 work within 52 can parallelize after Phase 50 ships — see ROADMAP.md).
+**Last activity:** 2026-04-20
 
 ## Milestone Status
 
@@ -112,6 +114,15 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 49-per-shard-state-store P06 | 25 | 2 tasks | 4 files |
 
 ## Accumulated Context
+
+### Phase 54 Plan 00 — 2026-04-19
+
+- **EPS baseline committed:** MODE=complex N=8 = 197,122 EPS at Phase 53 HEAD (`d30ff5f`). −15% floor for TPC-PERSIST-05A = **167,553 EPS** (gate for Wave 5 plan 54-05).
+- **Phase 53 pprof preserved:** `.planning/phases/54-legacy-engine-removal/pprof-before/` (on-disk; gitignored). DashMap::_entry at 61.2% self-samples — the primary target of the phase.
+- **Grep-ZERO RED counts at Phase 53 HEAD:** DashMap=50 hits in src/, StateStore struct=1 hit, legacy push helpers=3 hits. Wave 4 target: 0/0/0.
+- **Replica notify-hook gap confirmed:** `push_internal_on_shard` (shard-thread mutation path at pipeline.rs:1939) does NOT call `notify_subscribers`; legacy `push_internal` at pipeline.rs:1198 does. Silent-regression test `tests/replica_ingest_routing.rs::replica_push_fires_notify_on_shard_path` guards at N=2. Wave 1 plan 54-01 Task 3 must port the hook.
+- **REQUIREMENTS.md Coverage 24/24 → 31/31:** Added TPC-PERSIST-05A + TPC-ARCH-01; Phase 53 + Phase 54 trace rows landed.
+- **Deviation pattern (noted for future TDD planning):** metric-only assertions are INSUFFICIENT SPSC-transit proofs when the legacy and shard paths both emit the same counter. Use a DashMap-empty side check (`state.store.get_entity().is_none()`) for the real RED.
 
 ### Architecture decisions locked 2026-04-18
 
