@@ -323,6 +323,20 @@ fn shard_event_loop(
                     let result = {
                         let engine = state.engine.read();
                         let read_features = event.response_tx.is_some();
+                        // Phase 54-02 Task 2: hand the engine a snapshot of
+                        // the sibling-shard handles so cross-shard TT
+                        // cascades can dispatch via SPSC. `read()` is a
+                        // parking_lot RwLock guard held only across this
+                        // single synchronous call, so the window is the
+                        // duration of one event's push + cascade. No
+                        // re-entrancy — shard threads never call into their
+                        // own handle's inbox.
+                        let handles_guard = state.shard_handles.read();
+                        let handles_slice: Option<&[ShardHandle]> = if handles_guard.is_empty() {
+                            None
+                        } else {
+                            Some(&handles_guard[..])
+                        };
                         engine.push_with_cascade_on_shard(
                             stream_name,
                             &payload,
@@ -330,6 +344,8 @@ fn shard_event_loop(
                             None,
                             now,
                             read_features,
+                            handles_slice,
+                            shard_index,
                         )
                     };
 

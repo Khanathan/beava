@@ -300,7 +300,17 @@ pub fn run_batch(
         let now = event_ts(evt);
         let shard = &mut shards[shard_idx];
 
-        match engine.push_with_cascade_on_shard(stream_name, &payload, shard, None, now, true) {
+        // Phase 54-02 Task 2: harness has no shard threads, sibling_shards = None.
+        match engine.push_with_cascade_on_shard(
+            stream_name,
+            &payload,
+            shard,
+            None,
+            now,
+            true,
+            None,
+            shard_idx,
+        ) {
             Ok(fm) if !fm.is_empty() => {
                 results.insert(evt.key.clone(), fm);
             }
@@ -507,6 +517,8 @@ fn fjall_shard_state_iter_roundtrips() {
                 None,
                 event_ts(evt),
                 true,
+                None, // Phase 54-02 Task 2: no sibling shards in this harness.
+                idx,
             )
             .expect("push ok");
     }
@@ -671,7 +683,17 @@ pub fn run_batch_fork(
         let now = event_ts(evt);
         let shard = &mut shards[shard_idx];
 
-        match engine.push_with_cascade_on_shard(stream_name, &payload, shard, None, now, true) {
+        // Phase 54-02 Task 2: harness has no shard threads, sibling_shards = None.
+        match engine.push_with_cascade_on_shard(
+            stream_name,
+            &payload,
+            shard,
+            None,
+            now,
+            true,
+            None,
+            shard_idx,
+        ) {
             Ok(fm) if !fm.is_empty() => {
                 results.insert(evt.key.clone(), fm);
             }

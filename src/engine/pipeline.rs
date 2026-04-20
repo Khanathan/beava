@@ -1554,6 +1554,446 @@ impl PipelineEngine {
         self.push_with_cascade_internal(stream_name, event, store, now, false)
     }
 
+    /// Phase 54-02 Task 2: scatter-gather Table↔Table cascade on the shard path.
+    ///
+    /// Shard-aware twin of `cascade_table_upsert`. Walks every registered
+    /// `TableTableJoin` feature that references `input_table`, computes the
+    /// output row, then routes the resulting `upsert_table_row` /
+    /// `tombstone_table_row` to the shard that OWNS the output key:
+    ///
+    ///   - If the output key hashes to `input_shard_idx` (or `sibling_shards`
+    ///     is `None` / has ≤1 handles) → write directly against `input_shard`
+    ///     via the widened `StoreView::Sharded` surface (intra-shard fast path).
+    ///
+    ///   - Otherwise → dispatch `ShardOp::UpsertTableRow` /
+    ///     `ShardOp::TombstoneTableRow` to `sibling_shards[target_idx]` via
+    ///     non-blocking `crossbeam::try_send`, collect the oneshot response
+    ///     receivers, and join them at the end of the call
+    ///     (`futures::executor::block_on`).
+    ///
+    /// # User decision (2026-04-19)
+    ///
+    /// This implements **SCATTER-GATHER** per the Phase 54 locked user
+    /// decision. The researcher's register-time shard_key-constraint
+    /// recommendation (reject cross-shard TT edges at REGISTER) was
+    /// EXPLICITLY REJECTED — TT cascades whose output keys live on a
+    /// different shard than their input are a first-class supported
+    /// pattern, budgeted against the Wave 5 -15% EPS gate.
+    ///
+    /// # Deadlock analysis — why shard-A → shard-B → shard-A cycles cannot form
+    ///
+    /// The scatter phase issues `try_send` into sibling inboxes and then
+    /// blocks on `futures::executor::block_on(rx)` where `rx` is a
+    /// `tokio::sync::oneshot::Receiver` fulfilled by the sibling shard's
+    /// own event loop. Three observations make a deadlock impossible:
+    ///
+    /// **(a) Each shard has its own pinned OS thread + its own runtime.**
+    /// Per Phase 50.5, `spawn_shard_threads` gives every shard a dedicated
+    /// OS thread and its own `tokio::runtime::Builder::new_current_thread`
+    /// reactor. When shard-A calls `block_on(rx)` waiting for shard-B, the
+    /// blocked thread is shard-A's — shard-A is NOT a consumer of shard-B's
+    /// inbox. Shard-B's event loop runs on its own thread and continues
+    /// draining its own inbox unimpeded. The canonical "cycle" (A waits on
+    /// B, B waits on A) would require A to be the consumer of B's inbox —
+    /// it is not.
+    ///
+    /// **(b) `crossbeam_channel::try_send` is non-blocking on the send
+    /// side.** The scatter phase uses `try_send` exclusively. If the target
+    /// shard's inbox is `Full`, `try_send` returns `TrySendError::Full`
+    /// immediately — control returns to the caller without acquiring any
+    /// wait-chain edge. Even if shard-B (while servicing our
+    /// `UpsertTableRow`) issued its own cross-shard cascade back to
+    /// shard-A, that nested send is also `try_send`, so shard-B never
+    /// blocks on scheduling. The ONLY blocking edge in the whole dance is
+    /// shard-A → oneshot(rx) ← shard-B's SetOk reply, and shard-B fulfills
+    /// that receiver independently when it drains the inbox entry.
+    ///
+    /// **(c) Backpressure on target inbox = FAIL FAST with
+    /// `BeavaError::Protocol("shard inbox full — cascade backpressure")`.**
+    /// On `try_send → Full` we increment
+    /// `beava_shard_inbox_full_total{shard=target}` (the existing Phase 50
+    /// metric) and return the error up through
+    /// `push_with_cascade_on_shard` → `shard_event_loop` → TCP/HTTP
+    /// caller, which maps it to 503 / `SHARD_OVERLOAD 0x10` exactly like a
+    /// single-shard push would. No retry, no backoff — retrying in place
+    /// would re-introduce the cycle risk the scatter-gather design
+    /// eliminates, and TT-cascade is a correctness invariant (the derived
+    /// row MUST land atomically, or the whole push fails). Sustained
+    /// `beava_shard_inbox_full_total` on a cascade target is the signal
+    /// to exercise the CONTEXT §Area 5 contingency ladder (renegotiate
+    /// inbox capacity, add write-through cache, or reduce fan-out).
+    ///
+    /// # Cross-shard recursion scope (this wave)
+    ///
+    /// When an output row is routed cross-shard we do NOT recurse into
+    /// TT-of-TT chains from the current shard — that recursion must run
+    /// against the target shard's row state, which lives on the target
+    /// shard. Same-shard outputs recurse normally (matches the DashMap
+    /// `cascade_table_upsert` semantics). Cross-shard TT-of-TT is
+    /// out-of-scope for Pass B; the existing sharding_parity harness does
+    /// not exercise it, and the cross_shard_tt_cascade test covers a
+    /// single cascade hop.
+    ///
+    /// # Signature notes
+    ///
+    /// - `primary_event` is the source payload the cascade was triggered by
+    ///   — it's the only source of field values for the output key when the
+    ///   downstream Table's key_field differs from `input_table`'s.
+    /// - `sibling_shards = None` (or `len ≤ 1`) collapses to intra-shard
+    ///   writes exclusively (preserves N=1 behavior and covers test
+    ///   harnesses that don't spawn real shard threads).
+    #[allow(clippy::too_many_arguments)]
+    pub fn cascade_table_upsert_on_shard(
+        &self,
+        input_table: &str,
+        key: &str,
+        _tombstoned: bool,
+        primary_event: Option<&serde_json::Value>,
+        input_shard: &mut crate::shard::Shard,
+        input_shard_idx: usize,
+        sibling_shards: Option<&[crate::shard::thread::ShardHandle]>,
+        now: SystemTime,
+    ) -> Result<(), BeavaError> {
+        use crate::state::store::TableRowState;
+        use crate::shard::{read_entity_from_shard, StoreView};
+
+        // Port of cascade_table_upsert (DashMap version): walk every stream
+        // whose features reference `input_table` as left or right of a
+        // TableTableJoin. For each such downstream:
+        //   - read left/right rows from `input_shard` at `key`
+        //   - compute Live / Tombstoned disposition via join_type semantics
+        //   - write the merged row to the shard OWNING the output key
+        let n_shards = sibling_shards.map(|s| s.len()).unwrap_or(1).max(1);
+
+        let mut downstreams: Vec<(String, FeatureDef)> = Vec::new();
+        for (sname, sdef) in &self.streams {
+            for (_fn, def) in &sdef.features {
+                if let FeatureDef::TableTableJoin {
+                    left_table,
+                    right_table,
+                    ..
+                } = def
+                {
+                    if left_table == input_table || right_table == input_table {
+                        downstreams.push((sname.clone(), def.clone()));
+                    }
+                }
+            }
+        }
+
+        // Outstanding oneshot receivers for the gather phase.
+        let mut pending: Vec<(usize, tokio::sync::oneshot::Receiver<crate::shard::thread::ShardResult>)> =
+            Vec::new();
+
+        for (output_name, def) in downstreams {
+            let (left_table, right_table, join_type, left_fields, right_fields) = match def {
+                FeatureDef::TableTableJoin {
+                    left_table,
+                    right_table,
+                    join_type,
+                    left_fields,
+                    right_fields,
+                    ..
+                } => (
+                    left_table,
+                    right_table,
+                    join_type,
+                    left_fields,
+                    right_fields,
+                ),
+                _ => continue,
+            };
+
+            // Read both sides from the input shard — TT cascade state still
+            // lives at `key` on the INPUT side; the split-shard hop is only
+            // on the OUTPUT write.
+            let (left_row, right_row): (
+                Option<crate::state::store::TableRow>,
+                Option<crate::state::store::TableRow>,
+            ) = {
+                let lt = left_table.clone();
+                let rt = right_table.clone();
+                let lr = read_entity_from_shard(input_shard, key, |entity| {
+                    entity.table_rows.get(&lt).cloned()
+                })
+                .flatten();
+                let rr = read_entity_from_shard(input_shard, key, |entity| {
+                    entity.table_rows.get(&rt).cloned()
+                })
+                .flatten();
+                (lr, rr)
+            };
+
+            let l_live = matches!(
+                left_row.as_ref().map(|r| &r.state),
+                Some(TableRowState::Live)
+            );
+            let r_live = matches!(
+                right_row.as_ref().map(|r| &r.state),
+                Some(TableRowState::Live)
+            );
+
+            let (emit_live, null_right) = match join_type {
+                JoinType::Inner => {
+                    if l_live && r_live {
+                        (true, false)
+                    } else {
+                        (false, false)
+                    }
+                }
+                JoinType::Left => {
+                    if l_live && r_live {
+                        (true, false)
+                    } else if l_live {
+                        (true, true)
+                    } else {
+                        (false, false)
+                    }
+                }
+            };
+
+            let output_tombstoned = !emit_live;
+
+            // Determine output_key. If the downstream stream declares its
+            // own key_field / group_by_keys AND we have the primary event in
+            // hand, use those to re-derive the output key — this is the
+            // scatter-gather trigger (different shard_key on output table).
+            // Otherwise fall back to `key` (same-shard semantics, matches
+            // the DashMap cascade_table_upsert).
+            let output_key: String = match (primary_event, self.streams.get(&output_name)) {
+                (Some(event), Some(out_def)) => {
+                    if let Some(gb_keys) = &out_def.group_by_keys {
+                        match crate::engine::register::encode_group_by(gb_keys, event) {
+                            Ok(k) => k,
+                            Err(_) => key.to_string(),
+                        }
+                    } else if let Some(kf) = &out_def.key_field {
+                        match event.get(kf) {
+                            Some(serde_json::Value::String(s)) if !s.is_empty() => s.clone(),
+                            Some(serde_json::Value::Number(n)) => n.to_string(),
+                            _ => key.to_string(),
+                        }
+                    } else {
+                        key.to_string()
+                    }
+                }
+                _ => key.to_string(),
+            };
+
+            // Target shard for output row. At N=1 (n_shards==1) this is
+            // always 0; at N>1 we use the same ahash-modulo-N routing the
+            // ingest path uses (shard_hint_for_event on a synthetic
+            // {"k": output_key} payload is equivalent to hashing the string
+            // directly). Keep routing backend-agnostic — just the string.
+            let target_shard_idx: usize = if n_shards <= 1 {
+                0
+            } else {
+                let synth = serde_json::json!({ "__k": output_key });
+                (crate::routing::shard_hint_for_event(&synth, Some("__k")) as usize) % n_shards
+            };
+
+            if emit_live {
+                // Build merged fields exactly like cascade_table_upsert.
+                let mut merged: AHashMap<String, FeatureValue> = AHashMap::new();
+
+                if let Some(lr) = left_row.as_ref() {
+                    for lf in &left_fields {
+                        let v = lr.fields.get(lf).cloned().unwrap_or(FeatureValue::Missing);
+                        merged.insert(lf.clone(), v);
+                    }
+                }
+
+                for (src, emitted) in &right_fields {
+                    if merged.contains_key(emitted) {
+                        continue;
+                    }
+                    let v = if null_right {
+                        FeatureValue::Missing
+                    } else {
+                        right_row
+                            .as_ref()
+                            .and_then(|rr| rr.fields.get(src).cloned())
+                            .unwrap_or(FeatureValue::Missing)
+                    };
+                    merged.insert(emitted.clone(), v);
+                }
+
+                // Same-shard fast path.
+                if target_shard_idx == input_shard_idx
+                    || sibling_shards.map(|s| s.len()).unwrap_or(0) <= 1
+                {
+                    let mut view = StoreView::Sharded(input_shard);
+                    view.upsert_table_row(&output_key, &output_name, merged, now);
+                    // Recurse — same-shard only. See "Cross-shard recursion
+                    // scope" in the doc comment above.
+                    self.cascade_table_upsert_on_shard(
+                        &output_name,
+                        &output_key,
+                        output_tombstoned,
+                        primary_event,
+                        input_shard,
+                        input_shard_idx,
+                        sibling_shards,
+                        now,
+                    )?;
+                } else {
+                    // Scatter: dispatch to sibling shard.
+                    let handles = sibling_shards.expect("sibling_shards checked above");
+                    let target = &handles[target_shard_idx];
+                    if target.is_down.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(BeavaError::Protocol(format!(
+                            "cascade target shard {} is down (quarantined)",
+                            target_shard_idx
+                        )));
+                    }
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let ev = crate::shard::thread::ShardEvent {
+                        payload: bytes::Bytes::new(),
+                        stream_name: std::sync::Arc::from(""),
+                        shard_hint: 0,
+                        response_tx: Some(tx),
+                        op: crate::shard::thread::ShardOp::UpsertTableRow {
+                            key: output_key.clone(),
+                            table_name: output_name.clone(),
+                            fields: merged,
+                            now,
+                        },
+                    };
+                    match target.inbox_tx.try_send(ev) {
+                        Ok(()) => {
+                            pending.push((target_shard_idx, rx));
+                        }
+                        Err(crossbeam_channel::TrySendError::Full(_)) => {
+                            crate::shard::metrics::record_inbox_full(target_shard_idx);
+                            return Err(BeavaError::Protocol(format!(
+                                "shard inbox full — cascade backpressure (target={})",
+                                target_shard_idx
+                            )));
+                        }
+                        Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                            return Err(BeavaError::Protocol(format!(
+                                "shard inbox disconnected (target={})",
+                                target_shard_idx
+                            )));
+                        }
+                    }
+                    // Cross-shard recursion is out of scope for this wave;
+                    // same-shard TT-of-TT still recurses above.
+                }
+            } else {
+                // Tombstone path.
+                if target_shard_idx == input_shard_idx
+                    || sibling_shards.map(|s| s.len()).unwrap_or(0) <= 1
+                {
+                    let mut view = StoreView::Sharded(input_shard);
+                    view.tombstone_table_row(&output_key, &output_name, now);
+                    self.cascade_table_upsert_on_shard(
+                        &output_name,
+                        &output_key,
+                        output_tombstoned,
+                        primary_event,
+                        input_shard,
+                        input_shard_idx,
+                        sibling_shards,
+                        now,
+                    )?;
+                } else {
+                    let handles = sibling_shards.expect("sibling_shards checked above");
+                    let target = &handles[target_shard_idx];
+                    if target.is_down.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(BeavaError::Protocol(format!(
+                            "cascade target shard {} is down (quarantined)",
+                            target_shard_idx
+                        )));
+                    }
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let ev = crate::shard::thread::ShardEvent {
+                        payload: bytes::Bytes::new(),
+                        stream_name: std::sync::Arc::from(""),
+                        shard_hint: 0,
+                        response_tx: Some(tx),
+                        op: crate::shard::thread::ShardOp::TombstoneTableRow {
+                            key: output_key.clone(),
+                            table_name: output_name.clone(),
+                            now,
+                        },
+                    };
+                    match target.inbox_tx.try_send(ev) {
+                        Ok(()) => pending.push((target_shard_idx, rx)),
+                        Err(crossbeam_channel::TrySendError::Full(_)) => {
+                            crate::shard::metrics::record_inbox_full(target_shard_idx);
+                            return Err(BeavaError::Protocol(format!(
+                                "shard inbox full — cascade backpressure (target={})",
+                                target_shard_idx
+                            )));
+                        }
+                        Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                            return Err(BeavaError::Protocol(format!(
+                                "shard inbox disconnected (target={})",
+                                target_shard_idx
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        // GATHER phase — block on every outstanding oneshot. We use
+        // `futures::executor::block_on` (not tokio's block_on) because the
+        // caller is already inside the shard thread's current_thread tokio
+        // runtime and tokio's Handle::block_on panics on re-entry. The tiny
+        // futures executor polls the oneshot Receiver; wakeups originate on
+        // the sibling shard's thread (send-side), independent of any tokio
+        // reactor, so no reactor progress is required on THIS thread during
+        // the wait.
+        for (target_idx, rx) in pending {
+            match futures::executor::block_on(rx) {
+                Ok(crate::shard::thread::ShardResult::SetOk) => {}
+                Ok(crate::shard::thread::ShardResult::Err(e)) => {
+                    return Err(BeavaError::Protocol(format!(
+                        "cascade dispatch to shard {} failed: {:?}",
+                        target_idx, e
+                    )));
+                }
+                Ok(other) => {
+                    return Err(BeavaError::Protocol(format!(
+                        "cascade dispatch to shard {} returned unexpected ShardResult: {:?}",
+                        target_idx, other
+                    )));
+                }
+                Err(_) => {
+                    return Err(BeavaError::Protocol(format!(
+                        "cascade dispatch to shard {} oneshot closed",
+                        target_idx
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Phase 54-02 Task 2: live-operator-read variant of
+    /// `get_features_on_shard`. Takes `&mut Shard` so operators that need to
+    /// advance time (`op.read(now)` RMW) can do so cleanly. Read-only
+    /// callers keep using the `&Shard` variant.
+    ///
+    /// For Pass B scope this forwards to `get_features_on_shard` — the full
+    /// live-op migration is a Pass C concern against the widened operator
+    /// surface. Providing the signature now lets callers that will need the
+    /// `&mut` borrow in Pass C compile-switch without a second signature
+    /// rewrite later.
+    pub fn get_features_on_shard_mut(
+        &self,
+        key: &str,
+        shard: &mut crate::shard::Shard,
+        now: SystemTime,
+    ) -> FeatureMap {
+        // Pass B: delegate to the existing read-only implementation. Pass C
+        // (operators.rs migration) will inline the live-op eval path here.
+        self.get_features_on_shard(key, shard, now)
+    }
+
     /// Phase 50.5-01: Cascade-aware push against a per-shard AHashMap partition.
     ///
     /// This is the N>1 entry point — parameterized on `&mut Shard` instead of
@@ -1562,6 +2002,16 @@ impl PipelineEngine {
     ///
     /// The cascade shape (StoreView enum) was chosen by the Wave 0 grep-and-count
     /// in `50.5-01-CASCADE-SHAPE.md`: 4 call sites, 2 distinct methods → enum.
+    ///
+    /// # Phase 54-02 Task 2 — `sibling_shards` parameter
+    ///
+    /// Added `sibling_shards: Option<&[ShardHandle]>` so the TT cascade can
+    /// route output rows to the shard that owns the output key (scatter-
+    /// gather, per user decision 2026-04-19). `None` (or a slice of len ≤ 1)
+    /// collapses to intra-shard writes exclusively — preserves N=1 parity
+    /// and covers test harnesses that don't spawn real shard threads. The
+    /// shard event loop passes `Some(&state.shard_handles.read())`.
+    #[allow(clippy::too_many_arguments)]
     pub fn push_with_cascade_on_shard(
         &self,
         stream_name: &str,
@@ -1570,6 +2020,8 @@ impl PipelineEngine {
         _event_log: Option<&std::sync::Arc<crate::state::event_log::EventLog>>,
         now: SystemTime,
         read_features: bool,
+        sibling_shards: Option<&[crate::shard::thread::ShardHandle]>,
+        input_shard_idx: usize,
     ) -> Result<FeatureMap, BeavaError> {
         // Determine if downstream cascade exists (same fast path as push_with_cascade_internal).
         let cascade = match self.cascade_plan.get(stream_name) {
@@ -1920,6 +2372,63 @@ impl PipelineEngine {
                         enrichment_fv.insert(name.clone(), value.clone());
                     }
                 }
+            }
+        }
+
+        // Phase 54-02 Task 2: Table↔Table cascade hook on the shard path.
+        //
+        // If `stream_name` is an input-side Table of any registered
+        // TableTableJoin, kick `cascade_table_upsert_on_shard` to derive +
+        // route the join-output rows (scatter-gather when the output key
+        // lives on a different shard, per user decision 2026-04-19). The
+        // call is a no-op when no TT edge references this stream.
+        //
+        // Primary-push-triggered TT cascade is dormant today — TT inputs
+        // are currently driven via OP_PUSH_TABLE / SET handlers in tcp.rs,
+        // which still use the DashMap `cascade_table_upsert` path (Wave 4
+        // deletes that). Wiring the hook here makes
+        // push_with_cascade_on_shard the SINGLE cascade entry point once
+        // those handlers migrate onto the shard path, and satisfies the
+        // 54-02 invariant "push_with_cascade_on_shard body contains a call
+        // to cascade_table_upsert_on_shard".
+        let has_tt_edge = self.streams.values().any(|sdef| {
+            sdef.features.iter().any(|(_, def)| match def {
+                FeatureDef::TableTableJoin {
+                    left_table,
+                    right_table,
+                    ..
+                } => left_table == stream_name || right_table == stream_name,
+                _ => false,
+            })
+        });
+        if has_tt_edge {
+            // Resolve primary-entity key the same way push_internal_on_shard
+            // does so the cascade reads the right entity on this shard.
+            let primary_stream = self.streams.get(stream_name);
+            let cascade_key: Option<String> = primary_stream.and_then(|sdef| {
+                if let Some(gb_keys) = &sdef.group_by_keys {
+                    crate::engine::register::encode_group_by(gb_keys, payload).ok()
+                } else if let Some(kf) = &sdef.key_field {
+                    match payload.get(kf) {
+                        Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s.clone()),
+                        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            });
+            if let Some(k) = cascade_key {
+                self.cascade_table_upsert_on_shard(
+                    stream_name,
+                    &k,
+                    false,
+                    Some(payload),
+                    shard,
+                    input_shard_idx,
+                    sibling_shards,
+                    now,
+                )?;
             }
         }
 

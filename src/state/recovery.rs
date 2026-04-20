@@ -336,7 +336,11 @@ fn apply_log_entry_to_shard(
     // Push through the pipeline engine (read lock — engine is read-only after registration).
     let eng = engine.read();
     // read_features=false during recovery (we don't need the computed feature map back).
-    let _ = eng.push_with_cascade_on_shard(stream_name, &event, shard, None, now, false);
+    // Phase 54-02 Task 2: recovery runs before shard threads are spawned,
+    // so there are no sibling shards to scatter-gather into — pass `None`
+    // so the cascade stays intra-shard (which is also how legacy recovery
+    // behaved).
+    let _ = eng.push_with_cascade_on_shard(stream_name, &event, shard, None, now, false, None, 0);
 
     Ok(())
 }
