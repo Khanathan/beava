@@ -54,6 +54,11 @@ Requirements scoped to the v1.2 milestone. Each maps to a roadmap phase (48–52
 - [ ] **TPC-PERSIST-04**: A soak test with 100 GB of entity state on a 32 GB RAM box sustains sub-ms p99 feature-read latency; validates fjall bloom filters + block cache behavior for out-of-RAM workloads. (Phase 53)
 - [ ] **TPC-PERSIST-05**: Performance regression vs Phase 52 in-memory baseline is bounded: 9-cell matrix + Pareto cell at N=CPU_COUNT regress by at most **−15%**; fork/replica parity tests (N=1↔N=8 proptest from Phase 52) remain green with fjall-backed state. (Phase 53)
 - [ ] **TPC-PERSIST-06**: `docs/architecture-tpc.md` gains a "State durability (fjall)" section; `docs/operations.md` documents `BEAVA_FJALL_*` tuning knobs (block cache size, compaction threads, WAL fsync cadence) and restart/recovery semantics. (Phase 53)
+- [ ] **TPC-PERSIST-05A**: After legacy engine removal, the `MODE=complex DURATION=60 CPUS=8 CLIENTS=8` benchmark on the reference box produces EPS within **−15%** of the Phase 52 baseline committed at `benchmark/fraud-pipeline/baseline-N8-complex.json`. Unlocks the Phase 53-deferred ship gate. (Phase 54)
+
+### TPC-ARCH — Single Hot Path (Phase 54)
+
+- [ ] **TPC-ARCH-01**: Every push entrypoint — TCP `handle_push_batch`, HTTP `http_push_single`/`http_push_batch`, and replica ingest — routes through the shard-thread SPSC dispatch at N=1 as well as N>1, so `push_with_cascade_on_shard` + fjall `PartitionHandle` is the sole hot path. `StateStore`, `PipelineEngine::push_internal`, and `push_batch_with_cascade_no_features` are deleted. `dashmap` and `arc-swap` are removed from `[dependencies]`. Grep-ZERO gates enforce this in CI. (Phase 54)
 
 ## Future Requirements
 
@@ -88,5 +93,7 @@ Filled by roadmapper 2026-04-18. Maps each REQ-ID to the phase that delivers it.
 | 50 | multi-shard-routing | TPC-INFRA-03, TPC-INFRA-04, TPC-INFRA-07, TPC-PERF-02, TPC-PERF-03, TPC-PERF-04, TPC-CORR-01, TPC-CORR-03, TPC-DX-02 |
 | 51 | cross-shard-queries-joins | TPC-INFRA-05, TPC-PERF-05, TPC-PERF-06, TPC-CORR-04 |
 | 52 | event-log-recovery-ship-gate | TPC-INFRA-06, TPC-CORR-02, TPC-CORR-05, TPC-CORR-06, TPC-PERF-07, TPC-DX-03, TPC-DX-04 |
+| 53 | fjall-state-backend | TPC-PERSIST-01, TPC-PERSIST-02, TPC-PERSIST-03, TPC-PERSIST-06 (TPC-PERSIST-04 + TPC-PERSIST-05 deferred to Phase 54) |
+| 54 | legacy-engine-removal | TPC-ARCH-01, TPC-PERSIST-04, TPC-PERSIST-05A (TPC-PERSIST-04 + TPC-PERSIST-05A deferred from Phase 53 — closed here) |
 
-**Coverage:** 24/24 requirements mapped (1 + 3 + 9 + 4 + 7 = 24)
+**Coverage:** 31/31 requirements mapped (1 + 3 + 9 + 4 + 7 + 4 + 3 = 31; adds 6 TPC-PERSIST-* + 1 TPC-ARCH-*)
