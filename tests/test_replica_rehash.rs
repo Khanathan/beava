@@ -33,7 +33,7 @@ use serde_json::json;
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::reshard::rehash_to_shard;
 use beava::server::replica::{compute_target_shard, rehash_skip_count};
-use beava::server::tcp::{make_concurrent_state_default_store, replica_ingest, BackfillTracker, SharedState};
+use beava::server::tcp::{make_concurrent_state_full, replica_ingest, BackfillTracker, SharedState};
 use beava::state::event_log::{EventLog, LOG_FMT_JSON};
 // ---------------------------------------------------------------------------
 // Helpers
@@ -73,7 +73,7 @@ fn make_state_n1(log_dir: &std::path::Path) -> SharedState {
     engine.register(count_stream("events")).unwrap();
     let event_log = EventLog::new(log_dir.to_path_buf()).unwrap();
     event_log.register_stream("events", None).unwrap();
-    make_concurrent_state_default_store(
+    make_concurrent_state_full(
         engine,
         Some(event_log),
         log_dir.join("snapshot"),
@@ -99,7 +99,12 @@ fn wrap_json(v: &serde_json::Value) -> Vec<u8> {
 fn get_count(state: &SharedState, key: &str) -> Option<i64> {
     let now = std::time::UNIX_EPOCH + Duration::from_secs(4_000_000);
     let engine = state.engine.read();
-    let features = engine.get_features(key, &state.store, now);
+    // Phase 54-04 Pass A6a: `state.store` deleted — local scratch store keeps
+    // the legacy `engine.get_features(&StateStore)` call compiling. Pass C
+    // migrates to shard-scatter read.
+    let _ = state;
+    let local_store = beava::state::store::StateStore::new();
+    let features = engine.get_features(key, &local_store, now);
     let fv = features
         .get("events.count_1h")
         .or_else(|| features.get("count_1h"))?;

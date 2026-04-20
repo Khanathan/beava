@@ -32,7 +32,7 @@ use beava::server::protocol::{
     self, Scope, OP_SNAPSHOT_FETCH, REPLICA_FRAME_TAG_HEADER, REPLICA_FRAME_TAG_PAYLOAD,
     STATUS_ERROR,
 };
-use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
 use beava::state::snapshot::{
     save_base_snapshot, BaseSnapshotStateV8, SerializableEntityState, SerializableStreamEntityState,
     SnapshotHeader, SnapshotType,
@@ -122,7 +122,7 @@ async fn start_test_server(
     for s in stream_names {
         engine.register(stream_def(s)).expect("register stream");
     }
-    let state = make_concurrent_state_default_store(
+    let state = make_concurrent_state_full(
         engine,
         None,
         snap_dir.join("beava.snapshot"), // legacy path root (parent == snap_dir)

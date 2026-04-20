@@ -29,13 +29,13 @@ use beava::server::http::build_router;
 use beava::server::signals::{
     emit_config_recommendations, emit_late_drop_signals, emit_register_failure,
 };
-use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
 fn fresh_state() -> SharedState {
-    make_concurrent_state_default_store(
+    make_concurrent_state_full(
         PipelineEngine::new(),
         None,
         std::path::PathBuf::from("/tmp/beava-test-warnings-integration.snapshot"),

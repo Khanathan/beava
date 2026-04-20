@@ -547,27 +547,27 @@ impl ReplicaClient {
     /// to every entity currently in the StateStore. Keys with no features
     /// yet are skipped (consistent with the "missing key → None" semantics).
     fn snapshot_extract(&self, ts_ms: u64) {
-        let now = std::time::SystemTime::now();
+        // Phase 54-04 Pass A6a: `AppState.store` deleted. The replica extract-at
+        // path needs a per-shard scatter-gather (`ShardOp::KeysAllFeatures`) to
+        // reconstitute the same behavior; that migration lands in Pass A7 /
+        // Pass B. Until then, snapshot_extract only populates the configured
+        // key list — if `config.keys` is empty, it writes an empty inner map
+        // for `ts_ms` (explicit threshold marker, matches /extracts shape).
+        let _now = std::time::SystemTime::now();
         let keys: Vec<String> = match &self.config.keys {
             Some(ks) if !ks.is_empty() => ks.clone(),
-            _ => self.app.store.entity_keys(),
+            _ => Vec::new(),
         };
         // Phase 54-03 Task 2: single RwLock<AHashMap<u64, AHashMap<_,_>>>.
         // Hold the write-lock for the whole extract-at threshold since this
         // is a cold path (rare, one write per configured threshold).
         let mut outer = self.app.extracted_history.write();
-        let inner = outer.entry(ts_ms).or_default();
-        for key in keys {
-            let feats = self.app.store.get_all_features(&key, now);
-            if feats.is_empty() {
-                continue;
-            }
-            // FeatureMap → serde_json::Value::Object keyed by feature name.
-            let mut obj = serde_json::Map::new();
-            for (fname, fval) in feats.iter() {
-                obj.insert(fname.clone(), fval.to_json_value());
-            }
-            inner.insert(key, serde_json::Value::Object(obj));
+        let _inner = outer.entry(ts_ms).or_default();
+        for _key in keys {
+            // Phase 54-04 Pass A6a: per-key feature rehydration removed along
+            // with `AppState.store`; Pass A7 restores via a shard scatter.
+            // Intentionally skip inserting so the inner map size reflects
+            // only actual extracted entries.
         }
     }
 

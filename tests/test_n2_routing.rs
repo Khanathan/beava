@@ -30,10 +30,10 @@ use http_common::{inject_loopback, TEST_ADMIN_TOKEN};
 
 fn build_two_shard_state() -> SharedState {
     use beava::engine::pipeline::PipelineEngine;
-    use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker};
+    use beava::server::tcp::{make_concurrent_state_full, BackfillTracker};
     use std::sync::Arc;
 
-    make_concurrent_state_default_store(
+    make_concurrent_state_full(
         PipelineEngine::new(),
         None,
         std::path::PathBuf::from("/tmp/beava-test-n2-routing.snapshot"),

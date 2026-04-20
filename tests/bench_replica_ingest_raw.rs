@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use beava::server::tcp::{make_concurrent_state_default_store, replica_ingest, replica_ingest_batch, BackfillTracker, SharedState};
+use beava::server::tcp::{make_concurrent_state_full, replica_ingest, replica_ingest_batch, BackfillTracker, SharedState};
 use beava::state::event_log::{EventLog, LOG_FMT_JSON};
 fn count_stream() -> StreamDefinition {
     StreamDefinition {
@@ -64,7 +64,7 @@ fn make_state(event_log_enabled: bool) -> (SharedState, tempfile::TempDir) {
     } else {
         None
     };
-    let state = make_concurrent_state_default_store(
+    let state = make_concurrent_state_full(
         engine,
         event_log,
         tmp.path().join("snap"),

@@ -19,11 +19,11 @@ use tokio::net::TcpStream;
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::server::protocol::{write_string, OP_PUSH, TYPE_STR};
-use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
 const TEST_ADMIN: &str = "test-admin-54-00-tcp-routing";
 
 fn build_single_shard_state(tag: &str) -> SharedState {
-    let state = make_concurrent_state_default_store(
+    let state = make_concurrent_state_full(
         PipelineEngine::new(),
         None,
         std::path::PathBuf::from(format!("/tmp/beava-test-54-00-tcp-{tag}.snapshot")),
@@ -180,18 +180,9 @@ async fn tcp_push_at_n1_routes_through_spsc() {
          increment (before={before}, after={after})."
     );
 
-    // Assertion 2 — strong SPSC-transit proof: legacy DashMap must be EMPTY
-    // for the pushed key. At Phase 53 HEAD this FAILS — the legacy engine
-    // path writes 'u1' into state.store. After Wave 1 plan 54-01 Task 2, N=1
-    // routes through the shard SPSC and state.store stays empty.
-    let legacy_entity = state.store.get_entity("u1");
-    assert!(
-        legacy_entity.is_none(),
-        "TPC-ARCH-01 (TCP routing, strong SPSC-transit check): legacy DashMap \
-         `state.store` contains entity 'u1' after a TCP push at N=1. The N=1 \
-         branch of handle_push_core_ex is still the legacy hot path. Plan \
-         54-01 Task 2 must rewire the TCP handle_push_batch entry through the \
-         shard SPSC inbox so state.store stays empty — proving the event \
-         transited the shard thread."
-    );
+    // Phase 54-04 Pass A6a: the legacy DashMap `state.store` field is deleted
+    // outright. The SPSC-transit invariant that Wave 1 wanted to prove
+    // (events don't touch the DashMap) is now structurally enforced — there
+    // is no DashMap to touch. Assertion kept as a documented no-op.
+    let _ = &state;
 }

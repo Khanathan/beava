@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 
 use beava::engine::pipeline::PipelineEngine;
 use beava::server::http::build_router;
-use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
 /// Admin token used in all Phase 45 tests.
 pub const TEST_ADMIN_TOKEN: &str = "test-admin";
 
@@ -26,7 +26,7 @@ pub const TEST_ADMIN_TOKEN: &str = "test-admin";
 /// `public_mode = true` mounts read routes on the public router.
 #[allow(dead_code)]
 pub fn build_test_state(public_mode: bool) -> SharedState {
-    make_concurrent_state_default_store(
+    make_concurrent_state_full(
         PipelineEngine::new(),
         None,
         std::path::PathBuf::from("/tmp/beava-test-http-ingest.snapshot"),

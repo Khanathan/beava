@@ -192,9 +192,9 @@ impl Shard {
     /// `StateStore::mark_deleted`'s dirty-removal semantics).
     ///
     /// NOTE: this diverges from `StateStore::delete_entity` which is an
-    /// alias for `tombstone_static` and KEEPS the entity (legacy behavior
-    /// preserved only via the `StoreView::Legacy` arm). Wave 4 deletes the
-    /// legacy arm, unifying on full-removal semantics.
+    /// alias for `tombstone_static` and KEEPS the entity. Phase 54-04 Pass
+    /// A6a deleted the `StoreView::Legacy` arm, unifying on full-removal
+    /// semantics.
     #[cfg(not(feature = "state-inmem"))]
     pub fn delete_entity(&mut self, key: &str) -> bool {
         let existed = matches!(self.state.get(key.as_bytes()), Ok(Some(_)));
@@ -425,14 +425,15 @@ fn entity_from_bytes(bytes: &[u8]) -> Option<EntityState> {
 ///
 /// Chosen shape: enum (CASCADE-SHAPE.md: 4 call sites, 2 distinct methods → enum).
 ///
-/// `Legacy` delegates to the DashMap-backed `StateStore` (N=1 path).
-/// `Sharded` delegates to the per-shard `Shard`. In the default (fjall) build
-/// the Sharded arm round-trips through `postcard` + `fjall::PartitionHandle`;
-/// in the dev-mode `state-inmem` build it uses the legacy AHashMap path.
+/// Phase 54-04 Pass A6a: the `Legacy` variant (DashMap-backed `StateStore`) has
+/// been deleted. `Sharded` is the only remaining variant — kept as a
+/// single-variant enum to avoid a mechanical rewrite of the ~15 call sites;
+/// Pass A6b / Pass B may collapse to a tuple struct when the adjacent
+/// `StateStore` struct itself is deleted.
 pub enum StoreView<'a> {
-    /// N=1 legacy path — DashMap-backed state store.
-    Legacy(&'a crate::state::store::StateStore),
-    /// N>1 per-shard path.
+    /// N>1 per-shard path. In the default (fjall) build the arm round-trips
+    /// through `postcard` + `fjall::PartitionHandle`; in the dev-mode
+    /// `state-inmem` build it uses the per-shard AHashMap path.
     Sharded(&'a mut Shard),
 }
 
@@ -445,10 +446,6 @@ impl<'a> StoreView<'a> {
         F: FnOnce(&mut crate::state::store::EntityState) -> R,
     {
         match self {
-            StoreView::Legacy(store) => {
-                let mut guard = store.get_or_create_entity(key);
-                f(&mut *guard)
-            }
             #[cfg(not(feature = "state-inmem"))]
             StoreView::Sharded(shard) => {
                 // Read-modify-write on the fjall partition. Missing key =>
@@ -491,7 +488,6 @@ impl<'a> StoreView<'a> {
         F: FnOnce(&crate::state::store::EntityState) -> R,
     {
         match self {
-            StoreView::Legacy(store) => store.get_entity(key).map(|guard| f(&*guard)),
             #[cfg(not(feature = "state-inmem"))]
             StoreView::Sharded(shard) => shard
                 .state
@@ -508,16 +504,16 @@ impl<'a> StoreView<'a> {
     // -----------------------------------------------------------------
     // Phase 54-02 Task 1: widened surface — the 5 methods StateStore
     // exposed for TT-cascade, SET/MSET static-feature, and dirty-set
-    // operations. Each arm delegates to `StateStore` (Legacy) or the new
-    // `Shard` methods above (Sharded). Wave 4 deletes the Legacy arm.
+    // operations. Phase 54-04 Pass A6a deleted the Legacy arm; all arms
+    // now delegate to `Shard` methods above (Sharded).
     // -----------------------------------------------------------------
 
     /// Phase 54-02: Delete an entity. See the `Shard::delete_entity`
-    /// docstring for the semantic divergence between Legacy (alias for
-    /// `tombstone_static` — keeps entity) and Sharded (full removal).
+    /// docstring — Sharded uses full-removal semantics. The historical
+    /// Legacy arm (alias for `tombstone_static` — keeps entity) was deleted
+    /// in Phase 54-04 Pass A6a.
     pub fn delete_entity(&mut self, key: &str) -> bool {
         match self {
-            StoreView::Legacy(store) => store.delete_entity(key),
             StoreView::Sharded(shard) => shard.delete_entity(key),
         }
     }
@@ -527,7 +523,6 @@ impl<'a> StoreView<'a> {
     /// before the call.
     pub fn tombstone_static(&mut self, key: &str) -> bool {
         match self {
-            StoreView::Legacy(store) => store.tombstone_static(key),
             StoreView::Sharded(shard) => shard.tombstone_static(key),
         }
     }
@@ -546,7 +541,6 @@ impl<'a> StoreView<'a> {
         now: SystemTime,
     ) {
         match self {
-            StoreView::Legacy(store) => store.upsert_table_row(key, table_name, fields, now),
             StoreView::Sharded(shard) => shard.upsert_table_row(key, table_name, fields, now),
         }
     }
@@ -560,7 +554,6 @@ impl<'a> StoreView<'a> {
         now: SystemTime,
     ) -> bool {
         match self {
-            StoreView::Legacy(store) => store.tombstone_table_row(key, table_name, now),
             StoreView::Sharded(shard) => shard.tombstone_table_row(key, table_name, now),
         }
     }
@@ -572,7 +565,6 @@ impl<'a> StoreView<'a> {
     /// hot-key contention on the shared `DashSet`).
     pub fn mark_dirty(&mut self, key: &str) {
         match self {
-            StoreView::Legacy(store) => store.mark_dirty(key),
             StoreView::Sharded(shard) => {
                 shard.dirty_set.insert(key.to_string());
             }

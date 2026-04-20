@@ -158,23 +158,9 @@ async fn events_distribute_across_all_shards_at_n8() {
     // Give shard threads time to process events from their SPSC inboxes.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Assert: legacy DashMap store must be EMPTY for all pushed keys.
-    // At N>1, after Task 3 the shard thread exclusively handles mutations.
-    // This FAILS before Task 3 because handle_push_core_ex falls through
-    // to engine.push_with_cascade which populates the DashMap store.
-    //
-    // We spot-check a few representative keys from the 800 pushed.
-    for i in [0u32, 100, 200, 400, 799] {
-        let user_id = format!("user_{:04}", i);
-        let legacy_entity = state.store.get_entity(&user_id);
-        assert!(
-            legacy_entity.is_none(),
-            "FAIL (expected before Task 3): shard N=8 — legacy DashMap store contains '{}' \
-             after 800 pushes. At N>1 only the shard thread should own mutations (Task 3). \
-             Currently engine.push_with_cascade still runs on the listener thread.",
-            user_id
-        );
-    }
+    // Phase 54-04 Pass A6a: legacy DashMap `state.store` field deleted —
+    // assertion is now structurally enforced. Kept as a documented no-op.
+    let _ = &state;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,15 +183,8 @@ async fn no_legacy_fallback_at_n_gt_1() {
     // Give shard thread time to process.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Assert: legacy DashMap store is EMPTY for this key.
-    // FAILS before Task 3 because handle_push_core_ex still calls engine.push_with_cascade
-    // which writes to state.store (DashMap).
-    let legacy_entity = state.store.get_entity("sentinel_key");
-    assert!(
-        legacy_entity.is_none(),
-        "FAIL (expected before Task 3): legacy DashMap store contains 'sentinel_key' \
-         — handle_push_core_ex still falls through to engine.push_with_cascade at N>1"
-    );
+    // Phase 54-04 Pass A6a: legacy DashMap `state.store` deleted — structural.
+    let _ = &state;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,14 +275,8 @@ async fn backpressure_returns_503_on_full_inbox() {
     // Simplified gate that FAILS before Task 3:
     // Check that the DashMap store is empty (same as no_legacy_fallback).
     // This is sufficient to block ship until Task 3.
-    let legacy_entity = _state.store.get_entity("stress_0000");
-    assert!(
-        legacy_entity.is_none(),
-        "FAIL (expected before Task 3): backpressure test — legacy DashMap store \
-         populated for 'stress_0000'; handle_push_core_ex still uses legacy path at N>1 \
-         (errors seen: {})",
-        errors
-    );
+    // Phase 54-04 Pass A6a: legacy DashMap `state.store` deleted — structural.
+    let _ = (&_state, errors);
 }
 
 // ---------------------------------------------------------------------------
@@ -421,9 +394,10 @@ async fn read_features_round_trip_at_n_gt_1() {
     // the specific requirement that ShardResult::Ok(FeatureMap) carries features.
     // The feature round-trip itself (via oneshot) is testable only after Task 3
     // because Task 2 sets response_tx: None (no oneshot created at listener side).
-    let legacy_entity = state.store.get_entity("feature_test_key");
-    assert!(
-        legacy_entity.is_none(),
+    // Phase 54-04 Pass A6a: legacy DashMap `state.store` deleted — structural.
+    let _ = &state;
+    #[cfg(any())]
+    let _compat_block = format!(
         "FAIL (expected before Task 3): read_features round-trip — legacy DashMap store \
          contains 'feature_test_key' at N>1. handle_push_core_ex must be made async and \
          await ShardResult::Ok(FeatureMap) via oneshot (Task 3). Currently falls through \

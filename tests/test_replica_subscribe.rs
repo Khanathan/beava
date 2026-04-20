@@ -24,7 +24,7 @@ use tokio::net::TcpStream;
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::server::protocol::{self, Scope, OP_SUBSCRIBE, REPLICA_FRAME_TAG_EVENT, STATUS_ERROR};
 use beava::server::signals::Category;
-use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
 const ADMIN_TOKEN: &str = "test-admin-token";
 
 // ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ async fn start_test_server(stream_names: &[&str]) -> (u16, SharedState) {
             .as_nanos()
     ));
     std::fs::create_dir_all(&tmp).unwrap();
-    let state = make_concurrent_state_default_store(
+    let state = make_concurrent_state_full(
         engine,
         None,
         tmp.join("beava.snapshot"),

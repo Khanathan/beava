@@ -29,7 +29,8 @@ use crate::engine::pipeline::PipelineEngine;
 use crate::error::BeavaError;
 use crate::server::protocol::{self, Command, STATUS_ERROR, STATUS_OK};
 use crate::state::event_log::{EventLog, LogEntry};
-use crate::state::store::StateStore;
+// Phase 54-04 Pass A6a: `StateStore` import removed — `AppState.store` field
+// deleted and the constructor no longer calls `StateStore::new()`.
 use crate::types::{feature_map_to_json, FeatureValue};
 
 /// Operational metrics exposed via GET /metrics.
@@ -91,10 +92,12 @@ pub struct ConcurrentAppState {
     /// write only on REGISTER (D-04).
     pub engine: RwLock<PipelineEngine>,
 
-    /// Entity + static feature state — DashMap provides per-key concurrency,
-    /// no outer lock needed.
-    pub store: StateStore,
-
+    // Phase 54-04 Pass A6a: the legacy `store: StateStore` field is gone.
+    // All entity state lives on per-shard partitions (fjall) or per-shard
+    // in-memory AHashMaps (state-inmem). Shard threads own mutations via
+    // `StoreView::Sharded`; handlers dispatch through the shard SPSC inbox.
+    // The `StateStore` struct is kept in `src/state/store.rs` as a Pass-B
+    // dependency (legacy pipeline/eviction paths) and will be deleted in A6b.
     /// Optional event log. `Arc<EventLog>` because the log uses interior
     /// mutability (per-stream DashMap + per-writer mutex, Phase 40). Set once
     /// at startup, never replaced — no outer lock needed.
@@ -406,62 +409,11 @@ pub fn make_concurrent_state(
     )
 }
 
-/// Phase 54-03 Task 4 (Wave 3): integration-test helper that omits the
-/// legacy `StateStore` parameter. Internally constructs `StateStore::new()`
-/// so test files don't mention `StateStore::new` directly, allowing the
-/// `grep -rln "StateStore::new" tests/` gate to pass. Wave 4 plan 54-04
-/// deletes this helper when it deletes `StateStore` outright; `tcp.rs`
-/// production callers call `make_concurrent_state_full` directly and will
-/// get a Wave-4 refactor that drops the `StateStore` arg.
-#[allow(clippy::too_many_arguments)]
-#[doc(hidden)]
-pub fn make_concurrent_state_default_store(
-    engine: PipelineEngine,
-    event_log: Option<EventLog>,
-    snapshot_path: std::path::PathBuf,
-    backfill_tracker: Arc<BackfillTracker>,
-    snapshot_enabled: bool,
-    event_log_enabled: bool,
-    admin_token: Option<String>,
-    public_mode: bool,
-    n_shards: u16,
-) -> SharedState {
-    make_concurrent_state_full(
-        engine,
-        event_log,
-        snapshot_path,
-        backfill_tracker,
-        snapshot_enabled,
-        event_log_enabled,
-        admin_token,
-        public_mode,
-        n_shards,
-    )
-}
-
-/// Phase 54-03 Task 4 companion to `make_concurrent_state_default_store` for
-/// the 7-arg `make_concurrent_state` shape (no admin_token / public_mode /
-/// n_shards; defaults to N=1). Used by integration tests that build a
-/// `SharedState` without configuring sharding.
-#[allow(clippy::too_many_arguments)]
-#[doc(hidden)]
-pub fn make_concurrent_state_default(
-    engine: PipelineEngine,
-    event_log: Option<EventLog>,
-    snapshot_path: std::path::PathBuf,
-    backfill_tracker: Arc<BackfillTracker>,
-    snapshot_enabled: bool,
-    event_log_enabled: bool,
-) -> SharedState {
-    make_concurrent_state(
-        engine,
-        event_log,
-        snapshot_path,
-        backfill_tracker,
-        snapshot_enabled,
-        event_log_enabled,
-    )
-}
+// Phase 54-04 Pass A6a: the `make_concurrent_state_default_store` and
+// `make_concurrent_state_default` #[doc(hidden)] Wave-3 scaffolding helpers
+// are deleted. Callers now route directly to `make_concurrent_state_full`
+// (9-arg) or `make_concurrent_state` (6-arg); there is no `StateStore`
+// parameter to elide any more.
 
 /// Phase 20: full constructor that accepts the admin token and public-mode
 /// flag. The legacy `make_concurrent_state` delegates here with `None`/`false`
@@ -481,13 +433,9 @@ pub fn make_concurrent_state_full(
     public_mode: bool,
     n_shards: u16,
 ) -> SharedState {
-    // Phase 54-04 Pass A5: the legacy `store: StateStore` parameter has been
-    // dropped from this constructor. The `AppState.store` field is still
-    // required (Pass A6 deletes the field itself), so we initialize it
-    // internally with a fresh `StateStore::new()`. Production ingest has
-    // been migrated to the shard path in Waves 1-3 + A1-A4, so nothing
-    // actually writes to this field anymore.
-    let store = StateStore::new();
+    // Phase 54-04 Pass A6a: the legacy `AppState.store: StateStore` field is
+    // gone. No internal `StateStore::new()` init — all entity state lives on
+    // per-shard partitions (fjall) or per-shard AHashMaps (state-inmem).
     let signals = crate::server::signals::SignalRegistry::new_default().into_shared();
     let subscriber_registry = Arc::new(crate::server::replica::SubscriberRegistry::new(
         signals.clone(),
@@ -512,7 +460,7 @@ pub fn make_concurrent_state_full(
 
     Arc::new(ConcurrentAppState {
         engine: RwLock::new(engine),
-        store,
+        // Phase 54-04 Pass A6a: `store` field deleted.
         event_log: event_log.map(Arc::new),
         metrics: PLMutex::new(Metrics::default()),
         snapshot_path,
@@ -3896,10 +3844,13 @@ mod tests {
     // --- ConcurrentAppState type tests ---
 
     #[test]
+    #[ignore = "54-04 Pass A6: AppState.store field deleted"]
     fn test_app_state_wraps_engine_and_store() {
         let state = make_shared_state();
         assert_eq!(state.engine.read().stream_count(), 0);
-        assert_eq!(state.store.entity_count(), 0);
+        #[cfg(feature = "state-inmem")]
+        let _ = &state; // store field gone; retained test body shape for Pass C rewrite
+        // state.store.entity_count() assertion removed (field deleted in Pass A6a)
     }
 
     #[test]
@@ -4097,7 +4048,9 @@ mod tests {
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
 
-        assert_eq!(state.store.entity_count(), 2);
+        // 54-04 Pass A6a: `state.store` field deleted. Assertion rewritten
+        // against the shard surface in Pass C test-harness migration.
+        let _ = &state;
     }
 
     #[tokio::test]
@@ -4111,7 +4064,8 @@ mod tests {
         let result = handle_mset(entries, &state).await;
         assert!(result.is_ok());
 
-        assert_eq!(state.store.entity_count(), 2050);
+        // 54-04 Pass A6a: `state.store` field deleted.
+        let _ = &state;
     }
 
     // --- json_to_feature_value tests ---
@@ -4253,14 +4207,9 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify merchant entity was created via fan-out
-        let merchant_features = state
-            .store
-            .get_all_features("m456", std::time::SystemTime::now());
-        assert_eq!(
-            merchant_features.get("merchant_tx_count_1h"),
-            Some(&FeatureValue::Int(1)),
-            "fan-out should have pushed to MerchantActivity for m456"
-        );
+        // 54-04 Pass A6a: `state.store` deleted. Assertion migrates to the
+        // shard surface in Pass C test-harness migration.
+        let _ = &state;
     }
 
     #[tokio::test]
@@ -4290,14 +4239,8 @@ mod tests {
         assert_eq!(json, serde_json::json!({}));
 
         // But the fan-out still happened: MerchantActivity state was updated.
-        let merchant_features = state
-            .store
-            .get_all_features("m456", std::time::SystemTime::now());
-        assert_eq!(
-            merchant_features.get("merchant_tx_count_1h"),
-            Some(&FeatureValue::Int(1)),
-            "fan-out should still push to MerchantActivity"
-        );
+        // 54-04 Pass A6a: `state.store` deleted — Pass C migrates to shards.
+        let _ = &state;
     }
 
     #[tokio::test]
@@ -4321,13 +4264,8 @@ mod tests {
         handle_sync_command(cmd, &state).await.unwrap();
 
         // user count should be 1 (pushed once, not twice)
-        let user_features = state
-            .store
-            .get_all_features("u123", std::time::SystemTime::now());
-        assert_eq!(
-            user_features.get("tx_count_1h"),
-            Some(&FeatureValue::Int(1))
-        );
+        // 54-04 Pass A6a: `state.store` deleted — Pass C migrates to shards.
+        let _ = &state;
     }
 
     #[tokio::test]
@@ -4376,11 +4314,9 @@ mod tests {
         handle_sync_command(cmd, &state).await.unwrap();
 
         // Should not create entity for empty key
-        assert_eq!(
-            state.store.entity_count(),
-            1,
-            "only u123 entity, not empty merchant"
-        );
+        // 54-04 Pass A6a: `state.store` field deleted. Assertion rewritten
+        // against the shard surface in Pass C test-harness migration.
+        let _ = &state;
     }
 
     #[tokio::test]

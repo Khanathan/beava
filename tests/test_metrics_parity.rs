@@ -208,7 +208,7 @@ fn record_shard_event_no_panic() {
 #[tokio::test]
 async fn n2_both_shards_see_events() {
     use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-    use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker};
+    use beava::server::tcp::{make_concurrent_state_full, BackfillTracker};
         use beava::server::protocol::{write_string, OP_PUSH, TYPE_STR};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
@@ -218,7 +218,7 @@ async fn n2_both_shards_see_events() {
     const N_EVENTS: u32 = 100;
 
     // Build a 2-shard state with a stream registered.
-    let state = make_concurrent_state_default_store(
+    let state = make_concurrent_state_full(
         PipelineEngine::new(),
         None,
         std::path::PathBuf::from("/tmp/beava-test-n2-metrics.snapshot"),

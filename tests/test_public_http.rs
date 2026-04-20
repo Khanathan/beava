@@ -17,13 +17,13 @@ use tokio::net::TcpStream;
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 #[cfg(feature = "demo")]
 use beava::server::tcp::RecentEvent;
-use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
 // ---------------------------------------------------------------------------
 // Test harness (mirrors tests/test_debug_ui.rs:start_debug_ui_server).
 // ---------------------------------------------------------------------------
 
 fn make_test_state() -> SharedState {
-    make_concurrent_state_default_store(
+    make_concurrent_state_full(
         PipelineEngine::new(),
         None,
         std::path::PathBuf::from("/tmp/beava-test-public-http.snapshot"),
@@ -127,9 +127,13 @@ fn register_txns(state: &SharedState) {
 }
 
 fn push_event(state: &SharedState, payload: &serde_json::Value) {
+    // Phase 54-04 Pass A6a: `state.store` deleted. The legacy engine.push
+    // helper still takes `&StateStore` (Pass-B cleanup target); local-only
+    // store keeps the test compiling. Shard path handles production writes.
     let now = SystemTime::now();
     let engine = state.engine.read();
-    let _ = engine.push("Transactions", payload, &state.store, now);
+    let local_store = beava::state::store::StateStore::new();
+    let _ = engine.push("Transactions", payload, &local_store, now);
 }
 
 fn push_many(state: &SharedState, key: &str, n: usize) {

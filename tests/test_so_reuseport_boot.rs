@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use beava::engine::pipeline::PipelineEngine;
-use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker};
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker};
 const TEST_ADMIN: &str = "test-admin-50-5-02-reuseport";
 
 // ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ fn count_listen_sockets_on_port(port: u16) -> usize {
 async fn bind_reuseport_invoked_by_boot_path() {
     const N_SHARDS: u16 = 4;
 
-    let state = make_concurrent_state_default_store(
+    let state = make_concurrent_state_full(
         PipelineEngine::new(),
         None,
         std::path::PathBuf::from("/tmp/beava-test-reuseport-boot.snapshot"),

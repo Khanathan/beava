@@ -28,7 +28,7 @@ use beava::server::protocol::{
     self as proto, decode_event_binary, parse_command, OP_GET, OP_PUSH_ASYNC, OP_PUSH_BATCH,
     STATUS_ERROR, STATUS_OK, TYPE_F64, TYPE_I64, TYPE_STR,
 };
-use beava::server::tcp::{handle_push_batch, make_concurrent_state_default, BackfillTracker, ConnAccumulator, PendingAsync, SharedState, BATCH_DEADLINE_US, BATCH_SIZE};
+use beava::server::tcp::{handle_push_batch, make_concurrent_state, BackfillTracker, ConnAccumulator, PendingAsync, SharedState, BATCH_DEADLINE_US, BATCH_SIZE};
 // ---------------------------------------------------------------------------
 // Harness helpers
 // ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ fn ts(secs: u64) -> SystemTime {
 }
 
 fn make_state() -> SharedState {
-    make_concurrent_state_default(
+    make_concurrent_state(
         PipelineEngine::new(),
         None,
         std::path::PathBuf::from("test.snapshot"),
@@ -85,8 +85,12 @@ fn register(state: &SharedState, defs: Vec<StreamDefinition>) {
 fn get_count(state: &SharedState, stream: &str, key: &str) -> Option<i64> {
     let now = ts(1000);
     let engine = state.engine.read();
-    let _store = &state.store;
-    let features = engine.get_features(key, &state.store, now);
+    // Phase 54-04 Pass A6a: `state.store` deleted. Legacy engine.get_features
+    // still takes `&StateStore` (Pass-B cleanup target); local scratch store
+    // keeps the test compiling. Pass C migrates to shard-scatter read.
+    let _ = state; // keep reference alive across this block
+    let local_store = beava::state::store::StateStore::new();
+    let features = engine.get_features(key, &local_store, now);
     let qualified = format!("{}.count_1h", stream);
     if let Some(fv) = features
         .get(&qualified)

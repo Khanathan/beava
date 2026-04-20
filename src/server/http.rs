@@ -832,71 +832,17 @@ async fn root_dispatch(State(state): State<SharedState>) -> axum::response::Resp
 }
 
 async fn debug_key(State(state): State<SharedState>, Path(key): Path<String>) -> impl IntoResponse {
-    let store = &state.store;
-    let now = SystemTime::now();
-    // First check if entity exists
-    let entity_exists = store.get_entity(&key).is_some();
-    if !entity_exists {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("key '{}' not found", key)})),
-        )
-            .into_response();
-    }
-    // Collect debug info from entity (immutable borrow)
-    let (live_ops, static_feats, last_event_at, total_estimated_bytes) = {
-        let entity = store.get_entity(&key).unwrap();
-        // Collect operators from all streams
-        let mut live_ops: Vec<serde_json::Value> = Vec::new();
-        let mut total_estimated_bytes: u64 = 0;
-        for (stream_name, stream_state) in &entity.streams {
-            for (name, op) in &stream_state.operators {
-                let op_bytes = op.estimated_bytes() as u64;
-                total_estimated_bytes += op_bytes;
-                let mut entry = serde_json::json!({
-                    "name": name,
-                    "stream": stream_name,
-                    "operator_type": op.operator_type_name(),
-                    "estimated_bytes": op_bytes,
-                    "state": format!("{:?}", op),
-                });
-                let buckets = op.num_buckets();
-                if buckets > 0 {
-                    entry["num_buckets"] = serde_json::json!(buckets);
-                }
-                // Plan 22-03: hybrid-op telemetry for percentile / top_k /
-                // distinct_count. Default None; serialized when present.
-                if let Some(tel) = op.hybrid_telemetry() {
-                    entry["hybrid_telemetry"] =
-                        serde_json::to_value(&tel).unwrap_or(serde_json::Value::Null);
-                }
-                live_ops.push(entry);
-            }
-        }
-        let static_feats: serde_json::Map<String, serde_json::Value> = entity
-            .static_features
-            .iter()
-            .map(|(k, v)| (k.clone(), v.value.to_json_value()))
-            .collect();
-        // Use the most recent last_event_at across all streams
-        let last_event_at = entity
-            .streams
-            .values()
-            .filter_map(|s| s.last_event_at)
-            .max()
-            .map(|t: SystemTime| {
-                t.duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-            });
-        (live_ops, static_feats, last_event_at, total_estimated_bytes)
-    };
-    // Now get computed features
-    let features = store.get_all_features(&key, now);
-    let feature_json: serde_json::Map<String, serde_json::Value> = features
-        .iter()
-        .map(|(k, v): (&String, &crate::types::FeatureValue)| (k.clone(), v.to_json_value()))
-        .collect();
+    // Phase 54-04 Pass A6a: `AppState.store` deleted. The per-key debug view
+    // needs a shard-lookup round-trip (`ShardOp::DebugKey`) which lands in
+    // Pass A7 / Pass B. Until then return a stub body — the endpoint stays
+    // live so operators can still inspect watermarks + stream ordinals, but
+    // per-entity fields are empty.
+    let _now = SystemTime::now();
+    let live_ops: Vec<serde_json::Value> = Vec::new();
+    let static_feats: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    let last_event_at: Option<u64> = None;
+    let total_estimated_bytes: u64 = 0;
+    let feature_json: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
     // Phase 24-04: per-stream watermarks visible on /debug/key/:key.
     // The watermark map is stream-level state (not per-entity) but it's
     // the most useful place to surface it for ad-hoc debugging, alongside
@@ -1215,48 +1161,19 @@ struct FeatureMemoryStats {
 ///
 /// Returns fine-grained, per-operator-type memory estimates based on actual
 /// operator state rather than hardcoded per-key estimates.
+///
+/// Phase 54-04 Pass A6a: the `AppState.store` DashMap is gone. The per-entity
+/// scatter-gather over shards (`ShardOp::MemoryStats`) lands in Pass A7 / Pass
+/// B. Until then, per-stream stats reflect an empty accumulator on the default
+/// (fjall) build; the route keeps responding so dashboards don't 404.
 async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Value> {
-    let store = &state.store;
     let engine = state.engine.read();
 
-    // Accumulate per-stream stats by iterating all entity state
-    let mut stream_stats: ahash::AHashMap<String, StreamMemoryStats> = ahash::AHashMap::new();
-    let mut total_static_bytes: u64 = 0;
-    let mut total_static_features: u64 = 0;
-
-    let keys: Vec<String> = store.entity_keys();
-    for key in &keys {
-        if let Some(entity) = store.get_entity(key) {
-            for (stream_name, stream_state) in &entity.streams {
-                let stats = stream_stats.entry(stream_name.clone()).or_default();
-                stats.key_count += 1;
-
-                for (feature_name, op) in &stream_state.operators {
-                    let op_bytes = op.estimated_bytes() as u64;
-                    let op_type = op.operator_type_name();
-                    let buckets = op.num_buckets();
-
-                    stats.total_bytes += op_bytes;
-
-                    let type_stats = stats.operator_types.entry(op_type).or_default();
-                    type_stats.count += 1;
-                    type_stats.total_bytes += op_bytes;
-
-                    let feat_stats = stats.features.entry(feature_name.clone()).or_default();
-                    feat_stats.operator_type = op_type;
-                    feat_stats.num_buckets = buckets;
-                    feat_stats.total_bytes += op_bytes;
-                    feat_stats.key_count += 1;
-                }
-            }
-
-            // Account for static features
-            let sf_count = entity.static_features.len() as u64;
-            total_static_features += sf_count;
-            // Estimate ~128 bytes per static feature (FeatureValue + timestamp + key overhead)
-            total_static_bytes += sf_count * 128;
-        }
-    }
+    // Accumulate per-stream stats by iterating all entity state.
+    // Phase 54-04 Pass A6a: DashMap iteration removed — empty accumulator.
+    let stream_stats: ahash::AHashMap<String, StreamMemoryStats> = ahash::AHashMap::new();
+    let total_static_bytes: u64 = 0;
+    let total_static_features: u64 = 0;
 
     // Build per-stream JSON
     let mut per_stream: Vec<serde_json::Value> = Vec::new();
@@ -1341,7 +1258,9 @@ async fn debug_memory(State(state): State<SharedState>) -> Json<serde_json::Valu
 
     grand_total_bytes += total_static_bytes;
 
-    let entity_count = store.entity_count();
+    // Phase 54-04 Pass A6a: `AppState.store` deleted; entity_count needs a
+    // shard-fan-out (Pass A7). Report 0 until then.
+    let entity_count: usize = 0;
     let per_entity_avg = if entity_count > 0 {
         grand_total_bytes / entity_count as u64
     } else {
@@ -1407,12 +1326,15 @@ async fn trigger_snapshot(
     let _guard = SnapshotGuard(state.clone());
 
     // Manual trigger always writes a full v6 base snapshot.
+    //
+    // Phase 54-04 Pass A6a: `AppState.store` deleted. Entity dump migrates to a
+    // per-shard scatter-gather (`ShardOp::SnapshotEntities`) in Pass A7 / Pass
+    // B; until then the manual snapshot writes an empty `entities` vec so the
+    // endpoint keeps responding without corrupting on-disk state.
     let (snapshot_data, seq, snap_dir) = {
         let engine = state.engine.read();
-        let store = &state.store;
         let seq = *state.snapshot_seq.lock();
-        let valid_features = engine.valid_features_map();
-        let entities = store.clone_for_snapshot_with_gc(&valid_features);
+        let entities: Vec<(String, crate::state::snapshot::SerializableEntityState)> = Vec::new();
         // Populate pipelines from engine
         let mut pipelines: Vec<crate::state::snapshot::SerializablePipeline> = engine
             .list_streams()
@@ -1438,9 +1360,6 @@ async fn trigger_snapshot(
         }
         let backfill_complete: Vec<(String, String)> =
             state.backfill_complete.lock().iter().cloned().collect();
-        // Manual trigger clears dirty/deleted tracking
-        store.clear_dirty();
-        let _ = store.take_deleted();
         *state.snapshot_seq.lock() = seq + 1;
         // Phase 9 WR-01 (re-review): keep the manual path symmetric with the
         // periodic timer.

@@ -26,7 +26,7 @@ use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::server::protocol::Scope;
 use beava::server::replica::{ReplicaEvent, SubscriberRegistry};
 use beava::server::signals::SignalRegistry;
-use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
 const TEST_ADMIN: &str = "test-admin-54-00-replica-routing";
 
 use std::sync::OnceLock;
@@ -35,7 +35,7 @@ static REGISTRY_MAP: OnceLock<
 > = OnceLock::new();
 
 fn build_two_shard_state(tag: &str) -> SharedState {
-    let state = make_concurrent_state_default_store(
+    let state = make_concurrent_state_full(
         PipelineEngine::new(),
         None,
         std::path::PathBuf::from(format!("/tmp/beava-test-54-00-replica-{tag}.snapshot")),

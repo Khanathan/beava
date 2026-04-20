@@ -34,7 +34,9 @@ use beava::state::snapshot::{
 };
 #[cfg(feature = "state-inmem")]
 use beava::state::snapshot::{SerializablePipeline, SnapshotHeader, SnapshotType};
-use beava::state::store::StateStore;
+// Phase 54-04 Pass A6a: `use beava::state::store::StateStore;` removed — the
+// top-level `load_incremental_snapshots` rewrite uses a plain `AHashMap`
+// accumulator. The test module re-imports `StateStore` where still needed.
 
 /// Local enum used by the periodic snapshot timer to pass a fully-prepared
 /// snapshot payload (base or delta) into the blocking serialization task.
@@ -836,18 +838,13 @@ async fn async_main() {
         }
         #[cfg(feature = "state-inmem")]
         {
-            // state-inmem (dev-only): legacy DashMap path. Wave 4 removes this.
-            let legacy_store = &state.store;
-            legacy_store.restore_from_snapshot(snapshot_state.entities);
-            // Clear any dirty/deleted tracking. Only meaningful on state-inmem:
-            // the default (fjall) build loaded entities directly into per-shard
-            // `PartitionHandle`s above, so `state.store` has no entities, no
-            // dirty-set entries, and no deleted-set entries — these calls would
-            // be pure no-ops. Gating behind `state-inmem` keeps the grep-ZERO
-            // invariant (`state.store.` = 0 in the default build) for Pass A6.
-            let legacy_alias = &state.store;
-            legacy_alias.clear_dirty();
-            let _ = legacy_alias.take_deleted();
+            // Phase 54-04 Pass A6a: `AppState.store` field deleted. The legacy
+            // DashMap restore path is gone; state-inmem's authoritative state
+            // lives on `state.sharded_store` shards. Pass C deletes the
+            // state-inmem feature outright (along with the remaining legacy
+            // pipeline + eviction helpers that still take `&StateStore`).
+            let _ = &snapshot_state; // drop on floor — shards own state now
+            let _ = &state;
         }
 
         // Re-register pipelines from stored JSON
@@ -903,10 +900,11 @@ async fn async_main() {
         // its own GC on its own entities immediately after construction.
         #[cfg(feature = "state-inmem")]
         {
-            let engine = state.engine.read();
-            let valid_features = engine.valid_features_map();
-            let legacy_alias = &state.store;
-            legacy_alias.gc_invalid_operators(&valid_features);
+            // Phase 54-04 Pass A6a: `AppState.store` field deleted. Pass A4
+            // already folded the GC pass into the shard-spawn codepath for
+            // the default build; state-inmem's equivalent GC will be folded
+            // into Pass C when the feature is deleted.
+            let _ = &state;
         }
 
         // Detect incomplete backfills
@@ -1208,100 +1206,17 @@ async fn async_main() {
 
                 #[cfg(feature = "state-inmem")]
                 let prepared: Option<(SnapshotData, u64, bool, PathBuf, u64)> = {
+                    // Phase 54-04 Pass A6a: `AppState.store` field deleted. The
+                    // state-inmem snapshot dump path is gutted — Pass C deletes
+                    // the state-inmem feature outright. Until then, state-inmem
+                    // produces no snapshots (matches the gap the default build
+                    // carried from Pass A3 → A4).
                     let engine = snap_state.engine.read();
-                    let legacy_alias = &snap_state.store;
-                    let cycle = *snap_state.snapshot_cycle.lock();
-                    let seq = *snap_state.snapshot_seq.lock();
-                    let is_full = cycle.is_multiple_of(full_snapshot_interval);
-                    let valid_features = engine.valid_features_map();
-                    let snap_dir = snap_state
-                        .snapshot_path
-                        .parent()
-                        .unwrap_or_else(|| std::path::Path::new("."))
-                        .to_path_buf();
-
-                    let last_base_seq_for_delta = *snap_state.last_base_seq.lock();
-                    if is_full {
-                        // Full base snapshot -- clone everything.
-                        let entities = legacy_alias.clone_for_snapshot_with_gc(&valid_features);
-                        let mut pipelines: Vec<SerializablePipeline> = engine
-                            .list_streams()
-                            .filter_map(|stream| {
-                                engine.get_raw_register_json(&stream.name).map(|json| {
-                                    SerializablePipeline {
-                                        name: stream.name.clone(),
-                                        key_field: stream.key_field.clone().unwrap_or_default(),
-                                        raw_register_json: serde_json::to_string(json)
-                                            .unwrap_or_default(),
-                                    }
-                                })
-                            })
-                            .collect();
-                        for view in engine.list_views() {
-                            if let Some(json) = engine.get_raw_register_json(&view.name) {
-                                pipelines.push(SerializablePipeline {
-                                    name: view.name.clone(),
-                                    key_field: view.key_field.clone(),
-                                    raw_register_json: serde_json::to_string(json)
-                                        .unwrap_or_default(),
-                                });
-                            }
-                        }
-                        let backfill_complete: Vec<(String, String)> = snap_state
-                            .backfill_complete
-                            .lock()
-                            .iter()
-                            .cloned()
-                            .collect();
-                        // Clear tracking
-                        legacy_alias.clear_dirty();
-                        let _ = legacy_alias.take_deleted();
-
-                        let base = BaseSnapshotState {
-                            header: SnapshotHeader {
-                                snapshot_type: SnapshotType::Base,
-                                sequence: seq,
-                            },
-                            entities,
-                            pipelines,
-                            backfill_complete,
-                        };
-                        *snap_state.snapshot_cycle.lock() = cycle + 1;
-                        *snap_state.snapshot_seq.lock() = seq + 1;
-                        let prev_base = *snap_state.last_base_seq.lock();
-                        *snap_state.previous_base_seq.lock() = prev_base;
-                        *snap_state.last_base_seq.lock() = seq;
-                        Some((SnapshotData::Base(base), seq, true, snap_dir, prev_base))
-                    } else {
-                        // Delta -- clone only dirty entities.
-                        // D-21 / CORR-10: atomically swap out the dirty set and
-                        // advance snapshot_gen in one operation, then pass the
-                        // frozen Arc<DashSet> to clone_dirty_for_snapshot_with_gc
-                        // so the snapshot never observes the post-swap active set.
-                        let frozen = legacy_alias.take_dirty_and_advance_gen();
-                        let changed =
-                            legacy_alias.clone_dirty_for_snapshot_with_gc(&frozen, &valid_features);
-                        let deleted = legacy_alias.take_deleted();
-
-                        if changed.is_empty() && deleted.is_empty() {
-                            *snap_state.snapshot_cycle.lock() = cycle + 1;
-                            None
-                        } else {
-                            let delta = DeltaSnapshotState {
-                                header: SnapshotHeader {
-                                    snapshot_type: SnapshotType::Delta {
-                                        base_seq: last_base_seq_for_delta,
-                                    },
-                                    sequence: seq,
-                                },
-                                changed_entities: changed,
-                                deleted_keys: deleted,
-                            };
-                            *snap_state.snapshot_cycle.lock() = cycle + 1;
-                            *snap_state.snapshot_seq.lock() = seq + 1;
-                            Some((SnapshotData::Delta(delta), seq, false, snap_dir, 0))
-                        }
-                    }
+                    let _engine_guard = engine; // preserve lock-acquire ordering
+                    let _ = &snap_state;
+                    let mut cycle_guard = snap_state.snapshot_cycle.lock();
+                    *cycle_guard += 1;
+                    None
                 };
 
                 let (snapshot_data, seq, is_full, snap_dir, prev_base_seq_for_cleanup) =
@@ -1419,9 +1334,11 @@ async fn async_main() {
                 )
             };
             #[cfg(feature = "state-inmem")]
-            let evicted = {
-                let legacy_alias = &evict_state.store;
-                evict_expired_keys(legacy_alias, &engine, now, ttl_multiplier)
+            let evicted: usize = {
+                // Phase 54-04 Pass A6a: `AppState.store` deleted. state-inmem
+                // eviction goes no-op until Pass C deletes the feature.
+                let _ = (&evict_state, &engine, now, ttl_multiplier);
+                0
             };
             // Phase 25-02: evict expired Table rows (per-Table TTL) and record
             // each eviction in the EvictionTracker so eviction→reinit signals
@@ -1437,14 +1354,11 @@ async fn async_main() {
                 )
             };
             #[cfg(feature = "state-inmem")]
-            let table_evicted = {
-                let legacy_alias = &evict_state.store;
-                beava::state::eviction::evict_expired_table_rows(
-                    legacy_alias,
-                    &engine,
-                    &evict_state.eviction_tracker,
-                    now,
-                )
+            let table_evicted: usize = {
+                // Phase 54-04 Pass A6a: `AppState.store` deleted. state-inmem
+                // Table-row eviction goes no-op until Pass C deletes the feature.
+                let _ = (&evict_state, &engine, now);
+                0
             };
             // Rotate per-Table bloom generations so the 7d rolling window
             // actually rolls.
@@ -1627,8 +1541,18 @@ pub(crate) fn load_incremental_snapshots(
     });
 
     if let Some((base_seq, base)) = loaded {
-        let store = StateStore::new();
-        store.restore_from_snapshot(base.entities.clone());
+        // Phase 54-04 Pass A6a: plain `AHashMap<String, SerializableEntityState>`
+        // accumulator replaces the `StateStore::new()` DashMap staging. Semantics
+        // preserved: base.entities seed the map; each delta's deleted_keys remove
+        // first (so an entity deleted-AND-re-inserted in the same delta ends up
+        // inserted — matches `StateStore::apply_delta`), then changed_entities
+        // overwrite. No TTL pruning / dirty tracking / listener side-effects —
+        // `StateStore::apply_delta` already documented none of those here.
+        let mut entities: ahash::AHashMap<String, beava::state::snapshot::SerializableEntityState> =
+            ahash::AHashMap::with_capacity(base.entities.len());
+        for (k, v) in base.entities.iter().cloned() {
+            entities.insert(k, v);
+        }
 
         let mut applicable: Vec<(u64, PathBuf)> = deltas
             .into_iter()
@@ -1644,7 +1568,14 @@ pub(crate) fn load_incremental_snapshots(
             };
             match load_snapshot_file(&bytes) {
                 Some(SnapshotFile::Delta(delta)) => {
-                    store.apply_delta(delta.changed_entities, delta.deleted_keys);
+                    // Deletes first, so delete-then-insert in the same delta
+                    // yields the insert. Matches `StateStore::apply_delta`.
+                    for key in delta.deleted_keys {
+                        entities.remove(&key);
+                    }
+                    for (k, v) in delta.changed_entities {
+                        entities.insert(k, v);
+                    }
                     if *seq > max_seq {
                         max_seq = *seq;
                     }
@@ -1654,7 +1585,7 @@ pub(crate) fn load_incremental_snapshots(
         }
 
         let state = SnapshotState {
-            entities: store.clone_for_snapshot(),
+            entities: entities.into_iter().collect(),
             pipelines: base.pipelines,
             backfill_complete: base.backfill_complete,
         };

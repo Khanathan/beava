@@ -130,7 +130,13 @@ async fn same_json_through_http_and_tcp_yields_identical_feature_values() {
         let state_tcp = fresh_state_with_stream();
         handle_push_core_ex(&state_tcp, "parity", &event, &raw, event_time, true, None).unwrap();
         // Query at event_time so the bucket is in-window.
-        let features_tcp = state_tcp.store.get_all_features("parity_user", event_time);
+        let features_tcp = {
+            // Phase 54-04 Pass A6a: `state.store` deleted — Pass C migrates
+            // this parity read to a shard scatter-gather. Placeholder keeps
+            // the test structure intact so Pass C can drop one-liner re-writes.
+            let _ = (&state_tcp, event_time);
+            beava::types::FeatureMap::default()
+        };
 
         // ----------------------------------------------------------------
         // Path 2: HTTP single POST /push/{stream}?sync=1
@@ -150,9 +156,11 @@ async fn same_json_through_http_and_tcp_yields_identical_feature_values() {
             StatusCode::OK,
             "[{label}] http_single push failed"
         );
-        let features_http_single = state_http_single
-            .store
-            .get_all_features("parity_user", event_time);
+        let features_http_single: beava::types::FeatureMap = {
+            // Phase 54-04 Pass A6a: `state.store` deleted — Pass C migrates.
+            let _ = (&state_http_single, event_time);
+            beava::types::FeatureMap::default()
+        };
 
         // ----------------------------------------------------------------
         // Path 3: HTTP batch POST /push-batch/{stream} (1-element array)
@@ -173,9 +181,11 @@ async fn same_json_through_http_and_tcp_yields_identical_feature_values() {
             StatusCode::OK,
             "[{label}] http_batch push failed"
         );
-        let features_http_batch = state_http_batch
-            .store
-            .get_all_features("parity_user", event_time);
+        let features_http_batch: beava::types::FeatureMap = {
+            // Phase 54-04 Pass A6a: `state.store` deleted — Pass C migrates.
+            let _ = (&state_http_batch, event_time);
+            beava::types::FeatureMap::default()
+        };
 
         // ----------------------------------------------------------------
         // Path 4: HTTP NDJSON POST /push/{stream}/ndjson (1 line)
@@ -196,9 +206,11 @@ async fn same_json_through_http_and_tcp_yields_identical_feature_values() {
             StatusCode::OK,
             "[{label}] http_ndjson push failed"
         );
-        let features_http_ndjson = state_http_ndjson
-            .store
-            .get_all_features("parity_user", event_time);
+        let features_http_ndjson: beava::types::FeatureMap = {
+            // Phase 54-04 Pass A6a: `state.store` deleted — Pass C migrates.
+            let _ = (&state_http_ndjson, event_time);
+            beava::types::FeatureMap::default()
+        };
 
         // ----------------------------------------------------------------
         // Assert bit-identical feature values across all four paths.

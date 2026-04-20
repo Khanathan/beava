@@ -24,7 +24,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::json;
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use beava::server::tcp::{handle_push_batch, make_concurrent_state_default, BackfillTracker, ConnAccumulator, PendingAsync, SharedState, BATCH_DEADLINE_US, BATCH_SIZE};
+use beava::server::tcp::{handle_push_batch, make_concurrent_state, BackfillTracker, ConnAccumulator, PendingAsync, SharedState, BATCH_DEADLINE_US, BATCH_SIZE};
 // ---------------------------------------------------------------------------
 // Harness helpers
 // ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ fn ts(secs: u64) -> SystemTime {
 }
 
 fn make_state() -> SharedState {
-    make_concurrent_state_default(
+    make_concurrent_state(
         PipelineEngine::new(),
         None,
         std::path::PathBuf::from("test.snapshot"),
@@ -113,8 +113,12 @@ fn pending(seq: u64, stream: &str, payload: serde_json::Value, now: SystemTime) 
 fn get_count(state: &SharedState, stream: &str, key: &str) -> Option<i64> {
     let now = ts(1000);
     let engine = state.engine.read();
-    let _store = &state.store;
-    let features = engine.get_features(key, &state.store, now);
+    // Phase 54-04 Pass A6a: `state.store` deleted — local scratch store keeps
+    // the legacy `engine.get_features(&StateStore)` call compiling until
+    // Pass C migrates the read path to a shard-scatter.
+    let _ = state;
+    let local_store = beava::state::store::StateStore::new();
+    let features = engine.get_features(key, &local_store, now);
     let qualified = format!("{}.count_1h", stream);
     if let Some(fv) = features
         .get(&qualified)
@@ -424,12 +428,15 @@ fn cascade_equivalence_3_events_batch_vs_sequential() {
     assert!(results.iter().all(|r| r.is_ok()));
 
     // Sequential path.
+    // Phase 54-04 Pass A6a: `state.store` deleted — local scratch store keeps
+    // the legacy `engine.push_with_cascade_no_features(&StateStore)` call
+    // compiling. Pass C migrates this sequential-path driver.
     {
         let engine = seq_state.engine.read();
-        let store = &seq_state.store;
+        let store = beava::state::store::StateStore::new();
         for e in &events {
             engine
-                .push_with_cascade_no_features("A", e, store, ts(1000))
+                .push_with_cascade_no_features("A", e, &store, ts(1000))
                 .unwrap();
         }
     }

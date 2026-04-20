@@ -16,7 +16,7 @@ use tokio::net::TcpStream;
 use beava::engine::pipeline::{
     FeatureDef, PipelineEngine, StreamDefinition, ViewDefinition, ViewFeatureDef,
 };
-use beava::server::tcp::{make_concurrent_state_default, BackfillTracker, SharedState};
+use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
 
 // ---------------------------------------------------------------------------
 // Helper A: start a Beava HTTP server on a random localhost port.
@@ -24,7 +24,7 @@ use beava::server::tcp::{make_concurrent_state_default, BackfillTracker, SharedS
 
 /// Build a fresh `SharedState` with an empty engine/store.
 fn make_test_state() -> SharedState {
-    make_concurrent_state_default(
+    make_concurrent_state(
         PipelineEngine::new(),
         None,
         std::path::PathBuf::from("test-debug-ui.snapshot"),
@@ -243,8 +243,12 @@ fn push_event(state: &SharedState, stream: &str, event: &serde_json::Value) {
     let now_inst = Instant::now();
     {
         let engine = state.engine.read();
-        let _store = &state.store;
-        let _ = engine.push(stream, event, &state.store, now_ts);
+        // Phase 54-04 Pass A6a: `state.store` deleted. The legacy engine.push
+        // helper still takes `&StateStore` (Pass-B cleanup target); a local
+        // scratch store keeps the test compiling until Pass C migrates this
+        // helper onto the shard dispatch.
+        let local_store = beava::state::store::StateStore::new();
+        let _ = engine.push(stream, event, &local_store, now_ts);
     }
     // Bump the throughput tracker so the /debug/throughput endpoint observes
     // the push. We pass a single-element slice of the stream name.

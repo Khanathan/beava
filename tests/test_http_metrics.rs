@@ -16,7 +16,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::server::http::build_router;
-use beava::server::tcp::{handle_push_core_ex, make_concurrent_state_default_store, BackfillTracker, SharedState};
+use beava::server::tcp::{handle_push_core_ex, make_concurrent_state_full, BackfillTracker, SharedState};
 use http_common::{inject_loopback, TEST_ADMIN_TOKEN};
 use serde_json::json;
 use tower::ServiceExt;
@@ -27,7 +27,7 @@ use tower::ServiceExt;
 
 /// Build a fresh SharedState and register a simple stream for pushing into.
 fn build_state_with_stream() -> SharedState {
-    let state = make_concurrent_state_default_store(
+    let state = make_concurrent_state_full(
         PipelineEngine::new(),
         None,
         std::path::PathBuf::from("/tmp/beava-test-http-metrics.snapshot"),

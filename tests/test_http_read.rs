@@ -9,7 +9,7 @@ use tower::ServiceExt;
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::server::http::build_router;
-use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker};
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker};
 use http_common::{build_test_state, inject_loopback, TEST_ADMIN_TOKEN};
 use std::sync::Arc;
 
@@ -44,7 +44,7 @@ fn seeded_state() -> beava::server::tcp::SharedState {
     };
     engine.register(stream).unwrap();
 
-    make_concurrent_state_default_store(
+    make_concurrent_state_full(
         engine,
         None,
         std::path::PathBuf::from("/tmp/beava-test-http-read.snapshot"),

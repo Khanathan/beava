@@ -15,9 +15,9 @@ use tokio::net::TcpStream;
 
 use beava::engine::pipeline::PipelineEngine;
 use beava::server::protocol::{self, OP_GET, OP_SCAN_RESERVED, STATUS_ERROR, STATUS_OK};
-use beava::server::tcp::{make_concurrent_state_default, BackfillTracker, SharedState};
+use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
 async fn start_test_server() -> (u16, SharedState) {
-    let state: SharedState = make_concurrent_state_default(
+    let state: SharedState = make_concurrent_state(
         PipelineEngine::new(),
         None,
         std::path::PathBuf::from("test_reserved_opcodes.snapshot"),

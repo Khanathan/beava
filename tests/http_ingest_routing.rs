@@ -26,13 +26,13 @@ use tower::ServiceExt;
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::server::http::build_router;
-use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
+use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
 const TEST_ADMIN: &str = "test-admin-54-00-http-routing";
 
 /// Build a 1-shard SharedState and register a stream with key_field=user_id.
 /// Shard threads are spawned so the SPSC dispatch path is live.
 fn build_single_shard_state(tag: &str) -> SharedState {
-    let state = make_concurrent_state_default_store(
+    let state = make_concurrent_state_full(
         PipelineEngine::new(),
         None,
         std::path::PathBuf::from(format!("/tmp/beava-test-54-00-http-{tag}.snapshot")),
@@ -193,22 +193,8 @@ async fn http_push_at_n1_routes_through_spsc() {
          increment (before={before}, after={after})."
     );
 
-    // Assertion 2 — the DashMap `state.store` MUST be EMPTY for the pushed key.
-    // This is the SPSC-transit proof: at Phase 53 HEAD the N=1 legacy branch
-    // writes into `state.store` (DashMap-backed). After Wave 1 plan 54-01
-    // Task 1, the shard thread owns mutations and `state.store` stays empty
-    // at N=1 (same invariant as N>1).
-    //
-    // RED at Phase 53 HEAD: the entity is present in the legacy DashMap.
-    let legacy_entity = state.store.get_entity("u1");
-    assert!(
-        legacy_entity.is_none(),
-        "TPC-ARCH-01 (HTTP routing, strong SPSC-transit check): legacy DashMap \
-         `state.store` contains entity 'u1' after an HTTP push at N=1. The N=1 \
-         branch of handle_push_core_ex (src/server/tcp.rs:~1730 'legacy \
-         engine.push_with_cascade path') is still the hot path and writes into \
-         the DashMap. Plan 54-01 Task 1 must rewire N=1 to route through the \
-         shard SPSC inbox so state.store stays empty — proving the event \
-         transited the shard thread, not the legacy path."
-    );
+    // Phase 54-04 Pass A6a: legacy DashMap `state.store` field deleted. The
+    // SPSC-transit invariant is now structurally enforced — there is no
+    // DashMap to touch. Assertion kept as a documented no-op.
+    let _ = &state;
 }
