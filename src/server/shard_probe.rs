@@ -474,8 +474,16 @@ pub fn collect_shard_diagnostics(
     let recovery_barrier = state.recovery_barrier.as_ref();
 
     // Build per-shard ShardInfo. When shard_handles is empty (N=1 legacy path
-    // before spawn_shard_threads is called), synthesize a single entry from
-    // state.store.entity_count() so the endpoint is always usable.
+    // before spawn_shard_threads is called), synthesize a single entry.
+    // Phase 54-04 Pass A2: the legacy fallback reports `keys_owned = 0`
+    // because scatter-gather over zero shards has no aggregate to sum.
+    // `collect_shard_diagnostics` is synchronous and cannot await a
+    // shard SPSC dispatch; in practice this branch only runs for a
+    // few milliseconds during boot before `spawn_shard_threads`
+    // populates `shard_handles` — once handles exist, the live
+    // per-shard `keys_owned` branch below reports accurate counts
+    // derived from each shard thread's local `approximate_len()`
+    // gauge updates.
     let shards: Vec<ShardInfo> = if handles.is_empty() {
         // Legacy N=1 path: no shard threads yet spawned.
         let recovered = recovery_barrier
@@ -485,7 +493,7 @@ pub fn collect_shard_diagnostics(
             id: 0,
             inbox_depth: 0,
             reactor_utilization: 0.0,
-            keys_owned: state.store.entity_count(),
+            keys_owned: 0,
             watermark_lag_seconds,
             events_total: global_events_total,
             inbox_full_total: 0,

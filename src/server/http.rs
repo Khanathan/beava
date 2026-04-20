@@ -344,7 +344,32 @@ async fn delete_pipeline(
 }
 
 async fn metrics_endpoint(State(state): State<SharedState>) -> impl IntoResponse {
-    let keys_total = state.store.entity_count();
+    // Phase 54-04 Pass A2: scatter-gather `keys_total` across all
+    // shards instead of reading the global StateStore. Each shard
+    // returns its approximate (O(1)) key count via SPSC; shards that
+    // are DOWN or backpressured contribute 0 so the endpoint stays
+    // available during partial failures (matches the `keys_owned`
+    // gauge behaviour). Clone handles before awaiting to release the
+    // `shard_handles` RwLock (Pass A1 pattern).
+    let keys_total: usize = {
+        let handle_clones: Vec<crate::shard::thread::ShardHandle> = {
+            let handles = state.shard_handles.read();
+            handles
+                .iter()
+                .map(crate::shard::thread::clone_handle)
+                .collect()
+        };
+        let mut total = 0usize;
+        for h in &handle_clones {
+            match crate::shard::thread::entity_count_via_shard(h).await {
+                Ok(n) => total = total.saturating_add(n),
+                // Shard DOWN / inbox full / channel closed: skip so
+                // the metrics endpoint stays up during degraded mode.
+                Err(_) => {}
+            }
+        }
+        total
+    };
     // Phase 41-01 T2: events_total + last-push latency are now lock-free
     // atomics on AppState. Only the rare-write fields stay behind the mutex.
     let events_total = state
@@ -736,6 +761,28 @@ async fn public_recent_events(
 
 /// `GET /public/stats` — aggregate counters for the demo page tiles.
 async fn public_stats(State(state): State<SharedState>) -> impl IntoResponse {
+    // Phase 54-04 Pass A2: scatter-gather `keys_total` across all
+    // shards (mirror of `metrics_endpoint`). Per-shard failures
+    // degrade to 0 so the public demo tiles keep rendering even
+    // during a shard outage. Done before locking the parking_lot
+    // `latency` mutex so no `!Send` guard can possibly cross the
+    // await point.
+    let keys_total: usize = {
+        let handle_clones: Vec<crate::shard::thread::ShardHandle> = {
+            let handles = state.shard_handles.read();
+            handles
+                .iter()
+                .map(crate::shard::thread::clone_handle)
+                .collect()
+        };
+        let mut total = 0usize;
+        for h in &handle_clones {
+            if let Ok(n) = crate::shard::thread::entity_count_via_shard(h).await {
+                total = total.saturating_add(n);
+            }
+        }
+        total
+    };
     // Phase 41-01 T2+T3: lock-free reads.
     let events_total = state
         .events_total
@@ -747,7 +794,6 @@ async fn public_stats(State(state): State<SharedState>) -> impl IntoResponse {
     let p50_push_us = latency.push_percentile_us(50.0, now_inst);
     drop(latency);
     let uptime_seconds = state.started_at.elapsed().as_secs();
-    let keys_total = state.store.entity_count();
     (
         StatusCode::OK,
         cors_headers(),

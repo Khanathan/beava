@@ -169,6 +169,14 @@ pub enum ShardOp {
     /// shard. Used by scatter-gather callers (run_backfill) that need
     /// a global key list without touching `StateStore.entity_keys`.
     ListEntityKeys,
+    /// Phase 54-04 Pass A2: return the approximate number of entity
+    /// keys held by this shard. On the default (fjall) build this
+    /// calls `PartitionHandle::approximate_len()` (O(1), stale
+    /// estimate — matches the per-shard `keys_owned` gauge); on
+    /// state-inmem it's `AHashMap::len()`. Used by HTTP metrics +
+    /// `/public/stats` to aggregate a fleet-wide key count via
+    /// scatter-gather without touching `StateStore.entities`.
+    EntityCount,
 }
 
 /// Result sent from shard back to listener via response_tx.
@@ -195,6 +203,10 @@ pub enum ShardResult {
     /// Phase 54-04 Pass A1: ListEntityKeys response — entity keys held
     /// by this shard at the moment of dispatch.
     EntityKeysOk(Vec<String>),
+    /// Phase 54-04 Pass A2: EntityCount response — approximate number
+    /// of entity keys held by this shard (O(1) estimate on fjall,
+    /// exact on state-inmem). Matches the `keys_owned` gauge semantics.
+    EntityCountOk(usize),
     /// Shard failed to process the event.
     Err(ShardDispatchError),
 }
@@ -674,6 +686,20 @@ fn shard_event_loop(
                         .collect();
                     if let Some(tx) = event.response_tx {
                         let _ = tx.send(ShardResult::EntityKeysOk(keys));
+                    }
+                }
+                ShardOp::EntityCount => {
+                    // Phase 54-04 Pass A2: O(1) approximate count —
+                    // mirrors the `keys_owned` gauge emission below
+                    // (Phase 53-03B Pitfall 4). Default build uses
+                    // `approximate_len()` on the fjall PartitionHandle;
+                    // state-inmem uses exact `AHashMap::len()`.
+                    #[cfg(not(feature = "state-inmem"))]
+                    let count = shard.state.approximate_len();
+                    #[cfg(feature = "state-inmem")]
+                    let count = shard.state.len();
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::EntityCountOk(count));
                     }
                 }
             }
@@ -1185,6 +1211,64 @@ pub async fn list_entity_keys_via_shard(
         }
         Ok(_) => Err(BeavaError::Protocol(
             "unexpected ShardResult variant for ListEntityKeys".to_string(),
+        )),
+        Err(_) => Err(BeavaError::Protocol(
+            "shard oneshot channel closed".to_string(),
+        )),
+    }
+}
+
+/// Phase 54-04 Pass A2: dispatch `ShardOp::EntityCount` and await the
+/// per-shard approximate key count. Used by HTTP scatter-gather
+/// callers (`metrics_endpoint`, `public_stats`) to compute a
+/// fleet-wide `keys_total` without touching `StateStore.entities`.
+/// The count is an O(1) estimate on the default (fjall) build —
+/// matches the `keys_owned` Prometheus gauge semantics — and exact
+/// on state-inmem.
+pub async fn entity_count_via_shard(
+    handle: &ShardHandle,
+) -> Result<usize, crate::error::BeavaError> {
+    use crate::error::BeavaError;
+
+    if handle.is_down.load(Ordering::Relaxed) {
+        crate::shard::metrics::record_shard_down(handle.shard_index);
+        return Err(BeavaError::Protocol(format!(
+            "shard {} is down (quarantined after panic)",
+            handle.shard_index
+        )));
+    }
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let evt = ShardEvent {
+        payload: bytes::Bytes::new(),
+        stream_name: std::sync::Arc::from(""),
+        shard_hint: 0,
+        response_tx: Some(tx),
+        op: ShardOp::EntityCount,
+    };
+
+    match handle.inbox_tx.try_send(evt) {
+        Ok(()) => {}
+        Err(crossbeam_channel::TrySendError::Full(_)) => {
+            crate::shard::metrics::record_inbox_full(handle.shard_index);
+            return Err(BeavaError::Protocol(
+                "shard inbox full — backpressure".to_string(),
+            ));
+        }
+        Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+            return Err(BeavaError::Protocol(
+                "shard inbox disconnected".to_string(),
+            ));
+        }
+    }
+
+    match rx.await {
+        Ok(ShardResult::EntityCountOk(n)) => Ok(n),
+        Ok(ShardResult::Err(e)) => {
+            Err(BeavaError::Protocol(format!("shard dispatch: {:?}", e)))
+        }
+        Ok(_) => Err(BeavaError::Protocol(
+            "unexpected ShardResult variant for EntityCount".to_string(),
         )),
         Err(_) => Err(BeavaError::Protocol(
             "shard oneshot channel closed".to_string(),
