@@ -177,7 +177,7 @@ Plans:
 - [x] 54-00-baseline-and-scaffolding-PLAN.md — Wave 0: capture pprof + EPS baseline, grep-ZERO scripts (RED), 3 ingest-routing integration tests (RED), REQUIREMENTS.md TPC-ARCH-01 patch (completed 2026-04-19 — baseline EPS 197,122; −15% floor 167,553; all 6 RED gates in place)
 - [x] 54-01-rewire-ingest-through-spsc-PLAN.md — Wave 1: send_to_shard helper + unify HTTP/TCP N=1 bypass + port replica.notify_subscribers hook (completed 2026-04-20 — 3 Wave-0 RED tests GREEN; 884 lib tests pass; Pass A aee409e / Pass B 1914fa0 / Pass C da5739f + 52e178a; 1 additional test #[ignore]'d for Wave 3 migration)
 - [x] 54-02-storeview-widening-and-scatter-gather-cascade-PLAN.md — Wave 2: widen StoreView (5 methods) + cascade_table_upsert_on_shard SCATTER-GATHER + migrate operators/register (completed 2026-04-20 — Pass A bfa62fb: StoreView +5 methods + Shard take_dirty/iter_entities + 2 new ShardOp variants, 8/8 tests on both backends; Pass B 85651a2: scatter-gather cascade via crossbeam try_send + blocking oneshot + deadlock analysis, 2/2 cross_shard_tt_cascade; Pass C no-op — operators.rs/register.rs already StateStore-free; 884/888 lib tests unchanged)
-- [ ] 54-03-migrate-remaining-statestore-callers-PLAN.md — Wave 3: boot-replay direct fjall insert + 6 non-shim DashMap users → RwLock<AHashMap> + test migration
+- [x] 54-03-migrate-remaining-statestore-callers-PLAN.md — Wave 3: boot-replay direct fjall insert + 6 non-shim DashMap users → RwLock<AHashMap> + test migration
 - [ ] 54-04-delete-legacy-surface-PLAN.md — Wave 4: delete StateStore + legacy pipeline methods + DashMap/arc-swap deps + state-inmem feature; flip grep-ZERO scripts GREEN
 - [ ] 54-05-perf-gates-and-soak-runbook-PLAN.md — Wave 5: pprof re-run, -15% EPS gate, Hetzner CCX43 100GB 8h soak runbook (human_needed), 54-VERIFICATION.md
 **UI hint**: no
@@ -193,4 +193,4 @@ Plans:
 | 51. Cross-shard queries + joins | 5/5 | Complete    | 2026-04-19 |
 | 52. Event log, recovery, ship-gate | 10/10 | Complete    | 2026-04-19 |
 | 53. Fjall state backend | 6/7 plans (06 deferred) | **Engineering-complete** — 4/6 TPC-PERSIST closed; PERSIST-04 + PERSIST-05A gates deferred to Phase 54 (legacy DashMap bypass at N=1) | 2026-04-19 |
-| 54. Legacy engine removal | 3/6 | In progress — Plan 00 complete (baseline + scaffolding + RED gates landed 2026-04-19); Plan 01 complete (unified SPSC hot path landed 2026-04-20; 3 Wave-0 RED tests GREEN); Plan 02 complete 2026-04-20 (StoreView widened +5 methods via bfa62fb; scatter-gather cascade via 85651a2 with deadlock analysis; operators/register no-op migration — src/engine/*.rs StateStore-free) | — |
+| 54. Legacy engine removal | 4/6 | In Progress|  |
