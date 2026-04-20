@@ -57,6 +57,18 @@ impl<'a> CascadeTarget for LiveCascadeTargets<'a> {
             target_shard_idx, self.source_shard_idx,
             "LiveCascadeTargets::dispatch_batch must not dispatch to source shard"
         );
+        // Phase 55 MED-4: release-build defense-in-depth. Self-dispatch
+        // would `try_send` to the source shard's own inbox while the
+        // source shard thread is blocked on `block_on(rx)` — deadlock.
+        // Convert the invariant violation into an explicit error so the
+        // caller bubbles up rather than hanging.
+        if target_shard_idx == self.source_shard_idx {
+            return Err(BeavaError::Protocol(format!(
+                "cascade self-dispatch rejected: target==source=={} \
+                 (LiveCascadeTargets)",
+                target_shard_idx
+            )));
+        }
         if target_shard_idx >= self.shards.len() {
             return Err(BeavaError::Protocol(format!(
                 "cascade target_shard_idx {} out of range (n_shards={})",
@@ -155,6 +167,22 @@ impl<'a> CascadeTarget for SyncCascadeTargets<'a> {
         writes: Vec<(String, String, AHashMap<String, FeatureValue>)>,
         now: SystemTime,
     ) -> Result<(), BeavaError> {
+        // Phase 55 MED-6: reject self-dispatch. Boot replay in
+        // `rematerialize_tables_from_event_logs` holds a `std::sync::Mutex`
+        // lock on `shards[source_shard_idx]` for the duration of a per-
+        // event replay. If the cascade's same-shard fast path ever
+        // regressed and a same-shard write reached this trait seam
+        // (target == source), this method would attempt to lock the same
+        // Mutex a second time — std::sync::Mutex is NOT re-entrant →
+        // deadlock with no error. Pair this guard with the lock-ownership
+        // comment in `state/recovery.rs::rematerialize_tables_from_event_logs`.
+        if target_shard_idx == self.source_shard_idx {
+            return Err(BeavaError::Protocol(format!(
+                "sync cascade self-dispatch rejected: target==source=={} \
+                 (SyncCascadeTargets; would deadlock on already-held shard lock)",
+                target_shard_idx
+            )));
+        }
         if target_shard_idx >= self.shards.len() {
             return Err(BeavaError::Protocol(format!(
                 "sync cascade target_shard_idx {} out of range (n_shards={})",

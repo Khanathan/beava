@@ -487,6 +487,17 @@ pub fn rematerialize_tables_from_event_logs(
             // `StoreView::Sharded` on `input_shard`, not via the
             // `CascadeTarget`. Cross-shard writes take the target_shard_idx
             // path (locks a sibling, not self).
+            //
+            // Phase 55 MED-6 invariant: the shard lock on `shards[s]`
+            // below is held while SyncCascadeTargets::dispatch_batch may
+            // be invoked (indirectly, via replay_one_event_through_cascade
+            // → push_with_cascade_on_shard). `SyncCascadeTargets`
+            // explicitly rejects `target_shard_idx == source_shard_idx`
+            // with a Protocol error to prevent re-entrant lock acquisition
+            // on this same Mutex (std::sync::Mutex is not re-entrant).
+            // If 55-NEXT #1 wiring ever calls `sync_tgt.dispatch_batch(
+            // source_shard_idx, …)` the dispatcher fails fast with a
+            // readable error rather than deadlocking silently.
             let now = std::time::SystemTime::now();
             let mut shard = shards[s].lock().map_err(|e| {
                 crate::error::BeavaError::Protocol(format!(

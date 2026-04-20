@@ -61,6 +61,15 @@ impl CascadeBuffer {
 
     /// Accumulate a cross-shard write. Same-shard writes are NOT expected
     /// here — caller uses inline `StoreView` path for `source == target`.
+    ///
+    /// Phase 55 MED-4: the self-dispatch invariant is enforced in BOTH
+    /// debug and release builds. If a future refactor routes a same-shard
+    /// write through the buffer, the subsequent `dispatch_batch` would
+    /// `try_send` to the source shard's own inbox while the source shard
+    /// thread is blocked on `block_on(rx)` — deadlock. Hard-skipping the
+    /// bad accumulate leaves a small observable gap (metric undercount)
+    /// but prevents the hang; the `debug_assert!` still fires in tests
+    /// so the bug gets caught early.
     pub fn accumulate(
         &mut self,
         target_shard_idx: usize,
@@ -72,6 +81,21 @@ impl CascadeBuffer {
             target_shard_idx, self.source_shard_idx,
             "same-shard must use inline path, not CascadeBuffer"
         );
+        if target_shard_idx == self.source_shard_idx {
+            // Release-build defense-in-depth: drop the write rather than
+            // enqueue a self-targeted batch that would deadlock on flush.
+            // The caller-side same-shard fast path (`push_with_cascade…
+            // _buffered` at the target==input branch) is the intended
+            // site; reaching here indicates a bug we must not hide with a
+            // silent success.
+            eprintln!(
+                "[WARN] CascadeBuffer::accumulate: refusing self-dispatch \
+                 (source==target=={}) — dropping write to avoid deadlock. \
+                 This indicates a cascade-routing bug; please report.",
+                target_shard_idx
+            );
+            return;
+        }
         debug_assert!(
             target_shard_idx < self.n_shards,
             "target_shard_idx {} >= n_shards {}",
