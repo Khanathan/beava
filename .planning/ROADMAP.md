@@ -336,7 +336,7 @@ Plans:
 | 52. Event log, recovery, ship-gate | 10/10 | Complete    | 2026-04-19 |
 | 53. Fjall state backend | 6/7 plans (06 deferred) | **Engineering-complete** — 4/6 TPC-PERSIST closed; PERSIST-04 + PERSIST-05A gates deferred to Phase 54 (legacy DashMap bypass at N=1) | 2026-04-19 |
 | 54. Legacy engine removal | 6/6 | **Engineering-complete** — TPC-ARCH-01 ✅ + TPC-PERSIST-05A ✅ closed; TPC-PERSIST-04 human_needed (Hetzner CCX43 8h soak; evidence-file gated). pprof DashMap → 0% in top-20; EPS +580% (197K → 1.34M). | 2026-04-20 (eng) |
-| 55. Stream→Table cascade cross-shard + source tables | 5/5 | Complete   | 2026-04-20 |
+| 55. Stream→Table cascade cross-shard + source tables | 5/5 | Complete    | 2026-04-20 |
 | 56. EnrichFromTable + StreamStreamJoin cross-shard | 0/? | Not started — relaxes TPC-CORR-04 to runtime warning; both sides route to join-key-owning shard | — |
 | 57. Retraction across cross-shard joins | 0/? | Not started — consuming the pending-retraction markers from Phase 55 source-table DELETEs + SSJ tombstone propagation | — |
 | 58. Tokio connection-handling rewrite | 0/? | Not started — biggest measured bottleneck (60% of CPU in samply) — eliminate per-conn task churn | — |

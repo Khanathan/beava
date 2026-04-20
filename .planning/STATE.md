@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
-status: executing
-stopped_at: Phase 55 engineering-complete — perf gate PASSED (1,246,190 EPS ≥ 1,138,529 floor); SC-6 N>1 boot fan-out human_needed (55-NEXT #1)
-last_updated: "2026-04-20T22:30:00.000Z"
+status: planning
+stopped_at: Phase 55 context gathered — 4 gray areas locked (cascade mechanics, wire format, rematerialization, test scope + perf gate)
+last_updated: "2026-04-20T22:50:37.590Z"
 last_activity: 2026-04-20
 progress:
   total_phases: 18
@@ -27,9 +27,9 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 Phase: 55 (stream-table-cascade-crossshard-and-source-tables) — ENGINEERING-COMPLETE (human_needed on SC-6 N>1)
 Plan: 5 of 5 (55-04 completed; all Phase 55 plans done)
-**Phase:** 55 → engineering-complete; SC-6 cross-shard boot fan-out deferred to 55-NEXT #1 (user accept/fix decision)
-**Plan:** 55-04 completed 2026-04-20 (commits `9a1a78b`, `29b0e54`); perf gate PASSED at 1,246,190 EPS
-**Status:** Phase 55 engineering-complete; awaiting user decision on SC-6 (accept deferred / request N>1 fix)
+**Phase:** 56
+**Plan:** Not started
+**Status:** Ready to plan
 **Progress:** [█████████▊] 94%
 
 **Last activity:** 2026-04-20
