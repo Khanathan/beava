@@ -162,6 +162,68 @@ None new. All W1 changes stay within existing trust boundaries (intra-process SP
 | Task 1 | `af069cc` | feat(55-01): add CascadeTarget trait + CascadeBuffer + ShardOp::UpsertTableBatch |
 | Task 2 | `02dd781` | feat(55-01): wire cascade metrics + delivery cursor; flip W1 RED -> GREEN |
 
+## Wiring Follow-Up (2026-04-20, per user decision)
+
+**Context:** The initial Plan 55-01 execution (commits `af069cc`, `02dd781`, `0dff880`) committed the `CascadeBuffer` module with passing unit tests but did NOT wire it into `push_with_cascade_on_shard` — the hot path still used per-event scatter-gather via `cascade_table_upsert_on_shard`. This violated CONTEXT D-A1/D-A2 and ROADMAP SC #7 ("same-shard fast path AND batched cross-shard dispatch from day one — no fast paths deferred"). User decision: "Send back to executor — wire CascadeBuffer into hot path now."
+
+**Change:** Introduced `cascade_table_upsert_on_shard_buffered(..., cascade_buffer: Option<&mut CascadeBuffer>, ...)`. The public `cascade_table_upsert_on_shard` now delegates with `None` (preserves the per-event path for non-batched callers: recovery, `PushTableRow`, `DeleteTableRow`, `SetWithCascade`). `push_with_cascade_on_shard` instantiates a fresh `CascadeBuffer` per primary event, calls the `_buffered` variant with `Some(&mut buf)`, then flushes via `LiveCascadeTargets` before advancing the delivery cursor.
+
+**Behavior delta on the batched hot path:**
+- Same-shard writes → inline `StoreView::Sharded::upsert_table_row` (unchanged; `beava_cascade_intra_shard_total` still fires per-event).
+- Cross-shard writes → `CascadeBuffer::accumulate` during the sweep (key `(target_shard, table, output_key)`, last-write-wins full-replace). Flush at end-of-event issues **one** `ShardOp::UpsertTableBatch` per unique target shard carrying a Vec of `(table, key, fields)` tuples. Target shard applies atomically in order and replies `ShardResult::SetOk` once all writes succeed.
+- Same-shard TT-of-TT recursion now threads the buffer through (via `cascade_buffer.as_mut().map(|b| &mut **b)` reborrow) so cross-shard output from a recursed TT chain also coalesces into the same buffer instead of falling back to per-event `try_send`.
+
+**Single emission site for `beava_cascade_cross_shard_total`:**
+- On the batched hot path (`push_with_cascade_on_shard`): emitted exclusively in `CascadeBuffer::flush`. Grep confirms `CASCADE_CROSS_SHARD_TOTAL` is referenced in `cascade_buffer.rs` once (the `metrics::counter!(...).increment(depth as u64)` call) and in `pipeline.rs` only on the NON-buffered fallback branch (line 1447, unreachable from the hot path because `push_with_cascade_on_shard` always supplies `Some(&mut cascade_buf)`).
+- `LiveCascadeTargets::dispatch_batch` does NOT emit the counter (remains a pure dispatch primitive per the 55-01 design).
+
+**Delivery cursor (D-A3):** Unchanged — `event_log.advance_cascaded_lsn(stream_name, nanos)` runs only if the flush returns `Ok(())` (the `?` on `cascade_buf.flush(...)` propagates backpressure errors before cursor advance). Replay on boot re-drives via full-replace idempotency.
+
+**Backpressure (D-A4):** Preserved — `LiveCascadeTargets::dispatch_batch` returns `BeavaError::Protocol("shard inbox full — cascade backpressure (target=N)")` on `TrySendError::Full` and increments `beava_shard_inbox_full_total{shard=T}`. The whole batch's cross-shard writes fail atomically; primary event state is already fsynced; cursor is not advanced; replay re-drives on next push.
+
+### Test Contract Results
+
+| Test | Status |
+|------|--------|
+| `cargo test --release --lib` | **790 passed / 0 failed / 35 ignored** (unchanged from pre-wiring baseline) |
+| `cargo test --release --features state-inmem --lib` | **794 passed / 0 failed / 35 ignored** |
+| `cross_shard_tt_cascade_ownership -- --ignored` (W1) | 2 passed |
+| `cross_shard_backpressure -- --ignored` (W1) | 1 passed |
+| `cross_shard_cascade_recovery -- --ignored` (W1) | 1 passed |
+| `cascade_metrics -- --ignored` (W1) | 2 passed |
+| `sharding_parity tt_cascade -- --ignored` (W1) | 2 passed |
+| `cross_shard_tt_cascade` (Phase 54 — no regression) | 2 passed |
+| `boot_rematerialization` | 8 passed |
+| `test_concurrent` | 6 failed — **pre-existing** (confirmed against pre-wiring tip of branch; orthogonal to this change) |
+
+Total W1 RED → GREEN: 9/9 preserved.
+
+### Perf Smoke (informational — Plan 55-04 owns the real gate)
+
+Harness: `MODE=complex DURATION=30 CPUS=8 CLIENTS=8 BEAVA_SHARD_INBOX_SIZE=1048576 bash benchmark/fraud-pipeline/run_bench.sh` on laptop (darwin, macOS 24.3, M-series).
+
+| Config | Aggregate EPS | Backpressure |
+|--------|---------------|--------------|
+| Pre-wiring (`0dff880`, same commit) | **1,225,411** | 8/8 clients hit `shard inbox full` late |
+| Post-wiring (this change) | **1,060,800** | 8/8 clients hit `shard inbox full` late |
+
+Delta: ~13% reduction on the smoke run. Not a catastrophic regression (well above the 500K floor in the executor's perf guard). Both configurations hit the same inbox-full backpressure on this laptop at 30s; the delta likely reflects the per-event `CascadeBuffer` allocation (`AHashMap::with_capacity(64)` in `CascadeBuffer::new`) and the extra `flush` pass. Plan 55-04 perf tuning can evaluate (a) pooling the buffer across events on the shard thread, (b) dropping the pre-size to a smaller capacity, or (c) skipping the buffer entirely when `n_shards == 1` (already short-circuited for the flush, but the allocation still happens).
+
+**Per the executor guidance:** EPS ≥ 500K → continue without checkpoint; Plan 55-04 is the real gate.
+
+### Files Modified in This Follow-Up
+
+- `src/engine/pipeline.rs` — added `cascade_table_upsert_on_shard_buffered`, wired `CascadeBuffer` into `push_with_cascade_on_shard`, threaded buffer through same-shard recursion.
+- `.planning/phases/55-stream-table-cascade-crossshard-and-source-tables/55-01-SUMMARY.md` — this section.
+
+No changes to `cascade_buffer.rs`, `cascade_target.rs`, `shard/thread.rs`, `shard/metrics.rs`, or `event_log.rs` — all existing primitives were already correctly shaped to plug into the hot path.
+
+### Commits
+
+| Commit | Message |
+|--------|---------|
+| (this commit) | `refactor(55-01): wire CascadeBuffer into push_with_cascade_on_shard hot path (SC #7 end-of-batch coalesce)` |
+
 ## Self-Check: PASSED
 
 - [x] `src/engine/cascade_target.rs` exists (185 LOC, contains `pub trait CascadeTarget` and `pub struct LiveCascadeTargets`)

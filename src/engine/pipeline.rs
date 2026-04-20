@@ -1147,11 +1147,53 @@ impl PipelineEngine {
         &self,
         input_table: &str,
         key: &str,
+        tombstoned: bool,
+        primary_event: Option<&serde_json::Value>,
+        input_shard: &mut crate::shard::Shard,
+        input_shard_idx: usize,
+        sibling_shards: Option<&[crate::shard::thread::ShardHandle]>,
+        now: SystemTime,
+    ) -> Result<(), BeavaError> {
+        // Non-batched callers (recovery replay, PushTableRow, DeleteTableRow,
+        // SetWithCascade, self-recursion for same-shard TT-of-TT) use the
+        // per-event scatter-gather path — `buffer=None`. Batched callers
+        // (push_with_cascade_on_shard) use
+        // `cascade_table_upsert_on_shard_buffered` which routes cross-shard
+        // writes into the CascadeBuffer for end-of-batch coalesced dispatch.
+        self.cascade_table_upsert_on_shard_buffered(
+            input_table,
+            key,
+            tombstoned,
+            primary_event,
+            input_shard,
+            input_shard_idx,
+            sibling_shards,
+            None,
+            now,
+        )
+    }
+
+    /// Phase 55-01 D-A1/D-A2: buffered variant of
+    /// `cascade_table_upsert_on_shard`. When `cascade_buffer = Some(&mut)`,
+    /// cross-shard writes accumulate into the buffer (end-of-batch coalesce
+    /// in `push_with_cascade_on_shard`). When `None`, falls back to the
+    /// per-event scatter-gather path used by non-batched callers (recovery,
+    /// legacy PushTableRow / DeleteTableRow / SetWithCascade dispatch).
+    ///
+    /// Same-shard writes ALWAYS take the inline `StoreView` fast path
+    /// regardless of buffer presence — matches SC #7's "same-shard fast
+    /// path AND batched cross-shard dispatch from day one" contract.
+    #[allow(clippy::too_many_arguments)]
+    pub fn cascade_table_upsert_on_shard_buffered(
+        &self,
+        input_table: &str,
+        key: &str,
         _tombstoned: bool,
         primary_event: Option<&serde_json::Value>,
         input_shard: &mut crate::shard::Shard,
         input_shard_idx: usize,
         sibling_shards: Option<&[crate::shard::thread::ShardHandle]>,
+        cascade_buffer: Option<&mut crate::shard::cascade_buffer::CascadeBuffer>,
         now: SystemTime,
     ) -> Result<(), BeavaError> {
         use crate::state::store::TableRowState;
@@ -1181,9 +1223,14 @@ impl PipelineEngine {
             }
         }
 
-        // Outstanding oneshot receivers for the gather phase.
+        // Outstanding oneshot receivers for the gather phase (per-event path).
         let mut pending: Vec<(usize, tokio::sync::oneshot::Receiver<crate::shard::thread::ShardResult>)> =
             Vec::new();
+
+        // Rebind buffer so we can reborrow across downstream iterations.
+        // `cascade_buffer.as_deref_mut()` would require Deref, so use
+        // `Option::as_mut()` on an Option-of-mut-ref trick via a local.
+        let mut cascade_buffer = cascade_buffer;
 
         for (output_name, def) in downstreams {
             let (left_table, right_table, join_type, left_fields, right_fields) = match def {
@@ -1333,8 +1380,10 @@ impl PipelineEngine {
                         1,
                     );
                     // Recurse — same-shard only. See "Cross-shard recursion
-                    // scope" in the doc comment above.
-                    self.cascade_table_upsert_on_shard(
+                    // scope" in the doc comment above. Thread the buffer
+                    // through so TT-of-TT chains that re-key cross-shard
+                    // also coalesce (Phase 55-01 SC #7).
+                    self.cascade_table_upsert_on_shard_buffered(
                         &output_name,
                         &output_key,
                         output_tombstoned,
@@ -1342,10 +1391,27 @@ impl PipelineEngine {
                         input_shard,
                         input_shard_idx,
                         sibling_shards,
+                        cascade_buffer.as_mut().map(|b| &mut **b),
                         now,
                     )?;
+                } else if let Some(buf) = cascade_buffer.as_mut() {
+                    // Phase 55-01 D-A1/D-A2: batched caller — accumulate
+                    // into the CascadeBuffer for end-of-batch coalesced
+                    // dispatch. The counter emission and high-watermark
+                    // observation happen in `CascadeBuffer::flush` + its
+                    // `LiveCascadeTargets::dispatch_batch` path (single
+                    // emission site for `beava_cascade_cross_shard_total`).
+                    // Cross-shard TT-of-TT recursion remains out-of-scope
+                    // for this wave; the batch flush carries one hop only.
+                    buf.accumulate(
+                        target_shard_idx,
+                        output_name.clone(),
+                        output_key.clone(),
+                        merged,
+                    );
                 } else {
-                    // Scatter: dispatch to sibling shard.
+                    // Non-batched caller (recovery, PushTableRow, SetWithCascade,
+                    // DeleteTableRow) — per-event scatter-gather.
                     let handles = sibling_shards.expect("sibling_shards checked above");
                     let target = &handles[target_shard_idx];
                     if target.is_down.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1368,10 +1434,10 @@ impl PipelineEngine {
                         },
                     };
                     // Phase 55-01 SC-5: high-watermark + cross-shard counter
-                    // emission site for the per-event cascade path. The
-                    // CascadeBuffer path in push_with_cascade_on_shard is a
-                    // distinct, additive batching layer — this per-event
-                    // path remains for test harnesses + non-batched callers.
+                    // emission site for the per-event (non-batched) cascade
+                    // path. This branch is NOT on the batched hot path —
+                    // `push_with_cascade_on_shard` threads a CascadeBuffer
+                    // through and takes the `as_mut()` arm above.
                     let depth = target.inbox_tx.len();
                     let cap = target.inbox_tx.capacity().unwrap_or(usize::MAX);
                     crate::shard::metrics::record_inbox_depth(target_shard_idx, depth, cap);
@@ -1398,8 +1464,6 @@ impl PipelineEngine {
                             )));
                         }
                     }
-                    // Cross-shard recursion is out of scope for this wave;
-                    // same-shard TT-of-TT still recurses above.
                 }
             } else {
                 // Tombstone path.
@@ -1408,7 +1472,7 @@ impl PipelineEngine {
                 {
                     let mut view = StoreView::Sharded(input_shard);
                     view.tombstone_table_row(&output_key, &output_name, now);
-                    self.cascade_table_upsert_on_shard(
+                    self.cascade_table_upsert_on_shard_buffered(
                         &output_name,
                         &output_key,
                         output_tombstoned,
@@ -1416,6 +1480,7 @@ impl PipelineEngine {
                         input_shard,
                         input_shard_idx,
                         sibling_shards,
+                        cascade_buffer.as_mut().map(|b| &mut **b),
                         now,
                     )?;
                 } else {
@@ -1940,7 +2005,20 @@ impl PipelineEngine {
                 }
             });
             if let Some(k) = cascade_key {
-                self.cascade_table_upsert_on_shard(
+                // Phase 55-01 D-A1/D-A2/SC #7: end-of-batch cascade buffer.
+                // Accumulates cross-shard TT-cascade writes during the
+                // per-event sweep and flushes once at the end, coalescing
+                // multiple writes to the same (target_shard, table, key)
+                // into a single `ShardOp::UpsertTableBatch` send.
+                //
+                // Same-shard writes remain inline (fast path unchanged);
+                // this buffer wraps ONLY the cross-shard dispatch layer.
+                let n_shards = sibling_shards.map(|s| s.len()).unwrap_or(1).max(1);
+                let mut cascade_buf = crate::shard::cascade_buffer::CascadeBuffer::new(
+                    input_shard_idx,
+                    n_shards,
+                );
+                self.cascade_table_upsert_on_shard_buffered(
                     stream_name,
                     &k,
                     false,
@@ -1948,14 +2026,37 @@ impl PipelineEngine {
                     shard,
                     input_shard_idx,
                     sibling_shards,
+                    Some(&mut cascade_buf),
                     now,
                 )?;
+
+                // Flush buffered cross-shard writes via coalesced dispatch.
+                // Counter emission for `beava_cascade_cross_shard_total`
+                // happens inside `CascadeBuffer::flush` (single-site).
+                if !cascade_buf.is_empty() {
+                    if let Some(siblings) = sibling_shards {
+                        if siblings.len() > 1 {
+                            let tgt = crate::engine::cascade_target::LiveCascadeTargets {
+                                shards: siblings,
+                                source_shard_idx: input_shard_idx,
+                            };
+                            cascade_buf.flush(&tgt, now)?;
+                        } else {
+                            // N=1 single-shard: accumulator is unreachable
+                            // because target_shard == source_shard at N=1.
+                            // Defensive no-op; drop buffer.
+                        }
+                    }
+                }
+
                 // Phase 55-01 D-A3: advance cascade delivery cursor after
-                // a successful TT-cascade sweep. We use a wall-clock-derived
-                // monotone value so every successful sweep moves the cursor
-                // forward; boot replay compares against this to decide
-                // whether to re-drive. On-disk persistence piggy-backs on
-                // the primary-log fsync (or clean shutdown fsync).
+                // a successful TT-cascade sweep (including flush). We use
+                // a wall-clock-derived monotone value so every successful
+                // sweep moves the cursor forward; boot replay compares
+                // against this to decide whether to re-drive. On-disk
+                // persistence piggy-backs on primary-log fsync (or clean
+                // shutdown fsync). Cursor is NOT advanced if flush errored
+                // above — `?` propagates the error and we never reach here.
                 if let Some(el) = event_log {
                     let lsn = now
                         .duration_since(std::time::UNIX_EPOCH)
