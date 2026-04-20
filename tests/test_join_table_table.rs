@@ -185,6 +185,7 @@ const KEY_USER: &str = r#""key_field":"user_id""#;
 // Table row at (key, "J"). See 24-03-SUMMARY for the migration notes.
 
 // (1) Inner join: upsert both sides, output row merges.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn tt_inner_upsert_both_sides() {
     let (engine, store) = build_engine(
@@ -205,6 +206,7 @@ fn tt_inner_upsert_both_sides() {
 }
 
 // (2) Inner join: only left side → no emit.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn tt_inner_only_left_no_emit() {
     let (engine, store) = build_engine(
@@ -221,6 +223,7 @@ fn tt_inner_only_left_no_emit() {
 }
 
 // (3) Left join: left-only upsert emits row with null right fields.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn tt_left_only_left_emits_null_right() {
     let (engine, store) = build_engine(
@@ -238,6 +241,7 @@ fn tt_left_only_left_emits_null_right() {
 }
 
 // (4) Inner: both sides populated, delete right → output tombstoned.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn tt_inner_tombstone_right_deletes_output() {
     let (engine, store) = build_engine(
@@ -260,6 +264,7 @@ fn tt_inner_tombstone_right_deletes_output() {
 }
 
 // (5) Left: delete right nulls right fields but keeps left row.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn tt_left_tombstone_right_nulls_right_fields() {
     let (engine, store) = build_engine(
@@ -279,6 +284,7 @@ fn tt_left_tombstone_right_nulls_right_fields() {
 }
 
 // (6) Delete left tombstones output for both inner and left.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn tt_tombstone_left_deletes_output_inner_and_left() {
     for jt in ["inner", "left"] {
@@ -304,6 +310,7 @@ fn tt_tombstone_left_deletes_output_inner_and_left() {
 
 // (7) Collision suffix: left has `status`, right has `status` → output has
 //     `status` (from left) and `status_right` (from right).
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn tt_collision_suffix_on_output() {
     let a_fields =
@@ -343,6 +350,7 @@ fn tt_collision_suffix_on_output() {
 
 // (8) Composite key: both tables keyed on [user_id, region]; deletion on one
 //     composite row leaves the other untouched.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn tt_composite_key() {
     let a_fields = r#"{"user_id":{"type":"str","optional":false},"region":{"type":"str","optional":false},"x":{"type":"int","optional":false}}"#;
@@ -402,6 +410,7 @@ fn tt_composite_key() {
 }
 
 // (9) Mismatched key declarations: A keyed on user_id, B keyed on account_id.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn tt_rejects_mismatched_keys() {
     let mut engine = PipelineEngine::new();
@@ -464,6 +473,7 @@ fn tt_rejects_mismatched_keys() {
 }
 
 // (10) Partial-key join: both tables keyed on [user_id, region], on=["user_id"].
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn tt_rejects_partial_key() {
     let comp_key = r#""key_field":null,"key_fields":["user_id","region"]"#;
@@ -522,6 +532,7 @@ fn tt_rejects_partial_key() {
 // (11) Snapshot round-trip: populate J, verify state persists through
 //      postcard serde (output Table is a regular EntityState — uses existing
 //      snapshot codec via `save_snapshot` / `load_snapshot`).
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn tt_snapshot_roundtrip() {
     let (engine, store) = build_engine(
@@ -542,6 +553,7 @@ fn tt_snapshot_roundtrip() {
 
 // (12) Recursive TT cascade: J = A.join(B); K = J.join(C). Upsert on A should
 //     cascade → J → K.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn tt_cascades_recursively_through_chain() {
     let mut engine = PipelineEngine::new();

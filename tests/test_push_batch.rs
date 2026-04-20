@@ -23,12 +23,7 @@ use beava::server::protocol::{
     self as proto, decode_event_binary, parse_command, OP_GET, OP_PUSH_ASYNC, OP_PUSH_BATCH,
     STATUS_ERROR, STATUS_OK, TYPE_F64, TYPE_I64, TYPE_STR,
 };
-use beava::server::tcp::{
-    handle_push_batch, make_concurrent_state, BackfillTracker, ConnAccumulator, PendingAsync,
-    SharedState, BATCH_DEADLINE_US, BATCH_SIZE,
-};
-use beava::state::store::StateStore;
-
+use beava::server::tcp::{handle_push_batch, make_concurrent_state_default, BackfillTracker, ConnAccumulator, PendingAsync, SharedState, BATCH_DEADLINE_US, BATCH_SIZE};
 // ---------------------------------------------------------------------------
 // Harness helpers
 // ---------------------------------------------------------------------------
@@ -38,9 +33,8 @@ fn ts(secs: u64) -> SystemTime {
 }
 
 fn make_state() -> SharedState {
-    make_concurrent_state(
+    make_concurrent_state_default(
         PipelineEngine::new(),
-        StateStore::new(),
         None,
         std::path::PathBuf::from("test.snapshot"),
         Arc::new(BackfillTracker::default()),

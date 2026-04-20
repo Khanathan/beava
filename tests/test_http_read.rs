@@ -2,8 +2,6 @@
 
 mod http_common;
 
-use std::time::SystemTime;
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::Value;
@@ -11,8 +9,7 @@ use tower::ServiceExt;
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::server::http::build_router;
-use beava::server::tcp::{make_concurrent_state_full, BackfillTracker};
-use beava::state::store::StateStore;
+use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker};
 use http_common::{build_test_state, inject_loopback, TEST_ADMIN_TOKEN};
 use std::sync::Arc;
 
@@ -22,9 +19,14 @@ use std::sync::Arc;
 
 /// Build a SharedState with a registered stream "txn_events" (key_field=user_id,
 /// one Count feature "txn_count") and one event pushed for key "u1".
+///
+/// Phase 54-03 Task 4: legacy `engine.push(&store, ...)` pre-seeding removed;
+/// the three tests in this file are all `#[ignore]`'d pending Wave 4
+/// re-enable with shard-thread harness. This stub satisfies compilation only;
+/// Wave 4 plan 54-04 will replace this with `ephemeral_test_keyspace` +
+/// `spawn_shard_threads` + a shard-path push to pre-seed `u1`.
+#[allow(dead_code)]
 fn seeded_state() -> beava::server::tcp::SharedState {
-    use std::time::Duration;
-
     let mut engine = PipelineEngine::new();
     let stream = StreamDefinition {
         name: "txn_events".to_string(),
@@ -32,8 +34,8 @@ fn seeded_state() -> beava::server::tcp::SharedState {
         features: vec![(
             "txn_count".to_string(),
             FeatureDef::Count {
-                window: Duration::from_secs(3600),
-                bucket: Duration::from_secs(60),
+                window: std::time::Duration::from_secs(3600),
+                bucket: std::time::Duration::from_secs(60),
                 where_expr: None,
                 backfill: false,
             },
@@ -42,15 +44,8 @@ fn seeded_state() -> beava::server::tcp::SharedState {
     };
     engine.register(stream).unwrap();
 
-    let store = StateStore::new();
-    let payload = serde_json::json!({ "user_id": "u1", "amount": 10.0 });
-    engine
-        .push("txn_events", &payload, &store, SystemTime::now())
-        .unwrap();
-
-    make_concurrent_state_full(
+    make_concurrent_state_default_store(
         engine,
-        store,
         None,
         std::path::PathBuf::from("/tmp/beava-test-http-read.snapshot"),
         Arc::new(BackfillTracker::default()),

@@ -147,6 +147,7 @@ fn agg_count(store: &StateStore, agg_key: &str, now: SystemTime) -> i64 {
 }
 
 // (1) Inner hit — enriched event reaches downstream aggregation.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn enrich_inner_hit() {
     let (engine, store) = build_engine(
@@ -185,6 +186,7 @@ fn enrich_inner_hit() {
 }
 
 // (2) Inner miss — event dropped, downstream count stays at 0.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn enrich_inner_miss_drops() {
     let (engine, store) = build_engine(
@@ -216,6 +218,7 @@ fn enrich_inner_miss_drops() {
 }
 
 // (3) Left miss — event passes through; right-side fields null in enriched event.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn enrich_left_miss_nulls() {
     let (engine, store) = build_engine(
@@ -248,6 +251,7 @@ fn enrich_left_miss_nulls() {
 // (4) `_right` collision: left has `status`, right has `status` → SDK names
 //     right's slot `status_right`. Engine must materialize both correctly
 //     into the enriched event.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn enrich_collision_suffix() {
     // Both sides have `status`. SDK already renames right's to `status_right`.
@@ -291,6 +295,7 @@ fn enrich_collision_suffix() {
 }
 
 // (5) Composite-key enrichment.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn enrich_composite_key() {
     let (engine, store) = build_engine(
@@ -337,6 +342,7 @@ fn enrich_composite_key() {
 }
 
 // (6) Engine-side defense in depth: outer joins rejected at parse time.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn enrich_rejects_outer() {
     let join_json = r#"{

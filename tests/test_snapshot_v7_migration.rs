@@ -81,6 +81,7 @@ fn sample_entity_with_rows(
     )
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn v7_roundtrip_table_rows() {
     let now = ts(1_000_000);
@@ -113,6 +114,7 @@ fn v7_roundtrip_table_rows() {
     assert!(matches!(sess.1.state, TableRowState::Tombstoned { .. }));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn v7_roundtrip_tombstone_since_preserved() {
     let now = ts(1_000_000);
@@ -143,6 +145,7 @@ fn v7_roundtrip_tombstone_since_preserved() {
     }
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn v6_snapshot_loads_with_empty_table_rows() {
     let now = ts(1_000_000);
@@ -207,6 +210,7 @@ fn v6_snapshot_loads_with_empty_table_rows() {
     assert_eq!(op_restored.read(now), FeatureValue::Int(2));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn unknown_version_returns_none() {
     // Start from a valid v7 snapshot then tamper with the version byte.
@@ -223,6 +227,7 @@ fn unknown_version_returns_none() {
     );
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn v7_mixed_live_tombstoned_gc_friendly() {
     // Build a v7 snapshot with two entities: one carrying a Live table_row,

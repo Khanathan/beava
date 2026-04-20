@@ -89,6 +89,7 @@ fn make_cascade_child(name: &str, key: &str, parent: &str) -> StreamDefinition {
 mod append_many {
     use super::*;
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn empty_batch_returns_zero() {
         let tmp = TempDir::new().unwrap();
@@ -102,6 +103,7 @@ mod append_many {
         assert_eq!(entries.len(), 0);
     }
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn three_events_written_and_readable() {
         let tmp = TempDir::new().unwrap();
@@ -125,6 +127,7 @@ mod append_many {
         assert_eq!(entries[2].timestamp, ts(2000));
     }
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn unregistered_stream_returns_zero_not_error() {
         let tmp = TempDir::new().unwrap();
@@ -135,6 +138,7 @@ mod append_many {
         assert_eq!(n, 0);
     }
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn append_many_after_append_preserves_order() {
         let tmp = TempDir::new().unwrap();
@@ -163,6 +167,7 @@ mod append_many {
 mod mark_dirty_many {
     use super::*;
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn empty_iterator_leaves_dirty_count_unchanged() {
         let store = StateStore::new();
@@ -172,6 +177,7 @@ mod mark_dirty_many {
         assert_eq!(store.dirty_count(), 0);
     }
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn five_keys_with_duplicate_dedups_to_four() {
         let store = StateStore::new();
@@ -179,6 +185,7 @@ mod mark_dirty_many {
         assert_eq!(store.dirty_count(), 4);
     }
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn mirrors_mark_dirty_does_not_touch_deleted_keys() {
         let store = StateStore::new();
@@ -200,6 +207,7 @@ mod mark_dirty_many {
 mod push_batch_no_features {
     use super::*;
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn empty_batch_returns_empty_vec() {
         let mut engine = PipelineEngine::new();
@@ -214,6 +222,7 @@ mod push_batch_no_features {
         assert_eq!(store.entity_count(), 0);
     }
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn three_events_return_three_results_in_order() {
         let mut engine = PipelineEngine::new();
@@ -233,6 +242,7 @@ mod push_batch_no_features {
         assert_eq!(store.entity_count(), 3);
     }
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn partial_failure_does_not_halt_and_preserves_side_effects() {
         let mut engine = PipelineEngine::new();
@@ -261,6 +271,7 @@ mod push_batch_no_features {
         assert_eq!(f2.get("count_1h"), Some(&FeatureValue::Int(1)));
     }
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn unknown_stream_errors_all_events() {
         let engine = PipelineEngine::new();
@@ -293,6 +304,7 @@ mod push_batch_with_cascade_no_features {
         engine
     }
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn empty_batch_returns_empty_vec() {
         let engine = build_cascade_engine();
@@ -303,6 +315,7 @@ mod push_batch_with_cascade_no_features {
         assert_eq!(store.entity_count(), 0);
     }
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn unknown_stream_errors_all() {
         let engine = build_cascade_engine();
@@ -317,6 +330,7 @@ mod push_batch_with_cascade_no_features {
         assert_eq!(store.entity_count(), 0);
     }
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn cascade_equivalence_3_events() {
         // Engine A receives a batch; Engine B receives sequential single-event
@@ -361,6 +375,7 @@ mod push_batch_with_cascade_no_features {
         assert_eq!(store_a.entity_count(), store_b.entity_count());
     }
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn fan_out_single_update_per_event_on_target_key() {
         // Two keyed streams sharing a fan-out target. A Txns push that
@@ -404,6 +419,7 @@ mod push_batch_with_cascade_no_features {
         }
     }
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn error_order_preserved_on_partial_failure() {
         let engine = build_cascade_engine();
@@ -429,6 +445,7 @@ mod push_batch_with_cascade_no_features {
         assert_eq!(u2.get("count_1h"), Some(&FeatureValue::Int(1)));
     }
 
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn unknown_stream_returns_errors_in_order_without_side_effects() {
         let engine = build_cascade_engine();

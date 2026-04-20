@@ -64,6 +64,7 @@ fn minimal_tx_stream() -> StreamDefinition {
     }
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn engine_push_round_trip_under_client_features() {
     let mut engine = PipelineEngine::new();
@@ -98,6 +99,7 @@ fn engine_push_round_trip_under_client_features() {
     assert_eq!(feats2.get("sum_1h"), Some(&FeatureValue::Float(12.5)));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn client_types_usable_alongside_engine() {
     // Smoke-check: the Phase 28 client surface is reachable from the

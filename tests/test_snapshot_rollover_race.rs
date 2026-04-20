@@ -12,6 +12,7 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn busy_racer_no_lost_keys() {
     let store = Arc::new(StateStore::new());

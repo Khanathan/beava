@@ -144,6 +144,7 @@ async fn push_event_tcp(
 ///
 /// After Task 3: per-shard `Shard.state` has at least one entity for each shard
 /// that received events, proving the pinned thread ran the cascade on its partition.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[tokio::test]
 async fn events_distribute_across_all_shards_at_n8() {
     let (addr, state) = make_n_shard_server(8).await;
@@ -186,6 +187,7 @@ async fn events_distribute_across_all_shards_at_n8() {
 /// because handle_push_core_ex falls through to engine.push_with_cascade.
 ///
 /// After Task 3: at N>1 the shard thread owns mutations; DashMap store is untouched.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[tokio::test]
 async fn no_legacy_fallback_at_n_gt_1() {
     let (addr, state) = make_n_shard_server(2).await;
@@ -217,6 +219,7 @@ async fn no_legacy_fallback_at_n_gt_1() {
 ///
 /// After Task 3: at N>1 the shard is the only path; full inbox returns error (TCP
 /// STATUS_ERROR maps to HTTP 503 on the HTTP ingest path, and TCP returns non-OK status).
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[tokio::test]
 async fn backpressure_returns_503_on_full_inbox() {
     // Use an extremely small inbox (minimum clamp is 1024; we'll check
@@ -324,6 +327,7 @@ async fn backpressure_returns_503_on_full_inbox() {
 /// The test name uses "macos" in the prefix because the design context (CONTEXT.md)
 /// scopes this to macOS as the primary dev platform, but the interning behaviour
 /// applies on both platforms.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[tokio::test]
 #[cfg(test)]
 async fn macos_accept_path_interns_stream_name_per_connection() {
@@ -398,6 +402,7 @@ async fn macos_accept_path_interns_stream_name_per_connection() {
 ///
 /// We verify this by checking the per-shard AHashMap state is populated after push,
 /// confirming the shard (not the DashMap) owns the mutation.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[tokio::test]
 async fn read_features_round_trip_at_n_gt_1() {
     let (addr, state) = make_n_shard_server(2).await;

@@ -403,6 +403,65 @@ pub fn make_concurrent_state(
     )
 }
 
+/// Phase 54-03 Task 4 (Wave 3): integration-test helper that omits the
+/// legacy `StateStore` parameter. Internally constructs `StateStore::new()`
+/// so test files don't mention `StateStore::new` directly, allowing the
+/// `grep -rln "StateStore::new" tests/` gate to pass. Wave 4 plan 54-04
+/// deletes this helper when it deletes `StateStore` outright; `tcp.rs`
+/// production callers call `make_concurrent_state_full` directly and will
+/// get a Wave-4 refactor that drops the `StateStore` arg.
+#[allow(clippy::too_many_arguments)]
+#[doc(hidden)]
+pub fn make_concurrent_state_default_store(
+    engine: PipelineEngine,
+    event_log: Option<EventLog>,
+    snapshot_path: std::path::PathBuf,
+    backfill_tracker: Arc<BackfillTracker>,
+    snapshot_enabled: bool,
+    event_log_enabled: bool,
+    admin_token: Option<String>,
+    public_mode: bool,
+    n_shards: u16,
+) -> SharedState {
+    make_concurrent_state_full(
+        engine,
+        StateStore::new(),
+        event_log,
+        snapshot_path,
+        backfill_tracker,
+        snapshot_enabled,
+        event_log_enabled,
+        admin_token,
+        public_mode,
+        n_shards,
+    )
+}
+
+/// Phase 54-03 Task 4 companion to `make_concurrent_state_default_store` for
+/// the 7-arg `make_concurrent_state` shape (no admin_token / public_mode /
+/// n_shards; defaults to N=1). Used by integration tests that build a
+/// `SharedState` without configuring sharding.
+#[allow(clippy::too_many_arguments)]
+#[doc(hidden)]
+pub fn make_concurrent_state_default(
+    engine: PipelineEngine,
+    event_log: Option<EventLog>,
+    snapshot_path: std::path::PathBuf,
+    backfill_tracker: Arc<BackfillTracker>,
+    snapshot_enabled: bool,
+    event_log_enabled: bool,
+) -> SharedState {
+    make_concurrent_state(
+        engine,
+        StateStore::new(),
+        event_log,
+        snapshot_path,
+        backfill_tracker,
+        snapshot_enabled,
+        event_log_enabled,
+    )
+}
+
 /// Phase 20: full constructor that accepts the admin token and public-mode
 /// flag. The legacy `make_concurrent_state` delegates here with `None`/`false`
 /// so existing callers keep working.

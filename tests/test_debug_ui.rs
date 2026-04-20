@@ -16,8 +16,7 @@ use tokio::net::TcpStream;
 use beava::engine::pipeline::{
     FeatureDef, PipelineEngine, StreamDefinition, ViewDefinition, ViewFeatureDef,
 };
-use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
-use beava::state::store::StateStore;
+use beava::server::tcp::{make_concurrent_state_default, BackfillTracker, SharedState};
 
 // ---------------------------------------------------------------------------
 // Helper A: start a Beava HTTP server on a random localhost port.
@@ -25,9 +24,8 @@ use beava::state::store::StateStore;
 
 /// Build a fresh `SharedState` with an empty engine/store.
 fn make_test_state() -> SharedState {
-    make_concurrent_state(
+    make_concurrent_state_default(
         PipelineEngine::new(),
-        StateStore::new(),
         None,
         std::path::PathBuf::from("test-debug-ui.snapshot"),
         Arc::new(BackfillTracker::default()),

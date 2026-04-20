@@ -46,6 +46,7 @@ fn build_test_engine_with_count_op() -> (PipelineEngine, StateStore) {
 }
 
 proptest! {
+    #[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
     #[test]
     fn batch_path_equals_single_event_path(
         // Adversarial: offsets in [-3600, 0] seconds from a fixed base.

@@ -12,12 +12,8 @@ use std::time::Duration;
 use serde_json::json;
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use beava::server::tcp::{
-    make_concurrent_state_full, replica_ingest, replica_ingest_batch, BackfillTracker, SharedState,
-};
+use beava::server::tcp::{make_concurrent_state_default_store, replica_ingest, replica_ingest_batch, BackfillTracker, SharedState};
 use beava::state::event_log::{EventLog, LOG_FMT_JSON};
-use beava::state::store::StateStore;
-
 fn count_stream(name: &str) -> StreamDefinition {
     StreamDefinition {
         name: name.into(),
@@ -51,9 +47,8 @@ fn make_state(log_dir: &std::path::Path) -> SharedState {
     engine.register(count_stream("events")).unwrap();
     let event_log = EventLog::new(log_dir.to_path_buf()).unwrap();
     event_log.register_stream("events", None).unwrap();
-    make_concurrent_state_full(
+    make_concurrent_state_default_store(
         engine,
-        StateStore::new(),
         Some(event_log),
         log_dir.join("snapshot"),
         Arc::new(BackfillTracker::default()),

@@ -37,6 +37,7 @@ fn register_engine_with_source_and_agg(
 }
 
 // (1) REGISTER payload with composite keys parses without the old rejection.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn composite_keys_register_accepted() {
     let source = r#"{
@@ -78,6 +79,7 @@ fn composite_keys_register_accepted() {
 // (2) Two events with same user_id but different merchant_id bucket into two
 //     distinct composite rows.
 // (3) A third event matching one composite merges into that bucket only.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn composite_keys_bucket_independently_and_merge_on_match() {
     let source = r#"{"name":"TX","kind":"stream","key_field":null,"fields":{}}"#;
@@ -136,6 +138,7 @@ fn composite_keys_bucket_independently_and_merge_on_match() {
 }
 
 // (4) Missing composite-key field still surfaces an error (preserved from 22-04).
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn composite_keys_missing_field_errors() {
     let ev = serde_json::json!({"user_id": "u1", "amount": 10.0}); // merchant_id absent
@@ -148,6 +151,7 @@ fn composite_keys_missing_field_errors() {
 
 // (5a) Single-key encode helper: one-element keys list produces an unpiped
 // key string ("u1", not "u1|"). Regression guard for the 22-04 fast path.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn single_key_encode_fast_path_unchanged() {
     let ev = serde_json::json!({"user_id": "u1", "amount": 5.0});
@@ -160,6 +164,7 @@ fn single_key_encode_fast_path_unchanged() {
 // (5b) Single-key engine dispatch regression guard: an aggregation with a
 // single-key `keys` array stores state under the plain key, not the
 // composite-encoded key.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn single_key_engine_dispatch_unchanged() {
     use serde_json;

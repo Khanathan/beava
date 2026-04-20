@@ -12,10 +12,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::json;
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use beava::server::tcp::{make_concurrent_state_full, replica_ingest_batch, BackfillTracker};
+use beava::server::tcp::{make_concurrent_state_default_store, replica_ingest_batch, BackfillTracker};
 use beava::state::event_log::{EventLog, LOG_FMT_JSON};
-use beava::state::store::StateStore;
-
 fn txns_stream() -> StreamDefinition {
     StreamDefinition {
         name: "Txns".into(),
@@ -68,9 +66,8 @@ fn replica_batch_advances_watermark() {
     let event_log = EventLog::new(tmp.clone()).unwrap();
     event_log.register_stream("Txns", None).unwrap();
 
-    let state = make_concurrent_state_full(
+    let state = make_concurrent_state_default_store(
         engine,
-        StateStore::new(),
         Some(event_log),
         tmp.join("snapshot"),
         Arc::new(BackfillTracker::default()),

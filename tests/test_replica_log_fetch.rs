@@ -25,10 +25,8 @@ use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::server::protocol::{
     self, Scope, OP_LOG_FETCH, REPLICA_FRAME_TAG_END, REPLICA_FRAME_TAG_EVENT, STATUS_ERROR,
 };
-use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
+use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
 use beava::state::event_log::EventLog;
-use beava::state::store::StateStore;
-
 const ADMIN_TOKEN: &str = "test-admin-token";
 
 fn stream_def(name: &str) -> StreamDefinition {
@@ -79,9 +77,8 @@ async fn start_test_server(stream_names: &[&str]) -> (u16, SharedState) {
         event_log.register_stream(s, None).unwrap();
     }
 
-    let state = make_concurrent_state_full(
+    let state = make_concurrent_state_default_store(
         engine,
-        StateStore::new(),
         Some(event_log),
         tmp.join("beava.snapshot"),
         Arc::new(BackfillTracker::default()),

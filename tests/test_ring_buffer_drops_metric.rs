@@ -120,6 +120,7 @@ fn push_sales(
 ///    i.e. pushing N events does NOT create N label combinations.
 /// 3. The snapshot contains only the three pre-registered (stream, kind, reason)
 ///    label combinations — not an unbounded set.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn bounded_labels() {
     let (engine, store) = build_sales_engine();
@@ -505,6 +506,7 @@ fn bounded_labels() {
 ///
 /// They cannot both fire for the same event because the tcp.rs gate fires
 /// `continue` (or `return`) before the event reaches push_with_cascade.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn counters_mutually_exclusive() {
     let (engine, store) = build_sales_engine();

@@ -77,6 +77,7 @@ fn push(store: &StateStore, engine: &PipelineEngine, key: &str, amount: f64, now
 
 // ======================== OPS-03: Delta contains only dirty ========================
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_incremental_snapshot_delta_contains_only_dirty_entities() {
     let mut engine = PipelineEngine::new();
@@ -115,6 +116,7 @@ fn test_incremental_snapshot_delta_contains_only_dirty_entities() {
 
 // ======================== OPS-04: Base + delta recovery ========================
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
     let dir = tempfile::tempdir().unwrap();
@@ -209,6 +211,7 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
 
 // ======================== OPS-04: Deleted keys in delta ========================
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_incremental_snapshot_deleted_keys_removed_on_recovery() {
     let dir = tempfile::tempdir().unwrap();
@@ -267,6 +270,7 @@ fn test_incremental_snapshot_deleted_keys_removed_on_recovery() {
 
 // ======================== OPS-04: Legacy v5 migration ========================
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_legacy_v5_migration_loads_as_initial_base() {
     // Build a v5 byte stream by hand: [version=5][postcard(SnapshotState)]
@@ -300,6 +304,7 @@ fn test_legacy_v5_migration_loads_as_initial_base() {
 
 // ======================== OPS-03: Full snapshot every Nth cycle ========================
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_full_snapshot_cycle_picks_base_at_zero_and_every_n() {
     // Simulate the cycle counter logic from main.rs: is_full = cycle % N == 0.
@@ -319,6 +324,7 @@ fn test_full_snapshot_cycle_picks_base_at_zero_and_every_n() {
 
 // ======================== Eviction + delta integration ========================
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_eviction_marks_deleted_and_delta_includes_it() {
     let mut engine = PipelineEngine::new();

@@ -27,12 +27,8 @@ use serde_json::json;
 
 use beava::engine::event_time::parse_event_time;
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use beava::server::tcp::{
-    handle_push_batch, make_concurrent_state, run_backfill, BackfillStatus, BackfillTracker,
-    PendingAsync, SharedState,
-};
+use beava::server::tcp::{handle_push_batch, make_concurrent_state_default, run_backfill, BackfillStatus, BackfillTracker, PendingAsync, SharedState};
 use beava::state::event_log::EventLog;
-use beava::state::store::StateStore;
 use beava::types::FeatureMap;
 
 // ---------------------------------------------------------------------------
@@ -75,9 +71,8 @@ fn txns_stream_def() -> StreamDefinition {
 /// Build a SharedState backed by a real EventLog in `log_dir`.
 fn make_state_with_log(log_dir: &std::path::Path) -> SharedState {
     let event_log = EventLog::new(log_dir.to_path_buf()).expect("EventLog::new");
-    make_concurrent_state(
+    make_concurrent_state_default(
         PipelineEngine::new(),
-        StateStore::new(),
         Some(event_log),
         log_dir.join("ship_gate.snapshot"),
         Arc::new(BackfillTracker::default()),

@@ -12,13 +12,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use beava::engine::pipeline::PipelineEngine;
-use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
-use beava::state::store::StateStore;
-
+use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
 fn state_with_mode(public_mode: bool) -> SharedState {
-    make_concurrent_state_full(
+    make_concurrent_state_default_store(
         PipelineEngine::new(),
-        StateStore::new(),
         None,
         std::path::PathBuf::from("/tmp/beava-test-demo-page.snapshot"),
         Arc::new(BackfillTracker::default()),

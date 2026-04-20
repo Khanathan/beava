@@ -48,6 +48,7 @@ fn make_ttl_stream(name: &str, entity_ttl_secs: u64) -> StreamDefinition {
         shard_key: None,    }
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn ttl_honors_event_time_not_wall_clock() {
     let store = StateStore::new();

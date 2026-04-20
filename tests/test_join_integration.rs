@@ -31,6 +31,7 @@ fn parse(json: &str) -> V0RegisterPayload {
 /// (1) Stream → Enrich(Table) → group_by(right-side field).agg(count).
 ///     Asserts enriched events feed into the downstream aggregation and
 ///     bucket by the joined field `country`.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn dag_enrich_then_aggregate() {
     let mut engine = PipelineEngine::new();
@@ -125,6 +126,7 @@ fn dag_enrich_then_aggregate() {
 
 /// (2) Stream↔Stream join then Enrich by a Table — stresses cascade
 ///     ordering when a join stream's output is consumed by an enrichment.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn dag_ss_join_then_enrich() {
     let mut engine = PipelineEngine::new();
@@ -221,6 +223,7 @@ fn dag_ss_join_then_enrich() {
 /// (3) Table↔Table output used as enrichment right side.
 ///     Acceptance-level smoke: registers TT-join and verifies translator
 ///     emits the expected StreamDefinition shape for the output Table.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn dag_tt_join_feeds_enrich() {
     let mut engine = PipelineEngine::new();

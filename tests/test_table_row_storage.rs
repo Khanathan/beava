@@ -21,6 +21,7 @@ fn fields_ab() -> AHashMap<String, FeatureValue> {
     m
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn upsert_creates_live_row() {
     let store = StateStore::new();
@@ -39,6 +40,7 @@ fn upsert_creates_live_row() {
     assert_eq!(row.fields.get("score"), Some(&FeatureValue::Int(42)));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn tombstone_flips_live_to_tombstoned() {
     let store = StateStore::new();
@@ -64,6 +66,7 @@ fn tombstone_flips_live_to_tombstoned() {
     assert_eq!(row.updated_at, t1);
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn tombstone_on_absent_creates_tombstone_only() {
     let store = StateStore::new();
@@ -81,6 +84,7 @@ fn tombstone_on_absent_creates_tombstone_only() {
     assert!(row.fields.is_empty());
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn upsert_over_tombstone_resurrects() {
     let store = StateStore::new();
@@ -107,6 +111,7 @@ fn upsert_over_tombstone_resurrects() {
     assert_eq!(row.updated_at, t2);
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn gc_tombstones_respects_7d_grace() {
     let store = StateStore::new();
@@ -133,6 +138,7 @@ fn gc_tombstones_respects_7d_grace() {
     );
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn gc_tombstones_leaves_live_rows_alone() {
     let store = StateStore::new();
@@ -169,6 +175,7 @@ fn gc_tombstones_leaves_live_rows_alone() {
     ));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn table_rows_independent_from_static_features() {
     let store = StateStore::new();

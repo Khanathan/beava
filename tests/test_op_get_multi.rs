@@ -20,17 +20,14 @@ use beava::engine::pipeline::PipelineEngine;
 use beava::server::protocol::{
     self, OP_DELETE_TABLE, OP_GET_MULTI, OP_PUSH_TABLE, OP_REGISTER, STATUS_ERROR, STATUS_OK,
 };
-use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
-use beava::state::store::StateStore;
-
+use beava::server::tcp::{make_concurrent_state_default, BackfillTracker, SharedState};
 // ---------------------------------------------------------------------------
 // Harness (mirrors tests/test_op_push_table.rs)
 // ---------------------------------------------------------------------------
 
 async fn start_test_server() -> (u16, SharedState) {
-    let state: SharedState = make_concurrent_state(
+    let state: SharedState = make_concurrent_state_default(
         PipelineEngine::new(),
-        StateStore::new(),
         None,
         std::path::PathBuf::from("test_op_get_multi.snapshot"),
         Arc::new(BackfillTracker::default()),

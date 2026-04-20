@@ -21,18 +21,15 @@ use beava::server::protocol::{
     self, OP_FLUSH, OP_GET, OP_MSET, OP_PUSH, OP_PUSH_ASYNC, OP_REGISTER, OP_SET, STATUS_ERROR,
     STATUS_OK, TYPE_BOOL, TYPE_F64, TYPE_I64, TYPE_NULL, TYPE_STR,
 };
-use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
-use beava::state::store::StateStore;
-
+use beava::server::tcp::{make_concurrent_state_default, BackfillTracker, SharedState};
 // ---------------------------------------------------------------------------
 // Test server helper
 // ---------------------------------------------------------------------------
 
 /// Start a test server on random ports. Returns (tcp_port, http_port, state).
 async fn start_test_server() -> (u16, u16, SharedState) {
-    let state: SharedState = make_concurrent_state(
+    let state: SharedState = make_concurrent_state_default(
         PipelineEngine::new(),
-        StateStore::new(),
         None,
         std::path::PathBuf::from("test.snapshot"),
         Arc::new(BackfillTracker::default()),

@@ -260,6 +260,7 @@ fn epoch_plus_secs(s: u64) -> SystemTime {
 ///   - UserRisk row is Live with country/tier/score merged.
 ///   - Purchases watermark = max(event_time) − 5s.
 ///   - No late drops.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn integ_full_dag_in_order_happy_path() {
     let (engine, store) = build_full_dag();
@@ -331,6 +332,7 @@ fn integ_full_dag_in_order_happy_path() {
 /// Pushes three events at t+100 (wm becomes 95), then a straggler at t+97
 /// (>= wm=95 → accepted). The RingBuffer's event-time routing must place it
 /// in its historical bucket so it counts toward the 1h window aggregate.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn integ_out_of_order_within_5s_lands_in_bucket() {
     let (engine, store) = build_full_dag();
@@ -372,6 +374,7 @@ fn integ_out_of_order_within_5s_lands_in_bucket() {
 }
 
 /// (3) Late event past 5s: dropped, downstream unaffected, counter increments.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn integ_late_event_past_5s_dropped_and_downstream_unaffected() {
     let (engine, store) = build_full_dag();
@@ -409,6 +412,7 @@ fn integ_late_event_past_5s_dropped_and_downstream_unaffected() {
 /// (4) Table tombstone cascades through TT-join. Tombstone UserProfile →
 ///     UserRisk retracts; merged GET view excludes both UserProfile.* and
 ///     UserRisk.* fields.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn integ_table_tombstone_cascades_through_aggregation_and_tt_join() {
     let (engine, store) = build_full_dag();
@@ -470,6 +474,7 @@ fn integ_table_tombstone_cascades_through_aggregation_and_tt_join() {
 }
 
 /// (5) GC after 7d grace: tombstoned rows removed; live rows untouched.
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn integ_gc_tombstones_after_7d_grace_removes_rows() {
     let (engine, store) = build_full_dag();

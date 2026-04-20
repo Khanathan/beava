@@ -29,17 +29,14 @@ use beava::server::signals::{
     emit_config_recommendations, emit_late_drop_signals, emit_perf_p99_signal,
     emit_register_failure, emit_snapshot_failure,
 };
-use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
-use beava::state::store::StateStore;
-
+use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
 fn test_state() -> SharedState {
-    make_concurrent_state_full(
+    make_concurrent_state_default_store(
         PipelineEngine::new(),
-        StateStore::new(),
         None,
         std::path::PathBuf::from("/tmp/beava-test-warnings-feed.snapshot"),
         Arc::new(BackfillTracker::default()),

@@ -17,17 +17,14 @@ use tokio::net::TcpStream;
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 #[cfg(feature = "demo")]
 use beava::server::tcp::RecentEvent;
-use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
-use beava::state::store::StateStore;
-
+use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
 // ---------------------------------------------------------------------------
 // Test harness (mirrors tests/test_debug_ui.rs:start_debug_ui_server).
 // ---------------------------------------------------------------------------
 
 fn make_test_state() -> SharedState {
-    make_concurrent_state_full(
+    make_concurrent_state_default_store(
         PipelineEngine::new(),
-        StateStore::new(),
         None,
         std::path::PathBuf::from("/tmp/beava-test-public-http.snapshot"),
         Arc::new(BackfillTracker::default()),

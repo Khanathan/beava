@@ -23,17 +23,16 @@ use beava::server::protocol::{
     self, OP_DELETE_TABLE, OP_GET, OP_PUSH, OP_PUSH_TABLE, OP_REGISTER, OP_SET, STATUS_ERROR,
     STATUS_OK, TYPE_F64, TYPE_I64, TYPE_STR,
 };
-use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
-use beava::state::store::{StateStore, TableRowState};
+use beava::server::tcp::{make_concurrent_state_default, BackfillTracker, SharedState};
+use beava::state::store::TableRowState;
 
 // ---------------------------------------------------------------------------
 // Server + frame helpers (copied from test_server.rs)
 // ---------------------------------------------------------------------------
 
 async fn start_test_server() -> (u16, SharedState) {
-    let state: SharedState = make_concurrent_state(
+    let state: SharedState = make_concurrent_state_default(
         PipelineEngine::new(),
-        StateStore::new(),
         None,
         std::path::PathBuf::from("test_op_push_table.snapshot"),
         Arc::new(BackfillTracker::default()),

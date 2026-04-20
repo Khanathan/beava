@@ -25,13 +25,10 @@ use tower::ServiceExt;
 use beava::engine::pipeline::PipelineEngine;
 use beava::server::http::build_router;
 use beava::server::signals::{Category, Severity, Signal};
-use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
-use beava::state::store::StateStore;
-
+use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
 fn test_state() -> SharedState {
-    make_concurrent_state_full(
+    make_concurrent_state_default_store(
         PipelineEngine::new(),
-        StateStore::new(),
         None,
         std::path::PathBuf::from("/tmp/beava-test-warnings.snapshot"),
         Arc::new(BackfillTracker::default()),

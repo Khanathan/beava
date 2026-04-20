@@ -35,10 +35,7 @@ use std::time::{Duration, Instant, SystemTime};
 use serde_json::json;
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
-use beava::server::tcp::{
-    handle_push_batch, make_concurrent_state_full, BackfillTracker, PendingAsync, SharedState,
-};
-use beava::state::store::StateStore;
+use beava::server::tcp::{handle_push_batch, make_concurrent_state_default_store, BackfillTracker, PendingAsync, SharedState};
 
 fn count_stream(name: &str, key_field: &str) -> StreamDefinition {
     StreamDefinition {
@@ -86,9 +83,8 @@ fn make_state() -> SharedState {
         .register(count_stream("IPSummary", "ip_address"))
         .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    make_concurrent_state_full(
+    make_concurrent_state_default_store(
         engine,
-        StateStore::new(),
         None, // event_log off — we want pure in-memory hot path
         tmp.path().join("snap"),
         Arc::new(BackfillTracker::default()),

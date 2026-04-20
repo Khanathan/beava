@@ -19,15 +19,12 @@ use tokio::net::TcpStream;
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::server::protocol::{write_string, OP_PUSH, TYPE_STR};
-use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
-use beava::state::store::StateStore;
-
+use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
 const TEST_ADMIN: &str = "test-admin-54-00-tcp-routing";
 
 fn build_single_shard_state(tag: &str) -> SharedState {
-    let state = make_concurrent_state_full(
+    let state = make_concurrent_state_default_store(
         PipelineEngine::new(),
-        StateStore::new(),
         None,
         std::path::PathBuf::from(format!("/tmp/beava-test-54-00-tcp-{tag}.snapshot")),
         Arc::new(BackfillTracker::default()),

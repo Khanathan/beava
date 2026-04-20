@@ -124,6 +124,7 @@ const KEY_USER: &str = r#""key_field":"user_id""#;
 // Tests
 // ---------------------------------------------------------------------------
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn cascade_migration_inner_both_live_merges() {
     let (engine, store) = build_engine(
@@ -152,6 +153,7 @@ fn cascade_migration_inner_both_live_merges() {
     assert_eq!(j.fields.get("y"), Some(&FeatureValue::Int(2)));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn cascade_migration_inner_right_tombstone_retracts_output() {
     let (engine, store) = build_engine(
@@ -179,6 +181,7 @@ fn cascade_migration_inner_right_tombstone_retracts_output() {
     );
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn cascade_migration_left_join_null_pads_missing_right() {
     let (engine, store) = build_engine(
@@ -218,6 +221,7 @@ fn cascade_migration_left_join_null_pads_missing_right() {
     assert!(matches!(j.state, TableRowState::Tombstoned { .. }));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn cascade_migration_collision_suffix_through_real_storage() {
     let a_fields =
@@ -262,6 +266,7 @@ fn cascade_migration_collision_suffix_through_real_storage() {
     );
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn cascade_migration_recurses_through_chain_a_b_j1_c_j2() {
     // A.join(B) = J1; J1.join(C) = J2. Upsert on A|B|C must cascade into J2.

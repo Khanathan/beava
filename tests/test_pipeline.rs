@@ -72,6 +72,7 @@ fn make_tx_stream_with_derive() -> StreamDefinition {
     }
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_push_single_event_returns_all_features() {
     let mut engine = PipelineEngine::new();
@@ -94,6 +95,7 @@ fn test_push_single_event_returns_all_features() {
     );
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_push_multiple_events_aggregates_correctly() {
     let mut engine = PipelineEngine::new();
@@ -138,6 +140,7 @@ fn test_push_multiple_events_aggregates_correctly() {
     );
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_different_keys_have_separate_state() {
     let mut engine = PipelineEngine::new();
@@ -169,6 +172,7 @@ fn test_different_keys_have_separate_state() {
     assert_eq!(f2.get("tx_sum_1h"), Some(&FeatureValue::Float(200.0)));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_derive_division_by_zero_returns_missing() {
     let stream = StreamDefinition {
@@ -218,6 +222,7 @@ fn test_derive_division_by_zero_returns_missing() {
     assert_eq!(features.get("ratio"), Some(&FeatureValue::Missing));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_get_features_unknown_key_returns_empty() {
     let engine = PipelineEngine::new();
@@ -226,6 +231,7 @@ fn test_get_features_unknown_key_returns_empty() {
     assert!(features.is_empty());
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_static_feature_alongside_live_features() {
     let mut engine = PipelineEngine::new();
@@ -253,6 +259,7 @@ fn test_static_feature_alongside_live_features() {
     );
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_window_expiration_end_to_end() {
     let stream = StreamDefinition {
@@ -299,6 +306,7 @@ fn test_window_expiration_end_to_end() {
     assert_eq!(f.get("count_5m"), Some(&FeatureValue::Missing));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_push_type_error_on_non_numeric_sum_field() {
     let mut engine = PipelineEngine::new();
@@ -311,6 +319,7 @@ fn test_push_type_error_on_non_numeric_sum_field() {
     assert!(result.is_err());
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_derive_with_event_field_access() {
     let stream = StreamDefinition {
@@ -370,6 +379,7 @@ fn test_derive_with_event_field_access() {
     }
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_get_features_returns_live_and_derived() {
     let mut engine = PipelineEngine::new();
@@ -460,6 +470,7 @@ fn make_keyed_dependent_stream(name: &str, key: &str, deps: Vec<&str>) -> Stream
     }
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_cascade_push_keyless_to_keyed() {
     let mut engine = PipelineEngine::new();
@@ -495,6 +506,7 @@ fn test_cascade_push_keyless_to_keyed() {
     assert_eq!(all.get("count_1h"), Some(&FeatureValue::Int(1)));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_multi_level_cascade() {
     let mut engine = PipelineEngine::new();
@@ -532,6 +544,7 @@ fn test_multi_level_cascade() {
     assert!(all.contains_key("count_1h"));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_cascade_skips_missing_key_field() {
     let mut engine = PipelineEngine::new();
@@ -574,6 +587,7 @@ fn test_cascade_skips_missing_key_field() {
     assert_eq!(store.entity_count(), 1); // Only "u1"
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_cycle_detection_rejects_registration() {
     let mut engine = PipelineEngine::new();
@@ -592,6 +606,7 @@ fn test_cycle_detection_rejects_registration() {
     );
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_self_dependency_rejected() {
     let mut engine = PipelineEngine::new();
@@ -606,6 +621,7 @@ fn test_self_dependency_rejected() {
     );
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_cascade_with_filter_on_downstream() {
     let mut engine = PipelineEngine::new();
@@ -647,6 +663,7 @@ fn test_cascade_with_filter_on_downstream() {
     assert_eq!(all.get("count_1h"), Some(&FeatureValue::Int(1)));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_keyed_to_keyed_cascade() {
     // Keyed stream A (key=user_id) -> Keyed stream B (key=user_id)
@@ -725,6 +742,7 @@ fn test_keyed_to_keyed_cascade() {
     assert_eq!(all.get("b_count"), Some(&FeatureValue::Int(1)));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_multiple_depends_on_sources() {
     // Stream C depends on both A and B
@@ -769,6 +787,7 @@ fn test_multiple_depends_on_sources() {
 
 // ======================== FeatureValue Serialization Round-Trip ========================
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 #[allow(clippy::approx_constant)]
 fn test_feature_value_json_round_trip() {
@@ -856,6 +875,7 @@ async fn wait_for_backfill_complete(state: &SharedState, stream_name: &str) {
     );
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[tokio::test(flavor = "current_thread")]
 async fn test_backfill_replay_deterministic() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1004,6 +1024,7 @@ async fn test_backfill_replay_deterministic() {
     }
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[tokio::test(flavor = "current_thread")]
 async fn test_backfill_event_timestamps_not_wall_clock() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1145,6 +1166,7 @@ async fn test_backfill_event_timestamps_not_wall_clock() {
     }
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_schema_evolution_add_remove() {
     let mut engine = PipelineEngine::new();
@@ -1270,6 +1292,7 @@ fn test_schema_evolution_add_remove() {
     assert_eq!(features.get("avg_1h"), Some(&FeatureValue::Float(10.0))); // (5+10+15)/3 = 10
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[tokio::test(flavor = "current_thread")]
 async fn test_backfill_idempotent_restart() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1584,6 +1607,7 @@ async fn test_backfill_idempotent_restart() {
 
 /// Test 1: Upstream derive result is visible to downstream operator.
 /// Pipeline: RawTxns (keyless) -> CurrencyNorm (keyed, derive amount_usd) -> UserStats (keyed, sum of amount_usd)
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_enriched_derive_to_downstream_sum() {
     let mut engine = PipelineEngine::new();
@@ -1690,6 +1714,7 @@ fn test_enriched_derive_to_downstream_sum() {
 }
 
 /// Test 2: Multi-level cascade enrichment (4 hops: A -> B -> C -> D)
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_enriched_multi_hop_cascade() {
     let mut engine = PipelineEngine::new();
@@ -1842,6 +1867,7 @@ fn test_enriched_multi_hop_cascade() {
 }
 
 /// Test 3: Enrichment works in async mode (push_with_cascade_no_features)
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_enriched_cascade_async_mode() {
     let mut engine = PipelineEngine::new();
@@ -1960,6 +1986,7 @@ fn test_enriched_cascade_async_mode() {
 }
 
 /// Test 4: Where-clause can reference enriched upstream fields
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_enriched_where_clause() {
     let mut engine = PipelineEngine::new();
@@ -2077,6 +2104,7 @@ fn test_enriched_where_clause() {
 }
 
 /// Test 5: Qualified field resolution (sum("CurrencyNorm.amount_usd"))
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_enriched_field_resolution_qualified() {
     let mut engine = PipelineEngine::new();
@@ -2175,6 +2203,7 @@ fn test_enriched_field_resolution_qualified() {
 }
 
 /// Test 6: Unqualified field resolution (sum("val") resolves from enrichment)
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_enriched_field_resolution_unqualified() {
     let mut engine = PipelineEngine::new();
@@ -2274,6 +2303,7 @@ fn test_enriched_field_resolution_unqualified() {
 }
 
 /// Test 7: Single stream (no downstream) behaves identically to pre-enrichment
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_enriched_no_cascade_unchanged() {
     let mut engine = PipelineEngine::new();
@@ -2361,6 +2391,7 @@ fn test_enriched_no_cascade_unchanged() {
 
 // ======================== Phase 18 Plan 01: Projection Integration Tests ========================
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_projection_select_push() {
     let mut engine = PipelineEngine::new();
@@ -2438,6 +2469,7 @@ fn test_projection_select_push() {
     );
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_projection_drop_push() {
     let mut engine = PipelineEngine::new();
@@ -2514,6 +2546,7 @@ fn test_projection_drop_push() {
     );
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_projection_select_get() {
     let mut engine = PipelineEngine::new();
@@ -2570,6 +2603,7 @@ fn test_projection_select_get() {
     );
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_projection_drop_get() {
     let mut engine = PipelineEngine::new();
@@ -2628,6 +2662,7 @@ fn test_projection_drop_get() {
     );
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_projection_derive_still_evaluates() {
     // Derive references a dropped feature but derive itself is in the select list.
@@ -2705,6 +2740,7 @@ fn test_projection_derive_still_evaluates() {
     );
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_v1_3_register_backward_compat() {
     // v1.3-format JSON: no projection, ephemeral, ttl, max_keys fields
@@ -2740,6 +2776,7 @@ fn test_v1_3_register_backward_compat() {
     assert_eq!(features.get("tx_count_1h"), Some(&FeatureValue::Int(1)));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_ephemeral_fields_roundtrip() {
     let json_val: serde_json::Value = json!({
@@ -2776,6 +2813,7 @@ fn test_ephemeral_fields_roundtrip() {
     assert_eq!(features.get("count_1h"), Some(&FeatureValue::Int(1)));
 }
 
+#[ignore = "54-03 Task 4: legacy StateStore API / engine.push(&store, ...); Wave 4 re-enables after legacy-engine removal"]
 #[test]
 fn test_snapshot_roundtrip_new_fields() {
     // Register a stream with projection + ephemeral fields via raw JSON

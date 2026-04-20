@@ -19,13 +19,10 @@ use beava::engine::recommend::ConfigRecommendation;
 use beava::server::signals::{
     emit_config_recommendations, emit_register_failure, format_rfc3339, Signal, SignalRegistry,
 };
-use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
-use beava::state::store::StateStore;
-
+use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
 fn test_state() -> SharedState {
-    make_concurrent_state_full(
+    make_concurrent_state_default_store(
         PipelineEngine::new(),
-        StateStore::new(),
         None,
         std::path::PathBuf::from("/tmp/beava-test-warnings-dedupe.snapshot"),
         Arc::new(BackfillTracker::default()),

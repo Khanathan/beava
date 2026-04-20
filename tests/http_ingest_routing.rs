@@ -26,17 +26,14 @@ use tower::ServiceExt;
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::server::http::build_router;
-use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
-use beava::state::store::StateStore;
-
+use beava::server::tcp::{make_concurrent_state_default_store, BackfillTracker, SharedState};
 const TEST_ADMIN: &str = "test-admin-54-00-http-routing";
 
 /// Build a 1-shard SharedState and register a stream with key_field=user_id.
 /// Shard threads are spawned so the SPSC dispatch path is live.
 fn build_single_shard_state(tag: &str) -> SharedState {
-    let state = make_concurrent_state_full(
+    let state = make_concurrent_state_default_store(
         PipelineEngine::new(),
-        StateStore::new(),
         None,
         std::path::PathBuf::from(format!("/tmp/beava-test-54-00-http-{tag}.snapshot")),
         Arc::new(BackfillTracker::default()),
