@@ -2628,6 +2628,21 @@ impl PipelineEngine {
             .unwrap_or(false)
     }
 
+    /// Phase 55-02 D-B1 (TPC-SOURCE-01): returns true iff `name` was
+    /// registered as a @bv.source_table (kind=="source_table" in the raw
+    /// REGISTER JSON). Dispatch-only — no side effects. Used by the
+    /// OP_UPSERT_TABLE_ROW / OP_DELETE_TABLE_ROW wire paths + HTTP
+    /// `POST /table/{name}` routes to reject writes against tables that
+    /// aren't CDC-tagged.
+    pub fn has_registered_source_table(&self, name: &str) -> bool {
+        self.raw_register_jsons
+            .get(name)
+            .and_then(|j| j.get("kind"))
+            .and_then(|k| k.as_str())
+            .map(|s| s == "source_table")
+            .unwrap_or(false)
+    }
+
     /// Get the raw register JSON for a stream. Returns None if not found.
     pub fn get_raw_register_json(&self, name: &str) -> Option<&serde_json::Value> {
         self.raw_register_jsons.get(name)

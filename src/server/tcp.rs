@@ -2652,6 +2652,28 @@ async fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8
         Command::DeleteTable { table_name, key } => {
             handle_delete_table(state, &table_name, &key, now).await
         }
+        // Phase 55-02 D-B1 (TPC-SOURCE-01): OP_UPSERT_TABLE_ROW (0x14).
+        // auth: admin_token validated upstream at opcode dispatch.
+        Command::UpsertTableRow {
+            table_name,
+            key,
+            source_lsn,
+            fields,
+        } => handle_upsert_source_table_row(state, &table_name, &key, source_lsn, fields, now).await,
+        // Phase 55-02 D-B1: OP_DELETE_TABLE_ROW (0x15).
+        Command::DeleteTableRow {
+            table_name,
+            key,
+            source_lsn,
+        } => handle_delete_source_table_row(state, &table_name, &key, source_lsn, now).await,
+        // Phase 55-02 D-B1: OP_UPSERT_TABLE_BATCH (0x16).
+        Command::UpsertTableBatch { table_name, rows } => {
+            handle_upsert_source_table_batch(state, &table_name, rows, now).await
+        }
+        // Phase 55-02 D-B1: OP_DELETE_TABLE_BATCH (0x17).
+        Command::DeleteTableBatch { table_name, rows } => {
+            handle_delete_source_table_batch(state, &table_name, rows, now).await
+        }
         Command::GetMulti { table_names, key } => {
             handle_get_multi(state, &table_names, &key, now).await
         }
@@ -2860,6 +2882,280 @@ async fn handle_delete_table(
     .await?;
 
     Ok(Vec::new())
+}
+
+// =====================================================================
+// Phase 55-02 D-B1 / D-B5 (TPC-SOURCE-01): source-table wire handlers.
+// =====================================================================
+
+/// Convert a serde_json `Value::Object` (already validated as object by
+/// the parser) into an `ahash::AHashMap<String, FeatureValue>`.
+fn source_table_fields_from_json(
+    fields: serde_json::Value,
+) -> Result<ahash::AHashMap<String, FeatureValue>, BeavaError> {
+    let map = match fields {
+        serde_json::Value::Object(m) => m,
+        _ => {
+            return Err(BeavaError::Protocol(
+                "source-table fields payload must be a JSON object".into(),
+            ))
+        }
+    };
+    let mut out: ahash::AHashMap<String, FeatureValue> = ahash::AHashMap::new();
+    for (k, v) in map {
+        out.insert(k, json_to_feature_value(v));
+    }
+    Ok(out)
+}
+
+/// Dispatch for `OP_UPSERT_TABLE_ROW` (0x14). Routes to the owner shard
+/// `hash(key) % N`, dispatches `ShardOp::UpsertSourceTableRow`, awaits
+/// ack, and returns a body carrying the echoed `source_lsn` (u64 LE).
+async fn handle_upsert_source_table_row(
+    state: &SharedState,
+    table_name: &str,
+    key: &str,
+    source_lsn: u64,
+    fields: serde_json::Value,
+    now: SystemTime,
+) -> Result<Vec<u8>, BeavaError> {
+    if key.is_empty() {
+        return Err(BeavaError::Protocol(
+            "OP_UPSERT_TABLE_ROW: key must not be empty".into(),
+        ));
+    }
+    {
+        let engine = state.engine.read();
+        if !engine.has_registered_source_table(table_name) {
+            return Err(BeavaError::Protocol(format!(
+                "table not registered as @bv.source_table: {}",
+                table_name
+            )));
+        }
+    }
+    let fields = source_table_fields_from_json(fields)?;
+    let shard_count = state.shard_handles.read().len();
+    let shard_idx = crate::server::http::shard_index_for_key(key, shard_count);
+    let handle_clone = {
+        let handles = state.shard_handles.read();
+        match handles.get(shard_idx) {
+            Some(h) => crate::shard::thread::clone_handle(h),
+            None => {
+                return Err(BeavaError::Protocol(format!(
+                    "shard {} not registered (shard_count={})",
+                    shard_idx, shard_count
+                )));
+            }
+        }
+    };
+    crate::shard::thread::send_op_await_setok(
+        &handle_clone,
+        crate::shard::thread::ShardOp::UpsertSourceTableRow {
+            table_name: table_name.to_string(),
+            key: key.to_string(),
+            fields,
+            source_lsn,
+            now,
+        },
+    )
+    .await?;
+    // Ack body echoes `source_lsn` as u64 LE (per D-B3).
+    Ok(source_lsn.to_le_bytes().to_vec())
+}
+
+/// Dispatch for `OP_DELETE_TABLE_ROW` (0x15). Same routing as upsert;
+/// shard hard-deletes the row + writes PendingRetraction marker.
+async fn handle_delete_source_table_row(
+    state: &SharedState,
+    table_name: &str,
+    key: &str,
+    source_lsn: u64,
+    now: SystemTime,
+) -> Result<Vec<u8>, BeavaError> {
+    if key.is_empty() {
+        return Err(BeavaError::Protocol(
+            "OP_DELETE_TABLE_ROW: key must not be empty".into(),
+        ));
+    }
+    {
+        let engine = state.engine.read();
+        if !engine.has_registered_source_table(table_name) {
+            return Err(BeavaError::Protocol(format!(
+                "table not registered as @bv.source_table: {}",
+                table_name
+            )));
+        }
+    }
+    let shard_count = state.shard_handles.read().len();
+    let shard_idx = crate::server::http::shard_index_for_key(key, shard_count);
+    let handle_clone = {
+        let handles = state.shard_handles.read();
+        match handles.get(shard_idx) {
+            Some(h) => crate::shard::thread::clone_handle(h),
+            None => {
+                return Err(BeavaError::Protocol(format!(
+                    "shard {} not registered (shard_count={})",
+                    shard_idx, shard_count
+                )));
+            }
+        }
+    };
+    crate::shard::thread::send_op_await_setok(
+        &handle_clone,
+        crate::shard::thread::ShardOp::DeleteSourceTableRow {
+            table_name: table_name.to_string(),
+            key: key.to_string(),
+            source_lsn,
+            now,
+        },
+    )
+    .await?;
+    Ok(source_lsn.to_le_bytes().to_vec())
+}
+
+/// Dispatch for `OP_UPSERT_TABLE_BATCH` (0x16). Pre-validates every row
+/// (non-empty key, object fields) — D-B4 all-or-nothing — then groups by
+/// target shard and fans out via `ShardOp::UpsertSourceTableBatch`. Ack
+/// body is `[u32 LE count][u64 LE source_lsn × count]` in INPUT order.
+async fn handle_upsert_source_table_batch(
+    state: &SharedState,
+    table_name: &str,
+    rows: Vec<(String, u64, serde_json::Value)>,
+    now: SystemTime,
+) -> Result<Vec<u8>, BeavaError> {
+    {
+        let engine = state.engine.read();
+        if !engine.has_registered_source_table(table_name) {
+            return Err(BeavaError::Protocol(format!(
+                "table not registered as @bv.source_table: {}",
+                table_name
+            )));
+        }
+    }
+    // D-B4 pre-validate.
+    for (k, _, f) in &rows {
+        if k.is_empty() {
+            return Err(BeavaError::Protocol(
+                "batch upsert: empty key rejected (D-B4 all-or-nothing)".into(),
+            ));
+        }
+        if !f.is_object() {
+            return Err(BeavaError::Protocol(
+                "batch upsert: fields must be a JSON object (D-B4 all-or-nothing)".into(),
+            ));
+        }
+    }
+    let shard_count = state.shard_handles.read().len().max(1);
+    let n = rows.len();
+    // Group by target shard while preserving input-order source_lsns.
+    let mut per_shard: std::collections::HashMap<
+        usize,
+        Vec<(String, ahash::AHashMap<String, FeatureValue>, u64)>,
+    > = std::collections::HashMap::new();
+    let mut input_lsns: Vec<u64> = Vec::with_capacity(n);
+    for (k, lsn, fields) in rows {
+        input_lsns.push(lsn);
+        let idx = crate::server::http::shard_index_for_key(&k, shard_count);
+        let fields_map = source_table_fields_from_json(fields)?;
+        per_shard
+            .entry(idx)
+            .or_default()
+            .push((k, fields_map, lsn));
+    }
+    // Fan out, one ShardOp per target shard; await each.
+    for (idx, per_rows) in per_shard {
+        let handle_clone = {
+            let handles = state.shard_handles.read();
+            match handles.get(idx) {
+                Some(h) => crate::shard::thread::clone_handle(h),
+                None => {
+                    return Err(BeavaError::Protocol(format!(
+                        "shard {} not registered (shard_count={})",
+                        idx, shard_count
+                    )));
+                }
+            }
+        };
+        crate::shard::thread::send_op_await_setok(
+            &handle_clone,
+            crate::shard::thread::ShardOp::UpsertSourceTableBatch {
+                table_name: table_name.to_string(),
+                rows: per_rows,
+                now,
+            },
+        )
+        .await?;
+    }
+    let mut out = Vec::with_capacity(4 + 8 * n);
+    out.extend_from_slice(&(n as u32).to_le_bytes());
+    for lsn in input_lsns {
+        out.extend_from_slice(&lsn.to_le_bytes());
+    }
+    Ok(out)
+}
+
+/// Dispatch for `OP_DELETE_TABLE_BATCH` (0x17).
+async fn handle_delete_source_table_batch(
+    state: &SharedState,
+    table_name: &str,
+    rows: Vec<(String, u64)>,
+    now: SystemTime,
+) -> Result<Vec<u8>, BeavaError> {
+    {
+        let engine = state.engine.read();
+        if !engine.has_registered_source_table(table_name) {
+            return Err(BeavaError::Protocol(format!(
+                "table not registered as @bv.source_table: {}",
+                table_name
+            )));
+        }
+    }
+    for (k, _) in &rows {
+        if k.is_empty() {
+            return Err(BeavaError::Protocol(
+                "batch delete: empty key rejected (D-B4 all-or-nothing)".into(),
+            ));
+        }
+    }
+    let shard_count = state.shard_handles.read().len().max(1);
+    let n = rows.len();
+    let mut per_shard: std::collections::HashMap<usize, Vec<(String, u64)>> =
+        std::collections::HashMap::new();
+    let mut input_lsns: Vec<u64> = Vec::with_capacity(n);
+    for (k, lsn) in rows {
+        input_lsns.push(lsn);
+        let idx = crate::server::http::shard_index_for_key(&k, shard_count);
+        per_shard.entry(idx).or_default().push((k, lsn));
+    }
+    for (idx, per_rows) in per_shard {
+        let handle_clone = {
+            let handles = state.shard_handles.read();
+            match handles.get(idx) {
+                Some(h) => crate::shard::thread::clone_handle(h),
+                None => {
+                    return Err(BeavaError::Protocol(format!(
+                        "shard {} not registered (shard_count={})",
+                        idx, shard_count
+                    )));
+                }
+            }
+        };
+        crate::shard::thread::send_op_await_setok(
+            &handle_clone,
+            crate::shard::thread::ShardOp::DeleteSourceTableBatch {
+                table_name: table_name.to_string(),
+                rows: per_rows,
+                now,
+            },
+        )
+        .await?;
+    }
+    let mut out = Vec::with_capacity(4 + 8 * n);
+    out.extend_from_slice(&(n as u32).to_le_bytes());
+    for lsn in input_lsns {
+        out.extend_from_slice(&lsn.to_le_bytes());
+    }
+    Ok(out)
 }
 
 /// Phase 25-01: Dispatch for OP_GET_MULTI.
@@ -3162,7 +3458,7 @@ pub async fn run_backfill(
 }
 
 /// Convert a serde_json::Value to FeatureValue for SET/MSET writes.
-fn json_to_feature_value(v: serde_json::Value) -> FeatureValue {
+pub(crate) fn json_to_feature_value(v: serde_json::Value) -> FeatureValue {
     match v {
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {

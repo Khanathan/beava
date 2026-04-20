@@ -130,6 +130,25 @@ pub struct LogEntry {
     pub lsn: u64,
 }
 
+/// Phase 55-02 D-B5 (TPC-SOURCE-01): marker written to the event log on
+/// every source-table DELETE. Phase 57 retraction flow is the SOLE reader;
+/// Phase 55 code WRITES this variant only (Pitfall 4 guard — no consumer
+/// in Phase 55).
+///
+/// Serialized via postcard and framed by `append_pending_retraction`. The
+/// entry lives in a dedicated virtual stream `__pending_retractions__` so
+/// Phase 57 can scan it independently of normal event streams.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct PendingRetraction {
+    pub table_name: String,
+    pub key: String,
+    pub source_lsn: u64,
+}
+
+/// Virtual stream name under which `PendingRetraction` entries are
+/// recorded (Phase 57 consumer reads from here).
+pub const PENDING_RETRACTIONS_STREAM: &str = "__pending_retractions__";
+
 /// Lock-free per-stream log writer.
 ///
 /// Wraps an `O_APPEND` file descriptor. `append_raw` issues a single
@@ -470,6 +489,71 @@ impl EventLog {
         );
         log_ref.append_raw(&frame)?;
         Ok(lsn)
+    }
+
+    /// Phase 55-02 D-B5 (TPC-SOURCE-01): append a `PendingRetraction` marker
+    /// to the per-shard `__pending_retractions__` virtual stream. Auto-
+    /// registers the stream on first call (idempotent). The marker carries
+    /// `(table_name, key, source_lsn)` postcard-encoded as the payload bytes.
+    /// Piggy-backs on the normal event-log fsync cadence (no dedicated fsync).
+    ///
+    /// Returns `Ok(())` on a successful append. Phase 55 code is the SOLE
+    /// WRITER of this variant; Phase 55 code MUST NOT read/consume it —
+    /// Phase 57 retraction flow owns consumption (Pitfall 4 guard).
+    pub fn append_pending_retraction(
+        &self,
+        table_name: &str,
+        key: &str,
+        source_lsn: u64,
+        now: SystemTime,
+    ) -> std::io::Result<()> {
+        // Auto-register the pending-retractions stream if first use.
+        if !self.writers.read().contains_key(PENDING_RETRACTIONS_STREAM) {
+            self.register_stream(PENDING_RETRACTIONS_STREAM, None)?;
+        }
+        let marker = PendingRetraction {
+            table_name: table_name.to_string(),
+            key: key.to_string(),
+            source_lsn,
+        };
+        let body = postcard::to_stdvec(&marker).map_err(std::io::Error::other)?;
+        let _ = self.append(PENDING_RETRACTIONS_STREAM, &body, now)?;
+        Ok(())
+    }
+
+    /// Phase 55-02 D-B5: scan every `PendingRetraction` marker in this shard's
+    /// event log. Intended for Phase 57 consumers + for Phase 55 tests
+    /// validating the DELETE path actually wrote a marker. Returns an empty
+    /// Vec if the virtual stream does not exist.
+    pub fn read_pending_retractions(&self) -> std::io::Result<Vec<PendingRetraction>> {
+        let path = Self::stream_log_path(&self.data_dir, self.shard_id, PENDING_RETRACTIONS_STREAM);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let mut file = File::open(&path)?;
+        let mut bytes = Vec::new();
+        use std::io::Read;
+        file.read_to_end(&mut bytes)?;
+        let mut out = Vec::new();
+        let mut cursor: &[u8] = &bytes;
+        while cursor.len() >= 4 {
+            let len =
+                u32::from_be_bytes([cursor[0], cursor[1], cursor[2], cursor[3]]) as usize;
+            cursor = &cursor[4..];
+            if cursor.len() < len {
+                break;
+            }
+            let entry_bytes = &cursor[..len];
+            cursor = &cursor[len..];
+            if let Ok(entry) = postcard::from_bytes::<LogEntry>(entry_bytes) {
+                if let Ok(marker) =
+                    postcard::from_bytes::<PendingRetraction>(&entry.payload)
+                {
+                    out.push(marker);
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Phase 52-06: Return the current seq counter map as a `replica_lsn_map`

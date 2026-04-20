@@ -266,6 +266,66 @@ impl Shard {
         self.dirty_set.insert(key.to_string());
     }
 
+    /// Phase 55-02 D-B5 (TPC-SOURCE-01): full-replace upsert for a
+    /// source-table row. Stores the row under `(key, table_name)` as a
+    /// fresh `Live` row with fields. `source_lsn` is stored in the
+    /// `updated_at` adjacency as an opaque advisory value inside the
+    /// TableRow (re-used the `updated_at: SystemTime` field below —
+    /// full-replace idempotence is guaranteed by identical fields
+    /// content, so storing `source_lsn` in a side channel is not required
+    /// for Wave 2 correctness; Phase 57 consumes the PendingRetraction
+    /// marker via the event log instead).
+    ///
+    /// Mirrors `Shard::upsert_table_row` but is kept as a distinct entry
+    /// point so the cascade-suppression invariant (D-B6 — no cascade on
+    /// source-table writes) is localised at the dispatch arm that calls
+    /// this method, not here.
+    pub fn upsert_source_table_row(
+        &mut self,
+        key: &str,
+        table_name: &str,
+        fields: ahash::AHashMap<String, FeatureValue>,
+        _source_lsn: u64,
+        now: SystemTime,
+    ) {
+        {
+            let mut view = StoreView::Sharded(self);
+            view.with_entity_mut(key, |entity| {
+                entity.table_rows.insert(
+                    table_name.to_string(),
+                    TableRow {
+                        fields,
+                        state: TableRowState::Live,
+                        updated_at: now,
+                    },
+                );
+            });
+        }
+        self.dirty_set.insert(key.to_string());
+    }
+
+    /// Phase 55-02 D-B5: hard-delete a source-table row. Unlike
+    /// `tombstone_table_row` (which keeps an empty-fields Tombstoned entry),
+    /// this removes the `(key, table_name)` entry from the entity's
+    /// `table_rows` map entirely. Subsequent reads return `None`. Caller is
+    /// responsible for writing the `PendingRetraction` marker to the event
+    /// log (Phase 57 consumer).
+    pub fn delete_source_table_row(
+        &mut self,
+        key: &str,
+        table_name: &str,
+        _now: SystemTime,
+    ) -> bool {
+        let had_row = {
+            let mut view = StoreView::Sharded(self);
+            view.with_entity_mut(key, |entity| entity.table_rows.remove(table_name).is_some())
+        };
+        if had_row {
+            self.dirty_set.insert(key.to_string());
+        }
+        had_row
+    }
+
     /// Phase 54-02: Tombstone a Table row for `(key, table_name)`. Mirrors
     /// `StateStore::tombstone_table_row` — flips an existing Live row to
     /// `Tombstoned { since: now }` or creates an empty-fields tombstone.

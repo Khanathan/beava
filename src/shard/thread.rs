@@ -125,6 +125,42 @@ pub enum ShardOp {
         writes: Vec<(String, String, ahash::AHashMap<String, crate::types::FeatureValue>)>,
         now: std::time::SystemTime,
     },
+    /// Phase 55-02 D-B1/D-B5 (TPC-SOURCE-01): source-table row upsert.
+    /// Full-replace semantics; source_lsn stored per-row; echoed on ack.
+    /// Does NOT fire cascade (D-B6 — Phase 55 source tables are passive).
+    /// Response is `SetOk` on success.
+    UpsertSourceTableRow {
+        table_name: String,
+        key: String,
+        fields: ahash::AHashMap<String, crate::types::FeatureValue>,
+        source_lsn: u64,
+        now: std::time::SystemTime,
+    },
+    /// Phase 55-02 D-B5: source-table row delete. Hard-deletes the row AND
+    /// appends a `LogEntry::PendingRetraction` marker (Phase 57 consumer)
+    /// to the per-shard event log. No cascade (D-B6).
+    DeleteSourceTableRow {
+        table_name: String,
+        key: String,
+        source_lsn: u64,
+        now: std::time::SystemTime,
+    },
+    /// Phase 55-02 D-B4: batch upsert, all-or-nothing. Pre-validates every
+    /// row (non-empty key); the first failure aborts the whole batch with
+    /// `ShardResult::Err`, no rows written. On success the target shard
+    /// applies each row via `upsert_source_table_row`.
+    UpsertSourceTableBatch {
+        table_name: String,
+        rows: Vec<(String, ahash::AHashMap<String, crate::types::FeatureValue>, u64)>, // (key, fields, source_lsn)
+        now: std::time::SystemTime,
+    },
+    /// Phase 55-02 D-B4: batch delete, all-or-nothing. Each row writes a
+    /// PendingRetraction marker on success.
+    DeleteSourceTableBatch {
+        table_name: String,
+        rows: Vec<(String, u64)>, // (key, source_lsn)
+        now: std::time::SystemTime,
+    },
     /// Phase 54-04 Pass A1: OP_PUSH_TABLE dispatch. Shard performs the
     /// full handle_push_table sequence on its own state:
     ///   - pre-existed check (triggers eviction-reinit counter if fresh),
@@ -646,6 +682,90 @@ fn shard_event_loop(
                     }
                     if let Some(tx) = event.response_tx {
                         let _ = tx.send(ShardResult::SetOk);
+                    }
+                }
+                ShardOp::UpsertSourceTableRow {
+                    table_name,
+                    key,
+                    fields,
+                    source_lsn,
+                    now,
+                } => {
+                    // Phase 55-02 D-B5: full-replace upsert into source table.
+                    // NO cascade fired (D-B6). source_lsn is stored per-row.
+                    shard.upsert_source_table_row(&key, &table_name, fields, source_lsn, now);
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::SetOk);
+                    }
+                }
+                ShardOp::DeleteSourceTableRow {
+                    table_name,
+                    key,
+                    source_lsn,
+                    now,
+                } => {
+                    // Phase 55-02 D-B5: hard-delete + PendingRetraction marker.
+                    shard.delete_source_table_row(&key, &table_name, now);
+                    if let Some(log) = shard.event_log.as_ref() {
+                        let _ = log
+                            .append_pending_retraction(&table_name, &key, source_lsn, now);
+                    }
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::SetOk);
+                    }
+                }
+                ShardOp::UpsertSourceTableBatch {
+                    table_name,
+                    rows,
+                    now,
+                } => {
+                    // Phase 55-02 D-B4: pre-validate all rows before any write.
+                    let invalid = rows.iter().any(|(k, _, _)| k.is_empty());
+                    if invalid {
+                        if let Some(tx) = event.response_tx {
+                            let _ = tx.send(ShardResult::Err(
+                                ShardDispatchError::ProcessingError(
+                                    "batch: empty key rejected (D-B4 all-or-nothing)"
+                                        .into(),
+                                ),
+                            ));
+                        }
+                    } else {
+                        for (k, fields, lsn) in rows {
+                            shard.upsert_source_table_row(&k, &table_name, fields, lsn, now);
+                        }
+                        if let Some(tx) = event.response_tx {
+                            let _ = tx.send(ShardResult::SetOk);
+                        }
+                    }
+                }
+                ShardOp::DeleteSourceTableBatch {
+                    table_name,
+                    rows,
+                    now,
+                } => {
+                    // Phase 55-02 D-B4: pre-validate all rows.
+                    let invalid = rows.iter().any(|(k, _)| k.is_empty());
+                    if invalid {
+                        if let Some(tx) = event.response_tx {
+                            let _ = tx.send(ShardResult::Err(
+                                ShardDispatchError::ProcessingError(
+                                    "batch: empty key rejected (D-B4 all-or-nothing)"
+                                        .into(),
+                                ),
+                            ));
+                        }
+                    } else {
+                        for (k, lsn) in rows {
+                            shard.delete_source_table_row(&k, &table_name, now);
+                            if let Some(log) = shard.event_log.as_ref() {
+                                let _ = log
+                                    .append_pending_retraction(&table_name, &k, lsn, now);
+                            }
+                        }
+                        if let Some(tx) = event.response_tx {
+                            let _ = tx.send(ShardResult::SetOk);
+                        }
                     }
                 }
                 ShardOp::PushTableRow { table_name, key, fields, event_time } => {

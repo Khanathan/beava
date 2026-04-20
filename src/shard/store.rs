@@ -40,6 +40,41 @@ impl std::fmt::Debug for ShardedStateStoreV1 {
     }
 }
 
+/// Phase 55-02 D-B5 (TPC-SOURCE-01): full-replace upsert wrapper for a
+/// source-table row against a `ShardedStateStoreV1` (state-inmem path).
+/// Delegates to `Shard::upsert_source_table_row` on the shard owning
+/// `hash(key) % N`. Never fires cascade (D-B6).
+///
+/// This free function exists alongside the `Shard`-level method in
+/// `src/shard/mod.rs` to keep a legacy-friendly entry point — routing at
+/// the store-level is convenient for harness tests that hold a
+/// `ShardedStateStoreV1` directly.
+pub fn upsert_source_table_row(
+    store: &ShardedStateStoreV1,
+    key: &str,
+    table_name: &str,
+    fields: ahash::AHashMap<String, crate::types::FeatureValue>,
+    source_lsn: u64,
+    now: std::time::SystemTime,
+) {
+    use serde_json::json;
+    let mut guard = store.shard_for_event(&json!({ "__k": key }), Some("__k"));
+    guard.upsert_source_table_row(key, table_name, fields, source_lsn, now);
+}
+
+/// Phase 55-02 D-B5: hard-delete wrapper. Caller is responsible for
+/// writing the `PendingRetraction` marker via the event log.
+pub fn delete_source_table_row(
+    store: &ShardedStateStoreV1,
+    key: &str,
+    table_name: &str,
+    now: std::time::SystemTime,
+) -> bool {
+    use serde_json::json;
+    let mut guard = store.shard_for_event(&json!({ "__k": key }), Some("__k"));
+    guard.delete_source_table_row(key, table_name, now)
+}
+
 impl ShardedStateStoreV1 {
     /// Allocate `n` empty shards.
     pub fn new(n: u16) -> Self {

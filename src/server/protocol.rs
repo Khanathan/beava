@@ -165,6 +165,47 @@ pub const REPLICA_FRAME_TAG_END: u8 = 0x04;
 /// event/end frames follow.
 pub const OP_LOG_FETCH: u8 = 0x13;
 
+// Phase 55-02 D-B1: source-table wire commands (TPC-SOURCE-01).
+//
+// Four explicit opcodes for CDC-style UPSERT/DELETE with source_lsn echo
+// on ack, batch variants for ≥10K rows. Full-replace UPSERT + hard-delete
+// DELETE that also writes a PendingRetraction LogEntry for Phase 57.
+// Source-table writes do NOT fire cascade in Phase 55 (D-B6).
+//
+// OP_UPSERT_TABLE_ROW frame:
+//   [u8 0x14]
+//   [varint table_name_len][table_name bytes]
+//   [varint key_len][key bytes]
+//   [u64 LE source_lsn]
+//   [u32 LE fields_json_len][fields_json bytes]
+// Ack:
+//   success: [u8 STATUS_OK][u64 LE source_lsn_echo]
+//   failure: [u8 STATUS_ERROR][error bytes]
+//
+// OP_DELETE_TABLE_ROW frame:
+//   [u8 0x15][varint table_name_len][table_name][varint key_len][key][u64 LE source_lsn]
+// Ack:
+//   success: [u8 STATUS_OK][u64 LE source_lsn_echo]
+//
+// OP_UPSERT_TABLE_BATCH frame:
+//   [u8 0x16][varint table_name_len][table_name]
+//   [u32 LE count]
+//   for each record:
+//     [varint key_len][key][u64 LE source_lsn][u32 LE fields_json_len][fields_json]
+// Ack:
+//   success: [u8 STATUS_OK][u32 LE count][u64 LE source_lsn × count] (input order)
+//   failure: [u8 STATUS_ERROR][u32 LE accepted_count=0][error bytes]
+//
+// OP_DELETE_TABLE_BATCH frame:
+//   [u8 0x17][varint table_name_len][table_name]
+//   [u32 LE count]
+//   for each record: [varint key_len][key][u64 LE source_lsn]
+// Ack: same shape as UPSERT_TABLE_BATCH but no fields.
+pub const OP_UPSERT_TABLE_ROW: u8 = 0x14;
+pub const OP_DELETE_TABLE_ROW: u8 = 0x15;
+pub const OP_UPSERT_TABLE_BATCH: u8 = 0x16;
+pub const OP_DELETE_TABLE_BATCH: u8 = 0x17;
+
 // Response status codes
 pub const STATUS_OK: u8 = 0x00;
 pub const STATUS_ERROR: u8 = 0x01;
@@ -236,6 +277,35 @@ pub enum Command {
     DeleteTable {
         table_name: String,
         key: String,
+    },
+    /// Phase 55-02 D-B1 (TPC-SOURCE-01): upsert a row in a @bv.source_table.
+    /// `source_lsn` is an opaque client-supplied cursor echoed on ack for
+    /// resumable CDC replication. `fields` is the decoded JSON body.
+    UpsertTableRow {
+        table_name: String,
+        key: String,
+        source_lsn: u64,
+        fields: serde_json::Value,
+    },
+    /// Phase 55-02 D-B1: delete a row in a @bv.source_table. Hard-deletes the
+    /// row on the owner shard and writes a PendingRetraction marker to the
+    /// event log for Phase 57 consumption.
+    DeleteTableRow {
+        table_name: String,
+        key: String,
+        source_lsn: u64,
+    },
+    /// Phase 55-02 D-B1: batch upsert into a @bv.source_table. All-or-nothing
+    /// per D-B4: the first validation failure (empty key, etc.) aborts the
+    /// whole batch with accepted_count=0.
+    UpsertTableBatch {
+        table_name: String,
+        rows: Vec<(String, u64, serde_json::Value)>, // (key, source_lsn, fields)
+    },
+    /// Phase 55-02 D-B1: batch delete into a @bv.source_table. All-or-nothing.
+    DeleteTableBatch {
+        table_name: String,
+        rows: Vec<(String, u64)>, // (key, source_lsn)
     },
     /// Phase 25-01: Multi-table feature-vector read. `table_names` preserves
     /// request order so the handler can serialize the response keys in the
@@ -651,6 +721,63 @@ pub fn write_string(s: &str) -> Vec<u8> {
     buf
 }
 
+/// Phase 55-02: read an unsigned varint (LEB128) followed by `len` UTF-8 bytes
+/// and advance `*buf`. Caps at 10 bytes of varint (max u64) + returns the
+/// decoded string. Matches the `[varint len][utf-8 bytes]` convention used by
+/// source-table wire opcodes (D-B1).
+pub fn read_varint_string(buf: &mut &[u8]) -> Result<String, BeavaError> {
+    let mut len: u64 = 0;
+    let mut shift: u32 = 0;
+    loop {
+        if buf.is_empty() {
+            return Err(BeavaError::Protocol(
+                "varint_string header truncated".into(),
+            ));
+        }
+        let byte = buf[0];
+        *buf = &buf[1..];
+        len |= ((byte & 0x7F) as u64) << shift;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+        if shift > 63 {
+            return Err(BeavaError::Protocol(
+                "varint_string length overflows u64".into(),
+            ));
+        }
+    }
+    let len = len as usize;
+    if buf.len() < len {
+        return Err(BeavaError::Protocol(format!(
+            "varint_string body truncated: expected {} bytes, got {}",
+            len,
+            buf.len()
+        )));
+    }
+    let s = std::str::from_utf8(&buf[..len])
+        .map_err(|e| BeavaError::Protocol(format!("varint_string invalid UTF-8: {}", e)))?
+        .to_string();
+    *buf = &buf[len..];
+    Ok(s)
+}
+
+/// Phase 55-02: encode a varint-prefixed UTF-8 string. Inverse of
+/// `read_varint_string`. Used by source-table clients (tests + future SDKs).
+pub fn write_varint_string(buf: &mut Vec<u8>, s: &str) {
+    let mut len = s.len() as u64;
+    loop {
+        let byte = (len & 0x7F) as u8;
+        len >>= 7;
+        if len == 0 {
+            buf.push(byte);
+            break;
+        }
+        buf.push(byte | 0x80);
+    }
+    buf.extend_from_slice(s.as_bytes());
+}
+
 /// Read remaining bytes in buffer as JSON.
 /// Returns BeavaError::Protocol on parse failure.
 pub fn read_json_payload(buf: &mut &[u8]) -> Result<serde_json::Value, BeavaError> {
@@ -922,6 +1049,147 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, BeavaError> 
             let table_name = read_string(&mut buf)?;
             let key = read_string(&mut buf)?;
             Ok(Command::DeleteTable { table_name, key })
+        }
+        OP_UPSERT_TABLE_ROW => {
+            // Phase 55-02 D-B1: [varint table_name][varint key][u64 LE source_lsn]
+            //                   [u32 LE fields_json_len][fields_json]
+            let table_name = read_varint_string(&mut buf)?;
+            let key = read_varint_string(&mut buf)?;
+            if buf.len() < 8 {
+                return Err(BeavaError::Protocol(
+                    "UPSERT_TABLE_ROW truncated: need 8 bytes for source_lsn".into(),
+                ));
+            }
+            let source_lsn = u64::from_le_bytes([
+                buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+            ]);
+            buf = &buf[8..];
+            if buf.len() < 4 {
+                return Err(BeavaError::Protocol(
+                    "UPSERT_TABLE_ROW truncated: need 4 bytes for fields_json_len".into(),
+                ));
+            }
+            let fields_len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+            buf = &buf[4..];
+            if buf.len() < fields_len {
+                return Err(BeavaError::Protocol(format!(
+                    "UPSERT_TABLE_ROW fields_json truncated: expected {} bytes, got {}",
+                    fields_len,
+                    buf.len()
+                )));
+            }
+            let fields: serde_json::Value = serde_json::from_slice(&buf[..fields_len])
+                .map_err(|e| BeavaError::Protocol(format!("UPSERT_TABLE_ROW fields JSON: {e}")))?;
+            if !fields.is_object() {
+                return Err(BeavaError::Protocol(
+                    "UPSERT_TABLE_ROW fields must be a JSON object".into(),
+                ));
+            }
+            Ok(Command::UpsertTableRow {
+                table_name,
+                key,
+                source_lsn,
+                fields,
+            })
+        }
+        OP_DELETE_TABLE_ROW => {
+            // Phase 55-02 D-B1: [varint table_name][varint key][u64 LE source_lsn]
+            let table_name = read_varint_string(&mut buf)?;
+            let key = read_varint_string(&mut buf)?;
+            if buf.len() < 8 {
+                return Err(BeavaError::Protocol(
+                    "DELETE_TABLE_ROW truncated: need 8 bytes for source_lsn".into(),
+                ));
+            }
+            let source_lsn = u64::from_le_bytes([
+                buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+            ]);
+            Ok(Command::DeleteTableRow {
+                table_name,
+                key,
+                source_lsn,
+            })
+        }
+        OP_UPSERT_TABLE_BATCH => {
+            // Phase 55-02 D-B1: [varint table_name][u32 LE count]
+            //   count × ([varint key][u64 LE source_lsn][u32 LE fields_len][fields_json])
+            let table_name = read_varint_string(&mut buf)?;
+            if buf.len() < 4 {
+                return Err(BeavaError::Protocol(
+                    "UPSERT_TABLE_BATCH truncated: need 4 bytes for count".into(),
+                ));
+            }
+            let count = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+            buf = &buf[4..];
+            if count > 1_000_000 {
+                return Err(BeavaError::Protocol(format!(
+                    "UPSERT_TABLE_BATCH count exceeds 1,000,000 cap: {}",
+                    count
+                )));
+            }
+            let mut rows = Vec::with_capacity(count.min(buf.len() / 16));
+            for _ in 0..count {
+                let key = read_varint_string(&mut buf)?;
+                if buf.len() < 8 {
+                    return Err(BeavaError::Protocol(
+                        "UPSERT_TABLE_BATCH record truncated: source_lsn".into(),
+                    ));
+                }
+                let source_lsn = u64::from_le_bytes([
+                    buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+                ]);
+                buf = &buf[8..];
+                if buf.len() < 4 {
+                    return Err(BeavaError::Protocol(
+                        "UPSERT_TABLE_BATCH record truncated: fields_json_len".into(),
+                    ));
+                }
+                let flen = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+                buf = &buf[4..];
+                if buf.len() < flen {
+                    return Err(BeavaError::Protocol(format!(
+                        "UPSERT_TABLE_BATCH fields_json truncated: expected {}, got {}",
+                        flen,
+                        buf.len()
+                    )));
+                }
+                let fields: serde_json::Value = serde_json::from_slice(&buf[..flen])
+                    .map_err(|e| BeavaError::Protocol(format!("UPSERT_TABLE_BATCH JSON: {e}")))?;
+                buf = &buf[flen..];
+                rows.push((key, source_lsn, fields));
+            }
+            Ok(Command::UpsertTableBatch { table_name, rows })
+        }
+        OP_DELETE_TABLE_BATCH => {
+            let table_name = read_varint_string(&mut buf)?;
+            if buf.len() < 4 {
+                return Err(BeavaError::Protocol(
+                    "DELETE_TABLE_BATCH truncated: need 4 bytes for count".into(),
+                ));
+            }
+            let count = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+            buf = &buf[4..];
+            if count > 1_000_000 {
+                return Err(BeavaError::Protocol(format!(
+                    "DELETE_TABLE_BATCH count exceeds 1,000,000 cap: {}",
+                    count
+                )));
+            }
+            let mut rows = Vec::with_capacity(count.min(buf.len() / 10));
+            for _ in 0..count {
+                let key = read_varint_string(&mut buf)?;
+                if buf.len() < 8 {
+                    return Err(BeavaError::Protocol(
+                        "DELETE_TABLE_BATCH record truncated: source_lsn".into(),
+                    ));
+                }
+                let source_lsn = u64::from_le_bytes([
+                    buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+                ]);
+                buf = &buf[8..];
+                rows.push((key, source_lsn));
+            }
+            Ok(Command::DeleteTableBatch { table_name, rows })
         }
         OP_GET_MULTI => {
             // Wire: [u16 count][count × u16-string table_name][u16-string key]

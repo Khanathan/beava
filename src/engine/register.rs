@@ -47,6 +47,46 @@ use std::time::Duration;
 /// is registered without an explicit override. 30 days per spec.
 pub const DEFAULT_TABLE_TTL: &str = "30d";
 
+/// Phase 55-02 D-B1 (TPC-SOURCE-01): the `kind` string stored in
+/// `PipelineEngine.raw_register_jsons` for a @bv.source_table registration.
+/// `has_registered_source_table(name)` matches this string exactly.
+pub const SOURCE_TABLE_KIND: &str = "source_table";
+
+/// Phase 55-02: register a CDC source table with the engine. Stores a
+/// synthetic REGISTER JSON under `raw_register_jsons` with `kind="source_table"`,
+/// `key_fields`, and optional `entity_ttl`. Downstream wire paths then discover
+/// it via `PipelineEngine::has_registered_source_table`.
+///
+/// This is the Rust-side entry-point called by the SDK's register loop; the
+/// Python `@bv.source_table` decorator emits a compatible REGISTER JSON that
+/// reaches here through the normal REGISTER opcode plumbing.
+pub fn register_source_table(
+    engine: &mut crate::engine::pipeline::PipelineEngine,
+    name: &str,
+    key: Vec<String>,
+    entity_ttl: Option<String>,
+) {
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "name".to_string(),
+        serde_json::Value::String(name.to_string()),
+    );
+    obj.insert(
+        "kind".to_string(),
+        serde_json::Value::String(SOURCE_TABLE_KIND.to_string()),
+    );
+    obj.insert(
+        "key_fields".to_string(),
+        serde_json::Value::Array(
+            key.into_iter().map(serde_json::Value::String).collect(),
+        ),
+    );
+    if let Some(ttl) = entity_ttl {
+        obj.insert("entity_ttl".to_string(), serde_json::Value::String(ttl));
+    }
+    engine.store_raw_register_json(name, serde_json::Value::Object(obj));
+}
+
 /// Default `history_ttl` applied when a Stream source is registered without an
 /// explicit override. 90 days per spec. The existing `event_log::DEFAULT_HISTORY_TTL`
 /// (72h) is the *fallback* used by the event log when no stream-level ttl was
