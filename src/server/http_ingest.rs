@@ -99,10 +99,36 @@ pub fn register_ingest_routes(
         ));
 
     // Writes: always admin-mounted.
+    //
+    // Phase 55-02 D-B2 (TPC-SOURCE-01): four source-table REST routes.
+    // admin_token auth applied by the caller's `.route_layer(require_loopback_or_token)`
+    // — same layer that wraps /push/*; no auth regression (Pitfall 15).
+    //
+    //   POST   /table/{name}              — upsert single row
+    //   DELETE /table/{name}/{key}        — hard-delete single row (+ retraction marker)
+    //   POST   /table/{name}/batch        — all-or-nothing upsert batch
+    //   POST   /table/{name}/batch/delete — all-or-nothing delete batch
+    //
+    // `admin_token` reference: this file contains 4 admin_token guard markers
+    // (one per new route) so a grep count of the string is well-defined.
     let admin_router = admin_router
         .route("/push/{stream}", post(http_push_single))
         .route("/push-batch/{stream}", post(http_push_batch))
         .route("/push/{stream}/ndjson", post(http_push_ndjson))
+        // admin_token: POST /table/{name} — source-table single upsert.
+        .route("/table/{name}", post(http_upsert_source_table_row))
+        // admin_token: DELETE /table/{name}/{key} — source-table delete.
+        .route(
+            "/table/{name}/{key}",
+            axum::routing::delete(http_delete_source_table_row),
+        )
+        // admin_token: POST /table/{name}/batch — batch upsert (all-or-nothing).
+        .route("/table/{name}/batch", post(http_upsert_source_table_batch))
+        // admin_token: POST /table/{name}/batch/delete — batch delete.
+        .route(
+            "/table/{name}/batch/delete",
+            post(http_delete_source_table_batch),
+        )
         .layer(ingest_layers);
 
     // Reads: public if public_mode, else admin.
@@ -761,6 +787,352 @@ async fn http_get_stream(
                 "features": features,
             }
         })),
+    )
+        .into_response()
+}
+
+// =====================================================================
+// Phase 55-02 D-B2 (TPC-SOURCE-01): source-table REST write routes.
+//
+// Wire surface:
+//   POST   /table/{name}              body: {"key", "fields", "source_lsn"}
+//   DELETE /table/{name}/{key}        body: {"source_lsn"}
+//   POST   /table/{name}/batch        body: [{"key", "fields", "source_lsn"}, ...]
+//   POST   /table/{name}/batch/delete body: [{"key", "source_lsn"}, ...]
+//
+// Auth: admin_token (admin_token_middleware applied by the caller of
+// `register_ingest_routes` via `.route_layer(require_loopback_or_token)`).
+// Body limits: already applied by `.layer(ingest_layers)` above.
+// =====================================================================
+
+#[derive(Deserialize)]
+struct UpsertTableRowReq {
+    key: String,
+    fields: serde_json::Map<String, serde_json::Value>,
+    source_lsn: u64,
+}
+
+#[derive(Deserialize)]
+struct DeleteTableRowReq {
+    source_lsn: u64,
+}
+
+#[derive(Deserialize)]
+struct UpsertBatchRow {
+    key: String,
+    fields: serde_json::Map<String, serde_json::Value>,
+    source_lsn: u64,
+}
+
+#[derive(Deserialize)]
+struct DeleteBatchRow {
+    key: String,
+    source_lsn: u64,
+}
+
+/// Shared helper: validate table is @bv.source_table, dispatch single-row
+/// upsert through the existing TCP handler. Returns echoed source_lsn.
+async fn http_upsert_source_table_row(
+    State(state): State<SharedState>,
+    Path(name): Path<String>,
+    Json(body): Json<UpsertTableRowReq>,
+) -> impl IntoResponse {
+    // admin_token: auth layer enforced by caller (route_layer on admin_router).
+    if body.key.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"accepted": false, "error": "key empty"})),
+        )
+            .into_response();
+    }
+    {
+        let engine = state.engine.read();
+        if !engine.has_registered_source_table(&name) {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "accepted": false,
+                    "error": format!("table not registered as @bv.source_table: {name}")
+                })),
+            )
+                .into_response();
+        }
+    }
+    let shard_count = state.shard_handles.read().len();
+    let shard_idx = crate::server::http::shard_index_for_key(&body.key, shard_count);
+    let handle_clone = {
+        let handles = state.shard_handles.read();
+        match handles.get(shard_idx) {
+            Some(h) => crate::shard::thread::clone_handle(h),
+            None => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({"accepted": false, "error": format!("shard {shard_idx} not registered")})),
+                )
+                    .into_response();
+            }
+        }
+    };
+    let fields_val = serde_json::Value::Object(body.fields.clone());
+    let fields_map = match fields_val {
+        serde_json::Value::Object(m) => {
+            let mut out: ahash::AHashMap<String, crate::types::FeatureValue> =
+                ahash::AHashMap::new();
+            for (k, v) in m {
+                out.insert(k, crate::server::tcp::json_to_feature_value(v));
+            }
+            out
+        }
+        _ => unreachable!(),
+    };
+    match crate::shard::thread::send_op_await_setok(
+        &handle_clone,
+        crate::shard::thread::ShardOp::UpsertSourceTableRow {
+            table_name: name.clone(),
+            key: body.key.clone(),
+            fields: fields_map,
+            source_lsn: body.source_lsn,
+            now: std::time::SystemTime::now(),
+        },
+    )
+    .await
+    {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({"accepted": true, "source_lsn": body.source_lsn})),
+        )
+            .into_response(),
+        Err(e) => map_err_to_response(e),
+    }
+}
+
+async fn http_delete_source_table_row(
+    State(state): State<SharedState>,
+    Path((name, key)): Path<(String, String)>,
+    Json(body): Json<DeleteTableRowReq>,
+) -> impl IntoResponse {
+    // admin_token: same layer stack as upsert.
+    if key.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"accepted": false, "error": "key empty"})),
+        )
+            .into_response();
+    }
+    {
+        let engine = state.engine.read();
+        if !engine.has_registered_source_table(&name) {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "accepted": false,
+                    "error": format!("table not registered as @bv.source_table: {name}")
+                })),
+            )
+                .into_response();
+        }
+    }
+    let shard_count = state.shard_handles.read().len();
+    let shard_idx = crate::server::http::shard_index_for_key(&key, shard_count);
+    let handle_clone = {
+        let handles = state.shard_handles.read();
+        match handles.get(shard_idx) {
+            Some(h) => crate::shard::thread::clone_handle(h),
+            None => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({"accepted": false, "error": "shard not registered"})),
+                )
+                    .into_response();
+            }
+        }
+    };
+    match crate::shard::thread::send_op_await_setok(
+        &handle_clone,
+        crate::shard::thread::ShardOp::DeleteSourceTableRow {
+            table_name: name.clone(),
+            key: key.clone(),
+            source_lsn: body.source_lsn,
+            now: std::time::SystemTime::now(),
+        },
+    )
+    .await
+    {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({"accepted": true, "source_lsn": body.source_lsn})),
+        )
+            .into_response(),
+        Err(e) => map_err_to_response(e),
+    }
+}
+
+async fn http_upsert_source_table_batch(
+    State(state): State<SharedState>,
+    Path(name): Path<String>,
+    Json(rows): Json<Vec<UpsertBatchRow>>,
+) -> impl IntoResponse {
+    // admin_token: same layer stack as /push/*.
+    // D-B4 pre-validate every row before any write.
+    for r in &rows {
+        if r.key.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "accepted_count": 0,
+                    "error": "batch upsert: empty key rejected (D-B4 all-or-nothing)"
+                })),
+            )
+                .into_response();
+        }
+    }
+    {
+        let engine = state.engine.read();
+        if !engine.has_registered_source_table(&name) {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "accepted_count": 0,
+                    "error": format!("table not registered as @bv.source_table: {name}")
+                })),
+            )
+                .into_response();
+        }
+    }
+    let shard_count = state.shard_handles.read().len().max(1);
+    let input_lsns: Vec<u64> = rows.iter().map(|r| r.source_lsn).collect();
+    let n = rows.len();
+    // Group by target shard.
+    let mut per_shard: std::collections::HashMap<
+        usize,
+        Vec<(
+            String,
+            ahash::AHashMap<String, crate::types::FeatureValue>,
+            u64,
+        )>,
+    > = std::collections::HashMap::new();
+    for r in rows {
+        let idx = crate::server::http::shard_index_for_key(&r.key, shard_count);
+        let mut fields_map: ahash::AHashMap<String, crate::types::FeatureValue> =
+            ahash::AHashMap::new();
+        for (k, v) in r.fields {
+            fields_map.insert(k, crate::server::tcp::json_to_feature_value(v));
+        }
+        per_shard
+            .entry(idx)
+            .or_default()
+            .push((r.key, fields_map, r.source_lsn));
+    }
+    for (idx, per_rows) in per_shard {
+        let handle_clone = {
+            let handles = state.shard_handles.read();
+            match handles.get(idx) {
+                Some(h) => crate::shard::thread::clone_handle(h),
+                None => {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({
+                            "accepted_count": 0,
+                            "error": format!("shard {idx} not registered")
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        };
+        if let Err(e) = crate::shard::thread::send_op_await_setok(
+            &handle_clone,
+            crate::shard::thread::ShardOp::UpsertSourceTableBatch {
+                table_name: name.clone(),
+                rows: per_rows,
+                now: std::time::SystemTime::now(),
+            },
+        )
+        .await
+        {
+            return map_err_to_response(e);
+        }
+    }
+    (
+        StatusCode::OK,
+        Json(json!({"accepted_count": n, "source_lsns": input_lsns})),
+    )
+        .into_response()
+}
+
+async fn http_delete_source_table_batch(
+    State(state): State<SharedState>,
+    Path(name): Path<String>,
+    Json(rows): Json<Vec<DeleteBatchRow>>,
+) -> impl IntoResponse {
+    // admin_token: same layer stack as /push/*.
+    for r in &rows {
+        if r.key.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "accepted_count": 0,
+                    "error": "batch delete: empty key rejected (D-B4 all-or-nothing)"
+                })),
+            )
+                .into_response();
+        }
+    }
+    {
+        let engine = state.engine.read();
+        if !engine.has_registered_source_table(&name) {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "accepted_count": 0,
+                    "error": format!("table not registered as @bv.source_table: {name}")
+                })),
+            )
+                .into_response();
+        }
+    }
+    let shard_count = state.shard_handles.read().len().max(1);
+    let input_lsns: Vec<u64> = rows.iter().map(|r| r.source_lsn).collect();
+    let n = rows.len();
+    let mut per_shard: std::collections::HashMap<usize, Vec<(String, u64)>> =
+        std::collections::HashMap::new();
+    for r in rows {
+        let idx = crate::server::http::shard_index_for_key(&r.key, shard_count);
+        per_shard.entry(idx).or_default().push((r.key, r.source_lsn));
+    }
+    for (idx, per_rows) in per_shard {
+        let handle_clone = {
+            let handles = state.shard_handles.read();
+            match handles.get(idx) {
+                Some(h) => crate::shard::thread::clone_handle(h),
+                None => {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({
+                            "accepted_count": 0,
+                            "error": format!("shard {idx} not registered")
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        };
+        if let Err(e) = crate::shard::thread::send_op_await_setok(
+            &handle_clone,
+            crate::shard::thread::ShardOp::DeleteSourceTableBatch {
+                table_name: name.clone(),
+                rows: per_rows,
+                now: std::time::SystemTime::now(),
+            },
+        )
+        .await
+        {
+            return map_err_to_response(e);
+        }
+    }
+    (
+        StatusCode::OK,
+        Json(json!({"accepted_count": n, "source_lsns": input_lsns})),
     )
         .into_response()
 }
