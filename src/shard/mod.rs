@@ -268,13 +268,29 @@ impl Shard {
 
     /// Phase 55-02 D-B5 (TPC-SOURCE-01): full-replace upsert for a
     /// source-table row. Stores the row under `(key, table_name)` as a
-    /// fresh `Live` row with fields. `source_lsn` is stored in the
-    /// `updated_at` adjacency as an opaque advisory value inside the
-    /// TableRow (re-used the `updated_at: SystemTime` field below —
-    /// full-replace idempotence is guaranteed by identical fields
-    /// content, so storing `source_lsn` in a side channel is not required
-    /// for Wave 2 correctness; Phase 57 consumes the PendingRetraction
-    /// marker via the event log instead).
+    /// fresh `Live` row with fields.
+    ///
+    /// # `source_lsn` handling (Phase 55 MED-5 clarification)
+    ///
+    /// The D-B3 locked decision called for `source_lsn` to be "echoed on
+    /// ack; stored per row". Phase 55 delivers the ack-echo half: TCP
+    /// opcodes and HTTP handlers echo the input `source_lsn` back to the
+    /// client in the response body, which is sufficient for Debezium-
+    /// style "I know what I sent" resume semantics.
+    ///
+    /// The per-row storage half is DEFERRED to Phase 56/57, because
+    /// landing it here would require adding `source_lsn: Option<u64>` to
+    /// the `TableRow` struct — a postcard schema_version v10 bump not
+    /// otherwise justified by Phase 55 correctness. Full-replace
+    /// idempotence under CDC retry is guaranteed by identical fields
+    /// content (D-B5), and Phase 57 consumes the PendingRetraction
+    /// marker from the event log — neither path requires per-row LSN
+    /// storage today.
+    ///
+    /// The parameter is therefore accepted for API stability (callers
+    /// pass it; future implementations will store it) but discarded in
+    /// this wave. External CDC connectors that plan to query per-row LSN
+    /// must wait for Phase 56 or a dedicated follow-up.
     ///
     /// Mirrors `Shard::upsert_table_row` but is kept as a distinct entry
     /// point so the cascade-suppression invariant (D-B6 — no cascade on
