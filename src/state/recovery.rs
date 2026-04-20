@@ -170,6 +170,17 @@ fn discover_streams_for_shard(data_dir: &Path, shard_id: u8) -> io::Result<Vec<S
         let log_file = stream_dir.join("log.bin");
         if log_file.exists() {
             if let Some(name) = stream_dir.file_name().and_then(|n| n.to_str()) {
+                // Phase 55 HIGH-1: virtual streams whose names start with
+                // `__` carry postcard-encoded payloads (e.g.
+                // `__pending_retractions__` holds `PendingRetraction` bytes),
+                // NOT JSON. `apply_log_entry_to_shard` expects JSON and would
+                // fail on the first byte. These streams are owned by
+                // feature-specific consumers (Phase 57 retraction flow for
+                // `__pending_retractions__`) and MUST NOT be replayed through
+                // the pipeline engine during shard recovery.
+                if name.starts_with("__") {
+                    continue;
+                }
                 names.push(name.to_string());
             }
         }
