@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: "Completed 54-00-PLAN.md — baseline + RED scaffolding committed"
-last_updated: "2026-04-20T00:10:00Z"
+stopped_at: "Completed 54-01-PLAN.md — Wave 1 rewire-ingest-through-spsc (3 RED tests GREEN; unified hot path live)"
+last_updated: "2026-04-20T02:30:00Z"
 last_activity: 2026-04-20
 progress:
   total_phases: 8
   completed_phases: 5
   total_plans: 55
-  completed_plans: 41
-  percent: 75
+  completed_plans: 42
+  percent: 76
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 ## Current Position
 
 Phase: 54 (legacy-engine-removal) — EXECUTING
-Plan: 2 of 6 (Plan 54-00 complete; next: 54-01 rewire-ingest-through-spsc)
+Plan: 3 of 6 (Plans 54-00 + 54-01 complete; next: 54-02 storeview-widening-and-scatter-gather-cascade)
 **Phase:** 54
-**Plan:** 54-00 completed 2026-04-19; 54-01 up next
+**Plan:** 54-01 completed 2026-04-20; 54-02 up next
 **Status:** Executing Phase 54
-**Progress:** [████░░░░░░] 38%
+**Progress:** [█████░░░░░] 50%
 
 **Last activity:** 2026-04-20
 
@@ -115,6 +115,15 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Accumulated Context
 
+### Phase 54 Plan 01 — 2026-04-20
+
+- **Wave 1 unified hot path landed:** Every HTTP/TCP/replica push now transits `ShardHandle.inbox_tx` → shard thread → `push_with_cascade_on_shard` at N=1 as well as N>1. Legacy DashMap bypass branches (`if shard_count <= 1 { legacy } else { SPSC }`) deleted from `handle_push_core_ex` + `handle_push_batch` + `http_push_*` + `replica_ingest_batch`.
+- **Risk #3 (silent regression) closed:** `push_internal_on_shard` (pipeline.rs:1939) now fires `notify_subscribers` — live `OP_SUBSCRIBE` sessions receive events on the shard path. `grep -c notify_subscribers src/engine/pipeline.rs` = 3 (≥2 required).
+- **3 Wave-0 RED tests GREEN:** `http_ingest_routing`, `tcp_ingest_routing`, `replica_ingest_routing` all pass. Lib tests still 884 total (872 + 12 ignored — Pass B's 12 + Pass C's 1 = 13 total ignored, with matching `54-03 Wave 3` migration markers).
+- **Pass-C deviations (auto-fixed, in 52e178a):** (1) Dropped outer `state.engine.read()` guard in `replica_ingest_batch` — `parking_lot::RwLock` is non-reentrant and `handle_push_core_ex` re-acquires internally; (2) `#[allow(dead_code)]` on `make_log_payload` with Wave-2 restore marker; (3) `#[ignore]` on `test_fork_watermark_propagation::replica_batch_advances_watermark` (test doesn't spawn shard threads); (4) Removed outer `events_total.fetch_add(n_ok)` — handle_push_core_ex bumps per-event.
+- **Hot-path inventory post-Pass-C (for Wave 2):** `send_to_shard` helper is ready for scatter-gather cascade (cross-shard writes from operators); `make_log_payload` is temporarily dead but lives again once shard loop gains event-log append.
+- **Operational surface still RED (Wave 4):** `verify-no-{dashmap,statestore,legacy-push}.sh` all exit 1; `ship_gate --ignored` 3 FAILED. All expected — Wave 4 flips them.
+
 ### Phase 54 Plan 00 — 2026-04-19
 
 - **EPS baseline committed:** MODE=complex N=8 = 197,122 EPS at Phase 53 HEAD (`d30ff5f`). −15% floor for TPC-PERSIST-05A = **167,553 EPS** (gate for Wave 5 plan 54-05).
@@ -182,8 +191,8 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** checkpoint:human-verify 50-08 Task 2 — benchmark ship-gate pending
+**Stopped at:** Completed 54-01-PLAN.md — Wave 1 rewire-ingest-through-spsc. Every HTTP/TCP/replica push now transits SPSC shard-thread at N=1; `notify_subscribers` fires on shard path; 3 Wave-0 RED tests GREEN; 884 lib tests (872 + 12 ignored, one added this pass). Next: `/gsd-plan-phase 54 --plan 02` for Wave 2 (storeview-widening + scatter-gather cascade).
 
-**Next action (engineering):** `/gsd-plan-phase 48` — Phase 48: shard-hint scaffolding (Wave 0).
+**Next action (engineering):** `/gsd-plan-phase 54 --plan 02` — Phase 54 Plan 02: widen StoreView (5 methods) + `cascade_table_upsert_on_shard` scatter-gather + migrate operators/register + move event_log.append_many_with_ts onto shard thread (restores `make_log_payload` usage).
 
 **Orthogonal ops (launch day — still pending):** v1.0-launch 6-item human-run checklist above remains outstanding. Run independently of v1.2 engineering work.

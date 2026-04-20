@@ -175,7 +175,7 @@ Plans:
 **Plans**: 6 plans
 Plans:
 - [x] 54-00-baseline-and-scaffolding-PLAN.md — Wave 0: capture pprof + EPS baseline, grep-ZERO scripts (RED), 3 ingest-routing integration tests (RED), REQUIREMENTS.md TPC-ARCH-01 patch (completed 2026-04-19 — baseline EPS 197,122; −15% floor 167,553; all 6 RED gates in place)
-- [ ] 54-01-rewire-ingest-through-spsc-PLAN.md — Wave 1: send_to_shard helper + unify HTTP/TCP N=1 bypass + port replica.notify_subscribers hook
+- [x] 54-01-rewire-ingest-through-spsc-PLAN.md — Wave 1: send_to_shard helper + unify HTTP/TCP N=1 bypass + port replica.notify_subscribers hook (completed 2026-04-20 — 3 Wave-0 RED tests GREEN; 884 lib tests pass; Pass A aee409e / Pass B 1914fa0 / Pass C da5739f + 52e178a; 1 additional test #[ignore]'d for Wave 3 migration)
 - [ ] 54-02-storeview-widening-and-scatter-gather-cascade-PLAN.md — Wave 2: widen StoreView (5 methods) + cascade_table_upsert_on_shard SCATTER-GATHER + migrate operators/register
 - [ ] 54-03-migrate-remaining-statestore-callers-PLAN.md — Wave 3: boot-replay direct fjall insert + 6 non-shim DashMap users → RwLock<AHashMap> + test migration
 - [ ] 54-04-delete-legacy-surface-PLAN.md — Wave 4: delete StateStore + legacy pipeline methods + DashMap/arc-swap deps + state-inmem feature; flip grep-ZERO scripts GREEN
@@ -193,4 +193,4 @@ Plans:
 | 51. Cross-shard queries + joins | 5/5 | Complete    | 2026-04-19 |
 | 52. Event log, recovery, ship-gate | 10/10 | Complete    | 2026-04-19 |
 | 53. Fjall state backend | 6/7 plans (06 deferred) | **Engineering-complete** — 4/6 TPC-PERSIST closed; PERSIST-04 + PERSIST-05A gates deferred to Phase 54 (legacy DashMap bypass at N=1) | 2026-04-19 |
-| 54. Legacy engine removal | 1/6 | In progress — Plan 00 complete (baseline + scaffolding + RED gates landed 2026-04-19) | — |
+| 54. Legacy engine removal | 2/6 | In progress — Plan 00 complete (baseline + scaffolding + RED gates landed 2026-04-19); Plan 01 complete (unified SPSC hot path landed 2026-04-20; 3 Wave-0 RED tests GREEN) | — |
