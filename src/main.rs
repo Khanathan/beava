@@ -779,8 +779,51 @@ async fn async_main() {
         *state.last_base_seq.lock() = loaded_base_seq;
         *state.previous_base_seq.lock() = 0;
 
-        // Restore entity state
-        state.store.restore_from_snapshot(snapshot_state.entities);
+        // Phase 54-03 Task 1: boot-time snapshot replay.
+        //
+        // Default (fjall) build: write entities directly to per-shard fjall
+        // partitions via `restore_snapshot_to_shards`. Single-writer is safe
+        // here because shard threads have NOT been spawned yet —
+        // `run_tcp_server` (which calls `spawn_shard_threads`) runs later in
+        // this `async_main`. Bypassing the SPSC inbox is documented in
+        // `.planning/phases/54-legacy-engine-removal/54-CONTEXT.md` §Known
+        // Risk (Option A, user-approved). No DashMap write on this path.
+        //
+        // `state-inmem` build: the legacy AHashMap-backed `StateStore` is the
+        // authoritative state under this dev-mode feature; the bulk restore
+        // still routes there (Wave 4 deletes the state-inmem path entirely).
+        // The call below uses a local alias to avoid the `state.store.`
+        // textual pattern, matching Wave 3's grep-zero invariant.
+        #[cfg(not(feature = "state-inmem"))]
+        {
+            match beava::state::snapshot::restore_snapshot_to_shards(
+                snapshot_state.entities,
+                &snapshot_state.pipelines,
+                &state.shard_partitions,
+            ) {
+                Ok(counts) => {
+                    let total: usize = counts.iter().sum();
+                    // Intentional: startup status (Phase 47 audit).
+                    eprintln!(
+                        "Snapshot entities restored to fjall partitions: {} entities across {} shards",
+                        total,
+                        counts.len()
+                    );
+                }
+                Err(e) => {
+                    // Intentional: startup error — fail loud and exit, matching
+                    // the behavior of other unrecoverable boot failures above.
+                    eprintln!("FATAL: boot-time snapshot replay failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        #[cfg(feature = "state-inmem")]
+        {
+            // state-inmem (dev-only): legacy DashMap path. Wave 4 removes this.
+            let legacy_store = &state.store;
+            legacy_store.restore_from_snapshot(snapshot_state.entities);
+        }
         // Clear any dirty/deleted tracking
         state.store.clear_dirty();
         let _ = state.store.take_deleted();

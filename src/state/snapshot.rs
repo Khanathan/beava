@@ -734,6 +734,117 @@ pub fn load_legacy_v5(bytes: &[u8]) -> Option<SnapshotState> {
     postcard::from_bytes(&bytes[1..]).ok()
 }
 
+// ---------------------------------------------------------------------------
+// Phase 54-03 Task 1: boot-time snapshot replay to fjall partitions.
+//
+// Single-writer invariant: this function writes directly via
+// `PartitionHandle::insert` BYPASSING the per-shard SPSC inbox. This is safe
+// ONLY because the main boot path calls it BEFORE shard threads are spawned
+// (see `src/main.rs`: `run_tcp_server` + `spawn_shard_threads` run strictly
+// after `load_incremental_snapshots`). No other thread owns any partition
+// handle at this point; `PartitionHandle` is single-writer by convention
+// (see `src/shard/mod.rs` module-level note).
+//
+// Routing reproduces `migrate_to_fjall::resolve_shard_key_for_entity`:
+//   - entity with no streams → shard 0 (keyless)
+//   - first stream's pipeline has empty `key_field` → shard 0
+//   - otherwise `shard_hint_for_event({kf: entity_key}, Some(kf)) % n`
+// This matches ingest-time routing EXACTLY so post-boot reads for a given
+// entity land on the same shard that any ingest event for that entity will.
+// ---------------------------------------------------------------------------
+
+/// Restore entities from a snapshot into per-shard fjall partitions.
+///
+/// Each `(entity_key, SerializableEntityState)` tuple is postcard-encoded and
+/// inserted into `partitions[shard_idx]`, where `shard_idx` matches the
+/// per-stream `shard_key` routing used by ingest (and by `migrate_to_fjall`).
+/// Returns a per-shard count vector of length `partitions.len()`.
+///
+/// # Errors
+///
+/// - `InvalidData` if an entity references a stream not present in `pipelines`.
+/// - `Other` wrapping `postcard::Error` on serialization failure.
+/// - `Other` wrapping `fjall::Error` on partition insert failure.
+///
+/// # Single-writer safety
+///
+/// Caller MUST ensure no shard thread has started when this runs. Under
+/// the default (fjall) build this is enforced by boot-path ordering in
+/// `src/main.rs`: snapshot replay runs before `run_tcp_server` which is
+/// where `spawn_shard_threads` lives.
+#[cfg(not(feature = "state-inmem"))]
+pub fn restore_snapshot_to_shards(
+    entities: Vec<(String, SerializableEntityState)>,
+    pipelines: &[SerializablePipeline],
+    partitions: &[fjall::PartitionHandle],
+) -> std::io::Result<Vec<usize>> {
+    use std::io::{Error as IoError, ErrorKind};
+
+    let n = partitions.len();
+    if n == 0 {
+        return Err(IoError::new(
+            ErrorKind::InvalidInput,
+            "restore_snapshot_to_shards: partitions slice is empty",
+        ));
+    }
+    let mut counts = vec![0usize; n];
+    for (entity_key, entity_state) in entities {
+        let shard_idx = route_entity_to_shard(&entity_key, &entity_state, pipelines, n)?;
+        let bytes = postcard::to_stdvec(&entity_state).map_err(IoError::other)?;
+        partitions[shard_idx]
+            .insert(entity_key.as_bytes(), bytes)
+            .map_err(IoError::other)?;
+        counts[shard_idx] += 1;
+    }
+    // Intentional: startup status (matches Phase 47 eprintln! convention in this module).
+    eprintln!(
+        "Boot-time snapshot replay complete: {:?} (single-writer, direct fjall insert, no SPSC)",
+        counts
+    );
+    Ok(counts)
+}
+
+/// Compute the shard index for an entity using per-stream `shard_key`
+/// routing (mirrors `migrate_to_fjall::resolve_shard_key_for_entity`).
+///
+/// - Entities with no streams → shard 0 (keyless).
+/// - Streams whose pipeline has an empty `key_field` → shard 0 (keyless).
+/// - Otherwise: `shard_hint_for_event({kf: entity_key}, Some(kf)) % n`.
+///
+/// Fails with `InvalidData` if the first stream is not present in the
+/// pipeline registry — indicates a corrupt snapshot or a stream that was
+/// de-registered between snapshot write and recovery.
+#[cfg(not(feature = "state-inmem"))]
+fn route_entity_to_shard(
+    entity_key: &str,
+    entity_state: &SerializableEntityState,
+    pipelines: &[SerializablePipeline],
+    shard_count: usize,
+) -> std::io::Result<usize> {
+    use crate::routing::shard_hint::shard_hint_for_event;
+    use std::io::{Error as IoError, ErrorKind};
+
+    let Some((stream_name, _)) = entity_state.streams.first() else {
+        return Ok(0); // no streams → keyless
+    };
+    let Some(pipeline) = pipelines.iter().find(|p| &p.name == stream_name) else {
+        return Err(IoError::new(
+            ErrorKind::InvalidData,
+            format!(
+                "entity {} references stream {} not found in pipeline registry",
+                entity_key, stream_name
+            ),
+        ));
+    };
+    let kf = pipeline.key_field.as_str();
+    if kf.is_empty() {
+        return Ok(0); // keyless stream
+    }
+    let payload = serde_json::json!({ kf: entity_key });
+    let hint = shard_hint_for_event(&payload, Some(kf));
+    Ok((hint as usize) % shard_count.max(1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
