@@ -266,6 +266,21 @@ impl LockFreeStreamLog {
     }
 }
 
+/// Phase 55-01 D-A3: per-(shard, primary_stream) cascade delivery cursor.
+///
+/// Stored at `<data_dir>/shard-{shard_id}/cascade-cursor.postcard`. Fsync
+/// piggy-backs on primary-log fsync (no extra syscalls on hot path); an
+/// explicit `fsync_cascade_cursor` is also called at clean shutdown.
+///
+/// Crash safety: re-delivery of cascade events whose LSN ≤ on-disk
+/// `last_cascaded_lsn` is idempotent because `upsert_table_row` is
+/// full-replace (D-B5). Missing cursor file ⇒ first-boot zero state.
+#[derive(Default, Serialize, Deserialize, Clone, Debug)]
+pub struct CascadeCursor {
+    /// primary_stream_name → last_cascaded_lsn
+    pub per_stream: std::collections::HashMap<String, u64>,
+}
+
 pub struct EventLog {
     /// Root data directory (e.g. `data/` or a tmp dir in tests).
     data_dir: PathBuf,
@@ -288,6 +303,14 @@ pub struct EventLog {
     /// briefly (u64 math only), matching the existing serialization shape
     /// of the prior DashMap entry-based code.
     seq_counters: RwLock<AHashMap<(String, u8), u64>>,
+    /// Phase 55-01 D-A3: per-primary-stream cascade delivery cursor.
+    /// In-memory; fsynced opportunistically via `fsync_cascade_cursor`
+    /// (piggy-backed on primary-log fsync or called explicitly at clean
+    /// shutdown).
+    cascade_cursor: RwLock<CascadeCursor>,
+    /// Dirty flag — only fsync when the cursor has been advanced since the
+    /// last persist. Avoids a wasteful write syscall on every fsync tick.
+    cursor_dirty: std::sync::atomic::AtomicBool,
 }
 
 impl EventLog {
@@ -303,13 +326,86 @@ impl EventLog {
         // create the EventLog (but register no streams yet) still see the dir.
         let streams_root = data_dir.join(format!("shard-{}/streams", shard_id));
         fs::create_dir_all(&streams_root)?;
+        // Phase 55-01 D-A3: load cascade cursor sidecar if present. Missing
+        // file = fresh start at cursor 0.
+        let cascade_cursor = Self::load_cascade_cursor(&data_dir, shard_id);
         Ok(Self {
             data_dir,
             shard_id,
             writers: RwLock::new(AHashMap::new()),
             history_ttls: RwLock::new(AHashMap::new()),
             seq_counters: RwLock::new(AHashMap::new()),
+            cascade_cursor: RwLock::new(cascade_cursor),
+            cursor_dirty: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// Phase 55-01 D-A3: path for the cascade cursor sidecar for this shard.
+    pub fn cascade_cursor_path(data_dir: &Path, shard_id: u8) -> PathBuf {
+        data_dir.join(format!("shard-{}/cascade-cursor.postcard", shard_id))
+    }
+
+    /// Phase 55-01 D-A3: in-memory advance of `last_cascaded_lsn` for
+    /// `primary_stream`. Monotonic (new_lsn ≤ current ⇒ no-op). Marks the
+    /// cursor dirty; on-disk persist happens at the next
+    /// `fsync_cascade_cursor` tick.
+    pub fn advance_cascaded_lsn(&self, primary_stream: &str, new_lsn: u64) {
+        let mut c = self.cascade_cursor.write();
+        let slot = c.per_stream.entry(primary_stream.to_string()).or_insert(0);
+        if new_lsn > *slot {
+            *slot = new_lsn;
+            self.cursor_dirty
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    /// Phase 55-01 D-A3: read the current `last_cascaded_lsn` for a stream.
+    /// Returns 0 if never advanced.
+    pub fn cascaded_lsn(&self, primary_stream: &str) -> u64 {
+        self.cascade_cursor
+            .read()
+            .per_stream
+            .get(primary_stream)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Phase 55-01 D-A3: atomic-rename cursor persist. Caller typically
+    /// invokes this at clean shutdown or piggy-backs on a primary-log
+    /// fsync. No-op when cursor_dirty is false.
+    pub fn fsync_cascade_cursor(&self) -> std::io::Result<()> {
+        if !self
+            .cursor_dirty
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            return Ok(());
+        }
+        let snapshot = self.cascade_cursor.read().clone();
+        let bytes = postcard::to_stdvec(&snapshot)
+            .map_err(std::io::Error::other)?;
+        let path = Self::cascade_cursor_path(&self.data_dir, self.shard_id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("postcard.tmp");
+        fs::write(&tmp, &bytes)?;
+        fs::rename(&tmp, &path)?; // atomic on POSIX
+        // Best-effort parent-dir fsync.
+        if let Some(parent) = path.parent() {
+            if let Ok(f) = File::open(parent) {
+                let _ = f.sync_all();
+            }
+        }
+        Ok(())
+    }
+
+    /// Phase 55-01 D-A3: load cursor from disk; returns Default on any error.
+    fn load_cascade_cursor(data_dir: &Path, shard_id: u8) -> CascadeCursor {
+        let path = Self::cascade_cursor_path(data_dir, shard_id);
+        match fs::read(&path) {
+            Ok(bytes) => postcard::from_bytes(&bytes).unwrap_or_default(),
+            Err(_) => CascadeCursor::default(),
+        }
     }
 
     /// Phase 52-06: Load per-(stream, upstream_shard_id) seq counters from a

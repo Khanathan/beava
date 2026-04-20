@@ -1,53 +1,109 @@
-//! Phase 55 Wave 0 — shared cascade harness for RED tests.
+//! Phase 55 Wave 0/1 — shared cascade harness for RED tests.
 //!
-//! This module provides the minimal surface that Wave 0 RED test files
-//! reference. Every helper is a stub today: Wave 1 flips them to real
-//! implementations when the end-of-batch coalesce buffer + cross-shard
-//! delivery cursor land.
+//! Wave 0 landed these helpers as `unimplemented!()` stubs. Wave 1 (plan
+//! 55-01) fills in real wiring:
+//!   - `spawn_two_shards(inbox_cap)` builds a two-shard fixture with a
+//!     fake sibling drain thread backed by a fresh fjall keyspace.
+//!   - `hash_key_to_shard` mirrors production routing
+//!     (`beava::routing::shard_hint_for_event`).
+//!   - `drain_sibling_inbox` services `UpsertTableRow`, `TombstoneTableRow`,
+//!     and the new `UpsertTableBatch` against a local Shard.
 //!
-//! Contract (called out in 55-00-PLAN.md):
-//!   - `spawn_two_shards(inbox_cap)` — build a two-shard fixture with a fake
-//!     sibling drain thread, mirroring `tests/cross_shard_tt_cascade.rs`
-//!     (Phase 54 Wave 2 template).
-//!   - `hash_key_to_shard(key, n)` — compute routing slot via
-//!     `shard_hint_for_event` (same as production routing).
-//!   - `drain_sibling_inbox(rx, state)` — spawn a drain-thread servicing
-//!     `ShardOp::UpsertTableRow` + `TombstoneTableRow` from the fake
-//!     sibling's inbox.
-//!   - `pick_two_keys_hashing_to_different_shards(n)` — deterministic
-//!     search for (k1, k2) where `hash_key_to_shard(k1, n) !=
-//!     hash_key_to_shard(k2, n)`. Used by SC-1 RED tests.
-//!
-//! Wave 1 replaces every `unimplemented!()` below with real wiring; RED
-//! tests consume this surface unchanged.
+//! The returned harness is "bare" — no real EngineState wired up. RED
+//! tests that exercise the full pipeline use the engine / pipeline
+//! directly against `TwoShardHarness.input_shard` + `sibling_shards`.
 
 #![allow(dead_code)]
 
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use beava::shard::thread::{ShardEvent, ShardHandle};
+use beava::shard::thread::{ShardEvent, ShardHandle, ShardOp, ShardResult};
+use beava::shard::Shard;
+use fjall::Keyspace;
+use tempfile::TempDir;
 
-/// Two-shard fixture handle. Wave 1 fills in engine state + shard handles
-/// + drain threads; Wave 0 only needs the type to exist so tests compile.
+/// Two-shard fixture handle. Fields are public so test bodies can borrow
+/// the input shard mutably + pass `sibling_handles` into the engine's
+/// cascade surface.
 pub struct TwoShardHarness {
-    /// Shared engine/app state pointer (Arc<ConcurrentAppState> in
-    /// production). Wave 1 wires this to a real `make_concurrent_state_full`.
-    pub state: Arc<beava::server::tcp::ConcurrentAppState>,
-    /// Per-shard handles — two entries (shard 0, shard 1).
+    /// Shard 0 — the "source" shard. Tests drive cascades from here.
+    pub input_shard: Shard,
+    /// Handles slice — two entries (shard 0 + shard 1). Index 0's sender
+    /// is a live SPSC into a thread-less drain; index 1's is the sibling.
     pub shard_handles: Vec<ShardHandle>,
-    /// Fake sibling drain threads — one per sibling (all shards except
-    /// the source). Holds the JoinHandle so the test can join at end.
-    pub drain_threads: Vec<JoinHandle<()>>,
+    /// Drain threads for the sibling shard(s). Calling `finish()` drops
+    /// the handles + senders and joins the drain thread, returning the
+    /// sibling's Shard so the test can assert against it.
+    drain_handle: Option<JoinHandle<Shard>>,
+    /// Senders we kept for explicit drop ordering — need to drop every
+    /// clone before the drain thread's `rx.recv()` returns Disconnected.
+    input_sender: crossbeam_channel::Sender<ShardEvent>,
+    sibling_sender: crossbeam_channel::Sender<ShardEvent>,
+    /// Keyspace guard — keep fjall alive for the duration of the test.
+    _keyspace: Arc<Keyspace>,
+    /// TempDir guard — drop removes the on-disk keyspace at end-of-test.
+    _tmp: TempDir,
 }
 
-/// Spawn a two-shard harness with bounded(inbox_cap) SPSC inboxes.
+impl TwoShardHarness {
+    /// Drop the handles + senders, join the drain thread, return the
+    /// sibling shard so assertions can inspect it.
+    pub fn finish(mut self) -> Shard {
+        // Drop every shard-handle sender clone first.
+        self.shard_handles.clear();
+        // Drop our retained sender handles.
+        drop(self.input_sender);
+        drop(self.sibling_sender);
+        // Join the drain thread.
+        self.drain_handle
+            .take()
+            .expect("drain handle present")
+            .join()
+            .expect("drain thread clean exit")
+    }
+}
+
+/// Phase 55-01 Wave 1 implementation — build a real two-shard fixture.
 ///
-/// Wave 0: returns `unimplemented!()` — no test calls this at runtime
-/// (every caller is `#[ignore = "55-W{N}"]`'d). The function signature
-/// is the contract Wave 1 must honor.
-pub fn spawn_two_shards(_inbox_cap: usize) -> TwoShardHarness {
-    unimplemented!("Wave 1 — spawn_two_shards implementation lands with the coalesce buffer");
+/// Uses `ephemeral_test_keyspace(2)` to get a fresh fjall keyspace with
+/// two partitions. Shard 0 is handed back as `input_shard` (mutable from
+/// the test). Shard 1 is wrapped in a drain thread that services TT
+/// cascade ops (`UpsertTableRow`, `TombstoneTableRow`, `UpsertTableBatch`).
+pub fn spawn_two_shards(inbox_cap: usize) -> TwoShardHarness {
+    let (ks, partitions, tmp, _cfg) = super::ephemeral_test_keyspace(2);
+    let mut parts = partitions.into_iter();
+    let input_shard = Shard::with_partition(parts.next().unwrap());
+    let sibling_shard = Shard::with_partition(parts.next().unwrap());
+
+    let (input_tx, _input_rx) = crossbeam_channel::bounded::<ShardEvent>(inbox_cap);
+    let (sibling_tx, sibling_rx) = crossbeam_channel::bounded::<ShardEvent>(inbox_cap);
+
+    let shard_handles = vec![
+        ShardHandle {
+            shard_index: 0,
+            is_down: Arc::new(AtomicBool::new(false)),
+            inbox_tx: input_tx.clone(),
+        },
+        ShardHandle {
+            shard_index: 1,
+            is_down: Arc::new(AtomicBool::new(false)),
+            inbox_tx: sibling_tx.clone(),
+        },
+    ];
+
+    let drain_handle = drain_sibling_inbox(sibling_shard, sibling_rx);
+
+    TwoShardHarness {
+        input_shard,
+        shard_handles,
+        drain_handle: Some(drain_handle),
+        input_sender: input_tx,
+        sibling_sender: sibling_tx,
+        _keyspace: ks,
+        _tmp: tmp,
+    }
 }
 
 /// Compute the shard slot for a given key under N-way sharding. Uses the
@@ -61,17 +117,57 @@ pub fn hash_key_to_shard(key: &str, n: usize) -> usize {
     (beava::routing::shard_hint_for_event(&ev, Some("__k")) as usize) % n.max(1)
 }
 
-/// Spawn a drain thread for a fake sibling shard. Reads `ShardEvent`s
-/// from `rx`, applies `UpsertTableRow` / `TombstoneTableRow` against a
-/// local `Shard`, and replies `ShardResult::SetOk` on the oneshot.
-///
-/// Wave 0: stub. Wave 1 mirrors the pattern in
-/// `tests/cross_shard_tt_cascade.rs::spawn_drain_thread`.
+/// Spawn a drain thread for the sibling shard. Services TT cascade ops
+/// (`UpsertTableRow`, `TombstoneTableRow`, `UpsertTableBatch`) against a
+/// local `Shard`, replying `ShardResult::SetOk` on the oneshot. Exits
+/// cleanly when all senders drop.
 pub fn drain_sibling_inbox(
-    _rx: crossbeam_channel::Receiver<ShardEvent>,
-    _state: Arc<beava::server::tcp::ConcurrentAppState>,
-) -> JoinHandle<()> {
-    unimplemented!("Wave 1 — drain_sibling_inbox implementation");
+    shard: Shard,
+    rx: crossbeam_channel::Receiver<ShardEvent>,
+) -> JoinHandle<Shard> {
+    std::thread::spawn(move || {
+        let mut shard = shard;
+        while let Ok(mut event) = rx.recv() {
+            let op = std::mem::replace(&mut event.op, ShardOp::Push);
+            match op {
+                ShardOp::UpsertTableRow {
+                    key,
+                    table_name,
+                    fields,
+                    now,
+                } => {
+                    shard.upsert_table_row(&key, &table_name, fields, now);
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::SetOk);
+                    }
+                }
+                ShardOp::TombstoneTableRow {
+                    key,
+                    table_name,
+                    now,
+                } => {
+                    shard.tombstone_table_row(&key, &table_name, now);
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::SetOk);
+                    }
+                }
+                ShardOp::UpsertTableBatch { writes, now } => {
+                    for (table_name, key, fields) in writes {
+                        shard.upsert_table_row(&key, &table_name, fields, now);
+                    }
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::SetOk);
+                    }
+                }
+                _ => {
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::SetOk);
+                    }
+                }
+            }
+        }
+        shard
+    })
 }
 
 /// Deterministic search for a `(k1, k2)` pair whose shard slots differ
@@ -104,4 +200,84 @@ pub fn pick_two_keys_hashing_to_same_shard(n: usize) -> (String, String) {
         }
     }
     panic!("pick_two_keys_hashing_to_same_shard: no pair found at n={n}");
+}
+
+// ---------------------------------------------------------------------------
+// Minimal engine builder: Txn (shard_key=user_id) → MerchantActivity (key=
+// merchant_id). Lifted from tests/cross_shard_tt_cascade.rs and repurposed
+// so Wave 1 SC-1 tests can flip GREEN without forking the fixture.
+// ---------------------------------------------------------------------------
+
+use beava::engine::pipeline::{FeatureDef, JoinType, PipelineEngine, StreamDefinition};
+
+/// Build an engine for SC-1 tests: primary Txn Table (keyed by user_id)
+/// plus `MerchantActivity = TableTableJoin(Txn, Txn)` keyed by
+/// merchant_id. Uses Txn as both left and right of an INNER join so a
+/// single primary PUSH fires exactly one cascade output per matching
+/// merchant_id (the production case has a distinct right Table but for
+/// ownership-test purposes this scheme is sufficient).
+pub fn make_tt_cascade_engine() -> PipelineEngine {
+    let mut engine = PipelineEngine::new();
+
+    engine
+        .register(StreamDefinition {
+            name: "Txn".into(),
+            key_field: Some("user_id".into()),
+            group_by_keys: None,
+            features: Vec::new(),
+            depends_on: None,
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+            watermark_lateness: None,
+            shard_key: None,
+        })
+        .unwrap();
+
+    engine
+        .register(StreamDefinition {
+            name: "MerchantActivity".into(),
+            key_field: Some("merchant_id".into()),
+            group_by_keys: None,
+            features: vec![(
+                "joined".into(),
+                FeatureDef::TableTableJoin {
+                    left_table: "Txn".into(),
+                    right_table: "Txn".into(),
+                    on: vec!["user_id".into()],
+                    join_type: JoinType::Inner,
+                    left_fields: vec!["amount".into()],
+                    right_fields: vec![("user_id".into(), "user_id".into())],
+                },
+            )],
+            depends_on: Some(vec!["Txn".into()]),
+            filter: None,
+            entity_ttl: None,
+            history_ttl: None,
+            projection: None,
+            ephemeral: None,
+            pipeline_ttl: None,
+            max_keys: None,
+            watermark_lateness: None,
+            shard_key: None,
+        })
+        .unwrap();
+
+    engine
+}
+
+/// Seed a Txn table row into `shard` at `user_id` carrying `amount`.
+pub fn seed_txn_row(shard: &mut Shard, user_id: &str, amount: i64) {
+    use ahash::AHashMap;
+    use beava::shard::StoreView;
+    use beava::types::FeatureValue;
+    let mut fields = AHashMap::new();
+    fields.insert("amount".into(), FeatureValue::Int(amount));
+    fields.insert("user_id".into(), FeatureValue::String(user_id.into()));
+    let mut view = StoreView::Sharded(shard);
+    view.upsert_table_row(user_id, "Txn", fields, std::time::SystemTime::now());
 }

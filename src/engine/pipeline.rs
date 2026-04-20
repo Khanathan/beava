@@ -1324,6 +1324,14 @@ impl PipelineEngine {
                 {
                     let mut view = StoreView::Sharded(input_shard);
                     view.upsert_table_row(&output_key, &output_name, merged, now);
+                    // Phase 55-01 SC-5: intra-shard cascade counter. Emitted
+                    // ONLY on the same-shard inline path so the ratio vs
+                    // beava_cascade_cross_shard_total gives exact
+                    // cross-shard fraction on perf dashboards.
+                    crate::shard::metrics::record_cascade_intra_shard(
+                        input_shard_idx,
+                        1,
+                    );
                     // Recurse — same-shard only. See "Cross-shard recursion
                     // scope" in the doc comment above.
                     self.cascade_table_upsert_on_shard(
@@ -1359,9 +1367,22 @@ impl PipelineEngine {
                             now,
                         },
                     };
+                    // Phase 55-01 SC-5: high-watermark + cross-shard counter
+                    // emission site for the per-event cascade path. The
+                    // CascadeBuffer path in push_with_cascade_on_shard is a
+                    // distinct, additive batching layer — this per-event
+                    // path remains for test harnesses + non-batched callers.
+                    let depth = target.inbox_tx.len();
+                    let cap = target.inbox_tx.capacity().unwrap_or(usize::MAX);
+                    crate::shard::metrics::record_inbox_depth(target_shard_idx, depth, cap);
                     match target.inbox_tx.try_send(ev) {
                         Ok(()) => {
                             pending.push((target_shard_idx, rx));
+                            metrics::counter!(
+                                crate::shard::metrics::CASCADE_CROSS_SHARD_TOTAL,
+                                "source" => input_shard_idx.to_string(),
+                                "target" => target_shard_idx.to_string(),
+                            ).increment(1);
                         }
                         Err(crossbeam_channel::TrySendError::Full(_)) => {
                             crate::shard::metrics::record_inbox_full(target_shard_idx);
@@ -1517,7 +1538,7 @@ impl PipelineEngine {
         stream_name: &str,
         payload: &serde_json::Value,
         shard: &mut crate::shard::Shard,
-        _event_log: Option<&std::sync::Arc<crate::state::event_log::EventLog>>,
+        event_log: Option<&std::sync::Arc<crate::state::event_log::EventLog>>,
         now: SystemTime,
         read_features: bool,
         sibling_shards: Option<&[crate::shard::thread::ShardHandle]>,
@@ -1929,6 +1950,19 @@ impl PipelineEngine {
                     sibling_shards,
                     now,
                 )?;
+                // Phase 55-01 D-A3: advance cascade delivery cursor after
+                // a successful TT-cascade sweep. We use a wall-clock-derived
+                // monotone value so every successful sweep moves the cursor
+                // forward; boot replay compares against this to decide
+                // whether to re-drive. On-disk persistence piggy-backs on
+                // the primary-log fsync (or clean shutdown fsync).
+                if let Some(el) = event_log {
+                    let lsn = now
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos() as u64)
+                        .unwrap_or(0);
+                    el.advance_cascaded_lsn(stream_name, lsn);
+                }
             }
         }
 
