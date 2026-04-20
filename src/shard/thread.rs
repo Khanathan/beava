@@ -95,6 +95,26 @@ pub enum ShardOp {
     /// GET_MULTI: read multiple table_rows for a single entity key.
     /// Response carries `GetMultiOk` with serialized JSON value.
     GetMulti { table_names: Vec<String>, key: String },
+    /// Phase 54-02 Task 1: Upsert a Table row at `(key, table_name)` on
+    /// this shard. `fields` is the row payload; `now` is the mutation
+    /// timestamp. Response is `SetOk` on success. Used by the
+    /// scatter-gather TT-cascade (Task 2) when an output-table shard
+    /// key hashes to a different shard than the input event's shard.
+    UpsertTableRow {
+        key: String,
+        table_name: String,
+        fields: ahash::AHashMap<String, crate::types::FeatureValue>,
+        now: std::time::SystemTime,
+    },
+    /// Phase 54-02 Task 1: Tombstone a Table row at `(key, table_name)`
+    /// on this shard. `now` is the tombstone-since timestamp. Response
+    /// is `SetOk` on success. Sibling of `UpsertTableRow` for
+    /// cascade-driven deletions.
+    TombstoneTableRow {
+        key: String,
+        table_name: String,
+        now: std::time::SystemTime,
+    },
 }
 
 /// Result sent from shard back to listener via response_tx.
@@ -417,6 +437,25 @@ fn shard_event_loop(
                         .collect();
                     if let Some(tx) = event.response_tx {
                         let _ = tx.send(ShardResult::GetMultiOk(rows));
+                    }
+                }
+                ShardOp::UpsertTableRow { key, table_name, fields, now } => {
+                    // Phase 54-02 Task 1: scatter-gather TT-cascade
+                    // landing path. Writes through the widened `Shard`
+                    // surface; dirty-set update is handled inside.
+                    shard.upsert_table_row(&key, &table_name, fields, now);
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::SetOk);
+                    }
+                }
+                ShardOp::TombstoneTableRow { key, table_name, now } => {
+                    // Phase 54-02 Task 1: cascade-driven row deletion.
+                    // `had_live` return value from `Shard::tombstone_table_row`
+                    // is currently ignored — callers that need it can
+                    // switch to a widened ShardResult variant later.
+                    shard.tombstone_table_row(&key, &table_name, now);
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::SetOk);
                     }
                 }
             }

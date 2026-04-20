@@ -41,9 +41,11 @@ pub mod watermark;
 #[cfg(feature = "state-inmem")]
 use ahash::AHashMap;
 use std::collections::HashSet;
+use std::time::SystemTime;
 
 use crate::state::event_log::EventLog;
-use crate::state::store::EntityState;
+use crate::state::store::{EntityState, TableRow, TableRowState};
+use crate::types::FeatureValue;
 use watermark::WatermarkState;
 
 /// Entity key type alias (mirrors crate::types::EntityKey = String).
@@ -147,6 +149,199 @@ impl Shard {
 impl Default for Shard {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 54-02 Task 1 (Pass A): widened Shard surface for legacy-StateStore
+// parity. Mirrors `StateStore::{delete_entity, tombstone_static,
+// upsert_table_row, tombstone_table_row}` against per-shard state. Adds
+// `take_dirty` + `iter_entities` so the snapshot cycle can run per-shard
+// (legacy DashMap.iter() has no direct equivalent).
+//
+// Semantics contract (preserved from StateStore EXCEPT where noted):
+// - `delete_entity`: **SEMANTIC DIVERGENCE** from legacy. Legacy aliases
+//   `tombstone_static` (keeps entity, clears static_features). The Shard
+//   variant REMOVES the entity from storage entirely — the plan's unit test
+//   spec requires `read_entity_from_shard` to return `None` after
+//   `delete_entity`. Wave 4 deletes the legacy path, unifying semantics.
+// - `tombstone_static`: clears static_features (preserves streams +
+//   table_rows); returns `true` iff the entity had prior static_features.
+//   Marks the key dirty on success.
+// - `upsert_table_row`: RMW — writes `TableRow { fields, Live, now }` at
+//   `(key, table_name)`, replacing any prior row (live or tombstoned).
+//   Marks dirty.
+// - `tombstone_table_row`: RMW — flips the row at `(key, table_name)` to
+//   `Tombstoned { since: now }` (creates an empty-fields tombstone if
+//   absent). Returns `true` iff a prior **Live** row existed under this
+//   identity. Marks dirty.
+//
+// Single-writer invariant: all of these take `&mut Shard` — caller is the
+// shard thread that owns the `fjall::PartitionHandle` (default build) or
+// the `AHashMap` (state-inmem build).
+// ---------------------------------------------------------------------------
+
+impl Shard {
+    /// Phase 54-02: Remove the entity for `key` from this shard's state.
+    ///
+    /// Returns `true` iff the entity was present before the call. On the
+    /// default (fjall) build this issues `PartitionHandle::remove`; on
+    /// state-inmem it removes from the `AHashMap`. Also removes the key
+    /// from the shard's `dirty_set` because a deleted entity cannot be
+    /// part of an incremental snapshot delta (matches
+    /// `StateStore::mark_deleted`'s dirty-removal semantics).
+    ///
+    /// NOTE: this diverges from `StateStore::delete_entity` which is an
+    /// alias for `tombstone_static` and KEEPS the entity (legacy behavior
+    /// preserved only via the `StoreView::Legacy` arm). Wave 4 deletes the
+    /// legacy arm, unifying on full-removal semantics.
+    #[cfg(not(feature = "state-inmem"))]
+    pub fn delete_entity(&mut self, key: &str) -> bool {
+        let existed = matches!(self.state.get(key.as_bytes()), Ok(Some(_)));
+        if existed {
+            self.state
+                .remove(key.as_bytes())
+                .expect("fjall partition remove");
+            self.dirty_set.remove(key);
+        }
+        existed
+    }
+
+    #[cfg(feature = "state-inmem")]
+    pub fn delete_entity(&mut self, key: &str) -> bool {
+        let existed = self.state.remove(key).is_some();
+        if existed {
+            self.dirty_set.remove(key);
+        }
+        existed
+    }
+
+    /// Phase 54-02: Clear all static_features for `key` (legacy
+    /// `StateStore::tombstone_static` parity). Preserves streams +
+    /// table_rows. Returns `true` iff the entity had static features
+    /// before the call.
+    pub fn tombstone_static(&mut self, key: &str) -> bool {
+        let had_rows = {
+            let view = StoreView::Sharded(self);
+            view.get_entity_ref(key, |e| !e.static_features.is_empty())
+                .unwrap_or(false)
+        };
+        if !had_rows {
+            return false;
+        }
+        {
+            let mut view = StoreView::Sharded(self);
+            view.with_entity_mut(key, |e| e.static_features.clear());
+        }
+        self.dirty_set.insert(key.to_string());
+        true
+    }
+
+    /// Phase 54-02: Upsert a Table row for `(key, table_name)`. Mirrors
+    /// `StateStore::upsert_table_row` — same field-map signature, same
+    /// "fresh Live row replaces prior state" semantics. Marks dirty.
+    pub fn upsert_table_row(
+        &mut self,
+        key: &str,
+        table_name: &str,
+        fields: ahash::AHashMap<String, FeatureValue>,
+        now: SystemTime,
+    ) {
+        {
+            let mut view = StoreView::Sharded(self);
+            view.with_entity_mut(key, |entity| {
+                entity.table_rows.insert(
+                    table_name.to_string(),
+                    TableRow {
+                        fields,
+                        state: TableRowState::Live,
+                        updated_at: now,
+                    },
+                );
+            });
+        }
+        self.dirty_set.insert(key.to_string());
+    }
+
+    /// Phase 54-02: Tombstone a Table row for `(key, table_name)`. Mirrors
+    /// `StateStore::tombstone_table_row` — flips an existing Live row to
+    /// `Tombstoned { since: now }` or creates an empty-fields tombstone.
+    /// Returns `true` iff a prior **Live** row existed under this
+    /// identity. Marks dirty.
+    pub fn tombstone_table_row(
+        &mut self,
+        key: &str,
+        table_name: &str,
+        now: SystemTime,
+    ) -> bool {
+        let had_live = {
+            let mut view = StoreView::Sharded(self);
+            view.with_entity_mut(key, |entity| {
+                let prior_live = entity
+                    .table_rows
+                    .get(table_name)
+                    .map(|r| matches!(r.state, TableRowState::Live))
+                    .unwrap_or(false);
+                entity.table_rows.insert(
+                    table_name.to_string(),
+                    TableRow {
+                        fields: ahash::AHashMap::new(),
+                        state: TableRowState::Tombstoned { since: now },
+                        updated_at: now,
+                    },
+                );
+                prior_live
+            })
+        };
+        self.dirty_set.insert(key.to_string());
+        had_live
+    }
+
+    /// Phase 54-02: Consume the dirty-set, returning its prior contents.
+    /// The shard's `dirty_set` is left empty. Used by the per-shard
+    /// snapshot cycle (Wave 2+) where each shard thread flushes its own
+    /// delta without contending on a shared `ArcSwap<DashSet>` —
+    /// replaces `StateStore::take_dirty_and_advance_gen` for the shard
+    /// path.
+    pub fn take_dirty(&mut self) -> HashSet<EntityKey> {
+        std::mem::take(&mut self.dirty_set)
+    }
+
+    /// Phase 54-02: Iterate all entities held by this shard as
+    /// `(key, EntityState)` pairs. On the default (fjall) build each row
+    /// is deserialized via postcard on-demand; on state-inmem it's a
+    /// cloning iteration over the `AHashMap`.
+    ///
+    /// Corrupt rows (postcard deserialize Err) are silently skipped —
+    /// matches the `T-53-03-01` mitigation used by `with_entity_mut` /
+    /// `read_entity_from_shard`. Callers that need a faithful error-
+    /// surfacing iterator should route through `shard.state.iter()`
+    /// directly on the default build.
+    ///
+    /// Returns an owning `Vec` rather than a borrowed iterator because:
+    /// (a) the fjall branch must materialize deserialized entities anyway,
+    /// and (b) borrowing from the partition handle across the yield point
+    /// is awkward (KvPair is `Result` with Slice types). For the snapshot
+    /// cycle this is fine — the whole point is to produce an owned delta.
+    #[cfg(not(feature = "state-inmem"))]
+    pub fn iter_entities(&self) -> Vec<(String, EntityState)> {
+        self.state
+            .iter()
+            .filter_map(|kv| {
+                let (k, v) = kv.ok()?;
+                let key = std::str::from_utf8(&k).ok()?.to_string();
+                let entity = entity_from_bytes(&v)?;
+                Some((key, entity))
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "state-inmem")]
+    pub fn iter_entities(&self) -> Vec<(String, EntityState)> {
+        self.state
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 }
 
@@ -307,6 +502,80 @@ impl<'a> StoreView<'a> {
                 .map(|entity| f(&entity)),
             #[cfg(feature = "state-inmem")]
             StoreView::Sharded(shard) => shard.state.get(key).map(|entity| f(entity)),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 54-02 Task 1: widened surface — the 5 methods StateStore
+    // exposed for TT-cascade, SET/MSET static-feature, and dirty-set
+    // operations. Each arm delegates to `StateStore` (Legacy) or the new
+    // `Shard` methods above (Sharded). Wave 4 deletes the Legacy arm.
+    // -----------------------------------------------------------------
+
+    /// Phase 54-02: Delete an entity. See the `Shard::delete_entity`
+    /// docstring for the semantic divergence between Legacy (alias for
+    /// `tombstone_static` — keeps entity) and Sharded (full removal).
+    pub fn delete_entity(&mut self, key: &str) -> bool {
+        match self {
+            StoreView::Legacy(store) => store.delete_entity(key),
+            StoreView::Sharded(shard) => shard.delete_entity(key),
+        }
+    }
+
+    /// Phase 54-02: Clear the entity's static_features. Preserves streams
+    /// and table_rows. Returns `true` iff there were static features
+    /// before the call.
+    pub fn tombstone_static(&mut self, key: &str) -> bool {
+        match self {
+            StoreView::Legacy(store) => store.tombstone_static(key),
+            StoreView::Sharded(shard) => shard.tombstone_static(key),
+        }
+    }
+
+    /// Phase 54-02: Upsert a Table row `(key, table_name)` with `fields`
+    /// as a fresh Live row at `now`. Marks the key dirty.
+    ///
+    /// Signature mirrors `StateStore::upsert_table_row` (takes a field
+    /// map rather than a prebuilt `TableRow`) so the Task 3 migration of
+    /// operators.rs is a textual replacement.
+    pub fn upsert_table_row(
+        &mut self,
+        key: &str,
+        table_name: &str,
+        fields: ahash::AHashMap<String, crate::types::FeatureValue>,
+        now: SystemTime,
+    ) {
+        match self {
+            StoreView::Legacy(store) => store.upsert_table_row(key, table_name, fields, now),
+            StoreView::Sharded(shard) => shard.upsert_table_row(key, table_name, fields, now),
+        }
+    }
+
+    /// Phase 54-02: Tombstone a Table row `(key, table_name)`. Returns
+    /// `true` iff a prior Live row existed under this identity.
+    pub fn tombstone_table_row(
+        &mut self,
+        key: &str,
+        table_name: &str,
+        now: SystemTime,
+    ) -> bool {
+        match self {
+            StoreView::Legacy(store) => store.tombstone_table_row(key, table_name, now),
+            StoreView::Sharded(shard) => shard.tombstone_table_row(key, table_name, now),
+        }
+    }
+
+    /// Phase 54-02: Mark the key dirty for the next snapshot cycle. On
+    /// the shard path this is a plain `HashSet.insert` — no generation
+    /// counter dance because the shard is single-writer (the `dirty_gen`
+    /// short-circuit in `StateStore::mark_dirty` existed only to avoid
+    /// hot-key contention on the shared `DashSet`).
+    pub fn mark_dirty(&mut self, key: &str) {
+        match self {
+            StoreView::Legacy(store) => store.mark_dirty(key),
+            StoreView::Sharded(shard) => {
+                shard.dirty_set.insert(key.to_string());
+            }
         }
     }
 }
