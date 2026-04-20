@@ -210,53 +210,82 @@ def main() -> None:
 
     random.seed(args.proc_id * 7919 + 17)
 
-    pipelines = SIMPLE_PIPELINES if args.mode == "simple" else COMPLEX_PIPELINES
-    app = bv.App(args.host)
-    app.register(*pipelines)
-
+    # The orchestrator (run_bench.sh) polls per-client stdout files for a
+    # line with "phase": "final" and spins forever if any client crashes
+    # without emitting it. Everything from connect onward is wrapped so the
+    # final line is emitted unconditionally, with an "error" field set when
+    # the run ended abnormally.
+    error_kind: str | None = None
+    error_msg: str | None = None
+    app = None
+    sent = 0
     t0 = time.monotonic()
     t_last_ckpt = t0
-    sent = 0
     batches_since_sample = 0
-
-    # latency_samples_ns stores per-batch latency in nanoseconds; we divide by
-    # args.batch at report time to get per-event microseconds. Per-call
-    # timing is dominated by batch framing / TCP write time rather than
-    # per-event server work, so this gives a representative "what the client
-    # sees" number for a 1000-event batch.
     latency_samples_ns: list[int] = []
+
+    try:
+        pipelines = SIMPLE_PIPELINES if args.mode == "simple" else COMPLEX_PIPELINES
+        app = bv.App(args.host)
+        app.register(*pipelines)
+    except KeyboardInterrupt:
+        error_kind = "KeyboardInterrupt"
+        error_msg = "interrupted during setup"
+    except Exception as exc:
+        error_kind = f"setup:{type(exc).__name__}"
+        error_msg = str(exc)[:200]
 
     # Pre-generate one batch; we refresh a few slots each push so the buffer
     # stays resident but the values vary enough to exercise the HLLs.
-    batch = [_event() for _ in range(args.batch)]
+    batch = [_event() for _ in range(args.batch)] if error_kind is None else []
+    try:
+        if error_kind is not None:
+            raise RuntimeError(error_kind)
+        while True:
+            t = time.monotonic()
+            if t - t0 >= args.duration:
+                break
 
-    while True:
-        t = time.monotonic()
-        if t - t0 >= args.duration:
-            break
+            for i in range(min(100, args.batch)):
+                batch[i] = _event()
 
-        for i in range(min(100, args.batch)):
-            batch[i] = _event()
+            do_sample = args.latency_stride > 0 and batches_since_sample >= args.latency_stride
+            if do_sample:
+                t_push_start = time.perf_counter_ns()
+                app.push_many(Transactions, batch)
+                latency_samples_ns.append(time.perf_counter_ns() - t_push_start)
+                batches_since_sample = 0
+            else:
+                app.push_many(Transactions, batch)
+                batches_since_sample += 1
+            sent += len(batch)
 
-        do_sample = args.latency_stride > 0 and batches_since_sample >= args.latency_stride
-        if do_sample:
-            t_push_start = time.perf_counter_ns()
-            app.push_many(Transactions, batch)
-            latency_samples_ns.append(time.perf_counter_ns() - t_push_start)
-            batches_since_sample = 0
-        else:
-            app.push_many(Transactions, batch)
-            batches_since_sample += 1
-        sent += len(batch)
+            if t - t_last_ckpt >= args.checkpoint:
+                _emit({"proc_id": args.proc_id, "phase": "checkpoint",
+                       "t": t - t0, "events": sent})
+                t_last_ckpt = t
+    except KeyboardInterrupt:
+        error_kind = "KeyboardInterrupt"
+        error_msg = "interrupted"
+    except Exception as exc:
+        error_kind = type(exc).__name__
+        error_msg = str(exc)[:200]
 
-        if t - t_last_ckpt >= args.checkpoint:
-            _emit({"proc_id": args.proc_id, "phase": "checkpoint",
-                   "t": t - t0, "events": sent})
-            t_last_ckpt = t
-
-    app.flush()
+    if app is not None:
+        try:
+            app.flush()
+        except Exception as exc:
+            if error_kind is None:
+                error_kind = f"flush:{type(exc).__name__}"
+                error_msg = str(exc)[:200]
     t_final = time.monotonic() - t0
-    app.close()
+    if app is not None:
+        try:
+            app.close()
+        except Exception as exc:
+            if error_kind is None:
+                error_kind = f"close:{type(exc).__name__}"
+                error_msg = str(exc)[:200]
 
     # Convert batch-timing samples to per-event microseconds for the report.
     # A 1000-event batch taking 100us is 0.1us/event at the batch granularity,
@@ -273,7 +302,7 @@ def main() -> None:
         p50 = p99 = p999 = 0.0
         sample_count = 0
 
-    _emit({
+    final_line = {
         "proc_id": args.proc_id,
         "phase": "final",
         "t": t_final,
@@ -284,7 +313,17 @@ def main() -> None:
         "sample_count": sample_count,
         "mode": args.mode,
         "batch_size": args.batch,
-    })
+    }
+    if error_kind is not None:
+        final_line["error"] = error_kind
+        final_line["error_msg"] = error_msg or ""
+    _emit(final_line)
+
+    # Non-zero exit so the orchestrator sees the failure; the final line
+    # was already emitted above, so the aggregator poll loop will unblock
+    # regardless.
+    if error_kind is not None:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

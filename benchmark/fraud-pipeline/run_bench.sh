@@ -416,9 +416,12 @@ summary = {
             "p50_us": r.get("p50_us"),
             "p99_us": r.get("p99_us"),
             "p999_us": r.get("p999_us"),
+            "error": r.get("error"),
+            "error_msg": r.get("error_msg"),
         }
         for r in sorted(finals, key=lambda x: x.get("proc_id", 0))
     ],
+    "errored_clients": sum(1 for r in finals if r.get("error")),
 }
 
 Path(out_path).write_text(json.dumps(summary, indent=2))
@@ -470,7 +473,10 @@ if mem.get("estimated_bytes"):
 
 print(f"    Per-client throughput:")
 for row in s["per_client"]:
-    print(f"      proc-{row['proc_id']}: {row['events']:>9,} events in {row['t_seconds']:>6.2f}s = {row['eps']:>9,} eps")
+    err = f"  [ERROR {row['error']}: {row.get('error_msg') or ''}]" if row.get("error") else ""
+    print(f"      proc-{row['proc_id']}: {row['events']:>9,} events in {row['t_seconds']:>6.2f}s = {row['eps']:>9,} eps{err}")
+if s.get("errored_clients", 0):
+    print(f"    NOTE: {s['errored_clients']}/{cfg['clients']} client(s) exited with error — aggregate EPS includes their partial data")
 print()
 PY
 
