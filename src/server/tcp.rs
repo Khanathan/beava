@@ -3062,6 +3062,43 @@ async fn handle_upsert_source_table_batch(
             .or_default()
             .push((k, fields_map, lsn));
     }
+    // Phase 55 HIGH-2 (D-B4 all-or-nothing across shards): pre-flight-check
+    // every target shard's availability and inbox headroom BEFORE issuing
+    // any write. Without this check, the first shard's writes commit and a
+    // downstream SHARD_OVERLOAD on a later shard leaves the batch half-
+    // applied — violating the D-B4 contract. The check is best-effort
+    // (tiny TOCTOU window between check and dispatch) but shrinks the
+    // "phantom half-apply" window to a single-batch scope; idempotent CDC
+    // retry heals any residual divergence.
+    {
+        let handles = state.shard_handles.read();
+        for (idx, per_rows) in &per_shard {
+            let h = handles.get(*idx).ok_or_else(|| {
+                BeavaError::Protocol(format!(
+                    "shard {} not registered (shard_count={})",
+                    idx, shard_count
+                ))
+            })?;
+            if h.is_down.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(BeavaError::Protocol(format!(
+                    "batch upsert: shard {} is down — rejecting batch atomically (D-B4)",
+                    idx
+                )));
+            }
+            let cap = h.inbox_tx.capacity().unwrap_or(usize::MAX);
+            let depth = h.inbox_tx.len();
+            if depth.saturating_add(1) > cap {
+                return Err(BeavaError::Protocol(format!(
+                    "batch upsert: shard {} inbox full (depth={}, cap={}, rows={}) \
+                     — rejecting batch atomically (D-B4)",
+                    idx,
+                    depth,
+                    cap,
+                    per_rows.len()
+                )));
+            }
+        }
+    }
     // Fan out, one ShardOp per target shard; await each.
     for (idx, per_rows) in per_shard {
         let handle_clone = {
@@ -3126,6 +3163,37 @@ async fn handle_delete_source_table_batch(
         input_lsns.push(lsn);
         let idx = crate::server::http::shard_index_for_key(&k, shard_count);
         per_shard.entry(idx).or_default().push((k, lsn));
+    }
+    // Phase 55 HIGH-2 (D-B4 all-or-nothing across shards): pre-flight every
+    // target shard. See handle_upsert_source_table_batch for rationale.
+    {
+        let handles = state.shard_handles.read();
+        for (idx, per_rows) in &per_shard {
+            let h = handles.get(*idx).ok_or_else(|| {
+                BeavaError::Protocol(format!(
+                    "shard {} not registered (shard_count={})",
+                    idx, shard_count
+                ))
+            })?;
+            if h.is_down.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(BeavaError::Protocol(format!(
+                    "batch delete: shard {} is down — rejecting batch atomically (D-B4)",
+                    idx
+                )));
+            }
+            let cap = h.inbox_tx.capacity().unwrap_or(usize::MAX);
+            let depth = h.inbox_tx.len();
+            if depth.saturating_add(1) > cap {
+                return Err(BeavaError::Protocol(format!(
+                    "batch delete: shard {} inbox full (depth={}, cap={}, rows={}) \
+                     — rejecting batch atomically (D-B4)",
+                    idx,
+                    depth,
+                    cap,
+                    per_rows.len()
+                )));
+            }
+        }
     }
     for (idx, per_rows) in per_shard {
         let handle_clone = {

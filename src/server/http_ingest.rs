@@ -1023,6 +1023,52 @@ async fn http_upsert_source_table_batch(
             .or_default()
             .push((r.key, fields_map, r.source_lsn));
     }
+    // Phase 55 HIGH-2 (D-B4 all-or-nothing across shards): pre-flight every
+    // target shard's availability + inbox headroom BEFORE issuing any
+    // write. Shrinks the "phantom half-apply" window to a single-batch
+    // scope; idempotent CDC retry heals any residual divergence.
+    {
+        let handles = state.shard_handles.read();
+        for (idx, per_rows) in &per_shard {
+            let Some(h) = handles.get(*idx) else {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "accepted_count": 0,
+                        "error": format!("shard {idx} not registered")
+                    })),
+                )
+                    .into_response();
+            };
+            if h.is_down.load(std::sync::atomic::Ordering::Relaxed) {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "accepted_count": 0,
+                        "error": format!(
+                            "batch upsert: shard {idx} is down — rejecting batch atomically (D-B4)"
+                        )
+                    })),
+                )
+                    .into_response();
+            }
+            let cap = h.inbox_tx.capacity().unwrap_or(usize::MAX);
+            let depth = h.inbox_tx.len();
+            if depth.saturating_add(1) > cap {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "accepted_count": 0,
+                        "error": format!(
+                            "batch upsert: shard {idx} inbox full (depth={depth}, cap={cap}, rows={}) — rejecting batch atomically (D-B4)",
+                            per_rows.len()
+                        )
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
     for (idx, per_rows) in per_shard {
         let handle_clone = {
             let handles = state.shard_handles.read();
@@ -1099,6 +1145,50 @@ async fn http_delete_source_table_batch(
     for r in rows {
         let idx = crate::server::http::shard_index_for_key(&r.key, shard_count);
         per_shard.entry(idx).or_default().push((r.key, r.source_lsn));
+    }
+    // Phase 55 HIGH-2 (D-B4 all-or-nothing across shards): pre-flight every
+    // target shard. See http_upsert_source_table_batch for rationale.
+    {
+        let handles = state.shard_handles.read();
+        for (idx, per_rows) in &per_shard {
+            let Some(h) = handles.get(*idx) else {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "accepted_count": 0,
+                        "error": format!("shard {idx} not registered")
+                    })),
+                )
+                    .into_response();
+            };
+            if h.is_down.load(std::sync::atomic::Ordering::Relaxed) {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "accepted_count": 0,
+                        "error": format!(
+                            "batch delete: shard {idx} is down — rejecting batch atomically (D-B4)"
+                        )
+                    })),
+                )
+                    .into_response();
+            }
+            let cap = h.inbox_tx.capacity().unwrap_or(usize::MAX);
+            let depth = h.inbox_tx.len();
+            if depth.saturating_add(1) > cap {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "accepted_count": 0,
+                        "error": format!(
+                            "batch delete: shard {idx} inbox full (depth={depth}, cap={cap}, rows={}) — rejecting batch atomically (D-B4)",
+                            per_rows.len()
+                        )
+                    })),
+                )
+                    .into_response();
+            }
+        }
     }
     for (idx, per_rows) in per_shard {
         let handle_clone = {
