@@ -1558,19 +1558,22 @@ fn format_rfc3339_utc(secs: u64) -> String {
 /// Empty object when no extractions were requested or replay has not yet
 /// captured any.
 async fn debug_extracts(State(state): State<SharedState>) -> Json<serde_json::Value> {
-    // Collect into a Vec so we can sort by timestamp; DashMap iteration
-    // order is unspecified.
-    let mut entries: Vec<(u64, serde_json::Map<String, serde_json::Value>)> =
-        Vec::with_capacity(state.extracted_history.len());
-    for outer in state.extracted_history.iter() {
-        let ts = *outer.key();
-        let inner = outer.value();
-        let mut key_map = serde_json::Map::with_capacity(inner.len());
-        for kv in inner.iter() {
-            key_map.insert(kv.key().clone(), kv.value().clone());
-        }
-        entries.push((ts, key_map));
-    }
+    // Phase 54-03 Task 2: `extracted_history` is now a single RwLock<AHashMap>,
+    // collect into a Vec so we can sort by timestamp (AHashMap iteration
+    // order is unspecified).
+    let mut entries: Vec<(u64, serde_json::Map<String, serde_json::Value>)> = {
+        let guard = state.extracted_history.read();
+        guard
+            .iter()
+            .map(|(ts, inner)| {
+                let mut key_map = serde_json::Map::with_capacity(inner.len());
+                for (k, v) in inner.iter() {
+                    key_map.insert(k.clone(), v.clone());
+                }
+                (*ts, key_map)
+            })
+            .collect()
+    };
     entries.sort_by_key(|(ts, _)| *ts);
 
     let mut out = serde_json::Map::with_capacity(entries.len());

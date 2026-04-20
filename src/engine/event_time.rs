@@ -26,7 +26,12 @@
 //! `src/engine/pipeline.rs::push_with_cascade_internal` at each cascade
 //! step.
 
-use dashmap::DashMap;
+// Phase 54-03 Task 2: migrated from DashMap → parking_lot::RwLock<AHashMap>
+// per RESEARCH Assumption A6. These structures are read-mostly / low-
+// contention (watermark aggregates + drop counters), so a coarse RwLock is
+// fine — and we avoid the dashmap crate for the eventual Wave 4 drop.
+use ahash::AHashMap;
+use parking_lot::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -210,17 +215,18 @@ fn parse_iso8601(s: &str) -> Option<SystemTime> {
 pub struct WatermarkTracker {
     /// `max(event_time observed)` per stream, stored as nanoseconds since
     /// UNIX_EPOCH in an `AtomicU64` for lock-free `fetch_max` updates.
-    /// DashMap gives per-stream shard-level concurrency; the inner atomic
-    /// means no lock is held on the hot path.
-    observed_max: DashMap<String, AtomicU64>,
+    /// Phase 54-03: RwLock<AHashMap> replaces DashMap — per-stream atomics
+    /// still give lock-free writes on the hot update path; the outer RwLock
+    /// serializes only new-stream insertion (rare).
+    observed_max: RwLock<AHashMap<String, Arc<AtomicU64>>>,
     /// Most recent event_time observed (not necessarily the max — this
     /// is the "last event" pointer for debug visibility). Last-writer-wins.
-    last_event_time: DashMap<String, AtomicU64>,
+    last_event_time: RwLock<AHashMap<String, Arc<AtomicU64>>>,
     /// D-10 / CORR-03: per-stream watermark lateness override. Absent entry
     /// falls back to the global `WATERMARK_LATENESS` constant (5 s).
     /// Populated by `PipelineEngine::register` when
     /// `StreamDefinition.watermark_lateness` is `Some`.
-    watermark_lateness: DashMap<String, Duration>,
+    watermark_lateness: RwLock<AHashMap<String, Duration>>,
 }
 
 impl Default for WatermarkTracker {
@@ -232,50 +238,48 @@ impl Default for WatermarkTracker {
 impl WatermarkTracker {
     pub fn new() -> Self {
         Self {
-            observed_max: DashMap::new(),
-            last_event_time: DashMap::new(),
-            watermark_lateness: DashMap::new(),
+            observed_max: RwLock::new(AHashMap::new()),
+            last_event_time: RwLock::new(AHashMap::new()),
+            watermark_lateness: RwLock::new(AHashMap::new()),
         }
+    }
+
+    /// Load-or-init the per-stream atomic for `map`, returning a cloned Arc.
+    /// Read-fast / write-rare: first try the read-lock fast path; only take
+    /// the write-lock to insert a fresh entry (bounded by the distinct
+    /// stream count).
+    fn get_or_init_atomic(
+        map: &RwLock<AHashMap<String, Arc<AtomicU64>>>,
+        stream: &str,
+    ) -> Arc<AtomicU64> {
+        if let Some(a) = map.read().get(stream) {
+            return Arc::clone(a);
+        }
+        let mut w = map.write();
+        Arc::clone(
+            w.entry(stream.to_string())
+                .or_insert_with(|| Arc::new(AtomicU64::new(0))),
+        )
     }
 
     /// Record an event_time observation for `stream`. Updates the
     /// running max (and thus the watermark) and the last-seen pointer.
-    /// Lock-free hot path — Phase 43.
+    /// Hot path lock-free on the atomic once the per-stream entry exists.
     pub fn observe(&self, stream: &str, event_time: SystemTime) {
         let ns = sys_to_nanos(event_time);
-        // last_event_time — last-writer-wins, just store.
-        match self.last_event_time.get(stream) {
-            Some(entry) => entry.value().store(ns, Ordering::Relaxed),
-            None => {
-                self.last_event_time
-                    .entry(stream.to_string())
-                    .or_insert_with(|| AtomicU64::new(ns))
-                    .value()
-                    .store(ns, Ordering::Relaxed);
-            }
-        }
-        // observed_max — monotonic max via fetch_max.
-        match self.observed_max.get(stream) {
-            Some(entry) => {
-                entry.value().fetch_max(ns, Ordering::Relaxed);
-            }
-            None => {
-                // Race-safe: or_insert_with + fetch_max afterwards keeps
-                // monotonic semantics even if two threads race the insert.
-                self.observed_max
-                    .entry(stream.to_string())
-                    .or_insert_with(|| AtomicU64::new(0))
-                    .value()
-                    .fetch_max(ns, Ordering::Relaxed);
-            }
-        }
+        let last = Self::get_or_init_atomic(&self.last_event_time, stream);
+        last.store(ns, Ordering::Relaxed);
+        let max = Self::get_or_init_atomic(&self.observed_max, stream);
+        max.fetch_max(ns, Ordering::Relaxed);
     }
 
     /// D-10 / CORR-03: set the per-stream watermark lateness override.
     /// Called by `PipelineEngine::register` when `StreamDefinition.watermark_lateness`
-    /// is `Some`. Lock-free insert into the DashMap.
+    /// is `Some`.
     pub fn set_lateness(&self, stream: &str, lateness: Duration) {
-        self.watermark_lateness.insert(stream.to_string(), lateness);
+        self.watermark_lateness
+            .write()
+            .insert(stream.to_string(), lateness);
     }
 
     /// D-10 / CORR-03: look up the per-stream lateness override.
@@ -283,8 +287,9 @@ impl WatermarkTracker {
     /// stream has no override registered.
     pub fn lateness_for(&self, stream: &str) -> Duration {
         self.watermark_lateness
+            .read()
             .get(stream)
-            .map(|e| *e.value())
+            .copied()
             .unwrap_or(WATERMARK_LATENESS)
     }
 
@@ -292,8 +297,11 @@ impl WatermarkTracker {
     /// Returns `None` if the stream has never been observed — in which case no
     /// event should be considered late (the first event always seeds the tracker).
     pub fn watermark(&self, stream: &str) -> Option<SystemTime> {
-        let entry = self.observed_max.get(stream)?;
-        let ns = entry.value().load(Ordering::Relaxed);
+        let ns = self
+            .observed_max
+            .read()
+            .get(stream)
+            .map(|a| a.load(Ordering::Relaxed))?;
         if ns == 0 {
             return None;
         }
@@ -309,8 +317,11 @@ impl WatermarkTracker {
 
     /// Most recent `event_time` observed on `stream`, or `None`.
     pub fn last_event_time(&self, stream: &str) -> Option<SystemTime> {
-        let entry = self.last_event_time.get(stream)?;
-        let ns = entry.value().load(Ordering::Relaxed);
+        let ns = self
+            .last_event_time
+            .read()
+            .get(stream)
+            .map(|a| a.load(Ordering::Relaxed))?;
         if ns == 0 {
             return None;
         }
@@ -319,8 +330,11 @@ impl WatermarkTracker {
 
     /// `max(event_time observed)` on `stream`, or `None`.
     pub fn observed_max(&self, stream: &str) -> Option<SystemTime> {
-        let entry = self.observed_max.get(stream)?;
-        let ns = entry.value().load(Ordering::Relaxed);
+        let ns = self
+            .observed_max
+            .read()
+            .get(stream)
+            .map(|a| a.load(Ordering::Relaxed))?;
         if ns == 0 {
             return None;
         }
@@ -369,13 +383,9 @@ impl WatermarkTracker {
     /// /debug/key/:key and /debug/streams/:name.
     pub fn iter_streams(&self) -> Vec<(String, SystemTime)> {
         self.observed_max
+            .read()
             .iter()
-            .map(|entry| {
-                (
-                    entry.key().clone(),
-                    nanos_to_sys(entry.value().load(Ordering::Relaxed)),
-                )
-            })
+            .map(|(k, v)| (k.clone(), nanos_to_sys(v.load(Ordering::Relaxed))))
             .collect()
     }
 }
@@ -384,7 +394,10 @@ impl WatermarkTracker {
 /// `/metrics` endpoint as `beava_late_events_dropped_total{stream="..."}`.
 #[derive(Debug)]
 pub struct LateDropCounters {
-    per_stream: DashMap<String, AtomicU64>,
+    /// Phase 54-03: RwLock<AHashMap<_, Arc<AtomicU64>>> replaces DashMap.
+    /// Writes on the hot path are via the Arc<AtomicU64> after a read-only
+    /// lookup; only first-ever insertion takes the write lock.
+    per_stream: RwLock<AHashMap<String, Arc<AtomicU64>>>,
 }
 
 impl Default for LateDropCounters {
@@ -396,37 +409,37 @@ impl Default for LateDropCounters {
 impl LateDropCounters {
     pub fn new() -> Self {
         Self {
-            per_stream: DashMap::new(),
+            per_stream: RwLock::new(AHashMap::new()),
         }
     }
 
-    /// Lock-free increment via DashMap entry + AtomicU64 fetch_add.
+    /// Increment the `stream` drop counter by 1. Fast path: read-lock +
+    /// atomic fetch_add. Slow path (first drop ever for this stream) takes
+    /// the write-lock to insert a zeroed atomic, then increments it.
     pub fn increment(&self, stream: &str) {
-        match self.per_stream.get(stream) {
-            Some(entry) => {
-                entry.value().fetch_add(1, Ordering::Relaxed);
-            }
-            None => {
-                self.per_stream
-                    .entry(stream.to_string())
-                    .or_insert_with(|| AtomicU64::new(0))
-                    .value()
-                    .fetch_add(1, Ordering::Relaxed);
-            }
+        if let Some(a) = self.per_stream.read().get(stream) {
+            a.fetch_add(1, Ordering::Relaxed);
+            return;
         }
+        let mut w = self.per_stream.write();
+        w.entry(stream.to_string())
+            .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn get(&self, stream: &str) -> u64 {
         self.per_stream
+            .read()
             .get(stream)
-            .map(|e| e.value().load(Ordering::Relaxed))
+            .map(|a| a.load(Ordering::Relaxed))
             .unwrap_or(0)
     }
 
     pub fn snapshot(&self) -> Vec<(String, u64)> {
         self.per_stream
+            .read()
             .iter()
-            .map(|e| (e.key().clone(), e.value().load(Ordering::Relaxed)))
+            .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
             .collect()
     }
 }
@@ -480,7 +493,10 @@ impl DropReason {
 #[derive(Debug)]
 pub struct RingBufferDropCounters {
     /// Key = (stream_name, operator_kind, reason).
-    per_label: DashMap<(String, String, DropReason), Arc<AtomicU64>>,
+    /// Phase 54-03: RwLock<AHashMap<_, Arc<AtomicU64>>> replaces DashMap.
+    /// D-06's hot path is unaffected — callers cache the returned Arc at
+    /// registration time and only touch the atomic on drop.
+    per_label: RwLock<AHashMap<(String, String, DropReason), Arc<AtomicU64>>>,
 }
 
 impl Default for RingBufferDropCounters {
@@ -492,8 +508,19 @@ impl Default for RingBufferDropCounters {
 impl RingBufferDropCounters {
     pub fn new() -> Self {
         Self {
-            per_label: DashMap::new(),
+            per_label: RwLock::new(AHashMap::new()),
         }
+    }
+
+    fn get_or_init(&self, key: (String, String, DropReason)) -> Arc<AtomicU64> {
+        if let Some(a) = self.per_label.read().get(&key) {
+            return Arc::clone(a);
+        }
+        let mut w = self.per_label.write();
+        Arc::clone(
+            w.entry(key)
+                .or_insert_with(|| Arc::new(AtomicU64::new(0))),
+        )
     }
 
     /// Pre-allocate and cache the three drop-reason `Arc<AtomicU64>` handles
@@ -504,80 +531,60 @@ impl RingBufferDropCounters {
         stream: &str,
         operator_kind: &str,
     ) -> (Arc<AtomicU64>, Arc<AtomicU64>, Arc<AtomicU64>) {
-        let too_old = Arc::clone(
-            self.per_label
-                .entry((
-                    stream.to_string(),
-                    operator_kind.to_string(),
-                    DropReason::TooOld,
-                ))
-                .or_insert_with(|| Arc::new(AtomicU64::new(0)))
-                .value(),
-        );
-        let too_new = Arc::clone(
-            self.per_label
-                .entry((
-                    stream.to_string(),
-                    operator_kind.to_string(),
-                    DropReason::TooNew,
-                ))
-                .or_insert_with(|| Arc::new(AtomicU64::new(0)))
-                .value(),
-        );
-        let pre_epoch = Arc::clone(
-            self.per_label
-                .entry((
-                    stream.to_string(),
-                    operator_kind.to_string(),
-                    DropReason::PreEpoch,
-                ))
-                .or_insert_with(|| Arc::new(AtomicU64::new(0)))
-                .value(),
-        );
+        let too_old = self.get_or_init((
+            stream.to_string(),
+            operator_kind.to_string(),
+            DropReason::TooOld,
+        ));
+        let too_new = self.get_or_init((
+            stream.to_string(),
+            operator_kind.to_string(),
+            DropReason::TooNew,
+        ));
+        let pre_epoch = self.get_or_init((
+            stream.to_string(),
+            operator_kind.to_string(),
+            DropReason::PreEpoch,
+        ));
         (too_old, too_new, pre_epoch)
     }
 
     /// Increment a specific `(stream, operator_kind, reason)` counter.
-    /// Used on the drop path (cold path); DashMap lookup is acceptable here.
+    /// Used on the drop path (cold path); map lookup is acceptable here.
     pub fn increment(&self, stream: &str, operator_kind: &str, reason: DropReason) {
-        match self
-            .per_label
-            .get(&(stream.to_string(), operator_kind.to_string(), reason))
-        {
-            Some(entry) => {
-                entry.value().fetch_add(1, Ordering::Relaxed);
-            }
-            None => {
-                // Not pre-registered (e.g. backfill path before registration).
-                // Insert lazily.
-                self.per_label
-                    .entry((stream.to_string(), operator_kind.to_string(), reason))
-                    .or_insert_with(|| Arc::new(AtomicU64::new(0)))
-                    .value()
-                    .fetch_add(1, Ordering::Relaxed);
-            }
+        let key = (stream.to_string(), operator_kind.to_string(), reason);
+        if let Some(a) = self.per_label.read().get(&key) {
+            a.fetch_add(1, Ordering::Relaxed);
+            return;
         }
+        // Not pre-registered (e.g. backfill path before registration). Insert lazily.
+        let mut w = self.per_label.write();
+        w.entry(key)
+            .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Snapshot all non-zero counters. Used by the `/metrics` endpoint.
     pub fn snapshot(&self) -> Vec<((String, String, DropReason), u64)> {
         self.per_label
+            .read()
             .iter()
-            .map(|e| (e.key().clone(), e.value().load(Ordering::Relaxed)))
+            .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
             .collect()
     }
 
     /// Total drops across all labels. Useful for integration tests.
     pub fn total(&self) -> u64 {
         self.per_label
-            .iter()
-            .map(|e| e.value().load(Ordering::Relaxed))
+            .read()
+            .values()
+            .map(|v| v.load(Ordering::Relaxed))
             .sum()
     }
 }
 
-/// Type aliases retained for call-site compatibility. Phase 43: the
-/// underlying types now use interior mutability (DashMap + AtomicU64),
+/// Type aliases retained for call-site compatibility. Phase 43/54-03: the
+/// underlying types use interior mutability (parking_lot::RwLock + atomics),
 /// so no outer lock is needed. Call sites that previously did
 /// `.read()` / `.write()` now call methods directly on `&WatermarkTracker`
 /// / `&LateDropCounters`.

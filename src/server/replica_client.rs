@@ -552,9 +552,11 @@ impl ReplicaClient {
             Some(ks) if !ks.is_empty() => ks.clone(),
             _ => self.app.store.entity_keys(),
         };
-        // Outer get-or-insert is lock-free per DashMap; inner inserts are
-        // per-key and rare (one write per key per extract_at threshold).
-        let inner = self.app.extracted_history.entry(ts_ms).or_default();
+        // Phase 54-03 Task 2: single RwLock<AHashMap<u64, AHashMap<_,_>>>.
+        // Hold the write-lock for the whole extract-at threshold since this
+        // is a cold path (rare, one write per configured threshold).
+        let mut outer = self.app.extracted_history.write();
+        let inner = outer.entry(ts_ms).or_default();
         for key in keys {
             let feats = self.app.store.get_all_features(&key, now);
             if feats.is_empty() {

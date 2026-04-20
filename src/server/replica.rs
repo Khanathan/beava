@@ -29,7 +29,12 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use dashmap::DashMap;
+// Phase 54-03 Task 2: migrated from dashmap::DashMap → parking_lot::RwLock<AHashMap>
+// per RESEARCH Assumption A6. All replica per-stream/per-session maps are
+// read-mostly or first-insert-once; the coarse RwLock covers the rare insert
+// path and everything else uses the inner Arc<AtomicU64> for lock-free writes.
+use ahash::AHashMap;
+use parking_lot::RwLock;
 use tokio::sync::mpsc;
 
 use crate::server::protocol::Scope;
@@ -197,16 +202,15 @@ pub fn compute_target_shard(key: &str, upstream_n: u8, downstream_n: u8, shard_h
 }
 
 /// Per-stream `beava_replica_events_pushed_total{stream}` counter.
-/// Lock-free reads via DashMap; init-on-first-push via `entry(..).or_insert`.
-/// Backed by a `OnceLock` because `DashMap::new` is not `const fn` on the
-/// currently-pinned dashmap version.
-static EVENTS_PUSHED_BY_STREAM: std::sync::OnceLock<DashMap<String, AtomicU64>> =
-    std::sync::OnceLock::new();
+/// Phase 54-03: migrated to `RwLock<AHashMap<_, Arc<AtomicU64>>>`. The
+/// `OnceLock` remains because `RwLock::new` + `AHashMap::new` are not
+/// `const fn`; inner atomics still give lock-free increments after init.
+type StreamCounterMap = RwLock<AHashMap<String, Arc<AtomicU64>>>;
+static EVENTS_PUSHED_BY_STREAM: std::sync::OnceLock<StreamCounterMap> = std::sync::OnceLock::new();
 
 /// Phase 35-01: per-stream `beava_replica_log_entries_sent_total{stream}`
 /// counter. One increment per event frame written by `handle_log_fetch`.
-/// Same DashMap layout as `EVENTS_PUSHED_BY_STREAM`.
-static LOG_ENTRIES_SENT_BY_STREAM: std::sync::OnceLock<DashMap<String, AtomicU64>> =
+static LOG_ENTRIES_SENT_BY_STREAM: std::sync::OnceLock<StreamCounterMap> =
     std::sync::OnceLock::new();
 
 /// Phase 36-01: per-stream `beava_replica_events_ingested_total{stream}`
@@ -214,11 +218,28 @@ static LOG_ENTRIES_SENT_BY_STREAM: std::sync::OnceLock<DashMap<String, AtomicU64
 /// (i.e., every CDC event the replica-client loop applies locally). Kept
 /// separate from the normal `events_total` metric so operators can see
 /// replica-sourced traffic distinctly from locally-accepted traffic.
-static REPLICA_EVENTS_INGESTED_BY_STREAM: std::sync::OnceLock<DashMap<String, AtomicU64>> =
+static REPLICA_EVENTS_INGESTED_BY_STREAM: std::sync::OnceLock<StreamCounterMap> =
     std::sync::OnceLock::new();
 
-fn replica_events_ingested_map() -> &'static DashMap<String, AtomicU64> {
-    REPLICA_EVENTS_INGESTED_BY_STREAM.get_or_init(DashMap::new)
+fn new_stream_counter_map() -> StreamCounterMap {
+    RwLock::new(AHashMap::new())
+}
+
+fn replica_events_ingested_map() -> &'static StreamCounterMap {
+    REPLICA_EVENTS_INGESTED_BY_STREAM.get_or_init(new_stream_counter_map)
+}
+
+/// Helper: fetch-or-init the per-stream Arc<AtomicU64> in a counter map.
+/// Reads first; only takes the write-lock if the entry is missing.
+fn stream_counter_get_or_init(map: &StreamCounterMap, stream: &str) -> Arc<AtomicU64> {
+    if let Some(a) = map.read().get(stream) {
+        return Arc::clone(a);
+    }
+    let mut w = map.write();
+    Arc::clone(
+        w.entry(stream.to_owned())
+            .or_insert_with(|| Arc::new(AtomicU64::new(0))),
+    )
 }
 
 /// Phase 36-01: bump the per-stream replica-events-ingested counter by 1.
@@ -227,18 +248,12 @@ pub fn bump_replica_events_ingested(stream: &str) {
 }
 
 /// Batched variant: bump the per-stream replica-events-ingested counter by `n`.
-/// Used by the replica-batch ingest path to amortize DashMap lookups.
+/// Used by the replica-batch ingest path to amortize map lookups.
 pub fn bump_replica_events_ingested_by(stream: &str, n: u64) {
     if n == 0 {
         return;
     }
-    let m = replica_events_ingested_map();
-    if let Some(existing) = m.get(stream) {
-        existing.fetch_add(n, Ordering::Relaxed);
-        return;
-    }
-    m.entry(stream.to_owned())
-        .or_insert_with(|| AtomicU64::new(0))
+    stream_counter_get_or_init(replica_events_ingested_map(), stream)
         .fetch_add(n, Ordering::Relaxed);
 }
 
@@ -246,21 +261,23 @@ pub fn bump_replica_events_ingested_by(stream: &str, n: u64) {
 /// replica-events-ingested counter. Exposed for tests + `/metrics` wiring.
 pub fn replica_events_ingested_snapshot() -> Vec<(String, u64)> {
     replica_events_ingested_map()
+        .read()
         .iter()
-        .map(|kv| (kv.key().clone(), kv.value().load(Ordering::Relaxed)))
+        .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
         .collect()
 }
 
-fn log_entries_sent_map() -> &'static DashMap<String, AtomicU64> {
-    LOG_ENTRIES_SENT_BY_STREAM.get_or_init(DashMap::new)
+fn log_entries_sent_map() -> &'static StreamCounterMap {
+    LOG_ENTRIES_SENT_BY_STREAM.get_or_init(new_stream_counter_map)
 }
 
 /// Phase 35-01: read snapshot of `(stream, count)` pairs for the per-stream
 /// log-entries-sent counter. Exposed for tests + `/metrics` wiring.
 pub fn log_entries_sent_snapshot() -> Vec<(String, u64)> {
     log_entries_sent_map()
+        .read()
         .iter()
-        .map(|kv| (kv.key().clone(), kv.value().load(Ordering::Relaxed)))
+        .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
         .collect()
 }
 
@@ -271,24 +288,17 @@ pub fn bump_log_entries_sent(stream: &str) {
 }
 
 /// Batched variant: bump the per-stream log-entries-sent counter by `n`.
-/// Used by `handle_log_fetch` to amortize DashMap lookups when streaming
+/// Used by `handle_log_fetch` to amortize map lookups when streaming
 /// thousands of event frames in a single LOG_FETCH response.
 pub fn bump_log_entries_sent_by(stream: &str, n: u64) {
     if n == 0 {
         return;
     }
-    let m = log_entries_sent_map();
-    if let Some(existing) = m.get(stream) {
-        existing.fetch_add(n, Ordering::Relaxed);
-        return;
-    }
-    m.entry(stream.to_owned())
-        .or_insert_with(|| AtomicU64::new(0))
-        .fetch_add(n, Ordering::Relaxed);
+    stream_counter_get_or_init(log_entries_sent_map(), stream).fetch_add(n, Ordering::Relaxed);
 }
 
-fn events_pushed_map() -> &'static DashMap<String, AtomicU64> {
-    EVENTS_PUSHED_BY_STREAM.get_or_init(DashMap::new)
+fn events_pushed_map() -> &'static StreamCounterMap {
+    EVENTS_PUSHED_BY_STREAM.get_or_init(new_stream_counter_map)
 }
 
 /// Read snapshot of `(reason, count)` pairs for the drop counter.
@@ -301,24 +311,18 @@ pub fn subscribers_dropped_snapshot() -> Vec<(&'static str, u64)> {
 }
 
 /// Read snapshot of `(stream, count)` pairs for the per-stream
-/// events-pushed counter. Stable iteration order is not guaranteed
-/// (DashMap internal order); Prometheus text doesn't require ordering.
+/// events-pushed counter. Stable iteration order is not guaranteed;
+/// Prometheus text doesn't require ordering.
 pub fn events_pushed_snapshot() -> Vec<(String, u64)> {
     events_pushed_map()
+        .read()
         .iter()
-        .map(|kv| (kv.key().clone(), kv.value().load(Ordering::Relaxed)))
+        .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
         .collect()
 }
 
 fn bump_events_pushed(stream: &str) {
-    let m = events_pushed_map();
-    if let Some(existing) = m.get(stream) {
-        existing.fetch_add(1, Ordering::Relaxed);
-        return;
-    }
-    m.entry(stream.to_owned())
-        .or_insert_with(|| AtomicU64::new(0))
-        .fetch_add(1, Ordering::Relaxed);
+    stream_counter_get_or_init(events_pushed_map(), stream).fetch_add(1, Ordering::Relaxed);
 }
 
 /// Increment `beava_replica_snapshot_bytes_sent_total` by `n`. Called once
@@ -433,8 +437,12 @@ pub struct ReplicaSession {
 
 /// Phase 27-02: process-wide registry of live `OP_SUBSCRIBE` sessions.
 ///
-/// Lock-free: `DashMap<conn_id, ReplicaSession>` gives per-shard mutexes and
-/// a non-blocking `iter` the ingest hook can walk without a global rwlock.
+/// Phase 54-03 Task 2: migrated from `DashMap<conn_id, ReplicaSession>` to
+/// `RwLock<AHashMap<conn_id, Arc<ReplicaSession>>>`. The ingest hot path
+/// short-circuits on the `active` counter before taking any lock, so the
+/// RwLock only matters when at least one subscriber is live. The inner
+/// `Arc<ReplicaSession>` lets `notify_subscribers` clone out the sender
+/// without holding the read-lock across `try_send` / closed-channel handling.
 /// `next_id` is a plain `AtomicU64` — ids never reuse.
 ///
 /// The ingest hot path calls `notify_subscribers(&self, stream, key, payload, now)`
@@ -444,7 +452,7 @@ pub struct ReplicaSession {
 /// `operational/warning` signal (per `27-CONTEXT.md §Backpressure A1`).
 /// A closed receiver (drain task exited) drops with `reason="disconnect"`.
 pub struct SubscriberRegistry {
-    sessions: DashMap<u64, ReplicaSession>,
+    sessions: RwLock<AHashMap<u64, Arc<ReplicaSession>>>,
     /// Fast-path counter mirroring `sessions.len()`. The push hot path calls
     /// `notify_subscribers` once per cascaded operator (~25× per event), so
     /// the default `DashMap::is_empty()` check — which walks all shards and
@@ -460,7 +468,7 @@ pub struct SubscriberRegistry {
 impl std::fmt::Debug for SubscriberRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SubscriberRegistry")
-            .field("active", &self.sessions.len())
+            .field("active", &self.active_count())
             .finish_non_exhaustive()
     }
 }
@@ -468,7 +476,7 @@ impl std::fmt::Debug for SubscriberRegistry {
 impl SubscriberRegistry {
     pub fn new(signals: SharedRegistry) -> Self {
         Self {
-            sessions: DashMap::new(),
+            sessions: RwLock::new(AHashMap::new()),
             active: AtomicUsize::new(0),
             next_id: AtomicU64::new(1),
             signals,
@@ -480,13 +488,13 @@ impl SubscriberRegistry {
     /// drain task that pulls from it.
     pub fn register(&self, scope: Scope, sender: mpsc::Sender<ReplicaEvent>) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.sessions.insert(
+        self.sessions.write().insert(
             id,
-            ReplicaSession {
+            Arc::new(ReplicaSession {
                 scope,
                 sender,
                 last_err: None,
-            },
+            }),
         );
         self.active.fetch_add(1, Ordering::Relaxed);
         id
@@ -495,7 +503,7 @@ impl SubscriberRegistry {
     /// Number of currently-registered subscribers. Backs the
     /// `beava_replica_subscriptions_active` gauge at scrape time.
     pub fn active_count(&self) -> usize {
-        self.sessions.len()
+        self.sessions.read().len()
     }
 
     /// Remove `conn_id` from the registry and bump the drop counter under
@@ -508,7 +516,7 @@ impl SubscriberRegistry {
         // Removing the entry also drops the registry-held `Sender`; if the
         // drain task is still running it will observe the Receiver close
         // (channel-closed) naturally.
-        let removed = self.sessions.remove(&conn_id).is_some();
+        let removed = self.sessions.write().remove(&conn_id).is_some();
         if !removed {
             // Already removed by a concurrent path — don't double-count.
             return;
@@ -534,23 +542,28 @@ impl SubscriberRegistry {
     /// `payload` is the serialized event JSON bytes; `now` is the event's
     /// logical timestamp (caller-provided — normally `SystemTime::now()`).
     pub fn notify_subscribers(&self, stream: &str, key: &str, payload: &[u8], now: SystemTime) {
-        // Hot path: ~25 calls per cascaded event. `DashMap::is_empty()` walks
-        // all shards + takes a brief read-lock each call (~300 ns), whereas a
-        // `Relaxed` load on a mirrored counter is ~2 ns. At 124k eps × 25 ops
-        // × 10 workers this is the difference between ~20% CPU and ~0.
+        // Hot path: ~25 calls per cascaded event. Mirror-counter fast-path
+        // so we never touch the RwLock when no one is subscribed.
         if self.active.load(Ordering::Relaxed) == 0 {
             return;
         }
         let stream_arr = [stream];
-        // Collect drops locally so we don't mutate the map mid-iter.
-        let mut to_drop: Vec<(u64, &'static str)> = Vec::new();
 
-        for entry in self.sessions.iter() {
-            let conn_id = *entry.key();
-            let session = entry.value();
-            if !entity_matches_scope(&stream_arr, key, &session.scope) {
-                continue;
-            }
+        // Snapshot matching sessions under a read-lock, then release the
+        // lock before running try_send + error bookkeeping. Arc<ReplicaSession>
+        // clones are cheap and avoid holding the lock across async boundaries
+        // inside the session's mpsc sender.
+        let matched: Vec<(u64, Arc<ReplicaSession>)> = {
+            let guard = self.sessions.read();
+            guard
+                .iter()
+                .filter(|(_, sess)| entity_matches_scope(&stream_arr, key, &sess.scope))
+                .map(|(id, sess)| (*id, Arc::clone(sess)))
+                .collect()
+        };
+
+        let mut to_drop: Vec<(u64, &'static str)> = Vec::new();
+        for (conn_id, session) in matched {
             let ev = ReplicaEvent {
                 timestamp: now,
                 stream: stream.to_owned(),

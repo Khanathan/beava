@@ -20,10 +20,11 @@
 //! documented in the STRIDE register as T-25-02-02 with mitigation: the
 //! `beava_bloom_memory_bytes` metric surfaces actual usage.
 
-use ahash::RandomState;
-use dashmap::DashMap;
+use ahash::{AHashMap, RandomState};
+use parking_lot::RwLock;
 use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 /// Rotation cadence: two-slot generational bloom gives an effective rolling
@@ -172,23 +173,44 @@ impl GenerationalBloom {
 /// metric and the recommendation engine.
 #[derive(Debug, Default)]
 pub struct EvictionTracker {
-    per_table: DashMap<String, parking_lot::Mutex<GenerationalBloom>>,
+    /// Phase 54-03 Task 2: DashMap → parking_lot::RwLock<AHashMap>. Per-Table
+    /// bloom access is already serialized by the inner Mutex; the outer
+    /// RwLock only serializes first-insert of a new table (rare).
+    per_table: RwLock<AHashMap<String, parking_lot::Mutex<GenerationalBloom>>>,
     /// Per-Table eviction-then-reinit counter. Also surfaced on `/metrics`.
-    pub reinits: DashMap<String, AtomicU64>,
+    /// `Arc<AtomicU64>` per table so the hot increment path never touches
+    /// the outer RwLock once the entry has been initialized.
+    pub reinits: RwLock<AHashMap<String, Arc<AtomicU64>>>,
     /// Per-Table eviction counter (monotonic). Also surfaced on `/metrics`.
-    pub evictions: DashMap<String, AtomicU64>,
+    pub evictions: RwLock<AHashMap<String, Arc<AtomicU64>>>,
     /// Window-size / hash-count parameters. Captured so new per-Table blooms
     /// use the same shape as everyone else.
     num_bits: usize,
     k: usize,
 }
 
+/// Local helper: get-or-init the per-Table atomic counter in a counter map.
+/// Reads first, falls back to a write-lock insert on miss.
+fn counter_get_or_init(
+    map: &RwLock<AHashMap<String, Arc<AtomicU64>>>,
+    table: &str,
+) -> Arc<AtomicU64> {
+    if let Some(a) = map.read().get(table) {
+        return Arc::clone(a);
+    }
+    let mut w = map.write();
+    Arc::clone(
+        w.entry(table.to_string())
+            .or_insert_with(|| Arc::new(AtomicU64::new(0))),
+    )
+}
+
 impl EvictionTracker {
     pub fn new() -> Self {
         Self {
-            per_table: DashMap::new(),
-            reinits: DashMap::new(),
-            evictions: DashMap::new(),
+            per_table: RwLock::new(AHashMap::new()),
+            reinits: RwLock::new(AHashMap::new()),
+            evictions: RwLock::new(AHashMap::new()),
             num_bits: BLOOM_BITS_DEFAULT,
             k: BLOOM_HASHES_DEFAULT,
         }
@@ -196,9 +218,9 @@ impl EvictionTracker {
 
     pub fn with_capacity(num_bits: usize, k: usize) -> Self {
         Self {
-            per_table: DashMap::new(),
-            reinits: DashMap::new(),
-            evictions: DashMap::new(),
+            per_table: RwLock::new(AHashMap::new()),
+            reinits: RwLock::new(AHashMap::new()),
+            evictions: RwLock::new(AHashMap::new()),
             num_bits,
             k,
         }
@@ -207,19 +229,22 @@ impl EvictionTracker {
     /// Record that `key` was evicted from `table`. Bumps the eviction counter
     /// and inserts the key into the table's bloom.
     pub fn record_eviction(&self, table: &str, key: &str) {
-        // Bump eviction counter
-        self.evictions
-            .entry(table.to_string())
-            .or_default()
-            .fetch_add(1, Ordering::Relaxed);
+        // Bump eviction counter.
+        counter_get_or_init(&self.evictions, table).fetch_add(1, Ordering::Relaxed);
 
-        // Insert into bloom (lazy-create per table)
+        // Insert into bloom (lazy-create per table). Fast-path takes a read
+        // lock if the bloom already exists.
+        if let Some(slot) = self.per_table.read().get(table) {
+            slot.lock().insert(key);
+            return;
+        }
+        // Slow path: materialize a fresh bloom for this table.
         let now = SystemTime::now();
-        let entry = self.per_table.entry(table.to_string()).or_insert_with(|| {
+        let mut w = self.per_table.write();
+        let slot = w.entry(table.to_string()).or_insert_with(|| {
             parking_lot::Mutex::new(GenerationalBloom::new(self.num_bits, self.k, now))
         });
-        let mut slot = entry.value().lock();
-        slot.insert(key);
+        slot.lock().insert(key);
     }
 
     /// Called on entity (re)creation. Returns `true` iff the bloom says we
@@ -229,16 +254,15 @@ impl EvictionTracker {
     /// Returns `false` (and does nothing) if no bloom exists for the table
     /// yet (i.e. no eviction was ever recorded).
     pub fn check_reinit(&self, table: &str, key: &str) -> bool {
-        let entry = match self.per_table.get(table) {
-            Some(e) => e,
-            None => return false,
+        let hit = {
+            let guard = self.per_table.read();
+            match guard.get(table) {
+                Some(slot) => slot.lock().contains(key),
+                None => return false,
+            }
         };
-        let hit = entry.value().lock().contains(key);
         if hit {
-            self.reinits
-                .entry(table.to_string())
-                .or_default()
-                .fetch_add(1, Ordering::Relaxed);
+            counter_get_or_init(&self.reinits, table).fetch_add(1, Ordering::Relaxed);
         }
         hit
     }
@@ -246,8 +270,8 @@ impl EvictionTracker {
     /// Call from the eviction scheduler tick. Rotates every per-Table bloom
     /// whose `rotated_at` is older than `ROTATE_INTERVAL`.
     pub fn rotate_generation(&self, now: SystemTime) {
-        for entry in self.per_table.iter() {
-            entry.value().lock().maybe_rotate(now);
+        for slot in self.per_table.read().values() {
+            slot.lock().maybe_rotate(now);
         }
     }
 
@@ -255,8 +279,8 @@ impl EvictionTracker {
     /// `beava_bloom_memory_bytes`.
     pub fn memory_bytes(&self) -> usize {
         let mut total = 0;
-        for entry in self.per_table.iter() {
-            total += entry.value().lock().memory_bytes();
+        for slot in self.per_table.read().values() {
+            total += slot.lock().memory_bytes();
         }
         total
     }
@@ -264,38 +288,42 @@ impl EvictionTracker {
     /// Snapshot of the eviction counter for all Tables (for /metrics).
     pub fn evictions_snapshot(&self) -> Vec<(String, u64)> {
         self.evictions
+            .read()
             .iter()
-            .map(|e| (e.key().clone(), e.value().load(Ordering::Relaxed)))
+            .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
             .collect()
     }
 
     /// Snapshot of the reinit counter for all Tables (for /metrics).
     pub fn reinits_snapshot(&self) -> Vec<(String, u64)> {
         self.reinits
+            .read()
             .iter()
-            .map(|e| (e.key().clone(), e.value().load(Ordering::Relaxed)))
+            .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
             .collect()
     }
 
     /// Get the current eviction count for a table.
     pub fn eviction_count(&self, table: &str) -> u64 {
         self.evictions
+            .read()
             .get(table)
-            .map(|e| e.load(Ordering::Relaxed))
+            .map(|a| a.load(Ordering::Relaxed))
             .unwrap_or(0)
     }
 
     /// Get the current eviction-then-reinit count for a table.
     pub fn reinit_count(&self, table: &str) -> u64 {
         self.reinits
+            .read()
             .get(table)
-            .map(|e| e.load(Ordering::Relaxed))
+            .map(|a| a.load(Ordering::Relaxed))
             .unwrap_or(0)
     }
 
     /// Number of tables currently tracked. Cap at 256 (T-25-02-02).
     pub fn table_count(&self) -> usize {
-        self.per_table.len()
+        self.per_table.read().len()
     }
 }
 
@@ -390,14 +418,17 @@ mod tests {
         let later = now + ROTATE_INTERVAL * 2 + Duration::from_secs(60);
         // Need two rotations to fully drop the key (moves today → yesterday → gone)
         {
-            let e = t.per_table.get("Users").unwrap();
-            e.value().lock().force_rotate(later);
-            e.value()
-                .lock()
-                .force_rotate(later + Duration::from_secs(60));
+            let guard = t.per_table.read();
+            let slot = guard.get("Users").unwrap();
+            slot.lock().force_rotate(later);
+            slot.lock().force_rotate(later + Duration::from_secs(60));
         }
         // Reset reinit counter before re-check so we observe ONLY the post-rotation result
-        t.reinits.get("Users").unwrap().store(0, Ordering::Relaxed);
+        t.reinits
+            .read()
+            .get("Users")
+            .unwrap()
+            .store(0, Ordering::Relaxed);
         assert!(!t.check_reinit("Users", "u1"));
         assert_eq!(t.reinit_count("Users"), 0);
     }

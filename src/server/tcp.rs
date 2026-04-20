@@ -232,7 +232,13 @@ pub struct ConcurrentAppState {
     /// is `entity_key -> {feature_name: feature_value}` JSON. Exposed via
     /// `GET /extracts`. Empty for non-replica servers and for replicas
     /// launched without `--replica-extract-at`.
-    pub extracted_history: dashmap::DashMap<u64, dashmap::DashMap<String, serde_json::Value>>,
+    /// Phase 54-03 Task 2: migrated from nested `DashMap<u64, DashMap<..>>` to
+    /// a single `parking_lot::RwLock<AHashMap<u64, AHashMap<String, Value>>>`.
+    /// This is a cold path (replica historical-extract + /extracts debug
+    /// endpoint); a single RwLock is plenty.
+    pub extracted_history: parking_lot::RwLock<
+        ahash::AHashMap<u64, ahash::AHashMap<String, serde_json::Value>>,
+    >,
 
     /// Phase 49-05 (TPC Wave 1): sharded state store alongside the DashMap compat shim.
     /// At N=1, all state lives in Shard-0. Wave 4 (Phase 52) removes the DashMap `store`.
@@ -471,7 +477,7 @@ pub fn make_concurrent_state_full(
         last_push_latency_nanos: std::sync::atomic::AtomicU64::new(0),
         atomic_throughput: crate::server::throughput::AtomicThroughput::new(),
         latency_sample_counter: std::sync::atomic::AtomicU64::new(0),
-        extracted_history: dashmap::DashMap::new(),
+        extracted_history: parking_lot::RwLock::new(ahash::AHashMap::new()),
         #[cfg(feature = "state-inmem")]
         sharded_store: std::sync::Arc::new(std::sync::Mutex::new(
             crate::shard::store::ShardedStateStoreV1::new(n_shards),
