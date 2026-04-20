@@ -119,6 +119,45 @@ pub fn evict_expired_keys(
     evict_expired_stream_entries(store, engine, now, ttl_multiplier)
 }
 
+/// Phase 54-04 Pass A3: thin wrapper matching the shard-aware signature.
+/// The body is migrated in Pass A4 (which scatter-gathers eviction across
+/// every live `ShardHandle`). Until then this returns 0 on the default
+/// (fjall) build — eviction was already a no-op on fjall because
+/// `state.store.entities` is empty under fjall (all state lives in
+/// per-shard `PartitionHandle`s). The stub makes that reality explicit
+/// and gives main.rs a stable call site that A4 can replace without
+/// another main.rs touch.
+///
+/// Signature is intentionally `shard_handles: &[ShardHandle]` so A4 can
+/// plug in SPSC dispatch (`ShardOp::EvictExpired`) without changing the
+/// caller.
+#[allow(unused_variables)]
+pub fn evict_expired_keys_on_shards(
+    shard_handles: &[crate::shard::thread::ShardHandle],
+    engine: &PipelineEngine,
+    now: SystemTime,
+    ttl_multiplier: u32,
+) -> usize {
+    // TODO(Pass A4): dispatch `ShardOp::EvictExpired { ttl_multiplier, now }`
+    // to each shard, aggregate per-shard evict counts. See Pass A4 plan.
+    0
+}
+
+/// Phase 54-04 Pass A3: shard-aware counterpart to `evict_expired_table_rows`.
+/// Stub for the same reason as `evict_expired_keys_on_shards` — body lands
+/// in Pass A4.
+#[allow(unused_variables)]
+pub fn evict_expired_table_rows_on_shards(
+    shard_handles: &[crate::shard::thread::ShardHandle],
+    engine: &PipelineEngine,
+    tracker: &crate::state::eviction_tracker::EvictionTracker,
+    now: SystemTime,
+) -> usize {
+    // TODO(Pass A4): dispatch `ShardOp::EvictExpiredTableRows { now }` to
+    // each shard, aggregate per-shard evict counts + tracker updates.
+    0
+}
+
 /// Phase 25-02: Evict expired Table rows (not stream entries) based on per-Table
 /// TTL, and record each evicted (table, key) pair in the supplied
 /// [`EvictionTracker`] so the recommendation engine can detect

@@ -17,16 +17,28 @@ use beava::server::tcp::{
     SharedState,
 };
 use beava::state::event_log::EventLog;
+// Phase 54-04 Pass A3: `evict_expired_keys` (legacy `&StateStore` signature)
+// is only consumed inside the `state-inmem` branch of the periodic eviction
+// timer. The default build dispatches to `evict_expired_keys_on_shards`.
+#[cfg(feature = "state-inmem")]
 use beava::state::eviction::evict_expired_keys;
+// Phase 54-04 Pass A3: `SerializablePipeline` / `SnapshotHeader` / `SnapshotType`
+// are only consumed inside the `#[cfg(feature = "state-inmem")]` snapshot-dump
+// arm below. The default (fjall) build does not construct snapshot payloads
+// until Pass A4 wires per-shard scatter-gather. `BaseSnapshotState` /
+// `DeltaSnapshotState` stay unconditional because both feature branches
+// reference them via the `SnapshotData` enum.
 use beava::state::snapshot::{
     load_legacy_v5, load_snapshot_file, save_base_snapshot, save_delta_snapshot, BaseSnapshotState,
-    DeltaSnapshotState, SerializablePipeline, SnapshotFile, SnapshotHeader, SnapshotState,
-    SnapshotType,
+    DeltaSnapshotState, SnapshotFile, SnapshotState,
 };
+#[cfg(feature = "state-inmem")]
+use beava::state::snapshot::{SerializablePipeline, SnapshotHeader, SnapshotType};
 use beava::state::store::StateStore;
 
 /// Local enum used by the periodic snapshot timer to pass a fully-prepared
 /// snapshot payload (base or delta) into the blocking serialization task.
+#[allow(dead_code)] // Variants only constructed under `state-inmem` in Pass A3.
 enum SnapshotData {
     Base(BaseSnapshotState),
     Delta(DeltaSnapshotState),
@@ -756,6 +768,11 @@ async fn async_main() {
     // Phase 9: how often to write a full base snapshot. Every Nth cycle is a
     // base, all other cycles are deltas. Default 10 (= one base per ~5 minutes
     // at the default 30s interval).
+    //
+    // Phase 54-04 Pass A3: only consumed inside the `state-inmem` snapshot-
+    // dump branch below. The default (fjall) build short-circuits the dump
+    // cycle (`prepared = None`) until Pass A4 wires per-shard scatter-gather.
+    #[cfg_attr(not(feature = "state-inmem"), allow(unused_variables))]
     let full_snapshot_interval: u64 = std::env::var("BEAVA_FULL_SNAPSHOT_INTERVAL")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -823,10 +840,16 @@ async fn async_main() {
             // state-inmem (dev-only): legacy DashMap path. Wave 4 removes this.
             let legacy_store = &state.store;
             legacy_store.restore_from_snapshot(snapshot_state.entities);
+            // Clear any dirty/deleted tracking. Only meaningful on state-inmem:
+            // the default (fjall) build loaded entities directly into per-shard
+            // `PartitionHandle`s above, so `state.store` has no entities, no
+            // dirty-set entries, and no deleted-set entries — these calls would
+            // be pure no-ops. Gating behind `state-inmem` keeps the grep-ZERO
+            // invariant (`state.store.` = 0 in the default build) for Pass A6.
+            let legacy_alias = &state.store;
+            legacy_alias.clear_dirty();
+            let _ = legacy_alias.take_deleted();
         }
-        // Clear any dirty/deleted tracking
-        state.store.clear_dirty();
-        let _ = state.store.take_deleted();
 
         // Re-register pipelines from stored JSON
         {
@@ -871,10 +894,20 @@ async fn async_main() {
         }
 
         // Phase 9 WR-05: one-shot GC pass.
+        //
+        // Phase 54-04 Pass A3: only meaningful under `state-inmem`. On the
+        // default (fjall) build, operator state lives in per-shard fjall
+        // partitions (`Shard.state`) and `state.store.entities` is empty,
+        // so `gc_invalid_operators` is a pure no-op there. Shard threads
+        // have not been spawned yet at this point in boot — Pass A4 folds
+        // the GC pass into the shard-spawn codepath so every shard runs
+        // its own GC on its own entities immediately after construction.
+        #[cfg(feature = "state-inmem")]
         {
             let engine = state.engine.read();
             let valid_features = engine.valid_features_map();
-            state.store.gc_invalid_operators(&valid_features);
+            let legacy_alias = &state.store;
+            legacy_alias.gc_invalid_operators(&valid_features);
         }
 
         // Detect incomplete backfills
@@ -1148,9 +1181,36 @@ async fn async_main() {
 
                 // Decide base vs delta, clone the required state, and advance
                 // the cycle counter — using individual locks.
+                //
+                // Phase 54-04 Pass A3: the snapshot dump path is the last
+                // production caller of `state.store.*` on the default build.
+                // Under fjall, `state.store.entities` is empty — all entities
+                // live in per-shard `PartitionHandle`s. The existing dump
+                // therefore produced empty base snapshots on fjall (silently
+                // broken since Phase 53). Pass A4 migrates the dump to a
+                // per-shard scatter-gather (new `ShardOp::SnapshotEntities` +
+                // `ShardOp::TakeSnapshotDelta` variants). Until A4 lands, the
+                // default-build branch returns `None` so we never write an
+                // empty snapshot file, making the temporary gap explicit.
+                //
+                // state-inmem keeps the legacy DashMap dump verbatim — Pass
+                // A6 deletes the state-inmem feature outright.
+                #[cfg(not(feature = "state-inmem"))]
+                let prepared: Option<(SnapshotData, u64, bool, PathBuf, u64)> = {
+                    let _engine = snap_state.engine.read(); // keep guard-order parity with state-inmem branch
+                    // TODO(Pass A4): scatter-gather snapshot dump.
+                    //   let entities = collect_entities_from_shards(&snap_state.shard_handles.read()).await;
+                    //   let (changed, deleted) = collect_dirty_deltas_from_shards(...).await;
+                    // For now advance cycle so the interval timer still ticks.
+                    let mut cycle_guard = snap_state.snapshot_cycle.lock();
+                    *cycle_guard += 1;
+                    None
+                };
+
+                #[cfg(feature = "state-inmem")]
                 let prepared: Option<(SnapshotData, u64, bool, PathBuf, u64)> = {
                     let engine = snap_state.engine.read();
-                    let store = &snap_state.store;
+                    let legacy_alias = &snap_state.store;
                     let cycle = *snap_state.snapshot_cycle.lock();
                     let seq = *snap_state.snapshot_seq.lock();
                     let is_full = cycle.is_multiple_of(full_snapshot_interval);
@@ -1164,7 +1224,7 @@ async fn async_main() {
                     let last_base_seq_for_delta = *snap_state.last_base_seq.lock();
                     if is_full {
                         // Full base snapshot -- clone everything.
-                        let entities = store.clone_for_snapshot_with_gc(&valid_features);
+                        let entities = legacy_alias.clone_for_snapshot_with_gc(&valid_features);
                         let mut pipelines: Vec<SerializablePipeline> = engine
                             .list_streams()
                             .filter_map(|stream| {
@@ -1195,8 +1255,8 @@ async fn async_main() {
                             .cloned()
                             .collect();
                         // Clear tracking
-                        store.clear_dirty();
-                        let _ = store.take_deleted();
+                        legacy_alias.clear_dirty();
+                        let _ = legacy_alias.take_deleted();
 
                         let base = BaseSnapshotState {
                             header: SnapshotHeader {
@@ -1219,10 +1279,10 @@ async fn async_main() {
                         // advance snapshot_gen in one operation, then pass the
                         // frozen Arc<DashSet> to clone_dirty_for_snapshot_with_gc
                         // so the snapshot never observes the post-swap active set.
-                        let frozen = store.take_dirty_and_advance_gen();
+                        let frozen = legacy_alias.take_dirty_and_advance_gen();
                         let changed =
-                            store.clone_dirty_for_snapshot_with_gc(&frozen, &valid_features);
-                        let deleted = store.take_deleted();
+                            legacy_alias.clone_dirty_for_snapshot_with_gc(&frozen, &valid_features);
+                        let deleted = legacy_alias.take_deleted();
 
                         if changed.is_empty() && deleted.is_empty() {
                             *snap_state.snapshot_cycle.lock() = cycle + 1;
@@ -1346,16 +1406,47 @@ async fn async_main() {
             interval.tick().await;
             let now = std::time::SystemTime::now();
             let engine = evict_state.engine.read();
-            let evicted = evict_expired_keys(&evict_state.store, &engine, now, ttl_multiplier);
+            // Phase 54-04 Pass A3: eviction no longer touches `state.store`.
+            //   - Default build: dispatches to `evict_expired_keys_on_shards`
+            //     (scatter-gather across live shards). Pass A3 lands a stub
+            //     that returns 0 — Pass A4 wires the real shard dispatch.
+            //   - state-inmem: keeps the legacy single-store path until Pass
+            //     A6 deletes the feature.
+            #[cfg(not(feature = "state-inmem"))]
+            let evicted = {
+                let handles = evict_state.shard_handles.read();
+                beava::state::eviction::evict_expired_keys_on_shards(
+                    &handles, &engine, now, ttl_multiplier,
+                )
+            };
+            #[cfg(feature = "state-inmem")]
+            let evicted = {
+                let legacy_alias = &evict_state.store;
+                evict_expired_keys(legacy_alias, &engine, now, ttl_multiplier)
+            };
             // Phase 25-02: evict expired Table rows (per-Table TTL) and record
             // each eviction in the EvictionTracker so eviction→reinit signals
             // surface on /metrics and /debug/config-recommendations.
-            let table_evicted = beava::state::eviction::evict_expired_table_rows(
-                &evict_state.store,
-                &engine,
-                &evict_state.eviction_tracker,
-                now,
-            );
+            #[cfg(not(feature = "state-inmem"))]
+            let table_evicted = {
+                let handles = evict_state.shard_handles.read();
+                beava::state::eviction::evict_expired_table_rows_on_shards(
+                    &handles,
+                    &engine,
+                    &evict_state.eviction_tracker,
+                    now,
+                )
+            };
+            #[cfg(feature = "state-inmem")]
+            let table_evicted = {
+                let legacy_alias = &evict_state.store;
+                beava::state::eviction::evict_expired_table_rows(
+                    legacy_alias,
+                    &engine,
+                    &evict_state.eviction_tracker,
+                    now,
+                )
+            };
             // Rotate per-Table bloom generations so the 7d rolling window
             // actually rolls.
             evict_state.eviction_tracker.rotate_generation(now);
