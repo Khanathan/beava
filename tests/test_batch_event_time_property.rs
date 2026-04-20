@@ -3,6 +3,12 @@
 // &[(&Value, SystemTime)] with group-by-bucket internals. This test asserts that
 // the batch path produces bit-identical per-key features as the single-event path
 // for adversarial event_time distributions (D-04).
+//
+// Phase 54-04 Pass A5: gated under `state-inmem` — exercises
+// `engine.get_features(&store)` and `engine.push_batch_with_cascade_no_features(&store)`
+// which only exist on the in-memory build after this pass.
+#![cfg(feature = "state-inmem")]
+
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::state::store::StateStore;
 use proptest::prelude::*;

@@ -8,11 +8,16 @@
 //!   3. `PipelineEngine::push_batch_no_features`            (primary-only)
 //!   4. `PipelineEngine::push_batch_with_cascade_no_features` (cascade + fan-out aware)
 //!
+//! Phase 54-04 Pass A5: gated under `state-inmem` — exercises legacy
+//! StateStore + `engine.push*_no_features(&store)` + `engine.get_features(&store)`
+//! paths that only exist on the in-memory build after this pass.
+//!
 //! Every test here is a correctness gate — the performance win from these
 //! primitives comes from their *caller* (handle_push_batch) holding the
 //! AppState mutex once per batch. These tests ensure the primitives preserve
 //! single-event semantics exactly.
 
+#![cfg(feature = "state-inmem")]
 #![allow(dead_code, unused_imports)]
 
 use serde_json::json;

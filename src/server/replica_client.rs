@@ -783,7 +783,6 @@ mod tests {
         let engine = crate::engine::pipeline::PipelineEngine::new();
         let state = crate::server::tcp::make_concurrent_state(
             engine,
-            crate::state::store::StateStore::new(),
             None,
             std::path::PathBuf::from("/tmp/__replica_test.snap"),
             std::sync::Arc::new(crate::server::tcp::BackfillTracker::default()),

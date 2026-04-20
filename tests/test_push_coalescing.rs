@@ -6,12 +6,17 @@
 //!   - Cascade + fan-out equivalence under the coalescer
 //!   - Partial failure preserves per-seq error attribution
 //!
+//! Phase 54-04 Pass A5: gated under `state-inmem`. This file reads results
+//! through `engine.get_features(&store)`, which is only compiled in the
+//! in-memory build after this pass.
+//!
 //! These are correctness gates. The performance win from coalescing comes
 //! from the caller holding the AppState mutex once per batch; these tests
 //! assert the primitive preserves v1.2 single-event cascade + fan-out
 //! semantics byte-for-byte.
 
 #![allow(dead_code, unused_imports)]
+#![cfg(feature = "state-inmem")]
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

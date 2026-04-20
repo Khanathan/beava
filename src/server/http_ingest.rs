@@ -780,7 +780,6 @@ mod tests {
     fn test_state() -> crate::server::tcp::SharedState {
         make_concurrent_state_full(
             PipelineEngine::new(),
-            StateStore::new(),
             None,
             std::path::PathBuf::from("/tmp/beava-test-http-ingest"),
             Arc::new(BackfillTracker::default()),

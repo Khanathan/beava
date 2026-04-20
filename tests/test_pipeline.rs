@@ -2,6 +2,15 @@
 //!
 //! Exercises the full path: create PipelineEngine, register stream,
 //! create StateStore, push events, verify returned features.
+//!
+//! Phase 54-04 Pass A5: gated under `state-inmem`. `engine.get_features` +
+//! the legacy `store: StateStore` constructor arg / `engine.push(&store)`
+//! path only exist on the in-memory build after this pass. Category-B
+//! cases were `#[ignore]`'d in Wave 3 pending Wave-4 migration; this
+//! module-level gate keeps them from breaking the default `cargo check
+//! --tests` gate until Pass B migrates / deletes the remaining legacy
+//! calls.
+#![cfg(feature = "state-inmem")]
 
 use ahash::AHashSet;
 use beava::engine::expression::parse_expr;
@@ -825,7 +834,6 @@ fn make_state_with_event_log(log_dir: &std::path::Path) -> SharedState {
     let event_log = EventLog::new(log_dir.to_path_buf()).ok();
     make_concurrent_state(
         PipelineEngine::new(),
-        beava::state::store::StateStore::new(),
         event_log,
         log_dir.join("test.snapshot"),
         Arc::new(BackfillTracker::default()),

@@ -3348,6 +3348,129 @@ impl PipelineEngine {
         Ok(())
     }
 
+    /// Phase 54-04 Pass A5: shard-aware twin of `push_for_backfill`.
+    ///
+    /// Replays a backfilled event against this shard's operator state for
+    /// `stream_name`. Mirrors the legacy `push_for_backfill` body but
+    /// routes entity mutation through `StoreView::Sharded(&mut shard)`
+    /// instead of `StateStore::get_or_create_entity`.
+    ///
+    /// The caller (`run_backfill` → `ShardOp::PushForBackfill` dispatch)
+    /// has already routed this event to the shard that owns its entity
+    /// key, so this method does not hash keys — it just extracts the
+    /// key to drive `with_entity_mut`.
+    ///
+    /// Semantics preserved from `push_for_backfill`:
+    ///   * stream-level filter applied before anything else
+    ///   * keyless streams: no-op (`Ok(())`)
+    ///   * events without a valid (non-empty string) key: no-op
+    ///   * only operators whose feature name appears in `backfill_features`
+    ///     and which are NOT `FeatureDef::Derive` are pushed
+    ///   * each operator observes `event_time`, not wall clock
+    ///   * `last_event_at` is NOT updated (backfill ≠ live event)
+    ///   * per-operator `where` clauses honored
+    pub fn push_for_backfill_on_shard(
+        &self,
+        stream_name: &str,
+        event: &serde_json::Value,
+        shard: &mut crate::shard::Shard,
+        event_time: SystemTime,
+        backfill_features: &[String],
+    ) -> Result<(), BeavaError> {
+        let stream = self
+            .streams
+            .get(stream_name)
+            .ok_or_else(|| BeavaError::Protocol(format!("unknown stream: {}", stream_name)))?;
+
+        // Stream-level filter (identical to push_for_backfill).
+        if let Some(ref filter_expr) = stream.filter {
+            let ctx = EvalContext {
+                features: &ahash::AHashMap::new(),
+                event: Some(event),
+                enrichment: None,
+                event_time: Some(event_time),
+            };
+            let result = eval(filter_expr, &ctx);
+            match result {
+                FeatureValue::Int(0) | FeatureValue::Missing => return Ok(()),
+                FeatureValue::Float(0.0) => return Ok(()),
+                _ => {}
+            }
+        }
+
+        // Keyless stream: nothing to backfill.
+        if stream.key_field.is_none() {
+            return Ok(());
+        }
+
+        // Extract key (defensive: skip events without a valid key).
+        let key_field = stream.key_field.as_ref().unwrap();
+        let key = match event.get(key_field) {
+            Some(serde_json::Value::String(s)) if !s.is_empty() => s.clone(),
+            _ => return Ok(()),
+        };
+
+        // Snapshot the (feature_name, FeatureDef) pairs we actually need to
+        // push — clone to avoid borrowing `self.streams` across the
+        // `with_entity_mut` call (which needs `&mut shard`, and the inner
+        // closure takes ownership of the operator names).
+        let op_features: Vec<(String, FeatureDef)> = stream
+            .features
+            .iter()
+            .filter(|(name, def)| {
+                !matches!(def, FeatureDef::Derive { .. }) && backfill_features.contains(name)
+            })
+            .map(|(name, def)| (name.clone(), def.clone()))
+            .collect();
+
+        if op_features.is_empty() {
+            return Ok(());
+        }
+
+        let mut view = crate::shard::StoreView::Sharded(shard);
+        view.with_entity_mut(&key, |entity| {
+            entity.get_or_create_stream(stream_name);
+            let stream_state = entity.streams.get_mut(stream_name).unwrap();
+
+            // Ensure backfill operators exist.
+            for (name, def) in &op_features {
+                let exists = stream_state.operators.iter().any(|(n, _)| n == name);
+                if !exists {
+                    if let Some(op) = create_operator(def) {
+                        stream_state.operators.push((name.clone(), op));
+                    }
+                }
+            }
+
+            // Push each backfill operator with the event timestamp.
+            for (fname, def) in &op_features {
+                if let Some((_, op)) = stream_state
+                    .operators
+                    .iter_mut()
+                    .find(|(n, _)| n == fname)
+                {
+                    if let Some(where_expr) = get_where_expr(def) {
+                        let ctx = EvalContext {
+                            features: &ahash::AHashMap::new(),
+                            event: Some(event),
+                            enrichment: None,
+                            event_time: Some(event_time),
+                        };
+                        let result = eval(where_expr, &ctx);
+                        match result {
+                            FeatureValue::Int(0) | FeatureValue::Missing => continue,
+                            FeatureValue::Float(0.0) => continue,
+                            _ => {}
+                        }
+                    }
+                    let _ = op.push(event, None, event_time);
+                }
+            }
+        });
+
+        Ok(())
+    }
+
     /// Return the current topological order (for testing/debugging).
     pub fn get_topo_order(&self) -> &[String] {
         &self.topo_order
@@ -3358,6 +3481,14 @@ impl PipelineEngine {
     /// advance time and expire stale buckets), then evaluates derive expressions
     /// for any registered streams, then evaluates view features (cross-stream
     /// derives and cross-key lookups).
+    ///
+    /// Phase 54-04 Pass A5: gated off the default (fjall) build. Production
+    /// callers have migrated to `get_features_on_shard` during Waves 1-3 +
+    /// Passes A1-A4; this signature now only exists for the `state-inmem`
+    /// feature and the in-tree unit tests that still exercise the legacy
+    /// StateStore-based view/derive evaluation path. Pass A6 / Pass C deletes
+    /// StateStore outright and this method with it.
+    #[cfg(any(test, feature = "state-inmem"))]
     pub fn get_features(&self, key: &str, store: &StateStore, now: SystemTime) -> FeatureMap {
         // Phase 24-02: merged view = live stream ops + flattened Live
         // table_rows (as `TableName.field`) + static_features overlay.

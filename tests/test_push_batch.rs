@@ -10,7 +10,12 @@
 //!   - Backward compat: OP_PUSH_ASYNC still works after PushBatch addition
 //!   - Seq continuity between batch and async frames
 //!   - Decode micro-benchmark (H-6 / D-18)
+//!
+//! Phase 54-04 Pass A5: gated under `state-inmem` — reads feature values
+//! through `engine.get_features(&state.store)`, only compiled on the
+//! in-memory build after this pass.
 
+#![cfg(feature = "state-inmem")]
 #![allow(dead_code, unused_imports)]
 
 use std::sync::Arc;

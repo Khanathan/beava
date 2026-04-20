@@ -5,6 +5,12 @@
 //! `replica_ingest`. Without this guarantee, the fork-replay catchup
 //! optimization (see benchmark/fork-replay) silently changes aggregate
 //! semantics and downstream forks see different values than upstream.
+//!
+//! Phase 54-04 Pass A5: gated under `state-inmem` — reads feature values
+//! through `engine.get_features(&store)`, only compiled on the in-memory
+//! build after this pass.
+
+#![cfg(feature = "state-inmem")]
 
 use std::sync::Arc;
 use std::time::Duration;

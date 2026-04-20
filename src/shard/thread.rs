@@ -200,6 +200,23 @@ pub enum ShardOp {
     EvictExpiredTableRows {
         now: std::time::SystemTime,
     },
+    /// Phase 54-04 Pass A5: on-shard variant of `push_for_backfill`.
+    /// Replays a single backfilled event onto this shard's operator state
+    /// for `stream_name`. Mirrors the legacy StateStore-backed
+    /// `PipelineEngine::push_for_backfill` body but operates through
+    /// `StoreView::Sharded(&mut shard)`. Caller (run_backfill) has
+    /// already extracted the entity key and routed this op to the
+    /// owning shard.
+    ///
+    /// Does NOT evaluate derives (they auto-resolve on read) and does
+    /// NOT touch `last_event_at` (backfill is not a "live" event).
+    /// Response is `SetOk` on success.
+    PushForBackfill {
+        stream_name: String,
+        event: serde_json::Value,
+        event_time: std::time::SystemTime,
+        feature_names: Vec<String>,
+    },
 }
 
 /// Result sent from shard back to listener via response_tx.
@@ -764,6 +781,35 @@ fn shard_event_loop(
                     );
                     if let Some(tx) = event.response_tx {
                         let _ = tx.send(ShardResult::EvictedCount(evicted));
+                    }
+                }
+                ShardOp::PushForBackfill {
+                    stream_name,
+                    event: backfill_event,
+                    event_time,
+                    feature_names,
+                } => {
+                    // Phase 54-04 Pass A5: on-shard backfill replay. The
+                    // engine method walks stream definitions + operator
+                    // state through `StoreView::Sharded`, so the fjall
+                    // partition round-trips through postcard in default
+                    // builds and the in-mem AHashMap in state-inmem.
+                    let engine = state.engine.read();
+                    let result = engine.push_for_backfill_on_shard(
+                        &stream_name,
+                        &backfill_event,
+                        &mut shard,
+                        event_time,
+                        &feature_names,
+                    );
+                    if let Some(tx) = event.response_tx {
+                        let r = match result {
+                            Ok(()) => ShardResult::SetOk,
+                            Err(e) => ShardResult::Err(
+                                ShardDispatchError::ProcessingError(format!("{:?}", e)),
+                            ),
+                        };
+                        let _ = tx.send(r);
                     }
                 }
             }
@@ -1628,10 +1674,8 @@ mod tests {
     fn make_test_state(n_shards: u16) -> std::sync::Arc<crate::server::tcp::ConcurrentAppState> {
         use crate::engine::pipeline::PipelineEngine;
         use crate::server::tcp::{make_concurrent_state_full, BackfillTracker};
-        use crate::state::store::StateStore;
         make_concurrent_state_full(
             PipelineEngine::new(),
-            StateStore::new(),
             None,
             std::path::PathBuf::from("/tmp/beava-test-thread.snapshot"),
             std::sync::Arc::new(BackfillTracker::default()),

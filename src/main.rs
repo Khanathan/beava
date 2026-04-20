@@ -754,7 +754,6 @@ async fn async_main() {
     // Phase 49-05: pass n_shards so ShardedStateStoreV1 is sized at startup.
     let state: SharedState = make_concurrent_state_full(
         PipelineEngine::new(),
-        StateStore::new(),
         event_log,
         snapshot_path.clone(),
         Arc::new(BackfillTracker::default()),
@@ -2000,7 +1999,6 @@ mod seed_pipelines_tests {
         std::mem::forget(tmp);
         make_concurrent_state(
             PipelineEngine::new(),
-            StateStore::new(),
             None,
             snapshot_path,
             Arc::new(BackfillTracker::default()),

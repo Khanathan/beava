@@ -15,7 +15,6 @@ use std::time::Duration;
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};
 use beava::server::tcp::{make_concurrent_state_full, BackfillTracker, SharedState};
-use beava::state::store::StateStore;
 
 const TEST_ADMIN: &str = "test-admin-50-5-01";
 
@@ -31,7 +30,6 @@ const TEST_ADMIN: &str = "test-admin-50-5-01";
 async fn make_n_shard_server(n_shards: u16) -> (std::net::SocketAddr, SharedState) {
     let state = make_concurrent_state_full(
         PipelineEngine::new(),
-        StateStore::new(),
         None,
         std::path::PathBuf::from(format!("/tmp/beava-test-50501-n{}.snapshot", n_shards)),
         Arc::new(BackfillTracker::default()),

@@ -380,9 +380,13 @@ pub type SharedState = Arc<ConcurrentAppState>;
 
 /// Helper: create a `SharedState` with the given initial values.
 /// Replaces the old `Arc::new(Mutex::new(AppState { ... }))` pattern.
+///
+/// Phase 54-04 Pass A5: the legacy `store: StateStore` parameter has been
+/// dropped. Call sites stop threading a StateStore through boot/test
+/// plumbing; the `AppState.store` field is still constructed internally
+/// (as `StateStore::new()`) because Pass A6 deletes that field outright.
 pub fn make_concurrent_state(
     engine: PipelineEngine,
-    store: StateStore,
     event_log: Option<EventLog>,
     snapshot_path: std::path::PathBuf,
     backfill_tracker: Arc<BackfillTracker>,
@@ -391,7 +395,6 @@ pub fn make_concurrent_state(
 ) -> SharedState {
     make_concurrent_state_full(
         engine,
-        store,
         event_log,
         snapshot_path,
         backfill_tracker,
@@ -425,7 +428,6 @@ pub fn make_concurrent_state_default_store(
 ) -> SharedState {
     make_concurrent_state_full(
         engine,
-        StateStore::new(),
         event_log,
         snapshot_path,
         backfill_tracker,
@@ -453,7 +455,6 @@ pub fn make_concurrent_state_default(
 ) -> SharedState {
     make_concurrent_state(
         engine,
-        StateStore::new(),
         event_log,
         snapshot_path,
         backfill_tracker,
@@ -471,7 +472,6 @@ pub fn make_concurrent_state_default(
 #[allow(clippy::too_many_arguments)]
 pub fn make_concurrent_state_full(
     engine: PipelineEngine,
-    store: StateStore,
     event_log: Option<EventLog>,
     snapshot_path: std::path::PathBuf,
     backfill_tracker: Arc<BackfillTracker>,
@@ -481,6 +481,13 @@ pub fn make_concurrent_state_full(
     public_mode: bool,
     n_shards: u16,
 ) -> SharedState {
+    // Phase 54-04 Pass A5: the legacy `store: StateStore` parameter has been
+    // dropped from this constructor. The `AppState.store` field is still
+    // required (Pass A6 deletes the field itself), so we initialize it
+    // internally with a fresh `StateStore::new()`. Production ingest has
+    // been migrated to the shard path in Waves 1-3 + A1-A4, so nothing
+    // actually writes to this field anymore.
+    let store = StateStore::new();
     let signals = crate::server::signals::SignalRegistry::new_default().into_shared();
     let subscriber_registry = Arc::new(crate::server::replica::SubscriberRegistry::new(
         signals.clone(),
@@ -3099,11 +3106,16 @@ pub async fn run_backfill(
             .collect()
     };
     for (chunk_idx, chunk) in entries.chunks(64).enumerate() {
-        // Collect per-entry dirty keys inside the engine-lock scope, then
-        // release the lock before awaiting shard acks (clippy::await_holding_lock).
-        let dirty_keys: Vec<String> = {
+        // Phase 54-04 Pass A5: parse + key-extract under the engine read lock,
+        // then release it before awaiting any shard dispatch. Each surviving
+        // entry produces a `(shard_idx, key, event_time, event)` tuple routed
+        // to its owning shard via `ShardOp::PushForBackfill`.
+        let dispatches: Vec<(usize, String, SystemTime, serde_json::Value)> = {
             let engine = state.engine.read();
-            let mut acc: Vec<String> = Vec::new();
+            let key_field: Option<String> = engine
+                .get_stream(&stream_name)
+                .and_then(|s| s.key_field.clone());
+            let mut acc: Vec<(usize, String, SystemTime, serde_json::Value)> = Vec::new();
             for entry in chunk {
                 // Plan 11-06: dispatch on log payload format byte.
                 // LOG_FMT_BINARY → decode binary wire format.
@@ -3130,40 +3142,52 @@ pub async fn run_backfill(
                 // bit-identical feature values.
                 let event_time =
                     crate::engine::event_time::parse_event_time(&event, entry.timestamp);
-                // NOTE (Phase 54-04 Pass A5): `push_for_backfill` still takes
-                // `&state.store`. Migration of the backfill replay path is
-                // deferred to a later pass. Until then, the backfill writes
-                // land on the legacy DashMap, not on the shard.
-                let _ = engine.push_for_backfill(
-                    &stream_name,
-                    &event,
-                    &state.store,
-                    event_time, // was: entry.timestamp (D-15 fix)
-                    &feature_names,
-                );
-                // Collect entity key for the per-chunk mark_dirty sweep
-                // (dispatched after the engine lock drops).
-                if let Some(stream_def) = engine.get_stream(&stream_name) {
-                    if let Some(ref kf) = stream_def.key_field {
-                        if let Some(serde_json::Value::String(key_val)) = event.get(kf.as_str()) {
-                            if !key_val.is_empty() {
-                                acc.push(key_val.clone());
-                            }
-                        }
-                    }
+                // Extract the entity key so we can route to the owner shard.
+                // Skip keyless / bad-key events (matches `push_for_backfill`'s
+                // defensive return-Ok arm — these entries contribute no state).
+                let Some(ref kf) = key_field else { continue };
+                let Some(serde_json::Value::String(key_val)) = event.get(kf.as_str()) else {
+                    continue;
+                };
+                if key_val.is_empty() {
+                    continue;
                 }
+                let key_owned = key_val.clone();
+                let shard_idx =
+                    crate::server::http::shard_index_for_key(&key_owned, shard_count);
+                acc.push((shard_idx, key_owned, event_time, event));
             }
             acc
         }; // Engine read lock released here — safe to await below.
 
-        // Phase 54-04 Pass A1: mark_dirty routed to the owner shard per-key.
-        // The ShardOp::MarkDirty arm was already available; this just replaces
-        // the legacy DashMap mark-dirty call on the store.
-        for key_val in dirty_keys {
-            let shard_idx = crate::server::http::shard_index_for_key(&key_val, shard_count);
+        // Phase 54-04 Pass A5: replay each event on its owning shard via
+        // `ShardOp::PushForBackfill`. The shard executes
+        // `engine.push_for_backfill_on_shard` (mirrors the legacy body but
+        // writes through `StoreView::Sharded`). Failures are logged but
+        // non-fatal — matches the `let _ = engine.push_for_backfill(...)`
+        // semantics the legacy code had.
+        for (shard_idx, key_val, event_time, event) in dispatches {
             let Some(handle) = handles_snapshot.get(shard_idx) else {
                 continue;
             };
+            if let Err(e) = crate::shard::thread::send_op_await_setok(
+                handle,
+                crate::shard::thread::ShardOp::PushForBackfill {
+                    stream_name: stream_name.clone(),
+                    event,
+                    event_time,
+                    feature_names: feature_names.clone(),
+                },
+            )
+            .await
+            {
+                eprintln!(
+                    "[run_backfill] push_for_backfill dispatch failed (shard {}): {}",
+                    shard_idx, e
+                );
+                continue;
+            }
+            // Phase 54-04 Pass A1: mark_dirty routed to the owner shard per-key.
             let _ = crate::shard::thread::send_op_await_setok(
                 handle,
                 crate::shard::thread::ShardOp::MarkDirty { key: key_val },
@@ -3819,7 +3843,6 @@ mod tests {
     fn make_shared_state() -> SharedState {
         make_concurrent_state(
             PipelineEngine::new(),
-            StateStore::new(),
             None,
             std::path::PathBuf::from("test.snapshot"),
             Arc::new(BackfillTracker::default()),

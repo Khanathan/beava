@@ -8,6 +8,10 @@
 //! Test 2: Fast-path: when upstream_n == downstream_n AND hint > 0, the wire
 //!   shard_hint is used directly and the rehash skip counter increments.
 //!
+//! Phase 54-04 Pass A5: gated under `state-inmem` — reads feature values
+//! through `engine.get_features(&state.store)`, only compiled on the
+//! in-memory build after this pass.
+//!
 //! Test 3: Compile-time grep — no `--reshard-from` flag in src/.
 //!
 //! Test 4: Fork parity: 1000 events, 20 keys, N=1 upstream / N=4 downstream
@@ -18,6 +22,8 @@
 //!
 //! Test 6: Fast-path observability: N=8 upstream → N=8 downstream —
 //!   `rehash_skip_count()` increments when fast-path is used.
+
+#![cfg(feature = "state-inmem")]
 
 use std::sync::Arc;
 use std::time::Duration;

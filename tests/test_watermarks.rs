@@ -35,7 +35,6 @@ use beava::engine::pipeline::PipelineEngine;
 use beava::server::http::build_router;
 use beava::server::protocol::{self, OP_PUSH, OP_REGISTER, STATUS_OK, TYPE_I64, TYPE_STR};
 use beava::server::tcp::{make_concurrent_state, BackfillTracker, SharedState};
-use beava::state::store::StateStore;
 
 // ---------------------------------------------------------------------------
 // Parser tests (pure unit, no server)
@@ -83,7 +82,6 @@ fn event_time_absent_uses_wall_clock() {
 async fn start_test_server() -> (u16, SharedState) {
     let state: SharedState = make_concurrent_state(
         PipelineEngine::new(),
-        StateStore::new(),
         None,
         std::path::PathBuf::from("test_watermarks.snapshot"),
         Arc::new(BackfillTracker::default()),

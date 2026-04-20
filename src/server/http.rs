@@ -1841,7 +1841,6 @@ mod tests {
     fn test_state() -> SharedState {
         make_concurrent_state(
             PipelineEngine::new(),
-            StateStore::new(),
             None,
             std::path::PathBuf::from("/tmp/beava-test-snapshot"),
             Arc::new(BackfillTracker::default()),
@@ -1943,7 +1942,6 @@ mod tests {
 
         let state = make_concurrent_state(
             PipelineEngine::new(),
-            StateStore::new(),
             None,
             std::path::PathBuf::from("/tmp/beava-test-snapshot"),
             Arc::new(BackfillTracker::default()),
