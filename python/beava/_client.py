@@ -343,6 +343,126 @@ class BeavaClient:
             self._drain_buf.extend(buf[needed:])
         return body[0], body[1:]
 
+    # ------------------------------------------------------------------
+    # Phase 55-02 Task 3 (TPC-SOURCE-01): @bv.source_table wire methods.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _write_varint_string(buf: bytearray, s: str) -> None:
+        data = s.encode("utf-8")
+        n = len(data)
+        while True:
+            byte = n & 0x7F
+            n >>= 7
+            if n == 0:
+                buf.append(byte)
+                break
+            buf.append(byte | 0x80)
+        buf.extend(data)
+
+    def _source_table_table_name(self, table) -> str:
+        """Accept either a SourceTable instance or a raw string."""
+        return getattr(table, "_name", None) or str(table)
+
+    def upsert_table_row(
+        self,
+        table,
+        key: str,
+        fields: dict,
+        source_lsn: int,
+    ) -> int:
+        """Upsert a row into a ``@bv.source_table``. Returns the echoed
+        ``source_lsn`` (u64, opaque). Uses OP_UPSERT_TABLE_ROW (0x14).
+        """
+        import json
+
+        name = self._source_table_table_name(table)
+        fields_json = json.dumps(fields, separators=(",", ":")).encode("utf-8")
+        buf = bytearray()
+        self._write_varint_string(buf, name)
+        self._write_varint_string(buf, key)
+        buf.extend(int(source_lsn).to_bytes(8, "little", signed=False))
+        buf.extend(len(fields_json).to_bytes(4, "little", signed=False))
+        buf.extend(fields_json)
+        status, payload = self.send_command(0x14, bytes(buf))
+        if status != 0x00:
+            raise ProtocolError(f"upsert_table_row failed: {payload!r}")
+        if len(payload) < 8:
+            raise ProtocolError("upsert_table_row: ack body missing source_lsn")
+        return int.from_bytes(payload[:8], "little", signed=False)
+
+    def delete_table_row(self, table, key: str, source_lsn: int) -> int:
+        """Delete a row from a ``@bv.source_table`` (hard-delete + retraction
+        marker). Returns the echoed ``source_lsn``. OP_DELETE_TABLE_ROW (0x15).
+        """
+        name = self._source_table_table_name(table)
+        buf = bytearray()
+        self._write_varint_string(buf, name)
+        self._write_varint_string(buf, key)
+        buf.extend(int(source_lsn).to_bytes(8, "little", signed=False))
+        status, payload = self.send_command(0x15, bytes(buf))
+        if status != 0x00:
+            raise ProtocolError(f"delete_table_row failed: {payload!r}")
+        return int.from_bytes(payload[:8], "little", signed=False)
+
+    def upsert_table_batch(
+        self,
+        table,
+        rows,
+    ) -> list[int]:
+        """Batch upsert. ``rows`` is a sequence of
+        ``(key: str, fields: dict, source_lsn: int)`` tuples. All-or-nothing
+        (D-B4): the first validation failure aborts the whole batch. Returns
+        the echoed ``source_lsns`` in INPUT order. OP_UPSERT_TABLE_BATCH (0x16).
+        """
+        import json
+
+        name = self._source_table_table_name(table)
+        buf = bytearray()
+        self._write_varint_string(buf, name)
+        rows_list = list(rows)
+        buf.extend(len(rows_list).to_bytes(4, "little", signed=False))
+        for (k, fields, lsn) in rows_list:
+            self._write_varint_string(buf, k)
+            buf.extend(int(lsn).to_bytes(8, "little", signed=False))
+            body = json.dumps(fields, separators=(",", ":")).encode("utf-8")
+            buf.extend(len(body).to_bytes(4, "little", signed=False))
+            buf.extend(body)
+        status, payload = self.send_command(0x16, bytes(buf))
+        if status != 0x00:
+            raise ProtocolError(f"upsert_table_batch failed: {payload!r}")
+        if len(payload) < 4:
+            raise ProtocolError("upsert_table_batch: ack missing count header")
+        count = int.from_bytes(payload[:4], "little", signed=False)
+        out = []
+        for i in range(count):
+            start = 4 + 8 * i
+            out.append(int.from_bytes(payload[start : start + 8], "little", signed=False))
+        return out
+
+    def delete_table_batch(self, table, rows) -> list[int]:
+        """Batch delete. ``rows`` is ``(key: str, source_lsn: int)`` tuples.
+        All-or-nothing. Returns echoed source_lsns in INPUT order.
+        OP_DELETE_TABLE_BATCH (0x17).
+        """
+        name = self._source_table_table_name(table)
+        buf = bytearray()
+        self._write_varint_string(buf, name)
+        rows_list = list(rows)
+        buf.extend(len(rows_list).to_bytes(4, "little", signed=False))
+        for (k, lsn) in rows_list:
+            self._write_varint_string(buf, k)
+            buf.extend(int(lsn).to_bytes(8, "little", signed=False))
+        status, payload = self.send_command(0x17, bytes(buf))
+        if status != 0x00:
+            raise ProtocolError(f"delete_table_batch failed: {payload!r}")
+        count = int.from_bytes(payload[:4], "little", signed=False)
+        out = []
+        for i in range(count):
+            start = 4 + 8 * i
+            out.append(int.from_bytes(payload[start : start + 8], "little", signed=False))
+        return out
+
     def close(self) -> None:
         """Close the TCP connection (if open)."""
         if self._sock is not None:

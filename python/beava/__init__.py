@@ -45,7 +45,15 @@ from beava._protocol import (
 from beava._types_core import Optional, Field
 from beava._col import col
 from beava._stream import stream, Stream, StreamSource, StreamDerivation
-from beava._table import table, Table, TableSource, TableDerivation
+from beava._table import (
+    table,
+    Table,
+    TableSource,
+    TableDerivation,
+    # Phase 55-02 Task 3 (TPC-SOURCE-01)
+    source_table,
+    SourceTable,
+)
 from beava._validate_v0 import validate, ValidationError
 
 # Plan 21-03: bv.union stub.
@@ -114,6 +122,9 @@ __all__ = [
     "StreamDerivation",
     "TableSource",
     "TableDerivation",
+    # Phase 55-02 Task 3 (TPC-SOURCE-01)
+    "source_table",
+    "SourceTable",
     "validate",
     "ValidationError",
     # Union stub (Plan 21-03)

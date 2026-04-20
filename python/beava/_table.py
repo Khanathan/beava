@@ -430,4 +430,115 @@ def table(
     return _wrap
 
 
-__all__ = ["table", "Table", "TableSource", "TableDerivation"]
+# ---------------------------------------------------------------------------
+# Phase 55-02 Task 3 (TPC-SOURCE-01): @bv.source_table decorator + SourceTable
+# ---------------------------------------------------------------------------
+
+
+class SourceTable(TableSource):
+    """A CDC-source Table whose writes arrive via UPSERT_TABLE_ROW /
+    DELETE_TABLE_ROW opcodes (not PUSH). Echoes ``source_lsn`` on ack for
+    resumable replication.
+
+    Phase 55 source tables are **passive enrichment targets**: they cannot
+    ``group_by``/aggregate — cascades do NOT fire on source-table writes
+    (D-B6). Phase 57 consumes the per-DELETE PendingRetraction marker to
+    drive downstream retraction.
+    """
+
+    _beava_kind: str = "source_table"
+
+    def group_by(self, *keys: str) -> Any:
+        raise RuntimeError(
+            f"Cannot group_by a @bv.source_table ({self._name!r}); "
+            f"source tables are passive enrichment targets in Phase 55. "
+            f"Aggregate a @bv.stream source instead."
+        )
+
+    def filter(self, *_args, **_kwargs) -> Any:
+        raise RuntimeError(
+            f"Cannot filter a @bv.source_table ({self._name!r}); "
+            f"source tables are passive enrichment targets."
+        )
+
+    def __repr__(self) -> str:
+        return f"SourceTable({self._name!r}, key={list(self._key)!r})"
+
+
+def source_table(
+    cls: type | None = None,
+    *,
+    key: str | list[str] | None = None,
+    entity_ttl: str | None = None,
+):
+    """Declare a CDC source table (Phase 55-02, TPC-SOURCE-01). Example::
+
+        @bv.source_table(key="country_code")
+        class Countries:
+            country_code: str
+            name: str
+            currency: str
+
+    Writes land via ``client.upsert_table_row(Countries, "US", {...},
+    source_lsn=42)`` — not via ``push()``. DELETEs are hard-delete +
+    PendingRetraction marker (Phase 57 consumer).
+
+    Args:
+        key: required column name(s) that identifies the row. ``str`` for
+            single-key, ``list[str]`` for composite.
+        entity_ttl: optional row-level TTL (e.g. ``"30d"``).
+
+    Raises:
+        TypeError: if ``key`` is omitted (``"requires key"``).
+    """
+    if key is None:
+        raise TypeError("@bv.source_table requires key=... (str or list[str])")
+
+    if isinstance(key, str):
+        key_list = [key]
+    elif isinstance(key, (list, tuple)) and all(isinstance(k, str) for k in key):
+        key_list = list(key)
+    else:
+        raise TypeError(
+            f"@bv.source_table key must be str or list[str], got {type(key).__name__}"
+        )
+    if not key_list:
+        raise TypeError("@bv.source_table key must not be empty")
+
+    if entity_ttl is not None:
+        _validate_duration_str(entity_ttl, field="entity_ttl")
+
+    def _wrap(target: Any) -> SourceTable:
+        if not isinstance(target, type):
+            raise TypeError(
+                f"@bv.source_table must be applied to a class, got "
+                f"{type(target).__name__}"
+            )
+        schema = extract_schema(target)
+        for k in key_list:
+            if k not in schema:
+                raise TypeError(
+                    schema_mismatch_error(k, schema, f"{target.__name__} schema")
+                )
+        return SourceTable(
+            name=target.__name__,
+            schema=schema,
+            key=key_list,
+            mode="append",
+            ttl=entity_ttl,
+        )
+
+    if cls is not None:
+        return _wrap(cls)
+    return _wrap
+
+
+__all__ = [
+    "table",
+    "Table",
+    "TableSource",
+    "TableDerivation",
+    # Phase 55-02 Task 3
+    "SourceTable",
+    "source_table",
+]

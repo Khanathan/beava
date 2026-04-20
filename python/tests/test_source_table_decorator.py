@@ -30,7 +30,6 @@ Run (post-Wave-2):
 import pytest
 
 
-@pytest.mark.skip(reason="55-W2 — source_table decorator lands in Wave 2 (plan 55-02 Task 3)")
 def test_source_table_basic():
     """Decorator returns a SourceTable class with _beava_kind == 'source_table'."""
     import beava as bv
@@ -45,7 +44,6 @@ def test_source_table_basic():
     assert Countries._key == ["country_code"]
 
 
-@pytest.mark.skip(reason="55-W2 — source_table decorator lands in Wave 2")
 def test_source_table_rejects_group_by():
     """D-B6: source tables are passive enrichment — .group_by() rejected."""
     import beava as bv
@@ -58,7 +56,6 @@ def test_source_table_rejects_group_by():
         Countries.group_by("country_code")
 
 
-@pytest.mark.skip(reason="55-W2 — source_table decorator lands in Wave 2")
 def test_source_table_requires_key():
     """key= is required at decoration time — TypeError on omission."""
     import beava as bv
