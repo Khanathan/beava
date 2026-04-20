@@ -177,6 +177,29 @@ pub enum ShardOp {
     /// `/public/stats` to aggregate a fleet-wide key count via
     /// scatter-gather without touching `StateStore.entities`.
     EntityCount,
+    /// Phase 54-04 Pass A4: on-shard variant of `evict_expired_keys`.
+    /// The shard walks its own entities, removes stream entries whose
+    /// last_event_at exceeds the per-stream or fallback global TTL,
+    /// and removes entities left completely empty. `ttl_multiplier`
+    /// scales the engine's `max_window_duration` for the global
+    /// fallback TTL (matches the legacy `evict_expired_stream_entries`
+    /// signature). `now` is the wall-clock fallback for the eviction
+    /// clock; the shard consults the engine's per-stream watermark
+    /// observed-max first (CORR-07). Response is `EvictedCount`.
+    EvictExpired {
+        now: std::time::SystemTime,
+        ttl_multiplier: u32,
+    },
+    /// Phase 54-04 Pass A4: on-shard variant of
+    /// `evict_expired_table_rows`. The shard walks its own entities'
+    /// `table_rows`, removes Live rows whose `updated_at` is older
+    /// than the per-Table `entity_ttl`, and records each eviction in
+    /// the shared `state.eviction_tracker` so the eviction→reinit
+    /// signal keeps surfacing on /metrics. Response is
+    /// `EvictedCount`.
+    EvictExpiredTableRows {
+        now: std::time::SystemTime,
+    },
 }
 
 /// Result sent from shard back to listener via response_tx.
@@ -207,6 +230,10 @@ pub enum ShardResult {
     /// of entity keys held by this shard (O(1) estimate on fjall,
     /// exact on state-inmem). Matches the `keys_owned` gauge semantics.
     EntityCountOk(usize),
+    /// Phase 54-04 Pass A4: EvictExpired / EvictExpiredTableRows ack —
+    /// number of items (stream entries or Table rows) evicted on the
+    /// responding shard.
+    EvictedCount(usize),
     /// Shard failed to process the event.
     Err(ShardDispatchError),
 }
@@ -700,6 +727,43 @@ fn shard_event_loop(
                     let count = shard.state.len();
                     if let Some(tx) = event.response_tx {
                         let _ = tx.send(ShardResult::EntityCountOk(count));
+                    }
+                }
+                ShardOp::EvictExpired { now, ttl_multiplier } => {
+                    // Phase 54-04 Pass A4: on-shard scatter of
+                    // `evict_expired_stream_entries`. Mirrors the
+                    // legacy StateStore-backed body in
+                    // `src/state/eviction.rs` but walks THIS shard's
+                    // entities via `iter_entities()` and mutates them
+                    // via `StoreView::Sharded`.
+                    let engine = state.engine.read();
+                    let evicted = evict_expired_stream_entries_on_shard(
+                        &mut shard,
+                        &engine,
+                        now,
+                        ttl_multiplier,
+                    );
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::EvictedCount(evicted));
+                    }
+                }
+                ShardOp::EvictExpiredTableRows { now } => {
+                    // Phase 54-04 Pass A4: on-shard scatter of
+                    // `evict_expired_table_rows`. Records each eviction
+                    // in `state.eviction_tracker` so the eviction→reinit
+                    // counter keeps surfacing on /metrics. The tracker
+                    // is already an `Arc<EvictionTracker>` (multi-reader
+                    // via RwLock<AHashMap>), safe to use from any
+                    // shard thread.
+                    let engine = state.engine.read();
+                    let evicted = evict_expired_table_rows_on_shard(
+                        &mut shard,
+                        &engine,
+                        &state.eviction_tracker,
+                        now,
+                    );
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::EvictedCount(evicted));
                     }
                 }
             }
@@ -1274,6 +1338,273 @@ pub async fn entity_count_via_shard(
             "shard oneshot channel closed".to_string(),
         )),
     }
+}
+
+/// Phase 54-04 Pass A4: dispatch `ShardOp::EvictExpired` and await the
+/// per-shard eviction count. Used by the periodic eviction timer in
+/// main.rs to scatter-gather TTL eviction across every live shard.
+pub async fn evict_expired_via_shard(
+    handle: &ShardHandle,
+    now: std::time::SystemTime,
+    ttl_multiplier: u32,
+) -> Result<usize, crate::error::BeavaError> {
+    use crate::error::BeavaError;
+
+    if handle.is_down.load(Ordering::Relaxed) {
+        crate::shard::metrics::record_shard_down(handle.shard_index);
+        return Err(BeavaError::Protocol(format!(
+            "shard {} is down (quarantined after panic)",
+            handle.shard_index
+        )));
+    }
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let evt = ShardEvent {
+        payload: bytes::Bytes::new(),
+        stream_name: std::sync::Arc::from(""),
+        shard_hint: 0,
+        response_tx: Some(tx),
+        op: ShardOp::EvictExpired { now, ttl_multiplier },
+    };
+
+    match handle.inbox_tx.try_send(evt) {
+        Ok(()) => {}
+        Err(crossbeam_channel::TrySendError::Full(_)) => {
+            crate::shard::metrics::record_inbox_full(handle.shard_index);
+            return Err(BeavaError::Protocol(
+                "shard inbox full — backpressure".to_string(),
+            ));
+        }
+        Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+            return Err(BeavaError::Protocol(
+                "shard inbox disconnected".to_string(),
+            ));
+        }
+    }
+
+    match rx.await {
+        Ok(ShardResult::EvictedCount(n)) => Ok(n),
+        Ok(ShardResult::Err(e)) => {
+            Err(BeavaError::Protocol(format!("shard dispatch: {:?}", e)))
+        }
+        Ok(_) => Err(BeavaError::Protocol(
+            "unexpected ShardResult variant for EvictExpired".to_string(),
+        )),
+        Err(_) => Err(BeavaError::Protocol(
+            "shard oneshot channel closed".to_string(),
+        )),
+    }
+}
+
+/// Phase 54-04 Pass A4: dispatch `ShardOp::EvictExpiredTableRows` and
+/// await the per-shard Table-row eviction count. Sibling of
+/// `evict_expired_via_shard` for the Table-row TTL path.
+pub async fn evict_expired_table_rows_via_shard(
+    handle: &ShardHandle,
+    now: std::time::SystemTime,
+) -> Result<usize, crate::error::BeavaError> {
+    use crate::error::BeavaError;
+
+    if handle.is_down.load(Ordering::Relaxed) {
+        crate::shard::metrics::record_shard_down(handle.shard_index);
+        return Err(BeavaError::Protocol(format!(
+            "shard {} is down (quarantined after panic)",
+            handle.shard_index
+        )));
+    }
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let evt = ShardEvent {
+        payload: bytes::Bytes::new(),
+        stream_name: std::sync::Arc::from(""),
+        shard_hint: 0,
+        response_tx: Some(tx),
+        op: ShardOp::EvictExpiredTableRows { now },
+    };
+
+    match handle.inbox_tx.try_send(evt) {
+        Ok(()) => {}
+        Err(crossbeam_channel::TrySendError::Full(_)) => {
+            crate::shard::metrics::record_inbox_full(handle.shard_index);
+            return Err(BeavaError::Protocol(
+                "shard inbox full — backpressure".to_string(),
+            ));
+        }
+        Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+            return Err(BeavaError::Protocol(
+                "shard inbox disconnected".to_string(),
+            ));
+        }
+    }
+
+    match rx.await {
+        Ok(ShardResult::EvictedCount(n)) => Ok(n),
+        Ok(ShardResult::Err(e)) => {
+            Err(BeavaError::Protocol(format!("shard dispatch: {:?}", e)))
+        }
+        Ok(_) => Err(BeavaError::Protocol(
+            "unexpected ShardResult variant for EvictExpiredTableRows".to_string(),
+        )),
+        Err(_) => Err(BeavaError::Protocol(
+            "shard oneshot channel closed".to_string(),
+        )),
+    }
+}
+
+/// Phase 54-04 Pass A4: on-shard body for `evict_expired_stream_entries`.
+/// Walks the shard-owned entities, removes stream entries whose
+/// last_event_at exceeds the per-stream entity_ttl (or the fallback
+/// `max_window * ttl_multiplier` global TTL), and removes entities
+/// left completely empty. Returns the number of stream entries
+/// evicted. Mirrors the legacy `evict_expired_stream_entries` logic
+/// but against `Shard` state rather than `StateStore`.
+fn evict_expired_stream_entries_on_shard(
+    shard: &mut crate::shard::Shard,
+    engine: &crate::engine::pipeline::PipelineEngine,
+    now: std::time::SystemTime,
+    ttl_multiplier: u32,
+) -> usize {
+    let max_window = engine.max_window_duration();
+    let global_ttl = if max_window.is_zero() {
+        None
+    } else {
+        Some(max_window * ttl_multiplier)
+    };
+
+    // Phase 1: plan evictions from an owned snapshot of this shard's
+    // entities. `iter_entities()` materializes owned clones on the fjall
+    // build (deserialized via postcard) and on state-inmem, so we can
+    // walk streams without holding a borrow during the write phase.
+    let entities: Vec<(String, crate::state::store::EntityState)> = shard.iter_entities();
+    // Each plan entry: (key, streams_to_remove, will_be_empty_after_eviction)
+    let mut eviction_plan: Vec<(String, Vec<String>, bool)> = Vec::new();
+
+    for (key, entity) in &entities {
+        let mut streams_to_remove: Vec<String> = Vec::new();
+        for (stream_name, stream_state) in entity.streams.iter() {
+            let last_event = match stream_state.last_event_at {
+                Some(t) => t,
+                None => continue,
+            };
+            let ttl = match engine.get_stream_entity_ttl(stream_name) {
+                Some(stream_ttl) => stream_ttl,
+                None => match global_ttl {
+                    Some(gt) => gt,
+                    None => continue,
+                },
+            };
+            // D-17 / CORR-07: source the eviction clock from the
+            // per-stream watermark observed_max so historical backfills
+            // don't evict alive-by-event-time entities. Fallback to
+            // wall-clock `now` preserves legacy semantics.
+            let scan_clock = engine.wm_observed_max(stream_name).unwrap_or(now);
+            let age = scan_clock
+                .duration_since(last_event)
+                .unwrap_or(std::time::Duration::ZERO);
+            if age > ttl {
+                streams_to_remove.push(stream_name.clone());
+            }
+        }
+        if !streams_to_remove.is_empty() {
+            let remaining = entity.streams.len().saturating_sub(streams_to_remove.len());
+            let will_be_empty = remaining == 0
+                && entity.static_features.is_empty()
+                && entity.table_rows.is_empty();
+            eviction_plan.push((key.clone(), streams_to_remove, will_be_empty));
+        }
+    }
+
+    // Phase 2: apply evictions. For each planned entity, either
+    // remove-in-place (will_be_empty) via `Shard::delete_entity` OR
+    // RMW via `StoreView::Sharded::with_entity_mut` to drop the
+    // selected streams.
+    let mut total_evicted = 0usize;
+    for (key, streams_to_remove, will_be_empty) in &eviction_plan {
+        if *will_be_empty {
+            shard.delete_entity(key);
+        } else {
+            let mut view = crate::shard::StoreView::Sharded(shard);
+            view.with_entity_mut(key, |entity| {
+                for stream_name in streams_to_remove {
+                    entity.streams.remove(stream_name);
+                }
+            });
+        }
+        total_evicted += streams_to_remove.len();
+    }
+
+    total_evicted
+}
+
+/// Phase 54-04 Pass A4: on-shard body for `evict_expired_table_rows`.
+/// Walks the shard-owned entities' `table_rows`, evicts Live rows
+/// whose `updated_at` age exceeds the per-Table `entity_ttl`, and
+/// records each eviction in the shared `EvictionTracker` so the
+/// eviction→reinit counter keeps firing on `/metrics`. Returns the
+/// number of Table rows evicted.
+fn evict_expired_table_rows_on_shard(
+    shard: &mut crate::shard::Shard,
+    engine: &crate::engine::pipeline::PipelineEngine,
+    tracker: &crate::state::eviction_tracker::EvictionTracker,
+    now: std::time::SystemTime,
+) -> usize {
+    use crate::duration::is_forever_ttl;
+    use crate::state::store::TableRowState;
+
+    let entities: Vec<(String, crate::state::store::EntityState)> = shard.iter_entities();
+    let mut eviction_plan: Vec<(String, String)> = Vec::new();
+
+    for (key, entity) in &entities {
+        for (table_name, row) in entity.table_rows.iter() {
+            // Tombstoned rows are reaped by `gc_tombstones`; skip.
+            if !matches!(row.state, TableRowState::Live) {
+                continue;
+            }
+            let ttl = match engine.get_stream_entity_ttl(table_name) {
+                Some(t) => t,
+                None => continue,
+            };
+            if is_forever_ttl(ttl) {
+                continue;
+            }
+            let age = now
+                .duration_since(row.updated_at)
+                .unwrap_or(std::time::Duration::ZERO);
+            if age >= ttl {
+                eviction_plan.push((key.clone(), table_name.clone()));
+            }
+        }
+    }
+
+    let mut total_evicted = 0usize;
+    for (key, table_name) in &eviction_plan {
+        // Record BEFORE mutating so the tracker sees the eviction even
+        // if the write path errors. Matches the legacy ordering in
+        // `evict_expired_table_rows`.
+        tracker.record_eviction(table_name, key);
+        {
+            let mut view = crate::shard::StoreView::Sharded(shard);
+            view.with_entity_mut(key, |entity| {
+                entity.table_rows.remove(table_name);
+            });
+        }
+        // If the entity is now fully empty (no streams, no static
+        // features, no table_rows), drop it. Read-back via
+        // `read_entity_from_shard` so we decide against current
+        // state rather than the stale `entities` snapshot.
+        let now_empty = crate::shard::read_entity_from_shard(shard, key, |e| {
+            e.streams.is_empty()
+                && e.static_features.is_empty()
+                && e.table_rows.is_empty()
+        })
+        .unwrap_or(false);
+        if now_empty {
+            shard.delete_entity(key);
+        }
+        total_evicted += 1;
+    }
+
+    total_evicted
 }
 
 /// Phase 54-04 Pass A1: clone a `ShardHandle` snapshot (Arc-backed inbox_tx,
