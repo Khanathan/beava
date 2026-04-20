@@ -1,7 +1,9 @@
 //! HTTP ingest + read endpoints (Phase 45).
 //!
-//! Handlers here are thin wrappers over `crate::server::tcp::handle_push_core_ex`
-//! and `crate::server::tcp::handle_push_batch`. Do not duplicate ingest logic.
+//! Phase 54-01 Task 1a (Pass A): write handlers dispatch through
+//! `crate::shard::thread::send_to_shard` directly — the unified SPSC hot path
+//! (no N=1 DashMap bypass). Read handlers still read from `state.store` until
+//! Wave 4 migrates them onto per-shard state.
 
 use std::time::Duration;
 
@@ -21,6 +23,36 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 
 use crate::server::tcp::SharedState;
+
+/// Phase 54-01 Task 1a: compute the target shard index from an event payload.
+///
+/// Mirrors the N>1 block in tcp.rs — reads the stream's
+/// `key_field` under the engine read lock, hashes the payload's key field
+/// (or the full payload when no key_field), then modulo `shard_count`.
+///
+/// At `shard_count == 1` this always returns 0 (the only valid index). Pass A
+/// rewires HTTP through this helper; TCP + replica migrate in Passes B/C.
+#[inline]
+fn compute_shard_idx(
+    state: &SharedState,
+    stream_name: &str,
+    payload: &serde_json::Value,
+    shard_count: usize,
+) -> (usize, u32) {
+    let shard_hint: u32 = {
+        let engine = state.engine.read();
+        let key_field_ref = engine
+            .get_stream(stream_name)
+            .and_then(|s| s.key_field.as_deref());
+        crate::routing::shard_hint_for_event(payload, key_field_ref)
+    };
+    let idx = if shard_count == 0 {
+        0
+    } else {
+        (shard_hint as usize) % shard_count
+    };
+    (idx, shard_hint)
+}
 
 const DEFAULT_MAX_BODY_BYTES: usize = 16 * 1024 * 1024; // D-05: 16 MiB
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -90,7 +122,12 @@ pub fn register_ingest_routes(
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct SyncQuery {
+    // Phase 54-01 Task 1a: retained for query-string back-compat. At Pass A,
+    // `send_to_shard` always awaits the per-event ack, so `?sync=1` is
+    // effectively always-on for writes. The field is parsed but no longer
+    // inspected; kept to avoid breaking existing clients.
     #[serde(default)]
+    #[allow(dead_code)]
     pub sync: Option<u8>,
 }
 
@@ -156,11 +193,9 @@ fn map_err_to_response(e: crate::error::BeavaError) -> axum::response::Response 
 async fn http_push_single(
     State(state): State<SharedState>,
     Path(stream): Path<String>,
-    Query(q): Query<SyncQuery>,
+    Query(_q): Query<SyncQuery>,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    use std::time::SystemTime;
-
     // Parse from raw Bytes so schema errors produce our D-11 structured envelope
     // instead of axum's default plain-text 400.
     let payload: serde_json::Value = match serde_json::from_slice(&body) {
@@ -177,38 +212,71 @@ async fn http_push_single(
         }
     };
 
-    // D-17: `?sync=1` → in-memory drain fast-path (A7).
-    let read_features = matches!(q.sync, Some(1));
-    let now = SystemTime::now();
-
-    // TPC-INFRA-01 (Wave 0): shard hint computed at HTTP ingest entry point.
-    // At N=1: always 0. Discarded — routing wired in Wave 1 (Phase 49).
+    // Phase 54-01 Task 1a (Pass A): unconditional SPSC dispatch. At N=1 the
+    // event still transits shard-0's inbox (the whole point of removing the
+    // legacy DashMap bypass). `?sync=1` is implicit — `send_to_shard` always
+    // awaits the shard's per-event ack before we respond, so the call is
+    // read-your-writes under a single shard thread.
+    //
+    // Phase 50-06 (D-10, TPC-CORR-03): reject BEFORE routing if any tuple
+    // shard_key field is missing. Shard threads never see malformed events.
     {
-        let engine_guard = state.engine.read();
-        let key_field_ref = engine_guard
-            .get_stream(&stream)
-            .and_then(|s| s.key_field.as_deref());
-        let _shard_hint: u32 =
-            crate::routing::shard_hint_for_event(&payload, key_field_ref);
+        let engine = state.engine.read();
+        if let Some(stream_def) = engine.get_stream(&stream) {
+            let missing = crate::server::tcp::check_shard_key_fields(stream_def, &payload);
+            if !missing.is_empty() {
+                crate::shard::metrics::record_shard_key_missing();
+                return map_err_to_response(crate::error::BeavaError::ShardKeyMissing { missing });
+            }
+        }
     }
 
-    match crate::server::tcp::handle_push_core_ex(
-        &state,
-        &stream,
-        &payload,
-        &body,
-        now,
-        read_features,
-        None, // no per-connection intern cache on the HTTP ingest path
-    ) {
+    let shard_count = state.shard_handles.read().len();
+    let (shard_idx, shard_hint) = compute_shard_idx(&state, &stream, &payload, shard_count);
+
+    // Phase 50-07 (TPC-PERF-03): record routing decision for the cross-shard probe.
+    crate::server::shard_probe::record_routed_event(shard_idx);
+
+    let stream_arc: std::sync::Arc<str> = std::sync::Arc::from(stream.as_str());
+    let payload_bytes = bytes::Bytes::copy_from_slice(&body);
+
+    // Snapshot a clone of the ShardHandle (inbox_tx is Arc-backed — Clone is
+    // O(1)) so we can drop the read guard before awaiting on the oneshot.
+    let handle_clone = {
+        let handles = state.shard_handles.read();
+        match handles.get(shard_idx) {
+            Some(h) => crate::shard::thread::ShardHandle {
+                shard_index: h.shard_index,
+                is_down: std::sync::Arc::clone(&h.is_down),
+                inbox_tx: h.inbox_tx.clone(),
+            },
+            None => {
+                return map_err_to_response(crate::error::BeavaError::Protocol(format!(
+                    "shard {} not registered (shard_count={})",
+                    shard_idx, shard_count
+                )));
+            }
+        }
+    };
+
+    match crate::shard::thread::send_to_shard(
+        &handle_clone,
+        stream_arc,
+        payload_bytes,
+        shard_hint,
+    )
+    .await
+    {
         Ok(_fm) => {
-            // Phase 45-04 A5: HTTP single-event path — bump labeled counter.
-            // events_total is already bumped inside handle_push_core_ex.
+            // Phase 45-04 A5 + 54-01: HTTP single-event path — bump HTTP counter
+            // and the global events_total (shard path no longer bumps it on
+            // our behalf, so we bump it here at the ingest boundary).
             state
                 .events_http
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            // Phase 50-04: record_shard_event now called inside handle_push_core_ex
-            // with the real shard_index — no duplicate call needed here.
+            state
+                .events_total
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             (StatusCode::OK, Json(json!({"ok": true}))).into_response()
         }
         Err(e) => map_err_to_response(e),
@@ -219,13 +287,9 @@ async fn http_push_single(
 ///
 /// Body: a JSON array of event objects. Max size enforced by 16 MiB body limit.
 ///
-/// Per-event `_event_time` is captured individually and stored in
-/// `PendingAsync.now`. `handle_push_batch` reads `batch[i].now` at
-/// `tcp.rs:1715` for per-event late-drop gating and watermark advance.
-///
-/// **Phase 46 handoff:** When Phase 46 flips `push_batch_with_cascade_no_features`
-/// to accept `&[(&Value, SystemTime)]` directly, the wrapping in PendingAsync
-/// becomes the direct pass-through — zero HTTP-handler changes needed.
+/// Phase 54-01 Task 1a (Pass A): per-event SPSC dispatch via `send_to_shard`.
+/// Watermark advance + late-drop gating are handled on the shard thread by
+/// `push_with_cascade_on_shard` — HTTP is a thin ingress.
 ///
 /// Response (D-12 summary-only):
 /// `{"ok": true, "data": {"accepted": N, "rejected": M, "first_error": null|{...}}}`
@@ -235,8 +299,6 @@ async fn http_push_batch(
     Query(_q): Query<SyncQuery>,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    use std::time::SystemTime;
-
     let events: Vec<serde_json::Value> = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {
@@ -262,57 +324,96 @@ async fn http_push_batch(
             .into_response();
     }
 
-    let wall = SystemTime::now();
-    let mut batch: Vec<crate::server::tcp::PendingAsync> = Vec::with_capacity(events.len());
-    for (seq, payload) in events.into_iter().enumerate() {
-        // Per-event event-time capture (Gap 8 / Phase 46 handoff):
-        // handle_push_batch picks up PendingAsync.now per-event at tcp.rs:1715
-        // for watermark gating. Phase 46 flips engine primitive — no change here.
-        let et = crate::engine::event_time::parse_event_time(&payload, wall);
-        let raw = serde_json::to_vec(&payload).unwrap_or_default();
-        batch.push(crate::server::tcp::PendingAsync {
-            seq: seq as u64,
-            stream_name: stream.clone(),
-            payload,
-            raw_payload: raw,
-            now: et,
-        });
-    }
+    // Phase 54-01 Task 1a (Pass A): per-event SPSC dispatch — replaces the
+    // legacy batch helper. At N=1 every event transits shard-0's
+    // inbox (no DashMap bypass). Per-event dispatch keeps the helper shape
+    // identical to `http_push_single` and defers batch-inbox-saturation
+    // optimization (RESEARCH.md Assumption A4) to a follow-up.
+    let shard_count = state.shard_handles.read().len();
+    let stream_arc: std::sync::Arc<str> = std::sync::Arc::from(stream.as_str());
 
-    // TPC-INFRA-01 (Wave 0): shard hint computed per event at HTTP batch entry point.
-    // At N=1: always 0. Discarded — routing wired in Wave 1 (Phase 49).
-    {
-        let engine_guard = state.engine.read();
-        for pending in &batch {
-            let key_field_ref = engine_guard
-                .get_stream(&pending.stream_name)
-                .and_then(|s| s.key_field.as_deref());
-            let _shard_hint: u32 =
-                crate::routing::shard_hint_for_event(&pending.payload, key_field_ref);
-        }
-    }
-
-    let results = crate::server::tcp::handle_push_batch(&state, &batch);
     let mut accepted = 0usize;
     let mut rejected = 0usize;
     let mut first_error: Option<serde_json::Value> = None;
-    for r in results {
-        match r {
-            Ok(()) => accepted += 1,
+
+    for payload in events.into_iter() {
+        // Phase 50-06 (D-10): reject BEFORE routing on missing tuple shard_key fields.
+        {
+            let engine = state.engine.read();
+            if let Some(stream_def) = engine.get_stream(&stream) {
+                let missing = crate::server::tcp::check_shard_key_fields(stream_def, &payload);
+                if !missing.is_empty() {
+                    crate::shard::metrics::record_shard_key_missing();
+                    rejected += 1;
+                    if first_error.is_none() {
+                        first_error = Some(json!({
+                            "code": "shard_key_missing",
+                            "missing": missing,
+                            "message": "shard_key field(s) missing from event payload",
+                        }));
+                    }
+                    continue;
+                }
+            }
+        }
+
+        let (shard_idx, shard_hint) = compute_shard_idx(&state, &stream, &payload, shard_count);
+        crate::server::shard_probe::record_routed_event(shard_idx);
+
+        // Clone the ShardHandle so we can drop the read guard before awaiting.
+        let handle_clone = {
+            let handles = state.shard_handles.read();
+            match handles.get(shard_idx) {
+                Some(h) => crate::shard::thread::ShardHandle {
+                    shard_index: h.shard_index,
+                    is_down: std::sync::Arc::clone(&h.is_down),
+                    inbox_tx: h.inbox_tx.clone(),
+                },
+                None => {
+                    rejected += 1;
+                    if first_error.is_none() {
+                        first_error = Some(json!({
+                            "code": "schema_error",
+                            "message": format!("shard {shard_idx} not registered"),
+                        }));
+                    }
+                    continue;
+                }
+            }
+        };
+
+        let payload_bytes =
+            bytes::Bytes::from(serde_json::to_vec(&payload).unwrap_or_default());
+
+        match crate::shard::thread::send_to_shard(
+            &handle_clone,
+            std::sync::Arc::clone(&stream_arc),
+            payload_bytes,
+            shard_hint,
+        )
+        .await
+        {
+            Ok(_fm) => accepted += 1,
             Err(e) => {
                 rejected += 1;
                 if first_error.is_none() {
-                    first_error = Some(json!({"code": "schema_error", "message": format!("{e}")}));
+                    first_error = Some(json!({
+                        "code": "schema_error",
+                        "message": format!("{e}"),
+                    }));
                 }
             }
         }
     }
 
-    // Phase 45-04 A5: HTTP batch path — bump labeled counter.
-    // events_total is already bumped inside handle_push_batch.
+    // Phase 45-04 A5 + 54-01: HTTP batch path — bump HTTP counter + global total
+    // at the ingest boundary (legacy batch helper used to do this inside).
     if accepted > 0 {
         state
             .events_http
+            .fetch_add(accepted as u64, std::sync::atomic::Ordering::Relaxed);
+        state
+            .events_total
             .fetch_add(accepted as u64, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -335,8 +436,9 @@ async fn http_push_batch(
 /// Uses `axum_extra::json_lines::JsonLines<serde_json::Value>` — line-by-line
 /// parse, no full-array allocation (Pitfall 7 mitigation).
 ///
-/// Events are flushed to `handle_push_batch` in chunks of 1000 to bound
-/// memory for large backfills.
+/// Phase 54-01 Task 1a (Pass A): each line is dispatched through `send_to_shard`.
+/// `chunks` is retained as a rough throughput indicator (events / CHUNK_SIZE
+/// rounded up) so the response envelope stays backwards-compatible.
 ///
 /// Malformed lines are counted as `rejected`; stream is NOT aborted.
 ///
@@ -347,57 +449,88 @@ async fn http_push_ndjson(
     Path(stream): Path<String>,
     mut stream_body: JsonLines<serde_json::Value>,
 ) -> impl IntoResponse {
-    use std::time::SystemTime;
-
     const CHUNK_SIZE: usize = 1000;
 
-    let wall = SystemTime::now();
-    let mut batch: Vec<crate::server::tcp::PendingAsync> = Vec::with_capacity(CHUNK_SIZE);
+    let shard_count = state.shard_handles.read().len();
+    let stream_arc: std::sync::Arc<str> = std::sync::Arc::from(stream.as_str());
+
     let mut accepted = 0usize;
     let mut rejected = 0usize;
-    let mut chunks = 0usize;
     let mut first_error: Option<serde_json::Value> = None;
-    let mut seq_counter: u64 = 0;
-
-    // Flush helper: drain batch into handle_push_batch and accumulate stats.
-    macro_rules! flush_batch {
-        () => {
-            if !batch.is_empty() {
-                chunks += 1;
-                let results = crate::server::tcp::handle_push_batch(&state, &batch);
-                for r in results {
-                    match r {
-                        Ok(()) => accepted += 1,
-                        Err(e) => {
-                            rejected += 1;
-                            if first_error.is_none() {
-                                first_error = Some(
-                                    json!({"code": "schema_error", "message": format!("{e}")}),
-                                );
-                            }
-                        }
-                    }
-                }
-                batch.clear();
-            }
-        };
-    }
+    let mut line_counter: usize = 0;
 
     while let Some(line) = stream_body.next().await {
         match line {
             Ok(payload) => {
-                let et = crate::engine::event_time::parse_event_time(&payload, wall);
-                let raw = serde_json::to_vec(&payload).unwrap_or_default();
-                batch.push(crate::server::tcp::PendingAsync {
-                    seq: seq_counter,
-                    stream_name: stream.clone(),
-                    payload,
-                    raw_payload: raw,
-                    now: et,
-                });
-                seq_counter += 1;
-                if batch.len() >= CHUNK_SIZE {
-                    flush_batch!();
+                line_counter += 1;
+
+                // Phase 50-06 (D-10): reject BEFORE routing on missing tuple shard_key.
+                {
+                    let engine = state.engine.read();
+                    if let Some(stream_def) = engine.get_stream(&stream) {
+                        let missing =
+                            crate::server::tcp::check_shard_key_fields(stream_def, &payload);
+                        if !missing.is_empty() {
+                            crate::shard::metrics::record_shard_key_missing();
+                            rejected += 1;
+                            if first_error.is_none() {
+                                first_error = Some(json!({
+                                    "code": "shard_key_missing",
+                                    "missing": missing,
+                                    "message": "shard_key field(s) missing from event payload",
+                                }));
+                            }
+                            continue;
+                        }
+                    }
+                }
+
+                let (shard_idx, shard_hint) =
+                    compute_shard_idx(&state, &stream, &payload, shard_count);
+                crate::server::shard_probe::record_routed_event(shard_idx);
+
+                let handle_clone = {
+                    let handles = state.shard_handles.read();
+                    match handles.get(shard_idx) {
+                        Some(h) => crate::shard::thread::ShardHandle {
+                            shard_index: h.shard_index,
+                            is_down: std::sync::Arc::clone(&h.is_down),
+                            inbox_tx: h.inbox_tx.clone(),
+                        },
+                        None => {
+                            rejected += 1;
+                            if first_error.is_none() {
+                                first_error = Some(json!({
+                                    "code": "schema_error",
+                                    "message": format!("shard {shard_idx} not registered"),
+                                }));
+                            }
+                            continue;
+                        }
+                    }
+                };
+
+                let payload_bytes =
+                    bytes::Bytes::from(serde_json::to_vec(&payload).unwrap_or_default());
+
+                match crate::shard::thread::send_to_shard(
+                    &handle_clone,
+                    std::sync::Arc::clone(&stream_arc),
+                    payload_bytes,
+                    shard_hint,
+                )
+                .await
+                {
+                    Ok(_fm) => accepted += 1,
+                    Err(e) => {
+                        rejected += 1;
+                        if first_error.is_none() {
+                            first_error = Some(json!({
+                                "code": "schema_error",
+                                "message": format!("{e}"),
+                            }));
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -410,14 +543,17 @@ async fn http_push_ndjson(
             }
         }
     }
-    // Flush final partial chunk.
-    flush_batch!();
 
-    // Phase 45-04 A5: HTTP ndjson path — bump labeled counter.
-    // events_total is already bumped inside handle_push_batch per chunk.
+    // Back-compat `chunks` estimate: ceiling(line_counter / CHUNK_SIZE).
+    let chunks = line_counter.div_ceil(CHUNK_SIZE);
+
+    // Phase 45-04 A5 + 54-01: HTTP ndjson path — bump HTTP counter + global total.
     if accepted > 0 {
         state
             .events_http
+            .fetch_add(accepted as u64, std::sync::atomic::Ordering::Relaxed);
+        state
+            .events_total
             .fetch_add(accepted as u64, std::sync::atomic::Ordering::Relaxed);
     }
 

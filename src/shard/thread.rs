@@ -585,6 +585,77 @@ pub fn inbox_size_from_env() -> usize {
         .clamp(1024, 1_000_000)
 }
 
+/// Phase 54-01 Task 1a (Pass A): unified SPSC dispatch helper.
+///
+/// Build a `ShardEvent::Push` with a oneshot response channel, `try_send` it
+/// into the target shard's inbox, then await the shard's per-event ack.
+///
+/// Backpressure (D-08 contract, preserved):
+/// - `try_send` never blocks the caller.
+/// - On `Full`: increment `beava_shard_inbox_full_total{shard=N}` +
+///   `beava_events_dropped_total{reason="inbox_full"}` and return
+///   `BeavaError::Protocol("shard inbox full — backpressure")` (matches the
+///   existing N>1 branch in `handle_push_core_ex`). HTTP handlers surface
+///   this as a 400 today via `map_err_to_response`; a dedicated 503 mapping
+///   is a follow-up (scope kept tight for Pass A).
+/// - On `Disconnected`: return `BeavaError::Protocol("shard inbox disconnected")`.
+///
+/// Response handling:
+/// - `ShardResult::Ok(fm)` → `Ok(fm)`
+/// - `ShardResult::Err(e)` → `Err(BeavaError::Protocol(format!("{:?}", e)))`
+/// - Any other variant (GetOk / SetOk / ...) is protocol-invalid for a Push
+///   and surfaced as a `BeavaError::Protocol`.
+///
+/// Used by HTTP ingest; TCP + replica inbound paths migrate in Passes B/C.
+pub(crate) async fn send_to_shard(
+    handle: &ShardHandle,
+    stream_name: std::sync::Arc<str>,
+    payload: bytes::Bytes,
+    shard_hint: u32,
+) -> Result<crate::types::FeatureMap, crate::error::BeavaError> {
+    use crate::error::BeavaError;
+
+    // Phase 50-04: short-circuit if the shard is quarantined (panicked).
+    if handle.is_down.load(Ordering::Relaxed) {
+        crate::shard::metrics::record_shard_down(handle.shard_index);
+        return Err(BeavaError::Protocol(format!(
+            "shard {} is down (quarantined after panic)",
+            handle.shard_index
+        )));
+    }
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let evt = ShardEvent::push(payload, stream_name, shard_hint, Some(tx));
+
+    match handle.inbox_tx.try_send(evt) {
+        Ok(()) => {}
+        Err(crossbeam_channel::TrySendError::Full(_)) => {
+            crate::shard::metrics::record_inbox_full(handle.shard_index);
+            return Err(BeavaError::Protocol(
+                "shard inbox full — backpressure".to_string(),
+            ));
+        }
+        Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+            return Err(BeavaError::Protocol(
+                "shard inbox disconnected".to_string(),
+            ));
+        }
+    }
+
+    match rx.await {
+        Ok(ShardResult::Ok(fm)) => Ok(fm),
+        Ok(ShardResult::Err(e)) => {
+            Err(BeavaError::Protocol(format!("shard dispatch: {:?}", e)))
+        }
+        Ok(_) => Err(BeavaError::Protocol(
+            "unexpected ShardResult variant for Push".to_string(),
+        )),
+        Err(_) => Err(BeavaError::Protocol(
+            "shard oneshot channel closed".to_string(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
