@@ -75,3 +75,13 @@ pub fn ephemeral_test_keyspace(
 
     (ks, partitions, tmp, cfg)
 }
+
+// Phase 55 Wave 0: cascade harness module.
+//
+// Hosts the two-shard fixture + fake sibling drain thread utilities used
+// by Phase 55 RED tests (cross_shard_tt_cascade_ownership.rs,
+// cross_shard_backpressure.rs, cross_shard_cascade_recovery.rs,
+// cascade_metrics.rs, boot_rematerialization.rs). Wave 1 fills in the
+// real implementations; Wave 0 only needs the module on disk so test
+// files compile.
+pub mod cascade_harness;
