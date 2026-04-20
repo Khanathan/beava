@@ -50,6 +50,13 @@ pub const CASCADE_LAG_SECONDS: &str = "beava_cascade_lag_seconds";
 /// Phase 55-01 SC-5: per-shard inbox-depth high-watermark counter.
 /// Counter; incremented when target inbox depth crosses 75 % of capacity.
 pub const SHARD_INBOX_HIGH_WATERMARK_TOTAL: &str = "beava_shard_inbox_high_watermark_total";
+/// Phase 55 MED-1: counter incremented when a PendingRetraction marker
+/// append fails (disk full / fsync failure / permission loss). The row is
+/// already hard-deleted from state when this fires, so Phase 57
+/// retraction propagation will silently miss the row — operators must
+/// investigate. Unlabelled so dashboards alert cleanly.
+pub const PENDING_RETRACTION_APPEND_FAILED_TOTAL: &str =
+    "beava_pending_retraction_append_failed_total";
 
 // ---- Phase 53-05 (W-4 revision): per-shard fjall metrics ----
 //

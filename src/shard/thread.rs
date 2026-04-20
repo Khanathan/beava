@@ -707,8 +707,25 @@ fn shard_event_loop(
                     // Phase 55-02 D-B5: hard-delete + PendingRetraction marker.
                     shard.delete_source_table_row(&key, &table_name, now);
                     if let Some(log) = shard.event_log.as_ref() {
-                        let _ = log
-                            .append_pending_retraction(&table_name, &key, source_lsn, now);
+                        if let Err(e) = log
+                            .append_pending_retraction(&table_name, &key, source_lsn, now)
+                        {
+                            // Phase 55 MED-1: the row is already hard-deleted
+                            // from state; if the marker fails to land, Phase 57
+                            // retraction propagation will silently miss this
+                            // row. Surface the failure to stderr + increment a
+                            // dedicated counter so operators can investigate
+                            // (disk full / fsync failure / perms).
+                            eprintln!(
+                                "[WARN] append_pending_retraction failed (table={}, key={}, \
+                                 source_lsn={}): {}",
+                                table_name, key, source_lsn, e
+                            );
+                            metrics::counter!(
+                                crate::shard::metrics::PENDING_RETRACTION_APPEND_FAILED_TOTAL
+                            )
+                            .increment(1);
+                        }
                     }
                     if let Some(tx) = event.response_tx {
                         let _ = tx.send(ShardResult::SetOk);
@@ -759,8 +776,20 @@ fn shard_event_loop(
                         for (k, lsn) in rows {
                             shard.delete_source_table_row(&k, &table_name, now);
                             if let Some(log) = shard.event_log.as_ref() {
-                                let _ = log
-                                    .append_pending_retraction(&table_name, &k, lsn, now);
+                                if let Err(e) = log
+                                    .append_pending_retraction(&table_name, &k, lsn, now)
+                                {
+                                    // Phase 55 MED-1: see DeleteSourceTableRow.
+                                    eprintln!(
+                                        "[WARN] append_pending_retraction failed (batch, table={}, \
+                                         key={}, source_lsn={}): {}",
+                                        table_name, k, lsn, e
+                                    );
+                                    metrics::counter!(
+                                        crate::shard::metrics::PENDING_RETRACTION_APPEND_FAILED_TOTAL
+                                    )
+                                    .increment(1);
+                                }
                             }
                         }
                         if let Some(tx) = event.response_tx {
