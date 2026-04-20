@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: "Completed 54-04-PLAN.md — Wave 4 delete-legacy-surface closing: dashmap + arc-swap deps dropped from Cargo.toml, StreamStore DashMap struct deleted, 3 TPC-ARCH-01 ship_gate tests flipped GREEN (dashmap_not_in_src / state_store_struct_deleted / legacy_push_helpers_deleted). All three grep-ZERO scripts exit 0 for the first time since Wave 0. state-inmem feature retained as no-op tracking marker (Option B per CONTEXT §Area 5) — full collapse of the 139 remaining cfg gates deferred to 54-NEXT. Lib 784/819 baseline preserved (A6b snapshot). Close commit 945d4ab (after A1 b435145 / A2 05e3c86 / A3 e918ea9 / A4 4a52b75 / A5 74d7433 / A6a 3077f72 / Pass B 70297ff / A6b 602c3ab). Next: /gsd-plan-phase 54 --plan 05 for Wave 5 perf-gates-and-soak-runbook."
-last_updated: "2026-04-19T22:15:00.000Z"
-last_activity: 2026-04-19
+stopped_at: "Completed 54-05-PLAN.md — Wave 5 perf-gates-and-soak-runbook: pprof-after shows ZERO DashMap in top-20 and fjall/crossbeam symbols taking over (vs 61.2% DashMap::_entry at Phase 53 HEAD); MODE=complex N=8 candidate EPS = 1,339,446 (+580% vs 197,122 baseline — 6.8× gain, 7× headroom over the -15% floor); Hetzner CCX43 100GB 8h soak runbook + script + evidence-dir shipped with human_needed verification contract. Phase 54 is engineering-complete; TPC-ARCH-01 + TPC-PERSIST-05A closed; TPC-PERSIST-04 awaits operator soak evidence (deterministic flip via /gsd-verify-work once JSON committed). Commits: 2660478 (Task 1 pprof harness fix) + 56a5a9a (Tasks 2+3 perf+soak artifacts). Next: phase 55 or milestone close."
+last_updated: "2026-04-20T14:15:00.000Z"
+last_activity: 2026-04-20
 progress:
   total_phases: 8
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 49
-  completed_plans: 45
-  percent: 92
+  completed_plans: 46
+  percent: 94
 ---
 
 # Project State
@@ -25,14 +25,14 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 ## Current Position
 
-Phase: 54 (legacy-engine-removal) — EXECUTING
-Plan: 6 of 6 (Plans 54-00 + 54-01 + 54-02 + 54-03 + 54-04 complete; next: 54-05 perf-gates-and-soak-runbook)
-**Phase:** 54
-**Plan:** 54-04 completed 2026-04-19; 54-05 up next
-**Status:** Executing Phase 54
-**Progress:** [█████████░] 92%
+Phase: 54 (legacy-engine-removal) — ENGINEERING COMPLETE (TPC-PERSIST-04 human_needed)
+Plan: 6 of 6 (All six plans 54-00 through 54-05 complete)
+**Phase:** 54 → closed; next is phase 55 or milestone-close
+**Plan:** 54-05 completed 2026-04-20
+**Status:** Phase 54 engineering-complete; TPC-ARCH-01 + TPC-PERSIST-05A passed; TPC-PERSIST-04 human_needed (operator-run 8h soak)
+**Progress:** [█████████▋] 94%
 
-**Last activity:** 2026-04-19
+**Last activity:** 2026-04-20
 
 ## Milestone Status
 
@@ -114,8 +114,23 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 49-per-shard-state-store P06 | 25 | 2 tasks | 4 files |
 | Phase 54 P03 | 2h | 4 tasks | 58 files |
 | Phase 54 P04 | 3h (A1..A6b + close) | 4 tasks | 7 files (close commit) |
+| Phase 54 P05 | ~45 min (pprof×3 + bench×2 + artifacts) | 3 tasks | 11 files (3 committed; 8 on-disk .planning/) |
+| Phase 54 full | Net −1,100 LOC; DashMap 61.2%→0% in pprof top-20; EPS +580% (197K→1.34M); 6/7 SC auto-passed | 6 plans | TPC-ARCH-01 ✅, TPC-PERSIST-05A ✅, TPC-PERSIST-04 human_needed |
 
 ## Accumulated Context
+
+### Phase 54 Plan 05 — 2026-04-20
+
+- **Wave 5 perf-gates-and-soak-runbook closed across 3 commits.** `2660478` (Task 1 pprof harness fix) + `56a5a9a` (Tasks 2+3 perf + soak artifacts) + post-SUMMARY commit. Phase 54 engineering is complete.
+- **Task 1 — pprof re-run PASSED.** Workload 8 threads × 8s = 1,068,225 events at 133K EPS. Top-20 leaf has **ZERO DashMap symbols** (was 61.2% at Phase 53 HEAD). Fjall + crossbeam take over: `fjall::journal::Journal::get_writer` (3.4% self), `fjall::partition::PartitionHandle::insert` (10.8% incl), `crossbeam_channel::Sender::try_send` (1.7% self), `push_internal_on_shard` (12.3% incl) through `shard_event_loop` (12.5% incl). Success Criterion 4 closed; TPC-ARCH-01 pprof requirement closed.
+- **Task 2 — EPS gate PASSED with massive headroom.** `MODE=complex N=8`: candidate **1,339,446 EPS** (+580% vs 197,122 baseline — 6.8× gain, 7× over the 167,553 floor). The Phase 53 DashMap bypass at N=1 was costing ~65% of CPU to lock contention; removing it dominated the scatter-gather SPSC overhead (projected ~1% per the static-analysis pre-step). TPC-PERSIST-05A closed.
+- **Task 3 — Hetzner soak infrastructure PREPARED.** `scripts/soak-hetzner-ccx43.sh` executable 9h runbook (1h warmup + 8h measure, emits evidence JSON at `.planning/phases/54-legacy-engine-removal/soak-evidence/<ts>.json`). `soak-runbook.md` operator 10-step flow. `.gitignore` adjusted so operator can `git add -f` the evidence JSON. 54-VERIFICATION.md records per-criterion status (6/7 auto-passed, TPC-PERSIST-04 human_needed with evidence-file verify contract: `jq -e '.p99_ms < 1.0 and .pass == true' soak-evidence/*.json`).
+- **Harness fix (Rule 3 blocking):** `tests/profile_ingest.rs` needed `spawn_shard_threads(8, 65_536, state.clone())` + `state.shard_handles.write() = handles` because Wave 4 removed the N=1 legacy bypass from `handle_push_batch`. Without this, every event dropped into an empty handles vec (0 EPS on first run). Fixed inline; behavior now mirrors `tests/http_ingest_routing.rs`.
+- **Bench inbox sizing (Rule 3 pragmatic):** Default `DEFAULT_INBOX_SIZE = 65,536` is under-provisioned for Wave-2 scatter-gather's 3× amplification. Ran with `BEAVA_SHARD_INBOX_SIZE=1048576`; clients still hit backpressure at t=55s. Aggregate EPS extracted from per-client last-checkpoint counters because bench.py doesn't emit `final` on ProtocolError. Both items filed as 54-NEXT.
+- **Cross-shard TT ratio (Rule 2 metadata):** `beava_cascade_cross_shard_total` / `_intra_shard_total` counters don't exist yet in src/. Used static-analysis fallback per plan — 5 TT edges, 3 with independent output keys (merchant/device/ip) at N=8 → P(cross)=7/8=0.875, weighted average cross_shard_ratio = 0.525. Projected overhead ~1%; reality = +580% because baseline was DashMap-bottlenecked. Counter addition filed as 54-NEXT.
+- **Phase 54 aggregate outcomes:** LOC net −1,100, 0 deps added, 2 deps removed (dashmap direct + arc-swap fully), 3 grep-ZERO gates GREEN, 3 ship_gate tests enforced on default, pprof DashMap → 0% in top-20, EPS +580%.
+- **54-NEXT follow-ups filed:** (1) bump DEFAULT_INBOX_SIZE or auto-size, (2) bench.py graceful-final on ProtocolError, (3) add cross_shard counters, (4) collapse 139 state-inmem cfg gates, (5) shard-harness rewrite for ~169 ignored tests.
+- **Next action:** operator runs `scripts/soak-hetzner-ccx43.sh` on Hetzner CCX43 when ready, commits `soak-evidence/<ts>.json` via `git add -f`, runs `/gsd-verify-work 54` to flip TPC-PERSIST-04 human_needed → passed. Meanwhile phase is engineering-complete and v1.2 milestone has 7 of 8 phases done (Phase 54 accepted, Phase 48 remains unstarted — see Milestone Status table for v1.2 alignment.)
 
 ### Phase 54 Plan 04 — 2026-04-19
 
@@ -233,8 +248,8 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 54-04-PLAN.md — Wave 4 delete-legacy-surface: dashmap + arc-swap deps dropped, StreamStore DashMap struct deleted, 3 TPC-ARCH-01 ship_gate tests flipped GREEN. All three grep-ZERO scripts GREEN. state-inmem retained as no-op marker (Option B). Close commit 945d4ab (Passes A1-A6b preceded). Lib 784/819 baseline preserved. Next: /gsd-plan-phase 54 --plan 05 for Wave 5 perf-gates-and-soak-runbook.
+**Stopped at:** Completed 54-05-PLAN.md — Wave 5 perf-gates-and-soak-runbook. Phase 54 engineering-complete. pprof-after ZERO DashMap in top-20 (was 61.2%); candidate EPS 1,339,446 (+580% vs 197K baseline, 6.8× gain); Hetzner CCX43 9h soak runbook shipped with evidence-file-gated human_needed verification. TPC-ARCH-01 + TPC-PERSIST-05A closed; TPC-PERSIST-04 awaits operator soak. Commits 2660478 (Task 1 harness fix) + 56a5a9a (Tasks 2+3 perf+soak infrastructure) + docs closing commit.
 
-**Next action (engineering):** `/gsd-plan-phase 54 --plan 05` — Phase 54 Plan 05: Wave 5 perf-gates-and-soak-runbook — run pprof re-baseline (DashMap / legacy-push symbols should be absent from top-20), verify `-15%` EPS gate (floor 167,553 from 197,122 baseline), produce Hetzner CCX43 100GB 8h soak runbook (human_needed), write `54-VERIFICATION.md`.
+**Next action (engineering):** Phase 54 is closed modulo soak evidence. Engineering-facing next action is either (a) operator runs `scripts/soak-hetzner-ccx43.sh` on Hetzner CCX43 to flip TPC-PERSIST-04 to `passed`, or (b) start next phase / close v1.2 milestone. See `.planning/phases/54-legacy-engine-removal/soak-runbook.md` for the operator steps.
 
 **Orthogonal ops (launch day — still pending):** v1.0-launch 6-item human-run checklist above remains outstanding. Run independently of v1.2 engineering work.

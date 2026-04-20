@@ -179,7 +179,7 @@ Plans:
 - [x] 54-02-storeview-widening-and-scatter-gather-cascade-PLAN.md — Wave 2: widen StoreView (5 methods) + cascade_table_upsert_on_shard SCATTER-GATHER + migrate operators/register (completed 2026-04-20 — Pass A bfa62fb: StoreView +5 methods + Shard take_dirty/iter_entities + 2 new ShardOp variants, 8/8 tests on both backends; Pass B 85651a2: scatter-gather cascade via crossbeam try_send + blocking oneshot + deadlock analysis, 2/2 cross_shard_tt_cascade; Pass C no-op — operators.rs/register.rs already StateStore-free; 884/888 lib tests unchanged)
 - [x] 54-03-migrate-remaining-statestore-callers-PLAN.md — Wave 3: boot-replay direct fjall insert + 6 non-shim DashMap users → RwLock<AHashMap> + test migration
 - [x] 54-04-delete-legacy-surface-PLAN.md — Wave 4: delete StateStore + legacy pipeline methods + DashMap/arc-swap deps; flip grep-ZERO scripts GREEN (completed 2026-04-19 — 9 commits A1 b435145 → A6b 602c3ab + close 945d4ab; 3 ship_gate tests flipped GREEN; dashmap + arc-swap dropped from Cargo.toml; StreamStore DashMap struct deleted; state-inmem retained as no-op marker per CONTEXT §Area 5 Option B with full 139-cfg-gate collapse deferred to 54-NEXT; 784/819 lib baseline preserved; all 3 grep-ZERO scripts exit 0)
-- [ ] 54-05-perf-gates-and-soak-runbook-PLAN.md — Wave 5: pprof re-run, -15% EPS gate, Hetzner CCX43 100GB 8h soak runbook (human_needed), 54-VERIFICATION.md
+- [x] 54-05-perf-gates-and-soak-runbook-PLAN.md — Wave 5: pprof re-run showed ZERO DashMap in top-20 (was 61.2%); fjall + crossbeam symbols dominate; candidate MODE=complex N=8 EPS = 1,339,446 (+580% vs 197,122 baseline, 6.8× gain, 7× headroom over the 167,553 floor); Hetzner CCX43 100GB 8h soak runbook + script + evidence-dir shipped with human_needed verification contract; 54-VERIFICATION.md records 6/7 SC auto-passed (TPC-ARCH-01 ✅ + TPC-PERSIST-05A ✅) and TPC-PERSIST-04 human_needed (evidence-file gated). Commits 2660478 + 56a5a9a + close commit. Phase 54 engineering-complete 2026-04-20.
 **UI hint**: no
 
 ## Progress
@@ -193,4 +193,4 @@ Plans:
 | 51. Cross-shard queries + joins | 5/5 | Complete    | 2026-04-19 |
 | 52. Event log, recovery, ship-gate | 10/10 | Complete    | 2026-04-19 |
 | 53. Fjall state backend | 6/7 plans (06 deferred) | **Engineering-complete** — 4/6 TPC-PERSIST closed; PERSIST-04 + PERSIST-05A gates deferred to Phase 54 (legacy DashMap bypass at N=1) | 2026-04-19 |
-| 54. Legacy engine removal | 5/6 | In Progress — Waves 0-4 closed (grep-ZERO gates all GREEN; ship_gate enforced); Wave 5 perf-gates-and-soak-runbook remaining |  |
+| 54. Legacy engine removal | 6/6 | **Engineering-complete** — TPC-ARCH-01 ✅ + TPC-PERSIST-05A ✅ closed; TPC-PERSIST-04 human_needed (Hetzner CCX43 8h soak; evidence-file gated). pprof DashMap → 0% in top-20; EPS +580% (197K → 1.34M). | 2026-04-20 (eng) |
