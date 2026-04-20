@@ -577,11 +577,48 @@ async fn http_get_features(
     Path(key): Path<String>,
     Query(q): Query<TableQuery>,
 ) -> impl IntoResponse {
-    use std::time::SystemTime;
-    let now = SystemTime::now();
+    // Phase 54-03 Task 3: route the read through the owner shard's SPSC
+    // inbox (ShardOp::Get) instead of reading `state.store` directly.
+    // Existence + features come back together so 404 is race-free.
+    let shard_count = state.shard_handles.read().len();
+    let shard_idx = crate::server::http::shard_index_for_key(&key, shard_count);
+    let handle_clone = {
+        let handles = state.shard_handles.read();
+        match handles.get(shard_idx) {
+            Some(h) => crate::shard::thread::ShardHandle {
+                shard_index: h.shard_index,
+                is_down: std::sync::Arc::clone(&h.is_down),
+                inbox_tx: h.inbox_tx.clone(),
+            },
+            None => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "ok": false,
+                        "error": { "code": "no_shards", "message": "no shards registered" }
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    };
 
-    // Fast existence check first — avoids computing features for unknown keys.
-    if state.store.get_entity(&key).is_none() {
+    let (exists, features) =
+        match crate::shard::thread::get_features_via_shard(&handle_clone, key.clone()).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "ok": false,
+                        "error": { "code": "shard_dispatch", "message": format!("{:?}", e) }
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+    if !exists {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -591,12 +628,6 @@ async fn http_get_features(
         )
             .into_response();
     }
-
-    // Walk all features for this key. The `FeatureMap` uses flat keys; features
-    // registered with stream-prefixed names ("stream.feature") are grouped by the
-    // prefix. Features without a dot land under a table whose key equals the full
-    // feature name.
-    let features = state.store.get_all_features(&key, now);
 
     let mut tables: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
     for (fq_name, val) in features.iter() {

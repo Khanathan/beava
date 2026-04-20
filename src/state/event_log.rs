@@ -44,13 +44,21 @@
 //! fsync is done periodically via a background timer, never on the hot path.
 //! Compaction rewrites log files excluding entries older than history_ttl.
 
-use dashmap::DashMap;
-use parking_lot::Mutex as PLMutex;
+// Phase 54-03 Task 3: migrated from dashmap::DashMap to
+// parking_lot::RwLock<AHashMap> (RESEARCH Assumption A6). Stream
+// registration/deregistration is rare (config-driven), so the outer RwLock
+// only serializes boot / admin paths. The hot append path takes a read-lock,
+// clones the Arc<LockFreeStreamLog> for the stream, releases the lock, then
+// runs the O_APPEND write via the kernel-atomic libc::write syscall — no
+// userspace lock held during the I/O.
+use ahash::AHashMap;
+use parking_lot::{Mutex as PLMutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read as IoRead, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 /// Default history TTL: 72 hours (3 days) per CONTEXT.md locked decision.
@@ -263,18 +271,23 @@ pub struct EventLog {
     data_dir: PathBuf,
     /// Which shard owns this log (0 for the N=1 single-shard case).
     shard_id: u8,
-    /// Per-stream lock-free writers. DashMap provides lock-free lookup by
-    /// stream name; each entry is a `LockFreeStreamLog` whose `append_raw`
-    /// hot path takes no userspace locks (relies on kernel `O_APPEND`
-    /// atomicity).
-    writers: DashMap<String, LockFreeStreamLog>,
+    /// Per-stream lock-free writers. Phase 54-03: RwLock<AHashMap<_, Arc<_>>>.
+    /// The hot append path reads the map, clones the `Arc<LockFreeStreamLog>`,
+    /// releases the read-lock, then runs the kernel-atomic `libc::write`
+    /// syscall — no userspace lock held during I/O. Registration /
+    /// deregistration / compaction take the write-lock briefly.
+    writers: RwLock<AHashMap<String, Arc<LockFreeStreamLog>>>,
     /// Per-stream history TTL for compaction. Streams not in this map are not logged.
-    history_ttls: DashMap<String, Duration>,
+    history_ttls: RwLock<AHashMap<String, Duration>>,
     /// Phase 52-06: per-(stream_name, upstream_shard_id) monotonic seq counter.
     /// Keyed by `(stream_name, upstream_shard_id)`. Loaded from
     /// `SnapshotV8.replica_lsn_map` at startup via `load_seq_counters`.
     /// Stores the *next* seq to assign (i.e. the count of events appended so far).
-    seq_counters: DashMap<(String, u8), u64>,
+    /// Phase 54-03: a single RwLock<AHashMap<(String, u8), u64>> — the
+    /// fetch-and-increment inside `append_lsn_tagged` holds the write-lock
+    /// briefly (u64 math only), matching the existing serialization shape
+    /// of the prior DashMap entry-based code.
+    seq_counters: RwLock<AHashMap<(String, u8), u64>>,
 }
 
 impl EventLog {
@@ -293,9 +306,9 @@ impl EventLog {
         Ok(Self {
             data_dir,
             shard_id,
-            writers: DashMap::new(),
-            history_ttls: DashMap::new(),
-            seq_counters: DashMap::new(),
+            writers: RwLock::new(AHashMap::new()),
+            history_ttls: RwLock::new(AHashMap::new()),
+            seq_counters: RwLock::new(AHashMap::new()),
         })
     }
 
@@ -308,9 +321,9 @@ impl EventLog {
     /// After loading, the next `append_lsn_tagged` call for `(stream, shard_id)`
     /// will use this value as seq, then increment it.
     pub fn load_seq_counters(&mut self, lsn_map: &std::collections::HashMap<(String, u8), u64>) {
+        let mut w = self.seq_counters.write();
         for ((stream, shard_id), &next_seq) in lsn_map {
-            self.seq_counters
-                .insert((stream.clone(), *shard_id), next_seq);
+            w.insert((stream.clone(), *shard_id), next_seq);
         }
     }
 
@@ -329,19 +342,19 @@ impl EventLog {
         upstream_shard_id: u8,
         stream_ord: u16,
     ) -> std::io::Result<u64> {
-        let log_ref = match self.writers.get(stream_name) {
-            Some(w) => w,
+        let log_ref: Arc<LockFreeStreamLog> = match self.writers.read().get(stream_name) {
+            Some(w) => Arc::clone(w),
             None => return Ok(0),
         };
 
         // Atomically fetch-and-increment the seq counter.
         let seq = {
-            let mut entry = self
-                .seq_counters
+            let mut w = self.seq_counters.write();
+            let slot = w
                 .entry((stream_name.to_string(), upstream_shard_id))
                 .or_insert(0);
-            let current = *entry;
-            *entry = current + 1;
+            let current = *slot;
+            *slot = current + 1;
             current
         };
 
@@ -374,12 +387,9 @@ impl EventLog {
     /// monotonicity is preserved across restarts.
     pub fn current_lsn_map(&self) -> std::collections::HashMap<(String, u8), u64> {
         self.seq_counters
+            .read()
             .iter()
-            .map(|entry| {
-                let key = entry.key().clone();
-                let next_seq = *entry.value();
-                (key, next_seq)
-            })
+            .map(|(k, v)| (k.clone(), *v))
             .collect()
     }
 
@@ -424,7 +434,7 @@ impl EventLog {
         stream_name: &str,
         history_ttl: Option<Duration>,
     ) -> std::io::Result<()> {
-        if self.writers.contains_key(stream_name) {
+        if self.writers.read().contains_key(stream_name) {
             return Ok(()); // idempotent re-registration
         }
         let path = Self::stream_log_path(&self.data_dir, self.shard_id, stream_name);
@@ -433,12 +443,16 @@ impl EventLog {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        // Only actually open/insert if not already present (race: two
-        // registrations for the same stream). We do the open here, outside
-        // the DashMap slot, to keep the entry closure simple.
+        // Open the log OUTSIDE the write-lock so we don't hold the lock across
+        // a filesystem call. Then insert-if-absent under the write-lock to
+        // handle the race (two registrations for the same stream).
         let log = LockFreeStreamLog::open(&path, stream_name.to_string())?;
-        self.writers.entry(stream_name.to_string()).or_insert(log);
+        self.writers
+            .write()
+            .entry(stream_name.to_string())
+            .or_insert_with(|| Arc::new(log));
         self.history_ttls
+            .write()
             .entry(stream_name.to_string())
             .or_insert_with(|| history_ttl.unwrap_or(DEFAULT_HISTORY_TTL));
         Ok(())
@@ -453,8 +467,8 @@ impl EventLog {
         event_bytes: &[u8],
         now: SystemTime,
     ) -> std::io::Result<bool> {
-        let log_ref = match self.writers.get(stream_name) {
-            Some(w) => w,
+        let log_ref: Arc<LockFreeStreamLog> = match self.writers.read().get(stream_name) {
+            Some(w) => Arc::clone(w),
             None => return Ok(false),
         };
         let entry = LogEntry {
@@ -496,8 +510,8 @@ impl EventLog {
         if event_bytes_list.is_empty() {
             return Ok(0);
         }
-        let log_ref = match self.writers.get(stream_name) {
-            Some(w) => w,
+        let log_ref: Arc<LockFreeStreamLog> = match self.writers.read().get(stream_name) {
+            Some(w) => Arc::clone(w),
             None => return Ok(0),
         };
         // Pre-allocate a single buffer for the whole batch.
@@ -550,8 +564,8 @@ impl EventLog {
         if event_bytes_list.is_empty() {
             return Ok(0);
         }
-        let log_ref = match self.writers.get(stream_name) {
-            Some(w) => w,
+        let log_ref: Arc<LockFreeStreamLog> = match self.writers.read().get(stream_name) {
+            Some(w) => Arc::clone(w),
             None => return Ok(0),
         };
         let rough_cap: usize = event_bytes_list.iter().map(|b| b.len() + 32).sum();
@@ -609,8 +623,16 @@ impl EventLog {
     /// Iterates the DashMap and calls `fdatasync(fd)` per stream — no
     /// userspace locks held anywhere.
     pub fn fsync_all(&self) -> std::io::Result<()> {
-        for entry in self.writers.iter() {
-            entry.value().fsync()?;
+        // Snapshot the Arc handles under the read-lock, release, then fsync
+        // each outside the lock so admin/shutdown paths never block register.
+        let handles: Vec<Arc<LockFreeStreamLog>> = self
+            .writers
+            .read()
+            .values()
+            .map(Arc::clone)
+            .collect();
+        for h in &handles {
+            h.fsync()?;
         }
         Ok(())
     }
@@ -625,7 +647,7 @@ impl EventLog {
     /// `Ok(false)` (unregistered) — acceptable because compaction runs
     /// from a single-threaded background timer and the window is ~ms.
     pub fn compact_stream(&self, stream_name: &str, now: SystemTime) -> std::io::Result<usize> {
-        let history_ttl = match self.history_ttls.get(stream_name) {
+        let history_ttl = match self.history_ttls.read().get(stream_name) {
             Some(ttl) => *ttl,
             None => return Ok(0), // not registered
         };
@@ -633,7 +655,7 @@ impl EventLog {
         // With O_APPEND + direct writes there's nothing to flush in userspace.
         // The writer has no buffer; every append was already a syscall. We
         // optionally fdatasync to ensure compaction scans the durable state.
-        if let Some(writer) = self.writers.get(stream_name) {
+        if let Some(writer) = self.writers.read().get(stream_name).map(Arc::clone) {
             writer.fsync()?;
         }
 
@@ -669,39 +691,41 @@ impl EventLog {
         }
 
         // Close old writer by removing it from the map.
-        self.writers.remove(stream_name);
+        self.writers.write().remove(stream_name);
 
         // Atomic rename
         fs::rename(&tmp_path, &log_path)?;
 
         // Reopen writer for the stream
         let log = LockFreeStreamLog::open(&log_path, stream_name.to_string())?;
-        self.writers.insert(stream_name.to_string(), log);
+        self.writers
+            .write()
+            .insert(stream_name.to_string(), Arc::new(log));
 
         Ok(removed_count)
     }
 
     /// Deregister a stream: remove from the writers map (closing fd via
-    /// OwnedFd Drop). Does NOT delete the log file (preserve history for
-    /// potential re-registration).
+    /// OwnedFd Drop when the last Arc to the LockFreeStreamLog is dropped).
+    /// Does NOT delete the log file (preserve history for potential
+    /// re-registration).
     pub fn deregister_stream(&self, stream_name: &str) -> std::io::Result<()> {
-        // Drop removes the DashMap entry; OwnedFd's Drop closes the fd.
-        let _ = self.writers.remove(stream_name);
+        let _ = self.writers.write().remove(stream_name);
         Ok(())
     }
 
     /// Get the history TTL for a stream.
     pub fn get_history_ttl(&self, stream_name: &str) -> Option<Duration> {
-        self.history_ttls.get(stream_name).map(|r| *r)
+        self.history_ttls.read().get(stream_name).copied()
     }
 
     /// Return a snapshot Vec of registered stream names.
     ///
     /// Phase 40: this returns owned `String`s instead of `&str` references
-    /// because DashMap entries can't safely yield borrowed keys across
+    /// because map entries can't safely yield borrowed keys across
     /// concurrent mutations.
     pub fn registered_streams(&self) -> Vec<String> {
-        self.writers.iter().map(|e| e.key().clone()).collect()
+        self.writers.read().keys().cloned().collect()
     }
 
     /// D-27 / A7: scaffolded hook for durable-ack HTTP push (future `?sync=1,durable=1`).
@@ -726,11 +750,10 @@ impl EventLog {
         }
 
         // Step 2: fsync the backing fd for this stream.
-        // We extract the raw fd while holding the DashMap reference, then
-        // release it before the blocking call so DashMap is not held across
-        // an await point.
+        // Extract the raw fd under a read-lock and drop the guard before the
+        // async blocking call so the RwLock is never held across an .await.
         let raw_fd = {
-            match self.writers.get(stream_name) {
+            match self.writers.read().get(stream_name) {
                 Some(w) => w.fd.as_raw_fd(),
                 None => return Ok(false), // writer was concurrently removed
             }
@@ -1116,7 +1139,7 @@ mod tests {
         log.deregister_stream("S").unwrap();
 
         // Writer should be removed
-        assert!(!log.writers.contains_key("S"));
+        assert!(!log.writers.read().contains_key("S"));
 
         // Append should return false (unregistered)
         let result = log.append("S", b"more", ts(1001)).unwrap();

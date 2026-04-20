@@ -11,8 +11,26 @@ use beava::engine::pipeline::PipelineEngine;
 use beava::engine::recommend::{humanize_duration_secs, recommend_config};
 use beava::engine::register::{v0_source_to_stream_def, SourceDescriptor};
 use beava::state::eviction_tracker::EvictionTracker;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
+
+/// Phase 54-03 Task 2: `EvictionTracker.{evictions, reinits}` migrated from
+/// `DashMap<_, AtomicU64>` to `RwLock<AHashMap<_, Arc<AtomicU64>>>`. These
+/// helpers replicate the old `entry().or_default().store()` flow.
+fn set_evictions(tracker: &EvictionTracker, table: &str, n: u64) {
+    let mut w = tracker.evictions.write();
+    w.entry(table.to_string())
+        .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+        .store(n, Ordering::Relaxed);
+}
+
+fn set_reinits(tracker: &EvictionTracker, table: &str, n: u64) {
+    let mut w = tracker.reinits.write();
+    w.entry(table.to_string())
+        .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+        .store(n, Ordering::Relaxed);
+}
 
 fn table(name: &str, ttl: Option<&str>) -> SourceDescriptor {
     SourceDescriptor {
@@ -70,16 +88,8 @@ fn ttl_too_short_triggers_recommendation() {
         tracker.record_eviction("UserStats", &format!("u{}", i));
     }
     // Bump the counters directly to sidestep bloom FP noise.
-    tracker
-        .evictions
-        .entry("UserStats".to_string())
-        .or_default()
-        .store(1000, Ordering::Relaxed);
-    tracker
-        .reinits
-        .entry("UserStats".to_string())
-        .or_default()
-        .store(100, Ordering::Relaxed);
+    set_evictions(&tracker, "UserStats", 1000);
+    set_reinits(&tracker, "UserStats", 100);
 
     let recs = recommend_config(&engine, &tracker);
     assert_eq!(recs.len(), 1, "expected exactly one recommendation");
@@ -140,16 +150,8 @@ fn clean_signals_yield_empty_recommendations() {
     register_raw_kind(&mut engine, &table("UserStats", Some("30d")));
     let tracker = EvictionTracker::new();
     // 1000 evictions, only 5 reinits → 0.5% reinit rate (below 5% threshold)
-    tracker
-        .evictions
-        .entry("UserStats".to_string())
-        .or_default()
-        .store(1000, Ordering::Relaxed);
-    tracker
-        .reinits
-        .entry("UserStats".to_string())
-        .or_default()
-        .store(5, Ordering::Relaxed);
+    set_evictions(&tracker, "UserStats", 1000);
+    set_reinits(&tracker, "UserStats", 5);
     let recs = recommend_config(&engine, &tracker);
     assert!(recs.is_empty(), "expected empty recs, got {:?}", recs);
 }
@@ -160,16 +162,8 @@ fn insufficient_sample_yields_no_recommendation() {
     register_raw_kind(&mut engine, &table("UserStats", Some("30d")));
     let tracker = EvictionTracker::new();
     // 10 evictions with 5 reinits → 50% rate, but sample is too small.
-    tracker
-        .evictions
-        .entry("UserStats".to_string())
-        .or_default()
-        .store(10, Ordering::Relaxed);
-    tracker
-        .reinits
-        .entry("UserStats".to_string())
-        .or_default()
-        .store(5, Ordering::Relaxed);
+    set_evictions(&tracker, "UserStats", 10);
+    set_reinits(&tracker, "UserStats", 5);
     let recs = recommend_config(&engine, &tracker);
     assert!(
         recs.is_empty(),
@@ -190,16 +184,8 @@ fn recommendation_schema_shape() {
     let mut engine = PipelineEngine::new();
     register_raw_kind(&mut engine, &table("UserStats", Some("30d")));
     let tracker = EvictionTracker::new();
-    tracker
-        .evictions
-        .entry("UserStats".to_string())
-        .or_default()
-        .store(1000, Ordering::Relaxed);
-    tracker
-        .reinits
-        .entry("UserStats".to_string())
-        .or_default()
-        .store(100, Ordering::Relaxed);
+    set_evictions(&tracker, "UserStats", 1000);
+    set_reinits(&tracker, "UserStats", 100);
     let recs = recommend_config(&engine, &tracker);
     assert_eq!(recs.len(), 1);
     let v = serde_json::to_value(&recs[0]).unwrap();

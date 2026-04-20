@@ -124,8 +124,13 @@ pub enum ShardOp {
 pub enum ShardResult {
     /// PUSH ack — carries computed FeatureMap (may be empty).
     Ok(crate::types::FeatureMap),
-    /// GET response — carries the feature map for the requested key.
-    GetOk(crate::types::FeatureMap),
+    /// GET response — carries the feature map for the requested key AND an
+    /// existence flag so HTTP can return 404 for missing entities without
+    /// re-reading state. Phase 54-03 Task 3.
+    GetOk {
+        exists: bool,
+        features: crate::types::FeatureMap,
+    },
     /// SET / MSET / Tombstone / MarkDirty ack.
     SetOk,
     /// MGET response — `Vec<(key, FeatureMap)>` preserving request order
@@ -372,12 +377,16 @@ fn shard_event_loop(
                 }
                 ShardOp::Get { key } => {
                     // Read features from shard-owned state via engine helper.
+                    // Phase 54-03 Task 3: also report existence so HTTP GET
+                    // can return 404 without a separate entity lookup.
+                    let exists = crate::shard::read_entity_from_shard(&shard, &key, |_| ())
+                        .is_some();
                     let features = {
                         let engine = state.engine.read();
                         engine.get_features_on_shard(&key, &shard, now)
                     };
                     if let Some(tx) = event.response_tx {
-                        let _ = tx.send(ShardResult::GetOk(features));
+                        let _ = tx.send(ShardResult::GetOk { exists, features });
                     }
                 }
                 ShardOp::Set { key, payload } => {
@@ -704,6 +713,77 @@ pub(crate) async fn send_to_shard(
         }
         Ok(_) => Err(BeavaError::Protocol(
             "unexpected ShardResult variant for Push".to_string(),
+        )),
+        Err(_) => Err(BeavaError::Protocol(
+            "shard oneshot channel closed".to_string(),
+        )),
+    }
+}
+
+/// Phase 54-03 Task 3: read-path dispatch helper.
+///
+/// HTTP GET endpoints compute the owner shard for `key`, then send a
+/// `ShardOp::Get { key }` through that shard's SPSC inbox. Returns:
+///
+/// - `Ok(Some(fm))` when the owning shard reports a FeatureMap (may be empty
+///   if the entity is a pure-static-features key with no stream-bound features).
+/// - `Ok(None)` when the oneshot returns an ack with no entity readable —
+///   callers map this to 404.
+/// - `Err(BeavaError::Protocol)` on shard DOWN, inbox full, disconnect, or
+///   protocol-invalid variants.
+///
+/// This replaces `state.store.get_all_features(&key, now)` on the HTTP GET
+/// path (plan 54-03 Task 3). Entity existence is inferred from whether the
+/// returned `FeatureMap` is empty AND no entity exists on the owning shard;
+/// a follow-up may widen `ShardResult::GetOk` with an explicit existence
+/// flag if callers need to distinguish "entity exists, all features Missing"
+/// from "no entity". For now, callers use the existing Null semantics in
+/// `PipelineEngine::get_features_on_shard`.
+pub async fn get_features_via_shard(
+    handle: &ShardHandle,
+    key: String,
+) -> Result<(bool, crate::types::FeatureMap), crate::error::BeavaError> {
+    use crate::error::BeavaError;
+
+    if handle.is_down.load(Ordering::Relaxed) {
+        crate::shard::metrics::record_shard_down(handle.shard_index);
+        return Err(BeavaError::Protocol(format!(
+            "shard {} is down (quarantined after panic)",
+            handle.shard_index
+        )));
+    }
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let evt = ShardEvent {
+        payload: bytes::Bytes::new(),
+        stream_name: std::sync::Arc::from(""),
+        shard_hint: 0,
+        response_tx: Some(tx),
+        op: ShardOp::Get { key },
+    };
+
+    match handle.inbox_tx.try_send(evt) {
+        Ok(()) => {}
+        Err(crossbeam_channel::TrySendError::Full(_)) => {
+            crate::shard::metrics::record_inbox_full(handle.shard_index);
+            return Err(BeavaError::Protocol(
+                "shard inbox full — backpressure".to_string(),
+            ));
+        }
+        Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+            return Err(BeavaError::Protocol(
+                "shard inbox disconnected".to_string(),
+            ));
+        }
+    }
+
+    match rx.await {
+        Ok(ShardResult::GetOk { exists, features }) => Ok((exists, features)),
+        Ok(ShardResult::Err(e)) => {
+            Err(BeavaError::Protocol(format!("shard dispatch: {:?}", e)))
+        }
+        Ok(_) => Err(BeavaError::Protocol(
+            "unexpected ShardResult variant for Get".to_string(),
         )),
         Err(_) => Err(BeavaError::Protocol(
             "shard oneshot channel closed".to_string(),

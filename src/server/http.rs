@@ -629,30 +629,74 @@ async fn public_features(
     State(state): State<SharedState>,
     Path(key): Path<String>,
 ) -> impl IntoResponse {
-    let now = SystemTime::now();
-    // Fast existence check first so we can return 404 without computing.
-    if state.store.get_entity(&key).is_none() {
-        return (
+    let _ = SystemTime::now(); // now is computed per-shard; kept here for parity
+
+    // Phase 54-03 Task 3: read features via the owner shard's SPSC inbox
+    // instead of reading `state.store` directly. Existence + feature-map
+    // come back in a single ShardResult::GetOk so 404 is race-free.
+    let shard_count = state.shard_handles.read().len();
+    let shard_idx = shard_index_for_key(&key, shard_count);
+    let handle_clone = {
+        let handles = state.shard_handles.read();
+        match handles.get(shard_idx) {
+            Some(h) => crate::shard::thread::ShardHandle {
+                shard_index: h.shard_index,
+                is_down: std::sync::Arc::clone(&h.is_down),
+                inbox_tx: h.inbox_tx.clone(),
+            },
+            None => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    cors_headers(),
+                    Json(serde_json::json!({"error": "no shards registered"})),
+                )
+                    .into_response();
+            }
+        }
+    };
+
+    match crate::shard::thread::get_features_via_shard(&handle_clone, key.clone()).await {
+        Ok((false, _)) => (
             StatusCode::NOT_FOUND,
             cors_headers(),
             Json(serde_json::json!({"error": "key not found"})),
         )
-            .into_response();
+            .into_response(),
+        Ok((true, features)) => {
+            let feature_json: serde_json::Map<String, serde_json::Value> = features
+                .iter()
+                .map(|(k, v)| (k.clone(), v.to_json_value()))
+                .collect();
+            (
+                StatusCode::OK,
+                cors_headers(),
+                Json(serde_json::json!({
+                    "key": key,
+                    "features": feature_json,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            cors_headers(),
+            Json(serde_json::json!({"error": format!("shard dispatch: {:?}", e)})),
+        )
+            .into_response(),
     }
-    let features = state.store.get_all_features(&key, now);
-    let feature_json: serde_json::Map<String, serde_json::Value> = features
-        .iter()
-        .map(|(k, v)| (k.clone(), v.to_json_value()))
-        .collect();
-    (
-        StatusCode::OK,
-        cors_headers(),
-        Json(serde_json::json!({
-            "key": key,
-            "features": feature_json,
-        })),
-    )
-        .into_response()
+}
+
+/// Phase 54-03 Task 3: compute the owner shard for a bare key string.
+/// Mirrors the routing used by `shard_hint_for_event` (ahash of the key),
+/// but takes the key directly (no JSON payload extraction).
+pub(crate) fn shard_index_for_key(key: &str, shard_count: usize) -> usize {
+    if shard_count <= 1 {
+        return 0;
+    }
+    use std::hash::{Hash, Hasher};
+    let mut hasher = ahash::AHasher::default();
+    key.hash(&mut hasher);
+    (hasher.finish() as usize) % shard_count
 }
 
 /// `GET /public/recent-events?limit=N` — tail of the in-memory recent-events

@@ -38,10 +38,13 @@ fn fp_rate_below_1pct() {
         t.record_eviction("Users", &format!("inserted_{}", i));
     }
     // Reset the reinit counter so we only observe FPs on fresh queries.
-    t.reinits
-        .entry("Users".to_string())
-        .or_default()
-        .store(0, Ordering::Relaxed);
+    // Phase 54-03 Task 2: `reinits` migrated from DashMap to RwLock<AHashMap>.
+    {
+        let mut w = t.reinits.write();
+        w.entry("Users".to_string())
+            .or_insert_with(|| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)))
+            .store(0, Ordering::Relaxed);
+    }
     let mut fps = 0;
     for i in 0..10_000 {
         if t.check_reinit("Users", &format!("query_{}", i)) {
@@ -63,10 +66,13 @@ fn generation_rotation_drops_old_key_after_7d() {
     t.record_eviction("Users", "u1");
     assert!(t.check_reinit("Users", "u1"));
     // Reset the reinit counter so we can observe the post-rotation state.
-    t.reinits
-        .entry("Users".to_string())
-        .or_default()
-        .store(0, Ordering::Relaxed);
+    // Phase 54-03 Task 2: `reinits` migrated from DashMap to RwLock<AHashMap>.
+    {
+        let mut w = t.reinits.write();
+        w.entry("Users".to_string())
+            .or_insert_with(|| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)))
+            .store(0, Ordering::Relaxed);
+    }
 
     // Simulate two full rotations (2 × ROTATE_INTERVAL ≈ 7 days total).
     // Each rotate_generation advances per-Table `rotated_at`, so the second
