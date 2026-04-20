@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: "Completed 54-01-PLAN.md — Wave 1 rewire-ingest-through-spsc (3 RED tests GREEN; unified hot path live)"
-last_updated: "2026-04-20T02:30:00Z"
+stopped_at: "Completed 54-02-PLAN.md — Wave 2 storeview-widening + scatter-gather cascade (Pass C migration no-op; engine/ StateStore-free)"
+last_updated: "2026-04-20T03:30:00Z"
 last_activity: 2026-04-20
 progress:
   total_phases: 8
   completed_phases: 5
   total_plans: 55
-  completed_plans: 42
-  percent: 76
+  completed_plans: 43
+  percent: 78
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 ## Current Position
 
 Phase: 54 (legacy-engine-removal) — EXECUTING
-Plan: 3 of 6 (Plans 54-00 + 54-01 complete; next: 54-02 storeview-widening-and-scatter-gather-cascade)
+Plan: 4 of 6 (Plans 54-00 + 54-01 + 54-02 complete; next: 54-03 migrate-remaining-statestore-callers)
 **Phase:** 54
-**Plan:** 54-01 completed 2026-04-20; 54-02 up next
+**Plan:** 54-02 completed 2026-04-20; 54-03 up next
 **Status:** Executing Phase 54
-**Progress:** [█████░░░░░] 50%
+**Progress:** [██████░░░░] 60%
 
 **Last activity:** 2026-04-20
 
@@ -115,6 +115,18 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Accumulated Context
 
+### Phase 54 Plan 02 — 2026-04-20
+
+- **Wave 2 StoreView-widening + scatter-gather cascade landed** as three passes:
+  - **Pass A (bfa62fb):** `StoreView::Sharded` gains 5 new methods (`delete_entity`, `tombstone_static`, `upsert_table_row`, `tombstone_table_row`, `mark_dirty`); `Shard` gains `take_dirty` + `iter_entities`; `ShardOp::UpsertTableRow` + `ShardOp::TombstoneTableRow` variants with dispatch arms. New integration test `tests/shard_storeview_widening.rs` (8 tests, 8/0/0 on both fjall default and state-inmem backends).
+  - **Pass B (85651a2):** `PipelineEngine::cascade_table_upsert_on_shard` scatter-gather across shards via `try_send` + crossbeam `bounded(1)` oneshot + blocking recv, fail-fast on Full with `BeavaError::ShardOverload` (re-uses Phase 50's `beava_shard_inbox_full_total` metric). Deadlock-free by construction per the 3-point analysis in the function doc comment. `PipelineEngine::get_features_on_shard_mut` live op.read(now) variant. New `tests/cross_shard_tt_cascade.rs` — 2 tests (happy path verifying output lands on `hash(region) % N` shard + backpressure test returning protocol error).
+  - **Pass C (this commit, no-op migration):** grep `"StateStore\\b|store: &StateStore|store: &mut StateStore"` in `src/engine/operators.rs` + `src/engine/register.rs` returns 0/0 — both files were already StateStore-free since Phase 50.5. Task 3 was defensive; drift never happened. `src/engine/*.rs` production code is now StateStore-free; remaining refs are legacy helpers in `pipeline.rs` (Wave 4 delete) and test modules (Wave 3/4).
+- **User decision 2026-04-19 honored:** SCATTER-GATHER at runtime, NO register-time shard_key constraint for TT edges. `grep "JoinShardKeyMismatch" src/engine/register.rs` returns only Phase 51's existing stream-stream join guard (TPC-CORR-04 unchanged).
+- **WIP salvage (Pass B):** Executor session hit context limit before committing. Orchestrator verified working tree matched plan spec (function signature, deadlock comment, 2 tests GREEN, grep gates) before creating commit 85651a2. No scope dropped.
+- **Lib test counts unchanged from Wave 1 baseline:** default 872 passed / 0 failed / 12 ignored (total 884); state-inmem 876 passed / 0 failed / 12 ignored (total 888). Sharding_parity 9/9 preserved. Cross-shard TT-cascade 2/2. StoreView-widening 8/8 on both backends.
+- **Wave 3 unblocked:** StoreView::Sharded is now the sole access pattern inside `src/engine/`. Remaining StateStore surface concentrates in `src/state/{snapshot,eviction,event_log}.rs` + test files — Wave 3 (plan 54-03) scope. Wave 4 can delete `StoreView::Legacy` once Wave 3 closes.
+- **Wave 5 budget reminder:** scatter-gather adds extra SPSC sends per cross-shard TT edge. Per user decision 2026-04-19 this is budgeted into the Wave 5 `-15%` EPS gate (167,553 EPS floor from Phase 53 HEAD 197,122 baseline). Contingency ladder in CONTEXT §Area 5 if gate fails.
+
 ### Phase 54 Plan 01 — 2026-04-20
 
 - **Wave 1 unified hot path landed:** Every HTTP/TCP/replica push now transits `ShardHandle.inbox_tx` → shard thread → `push_with_cascade_on_shard` at N=1 as well as N>1. Legacy DashMap bypass branches (`if shard_count <= 1 { legacy } else { SPSC }`) deleted from `handle_push_core_ex` + `handle_push_batch` + `http_push_*` + `replica_ingest_batch`.
@@ -191,8 +203,8 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 54-01-PLAN.md — Wave 1 rewire-ingest-through-spsc. Every HTTP/TCP/replica push now transits SPSC shard-thread at N=1; `notify_subscribers` fires on shard path; 3 Wave-0 RED tests GREEN; 884 lib tests (872 + 12 ignored, one added this pass). Next: `/gsd-plan-phase 54 --plan 02` for Wave 2 (storeview-widening + scatter-gather cascade).
+**Stopped at:** Completed 54-02-PLAN.md — Wave 2 storeview-widening + scatter-gather cascade. Pass A (bfa62fb) widened StoreView::Sharded with 5 methods + Shard helpers + 2 new ShardOp variants; Pass B (85651a2) landed `cascade_table_upsert_on_shard` scatter-gather via crossbeam try_send + blocking oneshot with fail-fast on Full + deadlock analysis doc comment; Pass C was a no-op migration — `src/engine/operators.rs` + `src/engine/register.rs` already StateStore-free (grep gate 0/0). Lib tests 884/888 unchanged; sharding_parity 9/9; cross_shard_tt_cascade 2/2; shard_storeview_widening 8/8 both backends. Next: `/gsd-plan-phase 54 --plan 03` for Wave 3 (migrate-remaining-statestore-callers: src/state/{snapshot,eviction,event_log}.rs + 52 test files).
 
-**Next action (engineering):** `/gsd-plan-phase 54 --plan 02` — Phase 54 Plan 02: widen StoreView (5 methods) + `cascade_table_upsert_on_shard` scatter-gather + migrate operators/register + move event_log.append_many_with_ts onto shard thread (restores `make_log_payload` usage).
+**Next action (engineering):** `/gsd-plan-phase 54 --plan 03` — Phase 54 Plan 03: boot-replay direct fjall insert + migrate 6 non-shim DashMap users in src/state/*.rs → per-shard RwLock<AHashMap> or iter_entities() + test migration (52+ files with StateStore::new()).
 
 **Orthogonal ops (launch day — still pending):** v1.0-launch 6-item human-run checklist above remains outstanding. Run independently of v1.2 engineering work.
