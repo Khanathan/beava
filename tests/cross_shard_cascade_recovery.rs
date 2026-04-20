@@ -20,7 +20,6 @@ mod common;
 /// re-applying the same `UpsertTableBatch` to a target shard yields
 /// identical state (idempotent full-replace).
 #[test]
-#[ignore = "55-W1"]
 fn crash_before_cursor_advance_is_idempotent_on_replay() {
     let tmp = tempfile::TempDir::new().expect("tmp");
     let data_dir: PathBuf = tmp.path().to_path_buf();

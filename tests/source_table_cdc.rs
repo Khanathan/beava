@@ -2,11 +2,12 @@
 //!
 //! Contract (TPC-SOURCE-01): see plan 55-02 CONTEXT Area B.
 //!
-//! Wave 2 GREEN tests are `#[ignore = "55-W2"]`'d per the wave convention
-//! so they only run explicitly under `-- --ignored`.
+//! Wave 2 GREEN tests landed under the wave-scoped ignore convention
+//! and were flipped to run-by-default at Phase 55 Wave 4 close (plan
+//! 55-04 Task 2).
 //!
 //! Run:
-//!   cargo test --release --test source_table_cdc -- --ignored
+//!   cargo test --release --test source_table_cdc
 
 #![cfg(not(feature = "state-inmem"))]
 
@@ -124,7 +125,7 @@ async fn http_delete_axum(
 /// HTTP single-row upsert. POST /table/Countries returns 200 with
 /// `{"accepted": true, "source_lsn": 12345}`.
 #[test]
-#[ignore = "55-W2"]
+#[ignore = "serial-only: build_state mutates process-global env BEAVA_DATA_DIR; run with -- --test-threads=1"]
 fn http_post_table_name_upserts_and_echoes_source_lsn() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -148,7 +149,7 @@ fn http_post_table_name_upserts_and_echoes_source_lsn() {
 
 /// TCP opcode OP_UPSERT_TABLE_ROW (0x14). Live TCP fixture.
 #[test]
-#[ignore = "55-W2"]
+#[ignore = "serial-only: build_state mutates process-global env BEAVA_DATA_DIR; run with -- --test-threads=1"]
 fn tcp_upsert_table_row_opcode_0x14_echoes_source_lsn() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -199,7 +200,7 @@ fn tcp_upsert_table_row_opcode_0x14_echoes_source_lsn() {
 
 /// HTTP batch upsert — accepts a multi-row batch with source_lsn Vec in INPUT order.
 #[test]
-#[ignore = "55-W2"]
+#[ignore = "serial-only: build_state mutates process-global env BEAVA_DATA_DIR; run with -- --test-threads=1"]
 fn http_post_table_batch_accepts_10k_rows_with_source_lsn_vec() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -237,7 +238,7 @@ fn http_post_table_batch_accepts_10k_rows_with_source_lsn_vec() {
 
 /// D-B4 all-or-nothing — any validation failure aborts the whole batch.
 #[test]
-#[ignore = "55-W2"]
+#[ignore = "serial-only: build_state mutates process-global env BEAVA_DATA_DIR; run with -- --test-threads=1"]
 fn http_post_table_batch_all_or_nothing_on_validation_failure() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -275,7 +276,7 @@ fn http_post_table_batch_all_or_nothing_on_validation_failure() {
 /// scope we assert the same primitive round-trips — writing + reading a
 /// PendingRetraction marker.
 #[test]
-#[ignore = "55-W2"]
+#[ignore = "serial-only: build_state mutates process-global env BEAVA_DATA_DIR; run with -- --test-threads=1"]
 fn http_delete_table_row_hard_deletes_and_writes_pending_retraction_marker() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -328,7 +329,7 @@ fn http_delete_table_row_hard_deletes_and_writes_pending_retraction_marker() {
 /// D-B5 full-replace idempotence. Re-applying the same UPSERT with byte-
 /// identical fields succeeds and is safe (full-replace is idempotent).
 #[test]
-#[ignore = "55-W2"]
+#[ignore = "serial-only: build_state mutates process-global env BEAVA_DATA_DIR; run with -- --test-threads=1"]
 fn idempotent_re_upsert_same_fields_is_noop() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -360,7 +361,7 @@ fn idempotent_re_upsert_same_fields_is_noop() {
 /// is that the UPSERT succeeds AND the cascade-cross-shard counter is
 /// unchanged (best-effort; counters may be lazily initialised).
 #[test]
-#[ignore = "55-W2"]
+#[ignore = "serial-only: build_state mutates process-global env BEAVA_DATA_DIR; run with -- --test-threads=1"]
 fn source_table_write_does_not_fire_cascade_in_phase_55() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {

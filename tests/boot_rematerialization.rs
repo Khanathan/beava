@@ -72,7 +72,6 @@ fn push_txn_log_entry(
 /// `hash(output_key) % N`, nowhere else; subsequent snapshots encode
 /// schema_version=9.
 #[test]
-#[ignore = "55-W3"]
 fn v8_snapshot_boots_and_rematerializes_to_v9() {
     let (_ks, partitions, tmp, _cfg) = common::ephemeral_test_keyspace(2);
     let mut parts = partitions.into_iter();
@@ -183,7 +182,6 @@ fn v8_snapshot_boots_and_rematerializes_to_v9() {
 /// whose message contains BOTH "Event log truncated before LSN" AND
 /// "tally rebuild --from-source".
 #[test]
-#[ignore = "55-W3"]
 fn truncated_event_log_hard_fails_with_actionable_error() {
     let (_ks, partitions, tmp, _cfg) = common::ephemeral_test_keyspace(1);
     let mut parts = partitions.into_iter();
@@ -256,7 +254,6 @@ fn truncated_event_log_hard_fails_with_actionable_error() {
 /// V8 and V9; a hypothetical pre-55 code path (here emulated by
 /// manually checking `bytes[0] != V8_FORMAT`) correctly rejects v9.
 #[test]
-#[ignore = "55-W3"]
 fn v8_server_rejects_v9_snapshot() {
     // Build a v9 snapshot and assert its outer byte is V9_FORMAT.
     let base = BaseSnapshotState {
@@ -305,7 +302,6 @@ fn v8_server_rejects_v9_snapshot() {
 /// non-existent log path returns a clean zero-event report instead of
 /// panicking (no entries to replay = no-op, not an error).
 #[test]
-#[ignore = "55-W3"]
 fn state_inmem_build_skips_rematerialization() {
     // Fjall build path: verify zero-event replay is a clean no-op.
     let (_ks, partitions, tmp, _cfg) = common::ephemeral_test_keyspace(1);
@@ -351,7 +347,6 @@ fn state_inmem_build_skips_rematerialization() {
 /// Phase 55-03 Task 2 surface checks — structural tests that the
 /// engine helpers are callable and return sane defaults.
 #[test]
-#[ignore = "55-W3"]
 fn pipeline_engine_rematerialize_helpers_exist() {
     let engine = make_tt_cascade_engine();
     // Txn is a primary; MerchantActivity is a TT cascade output.

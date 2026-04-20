@@ -26,7 +26,6 @@ mod common;
 /// drain thread), then fire a cross-shard dispatch. The dispatch MUST
 /// return a backpressure error and the inbox-full counter MUST increment.
 #[test]
-#[ignore = "55-W1"]
 fn target_inbox_full_returns_shard_overload_over_tcp() {
     // 2-shard fixture — but no drain thread on shard 1 (inbox stays full).
     let (_ks, partitions, _tmp, _cfg) = common::ephemeral_test_keyspace(2);

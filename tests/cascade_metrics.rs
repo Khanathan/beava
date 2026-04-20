@@ -24,7 +24,6 @@ use beava::shard::metrics as sm;
 /// sites + registration paths use a single source of truth for the
 /// series names (documented in the RED test spec under SC-5 matrix).
 #[test]
-#[ignore = "55-W1"]
 fn metrics_endpoint_exposes_all_five_phase_55_metrics() {
     assert_eq!(sm::CASCADE_CROSS_SHARD_TOTAL, "beava_cascade_cross_shard_total");
     assert_eq!(sm::CASCADE_INTRA_SHARD_TOTAL, "beava_cascade_intra_shard_total");
@@ -46,7 +45,6 @@ fn metrics_endpoint_exposes_all_five_phase_55_metrics() {
 /// SC-5 threshold — high-watermark counter fires when inbox depth
 /// crosses 75 % of capacity (48/64).
 #[test]
-#[ignore = "55-W1"]
 fn high_watermark_fires_at_75_percent_fill() {
     // Semantic check on record_inbox_depth: depth * 4 >= capacity * 3.
     let cap = 64usize;

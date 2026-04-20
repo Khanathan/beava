@@ -12,8 +12,8 @@
 //! Txn(shard_key=user_id) → MerchantActivity(key=merchant_id, agg=sum(amount)).
 //! Two proptests verify (1) N=1 ↔ N=8 byte-identical final state under
 //! cross-shard cascade, and (2) same-shard fast path produces identical
-//! output to cross-shard scatter-gather. Marked #[ignore = "55-W1"]
-//! pending Wave 1 coalesce-buffer implementation.
+//! output to cross-shard scatter-gather. Flipped GREEN at Phase 55 Wave 4
+//! close (plan 55-04 Task 2); both tests run by default.
 
 mod proptests;
 
@@ -24,8 +24,9 @@ mod proptests;
 // This module lives at the top-level sharding_parity binary (alongside
 // `mod proptests;`) so that the Wave 0 RED tests register under
 // `cargo test --test sharding_parity` without moving any existing file.
-// Wave 1 (plan 55-01) flips both `#[ignore = "55-W1"]` markers and
-// implements the property body via cross-shard cascade + parity compare.
+// Wave 1 (plan 55-01) implemented the property body via cross-shard
+// cascade + parity compare; Wave 4 (plan 55-04) removed the wave-scoped
+// ignore markers so both proptests run by default.
 
 #[cfg(not(feature = "state-inmem"))]
 mod tt_cascade {
@@ -65,7 +66,6 @@ mod tt_cascade {
         /// Additionally, at N=8 every MerchantActivity row MUST live
         /// on `hash(merchant_id) % 8` and ONLY there.
         #[test]
-        #[ignore = "55-W1"]
         fn tt_cascade_parity_n1_vs_n8(events in prop::collection::vec(arb_tt_cascade_event(), 1..64)) {
             // Wave 1 GREEN — check the sharding invariant at N=8: each
             // merchant_id maps to exactly ONE shard under production
@@ -97,7 +97,6 @@ mod tt_cascade {
         /// engine; compare MerchantActivity final state grouped by
         /// merchant_id. Both paths MUST yield identical fields maps.
         #[test]
-        #[ignore = "55-W1"]
         fn tt_cascade_same_shard_fastpath_matches_cross_shard_result(events in prop::collection::vec(arb_tt_cascade_event(), 1..64)) {
             // Wave 1 GREEN — verify the bucketing invariant used by the
             // fast-path vs cross-shard decision. For every generated

@@ -69,7 +69,6 @@ fn pick_same_shard_user_merchant() -> (String, String) {
 /// SC-1 primary assertion — downstream MerchantActivity row lives on
 /// `hash(merchant_id) % 2` shard and NOT on the input event's shard.
 #[test]
-#[ignore = "55-W1"]
 fn tt_cascade_output_key_lands_on_output_shard() {
     let (user_id, merchant_id) = pick_split_user_merchant();
 
@@ -128,7 +127,6 @@ fn tt_cascade_output_key_lands_on_output_shard() {
 /// SC-1 corollary — same-shard fast path MUST write inline (no SPSC hop),
 /// inspected via the sibling shard NOT receiving the row.
 #[test]
-#[ignore = "55-W1"]
 fn tt_cascade_same_shard_takes_fast_path() {
     let (user_id, merchant_id) = pick_same_shard_user_merchant();
 
