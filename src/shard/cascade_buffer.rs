@@ -30,9 +30,17 @@ pub struct CascadeBuffer {
     entries: AHashMap<(usize, String, String), AHashMap<String, FeatureValue>>,
     source_shard_idx: usize,
     n_shards: usize,
-    /// Total individual cross-shard events accumulated (NOT the coalesced
-    /// count — this is what gets emitted as the cross_shard_total counter
-    /// so metrics reflect logical writes, not wire sends).
+    /// Total individual cross-shard accumulate() calls (pre-coalesce count).
+    ///
+    /// Phase 55 MED-3: this field is tracked for unit-test assertions only;
+    /// the `beava_cascade_cross_shard_total` counter emitted in `flush` is
+    /// incremented by the POST-coalesce `writes.len()` per target (i.e. it
+    /// reflects coalesced wire sends, not logical accumulate events). This
+    /// matches the perf-gated implementation committed in 55-01 and the
+    /// D-D4 definition used on production dashboards. If per-logical-event
+    /// telemetry is wanted in the future, add a distinct
+    /// `beava_cascade_cross_shard_logical_total` counter that reads this
+    /// field; do not repurpose the existing counter (breaks dashboards).
     total_events: usize,
     /// Batch start time — used to record `beava_cascade_lag_seconds`.
     batch_start: Instant,
@@ -90,7 +98,8 @@ impl CascadeBuffer {
     ///
     /// Metrics emitted (single source of truth — do NOT also emit from
     /// `CascadeTarget::dispatch_batch`):
-    /// - `beava_cascade_cross_shard_total{source, target}` += entries-per-target
+    /// - `beava_cascade_cross_shard_total{source, target}` += coalesced
+    ///   per-target write count (post-coalesce; matches D-D4 + MED-3).
     /// - `beava_cascade_queue_depth{source, target}` set to entries-per-target
     /// - `beava_cascade_lag_seconds{source, target}` histogram record
     pub fn flush<T: CascadeTarget>(
