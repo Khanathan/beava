@@ -2119,6 +2119,28 @@ impl PipelineEngine {
             self.ring_buffer_drops.increment(stream_name, kind, reason);
         }
 
+        // Phase 54-01 Task 2 (Pass C): notify replica subscribers on the shard
+        // mutation path. Mirrors the hook at `push_internal` (pipeline.rs:1196)
+        // so that when an event transits the shard SPSC dispatch (HTTP / TCP /
+        // replica ingest under the unified hot path) live OP_SUBSCRIBE sessions
+        // still receive the event. Silent-regression guard (Risk #3 from
+        // 54-RESEARCH.md §Legacy push_internal divergence; driven GREEN by
+        // `tests/replica_ingest_routing.rs`).
+        //
+        // Placement parity with `push_internal`: fired AFTER the successful
+        // entity mutation (dirty_set insert above) so failed writes do not
+        // produce phantom notifications. Non-blocking (`try_send` only), so
+        // it preserves the async hot-path latency characteristics.
+        //
+        // Hook is cfg-gated on the `server` feature to match the origin call
+        // site — subscriber_registry is only installed in server builds.
+        #[cfg(feature = "server")]
+        if let Some(reg) = &self.subscriber_registry {
+            if let Ok(payload_bytes) = serde_json::to_vec(event) {
+                reg.notify_subscribers(stream_name, &key, &payload_bytes, now);
+            }
+        }
+
         // Mark key dirty in shard's dirty_set.
         shard.dirty_set.insert(key);
 
