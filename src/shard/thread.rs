@@ -115,6 +115,16 @@ pub enum ShardOp {
         table_name: String,
         now: std::time::SystemTime,
     },
+    /// Phase 55-01 D-A1: coalesced cross-shard TT-cascade writes. Carries a
+    /// Vec of `(table_name, key, fields)` tuples which are applied in order
+    /// on the target shard. Single `ShardResult::SetOk` on complete success;
+    /// `ShardResult::Err` on the first failure (subsequent writes are
+    /// skipped — caller sees a partial-apply condition and MUST NOT advance
+    /// the cascade delivery cursor).
+    UpsertTableBatch {
+        writes: Vec<(String, String, ahash::AHashMap<String, crate::types::FeatureValue>)>,
+        now: std::time::SystemTime,
+    },
     /// Phase 54-04 Pass A1: OP_PUSH_TABLE dispatch. Shard performs the
     /// full handle_push_table sequence on its own state:
     ///   - pre-existed check (triggers eviction-reinit counter if fresh),
@@ -616,6 +626,24 @@ fn shard_event_loop(
                     // is currently ignored — callers that need it can
                     // switch to a widened ShardResult variant later.
                     shard.tombstone_table_row(&key, &table_name, now);
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::SetOk);
+                    }
+                }
+                ShardOp::UpsertTableBatch { writes, now } => {
+                    // Phase 55-01 D-A1: coalesced cross-shard TT cascade.
+                    // Applies each (table, key, fields) via the widened
+                    // `Shard::upsert_table_row` surface. On first failure
+                    // (unreachable in current Shard impl — upsert is
+                    // infallible — but preserved for future fallible
+                    // variants) we reply Err and stop. All successful
+                    // writes stay applied; the source-side delivery
+                    // cursor is NOT advanced on error so boot replay
+                    // re-drives the partial batch (full-replace makes
+                    // that idempotent — T-55-01-04 mitigation).
+                    for (table_name, key, fields) in writes {
+                        shard.upsert_table_row(&key, &table_name, fields, now);
+                    }
                     if let Some(tx) = event.response_tx {
                         let _ = tx.send(ShardResult::SetOk);
                     }

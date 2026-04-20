@@ -20,6 +20,9 @@
 
 /// fjall 2.11 keyspace + partition lifecycle (Phase 53 Plan 02, D-01
 /// one-keyspace layout). Plan 03 wires `Shard.state` in here.
+/// Phase 55-01 D-A1+D-A2: per-batch source-side coalesce buffer for
+/// cross-shard TT cascade (see `src/shard/cascade_buffer.rs`).
+pub mod cascade_buffer;
 pub mod fjall_backend;
 pub mod global_watermark;
 /// Per-shard Prometheus metrics (Phase 50-02, D-07).

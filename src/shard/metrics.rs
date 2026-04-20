@@ -27,6 +27,30 @@ pub const EVENTS_DROPPED_TOTAL: &str = "beava_events_dropped_total";
 /// Cross-shard fanout counter — DEFINED here, NOT incremented until Wave 3.
 pub const CROSS_SHARD_FANOUT_TOTAL: &str = "beava_cross_shard_fanout_total";
 
+// ---- Phase 55-01: cascade metrics (SC-5 — five new series on /metrics) ----
+//
+// Emitted ONLY by `CascadeBuffer::flush` (cross_shard_total / queue_depth /
+// lag_seconds) and the engine's same-shard inline fast path
+// (intra_shard_total), plus `record_inbox_depth` (high_watermark).
+// `LiveCascadeTargets::dispatch_batch` does NOT emit cross_shard_total —
+// that keeps a single emission site and avoids double-count.
+
+/// Phase 55-01 SC-5: per-(source, target) cross-shard TT-cascade deliveries.
+/// Counter; incremented by `CascadeBuffer::flush` on successful dispatch.
+pub const CASCADE_CROSS_SHARD_TOTAL: &str = "beava_cascade_cross_shard_total";
+/// Phase 55-01 SC-5: per-shard same-shard TT-cascade writes (inline fast path).
+/// Counter; incremented by the engine's inline cascade path.
+pub const CASCADE_INTRA_SHARD_TOTAL: &str = "beava_cascade_intra_shard_total";
+/// Phase 55-01 SC-5: per-(source, target) current cascade queue depth.
+/// Gauge; set by `CascadeBuffer::flush` to the per-target coalesced-write count.
+pub const CASCADE_QUEUE_DEPTH: &str = "beava_cascade_queue_depth";
+/// Phase 55-01 SC-5: per-(source, target) cascade dispatch latency (seconds).
+/// Histogram; recorded by `CascadeBuffer::flush` using batch-start time.
+pub const CASCADE_LAG_SECONDS: &str = "beava_cascade_lag_seconds";
+/// Phase 55-01 SC-5: per-shard inbox-depth high-watermark counter.
+/// Counter; incremented when target inbox depth crosses 75 % of capacity.
+pub const SHARD_INBOX_HIGH_WATERMARK_TOTAL: &str = "beava_shard_inbox_high_watermark_total";
+
 // ---- Phase 53-05 (W-4 revision): per-shard fjall metrics ----
 //
 // Three UNCONDITIONAL series are emitted per shard:
@@ -130,6 +154,39 @@ pub fn register_shard_metrics(shard_count: usize) {
     }
     // Cross-shard fanout counter — defined here, first increment is Wave 3.
     metrics::counter!(CROSS_SHARD_FANOUT_TOTAL, "op" => "list_streams").increment(0);
+
+    // Phase 55-01 SC-5: touch cascade metrics so they appear in /metrics
+    // from the first scrape. Labels use (source, target) pairs for
+    // per-pair series; touch the (0, 0) placeholder so `# TYPE` lines
+    // land before the first real cascade event.
+    for src in 0..shard_count {
+        let s = src.to_string();
+        metrics::counter!(CASCADE_INTRA_SHARD_TOTAL, "shard" => s.clone()).increment(0);
+        metrics::counter!(SHARD_INBOX_HIGH_WATERMARK_TOTAL, "shard" => s.clone())
+            .increment(0);
+        for tgt in 0..shard_count {
+            if src == tgt { continue; }
+            let t = tgt.to_string();
+            metrics::counter!(
+                CASCADE_CROSS_SHARD_TOTAL,
+                "source" => s.clone(),
+                "target" => t.clone(),
+            )
+            .increment(0);
+            metrics::gauge!(
+                CASCADE_QUEUE_DEPTH,
+                "source" => s.clone(),
+                "target" => t.clone(),
+            )
+            .set(0.0);
+            metrics::histogram!(
+                CASCADE_LAG_SECONDS,
+                "source" => s.clone(),
+                "target" => t,
+            )
+            .record(0.0);
+        }
+    }
 }
 
 // ---- update helpers called from hot path ----
@@ -149,6 +206,28 @@ pub fn record_inbox_full(shard_index: usize) {
     let s = shard_index.to_string();
     metrics::counter!(SHARD_INBOX_FULL_TOTAL, "shard" => s).increment(1);
     metrics::counter!(EVENTS_DROPPED_TOTAL, "reason" => "inbox_full").increment(1);
+}
+
+/// Phase 55-01 SC-5: emit `beava_shard_inbox_high_watermark_total{shard}`
+/// when target-inbox `depth` crosses 75 % of `capacity`. Called from
+/// `LiveCascadeTargets::dispatch_batch` before each `try_send`. Cheap
+/// integer math (no floats); no allocation on the fast path.
+#[inline]
+pub fn record_inbox_depth(shard_index: usize, depth: usize, capacity: usize) {
+    if capacity > 0 && depth.saturating_mul(4) >= capacity.saturating_mul(3) {
+        let s = shard_index.to_string();
+        metrics::counter!(SHARD_INBOX_HIGH_WATERMARK_TOTAL, "shard" => s).increment(1);
+    }
+}
+
+/// Phase 55-01: intra-shard cascade counter helper. Emitted by the engine's
+/// same-shard fast path (inline `StoreView::upsert_table_row`) so the ratio
+/// `cross_shard_total / (cross_shard_total + intra_shard_total)` gives
+/// exact cross-shard fraction for perf dashboards.
+#[inline]
+pub fn record_cascade_intra_shard(shard_index: usize, n: u64) {
+    let s = shard_index.to_string();
+    metrics::counter!(CASCADE_INTRA_SHARD_TOTAL, "shard" => s).increment(n);
 }
 
 /// Record an event dropped at ingest because the shard_key field was missing (D-10).
