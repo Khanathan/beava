@@ -3864,14 +3864,14 @@ mod tests {
 
     // --- PUSH command tests ---
 
-    // 54-01 Pass B: tests below that push via handle_sync_command and then
-    // read via state.store are invalidated — the unified shard path writes
-    // into shard-owned state, not the legacy DashMap. Wave 3 (plan 54-03)
-    // migrates these to the shard-path read contract. Ignored in between
-    // with a reason so `cargo test --lib` reports them as "ignored" (not
+    // 54-NEXT: tests below push via handle_sync_command and then read via
+    // the legacy compat shim — the unified shard path writes into shard-
+    // owned state, not the legacy surface. A follow-up plan will migrate
+    // these to the shard-based test harness. Kept `#[ignore]` in the
+    // meantime so `cargo test --lib` reports them as "ignored" (not
     // failing) and the overall count stays at 884 passing.
     #[tokio::test]
-    #[ignore = "54-01 Pass B: legacy DashMap read semantics; migrated by 54-03 Wave 3"]
+    #[ignore = "54-NEXT: legacy compat shim reads; migrate to shard-based test harness"]
     async fn test_push_registered_stream_returns_empty_ack() {
         // Phase 11 read-skip: sync push returns an empty feature map as an
         // ack-only response. Callers that need features must use OP_GET.
@@ -3899,7 +3899,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "54-01 Pass B: legacy DashMap read semantics; migrated by 54-03 Wave 3"]
+    #[ignore = "54-NEXT: legacy compat shim reads; migrate to shard-based test harness"]
     async fn test_push_unregistered_stream_returns_error() {
         let state = make_shared_state();
         let cmd = Command::Push {
@@ -3916,7 +3916,7 @@ mod tests {
     // --- GET command tests ---
 
     #[tokio::test]
-    #[ignore = "54-01 Pass B: legacy DashMap read semantics; migrated by 54-03 Wave 3"]
+    #[ignore = "54-NEXT: legacy compat shim reads; migrate to shard-based test harness"]
     async fn test_get_existing_key_returns_features() {
         let state = make_shared_state();
         register_tx_stream(&state);
@@ -4186,7 +4186,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "54-01 Pass B: legacy DashMap read semantics; migrated by 54-03 Wave 3"]
+    #[ignore = "54-NEXT: legacy compat shim reads; migrate to shard-based test harness"]
     async fn test_fan_out_push_updates_secondary_stream() {
         let state = make_shared_state();
         register_tx_stream(&state);
@@ -4213,7 +4213,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "54-01 Pass B: legacy DashMap read semantics; migrated by 54-03 Wave 3"]
+    #[ignore = "54-NEXT: legacy compat shim reads; migrate to shard-based test harness"]
     async fn test_fan_out_push_ack_is_empty_but_state_updated() {
         // Phase 11 read-skip: sync push returns an empty ack. Fan-out still
         // runs (MerchantActivity is updated), but neither the primary nor the
@@ -4244,7 +4244,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "54-01 Pass B: legacy DashMap read semantics; migrated by 54-03 Wave 3"]
+    #[ignore = "54-NEXT: legacy compat shim reads; migrate to shard-based test harness"]
     async fn test_fan_out_skips_primary_stream() {
         let state = make_shared_state();
         register_tx_stream(&state);
@@ -4269,7 +4269,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "54-01 Pass B: legacy DashMap read semantics; migrated by 54-03 Wave 3"]
+    #[ignore = "54-NEXT: legacy compat shim reads; migrate to shard-based test harness"]
     async fn test_fan_out_skips_streams_without_key_in_event() {
         let state = make_shared_state();
         register_tx_stream(&state);
@@ -4294,7 +4294,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "54-01 Pass B: legacy DashMap read semantics; migrated by 54-03 Wave 3"]
+    #[ignore = "54-NEXT: legacy compat shim reads; migrate to shard-based test harness"]
     async fn test_fan_out_skips_empty_key_value() {
         let state = make_shared_state();
         register_tx_stream(&state);
@@ -4320,7 +4320,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "54-01 Pass B: legacy DashMap read semantics; migrated by 54-03 Wave 3"]
+    #[ignore = "54-NEXT: legacy compat shim reads; migrate to shard-based test harness"]
     async fn test_get_after_fan_out_returns_both_streams() {
         let state = make_shared_state();
         register_tx_stream(&state);
@@ -4355,7 +4355,7 @@ mod tests {
     // --- MGET command tests ---
 
     #[tokio::test]
-    #[ignore = "54-01 Pass B: legacy DashMap read semantics; migrated by 54-03 Wave 3"]
+    #[ignore = "54-NEXT: legacy compat shim reads; migrate to shard-based test harness"]
     async fn test_mget_returns_nested_json_for_known_and_unknown_keys() {
         let state = make_shared_state();
         register_tx_stream(&state);
@@ -4395,7 +4395,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "54-01 Pass B: legacy DashMap read semantics; migrated by 54-03 Wave 3"]
+    #[ignore = "54-NEXT: legacy compat shim reads; migrate to shard-based test harness"]
     async fn test_mget_strips_qualified_feature_names() {
         let state = make_shared_state();
         register_tx_stream(&state);
@@ -4429,7 +4429,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "54-01 Pass B: legacy DashMap read semantics; migrated by 54-03 Wave 3"]
+    #[ignore = "54-NEXT: legacy compat shim reads; migrate to shard-based test harness"]
     async fn test_end_to_end_register_push_get_with_views() {
         let state = make_shared_state();
         register_tx_stream(&state);

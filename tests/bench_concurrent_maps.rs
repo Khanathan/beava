@@ -24,6 +24,15 @@
 //! Run:
 //!   cargo test --release --test bench_concurrent_maps \
 //!     -- --nocapture --ignored concurrent_map_shootout
+//!
+//! Phase 54-04 2026-04-19: the `dashmap` direct dep was removed from
+//! `Cargo.toml` (the `StreamStore` DashMap struct was the last in-tree
+//! user). This comparison test referenced `dashmap::DashMap` directly and
+//! fails to compile without the dep. The whole file is gated off via
+//! `#![cfg(any())]` — the historical shootout results are archived in
+//! Phase 50 research; re-enable only by adding `dashmap` back to
+//! `[dev-dependencies]` if a new shootout is needed.
+#![cfg(any())]
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;

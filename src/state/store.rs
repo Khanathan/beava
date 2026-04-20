@@ -1,5 +1,5 @@
 //! Co-located state types: `EntityState`, `StaticFeature`, `TableRow`, `StreamEntityState`,
-//! `StreamStore`, plus the `check_shard_count_guard` / `read_beava_shards` boot helpers.
+//! plus the `check_shard_count_guard` / `read_beava_shards` boot helpers.
 //!
 //! Phase 54-04 Pass A6b: the `StateStore` struct (DashMap-backed global entity map),
 //! its `Default`/`Debug`/`impl StateStore` blocks, its `to_concurrent`/`from_concurrent`
@@ -7,22 +7,20 @@
 //! shard-owned state during Waves 1/2/3 + Pass A1-A6a; Pass B closed the last test-only
 //! paths that still took `&StateStore`.
 //!
+//! Phase 54-04 closeout (2026-04-19): the `StreamStore` DashMap-backed per-stream
+//! entity map was deleted — it was the last in-tree user of `dashmap::DashMap`.
+//! The `dashmap` + `arc-swap` Cargo deps are removed; the `verify-no-dashmap.sh`
+//! grep gate is now GREEN.
+//!
 //! This module now exists only to host the *data shapes* that the shard + snapshot
 //! + pipeline paths still reference (`EntityState`, `TableRow`, `SerializableTableRow`,
-//! `StaticFeature`, `StreamEntityState`, `StreamStore`). Pass C may relocate these to
+//! `StaticFeature`, `StreamEntityState`). Pass C may relocate these to
 //! `src/state/entity.rs` and retire this filename; the name is preserved here purely to
 //! avoid an import-churn commit spanning 8 files.
-//!
-//! Phase 14 (historical): `StreamStore` provides per-stream
-//! `DashMap<EntityKey, StreamEntityState>` for entity-level concurrency under the
-//! legacy `ConcurrentAppState` path (tcp.rs). Retained for the `state-inmem` feature
-//! build and the snapshot serialization shim; the default (fjall) build routes
-//! entity state through `shard::Shard::state` instead.
 
 use crate::state::snapshot::OperatorState;
 use crate::types::FeatureValue;
-use ahash::{AHashMap, AHashSet};
-use dashmap::DashMap;
+use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 
@@ -237,43 +235,8 @@ impl EntityState {
     }
 }
 
-/// Per-stream entity storage backed by `DashMap` (D-02, D-03).
-///
-/// Each registered stream gets its own `StreamStore`. Events targeting
-/// different entity keys within the same stream proceed concurrently
-/// via DashMap's internal sharded locking. Events targeting different
-/// streams use entirely different `StreamStore` instances.
-///
-/// Phase 54-04 Pass A6b: retained for the `state-inmem` feature build and
-/// `ConcurrentAppState` (tcp.rs). The default (fjall) build routes entity
-/// state through `shard::Shard::state` instead.
-pub struct StreamStore {
-    /// Entity-level concurrent map: key -> stream entity state.
-    pub entities: DashMap<String, StreamEntityState>,
-    /// Keys modified since last snapshot clear. Protected by parking_lot::Mutex.
-    pub dirty_keys: parking_lot::Mutex<AHashSet<String>>,
-    /// Keys deleted since last snapshot clear. Protected by parking_lot::Mutex.
-    pub deleted_keys: parking_lot::Mutex<AHashSet<String>>,
-}
-
-impl StreamStore {
-    /// Create an empty StreamStore.
-    pub fn new() -> Self {
-        Self {
-            entities: DashMap::new(),
-            dirty_keys: parking_lot::Mutex::new(AHashSet::new()),
-            deleted_keys: parking_lot::Mutex::new(AHashSet::new()),
-        }
-    }
-
-    /// Number of entity keys in this stream store.
-    pub fn entity_count(&self) -> usize {
-        self.entities.len()
-    }
-}
-
-impl Default for StreamStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// Phase 54-04 2026-04-19: `StreamStore` (DashMap-backed per-stream entity
+// map) deleted. It was the last in-tree user of `dashmap::DashMap`. Entity
+// state lives in per-shard fjall partitions via `shard::Shard::state` on
+// the default build; the `state-inmem` flag-gated `ShardedStateStoreV1` in
+// `src/shard/store.rs` uses `ahash::AHashMap`, not DashMap.

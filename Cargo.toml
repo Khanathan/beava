@@ -27,6 +27,15 @@ demo = ["server"]
 # ShardedStateStoreV1. OFF by default — production binary ships with the
 # fjall backend only. Enable via `cargo build --features state-inmem` to
 # run A/B benchmarks against the pre-Phase-53 legacy path.
+#
+# Phase 54-04 2026-04-19: flag retained as a **no-op tracking marker**. The
+# `dashmap` and `arc-swap` deps have been removed and the `StreamStore`
+# DashMap struct deleted. The still-gated `ShardedStateStoreV1` AHashMap
+# backend compiles only under this feature; a follow-up cleanup plan
+# (54-05-NEXT) will collapse the remaining `#[cfg(feature = "state-inmem")]`
+# gates into the default build. Do NOT use this feature as a supported
+# build configuration — the default (fjall) build is the sole production
+# target for Phase 54 onward.
 state-inmem = []
 
 [dependencies]
@@ -45,12 +54,15 @@ tokio-stream = { version = "0.1", features = ["io-util"] }
 bytes = "1.11"
 petgraph = "0.8"
 rust-embed = { version = "8.11", features = ["mime-guess", "debug-embed"] }
-dashmap = "6.1"
+# Phase 54-04 2026-04-19: `dashmap` and `arc-swap` removed from direct deps.
+# The `StreamStore` DashMap-backed per-stream entity map (last direct user)
+# was deleted in this plan; `arc-swap` had no in-tree call sites. `dashmap`
+# is still available transitively via `fjall` but `src/` no longer imports
+# it — the `verify-no-dashmap.sh` grep gate is GREEN.
 parking_lot = "0.12"
 ordered-float = { version = "4", features = ["serde"] }
 rand = "0.8"
 libc = "0.2"
-arc-swap = "1.9"
 num_cpus = "1.17"
 core_affinity = "0.8.3"
 crossbeam-channel = "0.5.15"
