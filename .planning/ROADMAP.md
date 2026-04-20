@@ -9,6 +9,7 @@
 - [x] **v0 -- Restructure + Data-Scientist Fork** (Phases 21-38) -- Phases 21-27, 36-37 complete; Phases 35, 38 planned.
 - [x] **v1.0-launch -- Public Launch Readiness** (Phases 45-47) -- Engineering complete 2026-04-17 -- `.planning/milestones/v1.0-launch-ROADMAP.md`
 - [ ] **v1.2 -- Thread-Per-Core + Full Key-Shard** (Phases 48, 49, 50, 50.5, 51, 52, 53, 54) -- Active 2026-04-18
+- [ ] **v1.3 -- Cross-Shard Correctness + Perf Runway** (Phases 55-64) -- Planned 2026-04-20 (correctness: 55 Stream→Table + source tables; 56 EnrichFromTable + SSJ; 57 retraction. perf: 58 Tokio rewrite; 59 binary wire; 60 hot-key salting; 61 metrics hoist; 62 allocator pooling; 63 fjall tuning; 64 Rust bench client. Target: 2.5–3M EPS complex N=8 on reference laptop.)
 
 ## Phases
 
@@ -182,6 +183,142 @@ Plans:
 - [x] 54-05-perf-gates-and-soak-runbook-PLAN.md — Wave 5: pprof re-run showed ZERO DashMap in top-20 (was 61.2%); fjall + crossbeam symbols dominate; candidate MODE=complex N=8 EPS = 1,339,446 (+580% vs 197,122 baseline, 6.8× gain, 7× headroom over the 167,553 floor); Hetzner CCX43 100GB 8h soak runbook + script + evidence-dir shipped with human_needed verification contract; 54-VERIFICATION.md records 6/7 SC auto-passed (TPC-ARCH-01 ✅ + TPC-PERSIST-05A ✅) and TPC-PERSIST-04 human_needed (evidence-file gated). Commits 2660478 + 56a5a9a + close commit. Phase 54 engineering-complete 2026-04-20.
 **UI hint**: no
 
+### Phase 55: 55-stream-table-cascade-crossshard-and-source-tables
+**Goal**: Fix the Stream→Table aggregation correctness bug — downstream table rows must live on the shard owning `hash(output_key) % N`, not on the input event's shard. `shard_key=` on streams becomes a pure source-ingress hint (which shard accepts the event first); all downstream cascades shuffle by the downstream's own key_field. Also introduces source tables (`@bv.source_table(key=K)`) as a new input kind for CDC-style keyed state (Postgres/MySQL replication target) with UPSERT/DELETE commands, bulk variants, and `source_lsn` echo for resumable replication.
+**Depends on**: Phase 54 (engineering-complete — legacy DashMap + StateStore deleted; scatter-gather cascade pattern exists via `cascade_table_upsert_on_shard`).
+**Requirements**: TPC-CORR-07 (NEW — Stream→Table downstream row on hash(output_key) shard), TPC-SOURCE-01 (NEW — `@bv.source_table` SDK + UPSERT/DELETE wire commands).
+**Success Criteria** (what must be TRUE):
+  1. A primary `Transactions` PUSH whose downstream `MerchantActivity[merchant_X]` hashes to a different shard than the input's `user_id` produces a row on `hash(merchant_X) % N` — verified by a test that asserts `read_entity_from_shard(correct_shard, "merchant_X")` returns the row AND every other shard returns None.
+  2. A Debezium-style CDC connector can UPSERT rows into a `@bv.source_table(key="country_code")` via `POST /table/Countries` (HTTP) or `UPSERT_TABLE_ROW` (TCP); batch variant handles ≥10K rows/call; `source_lsn` is echoed back in the ack.
+  3. DELETE on a source table is hard-delete + pending-retraction marker written to the event log (Phase 57 consumes the marker). Re-applying the same UPSERT with the same fields is a no-op (idempotent full-replace).
+  4. Cross-shard backpressure contract: cascade target inbox full → source shard blocks new ingress (listener returns 503 / SHARD_OVERLOAD); acked PUSHes are always recoverable within the existing 5 ms fsync window; cascade delivery is asynchronous with at-least-once semantics via event-log replay + per-source-shard delivery cursor.
+  5. Near-overload metrics exposed: `beava_shard_inbox_high_watermark_total{shard}`, `beava_cascade_queue_depth{source,target}`, `beava_cascade_lag_seconds{source,target}` visible via /metrics.
+  6. Boot-time full rematerialization: starting the server against a pre-Phase-55 snapshot triggers automatic event-log replay through the new cascade path, rebuilding downstream state correctly-sharded. Primary entity state reused from snapshot; downstream tables rebuilt.
+  7. Perf gate: `MODE=complex DURATION=60 CPUS=8 CLIENTS=8 bash benchmark/fraud-pipeline/run_bench.sh` ≥ 85% of Phase 54 baseline (≥ 935,000 EPS). Implementation MUST include same-shard fast path AND batched cross-shard dispatch (coalesce multiple writes to the same target into one SPSC send) from day one — no fast paths deferred.
+**Locked decisions (2026-04-20)**:
+  - Split across three phases (55/56/57) per user decision: 55 = Stream→Table shuffle + source tables; 56 = EnrichFromTable + SSJ cross-shard; 57 = retraction across cross-shard joins.
+  - Durability: primary PUSH ack = 5 ms fsync of event log (existing); cascade intent recovered via event-log replay with per-source-shard delivery cursor (works for both fjall and in-mem uniformly).
+  - Backpressure: acked events always recoverable; cascade async; block new PUSHes on near-overload; expose near-overload metrics.
+  - Migration: no dual-shard / lazy migration — boot-time full rematerialization on pre-55 snapshot.
+  - Source table wire shape: explicit new commands (not reusing PUSH); full-replace on UPDATE (CDC-native); hard-delete + pending-retraction marker; optional entity_ttl; batch UPSERT/DELETE variants; source_lsn echoed back on ack.
+  - No cascade fires on source-table writes in Phase 55 — source tables are passive enrichment targets. Retractions / downstream recomputation on source-table writes is Phase 57 territory.
+**Plans**: TBD
+**UI hint**: no
+
+### Phase 56: 56-enrich-from-table-and-stream-stream-join-crossshard
+**Goal**: Make EnrichFromTable and StreamStreamJoin work correctly across shards. EnrichFromTable does a cross-shard read via `ShardOp::ReadEntityAt` when the right-side key's shard differs from the current shard (today: silently returns Missing). StreamStreamJoin buffer lives on `hash(join.on) % N`; both sides route there; the register-time TPC-CORR-04 rejection of mismatched shard_keys is relaxed at runtime (becomes a co-location warning with perf impact noted).
+**Depends on**: Phase 55 (Stream→Table cascade path + cross-shard SPSC dispatch primitives landed; source tables available as enrichment targets).
+**Requirements**: TPC-CORR-08 (NEW — EnrichFromTable cross-shard), TPC-CORR-09 (NEW — StreamStreamJoin cross-shard; TPC-CORR-04 rejection relaxed).
+**Success Criteria** (what must be TRUE):
+  1. A stream `Txns(shard_key=user_id)` with `enrich_from(Countries, on=country_code)` where Countries is `@bv.source_table(key=country_code)` returns the correct enrichment regardless of which shard the Txn landed on — verified by a test that stages Country rows on shard-K and Txn events on shard-J (J ≠ K) and asserts the joined output has the Country fields populated.
+  2. StreamStreamJoin of `LeftStream(shard_key=user_id)` × `RightStream(shard_key=session_id)` on `user_id` produces correct joined events — both sides route to shard owning `hash(user_id) % N`; join buffer lives there.
+  3. Existing TPC-CORR-04 register-time error (JoinShardKeyMismatch) is replaced by a warning: `register` succeeds with a logged `CrossShardJoinWarning` naming the expected perf impact; no correctness regression.
+  4. EnrichFromTable read-side latency budget: p99 per-event latency on complex pipeline ≤ 2× Phase 55 baseline (cross-shard reads are synchronous but batched per-event and pipelined across multiple enrichments in the same downstream).
+  5. Perf gate: complex pipeline with ≥1 cross-shard EnrichFromTable per event, ≥ 85% of Phase 55 baseline EPS.
+**Locked decisions (carryover from Phase 55 scoping)**:
+  - EnrichFromTable: synchronous cross-shard read (block shard thread on oneshot); batched + pipelined where a downstream has multiple enrichments (decision: Q6-b from phase-55 scoping — revisit if p99 budget is exceeded).
+  - StreamStreamJoin buffer ownership: shard owning `hash(join.on) % N` (decision: Q5b-a from phase-55 scoping).
+**Plans**: TBD
+**UI hint**: no
+
+### Phase 57: 57-retraction-across-crossshard-joins
+**Goal**: Implement retraction propagation through cross-shard joins and cascades. Every emitted downstream row tracks its contributing input events (left/right ids for SSJ, source-row key for EnrichFromTable, primary event id for Stream→Table). Tombstones / deletes on any input trigger retractions on the owning shards of affected downstream outputs. Source-table DELETE's pending-retraction markers (from Phase 55) are consumed here.
+**Depends on**: Phase 56 (cross-shard joins work correctly; retraction is the correctness refinement on top).
+**Requirements**: TPC-CORR-10 (NEW — retractions flow through joins and cascades end-to-end).
+**Success Criteria** (what must be TRUE):
+  1. DELETE on a source table row causes all downstream enrichments that consulted that row to emit retraction tombstones on their owning shards; verified by a test that UPSERTs a source row, pushes a stream event that enriches from it, DELETEs the source row, and asserts the derived downstream row is tombstoned.
+  2. Tombstoning an entity on either side of a StreamStreamJoin retracts every previously-emitted joined-output row that referenced it; verified by a test that stages L×R matches, emits joined outputs, tombstones an L key, and asserts the joined outputs are retracted.
+  3. Late-retraction window: retractions apply to events within `history_ttl` of the current watermark; events older than that are documented as "cannot be retracted" and produce a `RetractionBeyondHistory` warning counter.
+  4. Perf impact: retraction tracking adds ≤ 10% overhead on the write path (not the retraction event itself). Measured by comparing Phase 56 baseline against Phase 57 on the standard complex bench WITH zero actual retractions firing.
+**Locked decisions (carryover)**:
+  - Contributing-input tracking per emitted row (Q5a-c from phase-55 scoping).
+  - Late retractions outside history_ttl window: warn + skip (not in scope to rewrite history).
+**Plans**: TBD
+**UI hint**: no
+
+### Phase 58: 58-tokio-connection-handling-rewrite
+**Goal**: Eliminate per-connection Tokio task spawn/drop churn — the biggest measured server-side CPU cost (60% of samples in samply profiles). Replace the "accept → spawn per-connection task" pattern with long-lived accept-loops per-CPU via SO_REUSEPORT (Linux) and dedicated accept-thread-per-shard (macOS). Inline `handle_push_batch` from the accept loop without spawning. Target: recover the 25–40% of CPU currently spent on runtime overhead.
+**Depends on**: Phase 57 (correctness baseline established before optimization).
+**Requirements**: TPC-PERF-08 (NEW — connection-handling overhead ≤ 15% of CPU under steady load).
+**Success Criteria** (what must be TRUE):
+  1. samply profile of `MODE=complex N=8` shows `tokio::runtime::task` / `drop_in_place<Task::Cell<async_main closure>>` combined ≤ 15% of leaf samples (currently ~60%).
+  2. Each shard has a dedicated accept loop (Linux SO_REUSEPORT socket, macOS dispatched thread) that inlines `handle_push_batch` without `tokio::spawn` per connection.
+  3. Perf gate: ≥ +25% EPS vs Phase 57 baseline on complex N=8 (≥ ~1.17M × 1.25 = 1.46M EPS if Phase 57 holds at Phase 55's 935K minimum, or ≥ 1.43M if Phase 55 hits the 1.15M range).
+  4. No regression in p99 latency — tail latency should improve or match.
+**Plans**: TBD
+**UI hint**: no
+
+### Phase 59: 59-binary-wire-format-for-push
+**Goal**: Eliminate JSON re-serialization on the PUSH hot path — currently ~11% of CPU (serde_json::format_escaped_str + from_utf8 on the shard-dispatch path). Replace JSON with a binary codec (length-prefixed postcard or custom) for TCP PUSH; HTTP PUSH stays JSON for compatibility. Zero-copy payload via `bytes::Bytes` end-to-end from wire → shard inbox → fjall insert.
+**Depends on**: Phase 58 (Tokio overhead reduced first so this work's impact is measurable).
+**Requirements**: TPC-PERF-09 (NEW — PUSH path JSON cost ≤ 3% of CPU).
+**Success Criteria** (what must be TRUE):
+  1. samply profile shows `serde_json::*` + `from_utf8` combined ≤ 3% of leaf samples on TCP PUSH path.
+  2. Python + Rust SDKs emit the new binary format on TCP; HTTP path unchanged.
+  3. `bytes::Bytes` payload is forwarded from TCP read → ShardEvent → fjall insert with ZERO `serde_json::to_vec` / `to_string` re-serialization.
+  4. Perf gate: ≥ +10% EPS vs Phase 58 baseline.
+  5. Backward compatibility: servers accept both old (JSON) and new (binary) wire formats for ≥ 1 release cycle; SDKs negotiate on handshake.
+**Plans**: TBD
+**UI hint**: no
+
+### Phase 60: 60-hotkey-mitigation-via-application-salting
+**Goal**: Fix the Zipf-1.2 hot-shard bottleneck — today shard-0 saturates at ~450K EPS while shards 1–7 are idle (`/debug/shards` shows `inbox_depth=65536` on shard-0 vs 0 everywhere else). Under Pareto-80/20 workloads (TPC-PERF-07), a single shard is the ceiling. Approach: application-layer salting. Users declare `shard_key="user_id:salt(N)"` and Beava appends a random 0..N suffix at ingest, splitting hot keys across N virtual sub-shards. Cross-sub-shard scatter-gather on read.
+**Depends on**: Phase 59 (per-event hot-path cost reduced so salt fan-out is affordable).
+**Requirements**: TPC-PERF-10 (NEW — Pareto-80/20 workload EPS ≥ +50% vs uniform-key baseline on same hardware).
+**Success Criteria** (what must be TRUE):
+  1. SDK supports `@bv.stream(shard_key="user_id:salt(16)")` — ingest appends `:0`..`:15` suffix based on a per-event random draw or hash of a secondary field.
+  2. Reads of a salted key scatter-gather across all salt values; results aggregated via the operator's existing combine semantics (sum/count are commutative; last-value reads pick the freshest by event_time).
+  3. Perf gate: under Pareto-80/20 workload (matching TPC-PERF-07 cell), aggregate EPS ≥ +50% vs Phase 59 baseline on the same hardware; hot-shard `inbox_depth` stays ≤ 50% of `BEAVA_SHARD_INBOX_SIZE` under steady load.
+  4. No correctness regression on uniform workload — salt is opt-in per stream.
+  5. Metric `beava_shard_hot_key_owner_ratio` exposes "what % of events on this shard came from the top-1% of keys" so operators can identify candidates for salting.
+**Plans**: TBD
+**UI hint**: no
+
+### Phase 61: 61-metrics-hot-path-hoist
+**Goal**: Eliminate per-event `metrics_util::Registry::get_or_create_counter` overhead (~3.5% of CPU in current profile). Cache counter/histogram handles at stream-register time; the per-event path becomes a pointer dereference + atomic increment.
+**Depends on**: Phase 60 (optimizations ordered biggest-lever-first).
+**Requirements**: TPC-PERF-11 (NEW — metrics overhead ≤ 0.5% of CPU).
+**Success Criteria** (what must be TRUE):
+  1. samply shows `metrics_util::*` ≤ 0.5% of leaf samples.
+  2. `register_stream` + `register_table` pre-allocate counter handles for every metric the stream touches on its hot path; stored in `StreamState::counters: [Arc<AtomicU64>; N_METRICS]`.
+  3. Perf gate: ≥ +3% EPS vs Phase 60 baseline.
+**Plans**: TBD
+**UI hint**: no
+
+### Phase 62: 62-allocator-and-feature-row-pooling
+**Goal**: Reduce allocator churn on the hot path — `Vec::drop`, `RawVecInner::reserve`, `indexmap::insert_full` collectively cost ~10% of CPU. Pool `Vec<FeatureValue>` buffers per shard thread; pre-size IndexMap buckets at register time; use bumpalo for per-batch scratch allocations.
+**Depends on**: Phase 61.
+**Requirements**: TPC-PERF-12 (NEW — allocator churn ≤ 3% of CPU).
+**Success Criteria** (what must be TRUE):
+  1. samply shows `Vec::drop` + `RawVecInner::reserve` + allocator frames combined ≤ 3% of leaf samples.
+  2. Feature rows are allocated from a per-shard pool; `Vec::drop` at the end of batch returns buffers to the pool instead of freeing.
+  3. IndexMap capacity pre-sized at stream registration based on `max_keys` or a default.
+  4. Perf gate: ≥ +5% EPS vs Phase 61 baseline.
+**Plans**: TBD
+**UI hint**: no
+
+### Phase 63: 63-fjall-cache-and-compaction-tuning
+**Goal**: Close the fjall-vs-inmem throughput gap. Today fjall is ~93% of inmem on complex N=8 (lz4_flex decompression is the 6% tax). Tune block cache size to working-set; increase memtable size to reduce flush frequency; tune compaction schedule for the measured ingest rate.
+**Depends on**: Phase 62.
+**Requirements**: TPC-PERF-13 (NEW — fjall EPS ≥ 95% of inmem EPS on the standard complex N=8 bench).
+**Success Criteria** (what must be TRUE):
+  1. `MODE=complex N=8 DURATION=60` shows fjall EPS ≥ 95% of inmem EPS on the reference box.
+  2. `BEAVA_FJALL_CACHE_MB` default tuning formula revised based on Phase 62 measurements; `BEAVA_FJALL_MAX_MEMTABLE_MB` default revised.
+  3. lz4 decompression cost ≤ 3% of CPU (currently ~6%).
+**Plans**: TBD
+**UI hint**: no
+
+### Phase 64: 64-rust-bench-client
+**Goal**: Unblock true server-ceiling measurement by eliminating the Python + GIL bottleneck in the bench harness. `bench.py` clients cap at ~200–400K EPS each due to GIL + TCP framing in Python; this has been bounding our server measurements to ~1.3M EPS aggregate at CPUs=8. Replace with a Rust harness that can push ≥ 2M EPS per client.
+**Depends on**: Phase 63.
+**Requirements**: TPC-PERF-14 (NEW — bench client ceiling ≥ 10× current Python per-client rate).
+**Success Criteria** (what must be TRUE):
+  1. `benchmark/fraud-pipeline/bench-rust` binary replicates the Python bench.py feature set (Zipfian key distribution, checkpoint JSONL, latency sampling, phase=final envelope with error semantics matching Deviation-4 fix).
+  2. Single Rust client sustains ≥ 2M EPS against a localhost beava server.
+  3. Re-runs of the Phase 54 baseline bench using the Rust client measure a new server ceiling and document it — this phase is an **instrumentation unlock**, not a perf optimization; the server EPS number may reveal new bottlenecks to queue as Phase 65+.
+**Plans**: TBD
+**UI hint**: no
+
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
@@ -194,3 +331,13 @@ Plans:
 | 52. Event log, recovery, ship-gate | 10/10 | Complete    | 2026-04-19 |
 | 53. Fjall state backend | 6/7 plans (06 deferred) | **Engineering-complete** — 4/6 TPC-PERSIST closed; PERSIST-04 + PERSIST-05A gates deferred to Phase 54 (legacy DashMap bypass at N=1) | 2026-04-19 |
 | 54. Legacy engine removal | 6/6 | **Engineering-complete** — TPC-ARCH-01 ✅ + TPC-PERSIST-05A ✅ closed; TPC-PERSIST-04 human_needed (Hetzner CCX43 8h soak; evidence-file gated). pprof DashMap → 0% in top-20; EPS +580% (197K → 1.34M). | 2026-04-20 (eng) |
+| 55. Stream→Table cascade cross-shard + source tables | 0/? | Not started — correctness fix (shard_key on stream = source-ingress hint only; downstream cascades shuffle by output key); new `@bv.source_table` SDK for CDC | — |
+| 56. EnrichFromTable + StreamStreamJoin cross-shard | 0/? | Not started — relaxes TPC-CORR-04 to runtime warning; both sides route to join-key-owning shard | — |
+| 57. Retraction across cross-shard joins | 0/? | Not started — consuming the pending-retraction markers from Phase 55 source-table DELETEs + SSJ tombstone propagation | — |
+| 58. Tokio connection-handling rewrite | 0/? | Not started — biggest measured bottleneck (60% of CPU in samply) — eliminate per-conn task churn | — |
+| 59. Binary wire format for PUSH | 0/? | Not started — 11% CPU savings from removing JSON re-serialization | — |
+| 60. Hot-key mitigation via application salting | 0/? | Not started — architectural fix for Zipf hot-shard ceiling (≥+50% under Pareto-80/20) | — |
+| 61. Metrics hot-path hoist | 0/? | Not started — 3.5% CPU savings | — |
+| 62. Allocator + feature-row pooling | 0/? | Not started — 5-10% CPU savings | — |
+| 63. fjall cache + compaction tuning | 0/? | Not started — close fjall→inmem gap to ≥95% | — |
+| 64. Rust bench client | 0/? | Not started — instrumentation unlock; removes Python GIL ceiling | — |
