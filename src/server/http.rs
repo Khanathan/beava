@@ -1754,7 +1754,6 @@ mod tests {
     use super::*;
     use crate::engine::pipeline::PipelineEngine;
     use crate::server::tcp::{make_concurrent_state, BackfillTracker};
-    use crate::state::store::StateStore;
     use std::sync::Arc;
 
     fn test_state() -> SharedState {

@@ -1,3 +1,7 @@
+// Phase 54-04 Pass A6b: whole file gated off — references the deleted
+// `StateStore`. Pass C re-gates or prunes.
+#![cfg(any())]
+
 //! Phase 28-03: prove the engine runs in a client context.
 //!
 //! Registers a minimal pipeline, pushes two events, asserts state

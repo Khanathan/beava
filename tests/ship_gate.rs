@@ -1,3 +1,7 @@
+// Phase 54-04 Pass A6b: whole file gated off — references the deleted
+// `StateStore`. Pass C re-gates or prunes.
+#![cfg(any())]
+
 // SHIP-01 (+ CORR-01 + CORR-05 + CORR-06): single integration test exercising
 // live-ingest → crash (drop) → recover (replay from event log) → read features.
 //

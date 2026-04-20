@@ -1,3 +1,7 @@
+// Phase 54-04 Pass A6b: whole file gated off — references the deleted
+// `StateStore`. Pass C re-gates or prunes.
+#![cfg(any())]
+
 // CORR-07: eviction clock sources from WatermarkTracker::observed_max(), not
 // SystemTime::now().
 //

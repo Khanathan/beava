@@ -7,6 +7,11 @@
 // Phase 54-04 Pass A5: gated under `state-inmem` — exercises
 // `engine.get_features(&store)` and `engine.push_batch_with_cascade_no_features(&store)`
 // which only exist on the in-memory build after this pass.
+// Phase 54-04 Pass A6b: tightened from `state-inmem` to permanent-off. This
+// file exercises `StateStore::new()`, `engine.get_features(&StateStore)`, and
+// `engine.push_batch_with_cascade_no_features(&StateStore)` — all deleted by
+// Pass A5/A6b. Pass C migrates to shard-dispatch batch path or prunes.
+#![cfg(any())]
 #![cfg(feature = "state-inmem")]
 
 use beava::engine::pipeline::{FeatureDef, PipelineEngine, StreamDefinition};

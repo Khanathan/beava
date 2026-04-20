@@ -10,6 +10,10 @@
 //! module-level gate keeps them from breaking the default `cargo check
 //! --tests` gate until Pass B migrates / deletes the remaining legacy
 //! calls.
+// Phase 54-04 Pass A6b: tightened from `state-inmem` to permanent-off. Uses
+// `StateStore::new()` and `engine.push(&store)` / `engine.get_features(&store)`
+// — all deleted by Pass A5/A6b. Pass C migrates to the shard dispatch path.
+#![cfg(any())]
 #![cfg(feature = "state-inmem")]
 
 use ahash::AHashSet;

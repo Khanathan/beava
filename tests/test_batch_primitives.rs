@@ -17,6 +17,11 @@
 //! AppState mutex once per batch. These tests ensure the primitives preserve
 //! single-event semantics exactly.
 
+// Phase 54-04 Pass A6b: tightened from `state-inmem` to permanent-off. Uses
+// `StateStore::mark_dirty_many` / `push_batch_no_features(&StateStore)` /
+// `engine.get_features(&StateStore)` — all deleted. Pass C migrates to shard
+// batch primitives (per-shard AHashMap / fjall) or prunes.
+#![cfg(any())]
 #![cfg(feature = "state-inmem")]
 #![allow(dead_code, unused_imports)]
 

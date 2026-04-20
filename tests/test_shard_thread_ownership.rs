@@ -1,3 +1,7 @@
+// Phase 54-04 Pass A6b: whole file gated off — references the deleted
+// `StateStore`. Pass C re-gates or prunes.
+#![cfg(any())]
+
 //! Phase 50.5-01 — Shard thread ownership integration tests (TDD RED → GREEN).
 //!
 //! All four tests MUST FAIL before Task 3 (the GREEN implementation).

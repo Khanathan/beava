@@ -1917,7 +1917,6 @@ mod seed_pipelines_tests {
     use super::seed_pipelines_from_file;
     use beava::engine::pipeline::PipelineEngine;
     use beava::server::tcp::{make_concurrent_state, BackfillTracker};
-    use beava::state::store::StateStore;
     use std::io::Write;
     use std::sync::Arc;
 

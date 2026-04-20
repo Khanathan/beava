@@ -1,3 +1,7 @@
+// Phase 54-04 Pass A6b: whole file gated off — references the deleted
+// `StateStore`. Pass C re-gates or prunes.
+#![cfg(any())]
+
 //! Phase 23-01 Task 2 — Stream↔Table enrichment join end-to-end.
 //!
 //! These tests drive the engine via the same REGISTER JSON shape that

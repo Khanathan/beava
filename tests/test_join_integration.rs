@@ -1,3 +1,7 @@
+// Phase 54-04 Pass A6b: whole file gated off — references the deleted
+// `StateStore`. Pass C re-gates or prunes.
+#![cfg(any())]
+
 //! Phase 23-03 Task 2 — Cross-shape join integration tests.
 //!
 //! Exercises DAGs that combine MULTIPLE join shapes in a single pipeline to

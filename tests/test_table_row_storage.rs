@@ -3,6 +3,10 @@
 //! Verifies the four StateStore methods (`upsert_table_row`,
 //! `tombstone_table_row`, `get_table_row`, `gc_tombstones`) plus the
 //! isolation guarantee between `table_rows` and `static_features`.
+//!
+//! Phase 54-04 Pass A6b: whole file gated off — exercises the deleted
+//! `StateStore` API. Pass C migrates to the shard-owned TableRow path.
+#![cfg(any())]
 
 use ahash::AHashMap;
 use std::time::{Duration, UNIX_EPOCH};

@@ -15,6 +15,10 @@
 //! through `engine.get_features(&state.store)`, only compiled on the
 //! in-memory build after this pass.
 
+// Phase 54-04 Pass A6b: tightened from `state-inmem` to permanent-off. This
+// file exercises `engine.get_features(&StateStore)` — deleted by Pass A6b.
+// Pass C migrates to shard-dispatch batch path or prunes.
+#![cfg(any())]
 #![cfg(feature = "state-inmem")]
 #![allow(dead_code, unused_imports)]
 

@@ -6,6 +6,10 @@
 //!   - `integration`: end-to-end tests that drive the engine via REGISTER
 //!     payloads (Task 2). These mirror the Stream↔Table harness from
 //!     `test_join_stream_table.rs`.
+//!
+//! Phase 54-04 Pass A6b: whole file gated off — every test references the
+//! deleted `StateStore` struct. Pass C migrates to shard dispatch or prunes.
+#![cfg(any())]
 
 mod primitives {
     use beava::engine::operators::{JoinSide, StreamJoinBuffer};

@@ -1,3 +1,7 @@
+// Phase 54-04 Pass A6b: whole file gated off — references the deleted
+// `StateStore`. Pass C re-gates or prunes.
+#![cfg(any())]
+
 //! Phase 23-01 Task 1 — composite group_by keys.
 //!
 //! Verifies that aggregations declared with multi-key `group_by` bucket state

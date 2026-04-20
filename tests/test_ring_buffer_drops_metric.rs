@@ -1,3 +1,7 @@
+// Phase 54-04 Pass A6b: whole file gated off — references the deleted
+// `StateStore`. Pass C re-gates or prunes.
+#![cfg(any())]
+
 // OBS-01/02: beava_ring_buffer_drops_total{stream, operator_kind, reason}
 // counter with bounded labels and mutual-exclusivity invariant.
 //

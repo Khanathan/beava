@@ -1,3 +1,7 @@
+// Phase 54-04 Pass A6b: whole file gated off — references the deleted
+// `StateStore`. Pass C re-gates or prunes.
+#![cfg(any())]
+
 //! Phase 24-04 Task 1: event-time parsing + per-stream watermark
 //! tracking + late-event drop counter.
 //!

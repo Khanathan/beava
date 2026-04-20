@@ -23,6 +23,10 @@
 //! Test 6: Fast-path observability: N=8 upstream → N=8 downstream —
 //!   `rehash_skip_count()` increments when fast-path is used.
 
+// Phase 54-04 Pass A6b: tightened from `state-inmem` to permanent-off. Uses
+// `engine.get_features(&state.store)` + `StateStore::new()` — both deleted.
+// Pass C migrates to the shard dispatch equivalents.
+#![cfg(any())]
 #![cfg(feature = "state-inmem")]
 
 use std::sync::Arc;

@@ -771,7 +771,6 @@ mod tests {
     use crate::engine::pipeline::PipelineEngine;
     use crate::server::tcp::{make_concurrent_state_full, BackfillTracker};
     use crate::shard::global_watermark::GlobalWatermarkStore;
-    use crate::state::store::StateStore;
     use axum::body::Body;
     use axum::http::Request;
     use std::sync::Arc;

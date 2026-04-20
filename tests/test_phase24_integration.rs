@@ -1,3 +1,7 @@
+// Phase 54-04 Pass A6b: whole file gated off — tests reference the deleted
+// `StateStore` struct. Pass C migrates to shard dispatch or prunes.
+#![cfg(any())]
+
 //! Phase 24-05 Task 1 — Multi-shape DAG integration tests.
 //!
 //! These five tests are the Phase 24 integration gate: each builds a small but

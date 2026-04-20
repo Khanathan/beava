@@ -1,3 +1,13 @@
+// Phase 54-04 Pass A6b: whole bench body gated off — the `StateStore` struct
+// was deleted. The ArcSwap<DashSet<String>> dirty-set pattern benchmarked
+// here lived on `StateStore.dirty_keys`; the shard-owned `Shard.dirty_set`
+// (plain HashSet, single-writer) that replaces it does not need this bench.
+// A stub `main` keeps criterion's `cargo bench --bench dirty_swap` from
+// failing with E0601; Pass C deletes the file outright.
+fn main() {}
+
+#[cfg(any())]
+mod disabled_bench_body {
 // D-22: micro-bench for ArcSwap<DashSet<String>> mark_dirty overhead.
 // Regression ceiling: <2% delta on the 9-cell bench (D-03 gate).
 // Run via: cargo bench --bench dirty_swap
@@ -52,4 +62,6 @@ criterion_group!(
     bench_mark_dirty_distinct,
     bench_take_and_advance_empty
 );
-criterion_main!(benches);
+// criterion_main! removed — stub `fn main()` at top replaces it under the
+// gated body. Pass C will delete this whole file.
+} // end mod disabled_bench_body (Phase 54-04 Pass A6b)

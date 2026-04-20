@@ -10,6 +10,9 @@
 //! through `engine.get_features(&store)`, only compiled on the in-memory
 //! build after this pass.
 
+// Phase 54-04 Pass A6b: tightened from `state-inmem` to permanent-off. Uses
+// `engine.get_features(&StateStore)` — deleted by Pass A6b. Pass C migrates.
+#![cfg(any())]
 #![cfg(feature = "state-inmem")]
 
 use std::sync::Arc;

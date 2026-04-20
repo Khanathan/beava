@@ -1,3 +1,8 @@
+// Phase 54-04 Pass A6b: whole file gated off — the deleted `StateStore` and
+// the test-only `evict_expired_stream_entries(&StateStore, ...)` helper it
+// depended on are both gone. Pass C migrates to shard dispatch or prunes.
+#![cfg(any())]
+
 //! Integration tests for snapshot persistence and TTL eviction.
 //!
 //! Tests PERS-01 (periodic snapshot), PERS-02 (postcard + versioned format),

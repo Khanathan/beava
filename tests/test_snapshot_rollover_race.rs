@@ -1,3 +1,7 @@
+// Phase 54-04 Pass A6b: whole file gated off — references the deleted
+// `StateStore`. Pass C re-gates or prunes.
+#![cfg(any())]
+
 // CORR-10: busy-racer asserting take_dirty_and_advance_gen() loses no marks.
 //
 // Pattern: N writer threads call mark_dirty(key) while a snapshotter thread

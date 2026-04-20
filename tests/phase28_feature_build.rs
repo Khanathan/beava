@@ -10,11 +10,15 @@ fn engine_and_state_are_shared_across_features() {
     // These types must exist regardless of feature flag.
     // If a future change accidentally puts them behind
     // #[cfg(feature = "server")], this test stops compiling.
+    //
+    // Phase 54-04 Pass A6b: `StateStore` deleted. Check `EntityState` (one of
+    // the co-located types that survived) instead — it still asserts the
+    // `state` module is reachable under the default feature set.
     use beava::engine::pipeline::PipelineEngine;
-    use beava::state::store::StateStore;
+    use beava::state::store::EntityState;
 
     let _ = std::any::type_name::<PipelineEngine>();
-    let _ = std::any::type_name::<StateStore>();
+    let _ = std::any::type_name::<EntityState>();
 }
 
 #[test]

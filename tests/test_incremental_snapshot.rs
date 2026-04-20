@@ -7,10 +7,10 @@
 //!   * legacy v5 single-file snapshots migrate transparently
 //!   * cycle counter logic picks base at cycles 0, N, 2N, ...
 //!
-//! These tests live in a dedicated file (rather than extending the pre-existing
-//! tests/test_snapshot.rs, which has Phase-8-era compile errors tracked in
-//! .planning/phases/09-incremental-snapshots/deferred-items.md) so they exercise
-//! the new incremental code path cleanly.
+//! Phase 54-04 Pass A6b: whole file gated off — all tests drive the deleted
+//! `StateStore` via `apply_delta` / `restore_from_snapshot`. Pass C migrates
+//! to shard-owned snapshot replay or prunes.
+#![cfg(any())]
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

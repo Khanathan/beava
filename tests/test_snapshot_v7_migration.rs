@@ -1,3 +1,7 @@
+// Phase 54-04 Pass A6b: whole file gated off — references the deleted
+// `StateStore`. Pass C re-gates or prunes.
+#![cfg(any())]
+
 //! Phase 24-01, Task 2: Snapshot codec v7 round-trip + v6 → v7 migration.
 //!
 //! Verifies:

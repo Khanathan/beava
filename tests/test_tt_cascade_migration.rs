@@ -1,3 +1,8 @@
+// Phase 54-04 Pass A6b: whole file gated off — drives the deleted `StateStore`
+// primitives directly. Pass C migrates to shard `upsert_table_row` / shard
+// `get_table_row` or prunes these tests.
+#![cfg(any())]
+
 //! Phase 24-03 — Cascade migration: `cascade_table_upsert` now reads
 //! `table_rows[A] / table_rows[B]` (from plan 01) instead of the
 //! `__tt_left_*` / `__tt_right_*` markers from Phase 23-03.

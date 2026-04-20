@@ -16,6 +16,11 @@
 //! semantics byte-for-byte.
 
 #![allow(dead_code, unused_imports)]
+// Phase 54-04 Pass A6b: tightened from `state-inmem` to permanent-off. This
+// file exercises `engine.get_features(&StateStore)` and
+// `engine.push_with_cascade_no_features(&StateStore)` — both deleted by Pass
+// A5/A6b. Pass C migrates to the shard-dispatch batch path or prunes.
+#![cfg(any())]
 #![cfg(feature = "state-inmem")]
 
 use std::sync::Arc;

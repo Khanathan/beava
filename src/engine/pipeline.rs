@@ -14,11 +14,11 @@ use super::operators::{
 };
 use crate::error::BeavaError;
 use crate::state::snapshot::OperatorState;
-// Phase 54-04 Pass B: legacy `&StateStore` helpers deleted from this file.
-// `StateStore` is still referenced by the `get_features` read-path helper
-// (cfg-gated to tests + state-inmem) and by the in-file `#[cfg(test)]` module.
-#[cfg(any(test, feature = "state-inmem"))]
-use crate::state::store::StateStore;
+// Phase 54-04 Pass A6b: the `StateStore` struct was deleted, and with it the
+// cfg-gated `get_features(&StateStore, ...)` read-path helper that used to
+// live in this file. Production GET now always flows through
+// `get_features_on_shard` (shard-local, no DashMap). Pass C retires the
+// `state-inmem` feature entirely.
 use crate::types::{FeatureMap, FeatureValue};
 use ahash::{AHashMap, AHashSet};
 use petgraph::algo::toposort;
@@ -2292,127 +2292,11 @@ impl PipelineEngine {
         &self.topo_order
     }
 
-    /// Feature retrieval for GET path.
-    /// Calls store.get_all_features (which reads operators with &mut self to
-    /// advance time and expire stale buckets), then evaluates derive expressions
-    /// for any registered streams, then evaluates view features (cross-stream
-    /// derives and cross-key lookups).
-    ///
-    /// Phase 54-04 Pass A5: gated off the default (fjall) build. Production
-    /// callers have migrated to `get_features_on_shard` during Waves 1-3 +
-    /// Passes A1-A4; this signature now only exists for the `state-inmem`
-    /// feature and the in-tree unit tests that still exercise the legacy
-    /// StateStore-based view/derive evaluation path. Pass A6 / Pass C deletes
-    /// StateStore outright and this method with it.
-    #[cfg(any(test, feature = "state-inmem"))]
-    pub fn get_features(&self, key: &str, store: &StateStore, now: SystemTime) -> FeatureMap {
-        // Phase 24-02: merged view = live stream ops + flattened Live
-        // table_rows (as `TableName.field`) + static_features overlay.
-        // Tombstoned table rows filtered out in `collect_merged_features`.
-        let mut features = store.collect_merged_features(key, now);
-
-        // Build qualified feature names: "StreamName.feature_name" -> value
-        // so view derive expressions can reference features from specific streams.
-        // Iterate all streams' operators from the entity to build qualified names.
-        let mut qualified: Vec<(String, FeatureValue)> = Vec::new();
-        for stream in self.streams.values() {
-            for (fname, _) in &stream.features {
-                if let Some(val) = features.get(fname) {
-                    qualified.push((format!("{}.{}", stream.name, fname), val.clone()));
-                }
-            }
-        }
-        for (qname, val) in qualified {
-            features.insert(qname, val);
-        }
-
-        // Evaluate derives from all registered streams
-        let ctx = EvalContext {
-            features: &features,
-            event: None,
-            enrichment: None,
-            // Read-path: no current event. `event_time()` in a derive
-            // here returns Missing per the builtin's doc-comment.
-            event_time: None,
-        };
-        // Collect derives first to avoid borrow issues
-        let mut derived: Vec<(String, FeatureValue)> = Vec::new();
-        for stream in self.streams.values() {
-            for (name, def) in &stream.features {
-                if let FeatureDef::Derive { expr } = def {
-                    let value = eval(expr, &ctx);
-                    derived.push((name.clone(), value));
-                }
-            }
-        }
-        for (name, value) in derived {
-            features.insert(name, value);
-        }
-
-        // Apply per-stream projections to filter response features
-        // (after derives are evaluated -- they need all features)
-        for stream in self.streams.values() {
-            if let Some(ref proj) = stream.projection {
-                proj.apply(&mut features);
-            }
-        }
-
-        // Evaluate view features (cross-stream derives and cross-key lookups)
-        let mut view_results: Vec<(String, FeatureValue)> = Vec::new();
-        for view in self.views.values() {
-            for (fname, vdef) in &view.features {
-                match vdef {
-                    ViewFeatureDef::Derive { expr } => {
-                        let ctx = EvalContext {
-                            features: &features,
-                            event: None,
-                            enrichment: None,
-                            event_time: None,
-                        };
-                        view_results.push((fname.clone(), eval(expr, &ctx)));
-                    }
-                    ViewFeatureDef::Lookup {
-                        target_stream: _target_stream,
-                        target_feature,
-                        on_field,
-                    } => {
-                        // Resolve the foreign key from the entity's existing features.
-                        // Search stream definitions for a Last operator that tracks the
-                        // on_field, then use its feature name to look up the value.
-                        let mut foreign_key: Option<&FeatureValue> = None;
-                        'outer: for stream in self.streams.values() {
-                            for (feat_name, def) in &stream.features {
-                                if let FeatureDef::Last { field, .. } = def {
-                                    if field == on_field {
-                                        foreign_key = features.get(feat_name);
-                                        break 'outer;
-                                    }
-                                }
-                            }
-                        }
-                        // Fallback: try direct name match (e.g. feature named same as on_field)
-                        if foreign_key.is_none() {
-                            foreign_key = features.get(on_field);
-                        }
-                        match foreign_key {
-                            Some(FeatureValue::String(fk)) => {
-                                let val = store.get_feature_value(fk, target_feature, now);
-                                view_results.push((fname.clone(), val));
-                            }
-                            _ => {
-                                view_results.push((fname.clone(), FeatureValue::Missing));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        for (name, value) in view_results {
-            features.insert(name, value);
-        }
-
-        features
-    }
+    // Phase 54-04 Pass A6b: `pub fn get_features(&self, key, &StateStore, now)`
+    // was deleted here alongside the `StateStore` struct. Production GET now
+    // flows through `get_features_on_shard` below. Pass C retires the
+    // `state-inmem` feature and the last `collect_merged_features` shim with
+    // it.
 
     /// Phase 53-01: shard-local GET path. Reads features from shard-owned
     /// state (AHashMap) — no DashMap access.
