@@ -64,7 +64,23 @@ fn count_stream(name: &str, key_field: &str) -> StreamDefinition {
     }
 }
 
-fn make_state() -> SharedState {
+/// Build a state with N shards AND spawn the shard threads so
+/// `handle_push_batch` actually routes through the SPSC→shard→fjall path.
+///
+/// Wave-4 removed the N=1 legacy bypass, so `handle_push_batch` now
+/// requires `state.shard_handles` to be populated. Without
+/// `spawn_shard_threads`, every send returns `ShardOverload` / dropped
+/// and `r.is_ok()` is false for every event → 0 EPS.
+fn make_state_with_shards(n_shards: u16) -> SharedState {
+    // Use BEAVA_DATA_DIR so per-shard fjall partitions land in an
+    // ephemeral tempdir rather than clobbering a user workspace.
+    let tmp_data = tempfile::tempdir().unwrap();
+    std::env::set_var("BEAVA_DATA_DIR", tmp_data.path());
+    // Intentionally leak the TempDir: shard threads reference it for the
+    // lifetime of the test and dropping it mid-run would rm -rf the
+    // fjall partitions out from under them.
+    Box::leak(Box::new(tmp_data));
+
     let mut engine = PipelineEngine::new();
     // Mirrors benchmark/fraud-pipeline 'complex' topology: primary stream
     // keyed on user_id, plus three fan-out tables keyed on independent
@@ -83,7 +99,7 @@ fn make_state() -> SharedState {
         .register(count_stream("IPSummary", "ip_address"))
         .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    make_concurrent_state_full(
+    let state = make_concurrent_state_full(
         engine,
         None, // event_log off — we want pure in-memory hot path
         tmp.path().join("snap"),
@@ -92,8 +108,25 @@ fn make_state() -> SharedState {
         false, // event_log disabled
         None,
         false,
-        1,
-    )
+        n_shards,
+    );
+    // Leak `tmp` for the same reason as tmp_data above.
+    Box::leak(Box::new(tmp));
+
+    // Phase 54-05: spawn_shard_threads populates state.shard_handles.
+    // Without this, handle_push_batch drops every event.
+    let handles =
+        beava::shard::thread::spawn_shard_threads(n_shards.into(), 65_536, state.clone());
+    *state.shard_handles.write() = handles;
+    state
+}
+
+fn make_state() -> SharedState {
+    // Post-Wave-4: drive through 8 shards to match the fraud-pipeline
+    // MODE=complex N=8 workload shape that baseline-N8-complex.json
+    // captures. At N=1 the profile would under-sample the scatter-gather
+    // + SPSC-transit costs that dominate post-refactor.
+    make_state_with_shards(8)
 }
 
 /// Key generator. Defaults to Zipfian-1.2 (pathological hot-key).
