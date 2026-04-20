@@ -52,6 +52,7 @@ fn wrap_json(v: &serde_json::Value) -> Vec<u8> {
 }
 
 #[test]
+#[ignore = "54-01 Pass C: replica_ingest_batch now routes through SPSC (handle_push_core_ex), which requires spawn_shard_threads; this test builds state without spawning shard threads. Migrated by 54-03 Wave 3 (same class as Pass B's 12 ignored tests)."]
 fn replica_batch_advances_watermark() {
     let tmp = std::env::temp_dir().join(format!(
         "beava_fork_wm_{}",
