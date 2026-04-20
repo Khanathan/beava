@@ -42,8 +42,37 @@ use std::time::SystemTime;
 /// Table row storage. v6 snapshots migrate transparently — see `load_snapshot`.
 /// v8 (Phase 52-01): `BaseSnapshotStateV8` adds `shard_count: u16` and
 /// `replica_lsn_map` for TPC shard-count boot guard (TPC-CORR-02) and LSN dedup.
-/// v7 snapshots read and promoted with shard_count=1. Writer always emits v8.
-pub const SNAPSHOT_FORMAT_VERSION: u8 = 8;
+/// v7 snapshots read and promoted with shard_count=1.
+/// v9 (Phase 55-03): identical on-disk body to v8 (`BaseSnapshotStateV8`), but the
+/// embedded `SnapshotHeader.schema_version` is `9` (vs serde-default `8` for pre-55
+/// bytes). Loading a v8-outer-byte snapshot or a snapshot whose header reads
+/// `schema_version < 9` triggers `rematerialize_tables_from_event_logs` at boot
+/// (src/state/recovery.rs). Writer always emits v9 going forward; v8 bytes are
+/// still accepted by the reader. Pre-Phase-55 binaries clamp their outer-byte
+/// dispatch at `V8_FORMAT` and therefore reject v9 bytes (Pitfall 3, intentional
+/// forward-compat break).
+pub const SNAPSHOT_FORMAT_VERSION: u8 = 9;
+
+/// Phase 55-03: explicit outer-format byte for Phase 52-era snapshots (v8).
+/// v8 is STILL ACCEPTED by the reader (serde-default `schema_version = 8` triggers
+/// rematerialization at boot). Writer no longer emits v8 — new writes use
+/// `V9_FORMAT`. See `SNAPSHOT_FORMAT_VERSION` docs.
+pub const V8_FORMAT: u8 = 8;
+
+/// Phase 55-03: outer-format byte for Phase-55+ snapshots. Equal to
+/// `SNAPSHOT_FORMAT_VERSION`; exported separately so the boot-guard /
+/// rematerialization module can reason about v8-vs-v9 bytes explicitly.
+pub const V9_FORMAT: u8 = 9;
+
+/// Serde default for Phase 55's new `SnapshotHeader.schema_version` field.
+/// When a pre-Phase-55 snapshot (no field on the wire) is deserialized, this
+/// fills in `8` — the semantic pre-cross-shard-cascade version. The boot guard
+/// in `src/main.rs` / `src/state/recovery.rs` uses this to detect v8-era bytes
+/// and trigger downstream-table rematerialization through the new cross-shard
+/// cascade path. See Phase 55-03 Plan D-C1.
+fn default_v8() -> u16 {
+    8
+}
 
 /// Legacy v5 format version byte. Used by `load_legacy_v5` to migrate
 /// existing single-file snapshots to v6 on first startup.
@@ -352,12 +381,162 @@ pub enum SnapshotType {
     Delta { base_seq: u64 },
 }
 
-/// Header present in all v6 snapshots. Carries the snapshot type and a
+/// Header present in all v6+ snapshots. Carries the snapshot type and a
 /// monotonic sequence number used to order files during recovery.
+///
+/// Phase 55-03 added `schema_version: u16` with `#[serde(default = "default_v8")]`.
+/// A pre-Phase-55 snapshot on the wire (no field) decodes as `schema_version == 8`
+/// via an internal wire-compat shim (`SnapshotHeaderV8Wire` + conversion); a
+/// Phase-55+ writer emits `9`. The boot guard in `src/main.rs` /
+/// `src/state/recovery.rs` triggers downstream-table rematerialization when the
+/// loaded snapshot's `schema_version < 9` (the pre-cross-shard-cascade era wrote
+/// downstream TT rows onto the input event's shard — a correctness bug the
+/// rematerializer rebuilds away from).
+///
+/// Wire-compat note: postcard (used for the on-disk encoding) does NOT
+/// synthesize missing trailing fields from `#[serde(default)]`. The v8 load
+/// path therefore decodes into `BaseSnapshotStateV8Wire` (with a
+/// `SnapshotHeaderV8Wire` body that lacks `schema_version`) and converts to
+/// `BaseSnapshotStateV8` with `schema_version = 8` before returning. The
+/// `#[serde(default = "default_v8")]` attribute is still present so that
+/// self-describing formats (JSON in the admin HTTP surface) see the v8
+/// default, and it documents the semantic intent at the type level.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotHeader {
     pub snapshot_type: SnapshotType,
     pub sequence: u64,
+    /// Phase 55: semantic schema version.
+    ///   8 = pre-cross-shard-cascade (downstream rows on input event's shard) — BUG.
+    ///   9 = post-Phase-55 (downstream rows on hash(output_key) shard) — CORRECT.
+    /// Boot guard triggers rematerialization when loaded `< 9`.
+    #[serde(default = "default_v8")]
+    pub schema_version: u16,
+}
+
+/// Phase 55-03 wire-compat shim: the v8 on-disk header layout (no
+/// `schema_version` field). Used internally to decode v8-outer-byte bytes
+/// under postcard, which does not support `#[serde(default)]` for missing
+/// trailing fields. Converts to `SnapshotHeader` via `From` with
+/// `schema_version = 8`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SnapshotHeaderV8Wire {
+    snapshot_type: SnapshotType,
+    sequence: u64,
+}
+
+impl From<SnapshotHeaderV8Wire> for SnapshotHeader {
+    fn from(w: SnapshotHeaderV8Wire) -> Self {
+        SnapshotHeader {
+            snapshot_type: w.snapshot_type,
+            sequence: w.sequence,
+            schema_version: 8,
+        }
+    }
+}
+
+/// Phase 55-03 wire-compat: v8-wire body (decoded from v8 outer-byte snapshots).
+/// Uses `SnapshotHeaderV8Wire` (no `schema_version` field) so postcard decodes
+/// cleanly. Converts to `BaseSnapshotStateV8` with `schema_version = 8`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BaseSnapshotStateV8Wire {
+    header: SnapshotHeaderV8Wire,
+    entities: Vec<(String, SerializableEntityState)>,
+    pipelines: Vec<SerializablePipeline>,
+    #[serde(default)]
+    backfill_complete: Vec<(String, String)>,
+    shard_count: u16,
+    #[serde(default)]
+    replica_lsn_map: HashMap<(String, u8), u64>,
+}
+
+impl From<BaseSnapshotStateV8Wire> for BaseSnapshotStateV8 {
+    fn from(w: BaseSnapshotStateV8Wire) -> Self {
+        BaseSnapshotStateV8 {
+            header: w.header.into(),
+            entities: w.entities,
+            pipelines: w.pipelines,
+            backfill_complete: w.backfill_complete,
+            shard_count: w.shard_count,
+            replica_lsn_map: w.replica_lsn_map,
+        }
+    }
+}
+
+/// Phase 55-03 wire-compat: v8-wire delta body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DeltaSnapshotStateV8Wire {
+    header: SnapshotHeaderV8Wire,
+    changed_entities: Vec<(String, SerializableEntityState)>,
+    deleted_keys: Vec<String>,
+}
+
+impl From<DeltaSnapshotStateV8Wire> for DeltaSnapshotState {
+    fn from(w: DeltaSnapshotStateV8Wire) -> Self {
+        DeltaSnapshotState {
+            header: w.header.into(),
+            changed_entities: w.changed_entities,
+            deleted_keys: w.deleted_keys,
+        }
+    }
+}
+
+/// Phase 55-03 wire-compat: v6/v7 body shims. v6 and v7 on-disk bytes also pre-date
+/// the `schema_version` field, so we use dedicated wire types + conversion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BaseSnapshotStateV7Wire {
+    header: SnapshotHeaderV8Wire,
+    entities: Vec<(String, SerializableEntityState)>,
+    pipelines: Vec<SerializablePipeline>,
+    #[serde(default)]
+    backfill_complete: Vec<(String, String)>,
+}
+
+impl From<BaseSnapshotStateV7Wire> for BaseSnapshotState {
+    fn from(w: BaseSnapshotStateV7Wire) -> Self {
+        BaseSnapshotState {
+            header: w.header.into(),
+            entities: w.entities,
+            pipelines: w.pipelines,
+            backfill_complete: w.backfill_complete,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BaseSnapshotStateV6Wire {
+    header: SnapshotHeaderV8Wire,
+    entities: Vec<(String, SerializableEntityStateV6)>,
+    pipelines: Vec<SerializablePipeline>,
+    #[serde(default)]
+    backfill_complete: Vec<(String, String)>,
+}
+
+impl From<BaseSnapshotStateV6Wire> for BaseSnapshotStateV6 {
+    fn from(w: BaseSnapshotStateV6Wire) -> Self {
+        BaseSnapshotStateV6 {
+            header: w.header.into(),
+            entities: w.entities,
+            pipelines: w.pipelines,
+            backfill_complete: w.backfill_complete,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DeltaSnapshotStateV6Wire {
+    header: SnapshotHeaderV8Wire,
+    changed_entities: Vec<(String, SerializableEntityStateV6)>,
+    deleted_keys: Vec<String>,
+}
+
+impl From<DeltaSnapshotStateV6Wire> for DeltaSnapshotStateV6 {
+    fn from(w: DeltaSnapshotStateV6Wire) -> Self {
+        DeltaSnapshotStateV6 {
+            header: w.header.into(),
+            changed_entities: w.changed_entities,
+            deleted_keys: w.deleted_keys,
+        }
+    }
 }
 
 /// Full base snapshot state (v6). Contains everything needed for standalone
@@ -489,6 +668,11 @@ pub fn save_snapshot(data: &SnapshotState) -> Result<Vec<u8>, postcard::Error> {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 0,
+            // Phase 55-03: new writes always tag schema_version=9. Loading such
+            // a snapshot on a v9-aware binary skips rematerialization; loading
+            // on a pre-Phase-55 binary hits the outer-byte mismatch and returns
+            // None (Pitfall 3).
+            schema_version: 9,
         },
         entities: data.entities.clone(),
         pipelines: data.pipelines.clone(),
@@ -517,11 +701,14 @@ pub fn load_snapshot(bytes: &[u8]) -> Option<SnapshotState> {
     }
     // Phase 24: Legacy v6 path — deserialize with SerializableEntityStateV6
     // and promote each entity to v7 with an empty `table_rows` map.
+    // Phase 55-03: decoded via wire-compat shim (postcard lacks serde-default
+    // for trailing fields; v6 bytes have no schema_version field).
     if version == LEGACY_V6_FORMAT {
         if bytes.len() < 2 || bytes[1] != TYPE_TAG_BASE {
             return None;
         }
-        let base_v6: BaseSnapshotStateV6 = postcard::from_bytes(&bytes[2..]).ok()?;
+        let wire: BaseSnapshotStateV6Wire = postcard::from_bytes(&bytes[2..]).ok()?;
+        let base_v6: BaseSnapshotStateV6 = wire.into();
         let base: BaseSnapshotState = base_v6.into();
         return Some(SnapshotState {
             entities: base.entities,
@@ -530,6 +717,7 @@ pub fn load_snapshot(bytes: &[u8]) -> Option<SnapshotState> {
         });
     }
     // Phase 52-01: Legacy v7 path — decode as BaseSnapshotState (v7 layout).
+    // Phase 55-03: wire-compat shim for pre-schema_version bytes.
     if version == LEGACY_V7_FORMAT {
         if bytes.len() < 2 {
             return None;
@@ -537,22 +725,30 @@ pub fn load_snapshot(bytes: &[u8]) -> Option<SnapshotState> {
         if bytes[1] != TYPE_TAG_BASE {
             return None;
         }
-        let base: BaseSnapshotState = postcard::from_bytes(&bytes[2..]).ok()?;
+        let wire: BaseSnapshotStateV7Wire = postcard::from_bytes(&bytes[2..]).ok()?;
+        let base: BaseSnapshotState = wire.into();
         return Some(SnapshotState {
             entities: base.entities,
             pipelines: base.pipelines,
             backfill_complete: base.backfill_complete,
         });
     }
-    if version != SNAPSHOT_FORMAT_VERSION {
+    // Phase 55-03: accept both V8_FORMAT and V9_FORMAT as "base snapshot" bytes
+    // for this legacy API. The two share an identical on-disk body layout; only
+    // the outer byte + `schema_version` header field differ. v8 bytes decode
+    // through the `V8Wire` shim (header lacks `schema_version` → fills in 8);
+    // v9 bytes decode directly into `BaseSnapshotStateV8` (header carries 9).
+    // Unknown version bytes → None (Pitfall 3 guard for forward-compat:
+    // pre-Phase-55 binaries see 0x09 here and bail out).
+    if version != V8_FORMAT && version != V9_FORMAT {
         // Intentional: startup status (Phase 47 audit)
         eprintln!(
-            "Snapshot version mismatch: found {}, expected {}. Starting fresh.",
-            version, SNAPSHOT_FORMAT_VERSION
+            "Snapshot version mismatch: found {}, expected {} or {}. Starting fresh.",
+            version, V8_FORMAT, V9_FORMAT
         );
         return None;
     }
-    // v8 path: must be a base snapshot for this legacy API.
+    // v8/v9 path: must be a base snapshot for this legacy API.
     if bytes.len() < 2 {
         return None;
     }
@@ -560,7 +756,12 @@ pub fn load_snapshot(bytes: &[u8]) -> Option<SnapshotState> {
         // Delta snapshots must go through load_snapshot_file.
         return None;
     }
-    let base: BaseSnapshotStateV8 = postcard::from_bytes(&bytes[2..]).ok()?;
+    let base: BaseSnapshotStateV8 = if version == V8_FORMAT {
+        let wire: BaseSnapshotStateV8Wire = postcard::from_bytes(&bytes[2..]).ok()?;
+        wire.into()
+    } else {
+        postcard::from_bytes(&bytes[2..]).ok()?
+    };
     Some(SnapshotState {
         entities: base.entities,
         pipelines: base.pipelines,
@@ -570,13 +771,13 @@ pub fn load_snapshot(bytes: &[u8]) -> Option<SnapshotState> {
 
 // ================ Phase 9: v6 Save/Load Functions ================
 
-/// Serialize a `BaseSnapshotState` (v7 layout) wrapped in v8 envelope.
-/// Phase 52-01: this function promotes a v7-era `BaseSnapshotState` to a
-/// `BaseSnapshotStateV8` with `shard_count=1` and empty `replica_lsn_map`,
-/// then writes it as v8.  All new writes are v8; this entry point preserves
-/// the existing call sites in tests and callers that build a `BaseSnapshotState`.
+/// Serialize a `BaseSnapshotState` (v7 layout) wrapped in v8/v9 envelope.
+/// Phase 52-01 added promotion to `BaseSnapshotStateV8` with `shard_count=1` and
+/// empty `replica_lsn_map`. Phase 55-03 bumped the outer byte to `V9_FORMAT` for
+/// all new writes; the body type (`BaseSnapshotStateV8`) is unchanged — only the
+/// outer version byte and the embedded `SnapshotHeader.schema_version` differ.
 ///
-/// Format: `[version=8][type_tag=0x00][postcard(BaseSnapshotStateV8)]`
+/// Format: `[version=9][type_tag=0x00][postcard(BaseSnapshotStateV8)]`
 pub fn save_base_snapshot(data: &BaseSnapshotState) -> Result<Vec<u8>, postcard::Error> {
     let v8 = BaseSnapshotStateV8 {
         header: data.header.clone(),
@@ -589,16 +790,20 @@ pub fn save_base_snapshot(data: &BaseSnapshotState) -> Result<Vec<u8>, postcard:
     save_base_snapshot_v8(&v8)
 }
 
-/// Serialize a `BaseSnapshotStateV8` in v8 format.
-/// Format: `[version=8][type_tag=0x00][postcard(BaseSnapshotStateV8)]`
+/// Serialize a `BaseSnapshotStateV8` in v9 format (identical body to v8).
+/// Format: `[version=9][type_tag=0x00][postcard(BaseSnapshotStateV8)]`
+///
+/// Phase 55-03: outer byte is `SNAPSHOT_FORMAT_VERSION=9`. The v8 body type is
+/// retained as the on-disk schema; only the outer byte + header's
+/// `schema_version` field changed. See `SNAPSHOT_FORMAT_VERSION` docs.
 pub fn save_base_snapshot_v8(data: &BaseSnapshotStateV8) -> Result<Vec<u8>, postcard::Error> {
     let mut buf = vec![SNAPSHOT_FORMAT_VERSION, TYPE_TAG_BASE];
     buf.extend_from_slice(&postcard::to_stdvec(data)?);
     Ok(buf)
 }
 
-/// Serialize a `DeltaSnapshotState` in v8 format.
-/// Format: `[version=8][type_tag=0x01][postcard(DeltaSnapshotState)]`
+/// Serialize a `DeltaSnapshotState` in v9 format (Phase 55-03).
+/// Format: `[version=9][type_tag=0x01][postcard(DeltaSnapshotState)]`
 pub fn save_delta_snapshot(data: &DeltaSnapshotState) -> Result<Vec<u8>, postcard::Error> {
     let mut buf = vec![SNAPSHOT_FORMAT_VERSION, TYPE_TAG_DELTA];
     buf.extend_from_slice(&postcard::to_stdvec(data)?);
@@ -624,10 +829,12 @@ pub fn load_snapshot_file(bytes: &[u8]) -> Option<SnapshotFile> {
         return None;
     }
     // Phase 24: Accept legacy v6 files and migrate them on read.
+    // Phase 55-03: decode via V6Wire shim (v6 bytes pre-date schema_version).
     if bytes[0] == LEGACY_V6_FORMAT {
         return match bytes[1] {
             TYPE_TAG_BASE => {
-                let v6: BaseSnapshotStateV6 = postcard::from_bytes(&bytes[2..]).ok()?;
+                let wire: BaseSnapshotStateV6Wire = postcard::from_bytes(&bytes[2..]).ok()?;
+                let v6: BaseSnapshotStateV6 = wire.into();
                 // Promote v6 → BaseSnapshotState (v7: add table_rows) → BaseSnapshotStateV8.
                 let v7: BaseSnapshotState = v6.into();
                 let v8 = BaseSnapshotStateV8 {
@@ -640,17 +847,22 @@ pub fn load_snapshot_file(bytes: &[u8]) -> Option<SnapshotFile> {
                 };
                 Some(SnapshotFile::Base(v8))
             }
-            TYPE_TAG_DELTA => postcard::from_bytes::<DeltaSnapshotStateV6>(&bytes[2..])
+            TYPE_TAG_DELTA => postcard::from_bytes::<DeltaSnapshotStateV6Wire>(&bytes[2..])
                 .ok()
-                .map(|d| SnapshotFile::Delta(d.into())),
+                .map(|wire| {
+                    let d6: DeltaSnapshotStateV6 = wire.into();
+                    SnapshotFile::Delta(d6.into())
+                }),
             _ => None,
         };
     }
     // Phase 52-01: Accept legacy v7 files and promote them to v8.
+    // Phase 55-03: decode via V7Wire shim.
     if bytes[0] == LEGACY_V7_FORMAT {
         return match bytes[1] {
             TYPE_TAG_BASE => {
-                let v7: BaseSnapshotState = postcard::from_bytes(&bytes[2..]).ok()?;
+                let wire: BaseSnapshotStateV7Wire = postcard::from_bytes(&bytes[2..]).ok()?;
+                let v7: BaseSnapshotState = wire.into();
                 let v8 = BaseSnapshotStateV8 {
                     header: v7.header,
                     entities: v7.entities,
@@ -661,17 +873,31 @@ pub fn load_snapshot_file(bytes: &[u8]) -> Option<SnapshotFile> {
                 };
                 Some(SnapshotFile::Base(v8))
             }
-            TYPE_TAG_DELTA => postcard::from_bytes::<DeltaSnapshotState>(&bytes[2..])
+            TYPE_TAG_DELTA => postcard::from_bytes::<DeltaSnapshotStateV8Wire>(&bytes[2..])
                 .ok()
-                .map(SnapshotFile::Delta),
+                .map(|w| SnapshotFile::Delta(w.into())),
             _ => None,
         };
     }
-    if bytes[0] != SNAPSHOT_FORMAT_VERSION {
-        // T-52-01-01: unknown version → return None, not panic.
+    // Phase 55-03: both V8_FORMAT (0x08) and V9_FORMAT (0x09) share the
+    // BaseSnapshotStateV8 / DeltaSnapshotState body types. For v8 outer bytes,
+    // decode via the wire-compat shim (fills in `schema_version = 8`). For v9,
+    // decode directly (header carries `schema_version = 9`). Unknown version
+    // bytes → None (T-52-01-01 + Pitfall 3).
+    if bytes[0] != V8_FORMAT && bytes[0] != V9_FORMAT {
         return None;
     }
-    // v8 path.
+    if bytes[0] == V8_FORMAT {
+        return match bytes[1] {
+            TYPE_TAG_BASE => postcard::from_bytes::<BaseSnapshotStateV8Wire>(&bytes[2..])
+                .ok()
+                .map(|w| SnapshotFile::Base(w.into())),
+            TYPE_TAG_DELTA => postcard::from_bytes::<DeltaSnapshotStateV8Wire>(&bytes[2..])
+                .ok()
+                .map(|w| SnapshotFile::Delta(w.into())),
+            _ => None,
+        };
+    }
     match bytes[1] {
         TYPE_TAG_BASE => postcard::from_bytes::<BaseSnapshotStateV8>(&bytes[2..])
             .ok()
@@ -684,40 +910,63 @@ pub fn load_snapshot_file(bytes: &[u8]) -> Option<SnapshotFile> {
 }
 
 /// Phase 24 test helper: serialize a v6 base snapshot using the legacy v6
-/// layout (`[0x06][0x00][postcard(BaseSnapshotStateV6)]`). Used by the
-/// v6→v7 migration tests to exercise the read path without duplicating
-/// encoding logic inside test files. Not used at runtime — v6 writes stopped
-/// when `SNAPSHOT_FORMAT_VERSION` moved to 7.
+/// layout (`[0x06][0x00][postcard(BaseSnapshotStateV6Wire)]`). Phase 55-03
+/// encodes through the V6Wire shim so the on-disk bytes match the historical
+/// pre-schema_version layout that `load_snapshot_file` expects.
 pub fn save_base_snapshot_v6_for_test(
     data: &BaseSnapshotStateV6,
 ) -> Result<Vec<u8>, postcard::Error> {
+    let wire = BaseSnapshotStateV6Wire {
+        header: SnapshotHeaderV8Wire {
+            snapshot_type: data.header.snapshot_type.clone(),
+            sequence: data.header.sequence,
+        },
+        entities: data.entities.clone(),
+        pipelines: data.pipelines.clone(),
+        backfill_complete: data.backfill_complete.clone(),
+    };
     let mut buf = vec![LEGACY_V6_FORMAT, TYPE_TAG_BASE];
-    buf.extend_from_slice(&postcard::to_stdvec(data)?);
+    buf.extend_from_slice(&postcard::to_stdvec(&wire)?);
     Ok(buf)
 }
 
 /// Phase 24 test helper: serialize a v6 delta snapshot in the legacy v6
-/// layout. See `save_base_snapshot_v6_for_test`.
+/// layout. Phase 55-03 encodes through the V6Wire shim (see
+/// `save_base_snapshot_v6_for_test`).
 pub fn save_delta_snapshot_v6_for_test(
     data: &DeltaSnapshotStateV6,
 ) -> Result<Vec<u8>, postcard::Error> {
+    let wire = DeltaSnapshotStateV6Wire {
+        header: SnapshotHeaderV8Wire {
+            snapshot_type: data.header.snapshot_type.clone(),
+            sequence: data.header.sequence,
+        },
+        changed_entities: data.changed_entities.clone(),
+        deleted_keys: data.deleted_keys.clone(),
+    };
     let mut buf = vec![LEGACY_V6_FORMAT, TYPE_TAG_DELTA];
-    buf.extend_from_slice(&postcard::to_stdvec(data)?);
+    buf.extend_from_slice(&postcard::to_stdvec(&wire)?);
     Ok(buf)
 }
 
 /// Phase 52-01 test helper: serialize a v7 base snapshot using the legacy v7
-/// layout (`[0x07][0x00][postcard(BaseSnapshotState)]`). Used by the v7→v8
-/// migration tests to exercise the read promotion path. Not used at runtime —
-/// v7 writes stopped when `SNAPSHOT_FORMAT_VERSION` moved to 8.
-///
-/// `BaseSnapshotStateV7` is a type alias for `BaseSnapshotState` (the v7
-/// on-disk layout is identical to `BaseSnapshotState`).
+/// layout (`[0x07][0x00][postcard(BaseSnapshotStateV7Wire)]`). Phase 55-03
+/// encodes through the V7Wire shim so the on-disk bytes match the historical
+/// pre-schema_version layout.
 pub fn save_base_snapshot_v7_for_test(
     data: &BaseSnapshotStateV7,
 ) -> Result<Vec<u8>, postcard::Error> {
+    let wire = BaseSnapshotStateV7Wire {
+        header: SnapshotHeaderV8Wire {
+            snapshot_type: data.header.snapshot_type.clone(),
+            sequence: data.header.sequence,
+        },
+        entities: data.entities.clone(),
+        pipelines: data.pipelines.clone(),
+        backfill_complete: data.backfill_complete.clone(),
+    };
     let mut buf = vec![LEGACY_V7_FORMAT, TYPE_TAG_BASE];
-    buf.extend_from_slice(&postcard::to_stdvec(data)?);
+    buf.extend_from_slice(&postcard::to_stdvec(&wire)?);
     Ok(buf)
 }
 
@@ -1003,7 +1252,7 @@ mod tests {
         };
         let bytes = save_snapshot(&state).expect("save_snapshot should succeed");
         assert_eq!(bytes[0], SNAPSHOT_FORMAT_VERSION);
-        assert_eq!(bytes[0], 0x08, "Phase 52-01: save_snapshot must now emit v8");
+        assert_eq!(bytes[0], 0x09, "Phase 55-03: save_snapshot must now emit v9");
         // v6+ layouts carry a type tag byte after the version byte.
         assert_eq!(
             bytes[1], 0x00,
@@ -1089,6 +1338,7 @@ mod tests {
             header: SnapshotHeader {
                 snapshot_type: SnapshotType::Delta { base_seq: 0 },
                 sequence: 1,
+                schema_version: 9,
             },
             changed_entities: vec![],
             deleted_keys: vec![],
@@ -1198,8 +1448,13 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_format_version_is_8() {
-        assert_eq!(SNAPSHOT_FORMAT_VERSION, 8);
+    fn test_snapshot_format_version_is_9() {
+        // Phase 55-03: SNAPSHOT_FORMAT_VERSION bumped 8 → 9 alongside addition
+        // of SnapshotHeader.schema_version (triggers boot rematerialization on
+        // pre-v9 bytes).
+        assert_eq!(SNAPSHOT_FORMAT_VERSION, 9);
+        assert_eq!(V8_FORMAT, 8);
+        assert_eq!(V9_FORMAT, 9);
     }
 
     #[test]
@@ -1362,6 +1617,7 @@ mod tests {
             header: SnapshotHeader {
                 snapshot_type: SnapshotType::Base,
                 sequence: 42,
+                schema_version: 9,
             },
             entities: vec![],
             pipelines: vec![],
@@ -1369,6 +1625,7 @@ mod tests {
         };
         let bytes = save_base_snapshot(&base).expect("save base");
         assert_eq!(bytes[0], SNAPSHOT_FORMAT_VERSION);
+        assert_eq!(bytes[0], V9_FORMAT, "Phase 55-03: saves are v9");
         assert_eq!(bytes[1], 0x00, "base type tag must be 0x00");
     }
 
@@ -1378,12 +1635,14 @@ mod tests {
             header: SnapshotHeader {
                 snapshot_type: SnapshotType::Delta { base_seq: 5 },
                 sequence: 7,
+                schema_version: 9,
             },
             changed_entities: vec![],
             deleted_keys: vec![],
         };
         let bytes = save_delta_snapshot(&delta).expect("save delta");
         assert_eq!(bytes[0], SNAPSHOT_FORMAT_VERSION);
+        assert_eq!(bytes[0], V9_FORMAT, "Phase 55-03: saves are v9");
         assert_eq!(bytes[1], 0x01, "delta type tag must be 0x01");
     }
 
@@ -1395,6 +1654,7 @@ mod tests {
             header: SnapshotHeader {
                 snapshot_type: SnapshotType::Base,
                 sequence: 10,
+                schema_version: 9,
             },
             entities: vec![(key.clone(), entity)],
             pipelines: vec![SerializablePipeline {
@@ -1431,6 +1691,7 @@ mod tests {
             header: SnapshotHeader {
                 snapshot_type: SnapshotType::Delta { base_seq: 10 },
                 sequence: 11,
+                schema_version: 9,
             },
             changed_entities: vec![(key.clone(), entity)],
             deleted_keys: vec!["evicted_user".to_string()],
@@ -1463,6 +1724,7 @@ mod tests {
             header: SnapshotHeader {
                 snapshot_type: SnapshotType::Base,
                 sequence: 1,
+                schema_version: 9,
             },
             entities: vec![sample_entity(1, "S", "f", now)],
             pipelines: vec![],
@@ -1472,6 +1734,7 @@ mod tests {
             header: SnapshotHeader {
                 snapshot_type: SnapshotType::Delta { base_seq: 1 },
                 sequence: 2,
+                schema_version: 9,
             },
             changed_entities: vec![sample_entity(2, "S", "f", now)],
             deleted_keys: vec![],
@@ -1502,6 +1765,7 @@ mod tests {
             header: SnapshotHeader {
                 snapshot_type: SnapshotType::Base,
                 sequence: 0,
+                schema_version: 9,
             },
             entities: vec![],
             pipelines: vec![],
@@ -1518,6 +1782,7 @@ mod tests {
             header: SnapshotHeader {
                 snapshot_type: SnapshotType::Base,
                 sequence: 0,
+                schema_version: 9,
             },
             entities: vec![],
             pipelines: vec![],
@@ -1575,6 +1840,7 @@ mod tests {
             header: SnapshotHeader {
                 snapshot_type: SnapshotType::Base,
                 sequence: 0,
+                schema_version: 9,
             },
             entities: vec![],
             pipelines: vec![],
@@ -1626,6 +1892,7 @@ mod tests {
             header: SnapshotHeader {
                 snapshot_type: SnapshotType::Base,
                 sequence: 1000,
+                schema_version: 9,
             },
             entities: vec![],
             pipelines: vec![],
@@ -1641,6 +1908,7 @@ mod tests {
             header: SnapshotHeader {
                 snapshot_type: SnapshotType::Delta { base_seq: 1000 },
                 sequence: 1001,
+                schema_version: 9,
             },
             changed_entities: vec![],
             deleted_keys: vec![],
@@ -1655,6 +1923,135 @@ mod tests {
                 );
             }
             _ => panic!(),
+        }
+    }
+
+    // ======================== Phase 55-03: schema_version + V9_FORMAT ========================
+
+    #[test]
+    fn default_v8_helper_returns_8() {
+        // The serde default for SnapshotHeader.schema_version MUST be 8.
+        // This is how v8-era snapshots (no field on the wire) deserialize as 8
+        // and trigger the boot-time rematerialization guard.
+        assert_eq!(default_v8(), 8u16);
+    }
+
+    #[test]
+    fn snapshot_header_schema_version_defaults_to_8_on_v8_wire() {
+        // Build a serialized v8-shaped SnapshotHeader (WITHOUT the
+        // schema_version field) and ensure the wire-compat shim
+        // (SnapshotHeaderV8Wire → SnapshotHeader) fills in schema_version=8.
+        //
+        // Postcard does NOT synthesize missing trailing fields from
+        // `#[serde(default)]`; the v8 decode path therefore routes
+        // through `SnapshotHeaderV8Wire` which has no schema_version
+        // field, then converts via `From<SnapshotHeaderV8Wire> for
+        // SnapshotHeader` (which sets schema_version = 8). This test
+        // pins that conversion semantic.
+        let wire = SnapshotHeaderV8Wire {
+            snapshot_type: SnapshotType::Base,
+            sequence: 42,
+        };
+        let bytes = postcard::to_allocvec(&wire).unwrap();
+        let decoded_wire: SnapshotHeaderV8Wire = postcard::from_bytes(&bytes).unwrap();
+        let decoded: SnapshotHeader = decoded_wire.into();
+        assert_eq!(decoded.sequence, 42);
+        assert_eq!(
+            decoded.schema_version, 8,
+            "v8 wire → schema_version=8 via V8Wire → SnapshotHeader shim"
+        );
+    }
+
+    #[test]
+    fn snapshot_header_v9_roundtrips() {
+        let h = SnapshotHeader {
+            snapshot_type: SnapshotType::Base,
+            sequence: 100,
+            schema_version: 9,
+        };
+        let bytes = postcard::to_allocvec(&h).unwrap();
+        let decoded: SnapshotHeader = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.schema_version, 9);
+        assert_eq!(decoded.sequence, 100);
+    }
+
+    #[test]
+    fn load_base_snapshot_rejects_unknown_version_byte() {
+        // Pitfall 3 guard — unknown outer version byte (0xFF) → None on
+        // both legacy and generic load paths.
+        let bytes = vec![0xFFu8, TYPE_TAG_BASE, 0x00, 0x00];
+        assert!(load_snapshot_file(&bytes).is_none());
+        assert!(load_snapshot(&bytes).is_none());
+    }
+
+    #[test]
+    fn load_base_snapshot_v8_outer_byte_decodes_with_schema_version_8() {
+        // Construct a v8-formatted snapshot by hand (outer byte 0x08). The
+        // body is a BaseSnapshotStateV8 whose embedded SnapshotHeader omits
+        // the schema_version field; serde default fills in 8. Assert: loaded
+        // header.schema_version == 8.
+        #[derive(Serialize)]
+        struct V8Header {
+            snapshot_type: SnapshotType,
+            sequence: u64,
+        }
+        #[derive(Serialize)]
+        struct V8Body {
+            header: V8Header,
+            entities: Vec<(String, SerializableEntityState)>,
+            pipelines: Vec<SerializablePipeline>,
+            backfill_complete: Vec<(String, String)>,
+            shard_count: u16,
+            replica_lsn_map: HashMap<(String, u8), u64>,
+        }
+        let body = V8Body {
+            header: V8Header {
+                snapshot_type: SnapshotType::Base,
+                sequence: 5,
+            },
+            entities: vec![],
+            pipelines: vec![],
+            backfill_complete: vec![],
+            shard_count: 1,
+            replica_lsn_map: HashMap::new(),
+        };
+        let mut bytes = vec![V8_FORMAT, TYPE_TAG_BASE];
+        bytes.extend_from_slice(&postcard::to_stdvec(&body).unwrap());
+        let file = load_snapshot_file(&bytes).expect("v8 outer byte must decode");
+        match file {
+            SnapshotFile::Base(b) => {
+                assert_eq!(b.header.sequence, 5);
+                assert_eq!(
+                    b.header.schema_version, 8,
+                    "v8 wire → schema_version=8 via serde default"
+                );
+            }
+            _ => panic!("expected Base"),
+        }
+    }
+
+    #[test]
+    fn load_base_snapshot_v9_outer_byte_decodes_with_schema_version_9() {
+        // The Phase 55-03 writer path: save_base_snapshot promotes the header
+        // to schema_version=9 AND emits outer byte V9_FORMAT.
+        let base = BaseSnapshotState {
+            header: SnapshotHeader {
+                snapshot_type: SnapshotType::Base,
+                sequence: 7,
+                schema_version: 9,
+            },
+            entities: vec![],
+            pipelines: vec![],
+            backfill_complete: vec![],
+        };
+        let bytes = save_base_snapshot(&base).expect("save");
+        assert_eq!(bytes[0], V9_FORMAT, "Phase 55-03 writes V9_FORMAT byte");
+        let file = load_snapshot_file(&bytes).expect("v9 decode");
+        match file {
+            SnapshotFile::Base(b) => {
+                assert_eq!(b.header.schema_version, 9);
+            }
+            _ => panic!("expected Base"),
         }
     }
 }

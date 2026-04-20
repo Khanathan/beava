@@ -46,6 +46,7 @@ fn write_v8_snapshot(dir: &Path, shard_count: u8) {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 1,
+            schema_version: 9,
         },
         entities: vec![],
         pipelines: vec![],

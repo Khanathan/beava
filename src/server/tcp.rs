@@ -3974,6 +3974,7 @@ fn load_base_snapshot_for_fetch(
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 0,
+            schema_version: 9,
         },
         entities: vec![],
         pipelines: vec![],

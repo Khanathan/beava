@@ -136,6 +136,7 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 0,
+            schema_version: 9,
         },
         entities,
         pipelines: vec![SerializablePipeline {
@@ -160,6 +161,7 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Delta { base_seq: 0 },
             sequence: 1,
+            schema_version: 9,
         },
         changed_entities: changed,
         deleted_keys: vec![],
@@ -177,6 +179,7 @@ fn test_incremental_snapshot_recovery_base_plus_two_deltas() {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Delta { base_seq: 0 },
             sequence: 2,
+            schema_version: 9,
         },
         changed_entities: changed,
         deleted_keys: vec![],
@@ -231,6 +234,7 @@ fn test_incremental_snapshot_deleted_keys_removed_on_recovery() {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 0,
+            schema_version: 9,
         },
         entities,
         pipelines: vec![],
@@ -246,6 +250,7 @@ fn test_incremental_snapshot_deleted_keys_removed_on_recovery() {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Delta { base_seq: 0 },
             sequence: 1,
+            schema_version: 9,
         },
         changed_entities: vec![],
         deleted_keys: vec!["u2".into()],
@@ -355,6 +360,7 @@ fn test_eviction_marks_deleted_and_delta_includes_it() {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Delta { base_seq: 0 },
             sequence: 1,
+            schema_version: 9,
         },
         changed_entities: vec![],
         deleted_keys: deleted,

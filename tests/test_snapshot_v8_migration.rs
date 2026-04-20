@@ -90,6 +90,7 @@ fn test_snapshot_v8_roundtrip() {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 100,
+            schema_version: 9,
         },
         entities: vec![(key.clone(), entity)],
         pipelines: vec![],
@@ -99,8 +100,13 @@ fn test_snapshot_v8_roundtrip() {
     };
 
     let bytes = save_base_snapshot_v8(&snap_v8).expect("v8 save must succeed");
-    assert_eq!(bytes[0], SNAPSHOT_FORMAT_VERSION, "v8 must use current format version (8)");
-    assert_eq!(bytes[0], 0x08, "v8 version byte must be 8");
+    // Phase 55-03: writer now emits V9_FORMAT (0x09) outer byte. The v8 body
+    // type (BaseSnapshotStateV8) is unchanged — only the outer byte and the
+    // embedded schema_version field differ. v8 bytes on disk are still
+    // accepted by the reader (serde-default schema_version=8 triggers
+    // rematerialization at boot).
+    assert_eq!(bytes[0], SNAPSHOT_FORMAT_VERSION, "writer emits current format version");
+    assert_eq!(bytes[0], 0x09, "Phase 55-03: writes advertise V9_FORMAT");
 
     let file = load_snapshot_file(&bytes).expect("v8 must load cleanly");
     match file {
@@ -138,6 +144,7 @@ fn test_snapshot_v8_v7_to_v8_promotion_entities_intact() {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 7,
+            schema_version: 9,
         },
         entities: vec![(key.clone(), entity)],
         pipelines: vec![],
@@ -196,6 +203,7 @@ fn test_snapshot_v8_v7_promoted_shard_count_1_matches_beava_shards_1() {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 1,
+            schema_version: 9,
         },
         entities: vec![(key.clone(), entity)],
         pipelines: vec![],
@@ -225,6 +233,7 @@ fn test_snapshot_v8_v7_promoted_shard_count_1_mismatch_beava_shards_8() {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 1,
+            schema_version: 9,
         },
         entities: vec![(key.clone(), entity)],
         pipelines: vec![],
@@ -248,11 +257,18 @@ fn test_snapshot_v8_v7_promoted_shard_count_1_mismatch_beava_shards_8() {
     }
 }
 
-// ======================== Verify SNAPSHOT_FORMAT_VERSION is 8 ========================
+// ======================== Verify SNAPSHOT_FORMAT_VERSION is 9 (Phase 55-03) ========================
 
 #[test]
-fn test_snapshot_v8_format_version_is_8() {
-    assert_eq!(SNAPSHOT_FORMAT_VERSION, 8, "SNAPSHOT_FORMAT_VERSION must be 8 after v8 migration");
+fn test_snapshot_v8_format_version_is_9() {
+    // Phase 55-03: SNAPSHOT_FORMAT_VERSION bumped 8 → 9 alongside the
+    // SnapshotHeader.schema_version field addition. v8 bytes are STILL
+    // accepted by the reader (via wire-compat shim → schema_version=8 →
+    // triggers boot rematerialization); only the writer changed.
+    assert_eq!(
+        SNAPSHOT_FORMAT_VERSION, 9,
+        "SNAPSHOT_FORMAT_VERSION must be 9 after Phase 55-03 v9 bump"
+    );
 }
 
 // ======================== Verify LEGACY_V7_FORMAT constant is 7 ========================
@@ -283,6 +299,7 @@ fn generate_v7_fixture() {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 1,
+            schema_version: 9,
         },
         entities: vec![(key, entity)],
         pipelines: vec![],

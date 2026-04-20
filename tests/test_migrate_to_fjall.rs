@@ -126,6 +126,7 @@ fn build_v8_fixture(
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 1,
+            schema_version: 9,
         },
         entities: ents,
         pipelines,

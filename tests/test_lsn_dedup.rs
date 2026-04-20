@@ -111,6 +111,7 @@ fn test_lsn_seq_monotonic() {
             header: SnapshotHeader {
                 snapshot_type: SnapshotType::Base,
                 sequence: 1,
+                schema_version: 9,
             },
             entities: vec![],
             pipelines: vec![],
@@ -258,6 +259,7 @@ fn test_lsn_snapshot_persistence() {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 1,
+            schema_version: 9,
         },
         entities: vec![],
         pipelines: vec![],

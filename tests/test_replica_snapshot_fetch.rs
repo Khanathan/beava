@@ -100,6 +100,7 @@ fn write_base_snapshot(
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 1,
+            schema_version: 9,
         },
         entities,
         pipelines: vec![],

@@ -1380,6 +1380,7 @@ async fn trigger_snapshot(
             header: crate::state::snapshot::SnapshotHeader {
                 snapshot_type: crate::state::snapshot::SnapshotType::Base,
                 sequence: seq,
+                schema_version: 9,
             },
             entities,
             pipelines,

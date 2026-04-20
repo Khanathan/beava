@@ -221,6 +221,7 @@ pub fn reshard_data_dir(
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: base_snap.header.sequence,
+            schema_version: 9,
         },
         entities: out_entities,
         pipelines: base_snap.pipelines,

@@ -164,6 +164,7 @@ fn v6_snapshot_loads_with_empty_table_rows() {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 42,
+            schema_version: 9,
         },
         entities: vec![(
             "u_legacy".to_string(),
