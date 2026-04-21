@@ -325,6 +325,31 @@ Plans:
 **Status:** **Engineering-complete** (2026-04-21) — typed-row pipeline lands across 8 waves. Criterion typed-pipeline-phase cascade = 22.97 ns/event (370× below 8.5μs Value-path baseline; 87× under 2.0μs TPC-PERF-11 target). Aggregate-EPS SC-5 deferred to Phase 64 Rust bench client / Linux-host re-run per same Phase 58/59 HUMAN_NEEDED precedent (macOS Python-client ceiling = measurement vehicle saturated; server hits backpressure on every client). 9/10 SCs PASSED; 41 typed-path integration tests GREEN; all 6 grep invariants GREEN; zero regressions on prior-phase tests.
 **UI hint**: no
 
+### Phase 59.7: 59.7-typed-windowed-cascade
+**Goal**: Close the two gaps Phase 59.6 left open: (1) typed windowed aggregations — `operators_typed_aggs.rs` today has no `RingBuffer` / no window support, so `window="1h"/"24h"/"7d"` features (everywhere in fraud-pipeline) would silently produce lifetime counts if routed typed. Add `TypedRingBuffer` + 10 windowed typed agg impls (Count/Sum×2/Avg/Min×2/Max×2/Last/First) + V11 snapshot extension. (2) typed cascade-direct — `run_typed_enrich_cascade` today bridges every typed event back to Value via `row_to_value` + `push_with_cascade_on_shard`, so even typed-eligible downstream state still walks the Value path. Rewrite as a real typed walker that writes `entity_state_typed` directly (same-shard inline, cross-shard via new `ShardOp::RunTypedAggCascadeStep`). Feature-gated by `BEAVA_TYPED_CASCADE_DIRECT=1` env until stable. Target: `push_internal_on_shard` drops <1% on state-inmem; ≥+10% aggregate EPS on fjall.
+**Depends on**: Phase 59.6 (engineering-complete — typed ingest + unwindowed typed aggs + V11 snapshot scaffold landed).
+**Requirements**: TPC-PERF-11 (closes aggregate-EPS gap identified in 59.6 profile); TPC-CORR-07 (extends typed↔Value parity to windowed aggs and cross-shard cascade).
+**Success Criteria** (what must be TRUE):
+  1. `src/engine/operators_typed_aggs_windowed.rs` exists with windowed typed impls for Count, Sum(i64,f64), Avg(f64), Min(i64,f64), Max(i64,f64), Last, First — honoring `window` + `bucket` semantics identically to Value-path ops.
+  2. `TypedRingBuffer` struct + `Shard.entity_ringbuffers_typed: AHashMap<(String,String,u16), TypedRingBuffer>` field on both fjall + inmem Shard variants.
+  3. V11 snapshot serializes `entity_ringbuffers_typed` — round-trip proptest GREEN.
+  4. `ShardOp::RunTypedAggCascadeStep` variant wired; target-shard handler runs `run_typed_agg_step` only (no further cascade).
+  5. `PipelineEngine::run_typed_direct_cascade` replaces `run_typed_enrich_cascade` as primary walker; Value fallback preserved for non-typed-compatible downstreams.
+  6. `tests/typed_windowed_aggregation_parity.rs` — 100K events, `window=5s bucket=1s`, FeatureMap identical at 20 event-time checkpoints.
+  7. `tests/typed_cascade_crossshard_parity.rs` — N=8 fraud-pipeline-shaped cascade, typed-direct and Value-cascade produce byte-identical state.
+  8. All Phase 59.6 SC-1..SC-10 remain GREEN.
+  9. Perf gate: fraud-pipeline complex-c8-x8 aggregate EPS ≥ +10% vs Phase 59.6 baseline (1,322,525 median → ≥ 1,454,778) OR samply shows `push_internal_on_shard` <1% on state-inmem.
+  10. `is_typed_cascade_compatible` returns `true` only when a feature has an actual typed implementation available (structural + semantic check).
+**Plans**: 6 plans
+Plans:
+- [x] 59.7-00-PLAN.md — Wave 0: RED scaffolding — 14 ignored parity tests (10 windowed + 4 crossshard) + BEAVA_TYPED_CASCADE_DIRECT env flag + Criterion regression bench (3 pinned cells) + is_wave4_typed_compatible → is_typed_cascade_compatible rename + 2 new metrics counters (TYPED_CASCADE_DIRECT_DISPATCHED, TYPED_CASCADE_VALUE_FALLBACK) + REQUIREMENTS Phase 59.7 extension rows
+- [ ] 59.7-01-PLAN.md — Wave 1: TypedRingBuffer{I64,F64,Avg} + Shard::entity_ringbuffers_typed AHashMap field (both state-inmem + fjall variants) + 4 windowed typed agg impls (CountOpTypedWindowed / SumOpTypedWindowedI64 / SumOpTypedWindowedF64 / AvgOpTypedWindowedF64) + update_windowed trait method + 4 parity tests flipped GREEN
+- [ ] 59.7-02-PLAN.md — Wave 2: 6 remaining windowed typed agg impls (MinOpTypedWindowed{I64,F64} / MaxOpTypedWindowed{I64,F64} / LastOpTypedWindowedInlineStr / FirstOpTypedWindowedInlineStr) + TypedRingBufferEnum extended to 8 variants + V11 snapshot typed_ringbuffers extension (save + load + round-trip proptest) + 10/10 windowed parity tests GREEN
+- [ ] 59.7-03-PLAN.md — Wave 3: ShardOp::RunTypedAggCascadeStep variant + dispatch arm in src/shard/thread.rs + PipelineEngine::build_typed_agg_ops_for factory (Arc<dyn TypedAggOp> cache at finalize_dag) + get_typed_state_schema + try_extract_event_time_from_typed_row accessors + run_typed_direct_cascade_same_shard walker + 1/4 crossshard parity tests GREEN (same-shard case)
+- [ ] 59.7-04-PLAN.md — Wave 4: run_typed_direct_cascade promoted to full cross-shard walker (per-downstream target_shard compute + cross-shard dispatch via RunTypedAggCascadeStep + per-downstream Value fallback for non-typed-compatible features + whole-cascade fallback for retraction-capable inputs) + 4/4 crossshard parity tests GREEN
+- [ ] 59.7-05-PLAN.md — Wave 5: perf gate (fraud-pipeline best-of-3 × 2 configs + Criterion regression bench + samply probe state-inmem) + 59.7-PERF-GATE.md (C0/C1/C2/C3 ladder + HUMAN_NEEDED escalation if needed) + 59.7-VERIFICATION.md (SC-1..SC-10 table) + ROADMAP/STATE/REQUIREMENTS/docs/architecture.md updates + phase-close commit
+**UI hint**: no
+
 ### Phase 60: 60-hotkey-mitigation-via-application-salting
 **Goal**: Fix the Zipf-1.2 hot-shard bottleneck — today shard-0 saturates at ~450K EPS while shards 1–7 are idle (`/debug/shards` shows `inbox_depth=65536` on shard-0 vs 0 everywhere else). Under Pareto-80/20 workloads (TPC-PERF-07), a single shard is the ceiling. Approach: application-layer salting. Users declare `shard_key="user_id:salt(N)"` and Beava appends a random 0..N suffix at ingest, splitting hot keys across N virtual sub-shards. Cross-sub-shard scatter-gather on read.
 **Depends on**: Phase 59 (per-event hot-path cost reduced so salt fan-out is affordable).
