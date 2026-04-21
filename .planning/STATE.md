@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: Completed 59.6-01-PLAN.md (Wave 1 schema runtime + registry)
-last_updated: "2026-04-21T18:52:38.866Z"
+stopped_at: Completed 59.6-02-PLAN.md
+last_updated: "2026-04-21T19:13:43.954Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 19
   completed_phases: 11
   total_plans: 87
-  completed_plans: 74
-  percent: 85
+  completed_plans: 75
+  percent: 86
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 ## Current Position
 
 Phase: 59.6 (typed-pipeline-records) — EXECUTING
-Plan: 3 of 8 (59.6-00 Wave 0 RED scaffolding complete; next is 59.6-01 Wave 1 schema runtime)
+Plan: 4 of 8 (59.6-00 Wave 0 RED scaffolding complete; next is 59.6-01 Wave 1 schema runtime)
 **Status:** Ready to execute
-**Progress:** [█████████░] 85%
+**Progress:** [█████████░] 86%
 
 **Last activity:** 2026-04-21
 
@@ -161,6 +161,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 59 full | TCP OP_PUSH JSON round-trip eliminated; bytes::Bytes end-to-end; OP_NEGOTIATE_WIRE_FORMAT 0x18 + WIRE_BINARY_PASSTHROUGH capability bit; Python SDK v0.1.0→v0.2.0 with handshake + D-E4 fallback; samply JSON_SHARE_PCT=2.5 (≤3.0 D-D3 PASSED); p99 latency −15% IMPROVED; perf best-of-3 1,494,631 EPS (+8.6% vs P58 C1, −1.3% below floor within 6% run variance); SC-4 human_needed pending Linux prod-host re-run | 5 plans | 825/0/35 lib baseline (+13 from P58) + 817/0/35 state-inmem; 0 ship-gate regressions |
 | Phase 59.6 P00 | 8min | 5 tasks | 14 files |
 | Phase 59.6 P01 | 20min | 3 tasks | 13 files |
+| Phase 59.6 P02 | 30min | 3 tasks | 17 files |
 
 ## Accumulated Context
 
@@ -354,7 +355,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 59.6-01-PLAN.md (Wave 1 schema runtime + registry)
+**Stopped at:** Completed 59.6-02-PLAN.md
 
 **Next action (engineering):** Phase 58 is engineering-complete. The engineering-facing next action is one of:
   (a) **Start Phase 59** (Binary wire format for PUSH — TPC-PERF-09). Goal: eliminate JSON re-serialization on the PUSH hot path (~11% of CPU per 2026-04 samply notes). Replace JSON with a binary codec (length-prefixed postcard or custom) for TCP PUSH; HTTP PUSH stays JSON for compatibility; zero-copy `bytes::Bytes` end-to-end from wire → shard inbox → fjall insert. Phase 58 left the per-connection runtime dispatch overhead structurally eliminated — JSON is now the top-of-profile leaf to attack.
