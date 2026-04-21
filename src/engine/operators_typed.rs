@@ -322,6 +322,203 @@ pub fn derive_enriched_schema(
     }
 }
 
+/// Phase 59.6 Wave 5 (TPC-PERF-11, D-C3) — typed `StreamStreamJoin` operator.
+///
+/// Symmetric interval join between two typed streams. Left and right
+/// events are buffered on the join-owning shard (hash(join_key) % N,
+/// per Phase 56 D-B1); when an event of one side arrives, it probes
+/// the opposite-side buffer for time-overlap matches and emits
+/// joined output rows via [`match_typed`]. Retention on each side is
+/// bounded by `within: Duration`.
+///
+/// The joined schema is derived at register time via
+/// [`derive_joined_schema`] — left fields preserve their offsets;
+/// right fields append at `left.row_size` with their offsets
+/// shifted. Joined row payload = `left_payload ++ right_payload`;
+/// joined row arena = `left_arena ++ right_arena` (each side's arena
+/// offsets remain valid because they reference indices into the
+/// per-side arena slice; readers of the joined row must know which
+/// side a field came from — the appended left/right schema bookends
+/// encode this).
+pub struct StreamStreamJoinTyped {
+    pub name: String,
+    pub left_schema: Arc<RegisteredSchema>,
+    pub right_schema: Arc<RegisteredSchema>,
+    pub joined_schema: Arc<RegisteredSchema>,
+    /// Name of the field (on both left and right schemas) the join
+    /// matches on. Must exist on both sides with identical FieldTy.
+    pub on_field: String,
+    pub within: std::time::Duration,
+}
+
+impl TypedOperator for StreamStreamJoinTyped {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn input_schema(&self) -> &Arc<RegisteredSchema> {
+        &self.left_schema
+    }
+    fn output_schema(&self) -> &Arc<RegisteredSchema> {
+        &self.joined_schema
+    }
+}
+
+impl StreamStreamJoinTyped {
+    /// Emit a joined Row from a pair of side events (D-C3).
+    ///
+    /// Copies the left payload into `[0..left.row_size]`, the right
+    /// payload into `[left.row_size..left.row_size+right.row_size]`,
+    /// and concatenates both sides' arenas. The joined schema's
+    /// fields correspond to `left.fields ++ right.fields` (right
+    /// field offsets shifted by `left.row_size`); readers should
+    /// resolve field names via the joined schema's field list.
+    pub fn match_typed(&self, left: &Row, right: &Row) -> Row {
+        let ls = self.left_schema.row_size as usize;
+        let rs = self.right_schema.row_size as usize;
+        let total = self.joined_schema.row_size as usize;
+        debug_assert_eq!(total, ls + rs, "joined row_size == left + right");
+        let mut out = Row::zeroed(&self.joined_schema);
+        out.schema_id = self.joined_schema.schema_id;
+        // Left payload into [0..ls].
+        out.payload[..ls].copy_from_slice(&left.payload[..ls]);
+        // Right payload into [ls..ls+rs].
+        out.payload[ls..ls + rs].copy_from_slice(&right.payload[..rs]);
+        // Concatenate arenas.
+        out.arena.extend_from_slice(&left.arena);
+        out.arena.extend_from_slice(&right.arena);
+        out
+    }
+}
+
+/// Phase 59.6 Wave 5 (TPC-PERF-11, D-C3) — derive the joined-output
+/// schema from a left + right typed schema.
+///
+/// Schema layout: `left.fields` followed by `right.fields` with the
+/// right side's offsets shifted by `left.row_size`. Field names are
+/// preserved as-is; duplicate names across left and right resolve
+/// via first-match on the left side (caller is responsible for
+/// renaming in the SDK if ambiguity matters).
+pub fn derive_joined_schema(
+    left: &RegisteredSchema,
+    right: &RegisteredSchema,
+    inline_str_cap: u8,
+) -> RegisteredSchema {
+    let mut fields: Vec<FieldSpec> = left.fields.clone();
+    for rf in &right.fields {
+        fields.push(FieldSpec {
+            name: rf.name.clone(),
+            ty: rf.ty,
+            offset: rf.offset + left.row_size,
+            nullable: rf.nullable,
+        });
+    }
+    RegisteredSchema {
+        schema_id: 0,
+        name: format!("{}_join_{}", left.name, right.name),
+        fields,
+        inline_str_cap,
+        row_size: left.row_size + right.row_size,
+    }
+}
+
+/// Phase 59.6 Wave 5 (TPC-PERF-11, D-C3) — per-shard typed SSJ buffer.
+///
+/// Holds one side's buffered events keyed by join_key. Each event
+/// carries its (Row, timestamp) so the cross-side probe can evict
+/// entries older than `within`. Lives on the join-owning shard
+/// (`hash(join_key) % N`) — Phase 56 D-B1 routing preserved.
+///
+/// Wave 5 scope: in-memory per-shard buffer at library level. The
+/// cross-shard SPSC dispatch (`ShardOp::SsjInsertTyped` variant) is
+/// a future wave — the parity tests drive this buffer directly to
+/// cover SC-9's operator-boundary parity without requiring full
+/// cross-shard plumbing.
+pub struct TypedSsjBuffer {
+    /// join_key → Vec<(Row, timestamp)> — newest-appended-last.
+    pub left: ahash::AHashMap<String, Vec<(Row, std::time::SystemTime)>>,
+    pub right: ahash::AHashMap<String, Vec<(Row, std::time::SystemTime)>>,
+}
+
+impl TypedSsjBuffer {
+    pub fn new() -> Self {
+        Self {
+            left: ahash::AHashMap::new(),
+            right: ahash::AHashMap::new(),
+        }
+    }
+
+    /// Insert a left-side event + probe for time-overlap matches on
+    /// the right side. Returns any joined Rows (may be empty).
+    pub fn insert_left_and_match(
+        &mut self,
+        op: &StreamStreamJoinTyped,
+        join_key: &str,
+        row: Row,
+        now: std::time::SystemTime,
+    ) -> Vec<Row> {
+        // Evict expired right entries first so we match only fresh.
+        evict_expired(&mut self.right, join_key, op.within, now);
+        let mut out = Vec::new();
+        if let Some(rights) = self.right.get(join_key) {
+            for (r, _ts) in rights {
+                out.push(op.match_typed(&row, r));
+            }
+        }
+        // Buffer the newly arrived left event.
+        self.left
+            .entry(join_key.to_string())
+            .or_default()
+            .push((row, now));
+        out
+    }
+
+    /// Insert a right-side event + probe for time-overlap matches on
+    /// the left side. Returns any joined Rows (may be empty).
+    pub fn insert_right_and_match(
+        &mut self,
+        op: &StreamStreamJoinTyped,
+        join_key: &str,
+        row: Row,
+        now: std::time::SystemTime,
+    ) -> Vec<Row> {
+        evict_expired(&mut self.left, join_key, op.within, now);
+        let mut out = Vec::new();
+        if let Some(lefts) = self.left.get(join_key) {
+            for (l, _ts) in lefts {
+                out.push(op.match_typed(l, &row));
+            }
+        }
+        self.right
+            .entry(join_key.to_string())
+            .or_default()
+            .push((row, now));
+        out
+    }
+}
+
+impl Default for TypedSsjBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn evict_expired(
+    buf: &mut ahash::AHashMap<String, Vec<(Row, std::time::SystemTime)>>,
+    join_key: &str,
+    within: std::time::Duration,
+    now: std::time::SystemTime,
+) {
+    if let Some(vec) = buf.get_mut(join_key) {
+        vec.retain(|(_, ts)| match now.duration_since(*ts) {
+            Ok(age) => age <= within,
+            Err(_) => true, // clock skew — keep
+        });
+        if vec.is_empty() {
+            buf.remove(join_key);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

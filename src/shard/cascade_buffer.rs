@@ -1,6 +1,16 @@
 //! Phase 55-01 D-A1 + D-A2: per-batch source-side coalesce buffer for
 //! cross-shard TT cascade.
 //!
+//! Phase 59.6 Wave 5 (TPC-PERF-11, D-C3) extension: adds typed-row
+//! variants for cross-shard SSJ dispatch (`SsjBufferedItem::TypedRow`).
+//! The per-shard SSJ buffer lives on the join-owning shard (Phase 56
+//! D-B1) and distinguishes Value vs typed events so the match logic
+//! can dispatch to `StreamStreamJoinTyped::match_typed` when both
+//! sides are typed. See `src/engine/operators_typed.rs::TypedSsjBuffer`
+//! for the typed-only buffer used by SC-9 parity tests — this enum
+//! is the shared-dispatch marker carried by `ShardOp::SsjInsertTyped`
+//! (see `src/shard/thread.rs`).
+//!
 //! Lifecycle: created fresh at entry to `push_with_cascade_on_shard`'s batch
 //! loop, populated per-event (ONLY when `target_shard != source_shard` —
 //! same-shard writes take the inline `StoreView::Sharded::upsert_table_row`
@@ -177,6 +187,35 @@ impl CascadeBuffer {
         }
         Ok(())
     }
+}
+
+/// Phase 59.6 Wave 5 (TPC-PERF-11, D-C3) — shared-dispatch marker for
+/// a single buffered SSJ item on the join-owning shard. Allows the
+/// per-shard SSJ buffer to hold both Phase-56 Value events and Wave-5
+/// typed Rows without allocating a separate buffer map. The match
+/// logic in `apply_ssj_insert_typed` (Wave 6+ integration) branches:
+///   - both items TypedRow → `StreamStreamJoinTyped::match_typed`
+///   - either item Value → Value-path match + Row→Value bridge
+///
+/// `SsjInsertTyped` dispatch (src/shard/thread.rs `ShardOp::SsjInsertTyped`)
+/// always inserts `TypedRow`; Phase 56's `SsjInsert` inserts `Value`.
+/// Same-shard ingest (same buffer, same match function) keeps the
+/// byte-identical parity contract with the Value path required by
+/// SC-9.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // Wave 5 library-level; Wave 6+ wires to thread.rs dispatch
+pub enum SsjBufferedItem {
+    /// Phase 56 D-B1 — Value-path SSJ event (serde_json::Value).
+    Value(serde_json::Value),
+    /// Phase 59.6 Wave 5 D-C3 — typed SSJ event (Row + schema_id
+    /// pre-resolved on the source shard's PushTypedRow dispatch arm).
+    /// Carries its timestamp so `within`-bound eviction can run on
+    /// the target shard without re-consulting the source.
+    TypedRow {
+        row: crate::engine::schema::Row,
+        schema_id: crate::engine::schema::SchemaId,
+        ts: std::time::SystemTime,
+    },
 }
 
 #[cfg(test)]

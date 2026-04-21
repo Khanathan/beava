@@ -428,3 +428,170 @@ mod retraction_after_cascade {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 59.6 Wave 5 — typed-path sharding parity extension (SC-9 extension).
+// ---------------------------------------------------------------------------
+//
+// `typed_parity_n1_n8` replays a single deterministic event stream through
+// the typed StreamStreamJoinTyped operator partitioned at N=1 and N=8 and
+// asserts byte-identical joined output. Complements
+// `tests/typed_ssj_crossshard_parity.rs` by running as a subcase of the
+// sharding_parity binary so CI's `cargo test --test sharding_parity` pass
+// covers the typed path too. Advanced-aggs typed path is Wave 6.
+
+mod typed_parity {
+    use beava::engine::operators_typed::{
+        derive_joined_schema, StreamStreamJoinTyped, TypedSsjBuffer,
+    };
+    use beava::engine::schema::{FieldSpec, FieldTy, RegisteredSchema, Row};
+    use beava::routing::shard_hint::shard_hint_for_event;
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime};
+
+    fn left_schema() -> Arc<RegisteredSchema> {
+        let s = RegisteredSchema {
+            schema_id: 300,
+            name: "Txns".into(),
+            fields: vec![
+                FieldSpec {
+                    name: "user_id".into(),
+                    ty: FieldTy::InlineStr,
+                    offset: 0,
+                    nullable: false,
+                },
+                FieldSpec {
+                    name: "amount".into(),
+                    ty: FieldTy::F64,
+                    offset: 16,
+                    nullable: false,
+                },
+            ],
+            inline_str_cap: 15,
+            row_size: 24,
+        };
+        s.validate_layout().expect("valid");
+        Arc::new(s)
+    }
+    fn right_schema() -> Arc<RegisteredSchema> {
+        let s = RegisteredSchema {
+            schema_id: 301,
+            name: "Clicks".into(),
+            fields: vec![
+                FieldSpec {
+                    name: "user_id".into(),
+                    ty: FieldTy::InlineStr,
+                    offset: 0,
+                    nullable: false,
+                },
+                FieldSpec {
+                    name: "url_code".into(),
+                    ty: FieldTy::I64,
+                    offset: 16,
+                    nullable: false,
+                },
+            ],
+            inline_str_cap: 15,
+            row_size: 24,
+        };
+        s.validate_layout().expect("valid");
+        Arc::new(s)
+    }
+
+    /// Phase 59.6 Wave 5 SC-9 extension — typed StreamStreamJoin
+    /// N=1 ↔ N=8 partitioning produces byte-identical joined rows.
+    #[test]
+    fn typed_parity_n1_n8() {
+        let left = left_schema();
+        let right = right_schema();
+        let mut joined = derive_joined_schema(&left, &right, left.inline_str_cap);
+        joined.schema_id = 400;
+        let op = StreamStreamJoinTyped {
+            name: "txn_click_join".to_string(),
+            left_schema: left.clone(),
+            right_schema: right.clone(),
+            joined_schema: Arc::new(joined),
+            on_field: "user_id".to_string(),
+            within: Duration::from_secs(60),
+        };
+
+        let users: Vec<String> = (0..20).map(|i| format!("u{i}")).collect();
+        let now0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+        struct Ev {
+            side: char,
+            user: String,
+            amount: f64,
+            url: i64,
+            ts: SystemTime,
+        }
+        let mut events: Vec<Ev> = Vec::new();
+        for (i, u) in users.iter().enumerate() {
+            events.push(Ev {
+                side: 'L',
+                user: u.clone(),
+                amount: (i as f64) * 2.0,
+                url: 0,
+                ts: now0 + Duration::from_millis((i * 10) as u64),
+            });
+            events.push(Ev {
+                side: 'R',
+                user: u.clone(),
+                amount: 0.0,
+                url: (i + 500) as i64,
+                ts: now0 + Duration::from_millis((i * 10 + 1) as u64),
+            });
+        }
+
+        let replay = |n_shards: usize| -> Vec<Row> {
+            let mut bufs: Vec<TypedSsjBuffer> =
+                (0..n_shards).map(|_| TypedSsjBuffer::new()).collect();
+            let mut outs: Vec<(SystemTime, Row)> = Vec::new();
+            for e in &events {
+                let hint =
+                    shard_hint_for_event(&serde_json::json!({"user_id": e.user.clone()}), Some("user_id"));
+                let idx = (hint as usize) % n_shards;
+                let buf = &mut bufs[idx];
+                match e.side {
+                    'L' => {
+                        let mut r = Row::zeroed(&left);
+                        r.schema_id = left.schema_id;
+                        r.write_inline_str(0, left.inline_str_cap, &e.user);
+                        r.write_f64(16, e.amount);
+                        let joined = buf.insert_left_and_match(&op, &e.user, r, e.ts);
+                        for j in joined {
+                            outs.push((e.ts, j));
+                        }
+                    }
+                    'R' => {
+                        let mut r = Row::zeroed(&right);
+                        r.schema_id = right.schema_id;
+                        r.write_inline_str(0, right.inline_str_cap, &e.user);
+                        r.write_i64(16, e.url);
+                        let joined = buf.insert_right_and_match(&op, &e.user, r, e.ts);
+                        for j in joined {
+                            outs.push((e.ts, j));
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            outs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.payload.cmp(&b.1.payload)));
+            outs.into_iter().map(|(_, r)| r).collect()
+        };
+
+        let n1 = replay(1);
+        let n8 = replay(8);
+        assert_eq!(n1.len(), users.len(), "one join per user");
+        assert_eq!(
+            n1.len(),
+            n8.len(),
+            "N=1 and N=8 produce same joined count"
+        );
+        for (a, b) in n1.iter().zip(n8.iter()) {
+            assert_eq!(a.schema_id, b.schema_id);
+            assert_eq!(a.payload, b.payload);
+            assert_eq!(a.arena, b.arena);
+        }
+    }
+}

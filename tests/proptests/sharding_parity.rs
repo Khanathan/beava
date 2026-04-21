@@ -130,6 +130,7 @@ fn make_engine() -> PipelineEngine {
             max_keys: None,
             watermark_lateness: None,
             shard_key: None,
+            salt: None,
         })
         .unwrap();
 
@@ -157,6 +158,7 @@ fn make_engine() -> PipelineEngine {
             max_keys: None,
             watermark_lateness: None,
             shard_key: None,
+            salt: None,
         })
         .unwrap();
 
@@ -186,6 +188,7 @@ fn make_engine() -> PipelineEngine {
             max_keys: None,
             watermark_lateness: None,
             shard_key: None,
+            salt: None,
         })
         .unwrap();
 
@@ -215,6 +218,7 @@ fn make_engine() -> PipelineEngine {
             max_keys: None,
             watermark_lateness: None,
             shard_key: None,
+            salt: None,
         })
         .unwrap();
 
@@ -249,6 +253,7 @@ fn make_engine() -> PipelineEngine {
             max_keys: None,
             watermark_lateness: None,
             shard_key: None,
+            salt: None,
         })
         .unwrap();
 

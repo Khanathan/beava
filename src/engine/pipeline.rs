@@ -3775,6 +3775,18 @@ impl PipelineEngine {
     ///   `typed_row_parity.rs`) to drive typed-only agg state.
     /// - Future `run_typed_cascade` growth (Wave 5+) replaces the
     ///   Wave-3 Value bridge with a direct typed cascade walk.
+    ///
+    /// # Related Wave 5 dispatch — StreamStreamJoinTyped
+    ///
+    /// Typed StreamStreamJoin uses a sibling dispatch path: the source
+    /// shard emits `crate::shard::thread::ShardOp::SsjInsertTyped` to
+    /// the join-owning shard (`hash(join_key) % N`). The target shard's
+    /// `SsjInsertTyped` arm buffers the Row + probes the opposite side
+    /// via `crate::engine::operators_typed::TypedSsjBuffer` for
+    /// within-bound matches, emitting joined Rows via
+    /// `StreamStreamJoinTyped::match_typed`. SC-9 parity tests
+    /// (`tests/typed_ssj_crossshard_parity.rs`) drive the buffer
+    /// directly to cover the operator-boundary parity contract.
     pub fn run_typed_agg_step(
         &self,
         stream_name: &str,

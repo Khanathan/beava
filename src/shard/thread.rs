@@ -371,6 +371,34 @@ pub enum ShardOp {
         event: serde_json::Value,
         within_ms: u64,
     },
+    /// Phase 59.6 Wave 5 (TPC-PERF-11, D-C3): typed-row variant of
+    /// `SsjInsert`. When both sides of a StreamStreamJoin are on
+    /// streams with registered typed schemas, the cross-shard dispatch
+    /// carries a [`crate::engine::schema::Row`] + `schema_id` instead
+    /// of `serde_json::Value` — eliminates the per-hop serde_json
+    /// round-trip and preserves the packed-row fast path end-to-end.
+    ///
+    /// Dispatch pattern mirrors `SsjInsert` exactly: source shards
+    /// try_send this variant to the join-owning shard
+    /// (`hash(join_key) % N`) + block on a bounded oneshot reply.
+    /// Target-shard arm calls `apply_ssj_insert_typed` (Wave 6+
+    /// integration — Wave 5 ships the type + library-level buffer in
+    /// `src/engine/operators_typed.rs::TypedSsjBuffer`; parity gate
+    /// `tests/typed_ssj_crossshard_parity.rs` drives the buffer
+    /// directly at the operator boundary for SC-9).
+    ///
+    /// Increments `beava_ssj_cross_shard_total{join_id}` on dispatch
+    /// (same counter as `SsjInsert` — the typed vs Value path
+    /// distinction surfaces via
+    /// `beava_typed_row_path_total{stream}`).
+    SsjInsertTyped {
+        join_id: String,
+        side: crate::engine::operators::JoinSide,
+        join_key: String,
+        row: crate::engine::schema::Row,
+        schema_id: crate::engine::schema::SchemaId,
+        within_ms: u64,
+    },
     /// Phase 57 D-B1 (TPC-CORR-10): cross-shard retraction dispatch.
     /// Source shards emit this for every downstream row whose
     /// `contributing_inputs` intersects a tombstoned event (Stream→Table
@@ -1591,6 +1619,29 @@ fn process_shard_event(
                     ).increment(1);
                     if let Some(tx) = event.response_tx {
                         let _ = tx.send(ShardResult::SsjInsertOk(matches));
+                    }
+                }
+                ShardOp::SsjInsertTyped {
+                    join_id,
+                    side: _side,
+                    join_key: _join_key,
+                    row: _row,
+                    schema_id: _schema_id,
+                    within_ms: _within_ms,
+                } => {
+                    // Phase 59.6 Wave 5 (TPC-PERF-11, D-C3): typed cross-shard
+                    // SSJ dispatch. Wave 5 ships the variant + the
+                    // operator-level TypedSsjBuffer in
+                    // `src/engine/operators_typed.rs`. Wave 6+ wires the
+                    // target-shard match against `Shard::entity_state_typed`.
+                    // Until then, empty-reply keeps the SPSC contract alive
+                    // so any caller that send-and-blocks won't hang.
+                    metrics::counter!(
+                        crate::shard::metrics::SSJ_CROSS_SHARD_TOTAL,
+                        "join_id" => join_id
+                    ).increment(1);
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::SsjInsertOk(Vec::new()));
                     }
                 }
                 ShardOp::RetractDownstream {
