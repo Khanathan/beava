@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
-status: Phase 59.7 Wave 2 complete — 10/10 windowed parity tests GREEN + V11 snapshot round-trip (50-case proptest + byte-format golden). Min×2/Max×2/Last/First windowed typed ops shipped. TypedStateSnapshotV11.typed_ringbuffers transparently extends V11 via #[serde(default)].
-stopped_at: Completed 59.7-02-PLAN.md (W2 full windowed typed agg set + V11 snapshot extension)
-last_updated: "2026-04-21T23:40:00.000Z"
+status: Phase 59.7 Wave 3 complete — ShardOp::RunTypedAggCascadeStep dispatch primitive + PipelineEngine::build_typed_agg_ops_for + run_typed_direct_cascade_same_shard walker wired behind BEAVA_TYPED_CASCADE_DIRECT=1; 1 of 4 cross-shard parity tests GREEN (same-shard); 3 retagged 59.7-W4. Zero regressions on Phase 59.6 + W1/W2 parity suites.
+stopped_at: Completed 59.7-03-PLAN.md (W3 same-shard typed-direct cascade walker)
+last_updated: "2026-04-22T00:15:00.000Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 20
@@ -25,9 +25,9 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 ## Current Position
 
-Phase: 59.7 (typed-windowed-cascade) — **W2 COMPLETE** 2026-04-21
-Next: Phase 59.7 Plan 03 (W3 ShardOp::RunTypedAggCascadeStep + cross-shard dispatch — flips 4 cross-shard RED tests GREEN)
-**Status:** Phase 59.7 Wave 2 complete — 10/10 windowed parity tests GREEN + V11 snapshot round-trip (50-case proptest + byte-format golden). Min×2/Max×2/Last/First windowed typed ops shipped. TypedStateSnapshotV11.typed_ringbuffers transparently extends V11 via #[serde(default)].
+Phase: 59.7 (typed-windowed-cascade) — **W3 COMPLETE** 2026-04-21
+Next: Phase 59.7 Plan 04 (W4 cross-shard ShardOp dispatch + typed_cascade_value_fallback counter + 3 remaining parity tests GREEN)
+**Status:** Phase 59.7 Wave 3 complete — ShardOp::RunTypedAggCascadeStep dispatch primitive + PipelineEngine::build_typed_agg_ops_for + run_typed_direct_cascade_same_shard walker wired behind BEAVA_TYPED_CASCADE_DIRECT=1; 1 of 4 cross-shard parity tests GREEN (same-shard); 3 retagged 59.7-W4. Zero regressions on Phase 59.6 + W1/W2 parity suites.
 **Progress:** [█████████░] 90%
 
 **Last activity:** 2026-04-21
@@ -39,7 +39,7 @@ Next: Phase 59.7 Plan 03 (W3 ShardOp::RunTypedAggCascadeStep + cross-shard dispa
 | 59.7-00 (W0 RED scaffolding + rename + env flag + counters) | **Complete 2026-04-21** | 50db7d7, bc2d138 |
 | 59.7-01 (W1 windowed typed aggs + TypedRingBuffer) | **Complete 2026-04-21** | 840f5c8, aa1d704, 6de6309 |
 | 59.7-02 (W2 Min/Max/Last/First windowed + V11 snapshot) | **Complete 2026-04-21** | eb0d84b, 2b998b6 |
-| 59.7-03 (W3 ShardOp::RunTypedAggCascadeStep + cross-shard dispatch) | Pending | — |
+| 59.7-03 (W3 ShardOp::RunTypedAggCascadeStep + same-shard walker) | **Complete 2026-04-21** | 562a746, 4ea34dd |
 | 59.7-04 (W4 run_typed_direct_cascade walker + env consumption) | Pending | — |
 | 59.7-05 (W5 perf gate + close) | Pending | — |
 
