@@ -115,6 +115,18 @@ def _compile_source(descriptor: Any) -> dict[str, Any]:
             d["key_fields"] = key
         if getattr(descriptor, "_ttl", None) is not None:
             d["entity_ttl"] = descriptor._ttl
+    # Phase 59.6 Wave 1 (TPC-PERF-11 / D-G2): emit the `schema:` block when
+    # the descriptor (or its underlying class) carries a compiled
+    # `_beava_schema`. Absent → pre-59.6 wire shape preserved; server sees
+    # `desc.schema == None` and `engine.is_typed_stream(name) == False`.
+    sch = getattr(descriptor, "_beava_schema", None)
+    if sch is None:
+        cls = getattr(descriptor, "_beava_cls", None)
+        if cls is not None:
+            sch = getattr(cls, "_beava_schema", None)
+    if sch is not None:
+        # Match RegisterSchemaJson shape exactly: {"schema": {...}}.
+        d["schema"] = sch.to_json()
     return d
 
 

@@ -412,7 +412,7 @@ def _stream_impl(cls: type | FunctionType | None = None, *, history_ttl: str | N
             )
         if isinstance(target, type):
             schema = extract_schema(target)
-            return StreamSource(
+            source = StreamSource(
                 name=target.__name__,
                 schema=schema,
                 history_ttl=history_ttl,
@@ -420,6 +420,31 @@ def _stream_impl(cls: type | FunctionType | None = None, *, history_ttl: str | N
                 shard_key=shard_key,
                 salt=salt,
             )
+            # Phase 59.6 Wave 1 (TPC-PERF-11 / D-G1): compile typed schema
+            # from class annotations. Failure is non-fatal — emit a warning
+            # and fall through to the untyped REGISTER path (pre-59.6
+            # wire shape preserved) so users with un-annotated classes are
+            # not broken. Users wanting the typed fast path must annotate
+            # all fields with int / float / bool / str / bytes.
+            from beava._schema_compile import compile_schema_from_class
+            try:
+                compiled = compile_schema_from_class(target)
+                source._beava_schema = compiled
+                # Also stamp on the class itself so _serialize.py finds
+                # it regardless of which handle is passed to compile_to_register_json.
+                target._beava_schema = compiled
+            except TypeError as exc:
+                import warnings
+                warnings.warn(
+                    f"@bv.stream({target.__name__}): typed schema compile "
+                    f"failed ({exc}); falling back to untyped REGISTER. "
+                    f"Annotate all fields with int / float / bool / str / bytes "
+                    f"to enable the Phase 59.6 typed-pipeline fast path.",
+                    category=UserWarning,
+                    stacklevel=2,
+                )
+                source._beava_schema = None
+            return source
         raise TypeError(
             f"@bv.stream must be applied to a class or function, got "
             f"{type(target).__name__}"

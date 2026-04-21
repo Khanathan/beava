@@ -38,3 +38,35 @@ initializers). The `cargo bench --no-run` gate and `cargo build --release` gate
 **Recommendation:** Phase 60 executor should add the `salt: None` field to every
 `StreamDefinition {...}` literal in tests and shard-internal call sites before Phase
 60 close. This is a mechanical sweep, no design decisions needed.
+
+---
+
+### Wave 1 follow-up: pre-existing E2E join / enrich flakes visible now that the server compiles
+
+Once Phase 59.6 Wave 1 restored `cargo build --release` as a working gate
+(the server itself compiles cleanly; the pre-existing `salt` blocker only
+prevents `cargo test --lib` from linking), two Python E2E tests start
+failing — but they were NOT running at all on HEAD prior to 59.6, because
+the `conftest.py::beava_server` fixture calls `cargo build` and errored
+out with the salt compile failure:
+
+- `python/tests/test_v0_joins_e2e.py::test_stream_stream_join_tcp`
+  — expects `matched >= 1` after a stream-stream join; gets `{}`.
+- `python/tests/test_v0_joins_e2e.py::test_stream_table_enrich_tcp`
+  — same `row.get("n") == 2` → `None`.
+
+**Verified pre-existing:** reproduced by stashing `python/beava/_serialize.py`
+(my Wave 1 `schema:` emission) — the test still fails. Since pre-Wave-1
+HEAD could not build the server, the tests were erroring on fixture
+setup, not fail-on-assertion. Wave 1 surfaces the genuine join-E2E
+regression that landed somewhere between the last green server build
+(pre-Phase-60 WIP) and now.
+
+**Why deferred:** out of scope for 59.6 Wave 1 (which lands schema runtime
++ registry, not Stream-Stream-Join operator fixes). These are likely the
+responsibility of whoever lands the Phase 60 salt-sweep finish or whoever
+last touched join state — a parity regression in Stream-Stream-Join or
+stream-table enrich between that commit and arch/tpc-full-shard tip.
+
+**Owner / resolution:** next phase to touch joins, or a dedicated fix
+once the Phase 60 salt-sweep closes.

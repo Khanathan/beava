@@ -21,6 +21,11 @@ class TestSourcePayloads:
             url: str
 
         j = compile_to_register_json(Clicks)
+        # Phase 59.6 Wave 1 (TPC-PERF-11): a typed schema block is now emitted
+        # additively for any decorated class whose annotations all map to
+        # supported primitives. Assert the pre-59.6 keys are unchanged and
+        # test the new `schema` block separately.
+        schema_block = j.pop("schema", None)
         assert j == {
             "name": "Clicks",
             "kind": "stream",
@@ -30,6 +35,11 @@ class TestSourcePayloads:
                 "url": {"type": "str", "optional": False},
             },
         }
+        # The schema block must mirror RegisterSchemaJson exactly — tested
+        # in depth by test_schema_compile.py. Here we just smoke it.
+        assert schema_block is not None
+        assert schema_block["row_size"] == 32  # 2 inline_str slots (16 each)
+        assert len(schema_block["fields"]) == 2
 
     def test_stream_source_with_history_ttl(self):
         @bv.stream(history_ttl="30d")

@@ -413,13 +413,30 @@ def table(
                     raise TypeError(
                         schema_mismatch_error(k, schema, f"{target.__name__} schema")
                     )
-            return TableSource(
+            instance = TableSource(
                 name=target.__name__,
                 schema=schema,
                 key=key_list,
                 mode=mode,
                 ttl=ttl,
             )
+            # Phase 59.6 Wave 1 (TPC-PERF-11 / D-G1): compile typed schema.
+            # See python/beava/_stream.py for the fallback contract.
+            from beava._schema_compile import compile_schema_from_class
+            try:
+                compiled = compile_schema_from_class(target)
+                instance._beava_schema = compiled
+                target._beava_schema = compiled
+            except TypeError as exc:
+                import warnings
+                warnings.warn(
+                    f"@bv.table({target.__name__}): typed schema compile "
+                    f"failed ({exc}); falling back to untyped REGISTER.",
+                    category=UserWarning,
+                    stacklevel=2,
+                )
+                instance._beava_schema = None
+            return instance
         raise TypeError(
             f"@bv.table must be applied to a class or function, got "
             f"{type(target).__name__}"
@@ -561,6 +578,21 @@ def source_table(
         # Stamp the sharded flag on the instance so _serialize reads it
         # per-descriptor rather than from the class default.
         instance._beava_sharded = sharded
+        # Phase 59.6 Wave 1 (TPC-PERF-11 / D-G1): compile typed schema.
+        from beava._schema_compile import compile_schema_from_class
+        try:
+            compiled = compile_schema_from_class(target)
+            instance._beava_schema = compiled
+            target._beava_schema = compiled
+        except TypeError as exc:
+            import warnings
+            warnings.warn(
+                f"@bv.source_table({target.__name__}): typed schema compile "
+                f"failed ({exc}); falling back to untyped REGISTER.",
+                category=UserWarning,
+                stacklevel=2,
+            )
+            instance._beava_schema = None
         return instance
 
     if cls is not None:
