@@ -89,6 +89,15 @@ pub struct Shard {
     /// wave; Wave 5 extends fjall serialization (V11 snapshot) so typed
     /// agg state survives restart.
     pub entity_state_typed: ahash::AHashMap<(String, String), crate::engine::schema::Row>,
+    /// Phase 59.6 Wave 6 (TPC-PERF-11, D-C1 type-erasure): per-entity
+    /// side-channel state for sketch / window typed aggs (HLL, UDDSketch,
+    /// CMS+heap, ring buffers, EMA timestamps). Parallel keyspace with
+    /// `entity_state_typed` — one SideBand per entity, populated lazily
+    /// on first update by whichever advanced op touches it. Simple aggs
+    /// (Count/Sum/Avg/Min/Max/Last/First/Stddev/Variance) never allocate
+    /// into this map.
+    pub entity_sideband_typed:
+        ahash::AHashMap<(String, String), crate::engine::operators_typed::SideBand>,
 }
 
 /// Per-shard state container (dev-only `state-inmem` build). Single writer.
@@ -110,6 +119,11 @@ pub struct Shard {
     /// See the fjall-build variant for the full docstring; dev-mode
     /// build carries the same field so API surface is consistent.
     pub entity_state_typed: AHashMap<(String, String), crate::engine::schema::Row>,
+    /// Phase 59.6 Wave 6 (TPC-PERF-11, D-C1): per-entity SideBand side
+    /// channel for sketch / windowed typed aggs. See the fjall-build
+    /// variant for the full docstring.
+    pub entity_sideband_typed:
+        AHashMap<(String, String), crate::engine::operators_typed::SideBand>,
 }
 
 impl Shard {
@@ -127,6 +141,7 @@ impl Shard {
             watermark: WatermarkState::new(),
             write_bytes_since_sample: 0,
             entity_state_typed: ahash::AHashMap::new(),
+            entity_sideband_typed: ahash::AHashMap::new(),
         }
     }
 
@@ -147,6 +162,7 @@ impl Shard {
             event_log: None,
             watermark: WatermarkState::new(),
             entity_state_typed: AHashMap::new(),
+            entity_sideband_typed: AHashMap::new(),
         }
     }
 
@@ -159,6 +175,7 @@ impl Shard {
             event_log: Some(event_log),
             watermark: WatermarkState::new(),
             entity_state_typed: AHashMap::new(),
+            entity_sideband_typed: AHashMap::new(),
         }
     }
 

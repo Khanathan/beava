@@ -15,6 +15,14 @@ pub mod operators_typed;
 /// (CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp, FirstOp) implementing
 /// the `TypedAggOp` trait. See `src/engine/operators_typed_aggs.rs`.
 pub mod operators_typed_aggs;
+/// Phase 59.6 Wave 6 (TPC-PERF-11): typed advanced aggregation operator
+/// impls — DistinctCountOpTyped (HLL), PercentileOpTyped (UDDSketch),
+/// TopKOpTyped (CMS+heap), StddevOpTyped, VarianceOpTyped. Sketch ops
+/// live in the per-entity SideBand via the D-C1 type-erasure tradeoff.
+pub mod operators_typed_sketches;
+/// Phase 59.6 Wave 6 (TPC-PERF-11): typed windowed / recurrence operator
+/// impls — EmaOpTyped, LagOpTyped, FirstNOpTyped, LastNOpTyped.
+pub mod operators_typed_windows;
 pub mod pipeline;
 pub mod recommend;
 pub mod register;
@@ -33,7 +41,8 @@ pub use schema::{FieldSpec, FieldTy, RegisteredSchema, Row, SchemaId, SchemaRegi
 
 // Phase 59.6 Wave 3 (TPC-PERF-11) — typed operator re-exports.
 pub use operators_typed::{
-    derive_enriched_schema, EnrichFromTableTyped, ProjectedField, TypedAggOp, TypedOperator,
+    derive_enriched_schema, EnrichFromTableTyped, ProjectedField, SideBand, TypedAggOp,
+    TypedOperator,
 };
 
 // Phase 59.6 Wave 4 (TPC-PERF-11) — typed aggregation operator re-exports.
@@ -42,3 +51,10 @@ pub use operators_typed_aggs::{
     MaxOpTypedF64, MaxOpTypedI64, MinOpTypedF64, MinOpTypedI64, SumOpTypedF64,
     SumOpTypedI64,
 };
+
+// Phase 59.6 Wave 6 (TPC-PERF-11) — typed advanced agg re-exports.
+pub use operators_typed_sketches::{
+    DistinctCountOpTyped, NumCol, PercentileOpTyped, StddevOpTyped, TopKOpTyped,
+    VarianceOpTyped,
+};
+pub use operators_typed_windows::{EmaOpTyped, FirstNOpTyped, LagOpTyped, LastNOpTyped};

@@ -85,6 +85,76 @@ pub trait TypedAggOp: Send + Sync + std::fmt::Debug {
 
     /// Operator / feature name.
     fn name(&self) -> &str;
+
+    /// Phase 59.6 Wave 6 (D-C1 type-erasure): sketch + windowed ops override
+    /// this to update their side-channel state. Simple aggs (Count/Sum/Avg/
+    /// Min/Max/Last/First/Stddev/Variance) use the default which forwards to
+    /// [`Self::update_typed`]. Ops that need state too complex to
+    /// monomorphize over the column type (HLL/UDDSketch/CMS/ring-buffers)
+    /// override this to read/write into the per-entity [`SideBand`].
+    #[allow(unused_variables)]
+    fn update_with_sideband(
+        &self,
+        state: &mut Row,
+        state_schema: &RegisteredSchema,
+        event: &Row,
+        event_schema: &RegisteredSchema,
+        sideband: &mut SideBand,
+        now: std::time::SystemTime,
+    ) {
+        self.update_typed(state, state_schema, event, event_schema, now);
+    }
+
+    /// Phase 59.6 Wave 6: sketch ops override this to project from their
+    /// SideBand state into a FeatureValue. Default delegates to
+    /// [`Self::read_feature`].
+    #[allow(unused_variables)]
+    fn read_feature_with_sideband(
+        &self,
+        state: &Row,
+        state_schema: &RegisteredSchema,
+        sideband: &SideBand,
+    ) -> crate::types::FeatureValue {
+        self.read_feature(state, state_schema)
+    }
+}
+
+/// Phase 59.6 Wave 6 (TPC-PERF-11, D-C1 type-erasure) — per-entity
+/// side-channel state for typed aggregation operators whose internal state
+/// does not fit a fixed-layout Row (HLL registers, UDDSketch buckets,
+/// CountMinSketch + TopKHeap, windowed ring buffers).
+///
+/// Each typed op keys into these maps by its **operator name** (the feature
+/// name on the registered stream), because one entity's agg-state Row can
+/// host multiple ops of the same kind (e.g. two separate `top_k` features
+/// on different input fields). The op's `name()` is unique per-stream by
+/// the SDK's validator, so `(stream, entity_key, op.name())` uniquely
+/// identifies a sketch instance.
+///
+/// # Memory profile
+///
+/// All maps are lazy — a SideBand starts empty and only populates maps the
+/// entity's ops actually touch. A typed agg-state with only simple ops
+/// (Count/Sum/Avg/Min/Max/Last/First/Stddev/Variance) never allocates any
+/// map entries; the SideBand is pure overhead for the in-memory
+/// `AHashMap<(String,String), SideBand>` stored alongside
+/// [`crate::shard::Shard::entity_state_typed`].
+#[derive(Debug, Default)]
+pub struct SideBand {
+    /// `DistinctCountOpTyped` (HLL). Key = op.name().
+    pub hll_sketches: ahash::AHashMap<String, crate::engine::hll::Hll>,
+    /// `PercentileOpTyped` (UDDSketch). Key = op.name().
+    pub udd_sketches: ahash::AHashMap<String, crate::engine::uddsketch::UDDSketch>,
+    /// `TopKOpTyped` — CountMinSketch + TopKHeap pair per op name.
+    pub topk_sketches:
+        ahash::AHashMap<String, (crate::engine::cms::CountMinSketch, crate::engine::cms::TopKHeap)>,
+    /// `LagOpTyped` / `FirstNOpTyped` / `LastNOpTyped` — ring buffers of
+    /// recent observed values, keyed by op.name().
+    pub ring_buffers: ahash::AHashMap<String, std::collections::VecDeque<crate::types::FeatureValue>>,
+    /// `EmaOpTyped` last-timestamp per op name (initialized flag encoded
+    /// via presence). Stored as `Duration` since `UNIX_EPOCH` for
+    /// serialize-friendliness.
+    pub ema_last_ts: ahash::AHashMap<String, std::time::SystemTime>,
 }
 
 /// Declaration of a single projected field lifted from the right-side
