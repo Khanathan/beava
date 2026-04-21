@@ -402,6 +402,11 @@ pub struct StreamDefinition {
     /// Phase 51-04: shard key declaration for join validation.
     /// None = no shard key (join validation deferred / not applicable).
     pub shard_key: Option<crate::engine::join_validator::ShardKeySpec>,
+    /// Phase 60 D-A3 — per-stream salt cardinality for hot-key mitigation.
+    /// Power of 2 in [2, 256]. None = no salting (zero overhead). Added here
+    /// to complete the partial-landed P60 struct refactor; fully owned by
+    /// Phase 60's salting work.
+    pub salt: Option<u16>,
 }
 
 /// The pipeline engine. Holds registered stream definitions and coordinates
@@ -4019,6 +4024,25 @@ impl PipelineEngine {
             .and_then(|j| j.get("kind"))
             .and_then(|k| k.as_str())
             .map(|s| s == "source_table")
+            .unwrap_or(false)
+    }
+
+    /// Phase 59.5: returns true iff the named source_table was registered
+    /// with `sharded=true`. Replicated (the Phase 59.5 default) and non-
+    /// source-tables both return false. Used by the EnrichFromTable and
+    /// Table×Table join operators to select local-state vs cross-shard
+    /// read paths, and by OP_UPSERT_TABLE_ROW / OP_DELETE_TABLE_ROW
+    /// dispatch to select single-shard vs fanout write paths.
+    pub fn is_sharded_source_table(&self, name: &str) -> bool {
+        self.raw_register_jsons
+            .get(name)
+            .and_then(|j| {
+                // Only meaningful for source tables.
+                if j.get("kind").and_then(|k| k.as_str()) != Some("source_table") {
+                    return None;
+                }
+                j.get("sharded").and_then(|s| s.as_bool())
+            })
             .unwrap_or(false)
     }
 

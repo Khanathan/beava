@@ -101,6 +101,13 @@ def _compile_source(descriptor: Any) -> dict[str, Any]:
             # in-process `register_source_table()` helper's signature.
             d["key_field"] = None
             d["key_fields"] = key
+            # Phase 59.5: emit sharded flag. Absent (default) = replicated;
+            # true = partitioned by key with cross-shard ReadEntityAt on
+            # non-owner shards. Keeps pre-Phase-59.5 wire shape identical
+            # for the now-default replicated path (server's serde(default)
+            # reads None → treated as replicated).
+            if getattr(descriptor, "_beava_sharded", False):
+                d["sharded"] = True
         elif len(key) == 1:
             d["key_field"] = key[0]
         else:

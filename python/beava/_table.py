@@ -444,9 +444,18 @@ class SourceTable(TableSource):
     ``group_by``/aggregate — cascades do NOT fire on source-table writes
     (D-B6). Phase 57 consumes the per-DELETE PendingRetraction marker to
     drive downstream retraction.
+
+    Phase 59.5: SourceTable defaults to **replicated** (writes fan out to
+    all shards; enrichment reads are local). Pass ``sharded=True`` to the
+    ``@bv.source_table`` decorator for tables too large to replicate —
+    that preserves Phase 56 partition-by-key + cross-shard ReadEntityAt
+    behavior.
     """
 
     _beava_kind: str = "source_table"
+    # Phase 59.5: per-instance override. False (default) = replicated;
+    # True = partitioned by `key` and looked up via cross-shard ReadEntityAt.
+    _beava_sharded: bool = False
 
     def group_by(self, *keys: str) -> Any:
         raise RuntimeError(
@@ -470,6 +479,7 @@ def source_table(
     *,
     key: str | list[str] | None = None,
     entity_ttl: str | None = None,
+    sharded: bool = False,
 ):
     """Declare a CDC source table (Phase 55-02, TPC-SOURCE-01). Example::
 
@@ -483,13 +493,26 @@ def source_table(
     source_lsn=42)`` — not via ``push()``. DELETEs are hard-delete +
     PendingRetraction marker (Phase 57 consumer).
 
+    Phase 59.5: source tables default to **replicated** — every shard gets
+    a full copy of the table, writes fan out to all N shards, and
+    enrichment reads are local (no cross-shard traffic). This is the
+    correct architecture for small dimension tables (the 95% case).
+    Pass ``sharded=True`` for tables too large to replicate — that
+    preserves Phase 56 partition-by-key + cross-shard ReadEntityAt
+    behavior at the cost of per-event round-trip latency.
+
     Args:
         key: required column name(s) that identifies the row. ``str`` for
             single-key, ``list[str]`` for composite.
         entity_ttl: optional row-level TTL (e.g. ``"30d"``).
+        sharded: if True, the table is partitioned by ``key`` and
+            enrichment lookups on non-owner shards trigger a cross-shard
+            ``ShardOp::ReadEntityAt``. Default ``False`` = replicated
+            (fanout on write, local read on enrichment).
 
     Raises:
-        TypeError: if ``key`` is omitted (``"requires key"``).
+        TypeError: if ``key`` is omitted (``"requires key"``) or
+            ``sharded`` is not a bool.
     """
     if key is None:
         raise TypeError("@bv.source_table requires key=... (str or list[str])")
@@ -504,6 +527,14 @@ def source_table(
         )
     if not key_list:
         raise TypeError("@bv.source_table key must not be empty")
+
+    # Phase 59.5: validate sharded. bool subclasses of int must be rejected
+    # so `sharded=1` doesn't silently slip through — same pattern as
+    # _validate_salt rejecting bool-shaped ints.
+    if not isinstance(sharded, bool):
+        raise TypeError(
+            f"@bv.source_table sharded must be bool, got {type(sharded).__name__}"
+        )
 
     if entity_ttl is not None:
         _validate_duration_str(entity_ttl, field="entity_ttl")
@@ -520,13 +551,17 @@ def source_table(
                 raise TypeError(
                     schema_mismatch_error(k, schema, f"{target.__name__} schema")
                 )
-        return SourceTable(
+        instance = SourceTable(
             name=target.__name__,
             schema=schema,
             key=key_list,
             mode="append",
             ttl=entity_ttl,
         )
+        # Stamp the sharded flag on the instance so _serialize reads it
+        # per-descriptor rather than from the class default.
+        instance._beava_sharded = sharded
+        return instance
 
     if cls is not None:
         return _wrap(cls)

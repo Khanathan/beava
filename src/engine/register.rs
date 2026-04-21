@@ -265,6 +265,14 @@ pub struct SourceTableDescriptor {
     pub fields: serde_json::Value,
     #[serde(default)]
     pub entity_ttl: Option<String>,
+    /// Phase 59.5: routing/storage layout flag. Absent (default) =
+    /// replicated (writes fan out to all shards, enrichment reads are
+    /// local). `Some(true)` = partitioned by `key_fields` (writes go to
+    /// hash(key) % N; enrichment lookups on non-owner shards trigger
+    /// `ShardOp::ReadEntityAt`). See `engine::pipeline::is_sharded_source_table`
+    /// for the hot-path query.
+    #[serde(default)]
+    pub sharded: Option<bool>,
 }
 
 /// One feature inside an AggregationSpec.features[]. Fields match
@@ -943,7 +951,8 @@ pub fn v0_aggregation_to_stream_def(
         pipeline_ttl: None,
         max_keys: None,
         watermark_lateness: None,
-                shard_key: None,
+        shard_key: None,
+        salt: None,
     })
 }
 
@@ -1028,6 +1037,7 @@ pub fn v0_source_to_stream_def(
         max_keys: None,
         watermark_lateness,
         shard_key: None,
+        salt: None,
     })
 }
 
@@ -1199,6 +1209,7 @@ pub fn v0_join_to_stream_def_with_meta(
                 max_keys: None,
                 watermark_lateness: None,
                 shard_key: None,
+                salt: None,
             })
         }
         "stream_stream" => {
@@ -1298,6 +1309,7 @@ pub fn v0_join_to_stream_def_with_meta(
                 max_keys: None,
                 watermark_lateness: None,
                 shard_key: None,
+                salt: None,
             })
         }
         "table_table" => {
@@ -1465,6 +1477,7 @@ pub fn v0_join_to_stream_def_with_meta(
                 max_keys: None,
                 watermark_lateness: None,
                 shard_key: None,
+                salt: None,
             })
         }
         other => Err(BeavaError::Protocol(format!(
