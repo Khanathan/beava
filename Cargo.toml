@@ -37,6 +37,10 @@ demo = ["server"]
 # build configuration — the default (fjall) build is the sole production
 # target for Phase 54 onward.
 state-inmem = []
+# pprof CPU-profile HTTP endpoint (`GET /debug/pprof?secs=N`). OFF by default.
+# Enable with `cargo build --release --features pprof-endpoint` to attach the
+# sampler; combine with `state-inmem` to profile the inmem backend.
+pprof-endpoint = ["dep:pprof"]
 
 [dependencies]
 ahash = "0.8"
@@ -86,11 +90,15 @@ sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 # state. Pinned to the 2.x line (CONTEXT D-04 rejects 3.x for v1.2).
 fjall = "2.11"
 
+# pprof CPU-profile endpoint — gated by `pprof-endpoint` feature so
+# production builds don't include the sampler. Opt in with
+# `cargo build --release --features pprof-endpoint`.
+pprof = { version = "0.14", features = ["flamegraph", "frame-pointer"], optional = true }
+
 [dev-dependencies]
 tempfile = "3"
 sha2 = "0.10"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
-pprof = { version = "0.14", features = ["flamegraph", "frame-pointer"] }
 scc = "3.7"
 papaya = "0.2"
 flurry = "0.5"

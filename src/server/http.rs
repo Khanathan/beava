@@ -1086,6 +1086,74 @@ async fn debug_topology(State(state): State<SharedState>) -> Json<serde_json::Va
     }))
 }
 
+/// GET /debug/pprof?secs=N — CPU sample profile via pprof-rs. Writes a
+/// flamegraph SVG to /tmp/beava-pprof-{now}.svg and returns its path. N
+/// defaults to 10. Sampling frequency fixed at 997 Hz (common prime).
+#[cfg(feature = "pprof-endpoint")]
+async fn debug_pprof(Query(params): Query<std::collections::HashMap<String, String>>) -> Json<serde_json::Value> {
+    let secs: u64 = params.get("secs").and_then(|s| s.parse().ok()).unwrap_or(10);
+    let freq: i32 = 997;
+    let guard = match pprof::ProfilerGuardBuilder::default()
+        .frequency(freq)
+        .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+        .build()
+    {
+        Ok(g) => g,
+        Err(e) => {
+            return Json(serde_json::json!({"error": format!("ProfilerGuard build failed: {}", e)}));
+        }
+    };
+    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+    let report = match guard.report().build() {
+        Ok(r) => r,
+        Err(e) => {
+            return Json(serde_json::json!({"error": format!("report build failed: {}", e)}));
+        }
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let svg_path = format!("/tmp/beava-pprof-{}.svg", now);
+    let txt_path = format!("/tmp/beava-pprof-{}.txt", now);
+    let flamegraph_result = {
+        let f = std::fs::File::create(&svg_path);
+        match f {
+            Ok(f) => report.flamegraph(f).map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    };
+    let top_lines: Vec<String> = {
+        let mut entries: Vec<(String, isize)> = report
+            .data
+            .iter()
+            .map(|(frames, count)| {
+                // frames.frames: &Vec<Vec<Symbol>> — each Vec<Symbol> is inlined
+                // frame chain; take the innermost Symbol of the top stack frame.
+                let name = frames
+                    .frames
+                    .first()
+                    .and_then(|chain: &Vec<pprof::Symbol>| chain.first())
+                    .map(|sym: &pprof::Symbol| sym.name())
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                (name, *count as isize)
+            })
+            .collect();
+        entries.sort_by(|a, b| b.1.cmp(&a.1));
+        entries.into_iter().take(40).map(|(n, c)| format!("{:>8}  {}", c, n)).collect()
+    };
+    let _ = std::fs::write(&txt_path, top_lines.join("\n"));
+    Json(serde_json::json!({
+        "secs": secs,
+        "frequency_hz": freq,
+        "flamegraph": svg_path,
+        "top40_txt": txt_path,
+        "flamegraph_result": match flamegraph_result { Ok(_) => "ok".to_string(), Err(e) => e },
+        "sample_count": report.data.values().map(|c| *c as usize).sum::<usize>(),
+        "top5": top_lines.iter().take(5).cloned().collect::<Vec<_>>(),
+    }))
+}
+
 /// GET /debug/throughput — Per-stream EWMA message rates for the Streams tab.
 async fn debug_throughput(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let mut throughput = state.throughput.lock();
@@ -1690,7 +1758,12 @@ pub fn build_router(state: SharedState) -> Router {
         )
         .route("/debug/warnings", get(debug_warnings))
         .route("/debug/topology", get(debug_topology))
-        .route("/debug/throughput", get(debug_throughput))
+        .route("/debug/throughput", get(debug_throughput));
+
+    #[cfg(feature = "pprof-endpoint")]
+    let admin_router = admin_router.route("/debug/pprof", get(debug_pprof));
+
+    let admin_router = admin_router
         .route("/debug/latency", get(debug_latency))
         .route("/debug/shard_probe", get(debug_shard_probe))
         .route("/debug/shards", get(debug_shards))
