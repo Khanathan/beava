@@ -422,6 +422,135 @@ impl Shard {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     }
+
+    /// Phase 56 D-A1: pure entity lookup used by EnrichFromTable +
+    /// StreamStreamJoin buffer read-side. Backend-agnostic: wraps the
+    /// existing `read_entity_from_shard` helper and clones the
+    /// `EntityState` out. Returns `None` when the key is absent on this
+    /// shard's partition (caller increments enrich_missing_total).
+    ///
+    /// The `table_name` parameter is currently unused at this level —
+    /// the entity and its table rows live inside a single EntityState on
+    /// this shard, and the caller (operator eval) selects which
+    /// `table_rows[table_name]` field to pull from the returned entity.
+    /// The parameter is threaded through to match the D-A1 dispatch
+    /// shape so metric labels + future per-table indexing work without
+    /// a signature change.
+    ///
+    /// No mutation: takes `&self`. Safe to call from any reader holding
+    /// a `&Shard`.
+    pub fn read_entity_at(
+        &self,
+        _table_name: &str,
+        key: &str,
+    ) -> Option<EntityState> {
+        read_entity_from_shard(self, key, |e| e.clone())
+    }
+
+    /// Phase 56 D-B1: cross-shard StreamStreamJoin buffer insert on the
+    /// join-key-owning shard. Mirrors the Phase 23 StreamStreamJoin
+    /// block in `pipeline.rs::push_with_cascade_on_shard` but runs on
+    /// the target shard (this shard) for the relocated
+    /// `hash(join_key) % N` ownership.
+    ///
+    /// Semantics:
+    /// 1. Look up / create the `EntityState` at `join_key` on this shard.
+    /// 2. Find the `StreamJoinBuffer` operator for `join_id` (feat_name
+    ///    IS the join_id — confirmed in pipeline.rs:1813); create a
+    ///    fresh one with `within_ms` if absent.
+    /// 3. Probe the OPPOSITE side for matches in the symmetric interval
+    ///    window (`|arriving_ts - buffered_ts| <= within_ms`).
+    /// 4. Insert the arriving event on `side`; evict old entries.
+    /// 5. Return the matched counterparty event maps (possibly empty).
+    ///
+    /// The caller (source shard on the Wave 3 dispatch path) consumes
+    /// the Vec to emit joined outputs via its existing downstream
+    /// cascade. Wave 1 does not yet wire this into the operator eval
+    /// path — `apply_ssj_insert` is a primitive that Wave 3 calls.
+    ///
+    /// T-56-01-02 mitigation: if `event` is not a JSON object (e.g. a
+    /// bare string/number from a malformed source), returns an empty
+    /// matches Vec WITHOUT inserting anything — matches the silent-skip
+    /// behaviour the existing StreamStreamJoin eval uses.
+    pub fn apply_ssj_insert(
+        &mut self,
+        join_id: &str,
+        side: crate::engine::operators::JoinSide,
+        join_key: &str,
+        event: serde_json::Value,
+        within_ms: u64,
+    ) -> Vec<serde_json::Map<String, serde_json::Value>> {
+        // T-56-01-02: reject non-object events silently.
+        let arriving_map: serde_json::Map<String, serde_json::Value> = match event {
+            serde_json::Value::Object(m) => m,
+            _ => return Vec::new(),
+        };
+
+        // Derive event_time_ms from the event, falling back to 0 on
+        // parse failure (matches the Phase 23 behaviour in pipeline.rs
+        // where `parse_event_time().unwrap_or(now)` is used — but here
+        // the join-owning shard has no `now` parameter; 0 is the safe
+        // default because the evict floor is `max_seen - within_ms`
+        // and a zero timestamp will simply be evicted on the next
+        // insert with a later timestamp).
+        let event_time_ms: u64 = crate::engine::operators::parse_event_time(
+            &serde_json::Value::Object(arriving_map.clone()),
+        )
+        .and_then(|st| {
+            st.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_millis() as u64)
+        })
+        .unwrap_or(0);
+
+        // The SSJ buffer lives under a synthetic stream name on the
+        // EntityState — for the relocated (cross-shard) path the
+        // stream-scope doesn't matter, only the (join_id, join_key)
+        // pair identifies the buffer. Use a dedicated reserved stream
+        // slot "__ssj__" so the buffer cannot collide with any real
+        // stream's operator list.
+        let stream_slot: &str = "__ssj__";
+        let join_id_owned = join_id.to_string();
+        let within_ms_copy = within_ms;
+
+        let matches: Vec<serde_json::Map<String, serde_json::Value>> = {
+            let mut view = StoreView::Sharded(self);
+            view.with_entity_mut(join_key, |entity| {
+                entity.get_or_create_stream(stream_slot);
+                let stream_state = entity.streams.get_mut(stream_slot).unwrap();
+                if !stream_state.operators.iter().any(|(n, _)| *n == join_id_owned) {
+                    stream_state.operators.push((
+                        join_id_owned.clone(),
+                        crate::state::snapshot::OperatorState::StreamJoinBuffer(
+                            crate::engine::operators::StreamJoinBuffer::new(within_ms_copy),
+                        ),
+                    ));
+                }
+                let buf = stream_state
+                    .operators
+                    .iter_mut()
+                    .find_map(|(n, op)| {
+                        if *n != join_id_owned {
+                            return None;
+                        }
+                        match op {
+                            crate::state::snapshot::OperatorState::StreamJoinBuffer(b) => {
+                                Some(b)
+                            }
+                            _ => None,
+                        }
+                    })
+                    .expect("StreamJoinBuffer present after get-or-insert");
+                let probed = buf.probe(side, event_time_ms);
+                buf.insert(side, event_time_ms, arriving_map.clone());
+                buf.evict();
+                probed
+            })
+        };
+
+        self.dirty_set.insert(join_key.to_string());
+        matches
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -733,5 +862,152 @@ mod tests {
         // fallback still compiles + behaves as before.
         let s = super::Shard::new();
         assert_eq!(s.state.len(), 0);
+    }
+
+    // ---- Phase 56 Wave 1: read_entity_at + apply_ssj_insert unit tests ----
+
+    /// Helper: build an empty Shard in the default (fjall) build using a
+    /// temp partition. Mirrors the shard_state_approximate_len pattern.
+    #[cfg(not(feature = "state-inmem"))]
+    fn build_empty_shard_fjall() -> (super::Shard, tempfile::TempDir) {
+        use crate::shard::fjall_backend::{
+            fjall_config_from_env, open_keyspace_from_env, open_shard_partition,
+        };
+        std::env::set_var("BEAVA_FJALL_FSYNC_DISABLE", "1");
+        std::env::set_var("BEAVA_FJALL_CACHE_MB", "32");
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let cfg = fjall_config_from_env(1);
+        let ks = open_keyspace_from_env(tmp.path(), &cfg).expect("open keyspace");
+        let partition = open_shard_partition(&ks, 0, &cfg).expect("open partition");
+        (super::Shard::with_partition(partition), tmp)
+    }
+
+    #[cfg(not(feature = "state-inmem"))]
+    #[test]
+    fn read_entity_at_returns_none_on_missing() {
+        // Phase 56 D-A1: Shard::read_entity_at returns None for an
+        // absent key — caller bumps enrich_missing_total.
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _g = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let (shard, _tmp) = build_empty_shard_fjall();
+        assert!(shard.read_entity_at("Countries", "XX").is_none());
+    }
+
+    #[cfg(not(feature = "state-inmem"))]
+    #[test]
+    fn read_entity_at_returns_some_after_upsert() {
+        // Phase 56 D-A1: after upsert_source_table_row the row is
+        // readable via read_entity_at (the entity exists and contains
+        // the table row; caller pulls fields from returned EntityState).
+        use crate::types::FeatureValue;
+        use ahash::AHashMap;
+        use std::sync::{Mutex, OnceLock};
+        use std::time::SystemTime;
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _g = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let (mut shard, _tmp) = build_empty_shard_fjall();
+        let mut f: AHashMap<String, FeatureValue> = AHashMap::new();
+        f.insert("gdp_usd".into(), FeatureValue::Int(800_000));
+        shard.upsert_source_table_row("CH", "Countries", f, 1, SystemTime::now());
+        let got = shard.read_entity_at("Countries", "CH");
+        assert!(got.is_some());
+        let got = got.unwrap();
+        let row = got.table_rows.get("Countries").expect("Countries row present");
+        assert_eq!(
+            row.fields.get("gdp_usd"),
+            Some(&FeatureValue::Int(800_000))
+        );
+    }
+
+    #[cfg(not(feature = "state-inmem"))]
+    #[test]
+    fn apply_ssj_insert_first_side_returns_empty_matches() {
+        // Phase 56 D-B1: first insert on an empty buffer — no matches.
+        use serde_json::json;
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _g = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let (mut shard, _tmp) = build_empty_shard_fjall();
+        let ev = json!({"user_id": "u1", "payload": "L", "_event_time": 1_000_000_u64});
+        let matches = shard.apply_ssj_insert(
+            "j1",
+            crate::engine::operators::JoinSide::Left,
+            "u1",
+            ev,
+            60_000,
+        );
+        assert!(matches.is_empty());
+    }
+
+    #[cfg(not(feature = "state-inmem"))]
+    #[test]
+    fn apply_ssj_insert_second_side_returns_prior_counterparty() {
+        // Phase 56 D-B1: after inserting a Left event, a Right insert
+        // at the same join_key within the window returns the Left
+        // event as a match.
+        use serde_json::json;
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _g = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let (mut shard, _tmp) = build_empty_shard_fjall();
+        // Identical event_time (`_event_time` in milliseconds since epoch)
+        // — well within a 60_000 ms window.
+        let left_ev = json!({"user_id": "u1", "payload": "L", "_event_time": 1_700_000_000_000_u64});
+        let right_ev = json!({"user_id": "u1", "payload": "R", "_event_time": 1_700_000_000_000_u64});
+        let _ = shard.apply_ssj_insert(
+            "j1",
+            crate::engine::operators::JoinSide::Left,
+            "u1",
+            left_ev,
+            60_000,
+        );
+        let matches = shard.apply_ssj_insert(
+            "j1",
+            crate::engine::operators::JoinSide::Right,
+            "u1",
+            right_ev,
+            60_000,
+        );
+        assert_eq!(matches.len(), 1, "Right insert sees prior Left");
+        assert_eq!(
+            matches[0].get("payload").and_then(|v| v.as_str()),
+            Some("L"),
+            "Matched counterparty payload is from the Left side"
+        );
+    }
+
+    #[cfg(not(feature = "state-inmem"))]
+    #[test]
+    fn apply_ssj_insert_rejects_non_object_event() {
+        // Phase 56 T-56-01-02: non-object event (malformed source) is
+        // silently skipped — returns empty matches, no insertion.
+        use serde_json::json;
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _g = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let (mut shard, _tmp) = build_empty_shard_fjall();
+        // bare string, not an object
+        let ev = json!("not-an-object");
+        let matches = shard.apply_ssj_insert(
+            "j1",
+            crate::engine::operators::JoinSide::Left,
+            "u1",
+            ev,
+            60_000,
+        );
+        assert!(matches.is_empty());
+        // Confirm nothing was inserted: a subsequent Right insert at
+        // same join_key returns empty matches.
+        let right_ev =
+            json!({"user_id": "u1", "payload": "R", "_event_time": 1_700_000_000_000_u64});
+        let matches2 = shard.apply_ssj_insert(
+            "j1",
+            crate::engine::operators::JoinSide::Right,
+            "u1",
+            right_ev,
+            60_000,
+        );
+        assert!(matches2.is_empty(), "Nothing was buffered on the Left side");
     }
 }

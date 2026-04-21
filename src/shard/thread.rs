@@ -263,6 +263,41 @@ pub enum ShardOp {
         event_time: std::time::SystemTime,
         feature_names: Vec<String>,
     },
+    /// Phase 56 D-A1 (TPC-CORR-08): cross-shard single-key read for
+    /// EnrichFromTable. Source shard dispatches when
+    /// `hash(key) % N != current_shard`. Target shard reads its local
+    /// `PartitionHandle` and replies with `ShardResult::ReadEntityOk`.
+    /// Pure read; no state mutation. Increments
+    /// `beava_enrich_cross_shard_total{table}` on dispatch arm.
+    ReadEntityAt {
+        table_name: String,
+        key: String,
+    },
+    /// Phase 56 D-A2: per-target coalesced batch read. Source shard
+    /// accumulates all cross-shard enrichment keys headed to the same
+    /// target into one Vec<String>, dispatches once per (target, table)
+    /// pair. Target iterates and replies with parallel Vec<Option<_>>.
+    /// DoS guard: keys.len() > MAX_ENRICH_BATCH_KEYS=4096 → Err
+    /// (T-56-01-01 mitigation).
+    ReadEntityBatch {
+        table_name: String,
+        keys: Vec<String>,
+    },
+    /// Phase 56 D-B1 (TPC-CORR-09): cross-shard StreamStreamJoin
+    /// insert. The join buffer lives on `hash(join_key) % N` per
+    /// D-B1. Source shards dispatch their L/R events here; the
+    /// target inserts + probes inline and replies with matched
+    /// counterparty events that the source then emits as joined
+    /// outputs via its own downstream cascade (unchanged from the
+    /// Phase 55 path). Increments
+    /// `beava_ssj_cross_shard_total{join_id}` on the dispatch arm.
+    SsjInsert {
+        join_id: String,
+        side: crate::engine::operators::JoinSide,
+        join_key: String,
+        event: serde_json::Value,
+        within_ms: u64,
+    },
 }
 
 /// Result sent from shard back to listener via response_tx.
@@ -297,6 +332,17 @@ pub enum ShardResult {
     /// number of items (stream entries or Table rows) evicted on the
     /// responding shard.
     EvictedCount(usize),
+    /// Phase 56 D-A1: reply to ReadEntityAt. None = missing row
+    /// (downstream increments enrich_missing_total).
+    ReadEntityOk(Option<crate::state::store::EntityState>),
+    /// Phase 56 D-A2: reply to ReadEntityBatch. Parallel to input
+    /// `keys` Vec; each slot either Some(row) or None.
+    ReadEntityBatchOk(Vec<Option<crate::state::store::EntityState>>),
+    /// Phase 56 D-B1: reply to SsjInsert. Vec of matched
+    /// counterparty event maps. Empty Vec = no match found. The
+    /// source shard consumes these to emit joined outputs via its
+    /// existing downstream cascade path.
+    SsjInsertOk(Vec<serde_json::Map<String, serde_json::Value>>),
     /// Shard failed to process the event.
     Err(ShardDispatchError),
 }
@@ -322,6 +368,11 @@ pub struct ShardHandle {
 
 /// Default SPSC inbox capacity (D-08). Configurable via BEAVA_SHARD_INBOX_SIZE.
 pub const DEFAULT_INBOX_SIZE: usize = 65_536;
+
+/// Phase 56 T-56-01-01 DoS mitigation: upper bound on per-dispatch
+/// enrichment batch size. 4096 keys × ~500 bytes/row ≈ 2 MB worst
+/// case reply — bounded memory. Hardcoded (no env var) for Wave 1.
+pub const MAX_ENRICH_BATCH_KEYS: usize = 4096;
 
 /// Spawn all N shard threads. Returns only after every shard has signaled
 /// ready (the ready-barrier, D-01). Callers bind listener sockets after this
@@ -987,6 +1038,85 @@ fn shard_event_loop(
                             ),
                         };
                         let _ = tx.send(r);
+                    }
+                }
+                ShardOp::ReadEntityAt { table_name, key } => {
+                    // Phase 56 D-A1: pure cross-shard read — no mutation.
+                    // Source shard dispatches here when the enrichment
+                    // key hashes to a different shard. Reply carries the
+                    // full EntityState (or None). The source shard picks
+                    // out the table row it needs (D-A4 Missing-safe).
+                    let out = shard.read_entity_at(&table_name, &key);
+                    if out.is_none() {
+                        metrics::counter!(
+                            crate::shard::metrics::ENRICH_MISSING_TOTAL,
+                            "table" => table_name.clone()
+                        ).increment(1);
+                    }
+                    metrics::counter!(
+                        crate::shard::metrics::ENRICH_CROSS_SHARD_TOTAL,
+                        "table" => table_name
+                    ).increment(1);
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::ReadEntityOk(out));
+                    }
+                }
+                ShardOp::ReadEntityBatch { table_name, keys } => {
+                    // Phase 56 D-A2 + T-56-01-01: per-target coalesced
+                    // batch read with memory-DoS guard.
+                    if keys.len() > MAX_ENRICH_BATCH_KEYS {
+                        if let Some(tx) = event.response_tx {
+                            let _ = tx.send(ShardResult::Err(
+                                ShardDispatchError::ProcessingError(format!(
+                                    "enrich batch > {} keys ({}), rejected (T-56-01-01)",
+                                    MAX_ENRICH_BATCH_KEYS, keys.len()
+                                ))
+                            ));
+                        }
+                        continue;
+                    }
+                    let mut n_missing: u64 = 0;
+                    let batch_len = keys.len() as u64;
+                    let out: Vec<Option<_>> = keys.iter()
+                        .map(|k| {
+                            let r = shard.read_entity_at(&table_name, k);
+                            if r.is_none() { n_missing += 1; }
+                            r
+                        })
+                        .collect();
+                    metrics::counter!(
+                        crate::shard::metrics::ENRICH_CROSS_SHARD_TOTAL,
+                        "table" => table_name.clone()
+                    ).increment(batch_len);
+                    if n_missing > 0 {
+                        metrics::counter!(
+                            crate::shard::metrics::ENRICH_MISSING_TOTAL,
+                            "table" => table_name
+                        ).increment(n_missing);
+                    }
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::ReadEntityBatchOk(out));
+                    }
+                }
+                ShardOp::SsjInsert { join_id, side, join_key, event: ssj_event, within_ms } => {
+                    // Phase 56 D-B1: cross-shard StreamStreamJoin insert
+                    // on the join-key-owning shard. Target-shard-inline
+                    // probe + insert + evict; reply carries any matched
+                    // counterparty events for the source shard to emit
+                    // via its existing downstream cascade path.
+                    let matches = shard.apply_ssj_insert(
+                        &join_id,
+                        side,
+                        &join_key,
+                        ssj_event,
+                        within_ms,
+                    );
+                    metrics::counter!(
+                        crate::shard::metrics::SSJ_CROSS_SHARD_TOTAL,
+                        "join_id" => join_id
+                    ).increment(1);
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::SsjInsertOk(matches));
                     }
                 }
             }

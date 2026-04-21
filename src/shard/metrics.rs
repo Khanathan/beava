@@ -58,6 +58,39 @@ pub const SHARD_INBOX_HIGH_WATERMARK_TOTAL: &str = "beava_shard_inbox_high_water
 pub const PENDING_RETRACTION_APPEND_FAILED_TOTAL: &str =
     "beava_pending_retraction_append_failed_total";
 
+// ---- Phase 56: cross-shard EnrichFromTable + StreamStreamJoin counters ----
+//
+// Five new series for SC-1 (EnrichFromTable cross-shard), SC-2 (SSJ
+// cross-shard), and SC-3 (register-time relaxation). Emitted by the new
+// ShardOp dispatch arms + pipeline.rs helpers. Wave 1 registers + emits on
+// dispatch; Wave 2/3 wires the operator-level emitters (intra_shard path,
+// register-time warning).
+
+/// Phase 56 D-A1 (TPC-CORR-08): cross-shard EnrichFromTable reads
+/// dispatched via ShardOp::ReadEntityAt / ReadEntityBatch. Incremented
+/// on the target-shard dispatch arm (one per ReadEntityAt; `keys.len()`
+/// per ReadEntityBatch). Labelled by `table`.
+pub const ENRICH_CROSS_SHARD_TOTAL: &str = "beava_enrich_cross_shard_total";
+/// Phase 56 D-A3: same-shard EnrichFromTable reads (fast path, no inbox
+/// hop). Incremented by `PipelineEngine::read_entity_at_shard` when
+/// `target_shard_idx == current_shard_idx`. Labelled by `table`.
+pub const ENRICH_INTRA_SHARD_TOTAL: &str = "beava_enrich_intra_shard_total";
+/// Phase 56 D-A4: EnrichFromTable reads that returned None
+/// (null-safe enrichment fields — downstream decides). Incremented by
+/// both the cross-shard dispatch arm and the same-shard fast path.
+/// Labelled by `table`.
+pub const ENRICH_MISSING_TOTAL: &str = "beava_enrich_missing_total";
+/// Phase 56 D-B1 (TPC-CORR-09): cross-shard StreamStreamJoin inserts
+/// dispatched via ShardOp::SsjInsert. Incremented on the target-shard
+/// dispatch arm (one per SsjInsert). Labelled by `join_id`.
+pub const SSJ_CROSS_SHARD_TOTAL: &str = "beava_ssj_cross_shard_total";
+/// Phase 56 TPC-CORR-04 relaxation: joins registered with mismatched
+/// shard_key (left vs right vs join.on). Incremented by `register()`
+/// when the mismatch case is detected; co-located joins do NOT bump
+/// this counter (D-B5). Labelled by `join_id`.
+pub const CROSSSHARD_JOINS_REGISTERED_TOTAL: &str =
+    "beava_crossshard_joins_registered_total";
+
 // ---- Phase 53-05 (W-4 revision): per-shard fjall metrics ----
 //
 // Three UNCONDITIONAL series are emitted per shard:
@@ -194,6 +227,17 @@ pub fn register_shard_metrics(shard_count: usize) {
             .record(0.0);
         }
     }
+
+    // Phase 56: touch cross-shard EnrichFromTable + SSJ counters with a
+    // placeholder label so the series appear in /metrics from the first
+    // scrape. Real labels (`table` / `join_id`) come in at runtime from
+    // the ShardOp dispatch arms + pipeline.rs helpers (Wave 2/3).
+    metrics::counter!(ENRICH_CROSS_SHARD_TOTAL, "table" => "__init__").increment(0);
+    metrics::counter!(ENRICH_INTRA_SHARD_TOTAL, "table" => "__init__").increment(0);
+    metrics::counter!(ENRICH_MISSING_TOTAL, "table" => "__init__").increment(0);
+    metrics::counter!(SSJ_CROSS_SHARD_TOTAL, "join_id" => "__init__").increment(0);
+    metrics::counter!(CROSSSHARD_JOINS_REGISTERED_TOTAL, "join_id" => "__init__")
+        .increment(0);
 }
 
 // ---- update helpers called from hot path ----
