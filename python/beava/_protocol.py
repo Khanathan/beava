@@ -65,6 +65,22 @@ OP_NEGOTIATE_WIRE_FORMAT: int = 0x18
 # thread. Phase 59 delivers this bit.
 WIRE_BINARY_PASSTHROUGH: int = 1 << 0
 
+# Phase 59.6 Wave 2 (TPC-PERF-11): typed-row push batch opcode. Body shape:
+#   [u16 BE stream_name_len][stream_name utf-8]
+#   [u32 BE schema_id][u32 BE row_count]
+#   [row_count × schema.row_size bytes]
+#   [u32 BE arena_len][arena_bytes]
+#   [u64 BE ack_token]
+# Server response body: [u64 BE ack_token][u32 BE accepted].
+# See `.planning/phases/59.6-typed-pipeline-records/59.6-CONTEXT.md` D-B1.
+OP_PUSH_TYPED_BATCH: int = 0x19
+
+# Phase 59.6 Wave 2 (TPC-PERF-11): capability bit 1 — server accepts
+# OP_PUSH_TYPED_BATCH frames with schema_id prefixes and decodes them
+# into typed rows without serde_json::Value allocation. Advertised by
+# OP_NEGOTIATE_WIRE_FORMAT when the server has the Wave 2+ typed decoder.
+WIRE_TYPED_PIPELINE: int = 1 << 1
+
 # Phase 59 Wave 3 D-B4: client-side wire version tag. Advertise to server on
 # negotiate; server echoes its own WIRE_VERSION_TAG_SERVER back. Bump on
 # breaking Python-side wire changes (none planned through v1.3).

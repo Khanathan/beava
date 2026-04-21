@@ -27,9 +27,11 @@ from beava._protocol import (
     OP_PUSH_ASYNC,
     OP_PUSH_BATCH,
     OP_PUSH_TABLE,
+    OP_PUSH_TYPED_BATCH,
     OP_REGISTER,
     OP_SET,
     STATUS_ERROR,
+    WIRE_TYPED_PIPELINE,
     encode_delete_table,
     encode_get,
     encode_get_multi,
@@ -235,10 +237,23 @@ class App:
     def push_many(self, stream_class: type, events) -> None:
         """Push a batch of events in one wire frame (fire-and-forget).
 
-        Wraps all events into a single OP_PUSH_BATCH (0x0A) frame,
-        reducing per-event Python overhead from ~7us to ~0.3us.
-        Errors surface via drain_errors_nonblock on the next call,
-        attributed as (batch_id, event_index) per D-09.
+        Phase 59.6 Wave 2 (TPC-PERF-11): routes to the **typed-row** fast
+        path (``OP_PUSH_TYPED_BATCH``, 0x19) when BOTH of the following hold:
+
+        - the server advertises ``WIRE_TYPED_PIPELINE`` in its negotiated
+          capability bits (``client.server_capability_bits``), AND
+        - the ``stream_class`` has a compiled ``_beava_schema`` attached
+          by the ``@bv.stream`` / ``@bv.source_table`` / ``@bv.table``
+          decorator at import time.
+
+        Otherwise falls through to the Phase 59 ``OP_PUSH_BATCH`` (0x0A)
+        path — backwards compatible with pre-59.6 servers and with
+        un-annotated streams.
+
+        Wraps all events into a single wire frame, reducing per-event
+        Python overhead from ~7us to ~0.3us. Errors surface via
+        ``drain_errors_nonblock`` on the next call, attributed as
+        (batch_id, event_index) per D-09.
 
         Args:
             stream_class: The pipeline definition (SourceDef or decorated class).
@@ -247,6 +262,28 @@ class App:
         """
         self._client.drain_errors_nonblock()
         stream_name = stream_class._beava_stream_name
+
+        # Phase 59.6 Wave 2 dispatch — pick typed path if server + stream
+        # both opt in; else legacy OP_PUSH_BATCH.
+        caps = getattr(self._client, "server_capability_bits", None) or 0
+        schema = getattr(stream_class, "_beava_schema", None)
+        if (caps & WIRE_TYPED_PIPELINE) and schema is not None:
+            # Typed fast-path. ack_token is echoed by the server; we
+            # don't await it on this fire-and-forget method. Use a
+            # monotonic batch id as the token so async error reporting
+            # can still correlate.
+            ack_token = self._next_batch_id()
+            payload = self._client._pack_typed_batch(
+                stream_name,
+                schema.to_json(),
+                events,
+                ack_token,
+                schema_id=0,  # Wave 2 shortcut: server falls back to stream_name lookup.
+            )
+            self._client.send_frame_no_recv(OP_PUSH_TYPED_BATCH, payload)
+            return
+
+        # Legacy fallback: OP_PUSH_BATCH.
         batch_id = self._next_batch_id()
         payload = encode_push_batch(stream_name, events, batch_id)
         self._client.send_frame_no_recv(OP_PUSH_BATCH, payload)

@@ -538,6 +538,96 @@ class BeavaClient:
         self.server_version_tag = server_version
         return (server_bits, server_version)
 
+    # ------------------------------------------------------------------
+    # Phase 59.6 Wave 2 (TPC-PERF-11): typed-row batch packer.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _pack_typed_batch(
+        stream_name: str,
+        schema_json: dict,
+        events,
+        ack_token: int,
+        schema_id: int = 0,
+    ) -> bytes:
+        """Pack events into an OP_PUSH_TYPED_BATCH wire body (D-B1).
+
+        Mirrors the server-side decoder in
+        ``src/wire/typed.rs::decode_typed_row_push_batch`` byte-for-byte:
+
+        - ``[u16 BE stream_name_len][stream_name utf-8]``
+        - ``[u32 BE schema_id]`` — 0 is the Wave-2 "trust stream_name
+          lookup" shortcut (server accepts and uses the registered
+          schema's id).
+        - ``[u32 BE row_count]``
+        - ``[row_count × schema.row_size bytes]`` — fixed-layout payload
+          per field; string / bytes fields store ``(start: u32, len: u32)``
+          pointers into the shared arena.
+        - ``[u32 BE arena_len][arena_bytes]``
+        - ``[u64 BE ack_token]``
+
+        ``schema_json`` is the dict produced by ``CompiledSchema.to_json()``
+        — the same shape the server's ``RegisterSchemaJson`` consumes. The
+        function reads ``inline_str_cap``, ``fields``, and ``row_size`` from
+        it.
+
+        Raises ``ValueError`` for unsupported FieldTy names.
+        """
+        out = bytearray()
+        # [u16 stream_name_len][stream_name utf-8]
+        name_bytes = stream_name.encode("utf-8")
+        out += struct.pack(">H", len(name_bytes))
+        out += name_bytes
+        # [u32 schema_id][u32 row_count]
+        out += struct.pack(">I", schema_id)
+        inline_cap = int(schema_json["inline_str_cap"])
+        fields = schema_json["fields"]
+        row_size = int(schema_json["row_size"])
+        # Materialize events now so we have an accurate row_count upfront.
+        events_list = list(events)
+        out += struct.pack(">I", len(events_list))
+        arena_bytes = bytearray()
+        for evt in events_list:
+            row = bytearray(row_size)  # zero-filled
+            for f in fields:
+                name = f["name"]
+                ty = f["ty"]
+                off = int(f["offset"])
+                val = evt.get(name)
+                if val is None:
+                    # Nullable or missing — zero bytes are the
+                    # well-defined "absent" representation.
+                    continue
+                if ty == "i64":
+                    struct.pack_into("<q", row, off, int(val))
+                elif ty == "f64":
+                    struct.pack_into("<d", row, off, float(val))
+                elif ty == "bool":
+                    row[off] = 1 if val else 0
+                elif ty == "inline_str":
+                    b = str(val).encode("utf-8")
+                    copy_len = min(len(b), inline_cap)
+                    row[off : off + copy_len] = b[:copy_len]
+                    # Trailing bytes (including the NUL terminator slot at
+                    # off+inline_cap) are already zero from bytearray init.
+                elif ty == "string":
+                    b = str(val).encode("utf-8")
+                    start = len(arena_bytes)
+                    arena_bytes += b
+                    struct.pack_into("<II", row, off, start, len(b))
+                elif ty == "bytes":
+                    b = bytes(val)
+                    start = len(arena_bytes)
+                    arena_bytes += b
+                    struct.pack_into("<II", row, off, start, len(b))
+                else:
+                    raise ValueError(f"unknown FieldTy {ty!r} for field {name!r}")
+            out += bytes(row)
+        out += struct.pack(">I", len(arena_bytes))
+        out += bytes(arena_bytes)
+        out += struct.pack(">Q", int(ack_token))
+        return bytes(out)
+
     def close(self) -> None:
         """Close the TCP connection (if open)."""
         if self._sock is not None:
