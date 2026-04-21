@@ -63,6 +63,12 @@ Requirements scoped to the v1.2 milestone. Each maps to a roadmap phase (48–52
 ### TPC-CORR (continued) / TPC-SOURCE — Phase 55
 
 - [x] **TPC-CORR-07**: A primary Stream event whose cascade produces a downstream Table row MUST place that row on the shard owning `hash(output_key) % N`, not on the input event's shard. `shard_key=` on streams becomes a pure source-ingress hint only (which shard accepts the event first); all downstream cascades shuffle by the downstream's own `key_field`. Same-shard fast path + batched cross-shard dispatch (end-of-batch coalesce; one `try_send` per (source_shard, target_shard) pair). Per-source-shard delivery cursor (`last_cascaded_lsn` in per-shard event log header) makes cascade recoverable from event-log replay. Cross-shard target inbox full → source shard blocks new ingress (503 / `SHARD_OVERLOAD`); acked PUSHes remain recoverable. Boot-time rematerialization: snapshot v9 bump triggers event-log replay through new cascade path. Perf gate: `MODE=complex DURATION=60 CPUS=8 CLIENTS=8` ≥ 85% of Phase 54 Wave 5 baseline (1,339,446 EPS) = **≥ 1,138,529 EPS**. (Phase 55)
+  - **Phase 59.6 extension (typed-row parity):** Typed-row path and `serde_json::Value`
+    fallback path MUST produce byte-identical output on the same event stream. Verified
+    by `tests/typed_row_parity.rs` proptest harness on all 17 operators — 10K event
+    batches per op, state diff = ∅ after each batch. Same Phase 55 TPC-CORR-07
+    correctness semantics (`hash(output_key) % N` cascade routing) — the 59.6 addition
+    is the typed↔Value parity guarantee, NOT a new correctness surface.
 - [x] **TPC-SOURCE-01**: Python SDK gains `@bv.source_table(key=K, entity_ttl=...)` decorator declaring a CDC-style keyed input. Explicit wire commands — TCP opcodes `UPSERT_TABLE_ROW` / `DELETE_TABLE_ROW` / `UPSERT_TABLE_BATCH` / `DELETE_TABLE_BATCH`; HTTP routes `POST /table/{name}` (upsert), `DELETE /table/{name}/{key}` (single delete), `POST /table/{name}/batch` (upsert batch), `POST /table/{name}/batch/delete` (delete batch). Batch variants accept ≥ 10K rows/call. UPSERT is full-replace (CDC-native, idempotent); DELETE is hard-delete + pending-retraction marker written to event log (Phase 57 consumes). `source_lsn: u64` (opaque, no monotonicity check) is stored per row and echoed on every ack (array ack on batch, in input order) for resumable replication. Source-table writes do NOT fire cascades in v1.2 (Phase 57 territory); source tables are passive enrichment targets for Phase 56's EnrichFromTable. (Phase 55)
 
 ### TPC-CORR (continued) — Phase 56
@@ -85,6 +91,32 @@ Requirements scoped to the v1.2 milestone. Each maps to a roadmap phase (48–52
 ### TPC-PERF (continued) — Phase 60
 
 - [ ] **TPC-PERF-10**: A user declaring `shard_key="user_id:salt(N)"` on `@bv.stream` (single-key or tuple — at most one tuple element may carry `:salt(N)`) triggers ingest-side salt suffixing (derived key = `"<key>:<salt_idx>"`, `salt_idx = ahash(primary_event_id) % N`) and read-side N-way scatter-gather across salt variants. `salt_cardinality` MUST be a power of 2 in `[2, 256]`. Source tables (`@bv.source_table`) and streams with non-commutative operators CANNOT declare salt (register rejects). Observable gates: (a) `benches/pareto_workload.rs::pareto_salted_c8_x8` asserts salted aggregate EPS ≥ 1.5× unsalted baseline on the same harness; (b) under the Pareto-80/20 perf-run (`MODE=complex DURATION=60 CPUS=8 CLIENTS=8` with a fraud-pipeline variant declaring `salt(16)`), every shard's `/debug/shards.inbox_depth` stays ≤ 0.5 × `BEAVA_SHARD_INBOX_SIZE` in steady state for ≥ 5 consecutive 5-second polls; (c) the standard 9-cell matrix with NO salted streams is within ±2% of the Phase 59 baseline (opt-in zero-overhead); (d) `beava_shard_hot_key_owner_ratio` gauge emits per-shard top-1% concentration on a rolling 60s window; (e) `scripts/verify-salt-feature-complete.sh` exits 0. Verified by `tests/hot_key_salting.rs`, `tests/salted_stream_register_warning.rs`, extended `tests/sharding_parity.rs` + `tests/cross_shard_enrich_from_table.rs`, and `benches/pareto_workload.rs`. (Phase 60)
+
+### TPC-PERF (continued) — Phase 59.6
+
+- [ ] **TPC-PERF-11**: The in-pipeline event/state representation is typed,
+  fixed-layout row records (`#[repr(C)] struct Row { schema_id: SchemaId, payload: [u8; N] }`)
+  compiled from `@bv.stream` / `@bv.source_table` / `@bv.table` schemas at
+  register time. Wire codec (`OP_PUSH_BATCH` schema_id prefix per D-B1), engine
+  operators (EnrichFromTable + 16 agg ops + StreamStreamJoin — typed impls with
+  Value fallback per D-C5), and state store (inmem + fjall; snapshot v11 per D-D3)
+  all work on typed rows. Observable gates: (a) `cargo test --release --test
+  typed_row_parity` GREEN across all 17 operators (byte-identical typed ↔ Value
+  output on 100K events per D-F2); (b) `MODE=complex DURATION=60 CPUS=8 CLIENTS=8
+  BEAVA_SHARD_INBOX_SIZE=1048576 BEAVA_MAX_CONNS_PER_SHARD=1024` aggregate EPS
+  ≥ **4,542,285** (= Phase 59 C1 baseline 1,514,095 × 3.0, best-of-3); (c)
+  `beava_shard_push_phase_seconds{phase="pipeline"}` avg ≤ **2.0μs** (down from
+  8.5μs measured in 59.5-W3.5) at sustained 1M+ EPS; (d) `beava_typed_row_path_total{stream}`
+  / `beava_value_fallback_path_total{stream}` split shows 100% typed for any
+  registered pipeline post-landing (D-E2); (e) `bash scripts/verify-typed-path.sh`
+  exit 0; (f) Python SDK v0.3.0 handshake negotiates `WIRE_TYPED_PIPELINE = 1 << 1`
+  capability; pre-59.6 clients fall back to Value path (D-F3). Verified by
+  `tests/register_typed_schema.rs`, `tests/typed_push_ingest.rs`,
+  `tests/typed_enrich_from_table.rs`, `tests/typed_aggregation_parity.rs`,
+  `tests/typed_state_store_roundtrip.rs`, `tests/typed_snapshot_v11_migration.rs`,
+  `tests/typed_mixed_mode_coexistence.rs`, `tests/typed_value_fallback_unregressed.rs`,
+  `tests/typed_ssj_crossshard_parity.rs`, `tests/typed_python_sdk_handshake.rs`,
+  extended `tests/sharding_parity.rs`, and `benches/typed_pipeline_phase_latency.rs`. (Phase 59.6)
 
 ## Future Requirements
 
@@ -126,6 +158,7 @@ Filled by roadmapper 2026-04-18. Maps each REQ-ID to the phase that delivers it.
 | 57 | retraction-across-crossshard-joins | TPC-CORR-10 |
 | 58 | tokio-connection-handling-rewrite | TPC-PERF-08 |
 | 59 | binary-wire-format-for-push | TPC-PERF-09 |
+| 59.6 | typed-pipeline-records | TPC-PERF-11, TPC-CORR-07 (extension) |
 | 60 | hotkey-mitigation-via-application-salting | TPC-PERF-10 |
 
-**Coverage:** 39/39 requirements mapped (1 + 3 + 9 + 4 + 7 + 4 + 3 + 2 + 2 + 1 + 1 + 1 + 1 = 39; adds 6 TPC-PERSIST-* + 1 TPC-ARCH-* + 2 Phase-55 + 2 Phase-56 + 1 Phase-57 + 1 Phase-58 + 1 Phase-59 + 1 Phase-60 requirements; TPC-CORR-04 is re-delivered by Phase 56 as a relaxation)
+**Coverage:** 40/40 requirements mapped (1 + 3 + 9 + 4 + 7 + 4 + 3 + 2 + 2 + 1 + 1 + 1 + 1 = 39; adds 6 TPC-PERSIST-* + 1 TPC-ARCH-* + 2 Phase-55 + 2 Phase-56 + 1 Phase-57 + 1 Phase-58 + 1 Phase-59 + 1 Phase-60 requirements; TPC-CORR-04 is re-delivered by Phase 56 as a relaxation) + 1 Phase-59.6 requirement (TPC-PERF-11) + 1 TPC-CORR-07 extension
