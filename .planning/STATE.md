@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
-status: Ready to start Phase 59
-stopped_at: Completed 59-01-PLAN.md
-last_updated: "2026-04-21T11:23:16.966Z"
+status: Ready to start Phase 60
+stopped_at: Completed 59-04-PLAN.md (Phase 59 engineering-complete)
+last_updated: "2026-04-21T11:50:00.000Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 18
-  completed_phases: 10
+  completed_phases: 11
   total_plans: 74
-  completed_plans: 68
-  percent: 92
+  completed_plans: 71
+  percent: 96
 ---
 
 # Project State
@@ -25,33 +25,24 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 ## Current Position
 
-Phase: 58 CLOSED 2026-04-21 (engineering-complete; **TPC-PERF-08 structural change delivered**; SC-2 + SC-4 GREEN; SC-1 + SC-3 `human_needed` pending Linux prod-host run + probe harness extension — 58-NEXT #1. `tokio::spawn`-per-connection eliminated on all production PUSH paths on both Linux and macOS. Best candidate EPS 1,376,450 on macOS dev host = +6.1% vs Phase 57 baseline, −15.1% below 1,621,616 floor; p99 parity (−0.11%).)
-Plan: Phase 58 closed — next is Phase 59 (binary wire format for PUSH — TPC-PERF-09).
-**Phase:** 59 (binary-wire-format-for-push — in progress)
-**Plan:** 59-01 complete 2026-04-21 (`acffc40`, `f1a23d7`); next is 59-02 (OP_NEGOTIATE_WIRE_FORMAT)
-**Status:** Phase 59 Wave 1 engineering done — Bytes-end-to-end passthrough landed, D-C3 grep-ZERO GREEN, D-B3 JSON fallback GREEN, D-E1 DoS cap live
-**Progress:** [█████████░] 92%
+Phase: 59 CLOSED 2026-04-21 (engineering-complete; **TPC-PERF-09 structural change delivered**; SC-1 + SC-2 + SC-3 + SC-5 GREEN; SC-4 `human_needed` pending Linux prod-host re-run — 59-NEXT #1. TCP OP_PUSH `bytes::Bytes` end-to-end; OP_NEGOTIATE_WIRE_FORMAT 0x18 shipped; Python SDK v0.2.0 with handshake + D-E4 fallback. Samply `JSON_SHARE_PCT=2.5` (≤3.0 ceiling PASSED by 17% margin). p99 latency −15% IMPROVED (26,029 µs vs Phase 58 C1's 30,632 µs). Perf-gate best-of-3 1,494,631 EPS on macOS dev host = +8.6% vs Phase 58 C1 baseline, −1.3% below 1,514,095 floor within 6% run variance.)
+Plan: Phase 59 closed — next is Phase 60 (hot-key mitigation via application salting — TPC-PERF-10).
+**Phase:** 60 (hotkey-mitigation-via-application-salting — not started)
+**Plan:** Phase 59 closed 2026-04-21; next is 60-00 (Wave 0 RED scaffolding)
+**Status:** Phase 60 awaiting plan
+**Progress:** [██████████] 96%
 
-**Last activity:** 2026-04-21 (59-01-SUMMARY.md landed)
+**Last activity:** 2026-04-21 (59-04-SUMMARY.md landed; Phase 59 close)
 
 ### Phase 59 plans
 
 | Plan | Status | Commits |
 |------|--------|---------|
 | 59-00 (RED scaffolding) | Complete 2026-04-20 | bb96db2, 12988af, e5e956e, 940f562 |
-| 59-01 (Bytes passthrough + PayloadFmt) | Complete 2026-04-21 | acffc40, f1a23d7 |
-| 59-02 (OP_NEGOTIATE_WIRE_FORMAT 0x18) | Pending | — |
-| 59-03 (Python SDK handshake) | Pending | — |
-| 59-04 (Perf gate + samply re-run) | Pending | — |
-
-### Phase 59 Wave 1 decisions (key)
-
-- **Bytes-end-to-end passthrough lands** — listener-side `serde_json::to_vec(payload)` WASTE deleted (D-C3 grep-ZERO GREEN).
-- **`PayloadFmt::Binary` default** on `ShardEvent` per D-C2; HTTP path keeps Json via `send_to_shard_with_fmt`.
-- **D-B3 JSON-over-TCP fallback** live in `parse_command` (`{`/`[` first-byte discriminator). Regression guard: `tests/json_over_tcp_still_accepted`.
-- **D-E1 `BEAVA_MAX_PAYLOAD_BYTES` DoS cap** enforced at `parse_command` top; default 1 MiB, clamp [1 KiB, 64 MiB]; `OnceLock` cached.
-- **Rule-2 deviation** — `send_to_shard_with_fmt` helper added so HTTP ingest stays Json without touching http_ingest.rs call sites.
-- **Pre-existing out-of-scope failure** — `tests/test_concurrent.rs` (6 tests) broken on HEAD independent of Wave 1; filed in `.planning/phases/59-binary-wire-format-for-push/deferred-items.md`.
+| 59-01 (Bytes passthrough + PayloadFmt) | Complete 2026-04-21 | acffc40, f1a23d7, d9688ca |
+| 59-02 (OP_NEGOTIATE_WIRE_FORMAT 0x18) | Complete 2026-04-21 | e64b85c |
+| 59-03 (Python SDK handshake + pre-59 fallback) | Complete 2026-04-21 | 921f04d |
+| 59-04 (Perf gate + samply re-run + close) | Complete 2026-04-21 | (W4 evidence + close commits) |
 
 ## Milestone Status
 
@@ -153,8 +144,28 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 58 full | Structural tokio-churn elimination on Linux + macOS: 0 tokio::spawn(handle_connection) in production PUSH; per-shard SO_REUSEPORT + FuturesUnordered (Linux) + dedicated std::thread + per-thread current_thread runtime bridge (macOS); N LISTEN sockets / N accept threads smoke + replica guardrail; perf 1,376,450 EPS on macOS dev host (+6.1% vs P57, −15.1% below floor); SC-1 + SC-3 human_needed pending Linux-host run + probe-harness extension | 5 plans | 812/0/35 lib baseline preserved; 0 DashMap / StateStore / legacy-push regressions |
 | Phase 59 P00 | ~35min | 2 tasks | 7 files |
 | Phase 59 P01 | 25min | 2 tasks | 12 files |
+| Phase 59 P02 | ~10min | 1 task | 3 files (src/server/protocol.rs + src/server/tcp.rs + tests/wire_negotiation_handshake.rs) |
+| Phase 59 P03 | ~20min | 2 tasks | 5 files (python/beava/_protocol.py + python/beava/_client.py + python/pyproject.toml + python/tests/test_wire_negotiate.py + tests/python_sdk_pre_59_server_fallback.rs) |
+| Phase 59 P04 | ~35min (3× 60s perf runs + samply probe + probe bug-fix + PERF-GATE + VERIFICATION + ROADMAP/STATE + SUMMARY) | 2 tasks | 9 files (2 commits: W4 evidence + close) |
+| Phase 59 full | TCP OP_PUSH JSON round-trip eliminated; bytes::Bytes end-to-end; OP_NEGOTIATE_WIRE_FORMAT 0x18 + WIRE_BINARY_PASSTHROUGH capability bit; Python SDK v0.1.0→v0.2.0 with handshake + D-E4 fallback; samply JSON_SHARE_PCT=2.5 (≤3.0 D-D3 PASSED); p99 latency −15% IMPROVED; perf best-of-3 1,494,631 EPS (+8.6% vs P58 C1, −1.3% below floor within 6% run variance); SC-4 human_needed pending Linux prod-host re-run | 5 plans | 825/0/35 lib baseline (+13 from P58) + 817/0/35 state-inmem; 0 ship-gate regressions |
 
 ## Accumulated Context
+
+### Phase 59 — closed 2026-04-21 (engineering-complete, SC-4 `human_needed`)
+
+- **Phase 59 aggregate outcome:** TPC-PERF-09 structural change delivered. TCP OP_PUSH `bytes::Bytes` end-to-end from `parse_command` → `ShardEvent.payload` → shard thread; no `serde_json::to_vec` on the hot path. `OP_NEGOTIATE_WIRE_FORMAT = 0x18` + `WIRE_VERSION_TAG_SERVER = 2` + `WIRE_BINARY_PASSTHROUGH = 1u32 << 0` capability bit on server; Python SDK v0.1.0 → v0.2.0 with `BeavaClient.negotiate_wire_format()` + `BEAVA_WIRE_NEGOTIATE=1` env opt-in + D-E4 graceful `(0, 0)` fallback on pre-59 servers. D-B3 JSON-over-TCP OP_PUSH still accepted for ≥ 1 release cycle. `BEAVA_MAX_PAYLOAD_BYTES` DoS cap live from first frame (default 1 MiB; clamp [1 KiB, 64 MiB]).
+- **Wave 0 (2026-04-20, bb96db2 + 12988af + e5e956e + 940f562):** 4 RED integration tests + 2 probe scripts + REQUIREMENTS TPC-PERF-09 row + 2 always-on WASTE counter fields on `ConcurrentAppState`.
+- **Wave 1 (2026-04-21, acffc40 + f1a23d7 + d9688ca):** `src/wire/` module landed (`PayloadFmt { Binary, Json }` + `decode_event_on_shard` + `reserialize_value_to_json_bytes` + `WIRE_BINARY_PASSTHROUGH` + `max_payload_bytes_from_env`); `ShardEvent.payload_fmt` field; `tcp.rs` WASTE deleted; `parse_push_body` helper for D-B2/D-B3 dual-format accept; 3 auto-fixed Rule-1/2 deviations documented. lib: 812 → 822/0/35 (+10 wire:: unit tests).
+- **Wave 2 (2026-04-21, e64b85c):** `OP_NEGOTIATE_WIRE_FORMAT` opcode + `Command::NegotiateWireFormat` variant + `parse_command` arm with 6-byte truncation guard + `encode_negotiate_response_body` helper + `handle_sync_command` dispatch (echoes SERVER_SUPPORTED_BITS + WIRE_VERSION_TAG_SERVER). `#[ignore = "59-W2"]` removed from `tests/wire_negotiation_handshake.rs` → GREEN. 3 new lib unit tests. lib: 822 → 825/0/35.
+- **Wave 3 (2026-04-21, 921f04d):** Python SDK `OP_NEGOTIATE_WIRE_FORMAT`, `WIRE_BINARY_PASSTHROUGH`, `WIRE_VERSION_TAG_CLIENT` constants + `BeavaClient.negotiate_wire_format()` + `server_capability_bits`/`server_version_tag` attributes + `BEAVA_WIRE_NEGOTIATE` env check in `__init__`; Python v0.1.0 → v0.2.0. `tests/python_sdk_pre_59_server_fallback.rs` (3 Rust integration tests) + `python/tests/test_wire_negotiate.py` (8 pytest cases). Rule-3 class-name deviation (plan said TallyClient; actual is BeavaClient). Rule-1 deviation on Test 3 — rewrote to match Rust's parse-error teardown policy (connection resets after STATUS_ERROR; Python SDK's auto-reconnect in `_client.py:302-305` makes D-E4 work end-to-end via reconnect, not same-connection).
+- **Wave 4 (2026-04-21, W4 evidence + close commits):** Perf gate (3× 60s runs: 1,433K / 1,495K / 1,406K EPS; best-of-3 +8.6% vs Phase 58 C1; −1.3% below 1,514,095 floor within 6% run variance). Samply probe re-run: `JSON_SHARE_PCT=2.5` (≤ 3.0 D-D3 target **PASSED** by 17% margin). p99 latency median 26,029 µs = **−15% IMPROVED** vs Phase 58 C1's 30,632 µs (D-D4 gate PASSED). **Probe script bug fixed** (Rule 1 deviation): `scripts/samply-probe-json-share.sh` awk regex used `%?` optional, so it false-matched raw samples column (1416.0 bogus) instead of pct column. Fix: anchor on trailing `%` + restrict to leaf section. Contingency ladder: C0 misses floor by variance; C1 BytesMut scratch pool NOT attempted (gap < variance); **C3 human_needed escalation** per Phase 58 precedent. 59-PERF-GATE.md + 59-VERIFICATION.md committed. SC-1 + SC-2 + SC-3 + SC-5 PASSED; SC-4 `human_needed` pending Linux prod-host re-run (59-NEXT #1).
+- **Integration tests:** all P59 additions GREEN — `wire_negotiation_handshake` (1/0/0 Wave 2 flip), `binary_push_bytes_passthrough` (1/0/0 Wave 1 flip), `json_over_tcp_still_accepted` (1/0/0 Wave 1 flip; D-B3 regression guard), `protocol_binary_decode_fuzz` (2/0/0 always-on D-E3; 500 proptest × 2 props), `python_sdk_pre_59_server_fallback` (3/0/0 new Wave 3), Python `test_wire_negotiate` (8/0/0 new Wave 3). Phase 50/54/55/56/57/58 regression battery unchanged (`tests/http_push_still_works`, `tcp_ingest_routing`, `replica_ingest_routing`, `test_metrics_parity` all GREEN).
+- **Lib baselines preserved:** `cargo test --release --lib` 825/0/35 (fjall, +13 vs Phase 58 close: +10 wire:: tests from Wave 1 + 3 protocol negotiate unit tests from Wave 2); `cargo test --release --lib --features state-inmem` 817/0/35.
+- **59-W* markers all removed** (verified Wave 4). `grep -rE '#\[ignore = "59-W[0-4]"' tests/` → 0.
+- **Ship-gate tests:** `scripts/verify-no-tcp-json-reserialize.sh` exits 0 (D-C3 Bytes passthrough invariant); `scripts/verify-no-{dashmap,statestore,legacy-push,retraction-metrics}.sh` all exit 0.
+- **Structural guarantees:** Python SDK emit path unchanged (already binary since Phase 11). HTTP path unchanged (D-A4). Replica ingest inherits Bytes passthrough via Wave 1 automatically — no carve-out.
+- **59-NEXT items filed (priority-ordered):** #1 (HIGH — Linux prod-host perf gate re-run on Hetzner CCX43 or equivalent ≥ 8-core Linux x86_64; unblocks SC-4 human_needed → passed; ~30 min wall-clock + spot cost) > #2 (MED — BytesMut scratch pool C1 ladder tier if Linux still misses floor > 5%; ~30 LOC) > #3 (MED — remove JSON-over-TCP OP_PUSH legacy path in next minor; D-B3 window closes) > #4 (LOW — `BEAVA_WIRE_NEGOTIATE` default on in next Python SDK minor 0.3.0 once ecosystem ≥ Phase 59) > #5 (LOW — samply probe coverage for OP_PUSH_BATCH JSON fallback) > #6 (LOW — Rust SDK (replica_client) handshake symmetric to Python).
+- **Wave 4 handoff to Phase 60:** Hot-key mitigation via application salting (TPC-PERF-10). Phase 59 leaves the per-event CPU on the shard thread ~11% lighter (JSON round-trip gone); the shard thread is now idle enough that salt fan-out becomes affordable. Under Pareto-80/20 (TPC-PERF-07 cell), shard-0 saturates at ~450K EPS while shards 1-7 sit idle; Phase 60's `shard_key="user_id:salt(N)"` splits hot keys across N virtual sub-shards, scatter-gathers on read. Key integration points for Phase 60 planning: `src/engine/pipeline.rs::derive_shard_idx`, `/debug/shards` endpoint for `inbox_depth` monitoring, Phase 51 scatter-gather infrastructure.
 
 ### Phase 58 — closed 2026-04-21 (engineering-complete, SC-1 + SC-3 `human_needed`)
 

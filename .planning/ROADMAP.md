@@ -295,9 +295,9 @@ Plans:
 Plans:
 - [x] 59-00-PLAN.md — Wave 0: RED tests (wire-negotiation, binary-push-bytes-passthrough, json-over-tcp-still-accepted, binary-decode-fuzz) + samply-probe-json-share.sh + verify-no-tcp-json-reserialize.sh + REQUIREMENTS TPC-PERF-09 row + always-on counters
 - [x] 59-01-PLAN.md — Wave 1: src/wire/ module + PayloadFmt + ShardEvent.payload_fmt + Bytes passthrough (tcp.rs:2159 + :2538 + thread.rs:724 WASTE eliminated); BEAVA_MAX_PAYLOAD_BYTES DoS cap
-- [ ] 59-02-PLAN.md — Wave 2: OP_NEGOTIATE_WIRE_FORMAT (0x18) opcode + Command::NegotiateWireFormat + parse_command auto-detect binary↔JSON on OP_PUSH
-- [ ] 59-03-PLAN.md — Wave 3: Python SDK OP_NEGOTIATE constants + TallyClient.negotiate_wire_format + BEAVA_WIRE_NEGOTIATE env-opt-in + pre-59-server fallback test
-- [ ] 59-04-PLAN.md — Wave 4: perf gate + samply re-run + 59-VERIFICATION.md + close
+- [x] 59-02-PLAN.md — Wave 2: OP_NEGOTIATE_WIRE_FORMAT (0x18) opcode + Command::NegotiateWireFormat + handle_sync_command dispatch + 3 unit tests
+- [x] 59-03-PLAN.md — Wave 3: Python SDK OP_NEGOTIATE constants + BeavaClient.negotiate_wire_format + BEAVA_WIRE_NEGOTIATE env-opt-in + pre-59-server fallback test (3 Rust integration tests + 8 Python pytest cases) + Python 0.1.0 → 0.2.0
+- [x] 59-04-PLAN.md — Wave 4: perf gate (best-of-3 C0 = 1,494,631 EPS; −1.3% below floor within 6% variance; D-D3 samply PASSED 2.5; p99 −15% IMPROVED) + 59-PERF-GATE.md + 59-VERIFICATION.md (SC-1/2/3/5 passed, SC-4 human_needed Linux-host re-run) + close
 **UI hint**: no
 
 ### Phase 60: 60-hotkey-mitigation-via-application-salting
@@ -374,7 +374,7 @@ Plans:
 | 56. EnrichFromTable + StreamStreamJoin cross-shard | 5/5 | **Engineering-complete** — TPC-CORR-08 ✅ + TPC-CORR-09 ✅ closed; TPC-CORR-04 relaxation landed. Default-pipeline perf gate 1,195,914 EPS PASSED (+12.9% over 1,059,261 floor; −4.0% vs P55 baseline). Cross-shard scenario SC-5 human_needed — Phase 55 SDK source-table wire-registration gap (56-NEXT #6). | 2026-04-21 |
 | 57. Retraction across cross-shard joins | 4/5 | In Progress|  |
 | 58. Tokio connection-handling rewrite | 5/5 | **Engineering-complete** — structural tokio-churn elimination landed on both Linux (SO_REUSEPORT per-shard + FuturesUnordered inline handler) and macOS (dedicated `std::thread` per shard + handle_connection_blocking); 0 `tokio::spawn(handle_connection)` in production PUSH path. Perf gate 1,376,450 EPS (+6.1% vs P57) on macOS dev host — 15.1% below 1,621,616 floor; p99 parity (−0.11%); SC-1 + SC-3 `human_needed` pending Linux prod-host run + probe-harness extension (58-NEXT #1). | 2026-04-21 (eng) |
-| 59. Binary wire format for PUSH | 2/5 | In Progress|  |
+| 59. Binary wire format for PUSH | 5/5 | **Engineering-complete** — TCP OP_PUSH `bytes::Bytes` end-to-end (no JSON re-serialize); `OP_NEGOTIATE_WIRE_FORMAT=0x18` + Python SDK handshake (v0.2.0); D-B3 JSON-over-TCP compat ≥1 release cycle; `BEAVA_MAX_PAYLOAD_BYTES` DoS cap. Samply D-D3 PASSED (JSON_SHARE_PCT=2.5 ≤ 3.0). p99 latency −15% IMPROVED. Perf gate best-of-3 1,494,631 EPS = −1.3% below 1,514,095 floor within 6% run variance on macOS; SC-4 human_needed pending Linux prod-host re-run (59-NEXT #1). | 2026-04-21 (eng) |
 | 60. Hot-key mitigation via application salting | 0/? | Not started — architectural fix for Zipf hot-shard ceiling (≥+50% under Pareto-80/20) | — |
 | 61. Metrics hot-path hoist | 0/? | Not started — 3.5% CPU savings | — |
 | 62. Allocator + feature-row pooling | 0/? | Not started — 5-10% CPU savings | — |
