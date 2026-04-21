@@ -265,7 +265,13 @@ Plans:
   2. Each shard has a dedicated accept loop (Linux SO_REUSEPORT socket, macOS dispatched thread) that inlines `handle_push_batch` without `tokio::spawn` per connection.
   3. Perf gate: ≥ +25% EPS vs Phase 57 baseline on complex N=8 (≥ ~1.17M × 1.25 = 1.46M EPS if Phase 57 holds at Phase 55's 935K minimum, or ≥ 1.43M if Phase 55 hits the 1.15M range).
   4. No regression in p99 latency — tail latency should improve or match.
-**Plans**: TBD
+**Plans**: 5 plans
+Plans:
+- [ ] 58-00-PLAN.md — Wave 0: RED tests (tokio_spawn_absence, per_shard_listener, http_push_still_works) + samply-probe-tokio-share.sh + REQUIREMENTS TPC-PERF-08 row
+- [ ] 58-01-PLAN.md — Wave 1: Linux SO_REUSEPORT per-shard TcpListener + FuturesUnordered inline handler + BEAVA_MAX_CONNS_PER_SHARD=256; delete spawn_linux_per_shard_accept_loops
+- [ ] 58-02-PLAN.md — Wave 2: macOS dedicated std::thread per shard (D-B1) + BEAVA_SHARDS_SINGLE_LISTENER=1 fallback (D-B2); handle_connection_blocking + MacosConnSlot RAII
+- [ ] 58-03-PLAN.md — Wave 3: Replica ingest rides unified per-shard accept path; opcode-dispatch parity audit + replica_ingest_routing extension at N=4
+- [ ] 58-04-PLAN.md — Wave 4: perf gate (≥ 1,621,616 EPS floor) + samply re-run (≤ 15% tokio) + 58-VERIFICATION + close
 **UI hint**: no
 
 ### Phase 59: 59-binary-wire-format-for-push
