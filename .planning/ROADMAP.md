@@ -246,7 +246,13 @@ Plans:
 **Locked decisions (carryover)**:
   - Contributing-input tracking per emitted row (Q5a-c from phase-55 scoping).
   - Late retractions outside history_ttl window: warn + skip (not in scope to rewrite history).
-**Plans**: TBD
+**Plans**: 5 plans
+Plans:
+- [ ] 57-00-PLAN.md — Wave 0: RED tests for SC-1..SC-4 + depth guard + sharding_parity extension + REQUIREMENTS.md TPC-CORR-10
+- [ ] 57-01-PLAN.md — Wave 1: ShardOp::RetractDownstream + RetractReason/Outcome + Shard::apply_retraction + 5 metrics + ContribSet + snapshot v10 + pipeline.rs helper
+- [ ] 57-02-PLAN.md — Wave 2: Stream→Table contributing_inputs.primary_event_id emission + tombstone fan_out_retraction_for_primary + 16-hop depth guard
+- [ ] 57-03-PLAN.md — Wave 3: EnrichFromTable source_table_keys + SSJ left/right_event_id + source-table DELETE PendingRetraction consumer + late-retraction warning via /debug/warnings.retraction_beyond_history
+- [ ] 57-04-PLAN.md — Wave 4: perf gate (floor 1,076,322 EPS = 90% of Phase 56 baseline) + advisory retraction-firing micro-bench + 57-VERIFICATION + close
 **UI hint**: no
 
 ### Phase 58: 58-tokio-connection-handling-rewrite
