@@ -45,6 +45,31 @@ OP_SUBSCRIBE_RESERVED: int = 0x11
 # Rust parse_command cardinality guard in src/server/protocol.rs).
 GET_MULTI_MAX_TABLES: int = 256
 
+# Phase 59 Wave 3 D-B1 (TPC-PERF-09): wire-format capability handshake opcode.
+#
+# Request frame:
+#   [u8 0x18][u32 BE client_bits][u16 BE client_version]
+# Response (STATUS_OK):
+#   [u8 0x00][u32 BE server_bits][u16 BE server_version]
+# Response (STATUS_ERROR on pre-59 server):
+#   [u8 0x01]b"unknown opcode: 0x18"
+#
+# Per D-B2 the opcode is optional — Phase 59+ servers accept OP_PUSH with
+# binary or JSON body regardless. Clients that SEND it get a version tag +
+# a known-good capability bit set. Pre-59 servers return STATUS_ERROR on
+# the opcode; the BeavaClient helper swallows that gracefully (D-E4).
+OP_NEGOTIATE_WIRE_FORMAT: int = 0x18
+
+# Phase 59 Wave 3 D-B1: capability bit 0 — server accepts raw-binary OP_PUSH
+# bodies and forwards them without JSON re-serialization to the shard
+# thread. Phase 59 delivers this bit.
+WIRE_BINARY_PASSTHROUGH: int = 1 << 0
+
+# Phase 59 Wave 3 D-B4: client-side wire version tag. Advertise to server on
+# negotiate; server echoes its own WIRE_VERSION_TAG_SERVER back. Bump on
+# breaking Python-side wire changes (none planned through v1.3).
+WIRE_VERSION_TAG_CLIENT: int = 2
+
 STATUS_OK: int = 0x00
 STATUS_ERROR: int = 0x01
 

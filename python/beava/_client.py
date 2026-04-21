@@ -21,7 +21,7 @@ import select
 import socket
 import struct
 
-from beava._protocol import MAX_FRAME_SIZE, STATUS_ERROR, encode_frame
+from beava._protocol import MAX_FRAME_SIZE, STATUS_ERROR, STATUS_OK, encode_frame
 from beava._types import ConnectionError, ProtocolError
 
 
@@ -51,6 +51,31 @@ class BeavaClient:
         # partially between drain calls so we never block the hot path on
         # a kernel-buffered partial frame.
         self._drain_buf: bytearray = bytearray()
+        # Phase 59 Wave 3 D-B1 / D-E4: cache of the server's advertised
+        # capability bits + version tag. ``None`` until the client calls
+        # ``negotiate_wire_format()`` (explicit or via BEAVA_WIRE_NEGOTIATE=1).
+        # ``(0, 0)`` sentinel = pre-59 server (negotiate returned
+        # STATUS_ERROR) — client keeps emitting binary without handshake.
+        self.server_capability_bits: int | None = None
+        self.server_version_tag: int | None = None
+
+        # Phase 59 Wave 3 D-B4: BEAVA_WIRE_NEGOTIATE=1 opt-in handshake on
+        # connect. Default off — backwards compat for users on pre-59
+        # servers (they can set the flag manually once their server is
+        # upgraded). Safe to call before the first send_command: if the
+        # socket errors, we silently defer; the next real command will
+        # reassert the error via its own connect + send path.
+        import os as _os
+
+        if _os.environ.get("BEAVA_WIRE_NEGOTIATE") == "1":
+            try:
+                self.negotiate_wire_format()
+            except (OSError, ConnectionError):
+                # Socket-level errors surface as usual on the next real
+                # command. Handshake failures from pre-59 servers (STATUS_ERROR
+                # "unknown opcode 0x18") are swallowed by negotiate_wire_format
+                # itself (D-E4); they never raise here.
+                pass
 
     def _connect(self) -> None:
         """Open a new TCP connection to the server."""
@@ -462,6 +487,56 @@ class BeavaClient:
             start = 4 + 8 * i
             out.append(int.from_bytes(payload[start : start + 8], "little", signed=False))
         return out
+
+    def negotiate_wire_format(self) -> tuple[int, int]:
+        """Phase 59 Wave 3 D-B1 (TPC-PERF-09): handshake with the server.
+
+        Sends ``OP_NEGOTIATE_WIRE_FORMAT`` with this client's capability bits
+        + version tag; receives the server's bits + version. Caches the
+        result in ``self.server_capability_bits`` + ``self.server_version_tag``
+        for the connection lifetime.
+
+        Returns ``(server_bits, server_version)``. On a pre-Phase-59 server
+        that rejects 0x18 as unknown opcode, returns ``(0, 0)`` sentinel
+        and caches the same — indicating the client should fall back to
+        "emit binary without handshake" (D-E4). Safe to ignore the return
+        value; the cached attributes are the primary consumer.
+
+        The opcode is OPTIONAL per D-B2 — Phase 59+ servers accept OP_PUSH
+        with either binary or JSON body regardless of whether negotiation
+        happened. Calling this method lets the client stop paying the
+        server's auto-detect first-byte discriminator cost (a few ns/event)
+        and confirms the version tag.
+        """
+        # Local imports: keep module-load cost low; constants live in
+        # _protocol alongside the rest of the wire vocabulary.
+        from beava._protocol import (
+            OP_NEGOTIATE_WIRE_FORMAT,
+            WIRE_BINARY_PASSTHROUGH,
+            WIRE_VERSION_TAG_CLIENT,
+        )
+
+        payload = struct.pack(">IH", WIRE_BINARY_PASSTHROUGH, WIRE_VERSION_TAG_CLIENT)
+        status, body = self.send_command(OP_NEGOTIATE_WIRE_FORMAT, payload)
+        if status != STATUS_OK:
+            # Pre-Phase-59 server (STATUS_ERROR "unknown opcode: 0x18") or
+            # any malformed response. D-E4: silently fall back. The
+            # connection stays open per the Rust-side guarantee that
+            # STATUS_ERROR does not tear down the stream.
+            self.server_capability_bits = 0
+            self.server_version_tag = 0
+            return (0, 0)
+        if len(body) < 6:
+            # Malformed response from a broken server — don't crash; fall
+            # back same as pre-59 server case.
+            self.server_capability_bits = 0
+            self.server_version_tag = 0
+            return (0, 0)
+        server_bits = struct.unpack(">I", body[:4])[0]
+        server_version = struct.unpack(">H", body[4:6])[0]
+        self.server_capability_bits = server_bits
+        self.server_version_tag = server_version
+        return (server_bits, server_version)
 
     def close(self) -> None:
         """Close the TCP connection (if open)."""
