@@ -7,6 +7,10 @@ pub mod expression;
 pub mod hll;
 pub mod join_validator;
 pub mod operators;
+/// Phase 59.6 Wave 3 (TPC-PERF-11): typed-row operator implementations.
+/// See `src/engine/operators_typed.rs` for the `TypedOperator` trait +
+/// `EnrichFromTableTyped` + `derive_enriched_schema`.
+pub mod operators_typed;
 pub mod pipeline;
 pub mod recommend;
 pub mod register;
@@ -22,3 +26,8 @@ pub mod window;
 // and future Wave 2+ wire codec paths) import via `crate::engine::schema::*`
 // but these aliases keep the public surface discoverable from `engine::`.
 pub use schema::{FieldSpec, FieldTy, RegisteredSchema, Row, SchemaId, SchemaRegistry};
+
+// Phase 59.6 Wave 3 (TPC-PERF-11) — typed operator re-exports.
+pub use operators_typed::{
+    derive_enriched_schema, EnrichFromTableTyped, ProjectedField, TypedOperator,
+};

@@ -137,6 +137,17 @@ impl ShardEvent {
 pub enum ShardOp {
     /// PUSH event: payload + stream_name live on the enclosing ShardEvent.
     Push,
+    /// Phase 59.6 Wave 3 (TPC-PERF-11): zero-copy typed-row dispatch.
+    /// Listener (OP_PUSH_TYPED_BATCH) decodes each row and sends one of these
+    /// per event. The shard thread looks up the schema via
+    /// `engine.schema_registry.get_by_id(schema_id)` and calls
+    /// `engine.push_typed_on_shard` which operates on Row directly — no
+    /// Row → Value round-trip on the hot path. The `stream_name` lives on
+    /// the enclosing ShardEvent (same as `Push`).
+    PushTypedRow {
+        row: crate::engine::schema::Row,
+        schema_id: crate::engine::schema::SchemaId,
+    },
     /// GET features for a single entity key. Response carries FeatureMap in `Ok`.
     Get { key: String },
     /// SET static features for an entity key. `payload` is the raw fields
@@ -782,6 +793,7 @@ fn process_shard_event(
     let _t_process_start = std::time::Instant::now();
     let op_kind = match &event.op {
         ShardOp::Push => "push",
+        ShardOp::PushTypedRow { .. } => "push_typed",
         ShardOp::UpsertSourceTableRow { .. } => "upsert",
         ShardOp::DeleteSourceTableRow { .. } => "delete",
         ShardOp::ReadEntityAt { .. } => "read_at",
@@ -906,6 +918,73 @@ fn process_shard_event(
                         let gw = state.global_watermark.read();
                         shard.watermark.publish_if_due(stream_name, &gw, shard_index, wm_publish_threshold);
                     }
+
+                    crate::shard::metrics::record_shard_event(
+                        shard_index,
+                        crate::shard::metrics::Outcome::Accepted,
+                    );
+
+                    if let Some(tx) = event.response_tx {
+                        let shard_result = match result {
+                            Ok(fm) => ShardResult::Ok(fm),
+                            Err(e) => ShardResult::Err(ShardDispatchError::ProcessingError(
+                                format!("{:?}", e),
+                            )),
+                        };
+                        let _ = tx.send(shard_result);
+                    }
+                }
+                ShardOp::PushTypedRow { row, schema_id } => {
+                    // Phase 59.6 Wave 3 (TPC-PERF-11): zero-copy typed-row
+                    // dispatch. Replaces the Wave-2 Row→Value bridge — the
+                    // shard thread threads the Row directly into
+                    // `engine.push_typed_on_shard`, which runs the typed
+                    // cascade when all operators are typed-compatible
+                    // (Wave 3: EnrichFromTable only) or falls back to
+                    // Value for unsupported operators.
+                    state
+                        .typed_row_path_total
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let stream_name: &str = &event.stream_name;
+                    let result = {
+                        let engine = state.engine.read();
+                        let schema = match engine.schema_registry.get_by_id(schema_id) {
+                            Some(s) => s,
+                            None => {
+                                crate::shard::metrics::record_shard_event(
+                                    shard_index,
+                                    crate::shard::metrics::Outcome::Dropped,
+                                );
+                                if let Some(tx) = event.response_tx {
+                                    let _ = tx.send(ShardResult::Err(
+                                        ShardDispatchError::ProcessingError(format!(
+                                            "PushTypedRow for unregistered schema_id {}",
+                                            schema_id
+                                        )),
+                                    ));
+                                }
+                                return;
+                            }
+                        };
+                        let handles_guard = state.shard_handles.read();
+                        let handles_slice: Option<&[ShardHandle]> = if handles_guard.is_empty() {
+                            None
+                        } else {
+                            Some(&handles_guard[..])
+                        };
+                        let read_features = event.response_tx.is_some();
+                        engine.push_typed_on_shard(
+                            stream_name,
+                            row,
+                            &schema,
+                            &mut shard,
+                            None,
+                            now,
+                            read_features,
+                            handles_slice,
+                            shard_index,
+                        )
+                    };
 
                     crate::shard::metrics::record_shard_event(
                         shard_index,

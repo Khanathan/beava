@@ -177,6 +177,7 @@ fn build_engine() -> PipelineEngine {
             max_keys: None,
             watermark_lateness: None,
             shard_key: None,
+            salt: None,
         })
         .unwrap();
 
@@ -210,6 +211,7 @@ fn build_engine() -> PipelineEngine {
             max_keys: None,
             watermark_lateness: None,
             shard_key: None,
+            salt: None,
         })
         .unwrap();
 
@@ -239,6 +241,7 @@ fn build_engine() -> PipelineEngine {
             max_keys: None,
             watermark_lateness: None,
             shard_key: None,
+            salt: None,
         })
         .unwrap();
 

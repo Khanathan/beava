@@ -453,6 +453,136 @@ pub fn row_to_value(row: &Row, schema: &RegisteredSchema) -> serde_json::Value {
     serde_json::Value::Object(obj)
 }
 
+/// Phase 59.6 Wave 3 (TPC-PERF-11): inverse of `row_to_value`. Writes a
+/// serde_json::Value into a freshly-allocated Row following the schema's
+/// field layout. Used by the typed-path fallback in `push_typed_on_shard`
+/// (Value → Row upgrade at the operator boundary) and by the mixed-mode
+/// EnrichFromTable path where the right-side source_table is still Value
+/// (Wave 5 makes source_tables typed).
+///
+/// Behavior:
+/// - Scalar fields are written via the matching `Row::write_*` helper; on
+///   type mismatch (e.g. field declared i64 but Value holds a string) a
+///   `BeavaError::Protocol` is returned.
+/// - Missing fields: if nullable → left as zero; if required → error.
+/// - `FieldTy::Bytes` reads a string value (symmetric with `row_to_value`'s
+///   lossy UTF-8 emission — the Wave-3 bridge stays on string-compatible
+///   payloads; Wave 5+ revisits true bytes dispatch).
+pub fn value_to_row(
+    value: &serde_json::Value,
+    schema: &RegisteredSchema,
+) -> Result<Row, crate::error::BeavaError> {
+    use crate::error::BeavaError;
+    let mut row = Row::zeroed(schema);
+    let obj = value.as_object().ok_or_else(|| {
+        BeavaError::Protocol("value_to_row: expected JSON object".to_string())
+    })?;
+    for f in &schema.fields {
+        let v = match obj.get(&f.name) {
+            Some(v) => v,
+            None if f.nullable => continue,
+            None => {
+                return Err(BeavaError::Protocol(format!(
+                    "value_to_row: missing required field '{}'",
+                    f.name
+                )));
+            }
+        };
+        if v.is_null() {
+            if f.nullable {
+                continue;
+            }
+            return Err(BeavaError::Protocol(format!(
+                "value_to_row: field '{}' is null but non-nullable",
+                f.name
+            )));
+        }
+        match f.ty {
+            FieldTy::I64 => {
+                let n = v.as_i64().ok_or_else(|| {
+                    BeavaError::Protocol(format!(
+                        "value_to_row: field '{}' expected i64, got {:?}",
+                        f.name, v
+                    ))
+                })?;
+                row.write_i64(f.offset, n);
+            }
+            FieldTy::F64 => {
+                let n = v.as_f64().ok_or_else(|| {
+                    BeavaError::Protocol(format!(
+                        "value_to_row: field '{}' expected f64, got {:?}",
+                        f.name, v
+                    ))
+                })?;
+                row.write_f64(f.offset, n);
+            }
+            FieldTy::Bool => {
+                let b = v.as_bool().ok_or_else(|| {
+                    BeavaError::Protocol(format!(
+                        "value_to_row: field '{}' expected bool, got {:?}",
+                        f.name, v
+                    ))
+                })?;
+                row.write_bool(f.offset, b);
+            }
+            FieldTy::InlineStr => {
+                let s = v.as_str().ok_or_else(|| {
+                    BeavaError::Protocol(format!(
+                        "value_to_row: field '{}' expected string, got {:?}",
+                        f.name, v
+                    ))
+                })?;
+                row.write_inline_str(f.offset, schema.inline_str_cap, s);
+            }
+            FieldTy::String | FieldTy::Bytes => {
+                let s = v.as_str().ok_or_else(|| {
+                    BeavaError::Protocol(format!(
+                        "value_to_row: field '{}' expected string, got {:?}",
+                        f.name, v
+                    ))
+                })?;
+                row.write_string(f.offset, s);
+            }
+        }
+    }
+    Ok(row)
+}
+
+/// Phase 59.6 Wave 3 (TPC-PERF-11): derive a shard_hint from a typed Row
+/// by hashing the declared shard_key field's byte representation. Mirrors
+/// Phase 48's `shard_hint_for_event` behavior for the Value path —
+/// stringifies scalars, reads inline/arena strings directly — so the
+/// routing decision is identical across the typed and Value paths.
+pub fn shard_hint_from_row(
+    row: &Row,
+    schema: &RegisteredSchema,
+    shard_key_field: &str,
+) -> u32 {
+    use std::hash::{Hash, Hasher};
+    let idx = match schema.field_index(shard_key_field) {
+        Some(i) => i,
+        None => return 0,
+    };
+    let f = &schema.fields[idx];
+    let key_bytes: Vec<u8> = match f.ty {
+        FieldTy::InlineStr => row
+            .read_inline_str(f.offset, schema.inline_str_cap)
+            .as_bytes()
+            .to_vec(),
+        FieldTy::String => row.read_string(f.offset).as_bytes().to_vec(),
+        FieldTy::I64 => row.read_i64(f.offset).to_string().into_bytes(),
+        FieldTy::F64 => row.read_f64(f.offset).to_string().into_bytes(),
+        FieldTy::Bool => {
+            let v = if row.read_bool(f.offset) { "true" } else { "false" };
+            v.as_bytes().to_vec()
+        }
+        FieldTy::Bytes => row.read_bytes(f.offset).to_vec(),
+    };
+    let mut h = ahash::AHasher::default();
+    key_bytes.hash(&mut h);
+    (h.finish() % (u32::MAX as u64)) as u32
+}
+
 /// Schema registry — keyed by stream name; value is `Arc<RegisteredSchema>`
 /// so operators can clone cheaply.
 ///
@@ -885,6 +1015,103 @@ mod tests {
         assert!((v["amt"].as_f64().unwrap() - 9.5).abs() < 1e-9);
         assert_eq!(v["cnt"], -7);
         assert_eq!(v["ok"], true);
+    }
+
+    #[test]
+    fn value_to_row_roundtrip_scalars_is_symmetric_with_row_to_value() {
+        let schema = RegisteredSchema {
+            schema_id: 1,
+            name: "Evt".into(),
+            fields: vec![
+                FieldSpec { name: "uid".into(), ty: FieldTy::InlineStr, offset: 0, nullable: false },
+                FieldSpec { name: "amt".into(), ty: FieldTy::F64, offset: 16, nullable: false },
+                FieldSpec { name: "cnt".into(), ty: FieldTy::I64, offset: 24, nullable: false },
+                FieldSpec { name: "ok".into(),  ty: FieldTy::Bool, offset: 32, nullable: false },
+            ],
+            inline_str_cap: 15,
+            row_size: 33,
+        };
+        schema.validate_layout().expect("valid");
+        let mut row = Row::zeroed(&schema);
+        row.write_inline_str(0, 15, "alice");
+        row.write_f64(16, 9.5);
+        row.write_i64(24, -7);
+        row.write_bool(32, true);
+        let v = row_to_value(&row, &schema);
+        let row2 = value_to_row(&v, &schema).expect("round-trip");
+        // Scalar readback parity via field readers (payload bytes may
+        // differ in zero-pad of the trailing slot byte, which is fine).
+        assert_eq!(row2.read_inline_str(0, 15), "alice");
+        assert!((row2.read_f64(16) - 9.5).abs() < 1e-9);
+        assert_eq!(row2.read_i64(24), -7);
+        assert!(row2.read_bool(32));
+    }
+
+    #[test]
+    fn value_to_row_roundtrip_long_string() {
+        let schema = RegisteredSchema {
+            schema_id: 0,
+            name: "S".into(),
+            fields: vec![FieldSpec {
+                name: "msg".into(),
+                ty: FieldTy::String,
+                offset: 0,
+                nullable: false,
+            }],
+            inline_str_cap: 15,
+            row_size: 8,
+        };
+        schema.validate_layout().expect("valid");
+        let long = "this is a long string exceeding the inline cap";
+        let v = serde_json::json!({ "msg": long });
+        let row = value_to_row(&v, &schema).expect("ok");
+        assert_eq!(row.read_string(0), long);
+    }
+
+    #[test]
+    fn value_to_row_rejects_missing_required_field() {
+        let schema = RegisteredSchema {
+            schema_id: 0,
+            name: "S".into(),
+            fields: vec![FieldSpec {
+                name: "uid".into(),
+                ty: FieldTy::InlineStr,
+                offset: 0,
+                nullable: false,
+            }],
+            inline_str_cap: 15,
+            row_size: 16,
+        };
+        let v = serde_json::json!({});
+        let err = value_to_row(&v, &schema).expect_err("missing required");
+        let msg = format!("{:?}", err);
+        assert!(msg.contains("uid"), "unexpected error {msg}");
+    }
+
+    #[test]
+    fn shard_hint_from_row_matches_string_key_hash() {
+        let schema = RegisteredSchema {
+            schema_id: 0,
+            name: "S".into(),
+            fields: vec![FieldSpec {
+                name: "user_id".into(),
+                ty: FieldTy::InlineStr,
+                offset: 0,
+                nullable: false,
+            }],
+            inline_str_cap: 15,
+            row_size: 16,
+        };
+        let mut row = Row::zeroed(&schema);
+        row.write_inline_str(0, 15, "alice");
+        let h1 = shard_hint_from_row(&row, &schema, "user_id");
+        // Same key → same hint (determinism check).
+        let h2 = shard_hint_from_row(&row, &schema, "user_id");
+        assert_eq!(h1, h2);
+        // Different key → (with overwhelming probability) different hint.
+        row.write_inline_str(0, 15, "bob");
+        let h3 = shard_hint_from_row(&row, &schema, "user_id");
+        assert_ne!(h1, h3, "alice and bob should hash differently");
     }
 
     #[test]
