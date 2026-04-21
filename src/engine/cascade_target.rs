@@ -97,6 +97,7 @@ impl<'a> CascadeTarget for LiveCascadeTargets<'a> {
             response_tx: Some(tx),
             op: ShardOp::UpsertTableBatch { writes, now },
             payload_fmt: crate::wire::PayloadFmt::Binary,
+            schema_id: 0,
         };
 
         match target.inbox_tx.try_send(ev) {

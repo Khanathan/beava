@@ -21,6 +21,14 @@ pub enum PayloadFmt {
     /// JSON-encoded object. HTTP POST /push + replica `LOG_FMT_JSON`
     /// path + legacy TCP JSON fallback.
     Json = 1,
+    /// Phase 59.6 Wave 2 (D-B1): pre-decoded typed `Row`. The shard thread
+    /// looks up the schema via `ShardEvent.schema_id` and treats `payload`
+    /// as the row's payload bytes (Wave 2 also stores the full packed body
+    /// including the arena suffix so the decode is a straight copy). In
+    /// Wave 2 the shard thread still bridges to the Value path via
+    /// `crate::engine::schema::row_to_value`; Wave 3+ replaces the bridge
+    /// with a direct typed handoff to operators.
+    TypedRow = 2,
 }
 
 impl Default for PayloadFmt {
@@ -49,7 +57,12 @@ pub fn decode_event_on_shard(
             let mut buf: &[u8] = bytes;
             decode_event_binary(&mut buf)
         }
-        PayloadFmt::Json => serde_json::from_slice(bytes).map_err(|e| {
+        // Phase 59.6 Wave 2 bridge: TypedRow arrives at the shard thread
+        // as already-JSON-serialized bytes (listener side ran
+        // `row_to_value`). Decode identically to Json. Wave 3+ eliminates
+        // this bridge entirely by routing typed ShardEvents through a
+        // dedicated ShardOp variant.
+        PayloadFmt::Json | PayloadFmt::TypedRow => serde_json::from_slice(bytes).map_err(|e| {
             BeavaError::Protocol(format!("JSON decode error on shard: {}", e))
         }),
     }
@@ -77,6 +90,13 @@ mod tests {
     #[test]
     fn payload_fmt_default_is_binary() {
         assert_eq!(PayloadFmt::default(), PayloadFmt::Binary);
+    }
+
+    #[test]
+    fn payload_fmt_typed_row_is_variant_two() {
+        assert_eq!(PayloadFmt::TypedRow as u8, 2);
+        assert_ne!(PayloadFmt::TypedRow, PayloadFmt::Binary);
+        assert_ne!(PayloadFmt::TypedRow, PayloadFmt::Json);
     }
 
     #[test]

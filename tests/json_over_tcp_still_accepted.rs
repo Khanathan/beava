@@ -66,6 +66,7 @@ fn build_single_shard_state(tag: &str) -> SharedState {
             max_keys: None,
             watermark_lateness: None,
             shard_key: None,
+            salt: None,
         })
         .unwrap();
 

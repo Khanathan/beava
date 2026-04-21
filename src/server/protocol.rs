@@ -235,6 +235,18 @@ pub const OP_DELETE_TABLE_BATCH: u8 = 0x17;
 // know the server version tag explicitly.
 pub const OP_NEGOTIATE_WIRE_FORMAT: u8 = 0x18;
 
+/// Phase 59.6 Wave 2 (TPC-PERF-11): typed-row push batch. Body shape:
+/// `[stream_name_len u16 BE][stream_name utf-8][schema_id u32 BE][row_count u32 BE]
+///  [rows: row_size × row_count][arena_len u32 BE][arena_bytes][ack_token u64 BE]`.
+/// Decoded via `crate::wire::typed::decode_typed_row_push_batch`. See
+/// `.planning/phases/59.6-typed-pipeline-records/59.6-CONTEXT.md` D-B1.
+///
+/// Contrast with OP_PUSH_BATCH (0x0A): OP_PUSH_BATCH carries JSON/binary
+/// `Value`-shaped events; OP_PUSH_TYPED_BATCH carries packed fixed-layout
+/// rows. The client opts into the typed path via negotiation (bit
+/// WIRE_TYPED_PIPELINE) and schema presence on the stream descriptor.
+pub const OP_PUSH_TYPED_BATCH: u8 = 0x19;
+
 /// Phase 59 Wave 2 D-B1: server's wire-protocol version tag. Bump on
 /// breaking wire-surface changes. Version 2 = Phase 59 Bytes-passthrough
 /// + dual binary/JSON accept on OP_PUSH.
@@ -306,6 +318,16 @@ pub enum Command {
         stream_name: String,
         batch_id: u32,
         events: Vec<(serde_json::Value, Vec<u8>)>,
+    },
+    /// Phase 59.6 Wave 2 (TPC-PERF-11): typed-row push batch. Frame body
+    /// is consumed by `crate::wire::typed::decode_typed_row_push_batch`
+    /// after the stream-name header is read. `body` holds the raw bytes
+    /// starting at `schema_id` (inclusive) so the dispatcher can perform
+    /// the schema lookup before invoking the decoder. See `OP_PUSH_TYPED_BATCH`
+    /// doc-comment for the full wire shape.
+    PushTypedBatch {
+        stream_name: String,
+        body: Vec<u8>,
     },
     /// Phase 24-02: Upsert a row in a Table source. `fields` is the JSON
     /// object decoded from the payload tail.
@@ -1307,6 +1329,24 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, BeavaError> 
             }
             Ok(Command::DeleteTableBatch { table_name, rows })
         }
+        OP_PUSH_TYPED_BATCH => {
+            // Phase 59.6 Wave 2 (D-B1, TPC-PERF-11). Frame shape:
+            //   [u16 BE stream_name_len][stream_name utf-8]
+            //   [u32 BE schema_id][u32 BE row_count]
+            //   [row_count × row_size bytes]
+            //   [u32 BE arena_len][arena_bytes]
+            //   [u64 BE ack_token]
+            //
+            // We capture the stream name here, then hand the remaining
+            // body to the dispatcher so it can look up the registered
+            // schema via engine.get_schema(stream_name) and invoke
+            // `decode_typed_row_push_batch`. A separate
+            // `PushTypedBatch` command variant keeps the parse surface
+            // pure (no engine access here).
+            let stream_name = read_string(&mut buf)?;
+            let body: Vec<u8> = buf.to_vec();
+            Ok(Command::PushTypedBatch { stream_name, body })
+        }
         OP_NEGOTIATE_WIRE_FORMAT => {
             // Phase 59 Wave 2 D-B1: [u32 BE client_bits][u16 BE client_version]
             if payload.len() < 6 {
@@ -1982,7 +2022,8 @@ pub fn convert_register_request(req: RegisterRequest) -> Result<StreamDefinition
         pipeline_ttl,
         max_keys: req.max_keys,
         watermark_lateness: None,
-                shard_key: None,
+        shard_key: None,
+        salt: None,
     })
 }
 

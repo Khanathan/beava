@@ -53,6 +53,12 @@ pub struct ShardEvent {
     /// Python primary path. HTTP PUSH + replica `LOG_FMT_JSON` set
     /// `Json` explicitly.
     pub payload_fmt: crate::wire::PayloadFmt,
+    /// Phase 59.6 Wave 2 (D-B1, TPC-PERF-11): when `payload_fmt ==
+    /// TypedRow`, carries the schema id so the shard thread can look up
+    /// the `RegisteredSchema` via
+    /// `engine.schema_registry.get_by_id(schema_id)`. Zero for the
+    /// Binary / Json paths.
+    pub schema_id: u32,
 }
 
 impl ShardEvent {
@@ -91,6 +97,30 @@ impl ShardEvent {
             response_tx,
             op: ShardOp::Push,
             payload_fmt,
+            schema_id: 0,
+        }
+    }
+
+    /// Phase 59.6 Wave 2 (D-B1, TPC-PERF-11): construct a Push event
+    /// carrying a typed Row. `payload` is the packed row body (fixed
+    /// layout concatenated with arena); `schema_id` identifies the
+    /// `RegisteredSchema` so the shard thread can look it up via
+    /// `engine.schema_registry.get_by_id`.
+    pub fn push_typed(
+        payload: bytes::Bytes,
+        stream_name: Arc<str>,
+        shard_hint: u32,
+        schema_id: u32,
+        response_tx: Option<tokio::sync::oneshot::Sender<ShardResult>>,
+    ) -> Self {
+        Self {
+            payload,
+            stream_name,
+            shard_hint,
+            response_tx,
+            op: ShardOp::Push,
+            payload_fmt: crate::wire::PayloadFmt::TypedRow,
+            schema_id,
         }
     }
 }
@@ -790,6 +820,19 @@ fn process_shard_event(
 
     match op {
                 ShardOp::Push => {
+                    // Phase 59.6 Wave 2 (D-E2, TPC-PERF-11): bump per-path
+                    // counter BEFORE decode so we observe which path an
+                    // event took even if decode fails. Typed path is the
+                    // Wave 2 fast-path (decode already done on the listener);
+                    // Binary/Json are the Phase 59 generic decode paths.
+                    match event.payload_fmt {
+                        crate::wire::PayloadFmt::TypedRow => {
+                            state.typed_row_path_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        crate::wire::PayloadFmt::Binary | crate::wire::PayloadFmt::Json => {
+                            state.value_fallback_path_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
                     // Phase 59 D-C1: decode on the shard thread according to
                     // the listener-set `payload_fmt` tag. Binary → single
                     // `decode_event_binary` parse (the ONE necessary parse on
@@ -797,6 +840,14 @@ fn process_shard_event(
                     // HTTP / replica-JSON / legacy-TCP-JSON-fallback paths.
                     // No `serde_json::to_vec` round-trip on the listener side
                     // (that's the ~11% CPU Phase 59 recovers).
+                    //
+                    // Wave 2 bridge: TypedRow path arrives with the row's
+                    // payload already JSON-serialized by the listener
+                    // (listener called `row_to_value` on the decoded Row).
+                    // `decode_event_on_shard` handles TypedRow by routing
+                    // to its JSON decoder — no extra bridging needed here.
+                    // Wave 3+ replaces this bridge with a direct typed
+                    // handoff via a new ShardOp variant.
                     let payload: serde_json::Value = match crate::wire::decode_event_on_shard(
                         &event.payload,
                         event.payload_fmt,
@@ -2045,6 +2096,7 @@ pub async fn get_features_via_shard(
         response_tx: Some(tx),
         op: ShardOp::Get { key },
         payload_fmt: crate::wire::PayloadFmt::Binary,
+        schema_id: 0,
     };
 
     match handle.inbox_tx.try_send(evt) {
@@ -2105,6 +2157,7 @@ pub async fn send_op_await_setok(
         response_tx: Some(tx),
         op,
         payload_fmt: crate::wire::PayloadFmt::Binary,
+        schema_id: 0,
     };
 
     match handle.inbox_tx.try_send(evt) {
@@ -2181,6 +2234,7 @@ pub async fn send_op_await_setok_all_shards(
             response_tx: Some(tx),
             op: op_factory(),
             payload_fmt: crate::wire::PayloadFmt::Binary,
+            schema_id: 0,
         };
         match handle.inbox_tx.try_send(evt) {
             Ok(()) => {}
@@ -2258,6 +2312,7 @@ pub async fn get_multi_via_shard(
         response_tx: Some(tx),
         op: ShardOp::GetMulti { table_names, key },
         payload_fmt: crate::wire::PayloadFmt::Binary,
+        schema_id: 0,
     };
 
     match handle.inbox_tx.try_send(evt) {
@@ -2312,6 +2367,7 @@ pub async fn list_entity_keys_via_shard(
         response_tx: Some(tx),
         op: ShardOp::ListEntityKeys,
         payload_fmt: crate::wire::PayloadFmt::Binary,
+        schema_id: 0,
     };
 
     match handle.inbox_tx.try_send(evt) {
@@ -2371,6 +2427,7 @@ pub async fn entity_count_via_shard(
         response_tx: Some(tx),
         op: ShardOp::EntityCount,
         payload_fmt: crate::wire::PayloadFmt::Binary,
+        schema_id: 0,
     };
 
     match handle.inbox_tx.try_send(evt) {
@@ -2428,6 +2485,7 @@ pub async fn evict_expired_via_shard(
         response_tx: Some(tx),
         op: ShardOp::EvictExpired { now, ttl_multiplier },
         payload_fmt: crate::wire::PayloadFmt::Binary,
+        schema_id: 0,
     };
 
     match handle.inbox_tx.try_send(evt) {
@@ -2484,6 +2542,7 @@ pub async fn evict_expired_table_rows_via_shard(
         response_tx: Some(tx),
         op: ShardOp::EvictExpiredTableRows { now },
         payload_fmt: crate::wire::PayloadFmt::Binary,
+        schema_id: 0,
     };
 
     match handle.inbox_tx.try_send(evt) {

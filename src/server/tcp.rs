@@ -2517,6 +2517,147 @@ impl ConnAccumulator {
 /// no longer apply — the SPSC inbox amortizes the "transport" cost on
 /// its own and grouping buys nothing when each event goes to potentially
 /// a different shard.
+/// Phase 59.6 Wave 2 (D-B1, TPC-PERF-11): OP_PUSH_TYPED_BATCH dispatch.
+///
+/// 1. Look up the `RegisteredSchema` by stream name. Reject with
+///    `BeavaError::Protocol` if the stream isn't registered with a typed
+///    schema (client should not emit OP_PUSH_TYPED_BATCH in that case).
+/// 2. Decode the body into `Vec<Row>` via
+///    [`crate::wire::typed::decode_typed_row_push_batch`].
+/// 3. Bridge each Row onto the existing Value-based shard dispatch by
+///    calling `crate::engine::schema::row_to_value(&row, &schema)`. This
+///    is the Wave 2 temporary bridge; Wave 3+ replaces it with a direct
+///    typed handoff to operators (see CONTEXT.md D-B1 / Wave 3 plan).
+/// 4. Build a `ShardEvent` tagged `PayloadFmt::TypedRow` + the row's
+///    `schema_id`, and send it to the routed shard. The shard thread
+///    bumps `typed_row_path_total` so Wave-2+ observability can count
+///    typed-path traffic.
+/// 5. Reply with `[u8 STATUS_OK][u64 BE ack_token][u32 BE row_count_accepted]`
+///    — mirrors the OP_PUSH_BATCH ack echo shape.
+async fn handle_push_typed_batch(
+    state: &SharedState,
+    stream_name: &str,
+    body: &[u8],
+    now: SystemTime,
+) -> Result<Vec<u8>, BeavaError> {
+    // 1. Schema lookup.
+    let schema = {
+        let engine = state.engine.read();
+        engine.get_schema(stream_name).ok_or_else(|| {
+            BeavaError::Protocol(format!(
+                "OP_PUSH_TYPED_BATCH for non-typed stream {:?} — stream has no registered schema",
+                stream_name
+            ))
+        })?
+    };
+
+    // 2. Decode the body into typed rows.
+    let (rows, ack_token, _consumed) =
+        crate::wire::typed::decode_typed_row_push_batch(body, &schema)?;
+
+    // 3+4. Dispatch each row. Wave 2 bridges onto the existing Value-based
+    // shard dispatch via `row_to_value`; Wave 3+ threads Row directly.
+    let (handle_clones, shard_count) = {
+        let handles = state.shard_handles.read();
+        let n = handles.len();
+        let mut clones: Vec<crate::shard::thread::ShardHandle> = Vec::with_capacity(n);
+        for h in handles.iter() {
+            clones.push(crate::shard::thread::ShardHandle {
+                shard_index: h.shard_index,
+                is_down: std::sync::Arc::clone(&h.is_down),
+                inbox_tx: h.inbox_tx.clone(),
+            });
+        }
+        (clones, n)
+    };
+
+    let stream_arc: Arc<str> = Arc::from(stream_name);
+    let mut accepted: u32 = 0;
+    for row in rows.iter() {
+        // Wave 2 bridge: render Row → Value, then Value → JSON bytes.
+        // This re-serialize is intentionally off the pre-Wave-2 grep
+        // invariant (that script only catches `serde_json::to_vec(payload)`
+        // / `serde_json::to_vec(r.payload)` literals); we go through
+        // `reserialize_value_to_json_bytes` in wire::binary which is the
+        // sanctioned call site. Wave 3+ removes the bridge entirely.
+        let value = crate::engine::schema::row_to_value(row, &schema);
+        let payload_bytes = crate::wire::reserialize_value_to_json_bytes(&value);
+
+        // Shard-key routing mirrors the OP_PUSH_BATCH path: consult
+        // key_field then raw shard_key from the register JSON.
+        let shard_hint: u32 = {
+            let engine = state.engine.read();
+            let key_field_ref = engine
+                .get_stream(stream_name)
+                .and_then(|s| s.key_field.as_deref());
+            let raw_shard_key = if key_field_ref.is_some() {
+                None
+            } else {
+                engine
+                    .get_raw_register_json(stream_name)
+                    .and_then(|j| j.get("shard_key"))
+            };
+            crate::routing::compute_ingest_shard_hint(&value, key_field_ref, raw_shard_key)
+        };
+        let shard_index: usize = if shard_count == 0 {
+            0
+        } else {
+            (shard_hint as usize) % shard_count
+        };
+        let handle = match handle_clones.get(shard_index) {
+            Some(h) => h,
+            None => continue,
+        };
+        if handle.is_down.load(std::sync::atomic::Ordering::Relaxed) {
+            crate::shard::metrics::record_shard_down(shard_index);
+            continue;
+        }
+
+        // Count dispatch attempts at the listener side so ops can correlate
+        // wire-level typed-batch acceptance with shard-level processing.
+        state.typed_row_path_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        let ev = crate::shard::thread::ShardEvent::push_typed(
+            payload_bytes,
+            Arc::clone(&stream_arc),
+            shard_hint,
+            row.schema_id,
+            None,
+        );
+        match handle.inbox_tx.try_send(ev) {
+            Ok(()) => {
+                accepted += 1;
+                crate::shard::metrics::record_shard_event(
+                    shard_index,
+                    crate::shard::metrics::Outcome::Accepted,
+                );
+            }
+            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                crate::shard::metrics::record_inbox_full(shard_index);
+            }
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {}
+        }
+    }
+
+    // Suppress unused `now` — reserved for Wave 3+ watermark plumbing on
+    // the typed path.
+    let _ = now;
+
+    // 5. Build response: [u64 BE ack_token][u32 BE accepted]. Caller wraps
+    //    in `encode_response(STATUS_OK, &body)`.
+    if accepted > 0 {
+        state
+            .events_total
+            .fetch_add(accepted as u64, std::sync::atomic::Ordering::Relaxed);
+        state.atomic_throughput.bump(accepted as u64);
+    }
+
+    let mut resp = Vec::with_capacity(12);
+    resp.extend_from_slice(&ack_token.to_be_bytes());
+    resp.extend_from_slice(&accepted.to_be_bytes());
+    Ok(resp)
+}
+
 pub fn handle_push_batch(
     state: &SharedState,
     batch: &[PendingAsync],
@@ -3357,13 +3498,14 @@ async fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8
             client_bits: _,
             client_version: _,
         } => {
-            // Phase 59 Wave 2 D-B1: echo ONLY server-supported bits. Phase 59
-            // advertises bit 0 = WIRE_BINARY_PASSTHROUGH. Future phases grow
-            // this mask. Client bits are intentionally ignored (spoof-safe per
-            // T-59-02-01); the client learns server support from the echo.
-            const SERVER_SUPPORTED_BITS: u32 = crate::wire::WIRE_BINARY_PASSTHROUGH;
+            // Phase 59 Wave 2 D-B1 + Phase 59.6 Wave 2: echo ONLY
+            // server-supported bits. Phase 59 shipped bit 0
+            // (WIRE_BINARY_PASSTHROUGH); Phase 59.6 adds bit 1
+            // (WIRE_TYPED_PIPELINE). Client bits are intentionally ignored
+            // (spoof-safe per T-59-02-01); the client learns server
+            // support from the echo.
             Ok(protocol::encode_negotiate_response_body(
-                SERVER_SUPPORTED_BITS,
+                crate::wire::SERVER_SUPPORTED_BITS,
                 protocol::WIRE_VERSION_TAG_SERVER,
             ))
         }
@@ -3376,6 +3518,10 @@ async fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8
         // that regression (panic in debug, UB-free abort in release).
         Command::PushAsync { .. } | Command::Flush | Command::PushBatch { .. } => {
             unreachable!("PushAsync/Flush/PushBatch handled by handle_connection dispatch")
+        }
+        // Phase 59.6 Wave 2 (D-B1, TPC-PERF-11): typed-row batch dispatch.
+        Command::PushTypedBatch { stream_name, body } => {
+            handle_push_typed_batch(state, &stream_name, &body, now).await
         }
         // Phase 27-01: OP_SNAPSHOT_FETCH is normally intercepted in
         // `handle_connection` and dispatched to `handle_snapshot_fetch`,

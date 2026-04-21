@@ -408,6 +408,51 @@ impl Row {
     }
 }
 
+/// Phase 59.6 Wave 2 bridge (D-B1, TPC-PERF-11): convert a typed `Row` back
+/// to a `serde_json::Value` by walking the schema's `FieldSpec` entries.
+///
+/// Wave 2 uses this to bridge the typed decode path onto the existing
+/// `push_with_cascade_on_shard` entry point — operators still run on
+/// `Value`, but the wire decode has already happened and the server has
+/// validated the schema. Wave 3+ replaces this bridge by threading the
+/// `Row` directly through to typed operators, removing the JSON
+/// re-serialize entirely from the hot path.
+///
+/// The bridge is intentionally slow (per-field `Value::from` allocations) —
+/// it exists only so Wave 2 can ship wire-level correctness without
+/// touching operator execution. Performance work happens in Wave 3 when
+/// operators gain typed fast-paths.
+pub fn row_to_value(row: &Row, schema: &RegisteredSchema) -> serde_json::Value {
+    let mut obj = serde_json::Map::with_capacity(schema.fields.len());
+    for f in &schema.fields {
+        let v = match f.ty {
+            FieldTy::I64 => {
+                serde_json::Value::Number(serde_json::Number::from(row.read_i64(f.offset)))
+            }
+            FieldTy::F64 => {
+                let n = row.read_f64(f.offset);
+                serde_json::Number::from_f64(n)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or(serde_json::Value::Null)
+            }
+            FieldTy::Bool => serde_json::Value::Bool(row.read_bool(f.offset)),
+            FieldTy::InlineStr => serde_json::Value::String(
+                row.read_inline_str(f.offset, schema.inline_str_cap).to_string(),
+            ),
+            FieldTy::String => serde_json::Value::String(row.read_string(f.offset).to_string()),
+            FieldTy::Bytes => {
+                // Wave 2 simplification: render bytes as lossy UTF-8 string.
+                // Operators consuming Bytes-typed fields in Wave 3+ will
+                // bypass this bridge entirely.
+                let b = row.read_bytes(f.offset);
+                serde_json::Value::String(String::from_utf8_lossy(b).to_string())
+            }
+        };
+        obj.insert(f.name.clone(), v);
+    }
+    serde_json::Value::Object(obj)
+}
+
 /// Schema registry — keyed by stream name; value is `Arc<RegisteredSchema>`
 /// so operators can clone cheaply.
 ///
@@ -810,6 +855,36 @@ mod tests {
             let back: FieldTy = serde_json::from_str(&s).expect("deserialize");
             assert_eq!(back, v);
         }
+    }
+
+    #[test]
+    fn row_to_value_bridge_renders_all_scalar_types() {
+        // Phase 59.6 Wave 2 bridge sanity: renders the expected JSON
+        // Value shape so existing operators (still Value-based in Wave 2)
+        // see the same object they would have built from OP_PUSH_BATCH.
+        let schema = RegisteredSchema {
+            schema_id: 1,
+            name: "Evt".into(),
+            fields: vec![
+                FieldSpec { name: "uid".into(), ty: FieldTy::InlineStr, offset: 0, nullable: false },
+                FieldSpec { name: "amt".into(), ty: FieldTy::F64, offset: 16, nullable: false },
+                FieldSpec { name: "cnt".into(), ty: FieldTy::I64, offset: 24, nullable: false },
+                FieldSpec { name: "ok".into(),  ty: FieldTy::Bool, offset: 32, nullable: false },
+            ],
+            inline_str_cap: 15,
+            row_size: 33,
+        };
+        schema.validate_layout().expect("valid");
+        let mut row = Row::zeroed(&schema);
+        row.write_inline_str(0, 15, "alice");
+        row.write_f64(16, 9.5);
+        row.write_i64(24, -7);
+        row.write_bool(32, true);
+        let v = row_to_value(&row, &schema);
+        assert_eq!(v["uid"], "alice");
+        assert!((v["amt"].as_f64().unwrap() - 9.5).abs() < 1e-9);
+        assert_eq!(v["cnt"], -7);
+        assert_eq!(v["ok"], true);
     }
 
     #[test]

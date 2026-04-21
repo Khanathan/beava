@@ -1513,6 +1513,7 @@ impl PipelineEngine {
                             now,
                         },
                         payload_fmt: crate::wire::PayloadFmt::Binary,
+                        schema_id: 0,
                     };
                     // Phase 55-01 SC-5: high-watermark + cross-shard counter
                     // emission site for the per-event (non-batched) cascade
@@ -1585,6 +1586,7 @@ impl PipelineEngine {
                             now,
                         },
                         payload_fmt: crate::wire::PayloadFmt::Binary,
+                        schema_id: 0,
                     };
                     match target.inbox_tx.try_send(ev) {
                         Ok(()) => pending.push((target_shard_idx, rx)),
@@ -1734,6 +1736,7 @@ impl PipelineEngine {
                 key: key.to_string(),
             },
             payload_fmt: crate::wire::PayloadFmt::Binary,
+            schema_id: 0,
         };
         let depth = target.inbox_tx.len();
         let cap = target.inbox_tx.capacity().unwrap_or(usize::MAX);
@@ -1841,6 +1844,7 @@ impl PipelineEngine {
                 keys: keys.to_vec(),
             },
             payload_fmt: crate::wire::PayloadFmt::Binary,
+            schema_id: 0,
         };
         let depth = target.inbox_tx.len();
         let cap = target.inbox_tx.capacity().unwrap_or(usize::MAX);
@@ -1934,6 +1938,7 @@ impl PipelineEngine {
                 within_ms,
             },
             payload_fmt: crate::wire::PayloadFmt::Binary,
+            schema_id: 0,
         };
         let depth = target.inbox_tx.len();
         let cap = target.inbox_tx.capacity().unwrap_or(usize::MAX);
@@ -2120,6 +2125,7 @@ impl PipelineEngine {
                 depth,
             },
             payload_fmt: crate::wire::PayloadFmt::Binary,
+            schema_id: 0,
         };
         let inbox_depth = target.inbox_tx.len();
         let cap = target.inbox_tx.capacity().unwrap_or(usize::MAX);

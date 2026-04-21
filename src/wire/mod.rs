@@ -12,8 +12,10 @@
 #![allow(missing_docs)]
 
 pub mod binary;
+pub mod typed;
 
 pub use binary::{decode_event_on_shard, reserialize_value_to_json_bytes, PayloadFmt};
+pub use typed::decode_typed_row_push_batch;
 
 /// D-B1: capability bit advertised via `OP_NEGOTIATE_WIRE_FORMAT`.
 /// Bit 0 (= `1u32`) means the server accepts raw-binary OP_PUSH bodies and
@@ -21,6 +23,18 @@ pub use binary::{decode_event_on_shard, reserialize_value_to_json_bytes, Payload
 /// `serde_json::to_vec` re-serialize round-trip. Wave 1 lands the behavior;
 /// Wave 2 wires the opcode that advertises this bit.
 pub const WIRE_BINARY_PASSTHROUGH: u32 = 1u32 << 0;
+
+/// Phase 59.6 D-B1 (TPC-PERF-11): client advertises readiness to send
+/// `OP_PUSH_TYPED_BATCH` frames with schema_id prefixes. Server that
+/// advertises this bit has Wave 2+ typed-row decoder available and can
+/// decode schema-registered streams into `Row` without `serde_json::Value`.
+/// Bit 1 (= `2u32`).
+pub const WIRE_TYPED_PIPELINE: u32 = 1u32 << 1;
+
+/// Phase 59.6 Wave 2: bitmask of all capability bits this server
+/// advertises via `OP_NEGOTIATE_WIRE_FORMAT`. Wave 2 adds
+/// `WIRE_TYPED_PIPELINE`. Future waves `|=` additional bits here.
+pub const SERVER_SUPPORTED_BITS: u32 = WIRE_BINARY_PASSTHROUGH | WIRE_TYPED_PIPELINE;
 
 /// D-E1 default payload-size DoS cap (1 MiB).
 const DEFAULT_MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
@@ -61,6 +75,17 @@ mod mod_tests {
     #[test]
     fn wire_binary_passthrough_is_bit_zero() {
         assert_eq!(WIRE_BINARY_PASSTHROUGH, 1u32);
+    }
+
+    #[test]
+    fn wire_typed_pipeline_is_bit_one() {
+        assert_eq!(WIRE_TYPED_PIPELINE, 2u32);
+    }
+
+    #[test]
+    fn server_supported_bits_includes_typed_pipeline() {
+        assert_ne!(SERVER_SUPPORTED_BITS & WIRE_TYPED_PIPELINE, 0);
+        assert_ne!(SERVER_SUPPORTED_BITS & WIRE_BINARY_PASSTHROUGH, 0);
     }
 
     #[test]
