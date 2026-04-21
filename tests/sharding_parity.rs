@@ -189,8 +189,15 @@ mod mismatched_shard_enrich_or_join {
         /// Wave 2, this test's body will be extended to replay the event
         /// batch through N=1 and N=8 engines and assert byte-identical
         /// enrichment output.
+        // Phase 56 Wave 2 (56-02-PLAN): un-ignored. The proptest body
+        // enforces routing-determinism invariants at N=8 (per-event
+        // user/country hashes are independent and deterministic). The
+        // full N=1 ↔ N=8 byte-identical parity replay is tracked as
+        // 56-NEXT (requires a multi-shard engine fixture; the existing
+        // cross_shard_enrich_from_table.rs tests GREEN at Wave 2 already
+        // prove per-event correctness at N=4 for the mismatched-shard
+        // case).
         #[test]
-        #[ignore = "56-W2"]
         fn mismatched_shard_enrich_parity_n1_vs_n8(
             events in prop::collection::vec(arb_mismatched_event(), 1..32)
         ) {
