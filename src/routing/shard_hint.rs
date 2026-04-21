@@ -12,6 +12,99 @@
 
 use std::hash::{Hash, Hasher};
 
+/// Random shard hint (Phase 59.5-W3.5) — per-thread ChaCha12 RNG.
+/// Used when a stream has neither a key_field nor a declared shard_key:
+/// events distribute pseudorandomly across shards so no single shard
+/// becomes a CPU hotspot. Aggregation operators downstream reshuffle via
+/// cross-shard ShardOps (Phase 55/56/57) so correctness holds.
+pub fn random_shard_hint() -> u32 {
+    use rand::Rng;
+    rand::thread_rng().gen::<u32>()
+}
+
+/// Hash a single event field by name. Returns `None` if the field is
+/// absent, non-string, or empty.
+fn hash_event_field(event: &serde_json::Value, field: &str) -> Option<u32> {
+    let serde_json::Value::String(s) = event.get(field)? else {
+        return None;
+    };
+    if s.is_empty() {
+        return None;
+    }
+    let mut hasher = ahash::AHasher::default();
+    s.hash(&mut hasher);
+    Some(hasher.finish() as u32)
+}
+
+/// Hash a tuple of event fields in declared order. Short-circuits to
+/// `None` if any declared field is missing or non-string.
+fn hash_event_tuple(event: &serde_json::Value, fields: &[&str]) -> Option<u32> {
+    if fields.is_empty() {
+        return None;
+    }
+    let mut hasher = ahash::AHasher::default();
+    for f in fields {
+        let serde_json::Value::String(s) = event.get(*f)? else {
+            return None;
+        };
+        if s.is_empty() {
+            return None;
+        }
+        s.hash(&mut hasher);
+    }
+    Some(hasher.finish() as u32)
+}
+
+/// Compute a shard hint from a REGISTER payload's declared `shard_key`
+/// JSON value. Accepts a JSON string (scalar) or array of strings (tuple).
+/// Returns `None` if the shape is wrong or a declared field is absent.
+///
+/// Mirrors the Python SDK emission contract in `_serialize.py`:
+///   d["shard_key"] = "user_id"           → Single
+///   d["shard_key"] = ["region", "uid"]   → Tuple
+pub fn shard_hint_from_shard_key_json(
+    event: &serde_json::Value,
+    shard_key: &serde_json::Value,
+) -> Option<u32> {
+    match shard_key {
+        serde_json::Value::String(field) => hash_event_field(event, field),
+        serde_json::Value::Array(arr) => {
+            let fields: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+            if fields.len() != arr.len() {
+                return None;
+            }
+            hash_event_tuple(event, &fields)
+        }
+        _ => None,
+    }
+}
+
+/// Phase 59.5 W3.5 — full ingest routing with the three-tier priority:
+///   1. `key_field` (stream's primary key) — existing Phase 48+ behavior.
+///   2. `shard_key` from raw REGISTER JSON (scalar or tuple) — re-adds
+///      the shard_key-aware routing that Phase 56-NEXT #7 first proposed.
+///   3. Random hint — keyless, shard-keyless streams distribute evenly.
+///      Aggregations reshuffle downstream via cross-shard state ops.
+///
+/// Caller passes `raw_shard_key` = `raw_register_json["shard_key"]`
+/// (or `None` if absent). This avoids a circular dep between routing
+/// and engine::pipeline.
+pub fn compute_ingest_shard_hint(
+    event: &serde_json::Value,
+    key_field: Option<&str>,
+    raw_shard_key: Option<&serde_json::Value>,
+) -> u32 {
+    if key_field.is_some() {
+        return shard_hint_for_event(event, key_field);
+    }
+    if let Some(sk) = raw_shard_key {
+        if let Some(hint) = shard_hint_from_shard_key_json(event, sk) {
+            return hint;
+        }
+    }
+    random_shard_hint()
+}
+
 /// Compute the shard hint for a single event.
 ///
 /// Returns the lower 32 bits of an ahash of the primary-key string value.

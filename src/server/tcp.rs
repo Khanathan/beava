@@ -2158,7 +2158,20 @@ pub fn handle_push_core_ex(
         let key_field_ref = engine
             .get_stream(stream_name)
             .and_then(|s| s.key_field.as_deref());
-        crate::routing::shard_hint_for_event(payload, key_field_ref)
+        // Phase 59.5 W3.5 — three-tier routing: key_field → shard_key
+        // (from raw_register_jsons) → random. Without this, streams
+        // without key_field (all @bv.stream sources, since the SDK
+        // emits key_field=None) routed every event to shard 0,
+        // leaving 9/10 shards idle and capping throughput at a single
+        // shard's drain rate (~80K EPS inmem, ~20K EPS fjall).
+        let raw_shard_key = if key_field_ref.is_some() {
+            None
+        } else {
+            engine
+                .get_raw_register_json(stream_name)
+                .and_then(|j| j.get("shard_key"))
+        };
+        crate::routing::compute_ingest_shard_hint(payload, key_field_ref, raw_shard_key)
     };
     // Guard against div-by-zero when no shards are registered. Matches
     // `http_ingest::compute_shard_idx` behavior: treat missing shard as
@@ -2548,8 +2561,20 @@ pub fn handle_push_batch(
                     None => (Vec::new(), None),
                 };
             let key_field_ref = key_field_opt.as_deref();
-            let shard_hint: u32 =
-                crate::routing::shard_hint_for_event(&ev.payload, key_field_ref);
+            // Phase 59.5 W3.5 — mirror the sync path: consult shard_key
+            // from raw_register_jsons when key_field is None, else random.
+            let raw_shard_key = if key_field_ref.is_some() {
+                None
+            } else {
+                engine
+                    .get_raw_register_json(stream_name)
+                    .and_then(|j| j.get("shard_key"))
+            };
+            let shard_hint: u32 = crate::routing::compute_ingest_shard_hint(
+                &ev.payload,
+                key_field_ref,
+                raw_shard_key,
+            );
             let idx: usize = if shard_count == 0 {
                 0
             } else {

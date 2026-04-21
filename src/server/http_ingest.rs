@@ -44,7 +44,15 @@ fn compute_shard_idx(
         let key_field_ref = engine
             .get_stream(stream_name)
             .and_then(|s| s.key_field.as_deref());
-        crate::routing::shard_hint_for_event(payload, key_field_ref)
+        // Phase 59.5 W3.5 — three-tier routing (see tcp.rs).
+        let raw_shard_key = if key_field_ref.is_some() {
+            None
+        } else {
+            engine
+                .get_raw_register_json(stream_name)
+                .and_then(|j| j.get("shard_key"))
+        };
+        crate::routing::compute_ingest_shard_hint(payload, key_field_ref, raw_shard_key)
     };
     let idx = if shard_count == 0 {
         0
