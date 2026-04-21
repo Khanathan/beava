@@ -838,9 +838,8 @@ pub fn emit_shard_key_missing_warning(
     let id = format!("shard_key_missing:{}", stream_name);
     let detail = format!(
         "ShardKeyMissingWarning: stream \"{}\" has no shard_key; \
-         events distribute randomly across shards (aggregations reshuffle via \
-         cross-shard state ops). For better locality and lower cross-shard \
-         traffic, declare @bv.stream(shard_key=\"<fieldname>\").",
+         all events routing to shard 0. \
+         Declare @bv.stream(shard_key=\"<fieldname>\") to distribute.",
         stream_name
     );
     let sig = Signal::new(

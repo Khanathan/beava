@@ -2158,19 +2158,7 @@ pub fn handle_push_core_ex(
         let key_field_ref = engine
             .get_stream(stream_name)
             .and_then(|s| s.key_field.as_deref());
-        // 56-NEXT #7: consult declared shard_key on the REGISTER payload when
-        // the stream has no key_field; round-robin when neither is declared
-        // (aggregations reshuffle via cross-shard ShardOps so correctness
-        // holds). Reading from raw_register_jsons avoids coupling to any
-        // Phase 60 shard_key propagation work in `register.rs` / `pipeline.rs`.
-        let raw_shard_key = if key_field_ref.is_some() {
-            None
-        } else {
-            engine
-                .get_raw_register_json(stream_name)
-                .and_then(|j| j.get("shard_key"))
-        };
-        crate::routing::compute_ingest_shard_hint(payload, key_field_ref, raw_shard_key)
+        crate::routing::shard_hint_for_event(payload, key_field_ref)
     };
     // Guard against div-by-zero when no shards are registered. Matches
     // `http_ingest::compute_shard_idx` behavior: treat missing shard as
@@ -2560,20 +2548,8 @@ pub fn handle_push_batch(
                     None => (Vec::new(), None),
                 };
             let key_field_ref = key_field_opt.as_deref();
-            // 56-NEXT #7: same priority ladder as the sync path
-            // (key_field → raw_register_json["shard_key"] → round-robin).
-            let raw_shard_key = if key_field_ref.is_some() {
-                None
-            } else {
-                engine
-                    .get_raw_register_json(stream_name)
-                    .and_then(|j| j.get("shard_key"))
-            };
-            let shard_hint: u32 = crate::routing::compute_ingest_shard_hint(
-                &ev.payload,
-                key_field_ref,
-                raw_shard_key,
-            );
+            let shard_hint: u32 =
+                crate::routing::shard_hint_for_event(&ev.payload, key_field_ref);
             let idx: usize = if shard_count == 0 {
                 0
             } else {
@@ -3080,21 +3056,12 @@ async fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8
                 }
                 engine.store_raw_register_json(&def_name, raw_json);
                 // Phase 50-06 (D-11/D-12): warn if stream has no shard_key at N>1.
-                // 56-NEXT #7: check the raw REGISTER JSON rather than
-                // `StreamDefinition.shard_key` — the latter is None in
-                // paths where Phase 60 shard_key propagation hasn't fired,
-                // so this was firing the warning for streams that DID
-                // declare shard_key. Raw JSON reflects what the SDK emitted.
                 {
-                    let has_shard_key = engine
-                        .get_raw_register_json(&def_name)
-                        .and_then(|j| j.get("shard_key"))
-                        .is_some();
-                    let has_key_field = engine
+                    let no_shard_key = engine
                         .get_stream(&def_name)
-                        .and_then(|s| s.key_field.as_deref())
-                        .is_some();
-                    if !has_shard_key && !has_key_field {
+                        .map(|s| s.shard_key.is_none())
+                        .unwrap_or(false);
+                    if no_shard_key {
                         let shard_count = state.shard_handles.read().len();
                         crate::server::signals::emit_shard_key_missing_warning(
                             &state.signals,
@@ -3135,21 +3102,12 @@ async fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8
                 }
                 engine.store_raw_register_json(&def_name, raw_json);
                 // Phase 50-06 (D-11/D-12): warn if stream has no shard_key at N>1.
-                // 56-NEXT #7: check the raw REGISTER JSON rather than
-                // `StreamDefinition.shard_key` — the latter is None in
-                // paths where Phase 60 shard_key propagation hasn't fired,
-                // so this was firing the warning for streams that DID
-                // declare shard_key. Raw JSON reflects what the SDK emitted.
                 {
-                    let has_shard_key = engine
-                        .get_raw_register_json(&def_name)
-                        .and_then(|j| j.get("shard_key"))
-                        .is_some();
-                    let has_key_field = engine
+                    let no_shard_key = engine
                         .get_stream(&def_name)
-                        .and_then(|s| s.key_field.as_deref())
-                        .is_some();
-                    if !has_shard_key && !has_key_field {
+                        .map(|s| s.shard_key.is_none())
+                        .unwrap_or(false);
+                    if no_shard_key {
                         let shard_count = state.shard_handles.read().len();
                         crate::server::signals::emit_shard_key_missing_warning(
                             &state.signals,
