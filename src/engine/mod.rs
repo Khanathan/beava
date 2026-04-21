@@ -15,6 +15,11 @@ pub mod operators_typed;
 /// (CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp, FirstOp) implementing
 /// the `TypedAggOp` trait. See `src/engine/operators_typed_aggs.rs`.
 pub mod operators_typed_aggs;
+/// Phase 59.7 Wave 1 (TPC-PERF-11 extension / TPC-CORR-07 extension): typed
+/// windowed aggregation operator impls + monomorphized `TypedRingBuffer{I64,
+/// F64, Avg}` + `TypedRingBufferEnum` variant dispatch. See
+/// `src/engine/operators_typed_aggs_windowed.rs`.
+pub mod operators_typed_aggs_windowed;
 /// Phase 59.6 Wave 6 (TPC-PERF-11): typed advanced aggregation operator
 /// impls — DistinctCountOpTyped (HLL), PercentileOpTyped (UDDSketch),
 /// TopKOpTyped (CMS+heap), StddevOpTyped, VarianceOpTyped. Sketch ops
@@ -50,6 +55,13 @@ pub use operators_typed_aggs::{
     AvgOpTypedF64, CountOpTyped, FirstOpTypedInlineStr, LastOpTypedInlineStr,
     MaxOpTypedF64, MaxOpTypedI64, MinOpTypedF64, MinOpTypedI64, SumOpTypedF64,
     SumOpTypedI64,
+};
+
+// Phase 59.7 Wave 1 (TPC-PERF-11 extension) — typed windowed agg re-exports.
+pub use operators_typed_aggs_windowed::{
+    AvgOpTypedWindowedF64, CountOpTypedWindowed, SumOpTypedWindowedF64,
+    SumOpTypedWindowedI64, TypedRingBufferAvg, TypedRingBufferEnum, TypedRingBufferF64,
+    TypedRingBufferI64, TypedRingBufferVariantHint,
 };
 
 // Phase 59.6 Wave 6 (TPC-PERF-11) — typed advanced agg re-exports.
