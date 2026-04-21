@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
-status: Phase 59.7 Wave 0 RED scaffolding landed (14 RED parity tests + 3 pinned bench cells + rename + env flag + 2 counters). Regression gate GREEN — all 5 Phase-59.6 parity tests (12/12) pass on release profile.
-stopped_at: Completed 59.7-01-PLAN.md (W1 windowed typed aggs — 4 parity tests GREEN)
-last_updated: "2026-04-21T22:56:57.300Z"
+status: Phase 59.7 Wave 2 complete — 10/10 windowed parity tests GREEN + V11 snapshot round-trip (50-case proptest + byte-format golden). Min×2/Max×2/Last/First windowed typed ops shipped. TypedStateSnapshotV11.typed_ringbuffers transparently extends V11 via #[serde(default)].
+stopped_at: Completed 59.7-02-PLAN.md (W2 full windowed typed agg set + V11 snapshot extension)
+last_updated: "2026-04-21T23:40:00.000Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 20
   completed_phases: 12
   total_plans: 93
-  completed_plans: 82
-  percent: 88
+  completed_plans: 84
+  percent: 90
 ---
 
 # Project State
@@ -25,10 +25,10 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 ## Current Position
 
-Phase: 59.7 (typed-windowed-cascade) — **W0 COMPLETE** 2026-04-21
-Next: Phase 59.7 Plan 01 (W1 windowed typed aggs — operators_typed_aggs_windowed.rs + TypedRingBuffer)
-**Status:** Phase 59.7 Wave 0 RED scaffolding landed (14 RED parity tests + 3 pinned bench cells + rename + env flag + 2 counters). Regression gate GREEN — all 5 Phase-59.6 parity tests (12/12) pass on release profile.
-**Progress:** [█████████░] 88%
+Phase: 59.7 (typed-windowed-cascade) — **W2 COMPLETE** 2026-04-21
+Next: Phase 59.7 Plan 03 (W3 ShardOp::RunTypedAggCascadeStep + cross-shard dispatch — flips 4 cross-shard RED tests GREEN)
+**Status:** Phase 59.7 Wave 2 complete — 10/10 windowed parity tests GREEN + V11 snapshot round-trip (50-case proptest + byte-format golden). Min×2/Max×2/Last/First windowed typed ops shipped. TypedStateSnapshotV11.typed_ringbuffers transparently extends V11 via #[serde(default)].
+**Progress:** [█████████░] 90%
 
 **Last activity:** 2026-04-21
 
@@ -37,8 +37,8 @@ Next: Phase 59.7 Plan 01 (W1 windowed typed aggs — operators_typed_aggs_window
 | Plan | Status | Commits |
 |------|--------|---------|
 | 59.7-00 (W0 RED scaffolding + rename + env flag + counters) | **Complete 2026-04-21** | 50db7d7, bc2d138 |
-| 59.7-01 (W1 windowed typed aggs + TypedRingBuffer) | Pending | — |
-| 59.7-02 (W2 entity_ringbuffers_typed + snapshot v11) | Pending | — |
+| 59.7-01 (W1 windowed typed aggs + TypedRingBuffer) | **Complete 2026-04-21** | 840f5c8, aa1d704, 6de6309 |
+| 59.7-02 (W2 Min/Max/Last/First windowed + V11 snapshot) | **Complete 2026-04-21** | eb0d84b, 2b998b6 |
 | 59.7-03 (W3 ShardOp::RunTypedAggCascadeStep + cross-shard dispatch) | Pending | — |
 | 59.7-04 (W4 run_typed_direct_cascade walker + env consumption) | Pending | — |
 | 59.7-05 (W5 perf gate + close) | Pending | — |
