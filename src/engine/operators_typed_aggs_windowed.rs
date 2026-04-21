@@ -648,13 +648,47 @@ impl TypedAggOp for CountOpTypedWindowed {
         _es: &RegisteredSchema,
         _now: SystemTime,
     ) {
-        // State lives on the shard side-map; see `apply` + Wave-4 walker.
+        // State lives on the shard side-map; see `update_windowed`.
     }
     fn read_feature(&self, _state: &Row, _ss: &RegisteredSchema) -> FeatureValue {
         FeatureValue::Missing
     }
     fn name(&self) -> &str {
         &self.name
+    }
+    #[inline]
+    fn update_windowed(
+        &self,
+        shard: &mut crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        _event: &Row,
+        _event_schema: &RegisteredSchema,
+        now: SystemTime,
+    ) {
+        let ring = shard.get_or_init_typed_ringbuffer(
+            stream,
+            entity_key,
+            self.op_idx,
+            self.variant_hint(),
+            self.window,
+            self.bucket,
+        );
+        self.apply(ring.as_i64_mut(), now);
+    }
+    fn read_feature_windowed(
+        &self,
+        shard: &crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        _state: &Row,
+        _state_schema: &RegisteredSchema,
+    ) -> FeatureValue {
+        let key = (stream.to_string(), entity_key.to_string(), self.op_idx);
+        match shard.entity_ringbuffers_typed.get(&key) {
+            Some(r) => self.read(r.as_i64()),
+            None => FeatureValue::Missing,
+        }
     }
 }
 
@@ -706,6 +740,40 @@ impl TypedAggOp for SumOpTypedWindowedI64 {
     fn name(&self) -> &str {
         &self.name
     }
+    #[inline]
+    fn update_windowed(
+        &self,
+        shard: &mut crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        event: &Row,
+        _event_schema: &RegisteredSchema,
+        now: SystemTime,
+    ) {
+        let ring = shard.get_or_init_typed_ringbuffer(
+            stream,
+            entity_key,
+            self.op_idx,
+            self.variant_hint(),
+            self.window,
+            self.bucket,
+        );
+        self.apply(ring.as_i64_mut(), event, now);
+    }
+    fn read_feature_windowed(
+        &self,
+        shard: &crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        _state: &Row,
+        _state_schema: &RegisteredSchema,
+    ) -> FeatureValue {
+        let key = (stream.to_string(), entity_key.to_string(), self.op_idx);
+        match shard.entity_ringbuffers_typed.get(&key) {
+            Some(r) => self.read(r.as_i64()),
+            None => FeatureValue::Int(0),
+        }
+    }
 }
 
 /// Phase 59.7 W1 — windowed twin of [`SumOpTypedF64`].
@@ -749,6 +817,40 @@ impl TypedAggOp for SumOpTypedWindowedF64 {
     }
     fn name(&self) -> &str {
         &self.name
+    }
+    #[inline]
+    fn update_windowed(
+        &self,
+        shard: &mut crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        event: &Row,
+        _event_schema: &RegisteredSchema,
+        now: SystemTime,
+    ) {
+        let ring = shard.get_or_init_typed_ringbuffer(
+            stream,
+            entity_key,
+            self.op_idx,
+            self.variant_hint(),
+            self.window,
+            self.bucket,
+        );
+        self.apply(ring.as_f64_mut(), event, now);
+    }
+    fn read_feature_windowed(
+        &self,
+        shard: &crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        _state: &Row,
+        _state_schema: &RegisteredSchema,
+    ) -> FeatureValue {
+        let key = (stream.to_string(), entity_key.to_string(), self.op_idx);
+        match shard.entity_ringbuffers_typed.get(&key) {
+            Some(r) => self.read(r.as_f64()),
+            None => FeatureValue::Float(0.0),
+        }
     }
 }
 
@@ -806,6 +908,40 @@ impl TypedAggOp for AvgOpTypedWindowedF64 {
     }
     fn name(&self) -> &str {
         &self.name
+    }
+    #[inline]
+    fn update_windowed(
+        &self,
+        shard: &mut crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        event: &Row,
+        _event_schema: &RegisteredSchema,
+        now: SystemTime,
+    ) {
+        let ring = shard.get_or_init_typed_ringbuffer(
+            stream,
+            entity_key,
+            self.op_idx,
+            self.variant_hint(),
+            self.window,
+            self.bucket,
+        );
+        self.apply(ring.as_avg_mut(), event, now);
+    }
+    fn read_feature_windowed(
+        &self,
+        shard: &crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        _state: &Row,
+        _state_schema: &RegisteredSchema,
+    ) -> FeatureValue {
+        let key = (stream.to_string(), entity_key.to_string(), self.op_idx);
+        match shard.entity_ringbuffers_typed.get(&key) {
+            Some(r) => self.read(r.as_avg()),
+            None => FeatureValue::Missing,
+        }
     }
 }
 

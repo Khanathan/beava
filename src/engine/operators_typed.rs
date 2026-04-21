@@ -117,6 +117,42 @@ pub trait TypedAggOp: Send + Sync + std::fmt::Debug {
     ) -> crate::types::FeatureValue {
         self.read_feature(state, state_schema)
     }
+
+    /// Phase 59.7 Wave 1 (TPC-PERF-11 extension) — windowed typed aggs
+    /// override this to drive their per-entity ring buffer on
+    /// `Shard::entity_ringbuffers_typed`. Simple aggs (unwindowed
+    /// Count/Sum/Avg/Min/Max/Last/First) use the default no-op — their
+    /// state lives fully in the packed `Row`.
+    ///
+    /// Default is a no-op so existing simple-agg impls need no change; the
+    /// Wave-4 cascade walker (59.7-04) calls `update_typed` AND
+    /// `update_windowed` for every op in the agg step.
+    #[allow(unused_variables)]
+    fn update_windowed(
+        &self,
+        shard: &mut crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        event: &Row,
+        event_schema: &RegisteredSchema,
+        now: std::time::SystemTime,
+    ) {
+    }
+
+    /// Phase 59.7 Wave 1 — windowed typed aggs override this to project
+    /// the ring-buffer contents to a `FeatureValue`. Default delegates
+    /// to [`Self::read_feature`] so simple-agg impls continue to work.
+    #[allow(unused_variables)]
+    fn read_feature_windowed(
+        &self,
+        shard: &crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        state: &Row,
+        state_schema: &RegisteredSchema,
+    ) -> crate::types::FeatureValue {
+        self.read_feature(state, state_schema)
+    }
 }
 
 /// Phase 59.6 Wave 6 (TPC-PERF-11, D-C1 type-erasure) — per-entity

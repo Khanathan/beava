@@ -98,6 +98,19 @@ pub struct Shard {
     /// into this map.
     pub entity_sideband_typed:
         ahash::AHashMap<(String, String), crate::engine::operators_typed::SideBand>,
+    /// Phase 59.7 Wave 1 (TPC-PERF-11 extension / TPC-CORR-07 extension):
+    /// per-entity packed ring buffers for windowed typed aggs (Count, Sum,
+    /// Avg, and in W2 Min/Max/Last/First). Keyed by `(stream_name,
+    /// entity_key, op_index)`; the `op_index` disambiguates multiple
+    /// windowed ops on the same entity (e.g. `count_1h` + `count_24h`).
+    /// Parallel keyspace with `entity_state_typed` + `entity_sideband_typed`;
+    /// populated lazily via [`Shard::get_or_init_typed_ringbuffer`] on first
+    /// event for an entity. In-memory only in Wave 1 — V11 snapshot
+    /// round-trip lands in Wave 2 (59.7-02).
+    pub entity_ringbuffers_typed: ahash::AHashMap<
+        (String, String, u16),
+        crate::engine::operators_typed_aggs_windowed::TypedRingBufferEnum,
+    >,
 }
 
 /// Per-shard state container (dev-only `state-inmem` build). Single writer.
@@ -124,6 +137,13 @@ pub struct Shard {
     /// variant for the full docstring.
     pub entity_sideband_typed:
         AHashMap<(String, String), crate::engine::operators_typed::SideBand>,
+    /// Phase 59.7 Wave 1 (TPC-PERF-11 extension): per-entity packed ring
+    /// buffers for windowed typed aggs. See the fjall-build variant for
+    /// the full docstring.
+    pub entity_ringbuffers_typed: AHashMap<
+        (String, String, u16),
+        crate::engine::operators_typed_aggs_windowed::TypedRingBufferEnum,
+    >,
 }
 
 impl Shard {
@@ -142,6 +162,7 @@ impl Shard {
             write_bytes_since_sample: 0,
             entity_state_typed: ahash::AHashMap::new(),
             entity_sideband_typed: ahash::AHashMap::new(),
+            entity_ringbuffers_typed: ahash::AHashMap::new(),
         }
     }
 
@@ -163,6 +184,7 @@ impl Shard {
             watermark: WatermarkState::new(),
             entity_state_typed: AHashMap::new(),
             entity_sideband_typed: AHashMap::new(),
+            entity_ringbuffers_typed: AHashMap::new(),
         }
     }
 
@@ -176,6 +198,7 @@ impl Shard {
             watermark: WatermarkState::new(),
             entity_state_typed: AHashMap::new(),
             entity_sideband_typed: AHashMap::new(),
+            entity_ringbuffers_typed: AHashMap::new(),
         }
     }
 
@@ -213,6 +236,36 @@ impl Shard {
         self.entity_state_typed
             .get_mut(&key)
             .expect("inserted above")
+    }
+
+    /// Phase 59.7 Wave 1 (TPC-PERF-11 extension) — get-or-init the typed
+    /// windowed ring buffer for `(stream, entity_key, op_idx)`.
+    ///
+    /// First call for a key allocates a fresh ring via
+    /// [`crate::engine::operators_typed_aggs_windowed::TypedRingBufferVariantHint::construct`];
+    /// subsequent calls return the cached instance. Panics downstream if
+    /// the caller accesses a different variant than the one initially
+    /// constructed (the variant is a per-op contract, pinned at register
+    /// time).
+    ///
+    /// # Allocation profile
+    ///
+    /// One `Vec<i64|f64|(f64,i64)>` allocation per new (stream, entity,
+    /// op_idx) triple. Every event after is an `AHashMap::get_mut` +
+    /// in-place bucket update — no allocation in the hot path.
+    pub fn get_or_init_typed_ringbuffer(
+        &mut self,
+        stream: &str,
+        entity_key: &str,
+        op_idx: u16,
+        variant: crate::engine::operators_typed_aggs_windowed::TypedRingBufferVariantHint,
+        window: std::time::Duration,
+        bucket: std::time::Duration,
+    ) -> &mut crate::engine::operators_typed_aggs_windowed::TypedRingBufferEnum {
+        let key = (stream.to_string(), entity_key.to_string(), op_idx);
+        self.entity_ringbuffers_typed
+            .entry(key)
+            .or_insert_with(|| variant.construct(window, bucket))
     }
 }
 
