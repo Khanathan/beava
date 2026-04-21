@@ -56,6 +56,13 @@ pub mod state;
 #[allow(missing_docs)]
 pub mod types;
 
+/// Phase 59: wire-format helpers for binary-PUSH passthrough (TPC-PERF-09).
+/// Owns `PayloadFmt`, `decode_event_on_shard`, `BEAVA_MAX_PAYLOAD_BYTES`,
+/// and the `WIRE_BINARY_PASSTHROUGH` capability bit used by
+/// `OP_NEGOTIATE_WIRE_FORMAT` (Wave 2).
+#[allow(missing_docs)]
+pub mod wire;
+
 /// Prometheus metrics recorder wiring (Phase 50-01, D-06 parallel period).
 /// Installs global metrics-exporter-prometheus recorder alongside hand-rolled /metrics.
 #[allow(missing_docs)]
