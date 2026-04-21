@@ -85,7 +85,7 @@ fn build_two_shard_state(tag: &str) -> SharedState {
         .install_subscribers(Arc::clone(&registry));
 
     *state.shard_handles.write() =
-        beava::shard::thread::spawn_shard_threads(2, 65_536, state.clone());
+        beava::shard::thread::spawn_shard_threads(2, 65_536, state.clone(), None);
     beava::server::shard_probe::init_route_counters(2);
 
     beava::metrics::install_prometheus_recorder();

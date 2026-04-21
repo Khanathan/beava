@@ -64,7 +64,7 @@ fn build_single_shard_state(tag: &str) -> SharedState {
         })
         .unwrap();
 
-    let handles = beava::shard::thread::spawn_shard_threads(1, 65_536, state.clone());
+    let handles = beava::shard::thread::spawn_shard_threads(1, 65_536, state.clone(), None);
     *state.shard_handles.write() = handles;
     beava::server::shard_probe::init_route_counters(1);
 

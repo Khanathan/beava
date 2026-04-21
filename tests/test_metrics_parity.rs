@@ -261,7 +261,7 @@ async fn n2_both_shards_see_events() {
 
     let shard_count = N_SHARDS as usize;
     let inbox_size = 65_536;
-    let handles = beava::shard::thread::spawn_shard_threads(shard_count, inbox_size, state.clone());
+    let handles = beava::shard::thread::spawn_shard_threads(shard_count, inbox_size, state.clone(), None);
     *state.shard_handles.write() = handles;
     beava::server::shard_probe::init_route_counters(shard_count);
 

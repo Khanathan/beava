@@ -623,7 +623,14 @@ pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::i
     #[cfg(not(feature = "state-inmem"))]
     let shard_count = state.shard_partitions.len();
     let inbox_size = crate::shard::thread::inbox_size_from_env();
-    let shard_handles = crate::shard::thread::spawn_shard_threads(shard_count, inbox_size, state.clone());
+    // Phase 58-01 Task 1: accept_cfg threaded through as `None` here.
+    // Task 2 switches the Linux branch to `Some(PerShardAcceptCfg { .. })`.
+    let shard_handles = crate::shard::thread::spawn_shard_threads(
+        shard_count,
+        inbox_size,
+        state.clone(),
+        None,
+    );
     // D-01: shard ready-barrier passed. Safe to bind listener.
     // Store handles in shared state so push paths can route via try_send (D-08).
     *state.shard_handles.write() = shard_handles;

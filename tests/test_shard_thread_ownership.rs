@@ -78,7 +78,7 @@ async fn make_n_shard_server(n_shards: u16) -> (std::net::SocketAddr, SharedStat
     let shard_count = n_shards as usize;
     let inbox_size = 65_536;
     let handles =
-        beava::shard::thread::spawn_shard_threads(shard_count, inbox_size, state.clone());
+        beava::shard::thread::spawn_shard_threads(shard_count, inbox_size, state.clone(), None);
     *state.shard_handles.write() = handles;
     beava::server::shard_probe::init_route_counters(shard_count);
 

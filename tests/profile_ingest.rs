@@ -116,7 +116,7 @@ fn make_state_with_shards(n_shards: u16) -> SharedState {
     // Phase 54-05: spawn_shard_threads populates state.shard_handles.
     // Without this, handle_push_batch drops every event.
     let handles =
-        beava::shard::thread::spawn_shard_threads(n_shards.into(), 65_536, state.clone());
+        beava::shard::thread::spawn_shard_threads(n_shards.into(), 65_536, state.clone(), None);
     *state.shard_handles.write() = handles;
     state
 }

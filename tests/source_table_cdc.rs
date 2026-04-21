@@ -61,6 +61,7 @@ fn build_state(table_name: &str, tmp: &tempfile::TempDir) -> SharedState {
         1,
         beava::shard::thread::DEFAULT_INBOX_SIZE,
         state.clone(),
+        None,
     );
     *state.shard_handles.write() = shard_handles;
     state

@@ -465,6 +465,46 @@ pub const DEFAULT_INBOX_SIZE: usize = 65_536;
 /// case reply — bounded memory. Hardcoded (no env var) for Wave 1.
 pub const MAX_ENRICH_BATCH_KEYS: usize = 4096;
 
+/// Phase 58-01 D-A4: per-shard accept configuration.
+///
+/// When `Some`, the shard's `current_thread` tokio runtime hosts an accept loop
+/// bound to its own SO_REUSEPORT socket (Linux only — macOS branch in Wave 2
+/// reads this same struct to size dedicated accept threads).
+///
+/// `max_conns_per_shard` caps in-flight connections per shard. Default 256 via
+/// `BEAVA_MAX_CONNS_PER_SHARD`. Accept side back-pressures via kernel
+/// `listen(1024)` backlog when FuturesUnordered saturates.
+#[derive(Clone, Debug)]
+pub struct PerShardAcceptCfg {
+    /// Address on which every shard listens via SO_REUSEPORT.
+    pub accept_addr: std::net::SocketAddr,
+    /// Cap on in-flight connections per shard (D-A4).
+    pub max_conns_per_shard: usize,
+}
+
+/// Phase 58-01 D-A4: read `BEAVA_MAX_CONNS_PER_SHARD` from env, clamp to
+/// `[1, 65536]`, default 256. Invalid values (non-numeric, out-of-range) emit
+/// a warn-once stderr and fall back to the default — matches the
+/// `inbox_size_from_env` pattern.
+pub fn max_conns_per_shard_from_env() -> usize {
+    const DEFAULT: usize = 256;
+    const MIN: usize = 1;
+    const MAX: usize = 65_536;
+    match std::env::var("BEAVA_MAX_CONNS_PER_SHARD") {
+        Ok(s) => match s.parse::<usize>() {
+            Ok(n) if (MIN..=MAX).contains(&n) => n,
+            _ => {
+                eprintln!(
+                    "BEAVA_MAX_CONNS_PER_SHARD={s:?} invalid or out of range \
+                     [{MIN},{MAX}] — defaulting to {DEFAULT}"
+                );
+                DEFAULT
+            }
+        },
+        Err(_) => DEFAULT,
+    }
+}
+
 /// Spawn all N shard threads. Returns only after every shard has signaled
 /// ready (the ready-barrier, D-01). Callers bind listener sockets after this
 /// returns.
@@ -472,12 +512,19 @@ pub const MAX_ENRICH_BATCH_KEYS: usize = 4096;
 /// Phase 50.5-01: `state` added so each shard thread owns a handle into
 /// `ConcurrentAppState` and can call `push_with_cascade_on_shard` directly.
 ///
+/// Phase 58-01: `accept_cfg` added. When `Some` on Linux, each shard binds its
+/// own SO_REUSEPORT `TcpListener` and drives a `FuturesUnordered` accept loop
+/// INLINE on its `current_thread` runtime — no `tokio::spawn` per connection.
+/// When `None`, the pre-Phase-58 behavior is preserved (callers bind their own
+/// listener and dispatch through the SPSC inbox).
+///
 /// # Panics
 /// Panics at the caller level only if shard_count == 0.
 pub fn spawn_shard_threads(
     shard_count: usize,
     inbox_size: usize,
     state: std::sync::Arc<crate::server::tcp::ConcurrentAppState>,
+    accept_cfg: Option<PerShardAcceptCfg>,
 ) -> Vec<ShardHandle> {
     assert!(shard_count > 0, "shard_count must be >= 1");
 
@@ -494,6 +541,7 @@ pub fn spawn_shard_threads(
         let is_down_clone = Arc::clone(&is_down);
         let wg_worker = wg.clone();
         let state_clone = std::sync::Arc::clone(&state);
+        let accept_cfg_clone = accept_cfg.clone();
 
         std::thread::Builder::new()
             .name(format!("beava-shard-{}", shard_index))
@@ -506,7 +554,7 @@ pub fn spawn_shard_threads(
 
                 // D-02: catch_unwind quarantine around the entire shard event loop.
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    shard_event_loop(shard_index, rx, state_clone);
+                    shard_event_loop(shard_index, rx, state_clone, accept_cfg_clone);
                 }));
 
                 if result.is_err() {
@@ -564,6 +612,7 @@ fn shard_event_loop(
     shard_index: usize,
     rx: Receiver<ShardEvent>,
     state: std::sync::Arc<crate::server::tcp::ConcurrentAppState>,
+    accept_cfg: Option<PerShardAcceptCfg>,
 ) {
     // Each shard runs a tokio current_thread runtime on its pinned OS thread.
     // This allows async code (e.g. oneshot response sends) without cross-thread
@@ -572,6 +621,11 @@ fn shard_event_loop(
         .enable_all()
         .build()
         .expect("failed to build per-shard tokio runtime");
+
+    // Phase 58-01 Task 2 wires the Linux per-shard accept loop here; Task 1
+    // only plumbs the config through. `_accept_cfg` silences unused-var until
+    // Task 2 lands.
+    let _accept_cfg: Option<PerShardAcceptCfg> = accept_cfg;
 
     // Each shard owns its own Shard struct — single writer, no lock.
     //
@@ -2211,7 +2265,7 @@ mod tests {
     #[test]
     fn spawn_two_shards_returns_two_handles() {
         let state = make_test_state(2);
-        let handles = spawn_shard_threads(2, 64, state);
+        let handles = spawn_shard_threads(2, 64, state, None);
         assert_eq!(handles.len(), 2);
         assert_eq!(handles[0].shard_index, 0);
         assert_eq!(handles[1].shard_index, 1);
@@ -2220,7 +2274,7 @@ mod tests {
     #[test]
     fn all_shards_start_not_down() {
         let state = make_test_state(3);
-        let handles = spawn_shard_threads(3, 64, state);
+        let handles = spawn_shard_threads(3, 64, state, None);
         for h in &handles {
             assert!(!h.is_down.load(Ordering::SeqCst));
         }
@@ -2231,9 +2285,51 @@ mod tests {
         // Barrier must not deadlock — verifies WaitGroup logic is correct.
         let start = std::time::Instant::now();
         let state = make_test_state(2);
-        let _handles = spawn_shard_threads(2, 16, state);
+        let _handles = spawn_shard_threads(2, 16, state, None);
         // Should complete in well under 5 s even on CI with slow cores.
         assert!(start.elapsed().as_secs() < 5, "ready-barrier timed out");
+    }
+
+    // Phase 58-01 Task 1: BEAVA_MAX_CONNS_PER_SHARD env parsing.
+    //
+    // NOTE: these tests mutate process-global env vars, so they run in a
+    // single `#[test]` fn with a mutex to avoid interleaving with other tests
+    // in this module that might read the same var concurrently. In the current
+    // module the env var is unique to this test, so a mutex is unnecessary —
+    // but we still group them into one serial body to avoid even the
+    // appearance of a test-order-dependent race.
+    #[test]
+    fn per_shard_accept_cfg_env_parses_and_clamps() {
+        // Default (unset) → 256.
+        std::env::remove_var("BEAVA_MAX_CONNS_PER_SHARD");
+        assert_eq!(super::max_conns_per_shard_from_env(), 256);
+
+        // Below MIN (0) → default.
+        std::env::set_var("BEAVA_MAX_CONNS_PER_SHARD", "0");
+        assert_eq!(super::max_conns_per_shard_from_env(), 256);
+
+        // Above MAX (65537) → default.
+        std::env::set_var("BEAVA_MAX_CONNS_PER_SHARD", "999999");
+        assert_eq!(super::max_conns_per_shard_from_env(), 256);
+
+        // Non-numeric → default.
+        std::env::set_var("BEAVA_MAX_CONNS_PER_SHARD", "nope");
+        assert_eq!(super::max_conns_per_shard_from_env(), 256);
+
+        // Valid in-range → returned verbatim.
+        std::env::set_var("BEAVA_MAX_CONNS_PER_SHARD", "128");
+        assert_eq!(super::max_conns_per_shard_from_env(), 128);
+
+        // Boundary MIN.
+        std::env::set_var("BEAVA_MAX_CONNS_PER_SHARD", "1");
+        assert_eq!(super::max_conns_per_shard_from_env(), 1);
+
+        // Boundary MAX.
+        std::env::set_var("BEAVA_MAX_CONNS_PER_SHARD", "65536");
+        assert_eq!(super::max_conns_per_shard_from_env(), 65_536);
+
+        // Cleanup — don't pollute other tests.
+        std::env::remove_var("BEAVA_MAX_CONNS_PER_SHARD");
     }
 
     #[test]

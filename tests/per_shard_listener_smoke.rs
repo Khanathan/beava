@@ -96,15 +96,42 @@ async fn n_shards_produces_n_listeners_linux() {
 
     let shard_count = N_SHARDS as usize;
     let inbox_size = beava::shard::thread::inbox_size_from_env();
-    let handles = beava::shard::thread::spawn_shard_threads(shard_count, inbox_size, state.clone());
+
+    // Phase 58-01 Task 2: bind an ephemeral port UP FRONT, then pass the
+    // address as `accept_cfg` to `spawn_shard_threads` so every shard binds
+    // its own SO_REUSEPORT socket on that port. This flips the Linux half of
+    // the RED smoke test GREEN — `count_listen_sockets_on_port` observes
+    // N LISTEN sockets bound to the same port.
+    //
+    // The `probe_listener` bound here is just to discover a free port; we
+    // drop it BEFORE spawning the shard threads because SO_REUSEPORT with a
+    // plain (non-REUSEPORT) prior bind on the same port behaves
+    // inconsistently across kernels. The shard threads then each create
+    // their own SO_REUSEPORT sockets on the same port.
+    let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = probe_listener.local_addr().unwrap().port();
+    drop(probe_listener);
+
+    let accept_addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let accept_cfg = Some(beava::shard::thread::PerShardAcceptCfg {
+        accept_addr,
+        max_conns_per_shard: 256,
+    });
+    let handles = beava::shard::thread::spawn_shard_threads(
+        shard_count,
+        inbox_size,
+        state.clone(),
+        accept_cfg,
+    );
     *state.shard_handles.write() = handles;
     beava::server::shard_probe::init_route_counters(shard_count);
     beava::metrics::install_prometheus_recorder();
     beava::shard::metrics::register_shard_metrics(shard_count);
 
-    // Ephemeral port — T-58-00-03 mitigation (never a fixed port collision).
+    // No top-level listener needed: the shard threads own their SO_REUSEPORT
+    // sockets. Bind a dummy listener for `run_tcp_server_with_listener` —
+    // on Linux the function drops it and becomes `pending`.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
 
     let srv_state = state.clone();
     tokio::spawn(async move {
@@ -149,7 +176,14 @@ async fn n_shards_produces_n_accept_threads_macos() {
 
     let shard_count = N_SHARDS as usize;
     let inbox_size = beava::shard::thread::inbox_size_from_env();
-    let handles = beava::shard::thread::spawn_shard_threads(shard_count, inbox_size, state.clone());
+    // Phase 58-01 Task 1: macOS test passes None (Wave 2 macOS path wires its
+    // own accept_cfg handling — plumbing-only at Task 1/Wave 1).
+    let handles = beava::shard::thread::spawn_shard_threads(
+        shard_count,
+        inbox_size,
+        state.clone(),
+        None,
+    );
     *state.shard_handles.write() = handles;
     beava::server::shard_probe::init_route_counters(shard_count);
     beava::metrics::install_prometheus_recorder();

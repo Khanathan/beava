@@ -92,7 +92,7 @@ async fn bind_reuseport_invoked_by_boot_path() {
     // Register shard metrics and spawn shard threads first (as run_tcp_server does).
     let shard_count = N_SHARDS as usize;
     let inbox_size = beava::shard::thread::inbox_size_from_env();
-    let handles = beava::shard::thread::spawn_shard_threads(shard_count, inbox_size, state.clone());
+    let handles = beava::shard::thread::spawn_shard_threads(shard_count, inbox_size, state.clone(), None);
     *state.shard_handles.write() = handles;
     beava::server::shard_probe::init_route_counters(shard_count);
     beava::metrics::install_prometheus_recorder();
