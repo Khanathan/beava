@@ -622,11 +622,6 @@ fn shard_event_loop(
         .build()
         .expect("failed to build per-shard tokio runtime");
 
-    // Phase 58-01 Task 2 wires the Linux per-shard accept loop here; Task 1
-    // only plumbs the config through. `_accept_cfg` silences unused-var until
-    // Task 2 lands.
-    let _accept_cfg: Option<PerShardAcceptCfg> = accept_cfg;
-
     // Each shard owns its own Shard struct — single writer, no lock.
     //
     // Phase 53-03B: default build pulls the per-shard `PartitionHandle` from
@@ -647,19 +642,83 @@ fn shard_event_loop(
     let wm_publish_threshold =
         crate::shard::global_watermark::GlobalWatermarkConfig::from_env().publish_interval;
 
+    // Phase 58-01 Task 2: Linux per-shard accept driver branch.
+    //
+    // When `accept_cfg.is_some()` AND we're on Linux, the shard binds its own
+    // SO_REUSEPORT `TcpListener` and drives a `FuturesUnordered` accept loop
+    // INLINE on its current_thread runtime — NO `tokio::spawn` per connection
+    // (D-A1/A2/A3/A4). ShardOp inbox drain runs interleaved via `try_recv`.
+    //
+    // When `accept_cfg.is_none()` OR on non-Linux, we fall through to the
+    // pre-Phase-58 blocking `rx.recv()` loop (preserves Phase 50.5 behavior
+    // for the macOS branch — Wave 2 rewrites macOS separately).
+    #[cfg(target_os = "linux")]
+    if accept_cfg.is_some() {
+        let cfg = accept_cfg.clone().unwrap();
+        run_linux_per_shard_accept_loop(
+            shard_index,
+            rx,
+            state.clone(),
+            &mut shard,
+            wm_publish_threshold,
+            cfg,
+            &rt,
+        );
+        return;
+    }
+
+    // Silence unused-var on non-Linux / None path.
+    let _accept_cfg: Option<PerShardAcceptCfg> = accept_cfg;
+
     rt.block_on(async move {
         let mut event_count: u64 = 0;
         let mut last_gauge_update = std::time::Instant::now();
 
-        while let Ok(mut event) = rx.recv() {
+        while let Ok(event) = rx.recv() {
             event_count += 1;
             let now = std::time::SystemTime::now();
 
-            // Phase 53-01: dispatch on the new ShardOp enum. Take the op out of
-            // the event (replacing with Push placeholder) so we can still access
-            // event.payload / event.stream_name / event.response_tx by value.
-            let op = std::mem::replace(&mut event.op, ShardOp::Push);
-            match op {
+            process_shard_event(event, shard_index, &mut shard, &state, wm_publish_threshold, now);
+
+            // Emit gauges every 1000 events OR every 100ms.
+            if event_count % 1000 == 0 || last_gauge_update.elapsed().as_millis() >= 100 {
+                let inbox_depth = rx.len();
+                last_gauge_update =
+                    emit_shard_gauges(shard_index, &mut shard, inbox_depth, last_gauge_update);
+            }
+        }
+    });
+}
+
+/// Phase 58-01 Task 2: per-event dispatch extracted from the `rt.block_on`
+/// body so both the None-accept-cfg loop (blocking `rx.recv()`) AND the
+/// Linux per-shard accept loop (FuturesUnordered + `try_recv`) can share
+/// the same match body without duplication.
+///
+/// Behavior preserved verbatim from the pre-Phase-58 inline body — the only
+/// change is that the two `continue;` statements in the original (JSON parse
+/// error on Push, enrich batch over cap) are now `return;` statements. That
+/// is behavior-preserving at the caller: both original `continue` branches
+/// skipped the inner gauge block, and the helper now returns to the same
+/// point; the caller re-enters the loop on its next iteration.
+#[inline]
+fn process_shard_event(
+    mut event: ShardEvent,
+    shard_index: usize,
+    // `mut` on the param binding so the body can take `&mut shard` (reborrow)
+    // inside arms that call engine methods with a `&mut Shard` — the pre-
+    // Phase-58 body used `let mut shard` so reborrowing was implicit; we
+    // preserve that ergonomics here.
+    mut shard: &mut crate::shard::Shard,
+    state: &std::sync::Arc<crate::server::tcp::ConcurrentAppState>,
+    wm_publish_threshold: u64,
+    now: std::time::SystemTime,
+) {
+    // Phase 53-01: dispatch on the new ShardOp enum. Take the op out of
+    // the event (replacing with Push placeholder) so we can still access
+    // event.payload / event.stream_name / event.response_tx by value.
+    let op = std::mem::replace(&mut event.op, ShardOp::Push);
+    match op {
                 ShardOp::Push => {
                     // Parse JSON payload from bytes.
                     let payload: serde_json::Value = match serde_json::from_slice(&event.payload) {
@@ -674,7 +733,10 @@ fn shard_event_loop(
                                     format!("JSON parse error: {}", e),
                                 )));
                             }
-                            continue;
+                            // Phase 58-01 Task 2: was `continue;` inside the
+                            // outer while-let; lifted into `process_shard_event`
+                            // as early `return;`. Caller re-enters the loop.
+                            return;
                         }
                     };
 
@@ -1274,7 +1336,9 @@ fn shard_event_loop(
                                 ))
                             ));
                         }
-                        continue;
+                        // Phase 58-01 Task 2: was `continue;` inside outer
+                        // while-let; early `return;` from `process_shard_event`.
+                        return;
                     }
                     let mut n_missing: u64 = 0;
                     let batch_len = keys.len() as u64;
@@ -1387,44 +1451,216 @@ fn shard_event_loop(
                         let _ = tx.send(ShardResult::RetractOk(outcome));
                     }
                 }
+    }
+}
+
+/// Phase 58-01 Task 2: emit per-shard gauges extracted so both the blocking-
+/// `rx.recv()` loop and the Linux FuturesUnordered driver can share the
+/// same metrics sampler. Returns the new `last_gauge_update` instant so the
+/// caller can advance its throttle timer.
+#[inline]
+fn emit_shard_gauges(
+    shard_index: usize,
+    shard: &mut crate::shard::Shard,
+    inbox_depth: usize,
+    _last_gauge_update: std::time::Instant,
+) -> std::time::Instant {
+    // Phase 53-03B Pitfall 4: `PartitionHandle::len()` walks the LSM
+    // tree — use `approximate_len()` (O(1), usize, stale estimate)
+    // for the Prometheus `keys_owned` gauge. state-inmem keeps
+    // `AHashMap::len()` because it's already O(1) there.
+    #[cfg(not(feature = "state-inmem"))]
+    let keys_owned = shard.state.approximate_len();
+    #[cfg(feature = "state-inmem")]
+    let keys_owned = shard.state.len();
+    crate::shard::metrics::update_shard_gauges(
+        shard_index,
+        0.0,
+        inbox_depth,
+        keys_owned,
+        0.0,
+    );
+    // Phase 53-05 (W-4 revision): drain accumulated fjall write
+    // bytes on the default build and emit as a counter increment.
+    // `compaction_bytes` stays at 0 until a fjall API exposes it;
+    // the counter series itself is registered at startup so Plan
+    // 06's alert rules work. `fsync_latency_ms` gauge is updated
+    // by explicit fsync sites (migrate tool / admin), not here.
+    #[cfg(not(feature = "state-inmem"))]
+    {
+        let bytes = shard.take_write_bytes();
+        if bytes > 0 {
+            crate::shard::metrics::record_fjall_write_bytes(shard_index, bytes);
+        }
+        // Compaction bytes: emit 0 increment so the counter stays
+        // visible in scrapes. Upgrading this to a real byte count
+        // requires a fjall API that is not available in 2.11.
+        crate::shard::metrics::record_fjall_compaction_bytes(shard_index, 0);
+    }
+    // Shard owns its `_` — silence unused warning while keeping signature
+    // symmetrical with the caller.
+    let _ = shard;
+    std::time::Instant::now()
+}
+
+/// Phase 58-01 Task 2 (Linux only, D-A1/A2/A3/A4): per-shard SO_REUSEPORT
+/// accept loop hosted on the shard's own `current_thread` runtime.
+///
+/// Each shard binds its OWN `TcpListener` via `bind_reuseport_tcp` (Phase 50
+/// helper, REUSED verbatim). Accepted connections are pushed into a
+/// `FuturesUnordered` and polled INLINE — NO `tokio::spawn` per connection.
+/// Concurrency cap `max_conns_per_shard` back-pressures via the kernel
+/// listen(1024) backlog when `FuturesUnordered` saturates.
+///
+/// `accept_threads_spawned_total` is bumped exactly once (per shard) at the
+/// point the SO_REUSEPORT listener is installed — the same semantic as the
+/// macOS Wave 2 dedicated-accept-thread path, so operators can read a single
+/// counter across platforms. `inline_handler_events_total` is bumped on
+/// every accepted connection (D-C4 probe field).
+///
+/// The ShardOp inbox (`rx: Receiver<ShardEvent>`) is drained interleaved with
+/// accept via `tokio::select!` + `try_recv`. A 50 µs sleep arm wakes the
+/// select when there's no accept / no inflight / no inbox work, bounding
+/// idle CPU.
+#[cfg(target_os = "linux")]
+fn run_linux_per_shard_accept_loop(
+    shard_index: usize,
+    rx: Receiver<ShardEvent>,
+    state: std::sync::Arc<crate::server::tcp::ConcurrentAppState>,
+    shard: &mut crate::shard::Shard,
+    wm_publish_threshold: u64,
+    cfg: PerShardAcceptCfg,
+    rt: &tokio::runtime::Runtime,
+) {
+    use futures::stream::{FuturesUnordered, StreamExt};
+    use std::pin::Pin;
+    use std::future::Future;
+    use std::sync::atomic::Ordering;
+
+    // D-A1: bind our own SO_REUSEPORT socket. `bind_reuseport_tcp` already
+    // calls `set_nonblocking(true)` + `listen(1024)`. A failure here panics
+    // the shard thread — the surrounding `catch_unwind` in
+    // `spawn_shard_threads` flips this shard to DOWN, and since this runs
+    // BEFORE the ready-barrier relaxation window ends, boot fails fast.
+    let std_listener = crate::server::tcp::bind_reuseport_tcp(cfg.accept_addr)
+        .unwrap_or_else(|e| {
+            panic!(
+                "[beava-shard-{shard_index}] bind_reuseport_tcp({addr}) failed: {e}",
+                addr = cfg.accept_addr
+            )
+        });
+
+    // Bump the always-on counter ONCE per shard at the install point. Mirror
+    // of the macOS Wave 2 dedicated-accept-thread semantic (D-B1 — counter=N
+    // at steady state). `inline_handler_events_total` is bumped per-accept
+    // below.
+    state
+        .accept_threads_spawned_total
+        .fetch_add(1, Ordering::Relaxed);
+
+    rt.block_on(async move {
+        // Convert std TcpListener → tokio TcpListener *inside* the runtime —
+        // `from_std` requires an active tokio reactor.
+        let listener = tokio::net::TcpListener::from_std(std_listener)
+            .expect("tokio::net::TcpListener::from_std failed on an already-bound socket");
+
+        let max_conns = cfg.max_conns_per_shard;
+
+        // D-A3: in-flight connection futures. `BoxFuture` so heterogenous
+        // lifetimes of async blocks unify. Each future owns its own stream +
+        // Arc<ConcurrentAppState>; no `tokio::spawn` involved.
+        let mut inflight: FuturesUnordered<
+            Pin<Box<dyn Future<Output = ()> + Send>>,
+        > = FuturesUnordered::new();
+
+        let mut event_count: u64 = 0;
+        let mut last_gauge_update = std::time::Instant::now();
+
+        loop {
+            // Short sleep ticks wake the select when nothing else is pending,
+            // letting us pump the inbox (`try_recv` below) without spinning
+            // hard. Resolution is chosen to match the pre-Phase-58 inbox-
+            // drain responsiveness (≤ 100 µs p99 dispatch delay even at low
+            // load).
+            let idle_tick =
+                tokio::time::sleep(std::time::Duration::from_micros(50));
+
+            tokio::select! {
+                biased;
+
+                // 1. Drain completed inflight connections first. Keeps the
+                //    slot free so the accept arm can fire on the same tick.
+                _done = inflight.next(), if !inflight.is_empty() => {
+                    // Connection completed/errored. Per-connection
+                    // observability lives inside `handle_connection`.
+                }
+
+                // 2. Accept a new connection, GATED on inflight < cap.
+                //    D-A4: when saturated, we do NOT poll the listener,
+                //    letting the kernel backlog (listen(1024)) absorb.
+                accept_res = listener.accept(), if inflight.len() < max_conns => {
+                    match accept_res {
+                        Ok((stream, _peer)) => {
+                            state
+                                .inline_handler_events_total
+                                .fetch_add(1, Ordering::Relaxed);
+                            let st = state.clone();
+                            // D-A3: push INLINE — NO `tokio::spawn`.
+                            inflight.push(Box::pin(async move {
+                                let _ = crate::server::tcp::handle_connection_public(
+                                    stream, st,
+                                )
+                                .await;
+                            }));
+                        }
+                        Err(_) => {
+                            // accept() error (EMFILE / ENFILE / ECONNABORTED)
+                            // — loop-continue; the kernel retains the backlog
+                            // and the other N-1 shards remain accepting.
+                        }
+                    }
+                }
+
+                // 3. Idle tick — wakes the select! every 50 µs so we can
+                //    drain the ShardOp inbox even if there's no accept /
+                //    no inflight activity.
+                _ = idle_tick => {}
             }
 
-            // Emit gauges every 1000 events OR every 100ms.
+            // Drain the ShardOp inbox — the shard thread's primary job. We
+            // use `try_recv` (not blocking `recv`) because the tokio runtime
+            // owns the current thread; a blocking recv would starve the
+            // accept future. Drain up to a reasonable burst so a hot inbox
+            // doesn't monopolize against accept — the outer select! loop
+            // re-enters after this.
+            for _ in 0..256 {
+                match rx.try_recv() {
+                    Ok(event) => {
+                        event_count += 1;
+                        let now = std::time::SystemTime::now();
+                        process_shard_event(
+                            event,
+                            shard_index,
+                            shard,
+                            &state,
+                            wm_publish_threshold,
+                            now,
+                        );
+                    }
+                    Err(crossbeam_channel::TryRecvError::Empty) => break,
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                        // Sender dropped — server is shutting down. Break the
+                        // outer loop so the shard thread exits cleanly.
+                        return;
+                    }
+                }
+            }
+
+            // Emit gauges every 1000 events OR every 100 ms.
             if event_count % 1000 == 0 || last_gauge_update.elapsed().as_millis() >= 100 {
                 let inbox_depth = rx.len();
-                // Phase 53-03B Pitfall 4: `PartitionHandle::len()` walks the LSM
-                // tree — use `approximate_len()` (O(1), usize, stale estimate)
-                // for the Prometheus `keys_owned` gauge. state-inmem keeps
-                // `AHashMap::len()` because it's already O(1) there.
-                #[cfg(not(feature = "state-inmem"))]
-                let keys_owned = shard.state.approximate_len();
-                #[cfg(feature = "state-inmem")]
-                let keys_owned = shard.state.len();
-                crate::shard::metrics::update_shard_gauges(
-                    shard_index,
-                    0.0,
-                    inbox_depth,
-                    keys_owned,
-                    0.0,
-                );
-                // Phase 53-05 (W-4 revision): drain accumulated fjall write
-                // bytes on the default build and emit as a counter increment.
-                // `compaction_bytes` stays at 0 until a fjall API exposes it;
-                // the counter series itself is registered at startup so Plan
-                // 06's alert rules work. `fsync_latency_ms` gauge is updated
-                // by explicit fsync sites (migrate tool / admin), not here.
-                #[cfg(not(feature = "state-inmem"))]
-                {
-                    let bytes = shard.take_write_bytes();
-                    if bytes > 0 {
-                        crate::shard::metrics::record_fjall_write_bytes(shard_index, bytes);
-                    }
-                    // Compaction bytes: emit 0 increment so the counter stays
-                    // visible in scrapes. Upgrading this to a real byte count
-                    // requires a fjall API that is not available in 2.11.
-                    crate::shard::metrics::record_fjall_compaction_bytes(shard_index, 0);
-                }
-                last_gauge_update = std::time::Instant::now();
+                last_gauge_update =
+                    emit_shard_gauges(shard_index, shard, inbox_depth, last_gauge_update);
             }
         }
     });

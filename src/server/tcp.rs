@@ -623,13 +623,40 @@ pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::i
     #[cfg(not(feature = "state-inmem"))]
     let shard_count = state.shard_partitions.len();
     let inbox_size = crate::shard::thread::inbox_size_from_env();
-    // Phase 58-01 Task 1: accept_cfg threaded through as `None` here.
-    // Task 2 switches the Linux branch to `Some(PerShardAcceptCfg { .. })`.
+
+    // Phase 58-01 Task 2 (Linux, D-A1/A2/A3/A4): each shard binds its OWN
+    // SO_REUSEPORT listener via `bind_reuseport_tcp` and hosts a
+    // FuturesUnordered-driven accept loop INLINE on its current_thread
+    // runtime. No `tokio::spawn` per connection. The top-level
+    // `TcpListener::bind` below is kept for compatibility (it's dropped by
+    // `run_tcp_server_with_listener` on Linux) and for non-Linux builds
+    // where the Phase 50.5 single-listener path is preserved until Wave 2.
+    #[cfg(target_os = "linux")]
+    let accept_cfg = {
+        let accept_addr: std::net::SocketAddr = addr.parse().unwrap_or_else(|_| {
+            // `addr` may be a hostname:port string (e.g. "0.0.0.0:8080") —
+            // resolve via ToSocketAddrs if direct parse fails.
+            use std::net::ToSocketAddrs;
+            addr.to_socket_addrs()
+                .ok()
+                .and_then(|mut it| it.next())
+                .unwrap_or_else(|| {
+                    panic!("Phase 58-01: unable to resolve TCP listen addr {addr:?}")
+                })
+        });
+        Some(crate::shard::thread::PerShardAcceptCfg {
+            accept_addr,
+            max_conns_per_shard: crate::shard::thread::max_conns_per_shard_from_env(),
+        })
+    };
+    #[cfg(not(target_os = "linux"))]
+    let accept_cfg: Option<crate::shard::thread::PerShardAcceptCfg> = None;
+
     let shard_handles = crate::shard::thread::spawn_shard_threads(
         shard_count,
         inbox_size,
         state.clone(),
-        None,
+        accept_cfg,
     );
     // D-01: shard ready-barrier passed. Safe to bind listener.
     // Store handles in shared state so push paths can route via try_send (D-08).
@@ -637,8 +664,23 @@ pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::i
     // Phase 50-07 (TPC-PERF-03): initialize per-shard routing counters for cross_shard_fraction.
     crate::server::shard_probe::init_route_counters(shard_count);
 
-    let listener = TcpListener::bind(addr).await?;
-    run_tcp_server_with_listener(listener, state).await
+    // Phase 58-01 D-A1 (Linux): shards already own their SO_REUSEPORT sockets
+    // bound to `addr` — a top-level non-REUSEPORT bind on the same port would
+    // fail (EADDRINUSE). The server lifetime is held by `future::pending`
+    // inside `run_tcp_server_with_listener`.
+    #[cfg(target_os = "linux")]
+    {
+        // Still construct a synthetic loopback listener to keep the
+        // `run_tcp_server_with_listener` signature stable; it's dropped
+        // immediately inside the Linux branch of that function.
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        return run_tcp_server_with_listener(listener, state).await;
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let listener = TcpListener::bind(addr).await?;
+        run_tcp_server_with_listener(listener, state).await
+    }
 }
 
 /// Phase 50-05 (D-09, Linux only): bind a TCP socket on `addr` with SO_REUSEPORT set.
@@ -668,92 +710,49 @@ pub fn bind_reuseport_tcp(addr: std::net::SocketAddr) -> std::io::Result<std::ne
 
 /// Start the TCP server from a pre-bound listener (for tests with random ports).
 ///
-/// Phase 50.5-02 Task 2 (Linux path):
-/// When `shard_count > 1` on Linux, this function spawns N independent
-/// SO_REUSEPORT accept loops — one per shard — via
-/// `spawn_linux_per_shard_accept_loops`. The kernel 4-tuple-hashes incoming
-/// connections across the N sockets; each shard's accept loop receives its
-/// own share of new connections with near-zero accept-lock contention.
-/// The passed-in `listener` is dropped (replaced by N new SO_REUSEPORT sockets).
-/// On Linux with N=1, falls through to the single-accept loop below.
+/// Phase 58-01 D-A1/A2/A3 (Linux path):
+/// Per-shard SO_REUSEPORT accept loops live INSIDE each shard thread's own
+/// `current_thread` runtime (see `src/shard/thread.rs::run_linux_per_shard_accept_loop`).
+/// No `tokio::spawn` per connection — `handle_connection` is polled INLINE via
+/// `FuturesUnordered`. The passed-in `listener` is therefore unused on Linux;
+/// this function becomes `std::future::pending()` so the caller's task holds
+/// the server alive for its lifetime (SIGTERM terminates).
 ///
-/// Phase 50.5-02 Task 2 (macOS / non-Linux path):
-/// Single accept loop with per-connection `tokio::spawn` retained (CONTEXT D-04).
-/// Per-connection stream_name interning via `ConnAccumulator::intern_stream`
-/// happens in `handle_connection`'s sync OP_PUSH dispatch.
+/// Phase 50.5-02 (macOS / non-Linux path, preserved until Phase 58 Wave 2):
+/// Single accept loop with per-connection `tokio::spawn`. Wave 2 rewrites
+/// macOS to a dedicated-accept-thread-per-shard path.
 pub async fn run_tcp_server_with_listener(
     listener: TcpListener,
     state: SharedState,
 ) -> Result<(), std::io::Error> {
-    // Linux-only: per-shard SO_REUSEPORT accept loops.
     #[cfg(target_os = "linux")]
     {
-        let shard_count = state.shard_handles.read().len();
-        if shard_count > 1 {
-            // Extract the local address from the passed-in listener so all
-            // N SO_REUSEPORT sockets bind to the same port.
-            let addr = listener.local_addr()?;
-            drop(listener); // replaced by N SO_REUSEPORT sockets below
-            return spawn_linux_per_shard_accept_loops(addr, &state).await;
+        // Phase 58-01 D-A1: shard threads already bound their own
+        // SO_REUSEPORT sockets during `spawn_shard_threads` (which called
+        // `run_linux_per_shard_accept_loop` per shard). The top-level listener
+        // passed in here is redundant.
+        //
+        // Observability: `_state.accept_threads_spawned_total` == N,
+        // `_state.inline_handler_events_total` bumps per accepted connection.
+        let _ = &state;
+        drop(listener);
+        std::future::pending::<Result<(), std::io::Error>>().await
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        // macOS (Wave 2 rewrites this) — Phase 57 single-listener + tokio::spawn
+        // preserved to keep the platform on a known-good path during Wave 1.
+        loop {
+            let (stream, _addr) = listener.accept().await?;
+            let state = state.clone();
+            tokio::spawn(async move {
+                if let Err(_e) = handle_connection(stream, state).await {
+                    // Connection closed or error -- debug log only
+                }
+            });
         }
     }
-
-    // macOS (and Linux N=1): single accept loop with per-connection tokio::spawn.
-    // CONTEXT D-04 locks macOS as single-accept. The spawn-per-conn is retained
-    // here; per-connection interning is wired in handle_connection.
-    loop {
-        let (stream, _addr) = listener.accept().await?;
-        let state = state.clone();
-        tokio::spawn(async move {
-            if let Err(_e) = handle_connection(stream, state).await {
-                // Connection closed or error -- debug log only
-            }
-        });
-    }
-}
-
-/// Phase 50.5-02 Task 2 (Linux only): spawn N independent SO_REUSEPORT accept loops,
-/// one per shard. Each loop binds its own socket to `addr` with `SO_REUSEPORT` so the
-/// kernel 4-tuple-hashes new connections across the N sockets.
-///
-/// Loops run as `tokio::spawn` tasks on the ambient multi-threaded runtime
-/// (RESEARCH.md Open Question 4 — spawning on the shard's `current_thread` runtime
-/// for tightest locality is a Phase 51 follow-up; this plan wires SO_REUSEPORT at
-/// the boot path, which addresses the Hetzner +2% root cause).
-///
-/// Returns `std::future::pending()` so the caller blocks indefinitely (server lifetime).
-#[cfg(target_os = "linux")]
-async fn spawn_linux_per_shard_accept_loops(
-    addr: std::net::SocketAddr,
-    state: &SharedState,
-) -> Result<(), std::io::Error> {
-    let shard_count = state.shard_handles.read().len();
-    for _idx in 0..shard_count {
-        let listener_std = bind_reuseport_tcp(addr)?;
-        // bind_reuseport_tcp already calls set_nonblocking(true).
-        let listener = TcpListener::from_std(listener_std)?;
-        let state = state.clone();
-        tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((stream, _peer)) => {
-                        let state = state.clone();
-                        tokio::spawn(async move {
-                            let _ = handle_connection(stream, state).await;
-                        });
-                    }
-                    Err(_) => {
-                        // accept() error (e.g. EMFILE) — loop-continue per T-50.5-02-01.
-                        // The other N-1 loops continue accepting.
-                        continue;
-                    }
-                }
-            }
-        });
-    }
-    // Hold the server alive for its lifetime. The spawned accept loops run forever;
-    // this future never resolves (SIGTERM terminates the process).
-    std::future::pending::<Result<(), std::io::Error>>().await
 }
 
 /// Public wrapper for handle_connection, for integration tests.
