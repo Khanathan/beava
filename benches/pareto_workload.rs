@@ -228,5 +228,34 @@ fn bench_pareto(c: &mut Criterion) {
     );
 }
 
-criterion_group!(benches, bench_zipf_sampler_tests, bench_pareto);
+// ---------------------------------------------------------------------------
+// Phase 60 TPC-PERF-10 — placeholder salted-Pareto bench group.
+//
+// Wave 0 ships this as a no-op stub behind `#[cfg(any())]`-disabled body
+// (`bench_pareto_salted_c8_x8` runs but does not measure anything). Wave 4
+// replaces the stub body with a real Zipf-1.0 salted A/B variant that
+// asserts salted aggregate EPS >= 1.5x unsalted baseline.
+//
+// Present today so `scripts/verify-salt-feature-complete.sh` can grep
+// `pareto_salted_c8_x8` from Wave 0 onward.
+// ---------------------------------------------------------------------------
+
+fn bench_pareto_salted_c8_x8(c: &mut Criterion) {
+    let mut group = c.benchmark_group("pareto_salted_c8_x8");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("placeholder_wave0", |b| {
+        b.iter(|| {
+            // Wave 0 no-op — Wave 4 replaces with a real salted A/B harness.
+            black_box(());
+        });
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_zipf_sampler_tests,
+    bench_pareto,
+    bench_pareto_salted_c8_x8
+);
 criterion_main!(benches);
