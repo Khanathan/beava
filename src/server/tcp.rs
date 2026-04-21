@@ -354,6 +354,26 @@ pub struct ConcurrentAppState {
     /// Pre-seeded in Wave 0. Exposed as `beava_value_fallback_path_total`.
     pub value_fallback_path_total: std::sync::atomic::AtomicU64,
 
+    /// Phase 59.7 Wave 0 (TPC-PERF-11 extension) — count of events whose
+    /// cascade was dispatched via the new typed-cascade-direct walker
+    /// (`run_typed_direct_cascade`) instead of the Wave-3 Value-bridge
+    /// `run_typed_enrich_cascade`. Pre-seeded in W0 (engine reads the
+    /// `BEAVA_TYPED_CASCADE_DIRECT` env flag but does not yet consume it);
+    /// W4 wires the `.fetch_add(1)` call site inside `push_typed_on_shard`.
+    /// Exposed as `beava_typed_cascade_direct_dispatched_total` via the
+    /// metrics layer in W5.
+    pub typed_cascade_direct_dispatched: std::sync::atomic::AtomicU64,
+
+    /// Phase 59.7 Wave 0 (TPC-PERF-11 extension) — count of events that
+    /// the typed-cascade walker DOWNGRADED to the Value path because at
+    /// least one downstream feature in the cascade is not typed-compatible
+    /// (e.g. an SSJ feature on a secondary downstream). This is the same
+    /// "whole cascade falls back, not just the non-typed hop" semantic
+    /// the parity test `parity_value_fallback_for_nontyped_downstream`
+    /// asserts. Pre-seeded in W0; W3/W4 wire the `.fetch_add(1)` sites.
+    /// Exposed as `beava_typed_cascade_value_fallback_total`.
+    pub typed_cascade_value_fallback: std::sync::atomic::AtomicU64,
+
     /// Phase 51-02 (TPC-PERF-05): flat lock-free global watermark store.
     ///
     /// Indexed as shard_id × stream_capacity + stream_ord. All N shards publish
@@ -593,6 +613,12 @@ pub fn make_concurrent_state_full(
         // them via `beava_typed_row_path_total` / `beava_value_fallback_path_total`.
         typed_row_path_total: std::sync::atomic::AtomicU64::new(0),
         value_fallback_path_total: std::sync::atomic::AtomicU64::new(0),
+        // Phase 59.7 Wave 0 (TPC-PERF-11 extension): typed-cascade-direct
+        // dispatch + Value-fallback counters. Pre-seeded to zero. W3/W4
+        // wire the `.fetch_add(1)` call sites inside `push_typed_on_shard`
+        // / `run_typed_direct_cascade` once the direct walker ships.
+        typed_cascade_direct_dispatched: std::sync::atomic::AtomicU64::new(0),
+        typed_cascade_value_fallback: std::sync::atomic::AtomicU64::new(0),
         // Phase 51-02: global watermark store. n_shards rows × 64 stream-ordinal columns.
         // stream_capacity=64 matches GlobalWatermarkStore default; panics on overflow (T-51-01-03).
         global_watermark: parking_lot::RwLock::new(

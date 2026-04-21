@@ -69,6 +69,9 @@ Requirements scoped to the v1.2 milestone. Each maps to a roadmap phase (48–52
     batches per op, state diff = ∅ after each batch. Same Phase 55 TPC-CORR-07
     correctness semantics (`hash(output_key) % N` cascade routing) — the 59.6 addition
     is the typed↔Value parity guarantee, NOT a new correctness surface.
+    Phase 59.7 extends this to windowed aggs (`tests/typed_windowed_aggregation_parity.rs`,
+    10 ops × 20 event-time checkpoints each, window=5s bucket=1s) and cross-shard
+    cascade (`tests/typed_cascade_crossshard_parity.rs`, N=8 fraud-pipeline-shaped).
 - [x] **TPC-SOURCE-01**: Python SDK gains `@bv.source_table(key=K, entity_ttl=...)` decorator declaring a CDC-style keyed input. Explicit wire commands — TCP opcodes `UPSERT_TABLE_ROW` / `DELETE_TABLE_ROW` / `UPSERT_TABLE_BATCH` / `DELETE_TABLE_BATCH`; HTTP routes `POST /table/{name}` (upsert), `DELETE /table/{name}/{key}` (single delete), `POST /table/{name}/batch` (upsert batch), `POST /table/{name}/batch/delete` (delete batch). Batch variants accept ≥ 10K rows/call. UPSERT is full-replace (CDC-native, idempotent); DELETE is hard-delete + pending-retraction marker written to event log (Phase 57 consumes). `source_lsn: u64` (opaque, no monotonicity check) is stored per row and echoed on every ack (array ack on batch, in input order) for resumable replication. Source-table writes do NOT fire cascades in v1.2 (Phase 57 territory); source tables are passive enrichment targets for Phase 56's EnrichFromTable. (Phase 55)
 
 ### TPC-CORR (continued) — Phase 56
@@ -117,6 +120,19 @@ Requirements scoped to the v1.2 milestone. Each maps to a roadmap phase (48–52
   `tests/typed_mixed_mode_coexistence.rs`, `tests/typed_value_fallback_unregressed.rs`,
   `tests/typed_ssj_crossshard_parity.rs`, `tests/typed_python_sdk_handshake.rs`,
   extended `tests/sharding_parity.rs`, and `benches/typed_pipeline_phase_latency.rs`. (Phase 59.6)
+  - **Phase 59.7 extension (typed windowed aggs + cascade-direct):** (i)
+    `src/engine/operators_typed_aggs_windowed.rs` ships 10 windowed typed agg
+    impls honoring `window`+`bucket` identically to Value-path. (ii)
+    `ShardOp::RunTypedAggCascadeStep` dispatches cross-shard typed-cascade
+    without Row→Value round-trip. (iii) Perf gate: `push_internal_on_shard` <1%
+    of CPU on state-inmem samply OR fraud-pipeline complex-c8-x8 aggregate
+    EPS ≥ 1,454,778 (+10% vs 1,322,525 median). (iv) Feature-flag
+    `BEAVA_TYPED_CASCADE_DIRECT=1` gate for rollout. Scaffolding landed in
+    Phase 59.7-00 (14 RED parity tests + regression-tripwire bench +
+    `is_typed_cascade_compatible` rename + env-flag consumer +
+    `typed_cascade_direct_dispatched` / `typed_cascade_value_fallback`
+    counters). W1..W4 ship the windowed ops + cascade walker; W5 closes the
+    perf gate. (Phase 59.7)
 
 ## Future Requirements
 

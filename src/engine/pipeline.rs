@@ -479,18 +479,46 @@ pub struct PipelineEngine {
     /// `serde_json::Value` fallback. At Wave 1, only schema registration
     /// wires up — no operator behavior change yet.
     pub schema_registry: crate::engine::schema::SchemaRegistry,
+
+    /// Phase 59.7 Wave 0 (TPC-PERF-11 extension) — rollout gate for the
+    /// typed-cascade-direct walker (`run_typed_direct_cascade`). Populated
+    /// from `std::env::var("BEAVA_TYPED_CASCADE_DIRECT")` in
+    /// [`PipelineEngine::new`]; default `false` so existing call sites
+    /// route through the Value-bridge `run_typed_enrich_cascade` until
+    /// Wave 4 lands the real direct walker and ops opt-in via the flag.
+    ///
+    /// W0 only READS + EXPOSES this value. W4 consumes it inside
+    /// `push_typed_on_shard` to choose typed-direct vs. bridge walk.
+    pub(crate) typed_cascade_direct_enabled: bool,
 }
 
-/// Phase 59.6 Wave 4 (TPC-PERF-11) — predicate for the Wave-4 typed
-/// fast-path compatibility check inside `push_typed_on_shard`. Returns
-/// `true` for `FeatureDef` variants whose operator has a typed twin in
-/// `src/engine/operators_typed_aggs.rs` (or the Wave-3
-/// `EnrichFromTableTyped`).
+/// Phase 59.6 Wave 4 (TPC-PERF-11) → Phase 59.7 W0 rename — predicate for
+/// the typed-cascade fast-path compatibility check inside
+/// `push_typed_on_shard`. Returns `true` for `FeatureDef` variants whose
+/// operator has a typed twin in `src/engine/operators_typed_aggs.rs` (or
+/// the Wave-3 `EnrichFromTableTyped`).
 ///
-/// Waves 5-6 flip more variants to `true` as they gain typed impls.
-/// Anything returning `false` routes through the `row_to_value` + Value
-/// cascade bridge so behavior is unchanged until the typed op ships.
-pub(crate) fn is_wave4_typed_compatible(fd: &FeatureDef) -> bool {
+/// Waves 5-6 (Phase 59.6) flipped more variants to `true` as they gained
+/// typed impls. Anything returning `false` routes through the
+/// `row_to_value` + Value cascade bridge so behavior is unchanged until
+/// the typed op ships.
+///
+/// # Phase 59.7 rename rationale
+///
+/// Wave 4 of Phase 59.6 is the origin of this predicate — the old name
+/// embedded an internal wave number that leaked into downstream Phase
+/// 59.7 call sites (`run_typed_direct_cascade` etc.). Renamed to
+/// `is_typed_cascade_compatible` to reflect the permanent semantic role:
+/// "is this FeatureDef eligible for the typed-cascade direct walker?"
+///
+/// FIXME(59.7-W1): today this is a structural `matches!` on the enum
+/// variant only — a `FeatureDef::Count { window: Some(..), bucket:
+/// Some(..) }` returns `true` even though windowed typed aggs don't ship
+/// until Wave 1. W1 tightens this predicate to require a concrete typed
+/// windowed-agg impl exists for the op's window + bucket pair (gated via
+/// the new `operators_typed_aggs_windowed` module), so windowed call
+/// sites fall back to Value automatically until W1 flips.
+pub(crate) fn is_typed_cascade_compatible(fd: &FeatureDef) -> bool {
     matches!(
         fd,
         FeatureDef::EnrichFromTable { .. }
@@ -759,6 +787,15 @@ impl Default for PipelineEngine {
 impl PipelineEngine {
     /// Create engine with no registered streams.
     pub fn new() -> Self {
+        // Phase 59.7 Wave 0 (TPC-PERF-11 extension): read the rollout
+        // gate at engine construction time so tests + server binaries see
+        // identical behavior. Accepts only exact "1" to match the
+        // BEAVA_TYPED_CASCADE_DIRECT=1 documented form; any other value
+        // (including "true", "on", "yes", empty) keeps the flag OFF so
+        // the Value-bridge cascade remains the default.
+        let typed_cascade_direct_enabled = std::env::var("BEAVA_TYPED_CASCADE_DIRECT")
+            .ok()
+            .is_some_and(|v| v == "1");
         Self {
             streams: AHashMap::new(),
             views: AHashMap::new(),
@@ -778,7 +815,17 @@ impl PipelineEngine {
             #[cfg(feature = "state-inmem")]
             sharded_store: crate::shard::store::ShardedStateStoreV1::new(1),
             schema_registry: crate::engine::schema::SchemaRegistry::new(),
+            typed_cascade_direct_enabled,
         }
+    }
+
+    /// Phase 59.7 Wave 0 (TPC-PERF-11 extension) — accessor for the
+    /// `BEAVA_TYPED_CASCADE_DIRECT` rollout gate. Wave 4 consumes this
+    /// inside `push_typed_on_shard` to pick typed-direct vs. bridge
+    /// walk; Wave 0 just exposes it so tests can assert the env-read
+    /// works without reaching into private fields.
+    pub fn typed_cascade_direct_enabled(&self) -> bool {
+        self.typed_cascade_direct_enabled
     }
 
     // -----------------------------------------------------------------------
@@ -3710,7 +3757,7 @@ impl PipelineEngine {
         // predicate further as the remaining ops gain typed fast-paths.
         let wave4_compatible = cascade.iter().all(|downstream_name| {
             match self.streams.get(downstream_name) {
-                Some(def) => def.features.iter().all(|(_, fd)| is_wave4_typed_compatible(fd)),
+                Some(def) => def.features.iter().all(|(_, fd)| is_typed_cascade_compatible(fd)),
                 None => true,
             }
         });
