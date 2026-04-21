@@ -1915,6 +1915,194 @@ impl PipelineEngine {
         }
     }
 
+    /// Phase 57 D-B1 (TPC-CORR-10): dispatch a cross-shard retraction to the
+    /// target shard that owns the affected downstream row. Same-shard fast
+    /// path invokes `apply_retraction` directly (no inbox hop); cross-shard
+    /// path uses `try_send` + blocking `oneshot::recv` + `ShardOverload` on
+    /// Full. Mirrors the structural shape of `ssj_insert_at_shard`.
+    ///
+    /// Returns:
+    ///   - `Ok(RetractOutcome::Retracted)` — row was present + live, is now
+    ///     tombstoned on the target shard.
+    ///   - `Ok(RetractOutcome::NoOp)` — already-retracted / never-existed
+    ///     (D-B4 idempotent).
+    ///   - `Ok(RetractOutcome::BeyondHistory)` — contributing event is older
+    ///     than `watermark - history_ttl` (D-C1). Wave 1 returns this only if
+    ///     `Shard::apply_retraction` produces it; the live `history_ttl`
+    ///     check lands with Wave 4's plan 57-04.
+    ///   - `Ok(RetractOutcome::DepthExceeded)` — `depth >= MAX_RETRACTION_DEPTH`
+    ///     (D-B5). Caller may propagate as a typed error upstream.
+    ///   - `Err(BeavaError::Protocol(...))` — target shard is down / inbox
+    ///     full / oneshot dropped / unexpected reply variant.
+    ///
+    /// Metric emission (single source-site per event):
+    ///   - Source-side bump of `beava_retractions_sent_total{operator, reason}`
+    ///     happens on EVERY invocation of this helper — both fast path and
+    ///     cross-shard path — so dashboards can compute
+    ///     `sent - (applied+nooped+beyond_history+depth_exceeded)` as a
+    ///     target-unreachable leak detector.
+    ///   - Target-side bump of exactly one of
+    ///     `{RETRACTIONS_APPLIED,NOOPED,BEYOND_HISTORY,DEPTH_EXCEEDED}_TOTAL`
+    ///     happens on the target dispatch arm (cross-shard) OR inline here
+    ///     (same-shard fast path).
+    ///
+    /// Depth guard: enforced by BOTH the dispatch arm (cross-shard path) AND
+    /// `Shard::apply_retraction` itself (same-shard fast path). This helper
+    /// passes `depth` through unchanged — cascade callers in Waves 2/3
+    /// increment before they invoke.
+    ///
+    /// Deadlock analysis: see the module-level 3-point comment above
+    /// `read_entity_at_shard`. The source shard never try_sends to its own
+    /// inbox; `try_send` is non-blocking with `ShardOverload` on Full; the
+    /// target drains on its own pinned thread and replies via `oneshot`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn retract_downstream_at_shard(
+        &self,
+        sibling_shards: Option<&[crate::shard::thread::ShardHandle]>,
+        target_shard_idx: usize,
+        input_shard: &mut crate::shard::Shard,
+        input_shard_idx: usize,
+        stream_name: &str,
+        row_key: &str,
+        reason: crate::shard::thread::RetractReason,
+        depth: u8,
+    ) -> Result<crate::shard::thread::RetractOutcome, BeavaError> {
+        use crate::shard::thread::{RetractOutcome, RetractReason};
+
+        // Source-side emission — single site, always bumped, regardless of
+        // dispatch path. Label by operator (downstream stream) + reason
+        // variant discriminator.
+        let reason_label: &'static str = match &reason {
+            RetractReason::SourceTableDelete { .. } => "source_table_delete",
+            RetractReason::EntityTombstone { .. } => "entity_tombstone",
+            RetractReason::PrimaryEventRetract { .. } => "primary_event_retract",
+        };
+        metrics::counter!(
+            crate::shard::metrics::RETRACTIONS_SENT_TOTAL,
+            "operator" => stream_name.to_string(),
+            "reason" => reason_label,
+        )
+        .increment(1);
+
+        // Same-shard fast path (D-B1 co-location): skip inbox hop. Also
+        // covers the N=1 test harness case where sibling_shards is None or
+        // len ≤ 1. The fast path takes the `&mut Shard` we already hold,
+        // invokes `apply_retraction` inline, and bumps the target-side
+        // metric counter locally (mirrors the dispatch arm's emission).
+        let n_shards = sibling_shards.map(|s| s.len()).unwrap_or(0);
+        if n_shards <= 1 || target_shard_idx == input_shard_idx {
+            // Depth guard on the fast path mirrors the dispatch-arm check so
+            // caller behaviour is identical across paths.
+            let outcome = if depth >= crate::shard::thread::MAX_RETRACTION_DEPTH {
+                metrics::counter!(
+                    crate::shard::metrics::RETRACTION_DEPTH_EXCEEDED_TOTAL
+                )
+                .increment(1);
+                RetractOutcome::DepthExceeded
+            } else {
+                let o = input_shard.apply_retraction(stream_name, row_key, &reason, depth);
+                match o {
+                    RetractOutcome::Retracted => {
+                        metrics::counter!(
+                            crate::shard::metrics::RETRACTIONS_APPLIED_TOTAL,
+                            "operator" => stream_name.to_string()
+                        )
+                        .increment(1);
+                    }
+                    RetractOutcome::NoOp => {
+                        metrics::counter!(
+                            crate::shard::metrics::RETRACTIONS_NOOPED_TOTAL,
+                            "operator" => stream_name.to_string()
+                        )
+                        .increment(1);
+                    }
+                    RetractOutcome::BeyondHistory => {
+                        metrics::counter!(
+                            crate::shard::metrics::RETRACTION_BEYOND_HISTORY_TOTAL,
+                            "operator" => stream_name.to_string()
+                        )
+                        .increment(1);
+                    }
+                    RetractOutcome::DepthExceeded => {
+                        metrics::counter!(
+                            crate::shard::metrics::RETRACTION_DEPTH_EXCEEDED_TOTAL
+                        )
+                        .increment(1);
+                    }
+                }
+                o
+            };
+            return Ok(outcome);
+        }
+
+        // Cross-shard path (D-B1): try_send + blocking recv + ShardOverload
+        // on Full. The target dispatch arm in `shard/thread.rs` performs the
+        // depth guard + apply_retraction + target-side metric emission. We
+        // only translate the reply.
+        let handles = sibling_shards.expect("sibling_shards non-empty checked above");
+        let target = &handles[target_shard_idx];
+        if target.is_down.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(BeavaError::Protocol(format!(
+                "retract cross-shard: target shard {} is down (quarantined)",
+                target_shard_idx
+            )));
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Cap target_shard_idx into the u16 carried by ShardOp::RetractDownstream.
+        // Shard indices fit comfortably — BEAVA_SHARDS is clamped to u16.
+        let target_shard_u16: u16 = target_shard_idx as u16;
+        let ev = crate::shard::thread::ShardEvent {
+            payload: bytes::Bytes::new(),
+            stream_name: std::sync::Arc::from(""),
+            shard_hint: 0,
+            response_tx: Some(tx),
+            op: crate::shard::thread::ShardOp::RetractDownstream {
+                target_shard: target_shard_u16,
+                stream_name: stream_name.to_string(),
+                row_key: row_key.to_string(),
+                reason,
+                depth,
+            },
+        };
+        let inbox_depth = target.inbox_tx.len();
+        let cap = target.inbox_tx.capacity().unwrap_or(usize::MAX);
+        crate::shard::metrics::record_inbox_depth(target_shard_idx, inbox_depth, cap);
+        match target.inbox_tx.try_send(ev) {
+            Ok(()) => {}
+            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                crate::shard::metrics::record_inbox_full(target_shard_idx);
+                return Err(BeavaError::Protocol(format!(
+                    "shard inbox full — retract cross-shard dispatch backpressure (target={})",
+                    target_shard_idx
+                )));
+            }
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                return Err(BeavaError::Protocol(format!(
+                    "shard inbox disconnected (target={})",
+                    target_shard_idx
+                )));
+            }
+        }
+        // futures::executor::block_on (not tokio::Handle::block_on) — the
+        // caller is already inside the per-shard current_thread tokio runtime
+        // and tokio re-entry panics. Same pattern as ssj_insert_at_shard.
+        match futures::executor::block_on(rx) {
+            Ok(crate::shard::thread::ShardResult::RetractOk(o)) => Ok(o),
+            Ok(crate::shard::thread::ShardResult::Err(e)) => Err(BeavaError::Protocol(format!(
+                "retract cross-shard dispatch to shard {} failed: {:?}",
+                target_shard_idx, e
+            ))),
+            Ok(other) => Err(BeavaError::Protocol(format!(
+                "retract cross-shard dispatch to shard {} returned unexpected ShardResult: {:?}",
+                target_shard_idx, other
+            ))),
+            Err(_) => Err(BeavaError::Protocol(format!(
+                "retract cross-shard dispatch to shard {} oneshot closed",
+                target_shard_idx
+            ))),
+        }
+    }
+
     /// Phase 54-02 Task 2: live-operator-read variant of
     /// `get_features_on_shard`. Takes `&mut Shard` so operators that need to
     /// advance time (`op.read(now)` RMW) can do so cleanly. Read-only
