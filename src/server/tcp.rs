@@ -289,6 +289,34 @@ pub struct ConcurrentAppState {
     /// Always-on AtomicU64 (zero overhead in production — never read on the hot path).
     pub conn_interns_total: std::sync::atomic::AtomicU64,
 
+    /// Phase 58 D-B1 (TPC-PERF-08 per-shard accept probe):
+    /// number of dedicated `std::thread` accept threads spawned for per-shard
+    /// macOS accept loops. Always 0 on Linux (which uses `tokio` +
+    /// `SO_REUSEPORT` — see `per_shard_listener_smoke.rs` Linux half).
+    ///
+    /// Wave 0 (this commit): field exists, never incremented — RED smoke
+    /// test `per_shard_listener_smoke::n_shards_produces_n_accept_threads_macos`
+    /// asserts `== N` and fails at 0.
+    /// Wave 2 wires the macOS dedicated-accept-thread spawner which bumps
+    /// this counter exactly once per shard at startup.
+    ///
+    /// Always-on (not `cfg(test)`) per 50.5-02 `conn_interns_total`
+    /// precedent: integration tests compile the library without `cfg(test)`.
+    pub accept_threads_spawned_total: std::sync::atomic::AtomicU64,
+
+    /// Phase 58 D-A3 (TPC-PERF-08 inline-handler probe):
+    /// count of `handle_push_batch` invocations served INLINE on a per-shard
+    /// accept loop, i.e. WITHOUT `tokio::spawn` per connection. Wave 1
+    /// (Linux) bumps this from the new current-thread per-shard runtime;
+    /// Wave 2 (macOS) bumps it from the dedicated-thread blocking handler.
+    ///
+    /// Wave 0 (this commit): field exists, never incremented. Used by Wave
+    /// 4's perf gate as a sanity check that the new path actually fired.
+    ///
+    /// Always-on (not `cfg(test)`) per the same rationale as
+    /// `accept_threads_spawned_total`.
+    pub inline_handler_events_total: std::sync::atomic::AtomicU64,
+
     /// Phase 51-02 (TPC-PERF-05): flat lock-free global watermark store.
     ///
     /// Indexed as shard_id × stream_capacity + stream_ord. All N shards publish
@@ -505,6 +533,12 @@ pub fn make_concurrent_state_full(
         shard_handles: parking_lot::RwLock::new(Vec::new()),
         // Phase 50.5-02: per-connection intern counter (always-on, zero overhead when not read).
         conn_interns_total: std::sync::atomic::AtomicU64::new(0),
+        // Phase 58 D-B1 (Wave 0 RED): macOS per-shard dedicated-accept-thread
+        // counter. Zero today; Wave 2 bumps it once per shard at startup.
+        accept_threads_spawned_total: std::sync::atomic::AtomicU64::new(0),
+        // Phase 58 D-A3 (Wave 0 RED): inline-handler event counter, bumped by
+        // Wave 1/2's per-shard accept loops. Zero today.
+        inline_handler_events_total: std::sync::atomic::AtomicU64::new(0),
         // Phase 51-02: global watermark store. n_shards rows × 64 stream-ordinal columns.
         // stream_capacity=64 matches GlobalWatermarkStore default; panics on overflow (T-51-01-03).
         global_watermark: parking_lot::RwLock::new(
