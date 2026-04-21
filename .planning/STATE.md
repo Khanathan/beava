@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
-status: Ready to start Phase 60
-stopped_at: Completed 59-04-PLAN.md (Phase 59 engineering-complete)
-last_updated: "2026-04-21T11:50:00.000Z"
+status: executing
+stopped_at: Completed 59.6-00-PLAN.md (Wave 0 RED scaffolding)
+last_updated: "2026-04-21T18:30:12.686Z"
 last_activity: 2026-04-21
 progress:
-  total_phases: 18
+  total_phases: 19
   completed_phases: 11
-  total_plans: 74
-  completed_plans: 71
-  percent: 96
+  total_plans: 87
+  completed_plans: 73
+  percent: 84
 ---
 
 # Project State
@@ -21,18 +21,29 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 **Core value:** A skeptical engineer evaluating Beava on github.com can go from landing on the repo to correct, live feature values in under 60 seconds — from any language.
-**Current focus:** Phase 55 — stream-table-cascade-crossshard-and-source-tables
+**Current focus:** Phase 59.6 — typed-pipeline-records
 
 ## Current Position
 
-Phase: 59 CLOSED 2026-04-21 (engineering-complete; **TPC-PERF-09 structural change delivered**; SC-1 + SC-2 + SC-3 + SC-5 GREEN; SC-4 `human_needed` pending Linux prod-host re-run — 59-NEXT #1. TCP OP_PUSH `bytes::Bytes` end-to-end; OP_NEGOTIATE_WIRE_FORMAT 0x18 shipped; Python SDK v0.2.0 with handshake + D-E4 fallback. Samply `JSON_SHARE_PCT=2.5` (≤3.0 ceiling PASSED by 17% margin). p99 latency −15% IMPROVED (26,029 µs vs Phase 58 C1's 30,632 µs). Perf-gate best-of-3 1,494,631 EPS on macOS dev host = +8.6% vs Phase 58 C1 baseline, −1.3% below 1,514,095 floor within 6% run variance.)
-Plan: Phase 59 closed — next is Phase 60 (hot-key mitigation via application salting — TPC-PERF-10).
-**Phase:** 60 (hotkey-mitigation-via-application-salting — not started)
-**Plan:** Phase 59 closed 2026-04-21; next is 60-00 (Wave 0 RED scaffolding)
-**Status:** Phase 60 awaiting plan
-**Progress:** [██████████] 96%
+Phase: 59.6 (typed-pipeline-records) — EXECUTING
+Plan: 2 of 8 (59.6-00 Wave 0 RED scaffolding complete; next is 59.6-01 Wave 1 schema runtime)
+**Status:** Executing Phase 59.6
+**Progress:** [████████░░] 84%
 
-**Last activity:** 2026-04-21 (59-04-SUMMARY.md landed; Phase 59 close)
+**Last activity:** 2026-04-21
+
+### Phase 59.6 plans
+
+| Plan | Status | Commits |
+|------|--------|---------|
+| 59.6-00 (W0 RED scaffolding) | Complete 2026-04-21 | 08fc600, 6ef82f6, 08bdfc2, 625d085, 5254714, 2822699 |
+| 59.6-01 (W1 schema runtime + registry) | Pending | — |
+| 59.6-02 (W2 wire codec typed push) | Pending | — |
+| 59.6-03 (W3 EnrichFromTable typed path) | Pending | — |
+| 59.6-04 (W4 aggregation typed operators) | Pending | — |
+| 59.6-05 (W5 state store + fallback cleanup) | Pending | — |
+| 59.6-06 (W6 remaining operators + parity battery) | Pending | — |
+| 59.6-07 (W7 ship gate + docs) | Pending | — |
 
 ### Phase 59 plans
 
@@ -148,6 +159,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 59 P03 | ~20min | 2 tasks | 5 files (python/beava/_protocol.py + python/beava/_client.py + python/pyproject.toml + python/tests/test_wire_negotiate.py + tests/python_sdk_pre_59_server_fallback.rs) |
 | Phase 59 P04 | ~35min (3× 60s perf runs + samply probe + probe bug-fix + PERF-GATE + VERIFICATION + ROADMAP/STATE + SUMMARY) | 2 tasks | 9 files (2 commits: W4 evidence + close) |
 | Phase 59 full | TCP OP_PUSH JSON round-trip eliminated; bytes::Bytes end-to-end; OP_NEGOTIATE_WIRE_FORMAT 0x18 + WIRE_BINARY_PASSTHROUGH capability bit; Python SDK v0.1.0→v0.2.0 with handshake + D-E4 fallback; samply JSON_SHARE_PCT=2.5 (≤3.0 D-D3 PASSED); p99 latency −15% IMPROVED; perf best-of-3 1,494,631 EPS (+8.6% vs P58 C1, −1.3% below floor within 6% run variance); SC-4 human_needed pending Linux prod-host re-run | 5 plans | 825/0/35 lib baseline (+13 from P58) + 817/0/35 state-inmem; 0 ship-gate regressions |
+| Phase 59.6 P00 | 8min | 5 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -341,7 +353,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 59-01-PLAN.md
+**Stopped at:** Completed 59.6-00-PLAN.md (Wave 0 RED scaffolding)
 
 **Next action (engineering):** Phase 58 is engineering-complete. The engineering-facing next action is one of:
   (a) **Start Phase 59** (Binary wire format for PUSH — TPC-PERF-09). Goal: eliminate JSON re-serialization on the PUSH hot path (~11% of CPU per 2026-04 samply notes). Replace JSON with a binary codec (length-prefixed postcard or custom) for TCP PUSH; HTTP PUSH stays JSON for compatibility; zero-copy `bytes::Bytes` end-to-end from wire → shard inbox → fjall insert. Phase 58 left the per-connection runtime dispatch overhead structurally eliminated — JSON is now the top-of-profile leaf to attack.

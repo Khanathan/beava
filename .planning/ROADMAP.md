@@ -300,6 +300,29 @@ Plans:
 - [x] 59-04-PLAN.md — Wave 4: perf gate (best-of-3 C0 = 1,494,631 EPS; −1.3% below floor within 6% variance; D-D3 samply PASSED 2.5; p99 −15% IMPROVED) + 59-PERF-GATE.md + 59-VERIFICATION.md (SC-1/2/3/5 passed, SC-4 human_needed Linux-host re-run) + close
 **UI hint**: no
 
+### Phase 59.6: 59.6-typed-pipeline-records
+**Goal**: Replace `serde_json::Value` as the in-pipeline event/state representation with typed, fixed-layout row records compiled from SDK-declared `@bv.stream` / `@bv.source_table` / `@bv.table` schemas at register time. Wire codec, engine operators (EnrichFromTable + 16 agg ops + SSJ), and state store (inmem + fjall; snapshot v11) all work on typed rows. `Value` fallback preserved for dynamic / debug paths. Target: per-event shard-thread cost 8.5μs → ~1-2μs (5× lift), per-shard ceiling ~118K EPS → ~500K-1M EPS, 10-shard node 5-10M EPS.
+**Depends on**: Phase 59.5 (shard_key routing + source_table replication landed); inserts between 59.5 and 60. Phase 60 (hot-key salting) resumes after — orthogonal axis that multiplies with this work.
+**Requirements**: TPC-PERF-11 (NEW — per-event shard-thread cost ≤ 2.0μs on complex-c8-x8 workload); TPC-CORR-07 (NEW — typed-row ↔ Value fallback parity under proptest).
+**Success Criteria** (what must be TRUE):
+  1. 59.5-W3.5 per-event histogram shows `pipeline` phase ≤ 2.0μs avg (down from 8.5μs) at sustained 1M+ EPS on complex-c8-x8.
+  2. `@bv.stream` / `@bv.source_table` / `@bv.table` classes compile to `RegisteredSchema` at register time; SDK → server carries schema in REGISTER; server stores typed rows.
+  3. All 17 operators (EnrichFromTable + 16 agg) have typed-row implementations; generic `Value` dispatch retained for ad-hoc / dynamic-schema paths only.
+  4. Fjall state store emits snapshot v11 with packed-row encoding; v10→v11 in-place migration tool + round-trip test.
+  5. Perf gate: ≥ +3× EPS vs Phase 59 C1 baseline (1,514,095 × 3.0 = **≥ 4,542,285 EPS**) on complex-c8-x8 at N=8; fallback contingency ladder if short.
+  6. Backward compatibility: Python SDK ≥ v0.3.0 negotiates typed-pipeline capability; pre-59.6 clients continue to work via `Value` fallback for ≥ 1 release cycle.
+**Plans**: 8 plans
+Plans:
+- [x] 59.6-00-PLAN.md — Wave 0: RED scaffolding (11 tests + parity harness + verify-typed-path.sh + bench stub + 2 AtomicU64 counters + TPC-PERF-11 row)
+- [ ] 59.6-01-PLAN.md — Wave 1: schema runtime (RegisteredSchema, Row, SchemaRegistry) + engine accessors + REGISTER JSON consumer + Python _schema_compile + _serialize emit
+- [ ] 59.6-02-PLAN.md — Wave 2: wire codec (OP_PUSH_TYPED_BATCH 0x19 + WIRE_TYPED_PIPELINE 1<<1 + src/wire/typed.rs decoder + ShardEvent.schema_id + PayloadFmt::TypedRow + Python SDK v0.3.0 _pack_typed_batch + push_many dispatch)
+- [ ] 59.6-03-PLAN.md — Wave 3: ShardOp::PushTypedRow + engine.push_typed_on_shard + EnrichFromTableTyped + run_typed_enrich_cascade + SC-3 GREEN
+- [ ] 59.6-04-PLAN.md — Wave 4: 7 typed simple aggs (Count/Sum/Avg/Min/Max/Last/First) + TypedAggOp trait + Shard::entity_state_typed + V11_FORMAT declaration + SC-4 (2 of 3) GREEN
+- [ ] 59.6-05-PLAN.md — Wave 5: V11 snapshot writer/reader + fjall put_entity_typed/get_entity_typed + StreamStreamJoinTyped + typed SsjInsert + SC-7+SC-8+SC-9+SC-10 GREEN + verify-typed-path.sh exit 0
+- [ ] 59.6-06-PLAN.md — Wave 6: 9 advanced typed aggs (DistinctCount/Percentile/TopK/Stddev/Variance + Ema/Lag/FirstN/LastN) + SideBand + Python SDK REGISTER ack schema_id echo + SC-6 GREEN + sharding_parity extended
+- [ ] 59.6-07-PLAN.md — Wave 7: perf gate best-of-3 + pipeline-phase latency measurement + samply probe + 59.6-PERF-GATE.md + 59.6-VERIFICATION.md + ROADMAP/STATE/REQUIREMENTS updates + docs/architecture.md + close
+**UI hint**: no
+
 ### Phase 60: 60-hotkey-mitigation-via-application-salting
 **Goal**: Fix the Zipf-1.2 hot-shard bottleneck — today shard-0 saturates at ~450K EPS while shards 1–7 are idle (`/debug/shards` shows `inbox_depth=65536` on shard-0 vs 0 everywhere else). Under Pareto-80/20 workloads (TPC-PERF-07), a single shard is the ceiling. Approach: application-layer salting. Users declare `shard_key="user_id:salt(N)"` and Beava appends a random 0..N suffix at ingest, splitting hot keys across N virtual sub-shards. Cross-sub-shard scatter-gather on read.
 **Depends on**: Phase 59 (per-event hot-path cost reduced so salt fan-out is affordable).
@@ -317,13 +340,13 @@ Plans:
   - Register-time sample-event guard rejects salt declaration when key contains `:` (D-G1); mixed-salt joins emit `SaltedJoinWarning` (D-D2) — not reject.
   - Perf-gate harness: extended `benches/pareto_workload.rs` + `benchmark/fraud-pipeline/run_bench.sh` with a fraud-pipeline variant declaring `salt(16)` on Transactions; uniform workload regression budget ±2% of Phase 59 baseline (D-F4).
   - Contingency ladder: C1 salt(64) → C2 double-salting → C3 human_needed (D-F5).
-**Plans**: 5 plans
+**Plans**: 5 plans (re-planned 2026-04-21 — old-design plans 01-04 replaced after interactive redirect to `salt=N` kwarg API)
 Plans:
-- [ ] 60-00-PLAN.md — Wave 0: TPC-PERF-10 row + 4 RED integration tests (tagged `#[ignore = "60-W[1-4]"]`) + `scripts/verify-salt-feature-complete.sh` grep-gate (exits 1 pre-Wave 1) + `pareto_salted_c8_x8` bench placeholder
-- [ ] 60-01-PLAN.md — Wave 1: `parse_shard_key_with_salt` + `ShardKeyParseError` + `SaltedJoinWarning` + `StreamDefinition.salt_cardinality: Option<u8> (#[serde(default)])` + Python SDK client-side parse + REGISTER payload emission
-- [ ] 60-02-PLAN.md — Wave 2: `shard_hint_for_event_salted` + `derive_storage_key` + 6 `derive_shard_idx` call-site threads + TCP/HTTP ingest wiring + D-G1 colon-in-key guard
-- [ ] 60-03-PLAN.md — Wave 3: `expand_salt_variants` + `combine_salt_variants` + `dispatch_salted_read_scatter` (per-target-shard coalesce via `ShardOp::ReadEntityBatch`) + EnrichFromTable salted-right-side + `tests/sharding_parity.rs` salted proptest subcase
-- [ ] 60-04-PLAN.md — Wave 4: 3 new metrics (`beava_shard_hot_key_owner_ratio`, `beava_salt_fanout_reads_total`, `beava_salt_ingest_writes_total`) + `salted_streams` on `/debug/shards` + Pareto +50% perf-gate (Criterion A/B + `run_bench.sh` 3× best-of-3) + `60-PERF-GATE.md` + `60-VERIFICATION.md` + human verify + close
+- [x] 60-00-PLAN.md — Wave 0: TPC-PERF-10 row + 22 RED integration tests (tagged `#[ignore = "60-W[1-4]"]`) + `scripts/verify-salt-feature-complete.sh` grep-gate (exits 1 pre-Wave 1) + `pareto_salted_c8_x8` bench placeholder — Complete 2026-04-21 (commits 8eaaaa4, dd37e17)
+- [ ] 60-01-PLAN.md — Wave 1 (re-planned 2026-04-21): `validate_salt(n: u16)` + `SaltError` + `SaltedJoinWarning` + `StreamDefinition.salt: Option<u16> (#[serde(default)])` + Python `@bv.stream(salt=N)` kwarg + REGISTER JSON `"salt"` field + source-table rejection (D-A5) + rename 6 W1 tests from old string-DSL API
+- [ ] 60-02-PLAN.md — Wave 2: `shard_hint_for_event_salted` + `derive_storage_key` + 9 `shard_hint_for_event` call-site threads in pipeline.rs + store/store_fjall salt arg + TCP/HTTP ingest wiring + D-B4 colon-in-key guard
+- [ ] 60-03-PLAN.md — Wave 3: `expand_salt_variants` + `combine_salt_variants` + `dispatch_salted_read_scatter` (per-target-shard coalesce via `ShardOp::ReadEntityBatch`) + `get_entity_salted` point-read contract (D-C5, N× cost) + EnrichFromTable salted-right-side + `tests/sharding_parity.rs` salted N=1↔N=8 subcase
+- [ ] 60-04-PLAN.md — Wave 4: 3 new metrics (`beava_shard_hot_key_owner_ratio`, `beava_salt_fanout_reads_total`, `beava_salt_ingest_writes_total`) + `salted_streams` on `/debug/shards` + Pareto best-of-3 perf-gate (D-F2 throughput ≥+50% AND D-F3 NEW p99 read latency ≤2× unsalted) + D-F4 ±2% uniform regression + D-F5 inbox gate + `60-PERF-GATE.md` + `60-VERIFICATION.md` + `docs/architecture-tpc.md § hot-key salting` + human verify + close
 **UI hint**: no
 
 ### Phase 61: 61-metrics-hot-path-hoist
