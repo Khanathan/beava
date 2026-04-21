@@ -4071,6 +4071,30 @@ impl PipelineEngine {
         // without going through the cascade bridge — used by the
         // SC-4 parity tests in `tests/typed_aggregation_parity.rs` and
         // `tests/typed_row_parity.rs`.
+        //
+        // Phase 59.7 Wave 3 (TPC-PERF-11 extension) — when the
+        // `BEAVA_TYPED_CASCADE_DIRECT=1` env flag is set AND every
+        // downstream has a pre-built typed agg ops list, walk the cascade
+        // inline via `run_typed_direct_cascade_same_shard` to skip the
+        // `row_to_value` bridge for the same-shard case. Cross-shard
+        // downstreams fall back to the Value bridge for this wave
+        // (W4 swaps that for `ShardOp::RunTypedAggCascadeStep` dispatch).
+        if self.typed_cascade_direct_enabled {
+            let all_cached = cascade.iter().all(|ds| self.typed_agg_ops_cache.contains_key(ds));
+            if all_cached {
+                return self.run_typed_direct_cascade_same_shard(
+                    stream_name,
+                    row,
+                    schema,
+                    shard,
+                    event_log,
+                    now,
+                    read_features,
+                    sibling_shards,
+                    input_shard_idx,
+                );
+            }
+        }
         self.run_typed_enrich_cascade(
             stream_name,
             row,
@@ -4082,6 +4106,155 @@ impl PipelineEngine {
             sibling_shards,
             input_shard_idx,
         )
+    }
+
+    /// Phase 59.7 Wave 3 (TPC-PERF-11 extension, TPC-CORR-07) — same-shard
+    /// typed-direct cascade walker.
+    ///
+    /// Walks `cascade_plan[stream_name]` in topological order. For each
+    /// downstream whose target shard equals `input_shard_idx`, runs the
+    /// pre-built typed agg ops inline via `run_typed_agg_step` +
+    /// `update_windowed`. For cross-shard downstreams, falls back to the
+    /// Value bridge (`run_typed_enrich_cascade` → `push_with_cascade_on_shard`)
+    /// for this wave; Wave 4 swaps that to a `ShardOp::RunTypedAggCascadeStep`
+    /// dispatch.
+    ///
+    /// Byte-parity contract: produces the same entity_state bytes as the
+    /// Value-cascade path would have on the same event stream. The
+    /// parity gate is `tests/typed_cascade_crossshard_parity.rs ::
+    /// parity_same_shard_cascade_typed_vs_value_direct`.
+    #[allow(clippy::too_many_arguments)]
+    fn run_typed_direct_cascade_same_shard(
+        &self,
+        stream_name: &str,
+        row: crate::engine::schema::Row,
+        schema: &crate::engine::schema::RegisteredSchema,
+        shard: &mut crate::shard::Shard,
+        event_log: Option<&std::sync::Arc<crate::state::event_log::EventLog>>,
+        now: SystemTime,
+        read_features: bool,
+        sibling_shards: Option<&[crate::shard::thread::ShardHandle]>,
+        input_shard_idx: usize,
+    ) -> Result<FeatureMap, BeavaError> {
+        use crate::engine::schema::shard_hint_from_row;
+
+        let n_shards = sibling_shards.map(|s| s.len().max(1)).unwrap_or(1) as u32;
+
+        let cascade = match self.cascade_plan.get(stream_name) {
+            Some(plan) => plan.clone(),
+            None => return Ok(FeatureMap::new()),
+        };
+
+        // Watermark observation for the primary stream (mirrors
+        // push_with_cascade_on_shard's behavior).
+        if let Some(et) = self.try_extract_event_time_from_typed_row(&row, schema) {
+            shard.watermark.observe(stream_name, et);
+        }
+
+        let mut any_cross_shard = false;
+        let mut aggregate_fmap: FeatureMap = FeatureMap::new();
+
+        for downstream_name in &cascade {
+            // Compute downstream entity key + target shard.
+            let ds_def = match self.streams.get(downstream_name) {
+                Some(d) => d,
+                None => continue,
+            };
+            let key_field = match ds_def.key_field.as_deref() {
+                Some(k) => k,
+                None => continue,
+            };
+            // Extract entity_key from the typed row via the input schema
+            // (downstream shares the key field name with the primary for
+            // same-shard cascade — consistent with Phase 55/56 patterns).
+            let entity_key = match schema.field_index(key_field) {
+                Some(i) => {
+                    let f = &schema.fields[i];
+                    match f.ty {
+                        crate::engine::schema::FieldTy::InlineStr => row
+                            .read_inline_str(f.offset, schema.inline_str_cap)
+                            .to_string(),
+                        crate::engine::schema::FieldTy::String => {
+                            row.read_string(f.offset).to_string()
+                        }
+                        crate::engine::schema::FieldTy::I64 => row.read_i64(f.offset).to_string(),
+                        _ => continue,
+                    }
+                }
+                None => continue,
+            };
+
+            let target_shard = if n_shards == 0 {
+                0u32
+            } else {
+                shard_hint_from_row(&row, schema, key_field) % n_shards
+            };
+
+            if target_shard as usize == input_shard_idx {
+                // Same-shard fast path: run typed agg step inline.
+                if let (Some(ops_arc), Some(state_schema)) = (
+                    self.build_typed_agg_ops_for(downstream_name),
+                    self.get_typed_state_schema(downstream_name),
+                ) {
+                    let op_refs: Vec<&dyn crate::engine::operators_typed::TypedAggOp> =
+                        ops_arc.iter().map(|o| o.as_ref()).collect();
+                    let fmap = self.run_typed_agg_step(
+                        downstream_name,
+                        &entity_key,
+                        &row,
+                        schema,
+                        &op_refs,
+                        &state_schema,
+                        shard,
+                        now,
+                    );
+                    for op in &op_refs {
+                        op.update_windowed(
+                            shard,
+                            downstream_name,
+                            &entity_key,
+                            &row,
+                            schema,
+                            now,
+                        );
+                    }
+                    if read_features {
+                        for (k, v) in fmap {
+                            aggregate_fmap.insert(k, v);
+                        }
+                    }
+                } else {
+                    // No typed impl — downgrade just this downstream to
+                    // Value fallback.
+                    any_cross_shard = true;
+                }
+            } else {
+                // Cross-shard — W3 downgrades to Value fallback for the
+                // whole cascade. W4 dispatches
+                // `ShardOp::RunTypedAggCascadeStep` here.
+                any_cross_shard = true;
+            }
+        }
+
+        if any_cross_shard {
+            // Fall back to the Value-bridge for the whole cascade so
+            // downstream entity state matches the Value path byte-for-byte
+            // (W4 is the first wave that handles cross-shard dispatch
+            // directly).
+            return self.run_typed_enrich_cascade(
+                stream_name,
+                row,
+                schema,
+                shard,
+                event_log,
+                now,
+                read_features,
+                sibling_shards,
+                input_shard_idx,
+            );
+        }
+
+        Ok(aggregate_fmap)
     }
 
     /// Phase 59.6 Wave 4 (TPC-PERF-11, D-C4) — typed aggregation step.
