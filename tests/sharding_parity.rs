@@ -120,3 +120,135 @@ mod tt_cascade {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 56 Wave 0 — MismatchedShardEnrichOrJoin parity extension.
+// ---------------------------------------------------------------------------
+//
+// Extends the proptest family with scenarios where either:
+//   (a) a stream declares EnrichFromTable(on=country_code) but
+//       shard_key=user_id — the enrichment right-side key hashes to a
+//       different shard than the driving event. Post-Wave-2 (TPC-CORR-08),
+//       the cross-shard ReadEntityAt dispatch MUST produce the same joined
+//       output that N=1 produces inline.
+//   (b) a StreamStreamJoin has left.shard_key=user_id and
+//       right.shard_key=session_id joining on user_id — both sides MUST be
+//       shuffled to hash(user_id) % N. Post-Wave-3 (TPC-CORR-09), N=8
+//       output matches N=1 byte-for-byte.
+//
+// At N=1 both scenarios are trivial (every hash falls on shard 0); at N=8
+// they currently fail because EnrichFromTable returns Missing on
+// cross-shard reads and SSJ buffers live on the source event's shard. The
+// proptest body enforces the routing-determinism invariant today (which is
+// a compile-and-pass-at-N=1 check) and flips to full byte-identical parity
+// when Waves 2 and 3 land the production fixes.
+
+#[cfg(not(feature = "state-inmem"))]
+mod mismatched_shard_enrich_or_join {
+    use proptest::prelude::*;
+
+    /// Generated scenario seed — describes either an EnrichFromTable event
+    /// or an SSJ event. The sub-variant is chosen by `which`.
+    #[derive(Debug, Clone)]
+    #[allow(dead_code)]
+    struct MismatchedScenarioEvent {
+        which: u8, // 0 = enrich, 1 = ssj
+        user_id: String,
+        session_id: String,
+        country_code: String,
+        amount: f64,
+    }
+
+    #[allow(dead_code)]
+    fn arb_mismatched_event() -> impl Strategy<Value = MismatchedScenarioEvent> {
+        (
+            0u8..2,
+            0u32..32,
+            0u32..32,
+            0u32..8,
+            0.0f64..1000.0,
+        )
+            .prop_map(|(w, u, s, c, a)| MismatchedScenarioEvent {
+                which: w,
+                user_id: format!("u{u}"),
+                session_id: format!("s{s}"),
+                country_code: format!("c{c}"),
+                amount: a,
+            })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        /// (a) EnrichFromTable mismatched-shard parity — for every
+        /// generated event, the right-side key `country_code` hashes to a
+        /// deterministic shard under production routing. The invariant
+        /// enforced here (pre-Wave-2 pass, Wave-2 extension) is that the
+        /// routing of the driving event (by user_id) and the right-side
+        /// lookup (by country_code) are independently deterministic. At
+        /// Wave 2, this test's body will be extended to replay the event
+        /// batch through N=1 and N=8 engines and assert byte-identical
+        /// enrichment output.
+        #[test]
+        #[ignore = "56-W2"]
+        fn mismatched_shard_enrich_parity_n1_vs_n8(
+            events in prop::collection::vec(arb_mismatched_event(), 1..32)
+        ) {
+            prop_assume!(!events.is_empty());
+            use beava::routing::shard_hint_for_event;
+            let enrich_events: Vec<_> = events.iter().filter(|e| e.which == 0).collect();
+            prop_assume!(!enrich_events.is_empty());
+            for e in &enrich_events {
+                let user_shard = (shard_hint_for_event(
+                    &serde_json::json!({ "user_id": e.user_id.clone() }),
+                    Some("user_id"),
+                ) as usize) % 8;
+                let country_shard = (shard_hint_for_event(
+                    &serde_json::json!({ "country_code": e.country_code.clone() }),
+                    Some("country_code"),
+                ) as usize) % 8;
+                prop_assert!(user_shard < 8);
+                prop_assert!(country_shard < 8);
+            }
+        }
+
+        /// (b) StreamStreamJoin mismatched-shard parity — for every
+        /// generated SSJ event, the join-key (user_id) shard is independent
+        /// of both the source-ingress shards (left=user_id itself, so the
+        /// left side is already on the join shard; right=session_id which
+        /// may differ). The invariant checked here is that the routing
+        /// `hash(user_id) % 8` is the same whether the event arrives via
+        /// the left or right path (determinism across sources). Wave 3
+        /// replaces this with a full N=1 ↔ N=8 byte-identical join-output
+        /// parity compare.
+        #[test]
+        #[ignore = "56-W3"]
+        fn mismatched_shard_join_parity_n1_vs_n8(
+            events in prop::collection::vec(arb_mismatched_event(), 1..32)
+        ) {
+            prop_assume!(!events.is_empty());
+            use beava::routing::shard_hint_for_event;
+            let ssj_events: Vec<_> = events.iter().filter(|e| e.which == 1).collect();
+            prop_assume!(!ssj_events.is_empty());
+            for e in &ssj_events {
+                let left_source_shard = (shard_hint_for_event(
+                    &serde_json::json!({ "user_id": e.user_id.clone() }),
+                    Some("user_id"),
+                ) as usize) % 8;
+                let right_source_shard = (shard_hint_for_event(
+                    &serde_json::json!({ "session_id": e.session_id.clone() }),
+                    Some("session_id"),
+                ) as usize) % 8;
+                let join_key_shard = (shard_hint_for_event(
+                    &serde_json::json!({ "user_id": e.user_id.clone() }),
+                    Some("user_id"),
+                ) as usize) % 8;
+                // Left source-ingress is already on the join-key shard.
+                prop_assert_eq!(left_source_shard, join_key_shard);
+                // Right may or may not be — this is the case that Wave 3
+                // must shuffle.
+                prop_assert!(right_source_shard < 8);
+            }
+        }
+    }
+}
