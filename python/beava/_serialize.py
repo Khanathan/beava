@@ -79,6 +79,12 @@ def _compile_source(descriptor: Any) -> dict[str, Any]:
                 d["shard_key"] = sk
             elif isinstance(sk, tuple):
                 d["shard_key"] = list(sk)
+        # Phase 60 D-A3: emit optional salt field in REGISTER payload.
+        # Absent (not null) when salt=None — keeps pre-Phase-60 wire shape
+        # identical for unsalted streams; server's serde(default) reads None.
+        salt = getattr(descriptor, "_beava_salt", None)
+        if salt is not None:
+            d["salt"] = int(salt)
     elif isinstance(descriptor, TableSource):
         # Phase 56-NEXT #6: @bv.source_table emits kind="source_table" so the
         # server's REGISTER dispatch routes it through SourceTableDescriptor

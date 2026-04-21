@@ -28,6 +28,26 @@ from beava._stateless_ops import StatelessOpsMixin
 from beava._types_core import FieldSpec
 
 
+def _validate_salt(salt: int | None) -> None:
+    """Phase 60 D-A1..D-A2: client-side salt cardinality validation.
+
+    Server re-validates independently (D-A4). Raises TypeError with
+    actionable message on any invalid value so users catch bad declarations
+    before the network round-trip.
+    """
+    if salt is None:
+        return
+    # bool is a subclass of int — reject so @bv.stream(salt=True) errors.
+    if not isinstance(salt, int) or isinstance(salt, bool):
+        raise TypeError(
+            f"salt must be int or None, got {type(salt).__name__}"
+        )
+    if salt < 2 or salt > 256:
+        raise TypeError(f"salt must be in [2, 256], got {salt}")
+    if salt & (salt - 1) != 0:
+        raise TypeError(f"salt must be a power of 2, got {salt}")
+
+
 class Stream(StatelessOpsMixin):
     """Marker / runtime type for streaming inputs.
 
@@ -99,12 +119,17 @@ class StreamSource(Stream):
         history_ttl: str | None = None,
         watermark_lateness: str | None = None,
         shard_key: str | tuple | None = None,
+        salt: int | None = None,
     ) -> None:
         self._name = name
         self._schema = schema
         self._history_ttl = history_ttl
         self._watermark_lateness = watermark_lateness
         self._beava_shard_key = shard_key
+        # Phase 60 D-A1..D-A3: per-stream salt cardinality for hot-key mitigation.
+        # Validated client-side here (fast fail); server re-validates.
+        _validate_salt(salt)
+        self._beava_salt = salt
         # Sources have no upstream ops.
         self._ops: list[dict[str, Any]] = []
         self._upstreams: list[Stream] = []
@@ -328,7 +353,7 @@ def _build_stream_derivation_from_func(
     )
 
 
-def stream(cls: type | FunctionType | None = None, *, history_ttl: str | None = None, watermark_lateness: str | None = None, shard_key: str | tuple | None = None):  # noqa: D401
+def stream(cls: type | FunctionType | None = None, *, history_ttl: str | None = None, watermark_lateness: str | None = None, shard_key: str | tuple | None = None, salt: int | None = None):  # noqa: D401
     # D-09 / TPC-DX-01: validate shard_key type client-side.
     if shard_key is not None and not isinstance(shard_key, (str, tuple)):
         raise TypeError(
@@ -347,10 +372,14 @@ def stream(cls: type | FunctionType | None = None, *, history_ttl: str | None = 
     if watermark_lateness is not None:
         from beava._table import _validate_duration_str
         _validate_duration_str(watermark_lateness, field="watermark_lateness")
-    return _stream_impl(cls, history_ttl=history_ttl, watermark_lateness=watermark_lateness, shard_key=shard_key)
+    # Phase 60 D-A1..D-A2: validate salt client-side BEFORE calling _stream_impl
+    # so decorator-form (`@bv.stream(salt=10)`) fails fast during module import,
+    # not later at registration.
+    _validate_salt(salt)
+    return _stream_impl(cls, history_ttl=history_ttl, watermark_lateness=watermark_lateness, shard_key=shard_key, salt=salt)
 
 
-def _stream_impl(cls: type | FunctionType | None = None, *, history_ttl: str | None = None, watermark_lateness: str | None = None, shard_key: str | tuple | None = None):
+def _stream_impl(cls: type | FunctionType | None = None, *, history_ttl: str | None = None, watermark_lateness: str | None = None, shard_key: str | tuple | None = None, salt: int | None = None):
     """Decorator that declares a Stream — class form or function form.
 
     Class form::
@@ -389,6 +418,7 @@ def _stream_impl(cls: type | FunctionType | None = None, *, history_ttl: str | N
                 history_ttl=history_ttl,
                 watermark_lateness=watermark_lateness,
                 shard_key=shard_key,
+                salt=salt,
             )
         raise TypeError(
             f"@bv.stream must be applied to a class or function, got "
