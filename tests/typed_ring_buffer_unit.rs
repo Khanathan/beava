@@ -17,7 +17,9 @@
 
 use beava::engine::event_time::DropReason;
 use beava::engine::operators_typed_aggs_windowed::{
-    TypedRingBufferAvg, TypedRingBufferF64, TypedRingBufferI64, TypedRingBufferVariantHint,
+    TypedRingBufferAvg, TypedRingBufferF64, TypedRingBufferI64, TypedRingBufferInlineStr,
+    TypedRingBufferMaxF64, TypedRingBufferMaxI64, TypedRingBufferMinF64, TypedRingBufferMinI64,
+    TypedRingBufferVariantHint,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -133,4 +135,91 @@ fn test_typed_ring_buffer_enum_variant_mismatch_panics() {
     let mut e = TypedRingBufferVariantHint::I64
         .construct(Duration::from_secs(5), Duration::from_secs(1));
     let _ = e.as_f64_mut();
+}
+
+// ---------------------------------------------------------------------------
+// Phase 59.7 Wave 2 — Min/Max/InlineStr ring buffer unit tests.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_typed_ring_buffer_min_i64_across_buckets() {
+    let mut rb = TypedRingBufferMinI64::new(Duration::from_secs(5), Duration::from_secs(1));
+    // Distribute values across 5 buckets; min should fall to 1.
+    for (offset, v) in [(0u64, 10i64), (1, 5), (2, 3), (3, 1), (4, 8)] {
+        rb.update_at_event_time(v, ts(1000 + offset));
+    }
+    assert_eq!(rb.reduce(), Some(1));
+    // Empty before any insert.
+    let empty = TypedRingBufferMinI64::new(Duration::from_secs(5), Duration::from_secs(1));
+    assert_eq!(empty.reduce(), None);
+}
+
+#[test]
+fn test_typed_ring_buffer_max_f64_across_buckets() {
+    let mut rb = TypedRingBufferMaxF64::new(Duration::from_secs(5), Duration::from_secs(1));
+    for (offset, v) in [(0u64, 2.5f64), (1, 5.0), (2, 1.0), (3, 7.5), (4, 3.0)] {
+        rb.update_at_event_time(v, ts(1000 + offset));
+    }
+    assert_eq!(rb.reduce(), Some(7.5));
+    // Advance past the window → empty.
+    let _ = TypedRingBufferMaxI64::new(Duration::from_secs(5), Duration::from_secs(1));
+    // Drop on TooOld — insert at 1000, advance to 1020 (15s past), then try 1005.
+    let mut rb2 = TypedRingBufferMaxI64::new(Duration::from_secs(5), Duration::from_secs(1));
+    rb2.update_at_event_time(1, ts(1020));
+    assert_eq!(rb2.reduce(), Some(1));
+    rb2.update_at_event_time(99, ts(1005));
+    // 1005 was dropped as TooOld; reduce stays 1.
+    assert_eq!(rb2.reduce(), Some(1));
+    assert_eq!(rb2.take_last_drop(), Some(DropReason::TooOld));
+}
+
+#[test]
+fn test_typed_ring_buffer_inline_str_last_picks_newest() {
+    let mut rb = TypedRingBufferInlineStr::new(Duration::from_secs(5), Duration::from_secs(1));
+    rb.update_at_event_time("a", ts(1001));
+    rb.update_at_event_time("b", ts(1003));
+    rb.update_at_event_time("c", ts(1002));
+    assert_eq!(rb.read_last(), Some("b"));
+    assert_eq!(rb.read_first(), Some("a"));
+    let empty = TypedRingBufferInlineStr::new(Duration::from_secs(5), Duration::from_secs(1));
+    assert_eq!(empty.read_last(), None);
+    assert_eq!(empty.read_first(), None);
+}
+
+#[test]
+fn test_typed_ring_buffer_min_f64_serde_round_trip() {
+    let mut rb = TypedRingBufferMinF64::new(Duration::from_secs(5), Duration::from_secs(1));
+    rb.update_at_event_time(3.25, ts(1000));
+    rb.update_at_event_time(1.5, ts(1002));
+    rb.update_at_event_time(2.75, ts(1003));
+    let bytes = postcard::to_stdvec(&rb).expect("serialize");
+    let decoded: TypedRingBufferMinF64 = postcard::from_bytes(&bytes).expect("deserialize");
+    assert_eq!(rb, decoded);
+    assert_eq!(decoded.reduce(), Some(1.5));
+}
+
+#[test]
+fn test_typed_ring_buffer_inline_str_serde_round_trip() {
+    let mut rb = TypedRingBufferInlineStr::new(Duration::from_secs(5), Duration::from_secs(1));
+    rb.update_at_event_time("hello", ts(1000));
+    rb.update_at_event_time("world", ts(1003));
+    let bytes = postcard::to_stdvec(&rb).expect("serialize");
+    let decoded: TypedRingBufferInlineStr = postcard::from_bytes(&bytes).expect("deserialize");
+    assert_eq!(rb, decoded);
+    assert_eq!(decoded.read_last(), Some("world"));
+    assert_eq!(decoded.read_first(), Some("hello"));
+}
+
+#[test]
+fn test_typed_ring_buffer_enum_w2_variant_dispatch() {
+    let mut e = TypedRingBufferVariantHint::MinI64
+        .construct(Duration::from_secs(5), Duration::from_secs(1));
+    e.as_min_i64_mut().update_at_event_time(7, ts(1000));
+    e.as_min_i64_mut().update_at_event_time(3, ts(1001));
+    assert_eq!(e.as_min_i64().reduce(), Some(3));
+
+    let mut e2 = TypedRingBufferVariantHint::InlineStr
+        .construct(Duration::from_secs(5), Duration::from_secs(1));
+    e2.as_inline_str_mut().update_at_event_time("x", ts(1000));
+    assert_eq!(e2.as_inline_str().read_last(), Some("x"));
 }

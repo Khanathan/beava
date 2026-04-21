@@ -31,11 +31,14 @@
 #![allow(unused_imports, dead_code)]
 
 use beava::engine::operators::{
-    AvgOp, CountOp as CountOpValue, Operator, SumOp as SumOpValue,
+    AvgOp, CountOp as CountOpValue, MaxOp as MaxOpValue, MinOp as MinOpValue, Operator,
+    SumOp as SumOpValue,
 };
 use beava::engine::operators_typed::TypedAggOp;
 use beava::engine::operators_typed_aggs_windowed::{
-    AvgOpTypedWindowedF64, CountOpTypedWindowed, SumOpTypedWindowedF64, SumOpTypedWindowedI64,
+    AvgOpTypedWindowedF64, CountOpTypedWindowed, FirstOpTypedWindowedInlineStr,
+    LastOpTypedWindowedInlineStr, MaxOpTypedWindowedF64, MaxOpTypedWindowedI64,
+    MinOpTypedWindowedF64, MinOpTypedWindowedI64, SumOpTypedWindowedF64, SumOpTypedWindowedI64,
 };
 use beava::engine::schema::{FieldSpec, FieldTy, RegisteredSchema, Row};
 use beava::shard::Shard;
@@ -422,43 +425,417 @@ fn parity_avg_f64_typed_vs_value_windowed_5s_bucket_1s() {
 }
 
 // ---------------------------------------------------------------------------
-// Wave-2 RED tests (still ignored): Min i64/f64, Max i64/f64, Last, First.
+// Wave-2 GREEN tests: Min i64/f64, Max i64/f64, Last, First.
+//
+// Min/Max compare typed windowed vs. Value-path MinOp/MaxOp (both windowed).
+// Value-path ops emit Float regardless of input ty; typed i64 ops emit Int —
+// we normalize Int→Float before compare. Last/First compare against a local
+// in-memory sliding-window reference (Value-path LastOp/FirstOp are lifetime
+// ops, not windowed, so can't serve as ground truth).
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "59.7-W2"]
 fn parity_min_i64_typed_vs_value_windowed_5s_bucket_1s() {
-    // Wave 2: MinOpTypedWindowedI64 + TypedRingBufferMin<i64> (bucket-local
-    // min + parallel count buffer, mirroring MinOp's MinBucket semantics).
-    unreachable!("59.7-W2 RED: MinOpTypedWindowedI64 not yet implemented");
+    let event_schema = event_schema_num();
+    let state_schema = state_schema_dummy();
+    let typed_op = MinOpTypedWindowedI64 {
+        name: "min_qty".into(),
+        op_idx: 10,
+        window: window(),
+        bucket: bucket(),
+        input_offset: 24, // qty field
+    };
+    let mut value_op = MinOpValue::new("qty", window(), bucket(), false);
+    let mut shard = fresh_shard();
+
+    let checkpoints = checkpoints();
+    let mut cp_iter = checkpoints.iter().peekable();
+    let dummy_state = Row::zeroed(&state_schema);
+
+    for i in 0..N_EVENTS {
+        let et = event_time_at(i);
+        // Vary qty so min changes throughout the stream. Offset ensures min >= 1.
+        let qty = ((i % 997) as i64) + 1;
+        let (row, val) = make_event(0.0, qty);
+        typed_op.update_windowed(&mut shard, STREAM, ENTITY, &row, &event_schema, et);
+        value_op.push(&val, None, et).expect("value push");
+
+        while let Some(&cp) = cp_iter.peek() {
+            if et < *cp {
+                break;
+            }
+            let t = typed_op.read_feature_windowed(
+                &shard,
+                STREAM,
+                ENTITY,
+                &dummy_state,
+                &state_schema,
+            );
+            let v = value_op.read(*cp);
+            // Normalize: typed Int → Float for compare with Value-path MinOp.
+            let t = match t {
+                FeatureValue::Int(n) => FeatureValue::Float(n as f64),
+                other => other,
+            };
+            match (&t, &v) {
+                (FeatureValue::Missing, FeatureValue::Missing) => {}
+                (FeatureValue::Float(tf), FeatureValue::Float(vf)) => {
+                    assert!(
+                        (tf - vf).abs() < 1e-9,
+                        "MinI64 parity at cp={:?} i={}: typed={} value={}",
+                        cp,
+                        i,
+                        tf,
+                        vf
+                    );
+                }
+                (a, b) => panic!(
+                    "MinI64 parity shape mismatch at cp={:?} i={}: typed={:?} value={:?}",
+                    cp, i, a, b
+                ),
+            }
+            cp_iter.next();
+        }
+    }
 }
 
 #[test]
-#[ignore = "59.7-W2"]
 fn parity_min_f64_typed_vs_value_windowed_5s_bucket_1s() {
-    unreachable!("59.7-W2 RED: MinOpTypedWindowedF64 not yet implemented");
+    let event_schema = event_schema_num();
+    let state_schema = state_schema_dummy();
+    let typed_op = MinOpTypedWindowedF64 {
+        name: "min_amt".into(),
+        op_idx: 11,
+        window: window(),
+        bucket: bucket(),
+        input_offset: 16, // amount field
+    };
+    let mut value_op = MinOpValue::new("amount", window(), bucket(), false);
+    let mut shard = fresh_shard();
+
+    let checkpoints = checkpoints();
+    let mut cp_iter = checkpoints.iter().peekable();
+    let dummy_state = Row::zeroed(&state_schema);
+
+    for i in 0..N_EVENTS {
+        let et = event_time_at(i);
+        let amount = ((i % 997) as f64) + 0.5;
+        let (row, val) = make_event(amount, 0);
+        typed_op.update_windowed(&mut shard, STREAM, ENTITY, &row, &event_schema, et);
+        value_op.push(&val, None, et).expect("value push");
+
+        while let Some(&cp) = cp_iter.peek() {
+            if et < *cp {
+                break;
+            }
+            let t = typed_op.read_feature_windowed(
+                &shard,
+                STREAM,
+                ENTITY,
+                &dummy_state,
+                &state_schema,
+            );
+            let v = value_op.read(*cp);
+            match (&t, &v) {
+                (FeatureValue::Missing, FeatureValue::Missing) => {}
+                (FeatureValue::Float(tf), FeatureValue::Float(vf)) => {
+                    assert!(
+                        (tf - vf).abs() < 1e-9,
+                        "MinF64 parity at cp={:?} i={}: typed={} value={}",
+                        cp,
+                        i,
+                        tf,
+                        vf
+                    );
+                }
+                (a, b) => panic!(
+                    "MinF64 parity shape mismatch at cp={:?} i={}: typed={:?} value={:?}",
+                    cp, i, a, b
+                ),
+            }
+            cp_iter.next();
+        }
+    }
 }
 
 #[test]
-#[ignore = "59.7-W2"]
 fn parity_max_i64_typed_vs_value_windowed_5s_bucket_1s() {
-    unreachable!("59.7-W2 RED: MaxOpTypedWindowedI64 not yet implemented");
+    let event_schema = event_schema_num();
+    let state_schema = state_schema_dummy();
+    let typed_op = MaxOpTypedWindowedI64 {
+        name: "max_qty".into(),
+        op_idx: 12,
+        window: window(),
+        bucket: bucket(),
+        input_offset: 24,
+    };
+    let mut value_op = MaxOpValue::new("qty", window(), bucket(), false);
+    let mut shard = fresh_shard();
+
+    let checkpoints = checkpoints();
+    let mut cp_iter = checkpoints.iter().peekable();
+    let dummy_state = Row::zeroed(&state_schema);
+
+    for i in 0..N_EVENTS {
+        let et = event_time_at(i);
+        let qty = ((i % 997) as i64) + 1;
+        let (row, val) = make_event(0.0, qty);
+        typed_op.update_windowed(&mut shard, STREAM, ENTITY, &row, &event_schema, et);
+        value_op.push(&val, None, et).expect("value push");
+
+        while let Some(&cp) = cp_iter.peek() {
+            if et < *cp {
+                break;
+            }
+            let t = typed_op.read_feature_windowed(
+                &shard,
+                STREAM,
+                ENTITY,
+                &dummy_state,
+                &state_schema,
+            );
+            let v = value_op.read(*cp);
+            let t = match t {
+                FeatureValue::Int(n) => FeatureValue::Float(n as f64),
+                other => other,
+            };
+            match (&t, &v) {
+                (FeatureValue::Missing, FeatureValue::Missing) => {}
+                (FeatureValue::Float(tf), FeatureValue::Float(vf)) => {
+                    assert!(
+                        (tf - vf).abs() < 1e-9,
+                        "MaxI64 parity at cp={:?} i={}: typed={} value={}",
+                        cp,
+                        i,
+                        tf,
+                        vf
+                    );
+                }
+                (a, b) => panic!(
+                    "MaxI64 parity shape mismatch at cp={:?} i={}: typed={:?} value={:?}",
+                    cp, i, a, b
+                ),
+            }
+            cp_iter.next();
+        }
+    }
 }
 
 #[test]
-#[ignore = "59.7-W2"]
 fn parity_max_f64_typed_vs_value_windowed_5s_bucket_1s() {
-    unreachable!("59.7-W2 RED: MaxOpTypedWindowedF64 not yet implemented");
+    let event_schema = event_schema_num();
+    let state_schema = state_schema_dummy();
+    let typed_op = MaxOpTypedWindowedF64 {
+        name: "max_amt".into(),
+        op_idx: 13,
+        window: window(),
+        bucket: bucket(),
+        input_offset: 16,
+    };
+    let mut value_op = MaxOpValue::new("amount", window(), bucket(), false);
+    let mut shard = fresh_shard();
+
+    let checkpoints = checkpoints();
+    let mut cp_iter = checkpoints.iter().peekable();
+    let dummy_state = Row::zeroed(&state_schema);
+
+    for i in 0..N_EVENTS {
+        let et = event_time_at(i);
+        let amount = ((i % 997) as f64) + 0.5;
+        let (row, val) = make_event(amount, 0);
+        typed_op.update_windowed(&mut shard, STREAM, ENTITY, &row, &event_schema, et);
+        value_op.push(&val, None, et).expect("value push");
+
+        while let Some(&cp) = cp_iter.peek() {
+            if et < *cp {
+                break;
+            }
+            let t = typed_op.read_feature_windowed(
+                &shard,
+                STREAM,
+                ENTITY,
+                &dummy_state,
+                &state_schema,
+            );
+            let v = value_op.read(*cp);
+            match (&t, &v) {
+                (FeatureValue::Missing, FeatureValue::Missing) => {}
+                (FeatureValue::Float(tf), FeatureValue::Float(vf)) => {
+                    assert!(
+                        (tf - vf).abs() < 1e-9,
+                        "MaxF64 parity at cp={:?} i={}: typed={} value={}",
+                        cp,
+                        i,
+                        tf,
+                        vf
+                    );
+                }
+                (a, b) => panic!(
+                    "MaxF64 parity shape mismatch at cp={:?} i={}: typed={:?} value={:?}",
+                    cp, i, a, b
+                ),
+            }
+            cp_iter.next();
+        }
+    }
+}
+
+// Emit a per-event InlineStr whose content varies per event index so the
+// windowed "last" and "first" answers change at every checkpoint.
+fn make_event_with_label(i: usize) -> (Row, String) {
+    let sch = event_schema_num();
+    let label = format!("e{:09}", i); // max 10 chars — fits inline_str_cap=15
+    let mut r = Row::zeroed(&sch);
+    r.write_inline_str(0, sch.inline_str_cap, &label);
+    r.write_f64(16, 0.0);
+    r.write_i64(24, 0);
+    (r, label)
 }
 
 #[test]
-#[ignore = "59.7-W2"]
 fn parity_last_inline_str_typed_vs_value_windowed_5s_bucket_1s() {
-    unreachable!("59.7-W2 RED: LastOpTypedWindowedInlineStr not yet implemented");
+    let event_schema = event_schema_num();
+    let state_schema = state_schema_dummy();
+    let typed_op = LastOpTypedWindowedInlineStr {
+        name: "last_user".into(),
+        op_idx: 14,
+        window: window(),
+        bucket: bucket(),
+        input_offset: 0, // user_id field
+        input_inline_str_cap: 15,
+    };
+    let mut shard = fresh_shard();
+
+    let checkpoints = checkpoints();
+    let mut cp_iter = checkpoints.iter().peekable();
+    let dummy_state = Row::zeroed(&state_schema);
+
+    // Reference sliding-window tracker: Vec<(event_time, label)>.
+    let mut reference: Vec<(SystemTime, String)> = Vec::new();
+
+    for i in 0..N_EVENTS {
+        let et = event_time_at(i);
+        let (row, label) = make_event_with_label(i);
+        typed_op.update_windowed(&mut shard, STREAM, ENTITY, &row, &event_schema, et);
+        reference.push((et, label));
+
+        while let Some(&cp) = cp_iter.peek() {
+            if et < *cp {
+                break;
+            }
+            let t = typed_op.read_feature_windowed(
+                &shard,
+                STREAM,
+                ENTITY,
+                &dummy_state,
+                &state_schema,
+            );
+            // Reference: "last" = reference entry with max event_time whose
+            // event_time lies in (cp - window, cp] — i.e. still in the ring.
+            // Ring-buffer semantics align buckets to bucket_duration; for the
+            // 5s/1s config an event at ET is in-window at cp when its bucket
+            // start is not yet evicted, i.e. event_time >= cp - window.
+            // Ring-buffer semantic: oldest retained bucket starts at
+            // `bucket_start(cp) - (num_buckets - 1) * bucket`. For
+            // bucket=1s, window=5s → num_buckets=5 → retained range starts
+            // at aligned(cp) - 4s.
+            let cp_secs = cp.duration_since(UNIX_EPOCH).unwrap().as_secs();
+            let bucket_secs = bucket().as_secs();
+            let num_buckets = (window().as_secs_f64() / bucket().as_secs_f64()).ceil() as u64;
+            let aligned = (cp_secs / bucket_secs) * bucket_secs;
+            let floor_secs = aligned.saturating_sub((num_buckets - 1) * bucket_secs);
+            let floor = UNIX_EPOCH + Duration::from_secs(floor_secs);
+            let mut best: Option<(SystemTime, &str)> = None;
+            for (ts, s) in &reference {
+                if *ts >= floor && *ts <= *cp {
+                    best = Some(match best {
+                        None => (*ts, s.as_str()),
+                        Some((b, _)) if *ts >= b => (*ts, s.as_str()),
+                        Some(cur) => cur,
+                    });
+                }
+            }
+            let expected = match best {
+                Some((_, s)) => FeatureValue::String(s.to_string()),
+                None => FeatureValue::Missing,
+            };
+            assert_eq!(
+                t, expected,
+                "Last parity at cp={:?} i={}: typed={:?} ref={:?}",
+                cp, i, t, expected
+            );
+            cp_iter.next();
+        }
+    }
 }
 
 #[test]
-#[ignore = "59.7-W2"]
 fn parity_first_inline_str_typed_vs_value_windowed_5s_bucket_1s() {
-    unreachable!("59.7-W2 RED: FirstOpTypedWindowedInlineStr not yet implemented");
+    let event_schema = event_schema_num();
+    let state_schema = state_schema_dummy();
+    let typed_op = FirstOpTypedWindowedInlineStr {
+        name: "first_user".into(),
+        op_idx: 15,
+        window: window(),
+        bucket: bucket(),
+        input_offset: 0,
+        input_inline_str_cap: 15,
+    };
+    let mut shard = fresh_shard();
+
+    let checkpoints = checkpoints();
+    let mut cp_iter = checkpoints.iter().peekable();
+    let dummy_state = Row::zeroed(&state_schema);
+
+    let mut reference: Vec<(SystemTime, String)> = Vec::new();
+
+    for i in 0..N_EVENTS {
+        let et = event_time_at(i);
+        let (row, label) = make_event_with_label(i);
+        typed_op.update_windowed(&mut shard, STREAM, ENTITY, &row, &event_schema, et);
+        reference.push((et, label));
+
+        while let Some(&cp) = cp_iter.peek() {
+            if et < *cp {
+                break;
+            }
+            let t = typed_op.read_feature_windowed(
+                &shard,
+                STREAM,
+                ENTITY,
+                &dummy_state,
+                &state_schema,
+            );
+            // Ring-buffer semantic: oldest retained bucket starts at
+            // `bucket_start(cp) - (num_buckets - 1) * bucket`. For
+            // bucket=1s, window=5s → num_buckets=5 → retained range starts
+            // at aligned(cp) - 4s.
+            let cp_secs = cp.duration_since(UNIX_EPOCH).unwrap().as_secs();
+            let bucket_secs = bucket().as_secs();
+            let num_buckets = (window().as_secs_f64() / bucket().as_secs_f64()).ceil() as u64;
+            let aligned = (cp_secs / bucket_secs) * bucket_secs;
+            let floor_secs = aligned.saturating_sub((num_buckets - 1) * bucket_secs);
+            let floor = UNIX_EPOCH + Duration::from_secs(floor_secs);
+            let mut best: Option<(SystemTime, &str)> = None;
+            for (ts, s) in &reference {
+                if *ts >= floor && *ts <= *cp {
+                    best = Some(match best {
+                        None => (*ts, s.as_str()),
+                        Some((b, _)) if *ts < b => (*ts, s.as_str()),
+                        Some(cur) => cur,
+                    });
+                }
+            }
+            let expected = match best {
+                Some((_, s)) => FeatureValue::String(s.to_string()),
+                None => FeatureValue::Missing,
+            };
+            assert_eq!(
+                t, expected,
+                "First parity at cp={:?} i={}: typed={:?} ref={:?}",
+                cp, i, t, expected
+            );
+            cp_iter.next();
+        }
+    }
 }

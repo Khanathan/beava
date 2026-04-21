@@ -52,7 +52,7 @@ use std::time::{Duration, SystemTime};
 /// doc-comment for the full event-time routing / expiry / late-drop
 /// contract. This variant is intentionally duplicated (not generic) per
 /// D-C1 to keep the typed hot path free of monomorphization fanout.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TypedRingBufferI64 {
     buckets: Vec<i64>,
     head: u32,
@@ -62,6 +62,7 @@ pub struct TypedRingBufferI64 {
     current_bucket_start: Option<SystemTime>,
     /// Last drop reason from [`Self::bucket_index_for`] (OBS-01 semantics,
     /// reset on each success). Observability-only; not serialized.
+    #[serde(skip)]
     pub last_drop: Option<DropReason>,
 }
 
@@ -199,7 +200,7 @@ impl TypedRingBufferI64 {
 
 /// Packed time-bucketed ring buffer over `f64`. See [`TypedRingBufferI64`]
 /// for the semantics contract.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TypedRingBufferF64 {
     buckets: Vec<f64>,
     head: u32,
@@ -207,6 +208,7 @@ pub struct TypedRingBufferF64 {
     #[allow(dead_code)]
     window_duration: Duration,
     current_bucket_start: Option<SystemTime>,
+    #[serde(skip)]
     pub last_drop: Option<DropReason>,
 }
 
@@ -344,7 +346,7 @@ impl TypedRingBufferF64 {
 /// [`AvgOpTypedWindowedF64`] which needs both sum and count per bucket so
 /// `sum_all() / count_all()` yields the windowed average with Value-path
 /// semantics (Missing when `count == 0`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TypedRingBufferAvg {
     buckets: Vec<(f64, i64)>,
     head: u32,
@@ -352,6 +354,7 @@ pub struct TypedRingBufferAvg {
     #[allow(dead_code)]
     window_duration: Duration,
     current_bucket_start: Option<SystemTime>,
+    #[serde(skip)]
     pub last_drop: Option<DropReason>,
 }
 
@@ -504,6 +507,11 @@ pub enum TypedRingBufferVariantHint {
     I64,
     F64,
     Avg,
+    MinI64,
+    MinF64,
+    MaxI64,
+    MaxF64,
+    InlineStr,
 }
 
 impl TypedRingBufferVariantHint {
@@ -512,6 +520,21 @@ impl TypedRingBufferVariantHint {
             Self::I64 => TypedRingBufferEnum::I64(TypedRingBufferI64::new(window, bucket)),
             Self::F64 => TypedRingBufferEnum::F64(TypedRingBufferF64::new(window, bucket)),
             Self::Avg => TypedRingBufferEnum::Avg(TypedRingBufferAvg::new(window, bucket)),
+            Self::MinI64 => {
+                TypedRingBufferEnum::MinI64(TypedRingBufferMinI64::new(window, bucket))
+            }
+            Self::MinF64 => {
+                TypedRingBufferEnum::MinF64(TypedRingBufferMinF64::new(window, bucket))
+            }
+            Self::MaxI64 => {
+                TypedRingBufferEnum::MaxI64(TypedRingBufferMaxI64::new(window, bucket))
+            }
+            Self::MaxF64 => {
+                TypedRingBufferEnum::MaxF64(TypedRingBufferMaxF64::new(window, bucket))
+            }
+            Self::InlineStr => {
+                TypedRingBufferEnum::InlineStr(TypedRingBufferInlineStr::new(window, bucket))
+            }
         }
     }
 }
@@ -520,11 +543,16 @@ impl TypedRingBufferVariantHint {
 /// [`crate::shard::Shard::entity_ringbuffers_typed`]. Each entry is
 /// owned single-threaded by the shard; variant-mismatch access panics
 /// (contract: one op-index keys a single variant for its entire lifetime).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TypedRingBufferEnum {
     I64(TypedRingBufferI64),
     F64(TypedRingBufferF64),
     Avg(TypedRingBufferAvg),
+    MinI64(TypedRingBufferMinI64),
+    MinF64(TypedRingBufferMinF64),
+    MaxI64(TypedRingBufferMaxI64),
+    MaxF64(TypedRingBufferMaxF64),
+    InlineStr(TypedRingBufferInlineStr),
 }
 
 impl TypedRingBufferEnum {
@@ -559,6 +587,56 @@ impl TypedRingBufferEnum {
         }
     }
     #[inline]
+    pub fn as_min_i64_mut(&mut self) -> &mut TypedRingBufferMinI64 {
+        match self {
+            Self::MinI64(r) => r,
+            other => panic!(
+                "TypedRingBufferEnum variant mismatch: expected MinI64, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+    #[inline]
+    pub fn as_min_f64_mut(&mut self) -> &mut TypedRingBufferMinF64 {
+        match self {
+            Self::MinF64(r) => r,
+            other => panic!(
+                "TypedRingBufferEnum variant mismatch: expected MinF64, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+    #[inline]
+    pub fn as_max_i64_mut(&mut self) -> &mut TypedRingBufferMaxI64 {
+        match self {
+            Self::MaxI64(r) => r,
+            other => panic!(
+                "TypedRingBufferEnum variant mismatch: expected MaxI64, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+    #[inline]
+    pub fn as_max_f64_mut(&mut self) -> &mut TypedRingBufferMaxF64 {
+        match self {
+            Self::MaxF64(r) => r,
+            other => panic!(
+                "TypedRingBufferEnum variant mismatch: expected MaxF64, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+    #[inline]
+    pub fn as_inline_str_mut(&mut self) -> &mut TypedRingBufferInlineStr {
+        match self {
+            Self::InlineStr(r) => r,
+            other => panic!(
+                "TypedRingBufferEnum variant mismatch: expected InlineStr, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+    #[inline]
     pub fn as_i64(&self) -> &TypedRingBufferI64 {
         match self {
             Self::I64(r) => r,
@@ -579,12 +657,52 @@ impl TypedRingBufferEnum {
             _ => panic!("TypedRingBufferEnum variant mismatch: expected Avg"),
         }
     }
+    #[inline]
+    pub fn as_min_i64(&self) -> &TypedRingBufferMinI64 {
+        match self {
+            Self::MinI64(r) => r,
+            _ => panic!("TypedRingBufferEnum variant mismatch: expected MinI64"),
+        }
+    }
+    #[inline]
+    pub fn as_min_f64(&self) -> &TypedRingBufferMinF64 {
+        match self {
+            Self::MinF64(r) => r,
+            _ => panic!("TypedRingBufferEnum variant mismatch: expected MinF64"),
+        }
+    }
+    #[inline]
+    pub fn as_max_i64(&self) -> &TypedRingBufferMaxI64 {
+        match self {
+            Self::MaxI64(r) => r,
+            _ => panic!("TypedRingBufferEnum variant mismatch: expected MaxI64"),
+        }
+    }
+    #[inline]
+    pub fn as_max_f64(&self) -> &TypedRingBufferMaxF64 {
+        match self {
+            Self::MaxF64(r) => r,
+            _ => panic!("TypedRingBufferEnum variant mismatch: expected MaxF64"),
+        }
+    }
+    #[inline]
+    pub fn as_inline_str(&self) -> &TypedRingBufferInlineStr {
+        match self {
+            Self::InlineStr(r) => r,
+            _ => panic!("TypedRingBufferEnum variant mismatch: expected InlineStr"),
+        }
+    }
 
     pub fn allocated_bytes(&self) -> usize {
         match self {
             Self::I64(r) => r.allocated_bytes(),
             Self::F64(r) => r.allocated_bytes(),
             Self::Avg(r) => r.allocated_bytes(),
+            Self::MinI64(r) => r.allocated_bytes(),
+            Self::MinF64(r) => r.allocated_bytes(),
+            Self::MaxI64(r) => r.allocated_bytes(),
+            Self::MaxF64(r) => r.allocated_bytes(),
+            Self::InlineStr(r) => r.allocated_bytes(),
         }
     }
 }
@@ -940,6 +1058,922 @@ impl TypedAggOp for AvgOpTypedWindowedF64 {
         let key = (stream.to_string(), entity_key.to_string(), self.op_idx);
         match shard.entity_ringbuffers_typed.get(&key) {
             Some(r) => self.read(r.as_avg()),
+            None => FeatureValue::Missing,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 59.7 Wave 2 — MinI64 / MinF64 / MaxI64 / MaxF64 ring buffers.
+//
+// Each bucket packs `(value, count)` — the count doubles as a "seen" sentinel
+// so we can disambiguate "empty window" (all counts 0 → Missing) from "min is
+// INFINITY" (real INFINITY event). Matches the Value-path MinOp / MaxOp
+// convention which uses a parallel RingBuffer<u64> event_count to gate
+// Missing semantics.
+// ---------------------------------------------------------------------------
+
+macro_rules! impl_typed_ring_buffer_minmax {
+    (
+        $name:ident,
+        $slot_ty:ty,
+        $zero:expr,
+        $cmp:expr,
+        $sentinel:expr
+    ) => {
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct $name {
+            buckets: Vec<($slot_ty, i64)>,
+            head: u32,
+            bucket_duration: Duration,
+            #[allow(dead_code)]
+            window_duration: Duration,
+            current_bucket_start: Option<SystemTime>,
+            #[serde(skip)]
+            pub last_drop: Option<DropReason>,
+        }
+
+        impl $name {
+            pub fn new(window_duration: Duration, bucket_duration: Duration) -> Self {
+                let window_secs = window_duration.as_secs_f64();
+                let bucket_secs = bucket_duration.as_secs_f64();
+                let num_buckets = (window_secs / bucket_secs).ceil() as usize;
+                Self {
+                    buckets: vec![($sentinel, 0i64); num_buckets],
+                    head: 0,
+                    bucket_duration,
+                    window_duration,
+                    current_bucket_start: None,
+                    last_drop: None,
+                }
+            }
+
+            pub fn num_buckets(&self) -> usize {
+                self.buckets.len()
+            }
+
+            pub fn take_last_drop(&mut self) -> Option<DropReason> {
+                self.last_drop.take()
+            }
+
+            pub fn allocated_bytes(&self) -> usize {
+                self.buckets.capacity() * std::mem::size_of::<($slot_ty, i64)>()
+                    + std::mem::size_of::<Self>()
+            }
+
+            /// Walk every bucket with `count > 0`, reducing via `$cmp`.
+            /// Returns `None` if all counts are zero (empty window).
+            pub fn reduce(&self) -> Option<$slot_ty> {
+                let cmp = $cmp;
+                let mut out: Option<$slot_ty> = None;
+                for (v, c) in &self.buckets {
+                    if *c == 0 {
+                        continue;
+                    }
+                    out = Some(match out {
+                        None => *v,
+                        Some(cur) => cmp(cur, *v),
+                    });
+                }
+                out
+            }
+
+            pub fn update_at_event_time(&mut self, v: $slot_ty, event_time: SystemTime) {
+                if let Some(idx) = self.bucket_index_for(event_time) {
+                    let bucket = &mut self.buckets[idx];
+                    let cmp = $cmp;
+                    if bucket.1 == 0 {
+                        bucket.0 = v;
+                    } else {
+                        bucket.0 = cmp(bucket.0, v);
+                    }
+                    bucket.1 += 1;
+                }
+            }
+
+            pub fn advance_to(&mut self, now: SystemTime) -> usize {
+                let start = match self.current_bucket_start {
+                    Some(s) => s,
+                    None => {
+                        let aligned = self.bucket_start_for(now);
+                        self.current_bucket_start = Some(aligned);
+                        self.head = 0;
+                        return 0;
+                    }
+                };
+                let elapsed = now.duration_since(start).unwrap_or(Duration::ZERO);
+                let bucket_secs = self.bucket_duration.as_secs_f64();
+                let buckets_to_advance = (elapsed.as_secs_f64() / bucket_secs) as usize;
+                if buckets_to_advance == 0 {
+                    return self.head as usize;
+                }
+                let num_buckets = self.buckets.len();
+                if buckets_to_advance >= num_buckets {
+                    for bucket in self.buckets.iter_mut() {
+                        *bucket = ($sentinel, 0);
+                    }
+                    self.head = 0;
+                } else {
+                    for i in 1..=buckets_to_advance {
+                        let idx = (self.head as usize + i) % num_buckets;
+                        self.buckets[idx] = ($sentinel, 0);
+                    }
+                    self.head =
+                        ((self.head as usize + buckets_to_advance) % num_buckets) as u32;
+                }
+                self.current_bucket_start = Some(self.bucket_start_for(now));
+                self.head as usize
+            }
+
+            fn bucket_start_for(&self, time: SystemTime) -> SystemTime {
+                let since_epoch = time
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or(Duration::ZERO);
+                let bucket_secs = self.bucket_duration.as_secs();
+                if bucket_secs == 0 {
+                    return SystemTime::UNIX_EPOCH + since_epoch;
+                }
+                let aligned_secs = (since_epoch.as_secs() / bucket_secs) * bucket_secs;
+                SystemTime::UNIX_EPOCH + Duration::from_secs(aligned_secs)
+            }
+
+            fn bucket_index_for(&mut self, event_time: SystemTime) -> Option<usize> {
+                use std::time::UNIX_EPOCH;
+                if event_time < UNIX_EPOCH {
+                    self.last_drop = Some(DropReason::PreEpoch);
+                    return None;
+                }
+                let start = match self.current_bucket_start {
+                    Some(s) => s,
+                    None => {
+                        self.last_drop = None;
+                        self.advance_to(event_time);
+                        return Some(self.head as usize);
+                    }
+                };
+                if event_time >= start {
+                    self.last_drop = None;
+                    self.advance_to(event_time);
+                    return Some(self.head as usize);
+                }
+                let et_bucket_start = self.bucket_start_for(event_time);
+                let delta = match start.duration_since(et_bucket_start) {
+                    Ok(d) => d,
+                    Err(_) => {
+                        self.last_drop = Some(DropReason::TooNew);
+                        return None;
+                    }
+                };
+                let bucket_secs = self.bucket_duration.as_secs();
+                if bucket_secs == 0 {
+                    self.last_drop = None;
+                    return Some(self.head as usize);
+                }
+                let delta_buckets = (delta.as_secs() / bucket_secs) as usize;
+                let num_buckets = self.buckets.len();
+                if delta_buckets >= num_buckets {
+                    self.last_drop = Some(DropReason::TooOld);
+                    return None;
+                }
+                self.last_drop = None;
+                let idx = (self.head as usize + num_buckets - delta_buckets) % num_buckets;
+                Some(idx)
+            }
+        }
+
+        // `$zero` is unused but kept in the macro signature so each
+        // instantiation documents the neutral element (for allocator
+        // observability / future factoring). Silence dead-code by binding.
+        const _: fn() = || {
+            let _ = $zero;
+        };
+    };
+}
+
+impl_typed_ring_buffer_minmax!(
+    TypedRingBufferMinI64,
+    i64,
+    0i64,
+    |a: i64, b: i64| a.min(b),
+    i64::MAX
+);
+impl_typed_ring_buffer_minmax!(
+    TypedRingBufferMinF64,
+    f64,
+    0.0f64,
+    |a: f64, b: f64| a.min(b),
+    f64::INFINITY
+);
+impl_typed_ring_buffer_minmax!(
+    TypedRingBufferMaxI64,
+    i64,
+    0i64,
+    |a: i64, b: i64| a.max(b),
+    i64::MIN
+);
+impl_typed_ring_buffer_minmax!(
+    TypedRingBufferMaxF64,
+    f64,
+    0.0f64,
+    |a: f64, b: f64| a.max(b),
+    f64::NEG_INFINITY
+);
+
+// ---------------------------------------------------------------------------
+// Phase 59.7 Wave 2 — TypedRingBufferInlineStr (Last / First windowed).
+//
+// Each bucket holds `Vec<(event_time_ns_since_epoch_i128, String)>`. Multiple
+// events in the same bucket are preserved in insertion order; `read_last`
+// picks the maximum-event-time entry across all in-window buckets, and
+// `read_first` picks the minimum-event-time entry. On bucket expiry the bucket
+// is cleared (Vec::clear, retaining capacity).
+//
+// We use `i128` for ns-since-epoch to avoid any precision wraparound for
+// pre-1970 event_times (which the ring's `bucket_index_for` already gates as
+// PreEpoch). For the parity harness we only insert post-epoch events.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TypedRingBufferInlineStr {
+    buckets: Vec<Vec<(i128, String)>>,
+    head: u32,
+    bucket_duration: Duration,
+    #[allow(dead_code)]
+    window_duration: Duration,
+    current_bucket_start: Option<SystemTime>,
+    #[serde(skip)]
+    pub last_drop: Option<DropReason>,
+}
+
+impl TypedRingBufferInlineStr {
+    pub fn new(window_duration: Duration, bucket_duration: Duration) -> Self {
+        let window_secs = window_duration.as_secs_f64();
+        let bucket_secs = bucket_duration.as_secs_f64();
+        let num_buckets = (window_secs / bucket_secs).ceil() as usize;
+        Self {
+            buckets: (0..num_buckets).map(|_| Vec::new()).collect(),
+            head: 0,
+            bucket_duration,
+            window_duration,
+            current_bucket_start: None,
+            last_drop: None,
+        }
+    }
+
+    pub fn num_buckets(&self) -> usize {
+        self.buckets.len()
+    }
+
+    pub fn take_last_drop(&mut self) -> Option<DropReason> {
+        self.last_drop.take()
+    }
+
+    pub fn allocated_bytes(&self) -> usize {
+        let inner: usize = self
+            .buckets
+            .iter()
+            .map(|b| {
+                b.capacity() * std::mem::size_of::<(i128, String)>()
+                    + b.iter().map(|(_, s)| s.capacity()).sum::<usize>()
+            })
+            .sum();
+        self.buckets.capacity() * std::mem::size_of::<Vec<(i128, String)>>()
+            + inner
+            + std::mem::size_of::<Self>()
+    }
+
+    /// Return the value with the **largest** event_time across all buckets,
+    /// or None if the window is empty.
+    pub fn read_last(&self) -> Option<&str> {
+        let mut best: Option<(i128, &str)> = None;
+        for bucket in &self.buckets {
+            for (ts, s) in bucket {
+                best = Some(match best {
+                    None => (*ts, s.as_str()),
+                    Some((ref bt, _)) if *ts >= *bt => (*ts, s.as_str()),
+                    Some(cur) => cur,
+                });
+            }
+        }
+        best.map(|(_, s)| s)
+    }
+
+    /// Return the value with the **smallest** event_time across all buckets.
+    pub fn read_first(&self) -> Option<&str> {
+        let mut best: Option<(i128, &str)> = None;
+        for bucket in &self.buckets {
+            for (ts, s) in bucket {
+                best = Some(match best {
+                    None => (*ts, s.as_str()),
+                    Some((bt, _)) if *ts < bt => (*ts, s.as_str()),
+                    Some(cur) => cur,
+                });
+            }
+        }
+        best.map(|(_, s)| s)
+    }
+
+    pub fn update_at_event_time(&mut self, value: &str, event_time: SystemTime) {
+        if let Some(idx) = self.bucket_index_for(event_time) {
+            let ns = event_time
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as i128)
+                .unwrap_or(0);
+            self.buckets[idx].push((ns, value.to_string()));
+        }
+    }
+
+    pub fn advance_to(&mut self, now: SystemTime) -> usize {
+        let start = match self.current_bucket_start {
+            Some(s) => s,
+            None => {
+                let aligned = self.bucket_start_for(now);
+                self.current_bucket_start = Some(aligned);
+                self.head = 0;
+                return 0;
+            }
+        };
+        let elapsed = now.duration_since(start).unwrap_or(Duration::ZERO);
+        let bucket_secs = self.bucket_duration.as_secs_f64();
+        let buckets_to_advance = (elapsed.as_secs_f64() / bucket_secs) as usize;
+        if buckets_to_advance == 0 {
+            return self.head as usize;
+        }
+        let num_buckets = self.buckets.len();
+        if buckets_to_advance >= num_buckets {
+            for bucket in self.buckets.iter_mut() {
+                bucket.clear();
+            }
+            self.head = 0;
+        } else {
+            for i in 1..=buckets_to_advance {
+                let idx = (self.head as usize + i) % num_buckets;
+                self.buckets[idx].clear();
+            }
+            self.head = ((self.head as usize + buckets_to_advance) % num_buckets) as u32;
+        }
+        self.current_bucket_start = Some(self.bucket_start_for(now));
+        self.head as usize
+    }
+
+    fn bucket_start_for(&self, time: SystemTime) -> SystemTime {
+        let since_epoch = time
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO);
+        let bucket_secs = self.bucket_duration.as_secs();
+        if bucket_secs == 0 {
+            return SystemTime::UNIX_EPOCH + since_epoch;
+        }
+        let aligned_secs = (since_epoch.as_secs() / bucket_secs) * bucket_secs;
+        SystemTime::UNIX_EPOCH + Duration::from_secs(aligned_secs)
+    }
+
+    fn bucket_index_for(&mut self, event_time: SystemTime) -> Option<usize> {
+        use std::time::UNIX_EPOCH;
+        if event_time < UNIX_EPOCH {
+            self.last_drop = Some(DropReason::PreEpoch);
+            return None;
+        }
+        let start = match self.current_bucket_start {
+            Some(s) => s,
+            None => {
+                self.last_drop = None;
+                self.advance_to(event_time);
+                return Some(self.head as usize);
+            }
+        };
+        if event_time >= start {
+            self.last_drop = None;
+            self.advance_to(event_time);
+            return Some(self.head as usize);
+        }
+        let et_bucket_start = self.bucket_start_for(event_time);
+        let delta = match start.duration_since(et_bucket_start) {
+            Ok(d) => d,
+            Err(_) => {
+                self.last_drop = Some(DropReason::TooNew);
+                return None;
+            }
+        };
+        let bucket_secs = self.bucket_duration.as_secs();
+        if bucket_secs == 0 {
+            self.last_drop = None;
+            return Some(self.head as usize);
+        }
+        let delta_buckets = (delta.as_secs() / bucket_secs) as usize;
+        let num_buckets = self.buckets.len();
+        if delta_buckets >= num_buckets {
+            self.last_drop = Some(DropReason::TooOld);
+            return None;
+        }
+        self.last_drop = None;
+        let idx = (self.head as usize + num_buckets - delta_buckets) % num_buckets;
+        Some(idx)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 59.7 Wave 2 — windowed typed agg ops: Min×2, Max×2, Last, First.
+// ---------------------------------------------------------------------------
+
+/// Phase 59.7 W2 — windowed twin of [`MinOpTypedI64`].
+#[derive(Clone, Debug)]
+pub struct MinOpTypedWindowedI64 {
+    pub name: String,
+    pub op_idx: u16,
+    pub window: Duration,
+    pub bucket: Duration,
+    pub input_offset: u16,
+}
+
+impl MinOpTypedWindowedI64 {
+    pub fn variant_hint(&self) -> TypedRingBufferVariantHint {
+        TypedRingBufferVariantHint::MinI64
+    }
+    #[inline]
+    pub fn apply(&self, ring: &mut TypedRingBufferMinI64, event: &Row, event_time: SystemTime) {
+        let v = event.read_i64(self.input_offset);
+        ring.update_at_event_time(v, event_time);
+    }
+    pub fn read(&self, ring: &TypedRingBufferMinI64) -> FeatureValue {
+        match ring.reduce() {
+            Some(v) => FeatureValue::Int(v),
+            None => FeatureValue::Missing,
+        }
+    }
+}
+
+impl TypedAggOp for MinOpTypedWindowedI64 {
+    fn init_state(&self, _ss: &RegisteredSchema, _state: &mut Row) {}
+    #[inline]
+    fn update_typed(
+        &self,
+        _state: &mut Row,
+        _ss: &RegisteredSchema,
+        _e: &Row,
+        _es: &RegisteredSchema,
+        _now: SystemTime,
+    ) {
+    }
+    fn read_feature(&self, _state: &Row, _ss: &RegisteredSchema) -> FeatureValue {
+        FeatureValue::Missing
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    #[inline]
+    fn update_windowed(
+        &self,
+        shard: &mut crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        event: &Row,
+        _event_schema: &RegisteredSchema,
+        now: SystemTime,
+    ) {
+        let ring = shard.get_or_init_typed_ringbuffer(
+            stream,
+            entity_key,
+            self.op_idx,
+            self.variant_hint(),
+            self.window,
+            self.bucket,
+        );
+        self.apply(ring.as_min_i64_mut(), event, now);
+    }
+    fn read_feature_windowed(
+        &self,
+        shard: &crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        _state: &Row,
+        _state_schema: &RegisteredSchema,
+    ) -> FeatureValue {
+        let key = (stream.to_string(), entity_key.to_string(), self.op_idx);
+        match shard.entity_ringbuffers_typed.get(&key) {
+            Some(r) => self.read(r.as_min_i64()),
+            None => FeatureValue::Missing,
+        }
+    }
+}
+
+/// Phase 59.7 W2 — windowed twin of [`MinOpTypedF64`].
+#[derive(Clone, Debug)]
+pub struct MinOpTypedWindowedF64 {
+    pub name: String,
+    pub op_idx: u16,
+    pub window: Duration,
+    pub bucket: Duration,
+    pub input_offset: u16,
+}
+
+impl MinOpTypedWindowedF64 {
+    pub fn variant_hint(&self) -> TypedRingBufferVariantHint {
+        TypedRingBufferVariantHint::MinF64
+    }
+    #[inline]
+    pub fn apply(&self, ring: &mut TypedRingBufferMinF64, event: &Row, event_time: SystemTime) {
+        let v = event.read_f64(self.input_offset);
+        ring.update_at_event_time(v, event_time);
+    }
+    pub fn read(&self, ring: &TypedRingBufferMinF64) -> FeatureValue {
+        match ring.reduce() {
+            Some(v) => FeatureValue::Float(v),
+            None => FeatureValue::Missing,
+        }
+    }
+}
+
+impl TypedAggOp for MinOpTypedWindowedF64 {
+    fn init_state(&self, _ss: &RegisteredSchema, _state: &mut Row) {}
+    #[inline]
+    fn update_typed(
+        &self,
+        _state: &mut Row,
+        _ss: &RegisteredSchema,
+        _e: &Row,
+        _es: &RegisteredSchema,
+        _now: SystemTime,
+    ) {
+    }
+    fn read_feature(&self, _state: &Row, _ss: &RegisteredSchema) -> FeatureValue {
+        FeatureValue::Missing
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    #[inline]
+    fn update_windowed(
+        &self,
+        shard: &mut crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        event: &Row,
+        _event_schema: &RegisteredSchema,
+        now: SystemTime,
+    ) {
+        let ring = shard.get_or_init_typed_ringbuffer(
+            stream,
+            entity_key,
+            self.op_idx,
+            self.variant_hint(),
+            self.window,
+            self.bucket,
+        );
+        self.apply(ring.as_min_f64_mut(), event, now);
+    }
+    fn read_feature_windowed(
+        &self,
+        shard: &crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        _state: &Row,
+        _state_schema: &RegisteredSchema,
+    ) -> FeatureValue {
+        let key = (stream.to_string(), entity_key.to_string(), self.op_idx);
+        match shard.entity_ringbuffers_typed.get(&key) {
+            Some(r) => self.read(r.as_min_f64()),
+            None => FeatureValue::Missing,
+        }
+    }
+}
+
+/// Phase 59.7 W2 — windowed twin of [`MaxOpTypedI64`].
+#[derive(Clone, Debug)]
+pub struct MaxOpTypedWindowedI64 {
+    pub name: String,
+    pub op_idx: u16,
+    pub window: Duration,
+    pub bucket: Duration,
+    pub input_offset: u16,
+}
+
+impl MaxOpTypedWindowedI64 {
+    pub fn variant_hint(&self) -> TypedRingBufferVariantHint {
+        TypedRingBufferVariantHint::MaxI64
+    }
+    #[inline]
+    pub fn apply(&self, ring: &mut TypedRingBufferMaxI64, event: &Row, event_time: SystemTime) {
+        let v = event.read_i64(self.input_offset);
+        ring.update_at_event_time(v, event_time);
+    }
+    pub fn read(&self, ring: &TypedRingBufferMaxI64) -> FeatureValue {
+        match ring.reduce() {
+            Some(v) => FeatureValue::Int(v),
+            None => FeatureValue::Missing,
+        }
+    }
+}
+
+impl TypedAggOp for MaxOpTypedWindowedI64 {
+    fn init_state(&self, _ss: &RegisteredSchema, _state: &mut Row) {}
+    #[inline]
+    fn update_typed(
+        &self,
+        _state: &mut Row,
+        _ss: &RegisteredSchema,
+        _e: &Row,
+        _es: &RegisteredSchema,
+        _now: SystemTime,
+    ) {
+    }
+    fn read_feature(&self, _state: &Row, _ss: &RegisteredSchema) -> FeatureValue {
+        FeatureValue::Missing
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    #[inline]
+    fn update_windowed(
+        &self,
+        shard: &mut crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        event: &Row,
+        _event_schema: &RegisteredSchema,
+        now: SystemTime,
+    ) {
+        let ring = shard.get_or_init_typed_ringbuffer(
+            stream,
+            entity_key,
+            self.op_idx,
+            self.variant_hint(),
+            self.window,
+            self.bucket,
+        );
+        self.apply(ring.as_max_i64_mut(), event, now);
+    }
+    fn read_feature_windowed(
+        &self,
+        shard: &crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        _state: &Row,
+        _state_schema: &RegisteredSchema,
+    ) -> FeatureValue {
+        let key = (stream.to_string(), entity_key.to_string(), self.op_idx);
+        match shard.entity_ringbuffers_typed.get(&key) {
+            Some(r) => self.read(r.as_max_i64()),
+            None => FeatureValue::Missing,
+        }
+    }
+}
+
+/// Phase 59.7 W2 — windowed twin of [`MaxOpTypedF64`].
+#[derive(Clone, Debug)]
+pub struct MaxOpTypedWindowedF64 {
+    pub name: String,
+    pub op_idx: u16,
+    pub window: Duration,
+    pub bucket: Duration,
+    pub input_offset: u16,
+}
+
+impl MaxOpTypedWindowedF64 {
+    pub fn variant_hint(&self) -> TypedRingBufferVariantHint {
+        TypedRingBufferVariantHint::MaxF64
+    }
+    #[inline]
+    pub fn apply(&self, ring: &mut TypedRingBufferMaxF64, event: &Row, event_time: SystemTime) {
+        let v = event.read_f64(self.input_offset);
+        ring.update_at_event_time(v, event_time);
+    }
+    pub fn read(&self, ring: &TypedRingBufferMaxF64) -> FeatureValue {
+        match ring.reduce() {
+            Some(v) => FeatureValue::Float(v),
+            None => FeatureValue::Missing,
+        }
+    }
+}
+
+impl TypedAggOp for MaxOpTypedWindowedF64 {
+    fn init_state(&self, _ss: &RegisteredSchema, _state: &mut Row) {}
+    #[inline]
+    fn update_typed(
+        &self,
+        _state: &mut Row,
+        _ss: &RegisteredSchema,
+        _e: &Row,
+        _es: &RegisteredSchema,
+        _now: SystemTime,
+    ) {
+    }
+    fn read_feature(&self, _state: &Row, _ss: &RegisteredSchema) -> FeatureValue {
+        FeatureValue::Missing
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    #[inline]
+    fn update_windowed(
+        &self,
+        shard: &mut crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        event: &Row,
+        _event_schema: &RegisteredSchema,
+        now: SystemTime,
+    ) {
+        let ring = shard.get_or_init_typed_ringbuffer(
+            stream,
+            entity_key,
+            self.op_idx,
+            self.variant_hint(),
+            self.window,
+            self.bucket,
+        );
+        self.apply(ring.as_max_f64_mut(), event, now);
+    }
+    fn read_feature_windowed(
+        &self,
+        shard: &crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        _state: &Row,
+        _state_schema: &RegisteredSchema,
+    ) -> FeatureValue {
+        let key = (stream.to_string(), entity_key.to_string(), self.op_idx);
+        match shard.entity_ringbuffers_typed.get(&key) {
+            Some(r) => self.read(r.as_max_f64()),
+            None => FeatureValue::Missing,
+        }
+    }
+}
+
+/// Phase 59.7 W2 — windowed LastOp over an inline-string column. Unlike the
+/// unwindowed [`LastOpTypedInlineStr`], this one returns Missing when no
+/// event has been observed in the current window and returns the
+/// event_time-max value inside the window otherwise.
+#[derive(Clone, Debug)]
+pub struct LastOpTypedWindowedInlineStr {
+    pub name: String,
+    pub op_idx: u16,
+    pub window: Duration,
+    pub bucket: Duration,
+    pub input_offset: u16,
+    pub input_inline_str_cap: u8,
+}
+
+impl LastOpTypedWindowedInlineStr {
+    pub fn variant_hint(&self) -> TypedRingBufferVariantHint {
+        TypedRingBufferVariantHint::InlineStr
+    }
+    #[inline]
+    pub fn apply(
+        &self,
+        ring: &mut TypedRingBufferInlineStr,
+        event: &Row,
+        event_time: SystemTime,
+    ) {
+        let v = event.read_inline_str(self.input_offset, self.input_inline_str_cap);
+        ring.update_at_event_time(v, event_time);
+    }
+    pub fn read(&self, ring: &TypedRingBufferInlineStr) -> FeatureValue {
+        match ring.read_last() {
+            Some(s) => FeatureValue::String(s.to_string()),
+            None => FeatureValue::Missing,
+        }
+    }
+}
+
+impl TypedAggOp for LastOpTypedWindowedInlineStr {
+    fn init_state(&self, _ss: &RegisteredSchema, _state: &mut Row) {}
+    #[inline]
+    fn update_typed(
+        &self,
+        _state: &mut Row,
+        _ss: &RegisteredSchema,
+        _e: &Row,
+        _es: &RegisteredSchema,
+        _now: SystemTime,
+    ) {
+    }
+    fn read_feature(&self, _state: &Row, _ss: &RegisteredSchema) -> FeatureValue {
+        FeatureValue::Missing
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    #[inline]
+    fn update_windowed(
+        &self,
+        shard: &mut crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        event: &Row,
+        _event_schema: &RegisteredSchema,
+        now: SystemTime,
+    ) {
+        let ring = shard.get_or_init_typed_ringbuffer(
+            stream,
+            entity_key,
+            self.op_idx,
+            self.variant_hint(),
+            self.window,
+            self.bucket,
+        );
+        self.apply(ring.as_inline_str_mut(), event, now);
+    }
+    fn read_feature_windowed(
+        &self,
+        shard: &crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        _state: &Row,
+        _state_schema: &RegisteredSchema,
+    ) -> FeatureValue {
+        let key = (stream.to_string(), entity_key.to_string(), self.op_idx);
+        match shard.entity_ringbuffers_typed.get(&key) {
+            Some(r) => self.read(r.as_inline_str()),
+            None => FeatureValue::Missing,
+        }
+    }
+}
+
+/// Phase 59.7 W2 — windowed FirstOp over an inline-string column. Returns
+/// Missing when no event has been observed in the current window; otherwise
+/// returns the event_time-min value inside the window.
+#[derive(Clone, Debug)]
+pub struct FirstOpTypedWindowedInlineStr {
+    pub name: String,
+    pub op_idx: u16,
+    pub window: Duration,
+    pub bucket: Duration,
+    pub input_offset: u16,
+    pub input_inline_str_cap: u8,
+}
+
+impl FirstOpTypedWindowedInlineStr {
+    pub fn variant_hint(&self) -> TypedRingBufferVariantHint {
+        TypedRingBufferVariantHint::InlineStr
+    }
+    #[inline]
+    pub fn apply(
+        &self,
+        ring: &mut TypedRingBufferInlineStr,
+        event: &Row,
+        event_time: SystemTime,
+    ) {
+        let v = event.read_inline_str(self.input_offset, self.input_inline_str_cap);
+        ring.update_at_event_time(v, event_time);
+    }
+    pub fn read(&self, ring: &TypedRingBufferInlineStr) -> FeatureValue {
+        match ring.read_first() {
+            Some(s) => FeatureValue::String(s.to_string()),
+            None => FeatureValue::Missing,
+        }
+    }
+}
+
+impl TypedAggOp for FirstOpTypedWindowedInlineStr {
+    fn init_state(&self, _ss: &RegisteredSchema, _state: &mut Row) {}
+    #[inline]
+    fn update_typed(
+        &self,
+        _state: &mut Row,
+        _ss: &RegisteredSchema,
+        _e: &Row,
+        _es: &RegisteredSchema,
+        _now: SystemTime,
+    ) {
+    }
+    fn read_feature(&self, _state: &Row, _ss: &RegisteredSchema) -> FeatureValue {
+        FeatureValue::Missing
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    #[inline]
+    fn update_windowed(
+        &self,
+        shard: &mut crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        event: &Row,
+        _event_schema: &RegisteredSchema,
+        now: SystemTime,
+    ) {
+        let ring = shard.get_or_init_typed_ringbuffer(
+            stream,
+            entity_key,
+            self.op_idx,
+            self.variant_hint(),
+            self.window,
+            self.bucket,
+        );
+        self.apply(ring.as_inline_str_mut(), event, now);
+    }
+    fn read_feature_windowed(
+        &self,
+        shard: &crate::shard::Shard,
+        stream: &str,
+        entity_key: &str,
+        _state: &Row,
+        _state_schema: &RegisteredSchema,
+    ) -> FeatureValue {
+        let key = (stream.to_string(), entity_key.to_string(), self.op_idx);
+        match shard.entity_ringbuffers_typed.get(&key) {
+            Some(r) => self.read(r.as_inline_str()),
             None => FeatureValue::Missing,
         }
     }
