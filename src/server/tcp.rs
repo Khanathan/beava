@@ -342,6 +342,18 @@ pub struct ConcurrentAppState {
     /// `json_reserialize_count_total`.
     pub binary_passthrough_count_total: std::sync::atomic::AtomicU64,
 
+    /// Phase 59.6 D-E2 (TPC-PERF-11): count of events that took the typed-row
+    /// fast path through `process_shard_event`. Pre-seeded in Wave 0 so
+    /// Wave 1+ typed-path wiring can bump it without touching struct layout.
+    /// Exposed as `beava_typed_row_path_total` via the metrics layer in Wave 7.
+    pub typed_row_path_total: std::sync::atomic::AtomicU64,
+
+    /// Phase 59.6 D-E2 (TPC-PERF-11): count of events that fell back to the
+    /// `serde_json::Value` generic operator path (streams without a registered
+    /// schema, or schemas that exceed runtime monomorphization support).
+    /// Pre-seeded in Wave 0. Exposed as `beava_value_fallback_path_total`.
+    pub value_fallback_path_total: std::sync::atomic::AtomicU64,
+
     /// Phase 51-02 (TPC-PERF-05): flat lock-free global watermark store.
     ///
     /// Indexed as shard_id × stream_capacity + stream_ord. All N shards publish
@@ -575,6 +587,12 @@ pub fn make_concurrent_state_full(
         // Wave 1's new Bytes-forward site. Zero today — Wave 0 plants the
         // field only; Wave 1 wires the .fetch_add(1) call site.
         binary_passthrough_count_total: std::sync::atomic::AtomicU64::new(0),
+        // Phase 59.6 D-E2 (Wave 0): typed-row / Value-fallback path counters.
+        // Pre-seeded to zero. Wave 1+ (schema runtime + wire codec) wires
+        // the `.fetch_add(1)` call sites on the hot path; Wave 7 exposes
+        // them via `beava_typed_row_path_total` / `beava_value_fallback_path_total`.
+        typed_row_path_total: std::sync::atomic::AtomicU64::new(0),
+        value_fallback_path_total: std::sync::atomic::AtomicU64::new(0),
         // Phase 51-02: global watermark store. n_shards rows × 64 stream-ordinal columns.
         // stream_capacity=64 matches GlobalWatermarkStore default; panics on overflow (T-51-01-03).
         global_watermark: parking_lot::RwLock::new(
