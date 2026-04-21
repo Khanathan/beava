@@ -927,7 +927,16 @@ impl<'a> StoreView<'a> {
             }
             #[cfg(feature = "state-inmem")]
             StoreView::Sharded(shard) => {
-                let entity = shard.state.entry(key.to_string()).or_default();
+                // Zero-alloc fast path: existing entity looks up via Borrow<str>.
+                // One alloc on first-time entity creation only. Matches fjall
+                // path's byte-slice lookup semantics.
+                if !shard.state.contains_key(key) {
+                    shard.state.insert(key.to_string(), Default::default());
+                }
+                let entity = shard
+                    .state
+                    .get_mut(key)
+                    .expect("just inserted if missing");
                 f(entity)
             }
         }
@@ -1017,7 +1026,12 @@ impl<'a> StoreView<'a> {
     pub fn mark_dirty(&mut self, key: &str) {
         match self {
             StoreView::Sharded(shard) => {
-                shard.dirty_set.insert(key.to_string());
+                // Zero-alloc fast path: keys already dirty this snapshot
+                // window skip the String allocation. Hot aggregations repeat
+                // the same key many times between snapshots.
+                if !shard.dirty_set.contains(key) {
+                    shard.dirty_set.insert(key.to_string());
+                }
             }
         }
     }
