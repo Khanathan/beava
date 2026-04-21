@@ -266,3 +266,161 @@ mod mismatched_shard_enrich_or_join {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 57 Wave 0 — RetractionAfterCascade parity extension.
+// ---------------------------------------------------------------------------
+//
+// Extends the proptest family with a retraction-after-cascade scenario.
+// For every generated event batch, a deterministic `delete_at_step`
+// chooses a point at which either (a) the enrichment right-side row is
+// deleted via source-table DELETE, or (b) an L-side entity is tombstoned.
+// Post-Wave-2 / Wave-3 (TPC-CORR-10), replaying the batch through N=1 and
+// N=8 engines and then applying the retraction MUST yield byte-identical
+// downstream state under both routings.
+//
+// Today both scenarios are `#[ignore = "57-W{2|3}"]`'d — the proptest
+// body enforces routing-determinism invariants across the retraction
+// sub-variants (which always pass at all N). Wave 2 and Wave 3 replace
+// the body with a full N=1 ↔ N=8 replay compare.
+
+#[cfg(not(feature = "state-inmem"))]
+mod retraction_after_cascade {
+    use proptest::prelude::*;
+
+    /// Sub-scenario — enrich path (right-side source-table DELETE) vs
+    /// SSJ path (L-side tombstone).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[allow(dead_code)]
+    enum EnrichOrSsj {
+        Enrich,
+        Ssj,
+    }
+
+    /// Generated scenario — `which` picks the sub-branch; `step` picks
+    /// the event index at which the retraction fires.
+    #[derive(Debug, Clone)]
+    #[allow(dead_code)]
+    struct RetractionAfterCascadeEvent {
+        which: EnrichOrSsj,
+        step: usize,
+        user_id: String,
+        session_id: String,
+        country_code: String,
+        amount: f64,
+    }
+
+    #[allow(dead_code)]
+    fn arb_retraction_event() -> impl Strategy<Value = RetractionAfterCascadeEvent> {
+        (
+            0u8..2,
+            0usize..32,
+            0u32..32,
+            0u32..32,
+            0u32..8,
+            0.0f64..1000.0,
+        )
+            .prop_map(|(w, step, u, s, c, a)| RetractionAfterCascadeEvent {
+                which: if w == 0 {
+                    EnrichOrSsj::Enrich
+                } else {
+                    EnrichOrSsj::Ssj
+                },
+                step,
+                user_id: format!("u{u}"),
+                session_id: format!("s{s}"),
+                country_code: format!("c{c}"),
+                amount: a,
+            })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
+
+        /// (a) RetractionAfterCascade — enrich sub-case. At Wave 2 the
+        /// test body extends to: replay the generated batch through an
+        /// N=1 engine; delete Countries[country_code] at event `step`;
+        /// replay through an N=8 engine; delete same; assert downstream
+        /// EnrichedSnap state is byte-identical across N=1 and N=8 for
+        /// every user_id. Today the test enforces retraction routing
+        /// invariants that always hold (which shard owns the downstream
+        /// enrichment row; which shard owns the deleted Countries row).
+        // Phase 57 Wave 0 (57-00-PLAN): #[ignore = "57-W2"]'d — flips
+        // GREEN at Plan 57-02 when EnrichFromTable retraction path lands.
+        #[test]
+        #[ignore = "57-W2"]
+        fn retraction_after_cascade_enrich_parity_n1_vs_n8(
+            events in prop::collection::vec(arb_retraction_event(), 1..24)
+        ) {
+            prop_assume!(!events.is_empty());
+            let enrich_events: Vec<_> = events
+                .iter()
+                .filter(|e| e.which == EnrichOrSsj::Enrich)
+                .collect();
+            prop_assume!(!enrich_events.is_empty());
+            use beava::routing::shard_hint_for_event;
+            for e in &enrich_events {
+                let user_shard = (shard_hint_for_event(
+                    &serde_json::json!({ "user_id": e.user_id.clone() }),
+                    Some("user_id"),
+                ) as usize) % 8;
+                let country_shard = (shard_hint_for_event(
+                    &serde_json::json!({ "country_code": e.country_code.clone() }),
+                    Some("country_code"),
+                ) as usize) % 8;
+                prop_assert!(user_shard < 8);
+                prop_assert!(country_shard < 8);
+                // Retraction routing invariant — the downstream
+                // retraction fans out from country_shard to user_shard
+                // (the owner of the affected enriched downstream row).
+                // The fan-out target is deterministic in user_id.
+                prop_assert_eq!(
+                    user_shard,
+                    (shard_hint_for_event(
+                        &serde_json::json!({ "user_id": e.user_id.clone() }),
+                        Some("user_id"),
+                    ) as usize) % 8
+                );
+            }
+        }
+
+        /// (b) RetractionAfterCascade — SSJ sub-case. At Wave 3 the test
+        /// body extends to: replay the generated SSJ pairs through N=1
+        /// and N=8 engines; tombstone a chosen L entity at event `step`;
+        /// assert the retraction fan-out yields byte-identical joined
+        /// output state on every join-key shard across routings.
+        // Phase 57 Wave 0 (57-00-PLAN): #[ignore = "57-W3"]'d — flips
+        // GREEN at Plan 57-03 when StreamStreamJoin retraction lands.
+        #[test]
+        #[ignore = "57-W3"]
+        fn retraction_after_cascade_ssj_parity_n1_vs_n8(
+            events in prop::collection::vec(arb_retraction_event(), 1..24)
+        ) {
+            prop_assume!(!events.is_empty());
+            let ssj_events: Vec<_> = events
+                .iter()
+                .filter(|e| e.which == EnrichOrSsj::Ssj)
+                .collect();
+            prop_assume!(!ssj_events.is_empty());
+            use beava::routing::shard_hint_for_event;
+            for e in &ssj_events {
+                let left_shard = (shard_hint_for_event(
+                    &serde_json::json!({ "user_id": e.user_id.clone() }),
+                    Some("user_id"),
+                ) as usize) % 8;
+                let right_shard = (shard_hint_for_event(
+                    &serde_json::json!({ "session_id": e.session_id.clone() }),
+                    Some("session_id"),
+                ) as usize) % 8;
+                let join_shard = (shard_hint_for_event(
+                    &serde_json::json!({ "user_id": e.user_id.clone() }),
+                    Some("user_id"),
+                ) as usize) % 8;
+                // L-source == join-owner; retraction fan-out is local
+                // to join_shard so depth-0 retraction depth applies.
+                prop_assert_eq!(left_shard, join_shard);
+                prop_assert!(right_shard < 8);
+            }
+        }
+    }
+}
