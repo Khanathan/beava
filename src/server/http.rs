@@ -1515,6 +1515,13 @@ async fn debug_warnings(
     // Age out stale entries before snapshotting.
     state.signals.write().age_out(now);
     let warnings = state.signals.read().snapshot_sorted(now, category);
+    // Phase 56 D-C1: structured `cross_shard_joins` sibling field surfaced
+    // alongside the flat `warnings` signal feed. Back-compat with Phase 51
+    // tests that treat `warnings` as a flat array is preserved — the new
+    // field is additive. Each warning also appears in the `warnings` feed
+    // as a `Category::Safety` / `Severity::Warning` signal (see
+    // `emit_cross_shard_join_warning`).
+    let cross_shard_joins = state.signals.read().cross_shard_joins_snapshot();
     let now_rfc3339 = {
         let secs = now
             .duration_since(std::time::UNIX_EPOCH)
@@ -1526,6 +1533,7 @@ async fn debug_warnings(
         "generated_at": now_rfc3339,
         "observation_window": "7d",
         "warnings": warnings,
+        "cross_shard_joins": cross_shard_joins,
     }))
 }
 

@@ -149,6 +149,12 @@ pub struct SignalRegistry {
     /// Previous counter snapshots for rate computations (e.g. late-drop
     /// rate). Key: arbitrary stable metric id; value: (count, sampled_at).
     prev_counters: AHashMap<String, (u64, SystemTime)>,
+    /// Phase 56 D-C1 — structured list of cross-shard-join warnings,
+    /// surfaced as a sibling field to `warnings` on `GET /debug/warnings`.
+    /// Dedupe by `join_id` (T-56-03-01). Exposed read-only via
+    /// `cross_shard_joins_snapshot`.
+    cross_shard_joins:
+        Vec<crate::engine::join_validator::CrossShardJoinWarning>,
 }
 
 /// Shared handle used throughout the server. Clone is cheap (just bumps
@@ -162,7 +168,32 @@ impl SignalRegistry {
             signals: AHashMap::new(),
             observation_window,
             prev_counters: AHashMap::new(),
+            cross_shard_joins: Vec::new(),
         }
+    }
+
+    /// Phase 56 D-C1 — dedupe-aware push of a `CrossShardJoinWarning`.
+    /// Only the first occurrence of a `join_id` is retained (T-56-03-01).
+    pub fn push_cross_shard_join(
+        &mut self,
+        warning: crate::engine::join_validator::CrossShardJoinWarning,
+    ) {
+        if self
+            .cross_shard_joins
+            .iter()
+            .any(|w| w.join_id == warning.join_id)
+        {
+            return;
+        }
+        self.cross_shard_joins.push(warning);
+    }
+
+    /// Phase 56 D-C1 — read-only snapshot of the current cross-shard-join
+    /// warning list, consumed by the `/debug/warnings` HTTP handler.
+    pub fn cross_shard_joins_snapshot(
+        &self,
+    ) -> Vec<crate::engine::join_validator::CrossShardJoinWarning> {
+        self.cross_shard_joins.clone()
     }
 
     /// Default registry with the 7-day observation window.
@@ -452,6 +483,12 @@ pub fn emit_perf_p99_signal(registry: &SharedRegistry, current_p99_us: f64, thre
 /// Phase 51-04: emit a JoinShardKeyMismatch signal (D-12 locked message).
 /// Severity=Error, Category=Safety. Signal id is stable per stream pair so
 /// repeated mis-registration dedupes in the registry.
+///
+/// **Phase 56 D-C2 note:** this emitter is retained for back-compat. Its
+/// Phase-51 caller in `register()` has been swapped to
+/// `emit_cross_shard_join_warning` (non-fatal). Any external embedder still
+/// using the deprecated `JoinShardKeyMismatch` type can still call this fn.
+#[allow(deprecated)]
 pub fn emit_join_shard_key_mismatch(
     registry: &SharedRegistry,
     mismatch: &crate::engine::join_validator::JoinShardKeyMismatch,
@@ -475,6 +512,46 @@ pub fn emit_join_shard_key_mismatch(
         }),
     );
     registry.write().record(sig);
+}
+
+/// Phase 56 D-B4 / D-C1 — emit a non-fatal `CrossShardJoinWarning` to the
+/// signal registry. Dual-wire surface:
+///
+/// 1. Record a `Category::Safety` / `Severity::Warning` signal (shape
+///    mirrors `emit_join_shard_key_mismatch` so the unified `/debug/warnings`
+///    feed already renders the warning).
+/// 2. Push onto the dedicated `cross_shard_joins` Vec (dedupe by
+///    `join_id`) so the `/debug/warnings` handler can surface the
+///    structured array (D-C1 contract).
+///
+/// Severity is Warning (not Error) because the runtime path (Wave 1's
+/// `ssj_insert_at_shard`) routes both sides to `hash(join.on) % N` and
+/// produces correct output — the warning is a perf / co-location hint, not
+/// a correctness breach.
+pub fn emit_cross_shard_join_warning(
+    registry: &SharedRegistry,
+    warning: &crate::engine::join_validator::CrossShardJoinWarning,
+) {
+    let id = format!("crossshard_join.{}", warning.join_id);
+    let sig = Signal::new(
+        id,
+        Severity::Warning,
+        Category::Safety,
+        "Cross-shard join registered (perf hint)",
+        warning.message.clone(),
+        serde_json::json!({
+            "join_id": warning.join_id,
+            "stream_a": warning.stream_a,
+            "stream_b": warning.stream_b,
+            "left_shard_key": warning.left_shard_key,
+            "right_shard_key": warning.right_shard_key,
+            "on_field": warning.on_field,
+            "perf_note": warning.perf_note,
+        }),
+    );
+    let mut reg = registry.write();
+    reg.record(sig);
+    reg.push_cross_shard_join(warning.clone());
 }
 
 pub fn emit_register_failure(registry: &SharedRegistry, pipeline_name: &str, err: &str) {

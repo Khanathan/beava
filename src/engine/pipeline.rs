@@ -945,13 +945,42 @@ impl PipelineEngine {
             }
         }
 
-        // Phase 51-04: validate shard_key compatibility before inserting.
-        if let Err(mismatch) = crate::engine::join_validator::validate_shard_keys(&self.streams, &stream) {
+        // Phase 51-04 / Phase 56 D-B4 (TPC-CORR-04 relaxation): validate
+        // shard_key compatibility. Previously this returned `Err` on
+        // mismatch; the relaxed path emits a non-fatal
+        // `CrossShardJoinWarning` per peer pair and proceeds. Runtime
+        // correctness is delivered by Wave 1's `ssj_insert_at_shard`
+        // (TPC-CORR-09) which shuffles both sides to `hash(join.on) % N`.
+        //
+        // Three surfaces (D-B4 + D-C1):
+        //   * structured log line (`eprintln!` — matches repo convention,
+        //     this codebase does not pull in the `tracing` crate).
+        //   * `beava_crossshard_joins_registered_total{join_id}` counter.
+        //   * Signal registry + `/debug/warnings.cross_shard_joins` array.
+        let crossshard_warnings =
+            crate::engine::join_validator::validate_shard_keys(&self.streams, &stream);
+        for w in &crossshard_warnings {
+            eprintln!(
+                "[WARN] beava::register CrossShardJoinWarning: \
+                 join_id={} stream_a={} stream_b={} left_shard_key={} \
+                 right_shard_key={} on_field={} — {}",
+                w.join_id,
+                w.stream_a,
+                w.stream_b,
+                w.left_shard_key,
+                w.right_shard_key,
+                w.on_field,
+                w.message,
+            );
+            metrics::counter!(
+                crate::shard::metrics::CROSSSHARD_JOINS_REGISTERED_TOTAL,
+                "join_id" => w.join_id.clone(),
+            )
+            .increment(1);
             #[cfg(feature = "server")]
             if let Some(ref registry) = self.signals {
-                crate::server::signals::emit_join_shard_key_mismatch(registry, &mismatch);
+                crate::server::signals::emit_cross_shard_join_warning(registry, w);
             }
-            return Err(BeavaError::Protocol(mismatch.message.clone()));
         }
 
         self.streams.insert(name_clone.clone(), stream);

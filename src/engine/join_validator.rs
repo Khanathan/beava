@@ -1,11 +1,21 @@
-//! Join shard-key mismatch validation — Phase 51 (TPC-CORR-04).
+//! Join shard-key mismatch validation — Phase 51 (TPC-CORR-04) / Phase 56
+//! (D-B4 + D-C1..D-C3 — register-time relaxation).
 //!
-//! Called by `PipelineEngine::register` before inserting a stream.
-//! If the new stream participates in a join and its `shard_key` disagrees
-//! with the peer stream's `shard_key`, registration fails immediately with
-//! a structured `JoinShardKeyMismatch` error. The pipeline does not start.
+//! Called by `PipelineEngine::register` before inserting a stream. If the new
+//! stream participates in a join and its `shard_key` disagrees with the peer
+//! stream's `shard_key`, registration **no longer errors**. Instead it emits
+//! a `CrossShardJoinWarning` per mismatched peer pair (Phase 56 D-B4):
 //!
-//! The D-12 locked error message format is tested for grep-testability:
+//! - `tracing::warn!` with context (join_id, shard_keys, on_field, perf note).
+//! - `beava_crossshard_joins_registered_total{join_id}` counter increments.
+//! - Signal registry records the warning; `/debug/warnings` surfaces it.
+//!
+//! The `JoinShardKeyMismatch` struct + `build_mismatch` helper remain for
+//! back-compat with external callers who still match on the type (Phase 56
+//! additive-not-destructive rule). They are `#[deprecated]`-marked.
+//!
+//! The D-12 locked error message format is preserved verbatim inside the
+//! `CrossShardJoinWarning.message` for grep-testability:
 //! `"join operator between '{A}' and '{B}' requires matching shard_key;
 //!   got '{keyA}' vs '{keyB}'. Fix: declare @bv.stream(shard_key='{suggested}')
 //!   on both streams."`
@@ -41,6 +51,21 @@ impl ShardKeySpec {
 
 /// Structured error returned (and emitted to /debug/warnings) when two join
 /// streams declare incompatible `shard_key` values.
+///
+/// **Phase 56 D-C2:** this type is retained for back-compat (external
+/// callers matching on `BeavaError::Protocol(mismatch.message.clone())` from
+/// Phase 51), but `register()` **no longer raises** it. The runtime path
+/// emits `CrossShardJoinWarning` instead. A handful of Phase 51 internals
+/// (`emit_join_shard_key_mismatch`, `build_mismatch`) continue to use this
+/// type for their locked-message formatting — hence the `#[deprecated]`
+/// marker is advisory rather than a compile error.
+#[deprecated(
+    since = "56.0",
+    note = "Phase 56 D-C2 relaxation: register() no longer rejects mismatched \
+            shard_keys. Use `CrossShardJoinWarning` instead; this struct is \
+            retained for back-compat with callers who matched on the \
+            Phase 51 error variant."
+)]
 #[derive(Debug, Clone)]
 pub struct JoinShardKeyMismatch {
     pub stream_a: String,
@@ -55,12 +80,84 @@ pub struct JoinShardKeyMismatch {
     pub message: String,
 }
 
+/// Phase 56 D-B4 / D-C1 / D-C2 — non-fatal warning emitted by
+/// `validate_shard_keys` when a join's left/right shard_keys mismatch.
+///
+/// Produced instead of `JoinShardKeyMismatch` at register time. The engine
+/// proceeds with registration; at runtime, Phase 56 D-B1 + Wave 1's
+/// `ssj_insert_at_shard` routes both sides to `hash(join.on) % N` so the
+/// join still evaluates correctly. The warning is advisory: it documents
+/// the **perf cost** (+1 inbox hop per event) and points the operator at
+/// the co-location fix.
+///
+/// Flows through three surfaces (D-B4 + D-C1):
+/// - `tracing::warn!` — structured log line.
+/// - `beava_crossshard_joins_registered_total{join_id}` — counter.
+/// - `/debug/warnings` (`cross_shard_joins` array) — operator-visible surface.
+#[derive(Debug, Clone, Serialize)]
+pub struct CrossShardJoinWarning {
+    /// Stable synthetic id: `"{stream_a}_x_{stream_b}_on_{on_field}"`.
+    pub join_id: String,
+    pub stream_a: String,
+    pub stream_b: String,
+    /// Display string for the NEW (registering) stream's shard_key.
+    pub left_shard_key: String,
+    /// Display string for the peer stream's shard_key.
+    pub right_shard_key: String,
+    /// Join's `on=` field(s), comma-joined.
+    pub on_field: String,
+    /// Perf note — reminder of the +1 inbox hop + co-location fix.
+    pub perf_note: String,
+    /// Human-readable single-line summary (log-friendly). Preserves the
+    /// D-12 locked "requires matching shard_key; got ..." substring for
+    /// grep-testability across old and new call sites.
+    pub message: String,
+}
+
+impl CrossShardJoinWarning {
+    /// Build a warning for a mismatched peer pair. `stream_a` is the new
+    /// stream being registered; `stream_b` is the already-registered peer.
+    pub fn new(
+        stream_a: &str,
+        stream_b: &str,
+        left_shard_key: &str,
+        right_shard_key: &str,
+        on_field: &str,
+    ) -> Self {
+        let join_id = format!("{}_x_{}_on_{}", stream_a, stream_b, on_field);
+        let perf_note = format!(
+            "Both sides shuffled to hash({}) % N; expect +1 inbox hop per event. \
+             Co-locate by setting shard_key='{}' on both streams to remove the hop.",
+            on_field, on_field
+        );
+        // Preserve the D-12 locked message substring so anything grepping
+        // for "requires matching shard_key" still finds it.
+        let message = format!(
+            "CrossShardJoinWarning: join '{}' between '{}' and '{}' requires \
+             matching shard_key; got '{}' vs '{}' on '{}'. {}",
+            join_id, stream_a, stream_b, left_shard_key, right_shard_key, on_field, perf_note
+        );
+        Self {
+            join_id,
+            stream_a: stream_a.to_string(),
+            stream_b: stream_b.to_string(),
+            left_shard_key: left_shard_key.to_string(),
+            right_shard_key: right_shard_key.to_string(),
+            on_field: on_field.to_string(),
+            perf_note,
+            message,
+        }
+    }
+}
+
+#[allow(deprecated)]
 impl std::fmt::Display for JoinShardKeyMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
     }
 }
 
+#[allow(deprecated)]
 impl std::error::Error for JoinShardKeyMismatch {}
 
 // -----------------------------------------------------------------------
@@ -93,6 +190,7 @@ fn keys_match(a: &Option<ShardKeySpec>, b: &Option<ShardKeySpec>) -> bool {
     }
 }
 
+#[allow(deprecated, dead_code)]
 fn build_mismatch(
     stream_a: &str,
     stream_b: &str,
@@ -118,31 +216,57 @@ fn build_mismatch(
     }
 }
 
-/// Validate shard_key consistency for all join operators in `new_stream`.
+/// Phase 56 D-B4 — validate shard_key compatibility for all join operators
+/// in `new_stream` and return a (possibly empty) vector of warnings.
 ///
-/// For each join feature, looks up the peer stream in `streams`. If the peer
-/// is registered and has a different `shard_key`, returns the first mismatch.
-/// If the peer is not yet registered, skips (registration order may vary).
+/// For each join feature:
+///   - Look up the peer stream in `streams`.
+///   - If the peer is registered and its `shard_key` mismatches the new
+///     stream's `shard_key`, push a `CrossShardJoinWarning` describing the
+///     pair.
+///   - If the peer is not yet registered, skip (registration order may vary
+///     and the check re-runs when the other stream registers later).
+///   - Both-None (both implicit) is always OK — no warning.
 ///
-/// Both-None is always valid (no explicit sharding on either side).
+/// **Never returns Err.** The Phase 51 hard-reject behaviour is removed by
+/// D-C2. Callers handle the returned warnings by:
+///   - `tracing::warn!` on each entry.
+///   - Incrementing `CROSSSHARD_JOINS_REGISTERED_TOTAL{join_id}`.
+///   - Recording into the signal registry / `/debug/warnings`.
 pub fn validate_shard_keys(
     streams: &AHashMap<String, StreamDefinition>,
     new_stream: &StreamDefinition,
-) -> Result<(), JoinShardKeyMismatch> {
+) -> Vec<CrossShardJoinWarning> {
+    let mut out: Vec<CrossShardJoinWarning> = Vec::new();
     let new_key = &new_stream.shard_key;
+
+    let push_warning = |out: &mut Vec<CrossShardJoinWarning>,
+                        peer_name: &str,
+                        peer_key: &Option<ShardKeySpec>,
+                        on_fields: &[String]| {
+        let warning = CrossShardJoinWarning::new(
+            &new_stream.name,
+            peer_name,
+            &shard_key_display(new_key),
+            &shard_key_display(peer_key),
+            &suggested_common(on_fields),
+        );
+        // Dedupe by join_id inside the returned Vec (multiple peers may
+        // produce the same synthetic id if the stream pair + on field
+        // match; stay defensive).
+        if out.iter().all(|w| w.join_id != warning.join_id) {
+            out.push(warning);
+        }
+    };
 
     for (_feature_name, def) in &new_stream.features {
         match def {
-            FeatureDef::EnrichFromTable { right_table, on, .. } => {
+            FeatureDef::EnrichFromTable {
+                right_table, on, ..
+            } => {
                 if let Some(peer) = streams.get(right_table) {
                     if !keys_match(new_key, &peer.shard_key) {
-                        return Err(build_mismatch(
-                            &new_stream.name,
-                            right_table,
-                            new_key,
-                            &peer.shard_key,
-                            on,
-                        ));
+                        push_warning(&mut out, right_table, &peer.shard_key, on);
                     }
                 }
             }
@@ -156,13 +280,7 @@ pub fn validate_shard_keys(
                 if left_stream != &new_stream.name {
                     if let Some(peer) = streams.get(left_stream) {
                         if !keys_match(new_key, &peer.shard_key) {
-                            return Err(build_mismatch(
-                                &new_stream.name,
-                                left_stream,
-                                new_key,
-                                &peer.shard_key,
-                                on,
-                            ));
+                            push_warning(&mut out, left_stream, &peer.shard_key, on);
                         }
                     }
                 }
@@ -170,13 +288,7 @@ pub fn validate_shard_keys(
                 if right_stream != &new_stream.name {
                     if let Some(peer) = streams.get(right_stream) {
                         if !keys_match(new_key, &peer.shard_key) {
-                            return Err(build_mismatch(
-                                &new_stream.name,
-                                right_stream,
-                                new_key,
-                                &peer.shard_key,
-                                on,
-                            ));
+                            push_warning(&mut out, right_stream, &peer.shard_key, on);
                         }
                     }
                 }
@@ -189,34 +301,23 @@ pub fn validate_shard_keys(
             } => {
                 if let Some(peer) = streams.get(left_table) {
                     if !keys_match(new_key, &peer.shard_key) {
-                        return Err(build_mismatch(
-                            &new_stream.name,
-                            left_table,
-                            new_key,
-                            &peer.shard_key,
-                            on,
-                        ));
+                        push_warning(&mut out, left_table, &peer.shard_key, on);
                     }
                 }
                 if let Some(peer) = streams.get(right_table) {
                     if !keys_match(new_key, &peer.shard_key) {
-                        return Err(build_mismatch(
-                            &new_stream.name,
-                            right_table,
-                            new_key,
-                            &peer.shard_key,
-                            on,
-                        ));
+                        push_warning(&mut out, right_table, &peer.shard_key, on);
                     }
                 }
             }
             _ => {} // Non-join operators: no shard_key constraint.
         }
     }
-    Ok(())
+    out
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::engine::pipeline::{FeatureDef, JoinType, StreamDefinition};
@@ -252,10 +353,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 1: mismatched shard_key -> error with D-12 locked message
+    // Test 1 (Phase 56 D-B4 relaxation): mismatched shard_key -> returns a
+    // CrossShardJoinWarning (not an Err). Locked D-12 message text retained
+    // inside `warning.message` for grep-testability.
     // -----------------------------------------------------------------------
     #[test]
-    fn test_mismatch_returns_error_with_locked_message() {
+    fn test_mismatch_returns_warning_with_locked_message() {
         let mut streams = AHashMap::new();
         streams.insert(
             "Orders".to_string(),
@@ -284,36 +387,42 @@ mod tests {
             ..Default::default()
         };
 
-        let result = validate_shard_keys(&streams, &new_stream);
-        assert!(result.is_err(), "expected Err on shard_key mismatch");
-
-        let err = result.unwrap_err();
-        // D-12 locked message check
+        let warnings = validate_shard_keys(&streams, &new_stream);
+        assert_eq!(warnings.len(), 1, "expected exactly one mismatch warning");
+        let w = &warnings[0];
+        assert_eq!(w.stream_a, "OrdersEnriched");
+        assert_eq!(w.stream_b, "Products");
+        assert_eq!(w.left_shard_key, "user_id");
+        assert_eq!(w.right_shard_key, "product_id");
+        assert_eq!(w.on_field, "product_id");
+        // D-12 locked substring retained inside message for grep-testability.
         assert!(
-            err.message.contains("join operator between 'OrdersEnriched' and 'Products'"),
-            "message should name both streams"
+            w.message.contains("requires matching shard_key"),
+            "message should say 'requires matching shard_key': {}",
+            w.message
         );
         assert!(
-            err.message.contains("requires matching shard_key"),
-            "message should say 'requires matching shard_key'"
-        );
-        assert!(
-            err.message.contains("got 'user_id' vs 'product_id'"),
+            w.message.contains("'user_id' vs 'product_id'"),
             "message should show both keys: {}",
-            err.message
+            w.message
         );
         assert!(
-            err.message.contains("Fix: declare @bv.stream(shard_key='product_id')"),
-            "message should suggest fix: {}",
-            err.message
+            w.perf_note.contains("+1 inbox hop"),
+            "perf_note should mention '+1 inbox hop': {}",
+            w.perf_note
+        );
+        // join_id synthesis pattern
+        assert_eq!(
+            w.join_id, "OrdersEnriched_x_Products_on_product_id",
+            "stable synthetic join_id"
         );
     }
 
     // -----------------------------------------------------------------------
-    // Test 2: matching shard_key -> no error
+    // Test 2: matching shard_key -> no warnings
     // -----------------------------------------------------------------------
     #[test]
-    fn test_matching_shard_key_no_error() {
+    fn test_matching_shard_key_no_warning() {
         let mut streams = AHashMap::new();
         streams.insert(
             "A".to_string(),
@@ -342,15 +451,18 @@ mod tests {
             ..Default::default()
         };
 
-        let result = validate_shard_keys(&streams, &new_stream);
-        assert!(result.is_ok(), "matching shard_key should register without error");
+        let warnings = validate_shard_keys(&streams, &new_stream);
+        assert!(
+            warnings.is_empty(),
+            "matching shard_key should register without warnings"
+        );
     }
 
     // -----------------------------------------------------------------------
-    // Test 3: both shard_key=None -> no error
+    // Test 3: both shard_key=None -> no warnings (D-B5 implicit co-location).
     // -----------------------------------------------------------------------
     #[test]
-    fn test_both_none_shard_key_no_error() {
+    fn test_both_none_shard_key_no_warning() {
         let mut streams = AHashMap::new();
         streams.insert("X".to_string(), make_stream("X", None));
         streams.insert("Y".to_string(), make_stream("Y", None));
@@ -370,13 +482,15 @@ mod tests {
             ..Default::default()
         };
 
-        let result = validate_shard_keys(&streams, &new_stream);
-        assert!(result.is_ok(), "both-None shard_key should not produce a mismatch");
+        let warnings = validate_shard_keys(&streams, &new_stream);
+        assert!(
+            warnings.is_empty(),
+            "both-None shard_key should not produce a mismatch"
+        );
     }
 
     // -----------------------------------------------------------------------
-    // Test 4: mismatch emits correct error fields (signal emission checked
-    // in pipeline integration; here we verify the struct fields).
+    // Test 4: back-compat — JoinShardKeyMismatch + build_mismatch fields.
     // -----------------------------------------------------------------------
     #[test]
     fn test_mismatch_error_fields() {
@@ -395,12 +509,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 5: pipeline does not start — after mismatch the stream is not
-    // inserted (validated at the pipeline.rs layer; here we just verify
-    // validate_shard_keys returns Err without mutating state).
+    // Test 5: validate_shard_keys never returns Err — mismatch no longer
+    // blocks registration (D-C2). We assert the Vec return type explicitly
+    // plus that no state was mutated (it takes `&` references anyway).
     // -----------------------------------------------------------------------
     #[test]
-    fn test_mismatch_does_not_mutate_state() {
+    fn test_mismatch_does_not_mutate_state_and_returns_vec() {
         let mut streams: AHashMap<String, StreamDefinition> = AHashMap::new();
         streams.insert(
             "Peer".to_string(),
@@ -415,11 +529,12 @@ mod tests {
             &["a"],
         );
 
-        let _ = validate_shard_keys(&streams, &new_stream);
+        let warnings: Vec<CrossShardJoinWarning> = validate_shard_keys(&streams, &new_stream);
+        assert_eq!(warnings.len(), 1, "expected one mismatch warning");
         assert_eq!(
             streams.len(),
             initial_count,
-            "validate_shard_keys must not insert the stream on error"
+            "validate_shard_keys must not mutate the streams map"
         );
     }
 }
