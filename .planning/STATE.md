@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: Completed 57-03-PLAN.md (Wave 3 — EnrichFromTable + SSJ retraction + /debug/warnings.retraction_beyond_history; 4 Wave-0 RED tests GREEN)
-last_updated: "2026-04-21T08:07:11.116Z"
+stopped_at: Phase 57 closed 2026-04-21 (engineering-complete; TPC-CORR-10 closed; perf gate PASSED 1,297,293 EPS ≥ 1,076,322 floor (+20.5% headroom, +8.5% vs Phase 56 baseline); advisory D-D4 retraction-firing micro-bench deferred on same Phase 55 SDK gap as 56-NEXT #6).
+last_updated: "2026-04-21T08:30:00.000Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 18
-  completed_phases: 8
+  completed_phases: 9
   total_plans: 64
-  completed_plans: 60
-  percent: 94
+  completed_plans: 61
+  percent: 95
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 ## Current Position
 
-Phase: 56 CLOSED 2026-04-21 (engineering-complete; TPC-CORR-04 relaxation + TPC-CORR-08 + TPC-CORR-09 closed. Default fraud-pipeline perf gate PASSED 1,195,914 EPS ≥ 1,059,261 floor (+12.9%); cross-shard enrichment scenario SC-5 `human_needed` on Phase 55 SDK gap — 56-NEXT #6 filed.)
-Plan: 4 of 5 (57-00 Wave 0 + 57-01 Wave 1 retraction primitives landed; 57-02/03/04 pending)
-**Phase:** 57 (retraction-across-crossshard-joins)
-**Plan:** 4 of 5 (57-00 Wave 0 + 57-01 Wave 1 retraction primitives landed; 57-02/03/04 pending)
-**Status:** Ready to execute
-**Progress:** [█████████░] 94%
+Phase: 57 CLOSED 2026-04-21 (engineering-complete; **TPC-CORR-10 closed**; all SC-1..SC-4 + D-B5 depth guard GREEN. Default fraud-pipeline perf gate PASSED **1,297,293 EPS ≥ 1,076,322 floor** (+20.5% headroom; +8.5% vs Phase 56 baseline). Advisory D-D4 retraction-firing micro-bench deferred on same Phase 55 SDK gap as 56-NEXT #6; NOT a gate per plan.)
+Plan: 5 of 5 (all Phase 57 waves 57-00..57-04 landed)
+**Phase:** 58 (tokio-connection-handling-rewrite — planning-ready; TPC-PERF-08)
+**Plan:** Phase 57 COMPLETE → next is Phase 58 planning
+**Status:** Phase 57 closed; Phase 58 planning unblocked
+**Progress:** [█████████░] 95%
 
 **Last activity:** 2026-04-21
 
@@ -124,8 +124,25 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 57 P01 | ~35min | 2 tasks | 7 files (6 src + 1 test flip); 6 new lib tests; 57-W1 GREEN; lib 807/0/35 |
 | Phase 57 P02 | ~45min | 1 tasks | 6 files |
 | Phase 57 P03 | 75min | 2 tasks | 8 files |
+| Phase 57 P04 | ~50min (perf gate 60s run + verify script + smoke test + PERF-GATE + VERIFICATION + deferred-items + ROADMAP/STATE + SUMMARY) | 2 tasks | 10 files (2 commits: 3a41f35 + close commit) |
+| Phase 57 full | TPC-CORR-10 closed; default fraud-pipeline perf 1,297,293 EPS (+20.5% over floor; +8.5% vs Phase 56); 5 new retraction counters; 1 new ShardOp variant (RetractDownstream); 16-hop depth guard; /debug/warnings.retraction_beyond_history (60s dedupe); advisory D-D4 deferred on same SDK gap as 56-NEXT #6 | 5 plans | 4 new integration tests + 2 sharding_parity subcases; 809/0/35 lib baseline preserved |
 
 ## Accumulated Context
+
+### Phase 57 — closed 2026-04-21 (engineering-complete, TPC-CORR-10 closed)
+
+- **Phase 57 aggregate outcome:** TPC-CORR-10 closed. Retractions flow end-to-end through cross-shard joins and cascades. Every emitted downstream row tracks `contributing_inputs` (primary_event_id + source_table_keys + left/right_event_id); tombstones / source-table DELETEs trigger `ShardOp::RetractDownstream` fan-out to owning shards with idempotent `RetractOutcome::NoOp`, 16-hop depth guard, history_ttl warn+skip, and 60s-dedupe'd `/debug/warnings.retraction_beyond_history`. All 5 waves landed atomically on `arch/tpc-full-shard`.
+- **Wave 0 (2026-04-21, 7044a95 + cc1c45c + 14ebd1c):** 4 RED tests (SC-1..SC-3 + D-B5 depth guard) + sharding_parity retraction_after_cascade extension + REQUIREMENTS TPC-CORR-10 row.
+- **Wave 1 (2026-04-21, 6f807a7 + 3a2460f + e02a93f):** ShardOp::RetractDownstream + RetractReason/Outcome enums + Shard::apply_retraction + 5 pre-seeded metric counters (`beava_retractions_sent_total`, `_applied_total`, `_nooped_total`, `beava_retraction_beyond_history_total`, `_depth_exceeded_total`) + ContribSet struct + snapshot v10 + `pipeline.rs::retract_downstream_at_shard` helper + 6 new lib tests. lib: 807/0/35 (+6 vs Phase 56 close).
+- **Wave 2 (2026-04-21, 652fffa + b4635a4):** Stream→Table contributing_inputs.primary_event_id emission + tombstone fan_out_retraction_for_primary + 16-hop depth guard enforcement. lib: 809/0/35 (+2).
+- **Wave 3 (2026-04-21, 0f5409f + d597868 + 026d834):** EnrichFromTable source_table_keys tag (inherited via depends_on at keyed downstream) + SSJ fan_out_retraction_for_join_side + source-table DELETE PendingRetraction consumer wired into ShardOp::DeleteSourceTableRow/Batch dispatch + RetractionBeyondHistoryWarning + /debug/warnings.retraction_beyond_history. All 4 Wave-0 RED tests flipped GREEN (SC-1, SC-2, SC-3, sharding_parity SSJ subcase). TPC-CORR-10 correctness leg complete.
+- **Wave 4 (2026-04-21, 3a41f35):** Perf gate measured + evidence committed. **Default fraud-pipeline candidate EPS 1,297,293** over 60-s `MODE=complex DURATION=60 CPUS=8 CLIENTS=8 BEAVA_SHARD_INBOX_SIZE=1048576` — clears the 1,076,322 floor with **+20.5% headroom**; **+8.5% vs Phase 56 baseline** (1,195,914 EPS). Contingency ladder (C1 batch coalesce / C2 inline fast-check / C3 human_needed) NOT invoked. Advisory D-D4 retraction-firing micro-bench deferred on same Phase 55 SDK `@bv.source_table` wire-REGISTER gap as Phase 56 SC-5 / 56-NEXT #6 — explicitly optional per plan `<objective>` C off-ramp; NOT a gate.
+- **Integration tests:** 4 new Phase-57 tests GREEN (`crossshard_source_table_delete_retraction`, `crossshard_ssj_retraction`, `late_retraction_warning`, `retraction_depth_guard`); sharding_parity 15/0/0 (+2 retraction_after_cascade subcases vs Phase 56's 13). Phase 51/55/56 all unregressed (cross_shard_tt_cascade_ownership 2/0/0, cascade_metrics 2/0/0, cross_shard_enrich_from_table 2/0/0, cross_shard_stream_stream_join 2/0/0, register_crossshard_join_warning 4/0/0, debug_warnings + warnings_feed + dedupe 26/0/0).
+- **Lib baselines preserved:** `cargo test --release --lib` 809/0/35 (fjall, +8 vs Phase 56 close from Wave 1 primitives); `cargo test --release --lib --features state-inmem` 801/0/35.
+- **57-W* markers all removed** (completed as of Wave 3; verified Wave 4). `grep -rE '#\[ignore = "57-W[0-4]"' tests/` → 0.
+- **Ship-gate tests:** `scripts/verify-retraction-metrics.sh` exits 0 (all 5 Phase-57 retraction counters present + pre-seeded + `pub const`).
+- **9 57-NEXT items filed.** Priority-ordered: #1 (HIGH, inherited from 56-NEXT #6 — wire-REGISTER for @bv.source_table; unblocks both Phase 56 SC-5 AND Phase 57 D-D4) > #2 (MED — full SsjSideMap event_id threading) > #3 (MED — cross-batch DELETE coverage via secondary reverse index) > #4 (MED — batch retraction coalesce / C1 tier) > #5-#9 (LOW-priority). Carry-forwards from Phase 54/55/56 preserved.
+- **Wave 4 handoff to Phase 58:** Tokio connection-handling rewrite (TPC-PERF-08). Phase 57 leaves the write path with 20.5% headroom over floor — the Phase 58 Tokio rewrite has room to consume several percent without breaching its 57→58 regression budget. Key integration points for Phase 58 planning: `src/server/tcp.rs` connection handler per-connection task spawn, `src/server/http.rs` axum route handlers, `src/shard/thread.rs` shard_event_loop is already single-thread pinned and does NOT need rewriting.
 
 ### Phase 56 — closed 2026-04-21 (engineering-complete, SC-5 `human_needed`)
 
@@ -272,11 +289,11 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 57-03-PLAN.md (Wave 3 — EnrichFromTable + SSJ retraction + /debug/warnings.retraction_beyond_history; 4 Wave-0 RED tests GREEN)
+**Stopped at:** Phase 57 closed 2026-04-21 (engineering-complete; TPC-CORR-10 closed; perf gate PASSED 1,297,293 EPS ≥ 1,076,322 floor, +20.5% headroom, +8.5% vs Phase 56 baseline; advisory D-D4 retraction-firing micro-bench deferred on same Phase 55 SDK gap as 56-NEXT #6)
 
-**Next action (engineering):** Phase 56 is engineering-complete. The engineering-facing next action is one of:
-  (a) **Land 56-NEXT #6** (wire-REGISTER for `@bv.source_table`, ~80 LOC + 1 integration test) — unblocks the cross-shard enrichment perf gate. After landing, re-run `BEAVA_PERF_GATE=1 cargo test --release --test crossshard_enrich_perf_smoke crossshard_enrich_eps_floor -- --test-threads=1` to flip SC-5 to `passed` for Phase 56.
-  (b) **Start Phase 57** (retraction across cross-shard joins). The `src/engine/operators.rs` StreamJoinBuffer + `src/state/event_log.rs` PendingRetraction (from Phase 55-02) + `src/engine/pipeline.rs` ssj_insert_at_shard are the key integration points.
-  (c) Operator runs `scripts/soak-hetzner-ccx43.sh` at Phase 56 HEAD to flip TPC-PERSIST-04 `human_needed` → `passed` (carries through from Phase 54; runbook under `.planning/phases/54-legacy-engine-removal/soak-runbook.md`).
+**Next action (engineering):** Phase 57 is engineering-complete. The engineering-facing next action is one of:
+  (a) **Start Phase 58** (Tokio connection-handling rewrite — TPC-PERF-08). Goal: eliminate the per-connection Tokio task spawn/drop churn (~60% of samply leaf samples); long-lived accept-loops via SO_REUSEPORT (Linux) and dedicated accept-thread-per-shard (macOS). Phase 57 left the write path with 20.5% headroom, giving Phase 58 room to consume several percent on its way to the +25% EPS goal. Key integration points: `src/server/tcp.rs` per-connection task spawn, `src/server/http.rs` axum handlers, `src/shard/thread.rs::shard_event_loop` (already pinned, does NOT need rewriting).
+  (b) **Land 57-NEXT #1 / 56-NEXT #6** (wire-REGISTER for `@bv.source_table`, ~40 LOC Rust + 6 LOC Python + 2 tests) — unblocks BOTH the Phase 56 SC-5 cross-shard enrichment perf gate AND the Phase 57 D-D4 advisory retraction-firing micro-bench. After landing, SC-5 → `passed` for Phase 56 and D-D4 advisory number captured for Phase 57.
+  (c) Operator runs `scripts/soak-hetzner-ccx43.sh` at Phase 57 HEAD to flip TPC-PERSIST-04 `human_needed` → `passed` (carries through from Phase 54; runbook under `.planning/phases/54-legacy-engine-removal/soak-runbook.md`). Re-runnable at any Phase 55/56/57 HEAD since no state-format regressions.
 
 **Orthogonal ops (launch day — still pending):** v1.0-launch 6-item human-run checklist above remains outstanding. Run independently of v1.2 engineering work.
