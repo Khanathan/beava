@@ -314,7 +314,7 @@ Plans:
 **Plans**: 8 plans
 Plans:
 - [x] 59.6-00-PLAN.md — Wave 0: RED scaffolding (11 tests + parity harness + verify-typed-path.sh + bench stub + 2 AtomicU64 counters + TPC-PERF-11 row)
-- [ ] 59.6-01-PLAN.md — Wave 1: schema runtime (RegisteredSchema, Row, SchemaRegistry) + engine accessors + REGISTER JSON consumer + Python _schema_compile + _serialize emit
+- [x] 59.6-01-PLAN.md — Wave 1: schema runtime (RegisteredSchema, Row, SchemaRegistry) + engine accessors + REGISTER JSON consumer + Python _schema_compile + _serialize emit
 - [ ] 59.6-02-PLAN.md — Wave 2: wire codec (OP_PUSH_TYPED_BATCH 0x19 + WIRE_TYPED_PIPELINE 1<<1 + src/wire/typed.rs decoder + ShardEvent.schema_id + PayloadFmt::TypedRow + Python SDK v0.3.0 _pack_typed_batch + push_many dispatch)
 - [ ] 59.6-03-PLAN.md — Wave 3: ShardOp::PushTypedRow + engine.push_typed_on_shard + EnrichFromTableTyped + run_typed_enrich_cascade + SC-3 GREEN
 - [ ] 59.6-04-PLAN.md — Wave 4: 7 typed simple aggs (Count/Sum/Avg/Min/Max/Last/First) + TypedAggOp trait + Shard::entity_state_typed + V11_FORMAT declaration + SC-4 (2 of 3) GREEN
