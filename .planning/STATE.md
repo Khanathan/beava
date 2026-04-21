@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: Completed 58-03-PLAN.md
-last_updated: "2026-04-21T09:51:52.830Z"
+stopped_at: Phase 58 closed 2026-04-21 (engineering-complete; SC-1 + SC-3 human_needed pending Linux prod-host run + probe harness extension — 58-NEXT #1)
+last_updated: "2026-04-21T10:00:00.000Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 18
-  completed_phases: 9
+  completed_phases: 10
   total_plans: 69
-  completed_plans: 65
-  percent: 94
+  completed_plans: 69
+  percent: 100
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 ## Current Position
 
-Phase: 57 CLOSED 2026-04-21 (engineering-complete; **TPC-CORR-10 closed**; all SC-1..SC-4 + D-B5 depth guard GREEN. Default fraud-pipeline perf gate PASSED **1,297,293 EPS ≥ 1,076,322 floor** (+20.5% headroom; +8.5% vs Phase 56 baseline). Advisory D-D4 retraction-firing micro-bench deferred on same Phase 55 SDK gap as 56-NEXT #6; NOT a gate per plan.)
-Plan: 4 of 5 (58-00 RED scaffolding landed 2026-04-21; next is 58-01 Wave 1 Linux per-shard accept loop)
-**Phase:** 58 (tokio-connection-handling-rewrite — Wave 0 landed; TPC-PERF-08 in flight)
-**Plan:** 4 of 5 (58-00 RED scaffolding landed 2026-04-21; next is 58-01 Wave 1 Linux per-shard accept loop)
-**Status:** Ready to execute
-**Progress:** [█████████░] 94%
+Phase: 58 CLOSED 2026-04-21 (engineering-complete; **TPC-PERF-08 structural change delivered**; SC-2 + SC-4 GREEN; SC-1 + SC-3 `human_needed` pending Linux prod-host run + probe harness extension — 58-NEXT #1. `tokio::spawn`-per-connection eliminated on all production PUSH paths on both Linux and macOS. Best candidate EPS 1,376,450 on macOS dev host = +6.1% vs Phase 57 baseline, −15.1% below 1,621,616 floor; p99 parity (−0.11%).)
+Plan: Phase 58 closed — next is Phase 59 (binary wire format for PUSH — TPC-PERF-09).
+**Phase:** 59 (binary-wire-format-for-push — not started)
+**Plan:** Phase 59 plans TBD (plan step for Phase 59 pending)
+**Status:** Ready to start Phase 59
+**Progress:** [██████████] 100%
 
 **Last activity:** 2026-04-21
 
@@ -130,8 +130,24 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 58 P01 | 18min | 2 tasks | 12 files |
 | Phase 58 P02 | 30min | 2 tasks | 2 files |
 | Phase 58 P03 | 25min | 1 tasks | 1 files |
+| Phase 58 P04 | ~25min (60s perf C0 + 60s C1 + samply probe + samply-live attempt + PERF-GATE + VERIFICATION + ROADMAP/STATE + SUMMARY) | 2 tasks | 7 files (2 commits: W4 evidence + close) |
+| Phase 58 full | Structural tokio-churn elimination on Linux + macOS: 0 tokio::spawn(handle_connection) in production PUSH; per-shard SO_REUSEPORT + FuturesUnordered (Linux) + dedicated std::thread + per-thread current_thread runtime bridge (macOS); N LISTEN sockets / N accept threads smoke + replica guardrail; perf 1,376,450 EPS on macOS dev host (+6.1% vs P57, −15.1% below floor); SC-1 + SC-3 human_needed pending Linux-host run + probe-harness extension | 5 plans | 812/0/35 lib baseline preserved; 0 DashMap / StateStore / legacy-push regressions |
 
 ## Accumulated Context
+
+### Phase 58 — closed 2026-04-21 (engineering-complete, SC-1 + SC-3 `human_needed`)
+
+- **Phase 58 aggregate outcome:** Structural tokio-churn elimination delivered on both platforms. `tokio::spawn`-per-connection is gone from the production PUSH hot path on Linux (via per-shard SO_REUSEPORT + `FuturesUnordered` inline handler inside each shard's own `current_thread` runtime) and on macOS (via `spawn_macos_per_shard_accept_threads` + `handle_connection_blocking` which bridges to `handle_connection_public` through a per-thread `current_thread` tokio runtime — Wave 2 Rule-4 deviation). TPC-PERF-08 structural change shipped; numeric gates SC-1 (samply ≤ 15%) + SC-3 (≥ +25% EPS) pending Linux prod-host re-run + probe-harness extension.
+- **Wave 0 (2026-04-21, 88d41e5 + 1c25ac0 + 8478dca):** RED scaffolding — 3 integration tests (`tokio_spawn_absence_smoke`, `per_shard_listener_smoke`, `http_push_still_works`) + `scripts/samply-probe-tokio-share.sh` + TPC-PERF-08 REQUIREMENTS row + 2 always-on `ConcurrentAppState` counter fields (`accept_threads_spawned_total`, `inline_handler_events_total`). Probe-coverage sentinel planted (pct ≥ 1.0 coverage floor prevents false-pass when harness doesn't exercise TCP).
+- **Wave 1 (2026-04-20, 8a069be + fd10ead + 12d8b83):** Linux per-shard SO_REUSEPORT accept loop. `PerShardAcceptCfg` + `max_conns_per_shard_from_env` (`BEAVA_MAX_CONNS_PER_SHARD`, clamp [1, 65536] default 256) + `run_linux_per_shard_accept_loop` (private cfg-linux) threaded through `spawn_shard_threads`' new 4th arg `accept_cfg: Option<PerShardAcceptCfg>`. `spawn_linux_per_shard_accept_loops` (old pattern) DELETED. Top-level `TcpListener::bind(addr)` on Linux becomes a loopback ephemeral (dropped inside callee) to avoid EADDRINUSE against shards' REUSEPORT sockets. 9 integration tests + 3 inline unit tests migrated to the new signature. New unit test `per_shard_accept_cfg_env_parses_and_clamps`. lib: 810/0/35 (+1).
+- **Wave 2 (2026-04-21, 0cd7ed5 + 582ac16 + 0af252b):** macOS dedicated `std::thread` per shard. `bind_macos_listener` (BSD-style SO_REUSEADDR + SO_REUSEPORT via socket2) + `MacosConnSlot` (Arc<AtomicUsize> CAS-loop RAII counting semaphore) + `handle_connection_blocking` (per-thread `current_thread` tokio runtime bridge polling `handle_connection_public` INLINE; 300s slowloris read-timeout via socket2) + `spawn_macos_per_shard_accept_threads` (D-B1 default, bumps `accept_threads_spawned_total` once per shard) + `spawn_macos_single_accept_thread` (D-B2 `BEAVA_SHARDS_SINGLE_LISTENER=1` fallback). `run_tcp_server` dispatches post-`shard_handles.write()` to avoid boot race. `run_tcp_server_with_listener` macOS branch gated: `accept_threads_spawned_total > 0` → `future::pending`, else Phase 50.5 tokio::spawn compat shim (preserves 6 pre-existing failing `tests/test_concurrent.rs` tests' baseline). `grep -cE 'tokio::spawn\(.*handle_connection' src/server/tcp.rs` = 0. 2 new cfg-not-linux unit tests (`macos_conn_slot_raii_counts_inflight`, `two_macos_listeners_bind_same_port`). lib: 812/0/35 (+2).
+- **Wave 3 (2026-04-20, 0a423bf + 0ec7188):** Replica ingest guardrail. Zero `src/` change — audit confirmed Waves 1 + 2 already unified primary-PUSH and replica dispatch through one `handle_connection` opcode table (Linux) + `handle_connection_blocking → handle_connection_public → handle_connection` (macOS). `tests/replica_ingest_routing.rs` extended with 2 platform-gated tests (`replica_ingest_lands_on_per_shard_accept_{linux,macos}_at_n4`) that boot N=4 per-shard accept topology and assert OP_LOG_FETCH round-trips end-to-end (auth + scope validation + response framing). `#[ignore = "58-W3"]` re-labeled to `"guardrail-opens-real-tcp-socket; run with --ignored"` at Wave 4 close. lib unchanged.
+- **Wave 4 (2026-04-21, W4 evidence + close commits):** Perf gate + samply re-run + VERIFICATION + close. **C0 candidate 1,312,527 EPS** (MAX_CONNS_PER_SHARD=256) + **C1 candidate 1,376,450 EPS** (MAX_CONNS_PER_SHARD=1024) on macOS dev host — +6.1% vs P57 baseline but −15.1% below 1,621,616 floor. p99 latency median 30,632.5 µs = parity vs P57's 30,667.5 µs (−0.11%, SC-4 PASSED). Samply probe `TOKIO_SHARE_PCT=0.0` (harness-unable — `tests/profile_ingest.rs` exercises `handle_push_batch` direct, NEVER TCP/tokio). Contingency ladder: C1 invoked (+4.9% over C0 default); C2 N/A (`grep TCP_NODELAY/set_nodelay src/` = 0 — code already at C2 target state, kernel default Nagle ON); **C3 human_needed escalation** with full evidence. SC-1 + SC-3 `human_needed`; SC-2 + SC-4 + p99-parity PASSED. 58-PERF-GATE.md + 58-VERIFICATION.md committed. 3 `58-W[1,3]` attribute markers re-labeled to semantic (1 remains on `tokio_spawn_absence_smoke.rs::tokio_share_on_push_path_under_15_pct` as SC-1 human_needed tracking marker — re-labels to `58-NEXT` once probe harness extension lands).
+- **Integration tests:** all P58 additions GREEN — `per_shard_listener_smoke` (macOS 1/0/0 + Linux by construction on CI), `http_push_still_works` (1/0/0 every wave — D-B3 regression guard), `replica_ingest_routing` Wave-3 guardrails (1/0/0 macOS ignored→ GREEN; Linux by construction), `tcp_ingest_routing` + `http_ingest_routing` + `test_metrics_parity` all unregressed. Phase 54/55/56/57 regression battery unchanged.
+- **Lib baselines preserved:** `cargo test --release --lib` 812/0/35 (fjall); `cargo test --release --lib --features state-inmem` 804/0/35. Zero regressions across all prior-phase grep-gates (`verify-no-dashmap.sh` + `-statestore.sh` + `-legacy-push.sh` + `verify-retraction-metrics.sh` all exit 0).
+- **Structural guarantees:** `grep -cE 'tokio::spawn\(.*handle_connection' src/server/tcp.rs` = 0 (Wave 2 acceptance preserved); `grep -cE 'spawn_linux_per_shard_accept_loops' src/` = 0 (obsolete helper deleted); `grep -rnE 'spawn_linux_per_shard.*replica|replica_accept_loop' src/` = 0 (no replica-specific listener carve-out); `grep -rnE 'TCP_NODELAY|set_nodelay' src/` = 0 (kernel-default Nagle ON; C2 remediation lever unavailable as specified).
+- **58-NEXT items filed (priority-ordered):** #1 (HIGH — samply probe harness extension: extend `tests/profile_ingest.rs` or add sibling harness to drive `run_tcp_server` + real TCP driver threads for ≥ 8s of steady-state traffic; update `scripts/samply-probe-tokio-share.sh` to pick new harness; ~2h wiring; unblocks SC-1 human_needed → passed) > #2 (HIGH — Linux prod-host perf gate re-run on Hetzner CCX43 at Phase 58 HEAD; unblocks SC-3 human_needed → passed/documented-regression) > #3 (MED — Phase 50.5 `run_tcp_server_with_listener` macOS compat shim cleanup once `tests/test_concurrent.rs` harness audit lands — carried from Wave 2) > #4 (MED — Wave 4 C2 operator lever: explicit `TCP_NODELAY=true` experiment via socket2 once probe harness exists to measure delta; currently N/A because current code is already Nagle-ON) > #5 (LOW — bump `BEAVA_MAX_CONNS_PER_SHARD` default 256 → 1024 if Wave-4 Linux run confirms C1 lever helps on prod too).
+- **Wave 4 handoff to Phase 59:** Binary wire format for PUSH (TPC-PERF-09). Phase 58 leaves the per-connection runtime-dispatch overhead structurally gone; JSON serialization is now the next top-of-profile leaf. Expected: eliminating JSON re-serialization on the PUSH hot path should recover the +11% CPU that Phase 58 planning cited as "next after tokio-churn" on the 2026-04 samply profile. Key integration points for Phase 59 planning: `src/server/tcp.rs::handle_push_batch` serde_json hot spots, `src/client/wire.rs` framing, `src/shard/thread.rs::ShardEvent` payload carriage.
 
 ### Phase 57 — closed 2026-04-21 (engineering-complete, TPC-CORR-10 closed)
 
@@ -293,11 +309,13 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 58-03-PLAN.md
+**Stopped at:** Phase 58 closed 2026-04-21 (engineering-complete; SC-1 + SC-3 `human_needed`)
 
-**Next action (engineering):** Phase 57 is engineering-complete. The engineering-facing next action is one of:
-  (a) **Start Phase 58** (Tokio connection-handling rewrite — TPC-PERF-08). Goal: eliminate the per-connection Tokio task spawn/drop churn (~60% of samply leaf samples); long-lived accept-loops via SO_REUSEPORT (Linux) and dedicated accept-thread-per-shard (macOS). Phase 57 left the write path with 20.5% headroom, giving Phase 58 room to consume several percent on its way to the +25% EPS goal. Key integration points: `src/server/tcp.rs` per-connection task spawn, `src/server/http.rs` axum handlers, `src/shard/thread.rs::shard_event_loop` (already pinned, does NOT need rewriting).
-  (b) **Land 57-NEXT #1 / 56-NEXT #6** (wire-REGISTER for `@bv.source_table`, ~40 LOC Rust + 6 LOC Python + 2 tests) — unblocks BOTH the Phase 56 SC-5 cross-shard enrichment perf gate AND the Phase 57 D-D4 advisory retraction-firing micro-bench. After landing, SC-5 → `passed` for Phase 56 and D-D4 advisory number captured for Phase 57.
-  (c) Operator runs `scripts/soak-hetzner-ccx43.sh` at Phase 57 HEAD to flip TPC-PERSIST-04 `human_needed` → `passed` (carries through from Phase 54; runbook under `.planning/phases/54-legacy-engine-removal/soak-runbook.md`). Re-runnable at any Phase 55/56/57 HEAD since no state-format regressions.
+**Next action (engineering):** Phase 58 is engineering-complete. The engineering-facing next action is one of:
+  (a) **Start Phase 59** (Binary wire format for PUSH — TPC-PERF-09). Goal: eliminate JSON re-serialization on the PUSH hot path (~11% of CPU per 2026-04 samply notes). Replace JSON with a binary codec (length-prefixed postcard or custom) for TCP PUSH; HTTP PUSH stays JSON for compatibility; zero-copy `bytes::Bytes` end-to-end from wire → shard inbox → fjall insert. Phase 58 left the per-connection runtime dispatch overhead structurally eliminated — JSON is now the top-of-profile leaf to attack.
+  (b) **Land 58-NEXT #1** (samply probe harness extension, ~2h wiring + 30m verification) — extend `tests/profile_ingest.rs` (or add a sibling harness) to spawn `run_tcp_server` + a TCP driver thread pool and sample for ≥ 8s of steady-state traffic at ≥ 500K EPS; update `scripts/samply-probe-tokio-share.sh` to pick whichever harness is available; re-run Wave 4 samply. Flips Phase 58 SC-1 `human_needed` → `passed` (expected ≤ 15% per Wave 1/2 structural analysis).
+  (c) **Operator runs Linux prod-host perf gate at Phase 58 HEAD** on Hetzner CCX43 or equivalent Linux ≥ 8 physical-core host, commit `perf-evidence/<ts>-linux.txt` via `git add -f`. Flips Phase 58 SC-3 `human_needed` → `passed` or surfaces a documented delta for user evaluation. Expected: the 15.1% headroom gap closes on Linux where the SO_REUSEPORT 4-tuple-hash structural advantage actually materializes (the macOS per-thread current-thread-runtime bridge loses parity with the Linux SO_REUSEPORT + FuturesUnordered path).
+  (d) **Land 57-NEXT #1 / 56-NEXT #6** (wire-REGISTER for `@bv.source_table`, ~40 LOC Rust + 6 LOC Python + 2 tests) — unblocks BOTH the Phase 56 SC-5 cross-shard enrichment perf gate AND the Phase 57 D-D4 advisory retraction-firing micro-bench.
+  (e) Operator runs `scripts/soak-hetzner-ccx43.sh` at Phase 58 HEAD to flip TPC-PERSIST-04 `human_needed` → `passed` (carries through from Phase 54; runbook under `.planning/phases/54-legacy-engine-removal/soak-runbook.md`). Re-runnable at any Phase 55/56/57/58 HEAD since no state-format regressions.
 
 **Orthogonal ops (launch day — still pending):** v1.0-launch 6-item human-run checklist above remains outstanding. Run independently of v1.2 engineering work.

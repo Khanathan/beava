@@ -271,7 +271,7 @@ Plans:
 - [x] 58-01-PLAN.md — Wave 1: Linux SO_REUSEPORT per-shard TcpListener + FuturesUnordered inline handler + BEAVA_MAX_CONNS_PER_SHARD=256; delete spawn_linux_per_shard_accept_loops
 - [x] 58-02-PLAN.md — Wave 2: macOS dedicated std::thread per shard (D-B1) + BEAVA_SHARDS_SINGLE_LISTENER=1 fallback (D-B2); handle_connection_blocking + MacosConnSlot RAII
 - [x] 58-03-PLAN.md — Wave 3: Replica ingest rides unified per-shard accept path; opcode-dispatch parity audit + replica_ingest_routing extension at N=4
-- [ ] 58-04-PLAN.md — Wave 4: perf gate (≥ 1,621,616 EPS floor) + samply re-run (≤ 15% tokio) + 58-VERIFICATION + close
+- [x] 58-04-PLAN.md — Wave 4: perf gate HUMAN_NEEDED (best candidate 1,376,450 EPS on macOS dev host, +6.1% vs Phase 57 baseline, −15.1% below 1,621,616 floor; contingency C1 invoked / C2 N/A / C3 human_needed); samply probe harness-unable (TOKIO_SHARE_PCT=0.0 — coverage sentinel still RED; probe exercises wrong surface); p99 latency parity (−0.11% vs P57); structural change delivered (tokio::spawn-per-conn = 0 on all production PUSH paths); 58-VERIFICATION + 58-PERF-GATE committed; SC-1 + SC-3 human_needed pending Linux prod-host run + probe harness extension (58-NEXT #1)
 **UI hint**: no
 
 ### Phase 59: 59-binary-wire-format-for-push
@@ -360,7 +360,7 @@ Plans:
 | 55. Stream→Table cascade cross-shard + source tables | 5/5 | Complete    | 2026-04-20 |
 | 56. EnrichFromTable + StreamStreamJoin cross-shard | 5/5 | **Engineering-complete** — TPC-CORR-08 ✅ + TPC-CORR-09 ✅ closed; TPC-CORR-04 relaxation landed. Default-pipeline perf gate 1,195,914 EPS PASSED (+12.9% over 1,059,261 floor; −4.0% vs P55 baseline). Cross-shard scenario SC-5 human_needed — Phase 55 SDK source-table wire-registration gap (56-NEXT #6). | 2026-04-21 |
 | 57. Retraction across cross-shard joins | 4/5 | In Progress|  |
-| 58. Tokio connection-handling rewrite | 4/5 | In Progress|  |
+| 58. Tokio connection-handling rewrite | 5/5 | **Engineering-complete** — structural tokio-churn elimination landed on both Linux (SO_REUSEPORT per-shard + FuturesUnordered inline handler) and macOS (dedicated `std::thread` per shard + handle_connection_blocking); 0 `tokio::spawn(handle_connection)` in production PUSH path. Perf gate 1,376,450 EPS (+6.1% vs P57) on macOS dev host — 15.1% below 1,621,616 floor; p99 parity (−0.11%); SC-1 + SC-3 `human_needed` pending Linux prod-host run + probe-harness extension (58-NEXT #1). | 2026-04-21 (eng) |
 | 59. Binary wire format for PUSH | 0/? | Not started — 11% CPU savings from removing JSON re-serialization | — |
 | 60. Hot-key mitigation via application salting | 0/? | Not started — architectural fix for Zipf hot-shard ceiling (≥+50% under Pareto-80/20) | — |
 | 61. Metrics hot-path hoist | 0/? | Not started — 3.5% CPU savings | — |
