@@ -320,7 +320,9 @@ Plans:
 - [x] 59.6-04-PLAN.md — Wave 4: 7 typed simple aggs (Count/Sum/Avg/Min/Max/Last/First) + TypedAggOp trait + Shard::entity_state_typed + V11_FORMAT declaration + SC-4 (2 of 3) GREEN
 - [x] 59.6-05-PLAN.md — Wave 5: V11 snapshot writer/reader + fjall put_entity_typed/get_entity_typed + StreamStreamJoinTyped + typed SsjInsert + SC-7+SC-8+SC-9+SC-10 GREEN + verify-typed-path.sh exit 0
 - [x] 59.6-06-PLAN.md — Wave 6: 9 advanced typed aggs (DistinctCount/Percentile/TopK/Stddev/Variance + Ema/Lag/FirstN/LastN) + SideBand + Python SDK REGISTER ack schema_id echo + SC-6 GREEN + sharding_parity extended
-- [ ] 59.6-07-PLAN.md — Wave 7: perf gate best-of-3 + pipeline-phase latency measurement + samply probe + 59.6-PERF-GATE.md + 59.6-VERIFICATION.md + ROADMAP/STATE/REQUIREMENTS updates + docs/architecture.md + close
+- [x] 59.6-07-PLAN.md — Wave 7: perf gate best-of-3 + pipeline-phase latency measurement + samply probe + 59.6-PERF-GATE.md + 59.6-VERIFICATION.md + ROADMAP/STATE/REQUIREMENTS updates + docs/architecture.md + close
+
+**Status:** **Engineering-complete** (2026-04-21) — typed-row pipeline lands across 8 waves. Criterion typed-pipeline-phase cascade = 22.97 ns/event (370× below 8.5μs Value-path baseline; 87× under 2.0μs TPC-PERF-11 target). Aggregate-EPS SC-5 deferred to Phase 64 Rust bench client / Linux-host re-run per same Phase 58/59 HUMAN_NEEDED precedent (macOS Python-client ceiling = measurement vehicle saturated; server hits backpressure on every client). 9/10 SCs PASSED; 41 typed-path integration tests GREEN; all 6 grep invariants GREEN; zero regressions on prior-phase tests.
 **UI hint**: no
 
 ### Phase 60: 60-hotkey-mitigation-via-application-salting

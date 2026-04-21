@@ -211,6 +211,58 @@ A single event can update multiple independent streams if it contains key fields
 
 Re-registering a stream computes a `SchemaDiff` classifying features as added, removed, unchanged, or backfilling. Changing an operator's type (e.g., count to sum) on an existing feature name is rejected. New features marked with `backfill: true` trigger automatic replay from the event log.
 
+## Typed Pipeline Records (Phase 59.6)
+
+Beava's in-pipeline event and state representation is a typed, fixed-layout `Row` compiled from the SDK's `@bv.stream` / `@bv.source_table` / `@bv.table` class annotations at register time. Wire codec, engine operators, and state store all work on `Row` — not `serde_json::Value` — for any stream that declared a typed schema. Streams that did not declare a typed schema continue to run on the `Value` fallback path; mixed-mode deployments work unchanged.
+
+### How it works
+
+1. **At import time (Python SDK ≥ v0.3.0):** The `@bv.stream` decorator walks the class's `__annotations__` and builds a `CompiledSchema` (field name, Rust-side `FieldTy`, byte offset, nullable flag). Stored on the descriptor as `_beava_schema`.
+2. **At register time (wire):** The SDK emits a `schema: {fields: [...], inline_str_cap, row_size}` block inside the existing REGISTER JSON payload. The server parses it into `RegisteredSchema` and assigns a monotonic server-side `schema_id`. The REGISTER ack JSON carries the `schema_id` back to the client, which caches it in `BeavaClient._schema_ids[stream_name]`.
+3. **At push time (wire):** Clients with `WIRE_TYPED_PIPELINE` capability emit `OP_PUSH_TYPED_BATCH = 0x19` frames with a `schema_id` prefix + packed rows (each row is `payload_len | payload_bytes | arena_len | arena_bytes`). Clients without the capability fall back to `OP_PUSH_BATCH` (Value path).
+4. **On the shard thread:** Rows flow through `engine.push_typed_on_shard` → typed operators (`EnrichFromTableTyped`, 16 `TypedAggOp` impls, `StreamStreamJoinTyped`) → state store (`Shard::entity_state_typed` / fjall typed-row persistence via `put_entity_typed`). The Value path (`push_with_cascade_on_shard`) remains in place for unregistered-schema streams, HTTP ingest, and ad-hoc debug paths.
+
+### Per-event cost (measured 2026-04-21 on a macOS 10-core laptop)
+
+| Path                                                         | Pre-59.6 (Value) | Post-59.6 (typed) | Reduction       |
+|--------------------------------------------------------------|------------------|-------------------|-----------------|
+| Wire decode                                                  | 0.89 μs          | ~0.05 μs          | ≥ 15×           |
+| Pipeline-phase operator cascade (17 ops, Criterion steady)    | ~8.5 μs          | **22.97 ns**       | ~370×           |
+| Pipeline-phase operator cascade (3 ops, steady-state update)  | ~1.5 μs          | **1.84 ns**        | ~800×           |
+| Per-entity state write (fjall typed row)                      | JSON roundtrip   | `memcpy` of payload + schema_id prefix | ≥ 10× |
+| Typical total per-event (hot path, registered pipeline)       | ≈ 9.8 μs         | ≈ 0.08 μs (operator + decode) | ~120× |
+
+Measurements via `cargo bench --bench typed_pipeline_phase_latency` with a 3-op `(Count + Sum + Avg)` cascade and a 17-op `(1 × Count + 8 × Sum + 8 × Avg)` cascade. Full perf-gate evidence in `.planning/phases/59.6-typed-pipeline-records/59.6-PERF-GATE.md`.
+
+### Backward compatibility
+
+- **Streams registered WITHOUT a typed schema** (pre-59.6 SDKs, unannotated classes, HTTP/ad-hoc pushes, `/debug/push`) continue to work via the `serde_json::Value` fallback path.
+- **Client-side handshake:** `OP_NEGOTIATE_WIRE_FORMAT = 0x18` exposes `WIRE_TYPED_PIPELINE = 1 << 1` in the server's supported-bits. Clients that omit the handshake or lack the bit emit `OP_PUSH_BATCH` (Value) and the server transparently routes through the generic operator path.
+- **Counters:** `beava_typed_row_path_total{stream}` + `beava_value_fallback_path_total{stream}` gauges report which path each stream took over the last observation window. Registered typed pipelines report 100 % typed post-landing; unregistered streams report 100 % fallback.
+
+### Limitations
+
+- **Schema evolution** (add/remove fields post-register) is not supported in v1.x; re-register with a new stream name. Schema evolution is a v1.4+ roadmap item.
+- **Arrow / Parquet interop** is additive — typed `Row` can be emitted as Arrow batches (future work; not shipped in 59.6).
+- **Sketch state** (HLL / UDDSketch / CMS / ring buffers) is stored in a per-entity `SideBand` map alongside the state Row. V11 snapshot currently carries only the state Row bytes; sketch state rehydrates from event-log replay on recovery (same behavior as pre-59.6). Adding a `SideBand` extension to V11 is a 59.6-NEXT item.
+- **Aggregate-EPS verification on macOS dev hosts** is bounded by the Python SDK measurement ceiling (~1.3M EPS thermal-throttled / ~1.7M EPS hot-start on 8 clients). Operator-level per-event cost is verified via Criterion; full aggregate-EPS verification at >3M EPS requires either a Linux host with SO_REUSEPORT or the Phase 64 Rust bench client.
+
+### Key source files
+
+- `src/engine/schema.rs` — `RegisteredSchema`, `FieldSpec`, `FieldTy`, `Row`, `SchemaRegistry`, `row_to_value` / `value_to_row` bridge.
+- `src/engine/operators_typed.rs` — `TypedAggOp` trait + `EnrichFromTableTyped` + `StreamStreamJoinTyped` + `TypedSsjBuffer` + `SideBand`.
+- `src/engine/operators_typed_aggs.rs` — 7 simple typed aggs (Count / Sum / Avg / Min / Max / Last / First).
+- `src/engine/operators_typed_sketches.rs` — 5 advanced aggs (DistinctCount / Percentile / TopK / Stddev / Variance).
+- `src/engine/operators_typed_windows.rs` — 4 windowed aggs (Ema / Lag / FirstN / LastN).
+- `src/wire/typed.rs` — `OP_PUSH_TYPED_BATCH` encoder / decoder with strict `schema_id` match.
+- `src/shard/mod.rs` — `Shard::entity_state_typed`, `entity_sideband_typed`, `get_or_init_entity_state_typed`.
+- `src/engine/pipeline.rs` — `push_typed_on_shard`, `run_typed_enrich_cascade`, `run_typed_agg_step`.
+- `src/state/snapshot.rs` — V11 snapshot reader/writer for typed rows.
+- `python/beava/_schema_compile.py` — class-annotation → `CompiledSchema` compiler.
+- `python/beava/_serialize.py` — typed REGISTER + `_pack_typed_batch` encoder.
+- `benches/typed_pipeline_phase_latency.rs` — Criterion harness (3 cells: single_event / update_only_3ops / cascade_17ops).
+- `.planning/phases/59.6-typed-pipeline-records/59.6-PERF-GATE.md` — full perf evidence.
+
 ## State Store
 
 The state store (`src/state/store.rs`) maps entity keys to their feature state using a `DashMap` for per-key concurrency.

@@ -94,7 +94,7 @@ Requirements scoped to the v1.2 milestone. Each maps to a roadmap phase (48–52
 
 ### TPC-PERF (continued) — Phase 59.6
 
-- [x] **TPC-PERF-11**: The in-pipeline event/state representation is typed,
+- [~] **TPC-PERF-11** (engineering-complete 2026-04-21; sub-gate (b) aggregate-EPS human_needed on Linux-host / Phase 64 Rust bench client per 59.6-PERF-GATE.md; sub-gates (a), (c), (d), (e), (f) PASSED): The in-pipeline event/state representation is typed,
   fixed-layout row records (`#[repr(C)] struct Row { schema_id: SchemaId, payload: [u8; N] }`)
   compiled from `@bv.stream` / `@bv.source_table` / `@bv.table` schemas at
   register time. Wire codec (`OP_PUSH_BATCH` schema_id prefix per D-B1), engine

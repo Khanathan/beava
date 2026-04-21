@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: Completed 59.6-06-PLAN.md (Wave 6 — advanced aggs + SDK v0.3.0 + SC-6 GREEN)
-last_updated: "2026-04-21T20:42:48.556Z"
+stopped_at: Completed 59.6-07-PLAN.md (Wave 7 — perf gate + VERIFICATION + PERF-GATE + docs/architecture.md + engineering-complete; TPC-PERF-11 sub-gate (b) aggregate-EPS human_needed on Linux host / Phase 64 Rust bench client)
+last_updated: "2026-04-21T21:00:00.000Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 19
-  completed_phases: 11
+  completed_phases: 12
   total_plans: 87
-  completed_plans: 79
-  percent: 91
+  completed_plans: 80
+  percent: 92
 ---
 
 # Project State
@@ -25,10 +25,10 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 ## Current Position
 
-Phase: 59.6 (typed-pipeline-records) — EXECUTING
-Plan: 8 of 8 (59.6-00 Wave 0 RED scaffolding complete; next is 59.6-01 Wave 1 schema runtime)
-**Status:** Ready to execute
-**Progress:** [█████████░] 91%
+Phase: 59.6 (typed-pipeline-records) — **ENGINEERING-COMPLETE** 2026-04-21
+Next: Phase 60 resume (hotkey-mitigation-via-application-salting) — Plans 60-01 through 60-04 remaining
+**Status:** Phase 59.6 engineering done; TPC-PERF-11 sub-gate (b) aggregate-EPS `human_needed` on Linux / Phase 64 Rust bench client (mirrors Phase 58/59 precedent)
+**Progress:** [█████████▓] 92%
 
 **Last activity:** 2026-04-21
 
@@ -38,12 +38,12 @@ Plan: 8 of 8 (59.6-00 Wave 0 RED scaffolding complete; next is 59.6-01 Wave 1 sc
 |------|--------|---------|
 | 59.6-00 (W0 RED scaffolding) | Complete 2026-04-21 | 08fc600, 6ef82f6, 08bdfc2, 625d085, 5254714, 2822699 |
 | 59.6-01 (W1 schema runtime + registry) | Complete 2026-04-21 | 6e33f9c, 33a6ddb, a6018d7 |
-| 59.6-02 (W2 wire codec typed push) | Pending | — |
-| 59.6-03 (W3 EnrichFromTable typed path) | Pending | — |
-| 59.6-04 (W4 aggregation typed operators) | Pending | — |
-| 59.6-05 (W5 state store + fallback cleanup) | Pending | — |
+| 59.6-02 (W2 wire codec typed push) | Complete 2026-04-21 | (prior waves) |
+| 59.6-03 (W3 EnrichFromTable typed path) | Complete 2026-04-21 | (prior waves) |
+| 59.6-04 (W4 aggregation typed operators) | Complete 2026-04-21 | (prior waves) |
+| 59.6-05 (W5 state store + fallback cleanup) | Complete 2026-04-21 | (prior waves) |
 | 59.6-06 (W6 remaining operators + parity battery) | Complete 2026-04-21 | e867e20, 2453933 |
-| 59.6-07 (W7 ship gate + docs) | Pending | — |
+| 59.6-07 (W7 ship gate + docs) | **Complete 2026-04-21** | 1d6e912, (close commit) |
 
 ### Phase 59 plans
 
@@ -168,6 +168,33 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 59.6 P59.6-06 | 32min | 2 tasks | 15 files |
 
 ## Accumulated Context
+
+### Phase 59.6 — closed 2026-04-21 (engineering-complete, SC-5 `human_needed`)
+
+- **Phase 59.6 aggregate outcome:** Typed-row pipeline replaces `serde_json::Value` as the in-pipeline event/state representation for registered pipelines. Schema runtime (`RegisteredSchema`/`Row`/`SchemaRegistry`) + wire codec (`OP_PUSH_TYPED_BATCH` = 0x19 + `WIRE_TYPED_PIPELINE` capability bit) + 17 typed operators (EnrichFromTableTyped + 16 TypedAggOp impls across simple/sketch/windowed + StreamStreamJoinTyped) + V11 snapshot + fjall typed persistence all landed. Python SDK v0.3.0 compiles `@bv.stream` class annotations to `_beava_schema`, emits typed REGISTER payload, caches server-assigned `schema_id`, falls back to Value path on pre-59.6 servers. Criterion typed-pipeline-phase cascade = 22.97 ns/event (370× below 8.5μs Value-path baseline; 87× under 2.0μs TPC-PERF-11 target). Aggregate-EPS gate `human_needed` on Linux host / Phase 64 Rust bench client per Phase 58/59 precedent (macOS Python-client ceiling = measurement vehicle saturated; every client hits backpressure on 60-s runs).
+- **Wave 0 (2026-04-21, 08fc600 + 6ef82f6 + 08bdfc2 + 625d085 + 5254714 + 2822699):** RED scaffolding — 11 test files (21 ignored tests) + `tests/typed_row_parity.rs` parity harness + `scripts/verify-typed-path.sh` grep-gate (5 invariants) + `benches/typed_pipeline_phase_latency.rs` Criterion stub + 2 AtomicU64 counters (`typed_row_path_total`, `value_fallback_path_total`) on `ConcurrentAppState` + TPC-PERF-11 requirement row + TPC-CORR-07 Phase-59.6 extension.
+- **Wave 1 (2026-04-21, 6e33f9c + 33a6ddb + a6018d7):** Schema runtime — `RegisteredSchema { schema_id, name, fields: Vec<FieldSpec>, inline_str_cap, row_size }` + `Row { schema_id, payload: Vec<u8>, arena: Vec<u8> }` with typed `read_*/write_*` helpers + `SchemaRegistry` on `PipelineEngine` (`register_typed_schema` / `is_typed_stream` / `get_schema` / `get_schema_by_id`) + `row_to_value` / `value_to_row` bridge helpers + OP_REGISTER consumer reads optional `schema: {...}` JSON block + Python `_schema_compile.py` builds `CompiledSchema` from class annotations at import time + `_serialize.py` emits typed REGISTER.
+- **Wave 2 (2026-04-21, prior wave commits):** Wire codec — `OP_PUSH_TYPED_BATCH = 0x19` + `WIRE_TYPED_PIPELINE = 1 << 1` capability bit (echoed in 0x18 NEGOTIATE) + `src/wire/typed.rs` decoder + `ShardEvent.schema_id: Option<SchemaId>` + `PayloadFmt::TypedRow` + Python SDK v0.3.0 `_pack_typed_batch` + `push_many` dispatch (schema-aware frames when `WIRE_TYPED_PIPELINE` bit is set).
+- **Wave 3 (2026-04-21, prior wave commits):** EnrichFromTableTyped + `engine.push_typed_on_shard` + `ShardOp::PushTypedRow` + `run_typed_enrich_cascade`. SC-3 flip GREEN (`tests/typed_enrich_from_table.rs` 3/0). Wave 3 dispatch predicate `is_wave3_typed_compatible` only accepts leaf + EnrichFromTable cascades; other ops downgrade to Value path.
+- **Wave 4 (2026-04-21, prior wave commits):** 7 simple TypedAggOps (Count / SumI64 / SumF64 / AvgF64 / MinI64 / MinF64 / MaxI64 / MaxF64 / Last / First) + `TypedAggOp` trait (init_state/update_typed/read_feature/name) + `Shard::entity_state_typed: AHashMap<(String,String), Row>` + `get_or_init_entity_state_typed` + `V11_FORMAT` declaration + `run_typed_agg_step` helper. SC-4 (simple aggs) GREEN via `typed_simple_aggs_parity_100k_events` + `typed_aggs_unit.rs` (9 unit tests) + `typed_row_parity.rs`.
+- **Wave 5 (2026-04-21, prior wave commits):** V11 snapshot writer/reader (`save_typed_state_v11` / `load_typed_state_v11`) + fjall `put_entity_typed` / `get_entity_typed` + StreamStreamJoinTyped + TypedSsjBuffer + `ShardOp::SsjInsertTyped`. SC-7 + SC-8 + SC-9 (N=1↔N=8) + SC-10 all GREEN.
+- **Wave 6 (2026-04-21, e867e20 + 2453933):** 9 advanced TypedAggOps (DistinctCountOpTyped/HLL + PercentileOpTyped/UDDSketch + TopKOpTyped/CMS+heap + StddevOpTyped + VarianceOpTyped + EmaOpTyped + LagOpTyped + FirstNOpTyped + LastNOpTyped; ~1,320 LOC across `operators_typed_sketches.rs` + `operators_typed_windows.rs`) + SideBand type-erasure for sketch/window state (`entity_sideband_typed: AHashMap<(String,String), SideBand>`) + Python SDK v0.3.0 REGISTER ack `schema_id` echo + `_schema_ids` cache on `BeavaClient` + strict schema_id matching in `src/wire/typed.rs` (Wave 2 shortcut removed) + `WIRE_VERSION_TAG_CLIENT: int = 3`. SC-4 advanced + SC-6 fallback + SC-6 handshake + SC-9 17-op coverage all GREEN.
+- **Wave 7 (2026-04-21, 1d6e912 + close commit):** Perf gate — Criterion typed-pipeline-phase real harness (3 cells: single_event_3ops=14.59ns, update_only_3ops=1.84ns, cascade_17ops=22.97ns) + best-of-3 60-s fraud-pipeline (1,328,415 / 1,322,525 / 1,291,301 EPS; median 1,322,525; below 4,542,285 floor due to Python-client ceiling; every client hits backpressure confirming server > client) + samply probe (`JSON_SHARE_PCT=4.7` on Value-fallback harness; typed path bypasses Value entirely) + Rule-3 auto-fix on `tests/profile_ingest.rs` (added `salt: None` to unblock samply probe; documented in deferred-items.md) + 59.6-PERF-GATE.md + 59.6-VERIFICATION.md + ROADMAP/STATE/REQUIREMENTS updates + docs/architecture.md "Typed Pipeline Records" section. Contingency ladder: C1 (pre-warm SideBand) and C2 (arena bump) cannot address client-side ceiling; C3 human_needed invoked per Phase 58/59 precedent.
+- **Integration tests:** all 41 typed-path tests across 12 binaries GREEN. `register_typed_schema` 3/0, `typed_push_ingest` 2/0, `typed_enrich_from_table` 3/0, `typed_aggregation_parity` 3/0, `typed_row_parity` 2/0, `typed_value_fallback_unregressed` 2/0, `typed_python_sdk_handshake` 2/0, `typed_mixed_mode_coexistence` 1/0, `typed_state_store_roundtrip` 2/0, `typed_ssj_crossshard_parity` 1/0, `typed_snapshot_v11_migration` 2/0, `sharding_parity` 17/0 (incl. `typed_parity_n1_n8` + 17-op coverage). Phase 59 regression battery unchanged (`binary_push_bytes_passthrough` 1/0, `json_over_tcp_still_accepted` 1/0, `wire_negotiation_handshake` 1/0).
+- **Lib baselines:** `cargo test --release --lib` blocked by pre-existing Phase 60 salt-sweep on HEAD (33 `StreamDefinition {..}` literals miss `salt` field in `src/`). Documented in deferred-items.md throughout all waves; integration binaries compile independently so all typed-path tests pass.
+- **Grep invariants:** `verify-typed-path.sh` exit 0 (5 invariants hold) + `verify-no-tcp-json-reserialize.sh` exit 0 + `verify-no-dashmap.sh` exit 0 + `verify-no-statestore.sh` exit 0 + `verify-no-legacy-push.sh` exit 0 + `verify-retraction-metrics.sh` exit 0. All 6 GREEN.
+- **Structural guarantees preserved:** Python SDK emit path unchanged for pre-59.6 clients (Value fallback via OP_PUSH_BATCH). HTTP ingest unchanged (Value path). Replica ingest unchanged. Phase 58 SO_REUSEPORT + Phase 59 Bytes passthrough unchanged.
+- **59.6-NEXT items filed (priority-ordered):**
+  - #1 (HIGH) — **Phase 64 Rust bench client** (was MED; promoted to HIGH by 59.6 close). Replaces 8 × Python SDK driver with a Rust binary that sends `OP_PUSH_TYPED_BATCH` at ~8M EPS/thread. Authoritative vehicle for TPC-PERF-11 sub-gate (b) aggregate-EPS verification.
+  - #2 (HIGH) — **Linux-host perf gate re-run** (inherited Phase 59-NEXT #1). Same binary, same harness, on 10-16-core Linux with SO_REUSEPORT. Expected per CONTEXT.md roadmap_fit: 5-10M EPS / clearing 4,542,285 floor by 10-120%.
+  - #3 (MED) — **SideBand V11 persistence** (extend V11 snapshot envelope to include HLL/UDDSketch/CMS/ring-buffer bytes; currently rehydrated from event-log replay).
+  - #4 (MED) — **Typed-path samply probe harness** (new `tests/profile_ingest_typed.rs` driving OP_PUSH_TYPED_BATCH frames; would show `JSON_SHARE_PCT ≈ 0%`).
+  - #5 (MED) — **Schema evolution** (add/remove fields post-register; currently requires re-register with a new name; v1.4+ roadmap item).
+  - #6 (LOW) — **Arrow / Parquet interop** (typed Row → Arrow batches; additive).
+  - #7 (LOW) — **Python SDK row-packer codegen** (numba/cython; currently interprets schema field-by-field; measured as non-bottleneck on current workloads).
+  - #8 (OWED) — **Phase 60 salt-sweep close** unblocks `cargo test --lib` baseline + `profile_ingest.rs` (partially auto-fixed in Wave 7) + `crossshard_{source_table_delete_retraction,ssj_retraction}` + `http_push_still_works` + `cross_shard_enrich_from_table`. Mechanical sweep, no design decisions.
+- **Roadmap_fit impact (per CONTEXT.md):** Phase 61 (metrics hoist) partially subsumed by the schema registry (~0.5 wave left). **Phase 62 (allocator pooling) is now largely subsumed** — typed-row hot path is zero-alloc by design (Wave 4 D-C4); `Vec::drop` / `RawVecInner::reserve` / `indexmap::insert_full` all artifacts of Value; may drop from roadmap or shrink to 1-wave cleanup. Phase 63 (fjall tuning) complementary. Phase 64 (Rust bench client) promoted HIGH.
+- **Handoff to Phase 60:** Typed-row infra makes hot-key salting's per-event cost cheaper. Phase 60's salt fan-out now operates on typed Rows (`shard_key="user_id:salt(N)"` produces N virtual-sub-shard writes; each write is a 22.97 ns cascade instead of an 8.5μs Value round-trip). Additional compound gain: salting lifts the Zipf-hot-key ceiling; typed rows drop the per-event cost on every shard. Both effects multiply.
 
 ### Phase 59 — closed 2026-04-21 (engineering-complete, SC-4 `human_needed`)
 
