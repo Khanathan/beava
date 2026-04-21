@@ -318,7 +318,7 @@ Plans:
 - [x] 59.6-02-PLAN.md — Wave 2: wire codec (OP_PUSH_TYPED_BATCH 0x19 + WIRE_TYPED_PIPELINE 1<<1 + src/wire/typed.rs decoder + ShardEvent.schema_id + PayloadFmt::TypedRow + Python SDK v0.3.0 _pack_typed_batch + push_many dispatch)
 - [x] 59.6-03-PLAN.md — Wave 3: ShardOp::PushTypedRow + engine.push_typed_on_shard + EnrichFromTableTyped + run_typed_enrich_cascade + SC-3 GREEN
 - [x] 59.6-04-PLAN.md — Wave 4: 7 typed simple aggs (Count/Sum/Avg/Min/Max/Last/First) + TypedAggOp trait + Shard::entity_state_typed + V11_FORMAT declaration + SC-4 (2 of 3) GREEN
-- [ ] 59.6-05-PLAN.md — Wave 5: V11 snapshot writer/reader + fjall put_entity_typed/get_entity_typed + StreamStreamJoinTyped + typed SsjInsert + SC-7+SC-8+SC-9+SC-10 GREEN + verify-typed-path.sh exit 0
+- [x] 59.6-05-PLAN.md — Wave 5: V11 snapshot writer/reader + fjall put_entity_typed/get_entity_typed + StreamStreamJoinTyped + typed SsjInsert + SC-7+SC-8+SC-9+SC-10 GREEN + verify-typed-path.sh exit 0
 - [ ] 59.6-06-PLAN.md — Wave 6: 9 advanced typed aggs (DistinctCount/Percentile/TopK/Stddev/Variance + Ema/Lag/FirstN/LastN) + SideBand + Python SDK REGISTER ack schema_id echo + SC-6 GREEN + sharding_parity extended
 - [ ] 59.6-07-PLAN.md — Wave 7: perf gate best-of-3 + pipeline-phase latency measurement + samply probe + 59.6-PERF-GATE.md + 59.6-VERIFICATION.md + ROADMAP/STATE/REQUIREMENTS updates + docs/architecture.md + close
 **UI hint**: no
