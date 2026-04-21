@@ -58,6 +58,13 @@ pub const SHARD_INBOX_HIGH_WATERMARK_TOTAL: &str = "beava_shard_inbox_high_water
 pub const PENDING_RETRACTION_APPEND_FAILED_TOTAL: &str =
     "beava_pending_retraction_append_failed_total";
 
+/// Phase 59.5 W3.5: per-event processing latency on the shard thread.
+/// Histogram; recorded at every exit of `process_shard_event` via a
+/// LatencyGuard drop, tagged by `op` (push / upsert / delete / read_at /
+/// read_batch / ssj_insert / retract / etc.). Gives microsecond-resolution
+/// insight that macOS `sample` (1ms interval) can't provide.
+pub const SHARD_EVENT_PROCESS_SECONDS: &str = "beava_shard_event_process_seconds";
+
 // ---- Phase 56: cross-shard EnrichFromTable + StreamStreamJoin counters ----
 //
 // Five new series for SC-1 (EnrichFromTable cross-shard), SC-2 (SSJ
@@ -285,6 +292,15 @@ pub fn register_shard_metrics(shard_count: usize) {
     metrics::counter!(SSJ_CROSS_SHARD_TOTAL, "join_id" => "__init__").increment(0);
     metrics::counter!(CROSSSHARD_JOINS_REGISTERED_TOTAL, "join_id" => "__init__")
         .increment(0);
+
+    // Phase 59.5 W3.5: pre-seed the per-op process-latency histogram so
+    // /metrics exposes all op-kind buckets from the first scrape.
+    for op_kind in [
+        "push", "upsert", "delete", "read_at", "read_batch", "ssj_insert",
+        "delete_table", "upsert_batch", "delete_batch", "retract", "other",
+    ] {
+        metrics::histogram!(SHARD_EVENT_PROCESS_SECONDS, "op" => op_kind).record(0.0);
+    }
 
     // Phase 57: touch retraction counters with placeholder labels so the
     // series appear in /metrics from the first scrape. Real labels

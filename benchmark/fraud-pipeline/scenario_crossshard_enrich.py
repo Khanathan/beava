@@ -175,6 +175,11 @@ def main() -> None:
     p.add_argument("--batch", type=int, default=1000)
     p.add_argument("--checkpoint", type=float, default=5.0)
     p.add_argument("--latency-stride", type=int, default=64)
+    # Phase 59.5-W3.5: --target-eps lets the bench self-throttle below
+    # server capacity so we can measure where the REAL bottleneck is
+    # (vs. "server's inbox overflows → clients exit" collapse).
+    # 0 = unthrottled (default, matches pre-W3.5 behavior).
+    p.add_argument("--target-eps", type=float, default=0.0)
     args = p.parse_args()
 
     random.seed(args.proc_id * 7919 + 17)
@@ -188,14 +193,40 @@ def main() -> None:
     batches_since_sample = 0
     latency_samples_ns: list[int] = []
 
+    # File-based barrier: proc-0 seeds Countries; procs 1..N wait for a
+    # fresh sentinel (mtime ≥ this proc's start) before pushing, so proc-0's
+    # upserts don't compete with the push flood for shard inbox capacity.
+    proc_start_time = time.time()
+    seed_sentinel = os.path.join(
+        os.environ.get("TMPDIR", "/tmp"),
+        f"beava-bench-crossshard-seeded-{args.host.replace(':', '_')}",
+    )
     try:
         app = bv.App(args.host)
         app.register(*PIPELINES)
-        # Only proc-0 seeds the Countries table (source-table upserts are
-        # idempotent by (table, key) but the source_lsn contract prefers
-        # a single writer per key to avoid lsn-echo noise).
         if args.proc_id == 0:
+            try:
+                os.unlink(seed_sentinel)
+            except FileNotFoundError:
+                pass
             _seed_countries_once(app)
+            with open(seed_sentinel, "w") as f:
+                f.write(str(time.monotonic()))
+        else:
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                try:
+                    mt = os.path.getmtime(seed_sentinel)
+                except FileNotFoundError:
+                    mt = 0.0
+                if mt >= proc_start_time:
+                    break
+                time.sleep(0.05)
+            else:
+                raise TimeoutError(
+                    f"proc-0 did not seed Countries within 30 s "
+                    f"(sentinel={seed_sentinel} missing or stale)"
+                )
     except KeyboardInterrupt:
         error_kind = "KeyboardInterrupt"
         error_msg = "interrupted during setup"
@@ -204,6 +235,12 @@ def main() -> None:
         error_msg = str(exc)[:200]
 
     batch = [_event() for _ in range(args.batch)] if error_kind is None else []
+    # Phase 59.5-W3.5: per-batch throttle derived from --target-eps.
+    # target_eps=0 disables throttling (original behavior).
+    batch_interval_s = (
+        args.batch / args.target_eps if args.target_eps > 0 else 0.0
+    )
+    next_push_deadline = time.monotonic()
     try:
         if error_kind is not None:
             raise RuntimeError(error_kind)
@@ -211,6 +248,11 @@ def main() -> None:
             t = time.monotonic()
             if t - t0 >= args.duration:
                 break
+
+            # Throttle: pace batches so sustained rate matches --target-eps.
+            if batch_interval_s > 0 and t < next_push_deadline:
+                time.sleep(next_push_deadline - t)
+                t = time.monotonic()
 
             # Refresh a slice of the batch so values churn but the list stays
             # resident (matches bench.py's pattern).
@@ -227,6 +269,14 @@ def main() -> None:
                 app.push_many(Txns, batch)
                 batches_since_sample += 1
             sent += len(batch)
+
+            if batch_interval_s > 0:
+                next_push_deadline += batch_interval_s
+                # If we're badly behind (e.g., server slowed down), don't
+                # try to catch up in a tight loop — re-anchor to now.
+                now_m = time.monotonic()
+                if next_push_deadline < now_m - batch_interval_s:
+                    next_push_deadline = now_m + batch_interval_s
 
             if t - t_last_ckpt >= args.checkpoint:
                 _emit({"proc_id": args.proc_id, "phase": "checkpoint",

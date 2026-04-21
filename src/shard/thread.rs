@@ -746,10 +746,48 @@ fn process_shard_event(
     wm_publish_threshold: u64,
     now: std::time::SystemTime,
 ) {
+    // Phase 59.5-W3.5: record per-event processing latency so we can pin
+    // down where shard time is spent at 1-10us resolution (macOS `sample`
+    // at 1ms intervals can't resolve this). Tag with the ShardOp kind.
+    let _t_process_start = std::time::Instant::now();
+    let op_kind = match &event.op {
+        ShardOp::Push => "push",
+        ShardOp::UpsertSourceTableRow { .. } => "upsert",
+        ShardOp::DeleteSourceTableRow { .. } => "delete",
+        ShardOp::ReadEntityAt { .. } => "read_at",
+        ShardOp::ReadEntityBatch { .. } => "read_batch",
+        ShardOp::SsjInsert { .. } => "ssj_insert",
+        ShardOp::DeleteTableRow { .. } => "delete_table",
+        ShardOp::UpsertSourceTableBatch { .. } => "upsert_batch",
+        ShardOp::DeleteSourceTableBatch { .. } => "delete_batch",
+        ShardOp::RetractDownstream { .. } => "retract",
+        _ => "other",
+    };
+
     // Phase 53-01: dispatch on the new ShardOp enum. Take the op out of
     // the event (replacing with Push placeholder) so we can still access
     // event.payload / event.stream_name / event.response_tx by value.
     let op = std::mem::replace(&mut event.op, ShardOp::Push);
+    // Record latency at every exit via a defer guard.
+    struct LatencyGuard {
+        start: std::time::Instant,
+        op_kind: &'static str,
+    }
+    impl Drop for LatencyGuard {
+        fn drop(&mut self) {
+            let elapsed_s = self.start.elapsed().as_secs_f64();
+            metrics::histogram!(
+                crate::shard::metrics::SHARD_EVENT_PROCESS_SECONDS,
+                "op" => self.op_kind
+            )
+            .record(elapsed_s);
+        }
+    }
+    let _latency_guard = LatencyGuard {
+        start: _t_process_start,
+        op_kind,
+    };
+
     match op {
                 ShardOp::Push => {
                     // Phase 59 D-C1: decode on the shard thread according to
