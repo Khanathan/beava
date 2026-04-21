@@ -3005,6 +3005,17 @@ async fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8
                     });
                     return Ok(serde_json::to_vec(&diff_json).unwrap());
                 }
+                // Phase 59.6 Wave 1 (TPC-PERF-11 / D-B1): extract the typed
+                // `schema:` block *before* the stream_def match consumes the
+                // parsed payload. Applied after engine.register(stream_def)
+                // succeeds so REGISTER atomicity holds — if stream_def
+                // translation fails, no schema entry leaks into the registry.
+                let typed_schema: Option<(String, crate::engine::register::RegisterSchemaJson)> =
+                    if let crate::engine::register::V0RegisterPayload::Source(desc) = &parsed {
+                        desc.schema.clone().map(|s| (desc.name.clone(), s))
+                    } else {
+                        None
+                    };
                 let stream_def = match &parsed {
                     crate::engine::register::V0RegisterPayload::Source(desc) => {
                         crate::engine::register::v0_source_to_stream_def(desc)?
@@ -3098,6 +3109,25 @@ async fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8
                     let _ = log.register_stream(&def_name, history_ttl);
                 }
                 engine.store_raw_register_json(&def_name, raw_json);
+                // Phase 59.6 Wave 1 (TPC-PERF-11): consume the typed `schema:`
+                // block if present and register it with the engine's
+                // SchemaRegistry. Downstream waves branch on
+                // `engine.is_typed_stream(&def_name)` to take the typed path.
+                if let Some((sname, schema_json)) = typed_schema {
+                    let registered = schema_json.to_registered_schema(&sname);
+                    if let Err(e) = registered.validate_layout() {
+                        return Err(BeavaError::Protocol(format!(
+                            "v0 REGISTER {}: typed schema layout invalid: {}",
+                            sname, e
+                        )));
+                    }
+                    let schema_id = engine.register_typed_schema(&sname, registered);
+                    eprintln!(
+                        "[beava-register] Phase 59.6 (TPC-PERF-11): registered typed schema \
+                         stream={} schema_id={}",
+                        sname, schema_id
+                    );
+                }
                 // Phase 50-06 (D-11/D-12): warn if stream has no shard_key at N>1.
                 {
                     let no_shard_key = engine

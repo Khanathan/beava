@@ -617,6 +617,14 @@ fn seed_pipelines_from_file(state: &SharedState, path: &std::path::Path) -> Resu
                 .map_err(|e| format!("v0 REGISTER: re-serialize failed: {}", e))?;
             let parsed = beava::engine::register::V0RegisterPayload::parse(&v0_bytes)
                 .map_err(|e| format!("parse v0 REGISTER: {}", e))?;
+            // Phase 59.6 Wave 1 (TPC-PERF-11 / D-B1): extract the typed
+            // `schema:` block before the stream_def match consumes `parsed`.
+            let typed_schema: Option<(String, beava::engine::register::RegisterSchemaJson)> =
+                if let beava::engine::register::V0RegisterPayload::Source(desc) = &parsed {
+                    desc.schema.clone().map(|s| (desc.name.clone(), s))
+                } else {
+                    None
+                };
             let stream_def = match &parsed {
                 beava::engine::register::V0RegisterPayload::Source(desc) => {
                     beava::engine::register::v0_source_to_stream_def(desc)
@@ -641,6 +649,18 @@ fn seed_pipelines_from_file(state: &SharedState, path: &std::path::Path) -> Resu
             let history_ttl = engine.get_stream(&def_name).and_then(|s| s.history_ttl);
             if let Some(ref log) = state.event_log {
                 let _ = log.register_stream(&def_name, history_ttl);
+            }
+            // Phase 59.6 Wave 1 (TPC-PERF-11): register the typed schema,
+            // if present, with the engine's SchemaRegistry.
+            if let Some((sname, schema_json)) = typed_schema {
+                let registered = schema_json.to_registered_schema(&sname);
+                registered.validate_layout().map_err(|e| {
+                    format!(
+                        "v0 REGISTER {}: typed schema layout invalid: {}",
+                        sname, e
+                    )
+                })?;
+                engine.register_typed_schema(&sname, registered);
             }
             def_name
         } else {

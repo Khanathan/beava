@@ -153,6 +153,73 @@ pub struct SourceDescriptor {
     /// Single string → ShardKeySpec::Single; JSON array → ShardKeySpec::Tuple.
     #[serde(default)]
     pub shard_key: Option<crate::engine::join_validator::ShardKeySpec>,
+
+    /// Phase 59.6 Wave 1 (TPC-PERF-11 / D-B1): typed-pipeline schema block.
+    /// Absent (serde default) when the SDK has not been upgraded to the
+    /// 59.6 typed-row wire contract OR when the stream declares no typed
+    /// fields. Present → server's REGISTER dispatch calls
+    /// `PipelineEngine::register_typed_schema` so subsequent typed-wire
+    /// decoders (Wave 2+) can branch on `engine.is_typed_stream(name)`.
+    #[serde(default)]
+    pub schema: Option<RegisterSchemaJson>,
+}
+
+/// Phase 59.6 Wave 1 — REGISTER JSON shape for the typed-pipeline `schema:`
+/// sub-object. Mirrors `python/beava/_schema_compile.py::CompiledSchema.to_json`
+/// and deserializes into an `engine::schema::RegisteredSchema` via
+/// [`RegisterSchemaJson::to_registered_schema`].
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RegisterSchemaJson {
+    /// Per-schema inline-string capacity. Default 15 matches
+    /// `engine::schema::default_inline_str_cap`.
+    #[serde(default = "default_inline_str_cap_u8")]
+    pub inline_str_cap: u8,
+    pub fields: Vec<RegisterFieldJson>,
+    pub row_size: u16,
+}
+
+fn default_inline_str_cap_u8() -> u8 {
+    15
+}
+
+/// Phase 59.6 Wave 1 — one field entry in the REGISTER JSON `schema.fields[]`
+/// array. Serde's snake_case rename on [`crate::engine::schema::FieldTy`]
+/// matches the Python emitter's strings (`"i64" | "f64" | "bool" |
+/// "inline_str" | "string" | "bytes"`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RegisterFieldJson {
+    pub name: String,
+    pub ty: crate::engine::schema::FieldTy,
+    pub offset: u16,
+    #[serde(default)]
+    pub nullable: bool,
+}
+
+impl RegisterSchemaJson {
+    /// Translate the REGISTER JSON shape to the runtime `RegisteredSchema`.
+    /// The `schema_id` is left as 0 here; `SchemaRegistry::insert` assigns
+    /// the monotonic id on registration.
+    pub fn to_registered_schema(
+        self,
+        stream_name: &str,
+    ) -> crate::engine::schema::RegisteredSchema {
+        crate::engine::schema::RegisteredSchema {
+            schema_id: 0,
+            name: stream_name.to_string(),
+            fields: self
+                .fields
+                .into_iter()
+                .map(|f| crate::engine::schema::FieldSpec {
+                    name: f.name,
+                    ty: f.ty,
+                    offset: f.offset,
+                    nullable: f.nullable,
+                })
+                .collect(),
+            inline_str_cap: self.inline_str_cap,
+            row_size: self.row_size,
+        }
+    }
 }
 
 /// Stream/Table derivation with a stateless `ops: [...]` chain.
