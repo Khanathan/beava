@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
-status: Phase 59.7 Wave 3 complete — ShardOp::RunTypedAggCascadeStep dispatch primitive + PipelineEngine::build_typed_agg_ops_for + run_typed_direct_cascade_same_shard walker wired behind BEAVA_TYPED_CASCADE_DIRECT=1; 1 of 4 cross-shard parity tests GREEN (same-shard); 3 retagged 59.7-W4. Zero regressions on Phase 59.6 + W1/W2 parity suites.
-stopped_at: Completed 59.7-03-PLAN.md (W3 same-shard typed-direct cascade walker)
-last_updated: "2026-04-22T00:15:00.000Z"
+status: completed
+stopped_at: Completed 59.7-04-PLAN.md
+last_updated: "2026-04-21T23:44:09.076Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 20
   completed_phases: 12
   total_plans: 93
-  completed_plans: 84
-  percent: 90
+  completed_plans: 85
+  percent: 91
 ---
 
 # Project State
@@ -25,10 +25,10 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 ## Current Position
 
-Phase: 59.7 (typed-windowed-cascade) — **W3 COMPLETE** 2026-04-21
-Next: Phase 59.7 Plan 04 (W4 cross-shard ShardOp dispatch + typed_cascade_value_fallback counter + 3 remaining parity tests GREEN)
-**Status:** Phase 59.7 Wave 3 complete — ShardOp::RunTypedAggCascadeStep dispatch primitive + PipelineEngine::build_typed_agg_ops_for + run_typed_direct_cascade_same_shard walker wired behind BEAVA_TYPED_CASCADE_DIRECT=1; 1 of 4 cross-shard parity tests GREEN (same-shard); 3 retagged 59.7-W4. Zero regressions on Phase 59.6 + W1/W2 parity suites.
-**Progress:** [█████████░] 90%
+Phase: 59.7 (typed-windowed-cascade) — **W4 COMPLETE** 2026-04-21
+Next: Phase 59.7 Plan 05 (W5 perf gate close — fraud-pipeline EPS ≥ 1.45M on fjall OR `push_internal_on_shard` < 1% on state-inmem; close TPC-PERF-11 + TPC-CORR-07 Phase-59.7 sub-bullets)
+**Status:** Phase 59.7 Wave 4 complete — `run_typed_direct_cascade` promoted to full cross-shard walker with per-downstream Value fallback semantic (bumps `typed_cascade_value_fallback` once per non-typed hop), whole-cascade retraction bail-out for source_table-backed primary streams, and Arc<AtomicU64> counter aliasing between PipelineEngine and ConcurrentAppState; 4/4 cross-shard parity tests GREEN (was 1/4 at wave start); zero regressions on Phase 59.6 + W1/W2/W3 parity suites (56 tests across 9 test binaries).
+**Progress:** [█████████░] 91%
 
 **Last activity:** 2026-04-21
 
@@ -179,6 +179,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 59.6 P59.6-06 | 32min | 2 tasks | 15 files |
 | Phase 59.7 P00 | 10m | 2 tasks | 7 files |
 | Phase 59.7 P01 | 9min | 2 tasks | 6 files |
+| Phase 59.7 P04 | 35min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -399,7 +400,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 59.7-01-PLAN.md (W1 windowed typed aggs — 4 parity tests GREEN)
+**Stopped at:** Completed 59.7-04-PLAN.md
 
 **Next action (engineering):** Phase 58 is engineering-complete. The engineering-facing next action is one of:
   (a) **Start Phase 59** (Binary wire format for PUSH — TPC-PERF-09). Goal: eliminate JSON re-serialization on the PUSH hot path (~11% of CPU per 2026-04 samply notes). Replace JSON with a binary codec (length-prefixed postcard or custom) for TCP PUSH; HTTP PUSH stays JSON for compatibility; zero-copy `bytes::Bytes` end-to-end from wire → shard inbox → fjall insert. Phase 58 left the per-connection runtime dispatch overhead structurally eliminated — JSON is now the top-of-profile leaf to attack.
