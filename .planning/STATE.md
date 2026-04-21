@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
-status: executing
-stopped_at: Phase 57 closed 2026-04-21 (engineering-complete; TPC-CORR-10 closed; perf gate PASSED 1,297,293 EPS ≥ 1,076,322 floor (+20.5% headroom, +8.5% vs Phase 56 baseline); advisory D-D4 retraction-firing micro-bench deferred on same Phase 55 SDK gap as 56-NEXT #6).
-last_updated: "2026-04-21T08:30:00.000Z"
+status: completed
+stopped_at: Completed Phase 58 Plan 00 (Wave 0 RED scaffolding) 2026-04-21; TPC-PERF-08 row + 3 smoke tests + samply probe script + 2 ConcurrentAppState probe fields on disk; lib 809/0/35 preserved; next = 58-01 Wave 1 Linux per-shard accept loop
+last_updated: "2026-04-21T08:57:56.237Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 18
   completed_phases: 9
-  total_plans: 64
-  completed_plans: 61
-  percent: 95
+  total_plans: 69
+  completed_plans: 62
+  percent: 90
 ---
 
 # Project State
@@ -27,10 +27,10 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 Phase: 57 CLOSED 2026-04-21 (engineering-complete; **TPC-CORR-10 closed**; all SC-1..SC-4 + D-B5 depth guard GREEN. Default fraud-pipeline perf gate PASSED **1,297,293 EPS ≥ 1,076,322 floor** (+20.5% headroom; +8.5% vs Phase 56 baseline). Advisory D-D4 retraction-firing micro-bench deferred on same Phase 55 SDK gap as 56-NEXT #6; NOT a gate per plan.)
 Plan: 5 of 5 (all Phase 57 waves 57-00..57-04 landed)
-**Phase:** 58 (tokio-connection-handling-rewrite — planning-ready; TPC-PERF-08)
-**Plan:** Phase 57 COMPLETE → next is Phase 58 planning
-**Status:** Phase 57 closed; Phase 58 planning unblocked
-**Progress:** [█████████░] 95%
+**Phase:** 58 (tokio-connection-handling-rewrite — Wave 0 landed; TPC-PERF-08 in flight)
+**Plan:** 1 of 5 (58-00 RED scaffolding landed 2026-04-21; next is 58-01 Wave 1 Linux per-shard accept loop)
+**Status:** Phase 58 Wave 0 complete — 3 smoke tests + 1 probe script + TPC-PERF-08 requirement row on disk; 2 always-on probe fields on ConcurrentAppState; lib 809/0/35 baseline preserved
+**Progress:** [█████████░] 90%
 
 **Last activity:** 2026-04-21
 
@@ -126,6 +126,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 57 P03 | 75min | 2 tasks | 8 files |
 | Phase 57 P04 | ~50min (perf gate 60s run + verify script + smoke test + PERF-GATE + VERIFICATION + deferred-items + ROADMAP/STATE + SUMMARY) | 2 tasks | 10 files (2 commits: 3a41f35 + close commit) |
 | Phase 57 full | TPC-CORR-10 closed; default fraud-pipeline perf 1,297,293 EPS (+20.5% over floor; +8.5% vs Phase 56); 5 new retraction counters; 1 new ShardOp variant (RetractDownstream); 16-hop depth guard; /debug/warnings.retraction_beyond_history (60s dedupe); advisory D-D4 deferred on same SDK gap as 56-NEXT #6 | 5 plans | 4 new integration tests + 2 sharding_parity subcases; 809/0/35 lib baseline preserved |
+| Phase 58 P00 | ~8min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -289,7 +290,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Phase 57 closed 2026-04-21 (engineering-complete; TPC-CORR-10 closed; perf gate PASSED 1,297,293 EPS ≥ 1,076,322 floor, +20.5% headroom, +8.5% vs Phase 56 baseline; advisory D-D4 retraction-firing micro-bench deferred on same Phase 55 SDK gap as 56-NEXT #6)
+**Stopped at:** Completed Phase 58 Plan 00 (Wave 0 RED scaffolding) 2026-04-21; TPC-PERF-08 row + 3 smoke tests + samply probe script + 2 ConcurrentAppState probe fields on disk; lib 809/0/35 preserved; next = 58-01 Wave 1 Linux per-shard accept loop
 
 **Next action (engineering):** Phase 57 is engineering-complete. The engineering-facing next action is one of:
   (a) **Start Phase 58** (Tokio connection-handling rewrite — TPC-PERF-08). Goal: eliminate the per-connection Tokio task spawn/drop churn (~60% of samply leaf samples); long-lived accept-loops via SO_REUSEPORT (Linux) and dedicated accept-thread-per-shard (macOS). Phase 57 left the write path with 20.5% headroom, giving Phase 58 room to consume several percent on its way to the +25% EPS goal. Key integration points: `src/server/tcp.rs` per-connection task spawn, `src/server/http.rs` axum handlers, `src/shard/thread.rs::shard_event_loop` (already pinned, does NOT need rewriting).
