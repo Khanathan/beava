@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
-status: planning
-stopped_at: Phase 55 context gathered — 4 gray areas locked (cascade mechanics, wire format, rematerialization, test scope + perf gate)
-last_updated: "2026-04-20T22:50:37.590Z"
+status: in_progress
+stopped_at: Phase 55 closed (SC-6 deferred to 55-NEXT #1 per user); starting Phase 56
+last_updated: "2026-04-20T23:00:00.000Z"
 last_activity: 2026-04-20
 progress:
   total_phases: 18
@@ -25,8 +25,8 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 ## Current Position
 
-Phase: 55 (stream-table-cascade-crossshard-and-source-tables) — ENGINEERING-COMPLETE (human_needed on SC-6 N>1)
-Plan: 5 of 5 (55-04 completed; all Phase 55 plans done)
+Phase: 55 CLOSED 2026-04-20 (user accepted SC-6 N>1 boot-rematerialization deferral to 55-NEXT #1; ~80 LOC fix + two-shard unit test to land in a later phase)
+Plan: 5 of 5 (all Phase 55 plans done)
 **Phase:** 56
 **Plan:** Not started
 **Status:** Ready to plan
