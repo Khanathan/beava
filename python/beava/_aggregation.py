@@ -180,6 +180,27 @@ class GroupBy:
         )
         # Attach the aggregation spec — serializer uses this.
         derivation._agg_spec = spec  # type: ignore[attr-defined]
+        # Phase 59.6 Wave 8 (TPC-PERF-11): compile typed schema for derived
+        # tables so downstream cascade state can use the typed path. Without
+        # this, every @bv.table function-form derivation falls back to the
+        # serde_json::Value hot path on the server (push_internal_on_shard)
+        # even when the input stream was typed. Samply profiling on the
+        # fraud-pipeline benchmark shows this is ~17.8% of CPU.
+        try:
+            from beava._schema_compile import compile_schema_from_fields
+            compiled = compile_schema_from_fields(
+                out_schema, source_name=gen_name
+            )
+            derivation._beava_schema = compiled  # type: ignore[attr-defined]
+        except TypeError as exc:
+            import warnings
+            warnings.warn(
+                f"@bv.table (derived {gen_name!r}): typed schema compile "
+                f"failed ({exc}); falling back to untyped REGISTER.",
+                category=UserWarning,
+                stacklevel=2,
+            )
+            derivation._beava_schema = None  # type: ignore[attr-defined]
         return derivation
 
 

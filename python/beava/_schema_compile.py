@@ -247,9 +247,65 @@ def compile_schema_from_class(
     return schema
 
 
+def compile_schema_from_fields(
+    fields: dict,
+    inline_str_cap: int = DEFAULT_INLINE_STR_CAP,
+    *,
+    source_name: str = "<derived>",
+) -> CompiledSchema:
+    """Compile a schema from a ``dict[str, py_type]`` (or ``dict[str, FieldSpec]``).
+
+    Used by ``@bv.table`` function-form derivations where the output schema is
+    built programmatically from ``.group_by(...).agg(...)`` rather than from
+    class annotations. The input dict's values may be either raw Python types
+    (``int``, ``float``, ``bool``, ``str``, ``bytes``) or a ``FieldSpec``-like
+    object exposing a ``py_type`` attribute plus an ``optional`` bool.
+
+    Args:
+        fields: Mapping from column name to Python type or FieldSpec.
+        inline_str_cap: Override for the inline-string slot width.
+        source_name: Name used in error messages; defaults to ``"<derived>"``.
+
+    Returns:
+        A ``CompiledSchema`` ready for ``to_json()`` embedding into REGISTER.
+    """
+    if not fields:
+        raise TypeError(
+            f"derived schema for {source_name!r} has no columns"
+        )
+    schema = CompiledSchema(inline_str_cap=inline_str_cap)
+    offset = 0
+    for name, spec in fields.items():
+        # Accept either raw type or FieldSpec-like wrapper.
+        py_ty = getattr(spec, "py_type", spec)
+        nullable = bool(getattr(spec, "optional", False))
+        # If caller passed an Optional annotation, unwrap it.
+        py_ty, unwrapped_nullable = _strip_optional(py_ty)
+        nullable = nullable or unwrapped_nullable
+        if py_ty not in _PY_TO_FIELD_TY:
+            raise TypeError(
+                f"derived schema field {source_name}.{name} has unsupported "
+                f"type {py_ty!r}; supported: int, float, bool, str, bytes."
+            )
+        ty = _PY_TO_FIELD_TY[py_ty]
+        width = _field_width(ty, inline_str_cap)
+        schema.fields.append(
+            CompiledFieldSpec(
+                name=name,
+                ty=ty,
+                offset=offset,
+                nullable=nullable,
+            )
+        )
+        offset += width
+    schema.row_size = offset
+    return schema
+
+
 __all__ = [
     "DEFAULT_INLINE_STR_CAP",
     "CompiledFieldSpec",
     "CompiledSchema",
     "compile_schema_from_class",
+    "compile_schema_from_fields",
 ]

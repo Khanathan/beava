@@ -256,6 +256,14 @@ pub struct AggregationDescriptor {
     pub aggregation: AggregationSpec,
     #[serde(default)]
     pub depends_on: Vec<String>,
+
+    /// Phase 59.6 Wave 8 (TPC-PERF-11): typed-pipeline schema for derived
+    /// tables. Present when the SDK compiled the `.group_by().agg()` output
+    /// schema via `_schema_compile.compile_schema_from_fields`. Absent →
+    /// server registers the derivation without a typed schema and cascade
+    /// state stays on the serde_json::Value hot path (push_internal_on_shard).
+    #[serde(default)]
+    pub schema: Option<RegisterSchemaJson>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -3152,10 +3152,17 @@ async fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8
                 // succeeds so REGISTER atomicity holds — if stream_def
                 // translation fails, no schema entry leaks into the registry.
                 let typed_schema: Option<(String, crate::engine::register::RegisterSchemaJson)> =
-                    if let crate::engine::register::V0RegisterPayload::Source(desc) = &parsed {
-                        desc.schema.clone().map(|s| (desc.name.clone(), s))
-                    } else {
-                        None
+                    match &parsed {
+                        crate::engine::register::V0RegisterPayload::Source(desc) => {
+                            desc.schema.clone().map(|s| (desc.name.clone(), s))
+                        }
+                        // Phase 59.6 Wave 8 (TPC-PERF-11): derived tables
+                        // (`@bv.table` function-form) also carry schemas so
+                        // their cascade state can use the typed path.
+                        crate::engine::register::V0RegisterPayload::Aggregation(desc) => {
+                            desc.schema.clone().map(|s| (desc.name.clone(), s))
+                        }
+                        _ => None,
                     };
                 let stream_def = match &parsed {
                     crate::engine::register::V0RegisterPayload::Source(desc) => {

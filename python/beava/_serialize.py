@@ -152,6 +152,12 @@ def _compile_aggregation(descriptor: Any) -> dict[str, Any]:
     else:
         d["key_field"] = None
         d["key_fields"] = key
+    # Phase 59.6 Wave 8 (TPC-PERF-11): emit `schema:` block for derived
+    # tables so the server can register their state in the typed path.
+    # Absent → pre-59.6.8 wire shape preserved; server falls back to Value.
+    sch = getattr(descriptor, "_beava_schema", None)
+    if sch is not None:
+        d["schema"] = sch.to_json()
     return d
 
 
