@@ -250,7 +250,7 @@ Plans:
 Plans:
 - [x] 57-00-PLAN.md — Wave 0: RED tests for SC-1..SC-4 + depth guard + sharding_parity extension + REQUIREMENTS.md TPC-CORR-10
 - [x] 57-01-PLAN.md — Wave 1: ShardOp::RetractDownstream + RetractReason/Outcome + Shard::apply_retraction + 5 metrics + ContribSet + snapshot v10 + pipeline.rs helper
-- [ ] 57-02-PLAN.md — Wave 2: Stream→Table contributing_inputs.primary_event_id emission + tombstone fan_out_retraction_for_primary + 16-hop depth guard
+- [x] 57-02-PLAN.md — Wave 2: Stream→Table contributing_inputs.primary_event_id emission + tombstone fan_out_retraction_for_primary + 16-hop depth guard
 - [ ] 57-03-PLAN.md — Wave 3: EnrichFromTable source_table_keys + SSJ left/right_event_id + source-table DELETE PendingRetraction consumer + late-retraction warning via /debug/warnings.retraction_beyond_history
 - [ ] 57-04-PLAN.md — Wave 4: perf gate (floor 1,076,322 EPS = 90% of Phase 56 baseline) + advisory retraction-firing micro-bench + 57-VERIFICATION + close
 **UI hint**: no
@@ -352,7 +352,7 @@ Plans:
 | 54. Legacy engine removal | 6/6 | **Engineering-complete** — TPC-ARCH-01 ✅ + TPC-PERSIST-05A ✅ closed; TPC-PERSIST-04 human_needed (Hetzner CCX43 8h soak; evidence-file gated). pprof DashMap → 0% in top-20; EPS +580% (197K → 1.34M). | 2026-04-20 (eng) |
 | 55. Stream→Table cascade cross-shard + source tables | 5/5 | Complete    | 2026-04-20 |
 | 56. EnrichFromTable + StreamStreamJoin cross-shard | 5/5 | **Engineering-complete** — TPC-CORR-08 ✅ + TPC-CORR-09 ✅ closed; TPC-CORR-04 relaxation landed. Default-pipeline perf gate 1,195,914 EPS PASSED (+12.9% over 1,059,261 floor; −4.0% vs P55 baseline). Cross-shard scenario SC-5 human_needed — Phase 55 SDK source-table wire-registration gap (56-NEXT #6). | 2026-04-21 |
-| 57. Retraction across cross-shard joins | 2/5 | In Progress|  |
+| 57. Retraction across cross-shard joins | 3/5 | In Progress|  |
 | 58. Tokio connection-handling rewrite | 0/? | Not started — biggest measured bottleneck (60% of CPU in samply) — eliminate per-conn task churn | — |
 | 59. Binary wire format for PUSH | 0/? | Not started — 11% CPU savings from removing JSON re-serialization | — |
 | 60. Hot-key mitigation via application salting | 0/? | Not started — architectural fix for Zipf hot-shard ceiling (≥+50% under Pareto-80/20) | — |
