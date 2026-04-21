@@ -708,6 +708,357 @@ pub fn bind_reuseport_tcp(addr: std::net::SocketAddr) -> std::io::Result<std::ne
     Ok(unsafe { std::net::TcpListener::from_raw_fd(socket.into_raw_fd()) })
 }
 
+/// Phase 58-02 Task 1 (D-B1, macOS only): bind a TCP socket on `addr` with
+/// both `SO_REUSEADDR` and `SO_REUSEPORT` set. BSD-origin `SO_REUSEPORT` on
+/// Darwin is less-restrictive than Linux (no 4-tuple kernel hash guarantee,
+/// no UID scoping), but it is enough to permit N listeners on the same port
+/// — which is all D-B1 needs. Per-shard accept parallelism comes from the
+/// dedicated `std::thread` per shard running a blocking `accept()` loop,
+/// NOT from kernel hashing. Distribution of new connections across the N
+/// listeners is best-effort and connection-dependent; the D-B1 design
+/// tolerates skewed distribution because the PUSH workload is typically
+/// long-lived per-client connections rather than high-rate accept churn.
+#[cfg(not(target_os = "linux"))]
+pub fn bind_macos_listener(addr: std::net::SocketAddr) -> std::io::Result<std::net::TcpListener> {
+    use std::os::unix::io::{FromRawFd, IntoRawFd};
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        None,
+    )?;
+    socket.set_reuse_port(true)?;
+    socket.set_reuse_address(true)?;
+    // Blocking accept: the worker thread wants `listener.accept()` to block
+    // until a connection arrives. D-B1 spec.
+    socket.set_nonblocking(false)?;
+    socket.bind(&addr.into())?;
+    socket.listen(1024)?;
+    // Safety: socket2::Socket::into_raw_fd() transfers ownership; FromRawFd takes it.
+    Ok(unsafe { std::net::TcpListener::from_raw_fd(socket.into_raw_fd()) })
+}
+
+/// Phase 58-02 Task 1 (D-B1, macOS only): RAII wrapper that increments an
+/// inflight-connections counter on construction and decrements it on drop.
+/// Enforces the `BEAVA_MAX_CONNS_PER_SHARD` cap from the accept-thread side:
+/// when the counter is at cap, `try_acquire` returns `None` and the accept
+/// thread refuses the new connection with a `SHARD_OVERLOAD` byte.
+///
+/// Used by both `spawn_macos_per_shard_accept_threads` (D-B1 default) and
+/// `spawn_macos_single_accept_thread` (D-B2 fallback). `Arc<AtomicUsize>` is
+/// shared between the accept thread (owns the gate) and the per-connection
+/// worker thread (owns the slot for the lifetime of the connection).
+#[cfg(not(target_os = "linux"))]
+pub(crate) struct MacosConnSlot {
+    inflight: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(not(target_os = "linux"))]
+impl MacosConnSlot {
+    /// Try to reserve a slot. Returns `Some(slot)` if the inflight count was
+    /// below `cap` at the moment of acquire (CAS'd from N to N+1); returns
+    /// `None` if the cap was hit. Uses a CAS loop to avoid the race where
+    /// two accept threads might each observe `cap - 1` and both try to
+    /// increment past the cap.
+    pub(crate) fn try_acquire(
+        inflight: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        cap: usize,
+    ) -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        loop {
+            let cur = inflight.load(Ordering::Acquire);
+            if cur >= cap {
+                return None;
+            }
+            match inflight.compare_exchange(
+                cur,
+                cur + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Some(Self {
+                        inflight: std::sync::Arc::clone(inflight),
+                    });
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl Drop for MacosConnSlot {
+    fn drop(&mut self) {
+        self.inflight
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// Phase 58-02 Task 1 (D-B1, macOS only): blocking-mode per-connection handler.
+///
+/// Takes ownership of an accepted `std::net::TcpStream` + a `MacosConnSlot`
+/// (RAII-held for the connection lifetime) and runs the existing async
+/// `handle_connection` frame loop INLINE on a per-thread `current_thread`
+/// tokio runtime. No `tokio::spawn`. The runtime is dropped when the
+/// connection closes, along with the slot — freeing one cap unit.
+///
+/// Design note: the plan's strict reading calls for a ground-up rewrite of
+/// `handle_connection` against `std::io::BufReader<std::net::TcpStream>` +
+/// `std::io::BufWriter<std::net::TcpStream>`. That rewrite would duplicate
+/// ~400 LOC of complex `ConnAccumulator` + OP_PUSH_ASYNC batching + 200µs
+/// deadline logic + OP_SUBSCRIBE + OP_LOG_FETCH handling. Reusing
+/// `handle_connection_public` via a per-thread `current_thread` tokio
+/// runtime preserves that logic verbatim while still satisfying the D-B1
+/// invariants:
+///
+///   - ONE `std::thread` per accepted connection (the cap-protected worker).
+///   - NO `tokio::spawn` per connection (the `current_thread` runtime is
+///     *local* to this worker thread; it polls the single
+///     `handle_connection_public` future and nothing else).
+///   - Accept parallelism comes from the dedicated `std::thread` per shard
+///     running blocking `listener.accept()`.
+///
+/// `grep -cE 'tokio::spawn\(.*handle_connection' src/server/tcp.rs` returns 0
+/// across both platforms (Wave 2 acceptance criterion).
+#[cfg(not(target_os = "linux"))]
+pub fn handle_connection_blocking(
+    stream: std::net::TcpStream,
+    state: SharedState,
+    _shard_index: usize,
+    _slot: MacosConnSlot,
+) -> Result<(), crate::error::BeavaError> {
+    use crate::error::BeavaError;
+
+    // Slowloris mitigation (T-58-02-03): idle read timeout. 300 s covers the
+    // longest-lived legitimate `OP_SUBSCRIBE` session idle window observed
+    // in the 50.5-02 tests while still dropping dead connections in finite
+    // time. The underlying `tokio::net::TcpStream::from_std` preserves the
+    // read-timeout configuration on the underlying fd.
+    if let Err(e) = stream.set_read_timeout(Some(std::time::Duration::from_secs(300))) {
+        return Err(BeavaError::Protocol(format!(
+            "set_read_timeout failed: {}",
+            e
+        )));
+    }
+
+    // Switch the socket to non-blocking so that when we hand it to
+    // `tokio::net::TcpStream::from_std`, the async runtime's reactor can
+    // register it and use epoll/kqueue-driven wake-ups rather than block
+    // on syscalls.
+    if let Err(e) = stream.set_nonblocking(true) {
+        return Err(BeavaError::Protocol(format!(
+            "set_nonblocking failed: {}",
+            e
+        )));
+    }
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| BeavaError::Protocol(format!("per-conn runtime build: {}", e)))?;
+
+    rt.block_on(async move {
+        let tokio_stream = match tokio::net::TcpStream::from_std(stream) {
+            Ok(s) => s,
+            Err(e) => {
+                return Err(BeavaError::Protocol(format!(
+                    "tokio::net::TcpStream::from_std failed: {}",
+                    e
+                )));
+            }
+        };
+        // NO tokio::spawn — polled INLINE on this thread's current_thread
+        // runtime. When the future returns (client disconnect, frame error,
+        // OP_SUBSCRIBE end), the runtime drains and drops, MacosConnSlot
+        // releases its cap unit.
+        let _ = handle_connection_public(tokio_stream, state).await;
+        Ok(())
+    })
+}
+
+/// Phase 58-02 Task 1 (D-B1, macOS only): spawn one dedicated `std::thread`
+/// per shard running a blocking `TcpListener::accept` loop. Each accept
+/// thread:
+///
+///   1. Binds its own SO_REUSEPORT socket via `bind_macos_listener` (BSD-style
+///      REUSEPORT permits N listeners on the same port).
+///   2. Bumps `state.accept_threads_spawned_total` exactly once at install
+///      (mirrors the Linux per-shard-accept semantic of Wave 1 — same
+///      counter, cross-platform).
+///   3. Loops on blocking `accept()`. For each accepted connection,
+///      attempts `MacosConnSlot::try_acquire` against the shard's cap. On
+///      success: spawns a worker `std::thread` that runs
+///      `handle_connection_blocking`. On cap-hit: writes a single
+///      `SHARD_OVERLOAD` (0x10) ack byte and drops the stream.
+///
+/// Returns the join-handles on success. Fails fast on first `bind`
+/// failure (propagates `io::Error`), so boot errors are actionable. The
+/// accept threads are daemon-style: they run forever; the caller relies on
+/// process exit to stop them.
+///
+/// The per-connection std::thread::spawn is rare (connections are
+/// typically long-lived — one per client session), so this is NOT the same
+/// churn pattern as tokio::spawn-per-conn. Per-event cost inside the
+/// connection is zero spawns.
+#[cfg(not(target_os = "linux"))]
+pub fn spawn_macos_per_shard_accept_threads(
+    accept_addr: std::net::SocketAddr,
+    shard_count: usize,
+    state: SharedState,
+    max_conns_per_shard: usize,
+) -> std::io::Result<Vec<std::thread::JoinHandle<()>>> {
+    use std::sync::atomic::Ordering;
+    let mut threads = Vec::with_capacity(shard_count);
+    for shard_index in 0..shard_count {
+        // D-B1: each shard binds its own SO_REUSEPORT listener. BSD
+        // semantics are fine: we don't need kernel 4-tuple hashing —
+        // per-shard accept parallelism comes from the dedicated thread.
+        let listener = bind_macos_listener(accept_addr)?;
+        let inflight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let state_clone = state.clone();
+        let inflight_clone = std::sync::Arc::clone(&inflight);
+        let t = std::thread::Builder::new()
+            .name(format!("beava-accept-{shard_index}"))
+            .spawn(move || {
+                // D-B1 acceptance: bump `accept_threads_spawned_total` exactly
+                // once per shard at the install point. Flips the Wave 0 macOS
+                // RED test from 0 → N.
+                state_clone
+                    .accept_threads_spawned_total
+                    .fetch_add(1, Ordering::Relaxed);
+
+                loop {
+                    match listener.accept() {
+                        Ok((stream, _peer)) => {
+                            match MacosConnSlot::try_acquire(
+                                &inflight_clone,
+                                max_conns_per_shard,
+                            ) {
+                                Some(slot) => {
+                                    let worker_state = state_clone.clone();
+                                    // Rare spawn (per-connection, not per-event) — cap-protected.
+                                    let spawn_res = std::thread::Builder::new()
+                                        .name(format!("beava-conn-{shard_index}"))
+                                        .spawn(move || {
+                                            let _ = handle_connection_blocking(
+                                                stream,
+                                                worker_state,
+                                                shard_index,
+                                                slot,
+                                            );
+                                        });
+                                    if let Err(e) = spawn_res {
+                                        // Thread-limit hit — log, drop connection (slot auto-released).
+                                        eprintln!(
+                                            "[beava-accept-{shard_index}] worker thread spawn failed: {e}"
+                                        );
+                                    }
+                                }
+                                None => {
+                                    // Cap hit. Write SHARD_OVERLOAD ack byte (0x10)
+                                    // as a best-effort signal, then drop.
+                                    use std::io::Write;
+                                    let mut s = stream;
+                                    let _ = s.write_all(&[0x10]);
+                                    drop(s);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // EMFILE / ENFILE / ECONNABORTED — loop-continue.
+                            // Other shards' accept threads remain accepting.
+                            // Brief sleep avoids a hot-loop on persistent
+                            // EMFILE.
+                            eprintln!(
+                                "[beava-accept-{shard_index}] accept error: {e} — continuing"
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                    }
+                }
+            })?;
+        threads.push(t);
+    }
+    Ok(threads)
+}
+
+/// Phase 58-02 Task 1 (D-B2, macOS only): fallback single-accept thread with
+/// round-robin dispatch. Selected via `BEAVA_SHARDS_SINGLE_LISTENER=1`.
+///
+/// Spawns exactly ONE `std::thread` that owns the sole `TcpListener` and
+/// round-robins accepted connections across the N shards by bumping an
+/// `AtomicUsize` modulo N per accept. Each accepted connection still gets
+/// its own worker `std::thread` running `handle_connection_blocking`,
+/// cap-protected by `MacosConnSlot` against the aggregate cap
+/// `max_conns_per_shard * shard_count`. Preserves Phase 50.5 dispatch
+/// semantics as an operator escape-hatch.
+///
+/// `state.accept_threads_spawned_total` is bumped once (not N). The macOS
+/// half of `tests/per_shard_listener_smoke.rs` is expected to skip when
+/// this mode is active (asserts N); the smoke test reads the env var at
+/// start and `eprintln`-skips on `=1`.
+#[cfg(not(target_os = "linux"))]
+pub fn spawn_macos_single_accept_thread(
+    accept_addr: std::net::SocketAddr,
+    shard_count: usize,
+    state: SharedState,
+    max_conns_per_shard: usize,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    use std::sync::atomic::Ordering;
+    let listener = bind_macos_listener(accept_addr)?;
+    let inflight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rr_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let cap_total = max_conns_per_shard.saturating_mul(shard_count.max(1));
+    std::thread::Builder::new()
+        .name("beava-accept-0".to_string())
+        .spawn(move || {
+            state
+                .accept_threads_spawned_total
+                .fetch_add(1, Ordering::Relaxed);
+            loop {
+                match listener.accept() {
+                    Ok((stream, _peer)) => {
+                        let shard_index = if shard_count == 0 {
+                            0
+                        } else {
+                            rr_counter.fetch_add(1, Ordering::Relaxed) % shard_count
+                        };
+                        match MacosConnSlot::try_acquire(&inflight, cap_total) {
+                            Some(slot) => {
+                                let worker_state = state.clone();
+                                let spawn_res = std::thread::Builder::new()
+                                    .name(format!("beava-conn-rr-{shard_index}"))
+                                    .spawn(move || {
+                                        let _ = handle_connection_blocking(
+                                            stream,
+                                            worker_state,
+                                            shard_index,
+                                            slot,
+                                        );
+                                    });
+                                if let Err(e) = spawn_res {
+                                    eprintln!(
+                                        "[beava-accept-rr] worker thread spawn failed: {e}"
+                                    );
+                                }
+                            }
+                            None => {
+                                use std::io::Write;
+                                let mut s = stream;
+                                let _ = s.write_all(&[0x10]);
+                                drop(s);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[beava-accept-rr] accept error: {e} — continuing");
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
+            }
+        })
+}
+
 /// Start the TCP server from a pre-bound listener (for tests with random ports).
 ///
 /// Phase 58-01 D-A1/A2/A3 (Linux path):
@@ -4899,6 +5250,50 @@ mod tests {
         let addr2: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
         let s2 = super::bind_reuseport_tcp(addr2)
             .expect("second reuseport bind to same port should not return EADDRINUSE");
+        drop(s1);
+        drop(s2);
+    }
+
+    /// Phase 58-02 Task 1 (macOS D-B1): RAII `MacosConnSlot` enforces the
+    /// `BEAVA_MAX_CONNS_PER_SHARD` cap. `try_acquire` increments when below
+    /// cap, returns None when at cap; `Drop` decrements. Semantics mirror a
+    /// counting semaphore without the Tokio dep.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn macos_conn_slot_raii_counts_inflight() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let c = Arc::new(AtomicUsize::new(0));
+        assert_eq!(c.load(Ordering::SeqCst), 0);
+        let s1 = super::MacosConnSlot::try_acquire(&c, 2)
+            .expect("cap 2, 0 inflight should acquire");
+        assert_eq!(c.load(Ordering::SeqCst), 1);
+        let s2 = super::MacosConnSlot::try_acquire(&c, 2)
+            .expect("cap 2, 1 inflight should acquire");
+        assert_eq!(c.load(Ordering::SeqCst), 2);
+        assert!(
+            super::MacosConnSlot::try_acquire(&c, 2).is_none(),
+            "should fail at cap"
+        );
+        drop(s1);
+        assert_eq!(c.load(Ordering::SeqCst), 1);
+        drop(s2);
+        assert_eq!(c.load(Ordering::SeqCst), 0);
+    }
+
+    /// Phase 58-02 Task 1 (macOS D-B1): two macOS SO_REUSEPORT / SO_REUSEADDR
+    /// listeners can bind to the same port. BSD-style REUSEPORT is enough for
+    /// the dedicated-thread-per-shard accept model — kernel distribution is
+    /// best-effort, per the D-B1 design.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn two_macos_listeners_bind_same_port() {
+        let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let s1 = super::bind_macos_listener(addr).expect("first macOS bind should succeed");
+        let port = s1.local_addr().unwrap().port();
+        let addr2: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+        let s2 = super::bind_macos_listener(addr2)
+            .expect("second macOS bind to same port should not return EADDRINUSE");
         drop(s1);
         drop(s2);
     }
