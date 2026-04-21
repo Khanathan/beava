@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
-status: executing
-stopped_at: Phase 58 closed 2026-04-21 (engineering-complete; SC-1 + SC-3 human_needed pending Linux prod-host run + probe harness extension — 58-NEXT #1)
-last_updated: "2026-04-21T10:00:00.000Z"
+status: Ready to start Phase 59
+stopped_at: Completed 59-00-PLAN.md (Wave 0 RED scaffolding for TPC-PERF-09)
+last_updated: "2026-04-21T10:53:17.832Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 18
   completed_phases: 10
-  total_plans: 69
-  completed_plans: 69
-  percent: 100
+  total_plans: 74
+  completed_plans: 67
+  percent: 91
 ---
 
 # Project State
@@ -30,7 +30,7 @@ Plan: Phase 58 closed — next is Phase 59 (binary wire format for PUSH — TPC-
 **Phase:** 59 (binary-wire-format-for-push — not started)
 **Plan:** Phase 59 plans TBD (plan step for Phase 59 pending)
 **Status:** Ready to start Phase 59
-**Progress:** [██████████] 100%
+**Progress:** [█████████░] 91%
 
 **Last activity:** 2026-04-21
 
@@ -132,6 +132,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 58 P03 | 25min | 1 tasks | 1 files |
 | Phase 58 P04 | ~25min (60s perf C0 + 60s C1 + samply probe + samply-live attempt + PERF-GATE + VERIFICATION + ROADMAP/STATE + SUMMARY) | 2 tasks | 7 files (2 commits: W4 evidence + close) |
 | Phase 58 full | Structural tokio-churn elimination on Linux + macOS: 0 tokio::spawn(handle_connection) in production PUSH; per-shard SO_REUSEPORT + FuturesUnordered (Linux) + dedicated std::thread + per-thread current_thread runtime bridge (macOS); N LISTEN sockets / N accept threads smoke + replica guardrail; perf 1,376,450 EPS on macOS dev host (+6.1% vs P57, −15.1% below floor); SC-1 + SC-3 human_needed pending Linux-host run + probe-harness extension | 5 plans | 812/0/35 lib baseline preserved; 0 DashMap / StateStore / legacy-push regressions |
+| Phase 59 P00 | ~35min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -309,7 +310,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Phase 58 closed 2026-04-21 (engineering-complete; SC-1 + SC-3 `human_needed`)
+**Stopped at:** Completed 59-00-PLAN.md (Wave 0 RED scaffolding for TPC-PERF-09)
 
 **Next action (engineering):** Phase 58 is engineering-complete. The engineering-facing next action is one of:
   (a) **Start Phase 59** (Binary wire format for PUSH — TPC-PERF-09). Goal: eliminate JSON re-serialization on the PUSH hot path (~11% of CPU per 2026-04 samply notes). Replace JSON with a binary codec (length-prefixed postcard or custom) for TCP PUSH; HTTP PUSH stays JSON for compatibility; zero-copy `bytes::Bytes` end-to-end from wire → shard inbox → fjall insert. Phase 58 left the per-connection runtime dispatch overhead structurally eliminated — JSON is now the top-of-profile leaf to attack.

@@ -293,7 +293,7 @@ Plans:
   - Contingency ladder for Wave 4 perf gate: C1 pre-allocate per-shard BytesMut → C2 inline decode (skip Value) → C3 human_needed.
 **Plans**: 5 plans
 Plans:
-- [ ] 59-00-PLAN.md — Wave 0: RED tests (wire-negotiation, binary-push-bytes-passthrough, json-over-tcp-still-accepted, binary-decode-fuzz) + samply-probe-json-share.sh + verify-no-tcp-json-reserialize.sh + REQUIREMENTS TPC-PERF-09 row + always-on counters
+- [x] 59-00-PLAN.md — Wave 0: RED tests (wire-negotiation, binary-push-bytes-passthrough, json-over-tcp-still-accepted, binary-decode-fuzz) + samply-probe-json-share.sh + verify-no-tcp-json-reserialize.sh + REQUIREMENTS TPC-PERF-09 row + always-on counters
 - [ ] 59-01-PLAN.md — Wave 1: src/wire/ module + PayloadFmt + ShardEvent.payload_fmt + Bytes passthrough (tcp.rs:2159 + :2538 + thread.rs:724 WASTE eliminated); BEAVA_MAX_PAYLOAD_BYTES DoS cap
 - [ ] 59-02-PLAN.md — Wave 2: OP_NEGOTIATE_WIRE_FORMAT (0x18) opcode + Command::NegotiateWireFormat + parse_command auto-detect binary↔JSON on OP_PUSH
 - [ ] 59-03-PLAN.md — Wave 3: Python SDK OP_NEGOTIATE constants + TallyClient.negotiate_wire_format + BEAVA_WIRE_NEGOTIATE env-opt-in + pre-59-server fallback test
@@ -374,7 +374,7 @@ Plans:
 | 56. EnrichFromTable + StreamStreamJoin cross-shard | 5/5 | **Engineering-complete** — TPC-CORR-08 ✅ + TPC-CORR-09 ✅ closed; TPC-CORR-04 relaxation landed. Default-pipeline perf gate 1,195,914 EPS PASSED (+12.9% over 1,059,261 floor; −4.0% vs P55 baseline). Cross-shard scenario SC-5 human_needed — Phase 55 SDK source-table wire-registration gap (56-NEXT #6). | 2026-04-21 |
 | 57. Retraction across cross-shard joins | 4/5 | In Progress|  |
 | 58. Tokio connection-handling rewrite | 5/5 | **Engineering-complete** — structural tokio-churn elimination landed on both Linux (SO_REUSEPORT per-shard + FuturesUnordered inline handler) and macOS (dedicated `std::thread` per shard + handle_connection_blocking); 0 `tokio::spawn(handle_connection)` in production PUSH path. Perf gate 1,376,450 EPS (+6.1% vs P57) on macOS dev host — 15.1% below 1,621,616 floor; p99 parity (−0.11%); SC-1 + SC-3 `human_needed` pending Linux prod-host run + probe-harness extension (58-NEXT #1). | 2026-04-21 (eng) |
-| 59. Binary wire format for PUSH | 0/5 | Planned — 5 plans committed 2026-04-20; ~11% CPU savings target (JSON round-trip elimination, Bytes-end-to-end passthrough); perf floor 1,514,095 EPS | — |
+| 59. Binary wire format for PUSH | 1/5 | In Progress|  |
 | 60. Hot-key mitigation via application salting | 0/? | Not started — architectural fix for Zipf hot-shard ceiling (≥+50% under Pareto-80/20) | — |
 | 61. Metrics hot-path hoist | 0/? | Not started — 3.5% CPU savings | — |
 | 62. Allocator + feature-row pooling | 0/? | Not started — 5-10% CPU savings | — |
