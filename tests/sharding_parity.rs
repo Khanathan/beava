@@ -228,8 +228,15 @@ mod mismatched_shard_enrich_or_join {
         /// the left or right path (determinism across sources). Wave 3
         /// replaces this with a full N=1 ↔ N=8 byte-identical join-output
         /// parity compare.
+        // Phase 56 Wave 3 (56-03-PLAN): un-ignored. The proptest body
+        // enforces routing-determinism invariants at N=8 for the SSJ
+        // cross-shard case — both sides converge on hash(user_id) % N
+        // regardless of which source stream delivered the event. The
+        // full N=1 ↔ N=8 byte-identical replay is tracked as 56-NEXT
+        // (requires a multi-shard engine fixture; the
+        // cross_shard_stream_stream_join.rs tests GREEN at Wave 3 prove
+        // per-event correctness at N=4).
         #[test]
-        #[ignore = "56-W3"]
         fn mismatched_shard_join_parity_n1_vs_n8(
             events in prop::collection::vec(arb_mismatched_event(), 1..32)
         ) {

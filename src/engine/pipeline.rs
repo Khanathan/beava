@@ -2294,45 +2294,49 @@ impl PipelineEngine {
                         }
                     };
 
-                // Probe + insert join buffer in shard.state. Under default
-                // (fjall) build, route through StoreView::Sharded for the RMW
-                // so the partition fsyncs the updated EntityState. Under
-                // state-inmem, use the AHashMap entry() API directly.
-                let matches: Vec<serde_json::Map<String, serde_json::Value>> = {
-                    let mut view = crate::shard::StoreView::Sharded(shard);
-                    view.with_entity_mut(&state_key, |entity| {
-                        entity.get_or_create_stream(stream_in_order);
-                        let stream_state = entity.streams.get_mut(stream_in_order).unwrap();
-                        if !stream_state.operators.iter().any(|(n, _)| *n == feat_name) {
-                            stream_state.operators.push((
-                                feat_name.clone(),
-                                crate::state::snapshot::OperatorState::StreamJoinBuffer(
-                                    crate::engine::operators::StreamJoinBuffer::new(within_ms),
-                                ),
-                            ));
-                        }
-                        let buf = stream_state
-                            .operators
-                            .iter_mut()
-                            .find_map(|(n, op)| {
-                                if *n != feat_name {
-                                    return None;
-                                }
-                                match op {
-                                    crate::state::snapshot::OperatorState::StreamJoinBuffer(b) => {
-                                        Some(b)
-                                    }
-                                    _ => None,
-                                }
-                            })
-                            .expect("StreamJoinBuffer present");
-                        let probed = buf.probe(side, event_time_ms);
-                        buf.insert(side, event_time_ms, arriving_map.clone());
-                        buf.evict();
-                        stream_state.last_event_at = Some(now);
-                        probed
-                    })
+                // Phase 56 Wave 3 (TPC-CORR-09 / D-B1): route the SSJ
+                // buffer insert to the shard owning `hash(join.on) % N`.
+                // Both left and right events converge on that shard so
+                // the join match evaluates on a single authoritative
+                // buffer. Co-located case (D-B5 — both sides already
+                // declaring shard_key=join.on) short-circuits inside
+                // `ssj_insert_at_shard` (target == input_shard_idx) so
+                // the pre-Phase-56 same-shard path carries zero overhead.
+                //
+                // Buffer slot reconciliation (Wave 1 deviation 4): the
+                // old in-place path wrote the buffer under `stream_in_order`
+                // with `feat_name` as the operator name. `apply_ssj_insert`
+                // writes under the synthetic `"__ssj__"` stream slot with
+                // `join_id=feat_name`. We unify on `"__ssj__"` (the
+                // (join_id, join_key) pair is the true identity) — the
+                // stream-scope was an implementation detail. Event_time_ms
+                // derivation already lives inside `apply_ssj_insert`.
+                let n_shards = sibling_shards.map(|s| s.len()).unwrap_or(0);
+                let target_shard_idx = if n_shards <= 1 {
+                    input_shard_idx
+                } else {
+                    (crate::routing::shard_hint_for_event(
+                        &serde_json::json!({ "__k": state_key.clone() }),
+                        Some("__k"),
+                    ) as usize)
+                        % n_shards
                 };
+                // event_time_ms: retained for the last_event_at touch
+                // below; apply_ssj_insert derives its own timestamp from
+                // the event map (matches Wave 1 decision).
+                let _event_time_ms_for_touch = event_time_ms;
+                let matches: Vec<serde_json::Map<String, serde_json::Value>> =
+                    self.ssj_insert_at_shard(
+                        sibling_shards,
+                        target_shard_idx,
+                        shard,
+                        input_shard_idx,
+                        &feat_name,
+                        side,
+                        &state_key,
+                        serde_json::Value::Object(arriving_map.clone()),
+                        within_ms,
+                    )?;
 
                 let joined_events: Vec<serde_json::Value> = if !matches.is_empty() {
                     matches
