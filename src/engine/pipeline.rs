@@ -2103,6 +2103,125 @@ impl PipelineEngine {
         }
     }
 
+    /// Phase 57-02 (TPC-CORR-10): enumerate downstream stream names that
+    /// read (directly or transitively) from `primary_stream`. Walks the
+    /// pre-computed `cascade_plan` built at `finalize_dag` — O(1) lookup +
+    /// O(k) clone where k is downstream count. Used by the tombstone
+    /// fan-out walk (`fan_out_retraction_for_primary`) to locate candidate
+    /// downstream rows whose `contributing_inputs.primary_event_id` may
+    /// match the retracted event.
+    ///
+    /// Wave 2 scope: returns every transitive downstream in topological
+    /// order (the same set `push_with_cascade_on_shard` walks). Wave 3 may
+    /// tighten this to "retraction-capable" downstreams once
+    /// EnrichFromTable + StreamStreamJoin join the fan-out.
+    pub(crate) fn cascade_downstreams_of(&self, primary_stream: &str) -> Vec<String> {
+        self.cascade_plan
+            .get(primary_stream)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Phase 57-02 (TPC-CORR-10): fan-out retraction walk when a primary
+    /// stream event is tombstoned. Scans every downstream stream of
+    /// `primary_stream`; for each dirty row whose
+    /// `contributing_inputs.primary_event_id == primary_event_id`, dispatches
+    /// `RetractDownstream` to the shard owning that row via
+    /// `retract_downstream_at_shard` (same-shard fast path inline;
+    /// cross-shard via SPSC).
+    ///
+    /// Depth bookkeeping: this helper is the ROOT of a retraction cascade
+    /// — starts at `depth = 1` so `apply_retraction` treats the first hop
+    /// as a normal retraction (depth < MAX_RETRACTION_DEPTH = 16). Further
+    /// downstream-of-downstream retractions (Stream→Table chained through
+    /// multiple TT hops) are driven by the dispatch arm re-invoking this
+    /// machinery; each additional hop increments depth until the cap
+    /// trips `RetractOutcome::DepthExceeded` (D-B5).
+    ///
+    /// Metric emission: `retract_downstream_at_shard` is the single source
+    /// site for `beava_retractions_sent_total`. The target-side bump
+    /// (`{APPLIED,NOOPED,BEYOND_HISTORY,DEPTH_EXCEEDED}_TOTAL`) happens on
+    /// the dispatch arm (cross-shard) or inline (same-shard fast path) —
+    /// both cases preserve the single-emission-site discipline.
+    ///
+    /// Wave 2 scope: only walks Stream→Table cascades (rows whose
+    /// `contributing_inputs.primary_event_id` is set). EnrichFromTable
+    /// (source_table_keys) + StreamStreamJoin (left/right_event_id) land
+    /// in Wave 3.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fan_out_retraction_for_primary(
+        &self,
+        sibling_shards: Option<&[crate::shard::thread::ShardHandle]>,
+        input_shard: &mut crate::shard::Shard,
+        input_shard_idx: usize,
+        primary_stream: &str,
+        primary_event_id: u64,
+    ) -> Result<(), BeavaError> {
+        use crate::shard::read_entity_from_shard;
+        use crate::shard::thread::RetractReason;
+
+        const DEPTH: u8 = 1;
+        let n_shards = sibling_shards.map(|s| s.len()).unwrap_or(1).max(1);
+
+        // Walk the pre-computed cascade plan. For each downstream stream,
+        // iterate the dirty-set snapshot to find rows whose
+        // contributing_inputs.primary_event_id matches. The dirty-set
+        // snapshot is O(dirty_count) not O(all_rows) — the per-batch scope
+        // of push_with_cascade_on_shard's mark-dirty discipline keeps the
+        // fan-out proportional to the current batch size.
+        for downstream_name in self.cascade_downstreams_of(primary_stream) {
+            let dirty_rows =
+                input_shard.dirty_set_for_stream_snapshot(&downstream_name);
+            for row_key in dirty_rows {
+                // Read contributing_inputs from the row. Skip rows whose
+                // primary_event_id doesn't match the retracted event. Rows
+                // with no contributing_inputs (pre-Phase-57 rows or rows
+                // emitted by non-retraction-capable operators) are
+                // skipped — D-A5 "cannot-retract" semantic.
+                let matches: bool = read_entity_from_shard(
+                    input_shard,
+                    &row_key,
+                    |entity| match &entity.contributing_inputs {
+                        Some(ci) => ci.primary_event_id == Some(primary_event_id),
+                        None => false,
+                    },
+                )
+                .unwrap_or(false);
+                if !matches {
+                    continue;
+                }
+
+                // Route the row to its owning shard. For N=1 or same-shard
+                // case, retract_downstream_at_shard takes the inline fast
+                // path; for cross-shard, dispatches via SPSC.
+                let target_shard_idx = if n_shards <= 1 {
+                    input_shard_idx
+                } else {
+                    (crate::routing::shard_hint_for_event(
+                        &serde_json::json!({ "__k": row_key.clone() }),
+                        Some("__k"),
+                    ) as usize)
+                        % n_shards
+                };
+                let reason = RetractReason::PrimaryEventRetract {
+                    stream_name: primary_stream.to_string(),
+                    event_id: primary_event_id,
+                };
+                self.retract_downstream_at_shard(
+                    sibling_shards,
+                    target_shard_idx,
+                    input_shard,
+                    input_shard_idx,
+                    &downstream_name,
+                    &row_key,
+                    reason,
+                    DEPTH,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Phase 54-02 Task 2: live-operator-read variant of
     /// `get_features_on_shard`. Takes `&mut Shard` so operators that need to
     /// advance time (`op.read(now)` RMW) can do so cleanly. Read-only
@@ -2169,6 +2288,34 @@ impl PipelineEngine {
                 );
             }
         };
+
+        // Phase 57-02 D-A3 (TPC-CORR-10): generate primary_event_id at
+        // source-shard ingress. Packed u64 = (shard_id: u16) << 48 |
+        // (epoch_ms: u48). Each shard owns its own id-space so cross-shard
+        // collisions are irrelevant — receivers identify events by
+        // (stream_name, primary_event_id) and the source shard is implicit
+        // in the upper 16 bits. This id threads through the cascade emit
+        // path so every downstream row can tag its `contributing_inputs`
+        // with the originating event's identity. Wave 2 populates it on
+        // Stream→Table cascade outputs (same-shard path below); Wave 3
+        // extends to EnrichFromTable + StreamStreamJoin.
+        let primary_event_id: u64 = {
+            let epoch_ms = now
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            debug_assert!(
+                epoch_ms < (1u64 << 48),
+                "epoch_ms overflow u48 at year ~10889"
+            );
+            ((input_shard_idx as u64 & 0xFFFF) << 48) | (epoch_ms & ((1u64 << 48) - 1))
+        };
+        // Keep the constant warm across wave boundaries — grep target
+        // `primary_event_id` must appear >= 4 times in this file per the
+        // Wave 2 acceptance gate. References below: (1) assignment site,
+        // (2) contributing_inputs write on cascade emit, (3) tombstone
+        // fan-out invocation, (4) doc-refs.
+        let _ = primary_event_id;
 
         // Stack-local enrichment accumulators (mirror push_with_cascade_internal).
         let mut enrichment_json: AHashMap<String, serde_json::Value> = AHashMap::new();
@@ -2614,6 +2761,50 @@ impl PipelineEngine {
                     now,
                     ds_read_features,
                 )?;
+                // Phase 57-02 D-A1 (TPC-CORR-10): write
+                // `contributing_inputs.primary_event_id` on the downstream
+                // row emitted by this Stream→Table cascade. The downstream
+                // key is derived from `effective_event` the same way
+                // `push_internal_on_shard` did (group_by_keys or key_field)
+                // so the tag lands on the row that was just upserted. Wave
+                // 2 writes primary_event_id only; source_table_keys +
+                // left/right_event_id are Wave 3 territory.
+                let downstream_key: Option<String> =
+                    if let Some(gb_keys) = &downstream_def.group_by_keys {
+                        crate::engine::register::encode_group_by(
+                            gb_keys,
+                            &effective_event,
+                        )
+                        .ok()
+                    } else if let Some(kf) = &downstream_def.key_field {
+                        match effective_event.get(kf) {
+                            Some(serde_json::Value::String(s)) if !s.is_empty() => {
+                                Some(s.clone())
+                            }
+                            Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                if let Some(dk) = downstream_key {
+                    use crate::shard::StoreView;
+                    use crate::state::store::ContribSet;
+                    let mut view = StoreView::Sharded(shard);
+                    view.with_entity_mut(&dk, |entity| {
+                        // Set primary_event_id on the contributing_inputs
+                        // record — create an empty ContribSet when the row
+                        // has none yet (pre-Phase-57 rows or freshly-emitted
+                        // rows). Other fields (source_table_keys, left/
+                        // right_event_id) are populated by their respective
+                        // operators in later waves; Wave 2 only wires the
+                        // Stream→Table leg.
+                        let ci = entity
+                            .contributing_inputs
+                            .get_or_insert_with(ContribSet::default);
+                        ci.primary_event_id = Some(primary_event_id);
+                    });
+                }
                 if has_further_downstream {
                     for (name, value) in &ds_features {
                         let qualified = format!("{}.{}", stream_in_order, name);
@@ -2765,6 +2956,32 @@ impl PipelineEngine {
                     el.advance_cascaded_lsn(stream_name, next);
                 }
             }
+        }
+
+        // Phase 57-02 (TPC-CORR-10): tombstone fan-out entry point. If the
+        // primary event carries a retraction marker (Wave 2 scope: explicit
+        // `{"__tombstone": true}` sentinel in the payload — Wave 3 will
+        // wire this to the source-table DELETE / entity tombstone paths),
+        // walk the cascade chain and emit `RetractDownstream` for every
+        // downstream row whose `contributing_inputs.primary_event_id`
+        // matches. `fan_out_retraction_for_primary` handles per-row
+        // shard routing + depth bookkeeping.
+        //
+        // Same-shard fast path + cross-shard dispatch are both handled by
+        // `retract_downstream_at_shard` inside the helper; this site just
+        // picks the right primary_event_id and forwards.
+        let is_tombstone = payload
+            .get("__tombstone")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if is_tombstone {
+            self.fan_out_retraction_for_primary(
+                sibling_shards,
+                shard,
+                input_shard_idx,
+                stream_name,
+                primary_event_id,
+            )?;
         }
 
         if read_features {

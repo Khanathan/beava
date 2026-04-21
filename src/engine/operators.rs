@@ -2,6 +2,22 @@
 //!
 //! Each operator wraps one or more `RingBuffer`s and implements the `Operator`
 //! trait: `push()` to ingest an event, `read()` to get the current aggregate.
+//!
+//! # Phase 57-02 (TPC-CORR-10) — contributing_inputs emission
+//!
+//! The Stream→Table cascade leg (Wave 2) populates
+//! `EntityState.contributing_inputs.primary_event_id` on every downstream
+//! row emitted via `push_with_cascade_on_shard`. Operators defined in this
+//! module (`CountOp`, `SumOp`, `LastOp`, etc.) are pure aggregators — they
+//! do NOT write `contributing_inputs` themselves; the cascade driver in
+//! `pipeline.rs::push_with_cascade_on_shard` tags the row POST-operator-eval
+//! so every active operator shape participates automatically. Wave 3
+//! extends this to `EnrichFromTable` (source_table_keys) and
+//! `StreamStreamJoin` (left/right_event_id) — those operators pipe their
+//! own lookup results through `contributing_inputs` because the cascade
+//! driver lacks visibility into per-enrichment right-table keys + SSJ
+//! partner event ids. See `pipeline.rs::fan_out_retraction_for_primary`
+//! for the read side that consumes `contributing_inputs.primary_event_id`.
 
 use super::cms::{CountMinSketch, TopKHeap, TopKValue};
 use super::retracting_ring::RetractingRingBuffer;

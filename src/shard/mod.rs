@@ -386,6 +386,42 @@ impl Shard {
         std::mem::take(&mut self.dirty_set)
     }
 
+    /// Phase 57-02 (TPC-CORR-10): snapshot the set of entity keys on this
+    /// shard whose row carries a populated `streams[stream_name]` slot.
+    /// Used by `PipelineEngine::fan_out_retraction_for_primary` to find
+    /// candidate downstream rows matching a tombstoned primary event.
+    ///
+    /// Implementation: iterates the shard's `dirty_set` and filters by
+    /// "entity has a non-empty stream slot for `stream_name`". This is
+    /// O(dirty_count) not O(all_rows) — the per-batch mark-dirty
+    /// discipline in `push_with_cascade_on_shard` bounds the walk to
+    /// rows touched by the current event batch.
+    ///
+    /// Wave 2 trade-off: we filter by `dirty_set` rather than scanning
+    /// the full partition because (a) the tombstone fan-out is a hot path
+    /// on the write side and (b) a full-scan would dominate Phase 57's
+    /// perf gate. If Wave 3+ needs broader coverage (cascade rows NOT
+    /// dirty in the current batch — e.g. cross-batch retractions), a
+    /// secondary reverse index on `contributing_inputs.primary_event_id`
+    /// becomes justified.
+    ///
+    /// Returns an owning `Vec<String>` so the caller can iterate without
+    /// holding a borrow on the shard (enabling mutable re-entry for the
+    /// inline `apply_retraction` fast path).
+    pub fn dirty_set_for_stream_snapshot(&self, stream_name: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::with_capacity(self.dirty_set.len().min(64));
+        for key in self.dirty_set.iter() {
+            let has_stream: bool = read_entity_from_shard(self, key, |entity| {
+                entity.streams.contains_key(stream_name)
+            })
+            .unwrap_or(false);
+            if has_stream {
+                out.push(key.clone());
+            }
+        }
+        out
+    }
+
     /// Phase 54-02: Iterate all entities held by this shard as
     /// `(key, EntityState)` pairs. On the default (fjall) build each row
     /// is deserialized via postcard on-demand; on state-inmem it's a
@@ -678,10 +714,14 @@ impl Shard {
 
 #[cfg(not(feature = "state-inmem"))]
 fn entity_to_bytes(entity: &EntityState) -> Vec<u8> {
-    use crate::state::snapshot::{SerializableEntityState, SerializableStreamEntityState};
+    use crate::state::snapshot::{SerializableEntityStateV10, SerializableStreamEntityState};
     use crate::state::store::SerializableTableRow;
 
-    let ser = SerializableEntityState {
+    // Phase 57-02: write V10 per-entity wire format (adds `contributing_inputs`
+    // for TPC-CORR-10 retraction tracking). Readers try V10 first then fall
+    // back to V9 (`SerializableEntityState`) on postcard decode failure so
+    // Phase 55/56 on-disk bytes continue to load.
+    let ser = SerializableEntityStateV10 {
         streams: entity
             .streams
             .iter()
@@ -705,18 +745,37 @@ fn entity_to_bytes(entity: &EntityState) -> Vec<u8> {
             .iter()
             .map(|(k, v)| (k.clone(), SerializableTableRow::from(v)))
             .collect(),
+        contributing_inputs: entity.contributing_inputs.clone(),
     };
-    postcard::to_stdvec(&ser).expect("postcard serialize SerializableEntityState")
+    postcard::to_stdvec(&ser).expect("postcard serialize SerializableEntityStateV10")
 }
 
 #[cfg(not(feature = "state-inmem"))]
 fn entity_from_bytes(bytes: &[u8]) -> Option<EntityState> {
-    use crate::state::snapshot::SerializableEntityState;
+    use crate::state::snapshot::{SerializableEntityState, SerializableEntityStateV10};
     use crate::state::store::{StreamEntityState, TableRow};
 
-    let ser: SerializableEntityState = postcard::from_bytes(bytes).ok()?;
+    // Phase 57-02 wire-shim: try V10 first (includes `contributing_inputs`
+    // primary_event_id for TPC-CORR-10), fall back to V9
+    // (`SerializableEntityState` — Phase 55/56 wire layout without the field).
+    // postcard does NOT support `#[serde(default)]` for missing trailing
+    // fields so V9-era bytes fail V10 decode. The fallback preserves the
+    // pre-Phase-57 "cannot-retract" semantic (D-A5) by mapping to None.
+    let (streams_raw, static_features, table_rows_raw, contributing_inputs) =
+        match postcard::from_bytes::<SerializableEntityStateV10>(bytes) {
+            Ok(v10) => (
+                v10.streams,
+                v10.static_features,
+                v10.table_rows,
+                v10.contributing_inputs,
+            ),
+            Err(_) => {
+                let v9: SerializableEntityState = postcard::from_bytes(bytes).ok()?;
+                (v9.streams, v9.static_features, v9.table_rows, None)
+            }
+        };
     let mut streams: ahash::AHashMap<String, StreamEntityState> = ahash::AHashMap::new();
-    for (name, s) in ser.streams {
+    for (name, s) in streams_raw {
         streams.insert(
             name,
             StreamEntityState {
@@ -727,17 +786,15 @@ fn entity_from_bytes(bytes: &[u8]) -> Option<EntityState> {
     }
     Some(EntityState {
         streams,
-        static_features: ser.static_features.into_iter().collect(),
-        table_rows: ser
-            .table_rows
+        static_features: static_features.into_iter().collect(),
+        table_rows: table_rows_raw
             .into_iter()
             .map(|(k, v)| (k, TableRow::from(v)))
             .collect(),
-        // Phase 57 D-A5: pre-Wave-2 rows have no ContribSet. Wire-format
-        // (SerializableEntityState) does NOT carry this field in Wave 1;
-        // field stays in-memory only. Loading any existing bytes produces
-        // None here, which retraction logic treats as "cannot-retract".
-        contributing_inputs: None,
+        // Phase 57-02: restore `contributing_inputs` from V10 wire format; V9
+        // reads short-circuit to `None` (D-A5 cannot-retract semantic
+        // preserved for pre-Phase-57 rows).
+        contributing_inputs,
         dirty_gen: std::sync::atomic::AtomicU64::new(0),
     })
 }
@@ -1321,6 +1378,85 @@ mod tests {
                 postcard::from_bytes(&bytes).expect("deserialize");
             assert_eq!(&restored, r, "round-trip preserves variant");
         }
+    }
+
+    #[cfg(not(feature = "state-inmem"))]
+    #[test]
+    fn entity_state_v10_postcard_roundtrip_with_contributing_inputs() {
+        // Phase 57-02 (TPC-CORR-10): EntityState with populated
+        // `contributing_inputs` must survive the fjall per-entity wire round
+        // trip so downstream rows retain their `primary_event_id` across
+        // restart. V10 is the new wire format; V9 fallback is exercised by
+        // `entity_state_v9_bytes_load_as_none_contributing_inputs` below.
+        use crate::state::store::{ContribSet, EntityState};
+        use std::sync::atomic::AtomicU64;
+
+        let mut entity = EntityState {
+            streams: ahash::AHashMap::new(),
+            static_features: ahash::AHashMap::new(),
+            table_rows: ahash::AHashMap::new(),
+            contributing_inputs: Some(ContribSet {
+                primary_event_id: Some(0x1234_5678_9abc_def0),
+                source_table_keys: vec!["US".into(), "CA".into()],
+                left_event_id: Some(0x1111_2222_3333_4444),
+                right_event_id: Some(0x5555_6666_7777_8888),
+            }),
+            dirty_gen: AtomicU64::new(0),
+        };
+        // Add a stream so table_rows / streams aren't both empty (realistic
+        // payload).
+        entity.streams.insert(
+            "Primary".to_string(),
+            crate::state::store::StreamEntityState {
+                operators: vec![],
+                last_event_at: None,
+            },
+        );
+
+        let bytes = super::entity_to_bytes(&entity);
+        let restored =
+            super::entity_from_bytes(&bytes).expect("v10 bytes must decode");
+        let ci = restored
+            .contributing_inputs
+            .expect("contributing_inputs must survive round-trip");
+        assert_eq!(ci.primary_event_id, Some(0x1234_5678_9abc_def0));
+        assert_eq!(ci.source_table_keys, vec!["US".to_string(), "CA".to_string()]);
+        assert_eq!(ci.left_event_id, Some(0x1111_2222_3333_4444));
+        assert_eq!(ci.right_event_id, Some(0x5555_6666_7777_8888));
+    }
+
+    #[cfg(not(feature = "state-inmem"))]
+    #[test]
+    fn entity_state_v9_bytes_load_as_none_contributing_inputs() {
+        // Phase 57-02: V9 on-disk bytes (emitted by Phase 55/56 binaries
+        // without the `contributing_inputs` field) must load under the V10
+        // decoder by falling through to the `SerializableEntityState` legacy
+        // path, yielding `contributing_inputs = None` (D-A5 "cannot-retract"
+        // semantic). This guards backward compat.
+        use crate::state::snapshot::{SerializableEntityState, SerializableStreamEntityState};
+
+        let v9 = SerializableEntityState {
+            streams: vec![(
+                "Primary".to_string(),
+                SerializableStreamEntityState {
+                    operators: vec![],
+                    last_event_at: None,
+                },
+            )],
+            static_features: vec![],
+            table_rows: vec![],
+        };
+        let v9_bytes = postcard::to_stdvec(&v9).expect("v9 encode");
+        let restored = super::entity_from_bytes(&v9_bytes)
+            .expect("v9 bytes must decode under v10 reader via fallback");
+        assert!(
+            restored.contributing_inputs.is_none(),
+            "pre-Phase-57 rows load with contributing_inputs = None (D-A5)"
+        );
+        assert!(
+            restored.streams.contains_key("Primary"),
+            "stream slot preserved via V9 fallback"
+        );
     }
 
     #[cfg(not(feature = "state-inmem"))]

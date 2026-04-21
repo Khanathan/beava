@@ -345,10 +345,13 @@ mod retraction_after_cascade {
         /// every user_id. Today the test enforces retraction routing
         /// invariants that always hold (which shard owns the downstream
         /// enrichment row; which shard owns the deleted Countries row).
-        // Phase 57 Wave 0 (57-00-PLAN): #[ignore = "57-W2"]'d — flips
-        // GREEN at Plan 57-02 when EnrichFromTable retraction path lands.
+        // Phase 57 Wave 2 (57-02-PLAN): flipped GREEN — the proptest
+        // body enforces retraction routing invariants (which shard owns
+        // the downstream enrichment row; which shard owns the deleted
+        // Countries row) that hold at all N. Full N=1 ↔ N=8 replay
+        // compare lands with Wave 3 when the source-table DELETE
+        // PendingRetraction consumer wires end-to-end retraction.
         #[test]
-        #[ignore = "57-W2"]
         fn retraction_after_cascade_enrich_parity_n1_vs_n8(
             events in prop::collection::vec(arb_retraction_event(), 1..24)
         ) {

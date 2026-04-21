@@ -357,12 +357,42 @@ pub struct SerializableStreamEntityState {
 ///
 /// Phase 24 (v7): added `table_rows` for first-class Table row storage.
 /// v6 snapshots are migrated on read via `SerializableEntityStateV6`.
+///
+/// Phase 57-02 leaves this struct unchanged for top-level SNAPSHOT wire
+/// (v8/v9 envelope); the fjall per-entity wire format gains
+/// `contributing_inputs` via `SerializableEntityStateV10` — writes go out as
+/// V10, reads try V10 then fall back to this V9 layout. See
+/// `entity_to_bytes` / `entity_from_bytes` in `shard/mod.rs`. Snapshot
+/// envelopes remain on V9 body shape to preserve backward compat with v7
+/// fixtures + existing replica snapshot fetch consumers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableEntityState {
     pub streams: Vec<(String, SerializableStreamEntityState)>,
     pub static_features: Vec<(String, StaticFeature)>,
     /// Phase 24: Table rows keyed by table name.
     pub table_rows: Vec<(String, SerializableTableRow)>,
+}
+
+/// Phase 57-02 (v10 fjall per-entity wire layout): extends
+/// `SerializableEntityState` with `contributing_inputs: Option<ContribSet>`
+/// for cross-shard retraction tracking (TPC-CORR-10).
+///
+/// postcard does NOT support `#[serde(default)]` for missing trailing fields,
+/// so adding the field directly to `SerializableEntityState` would break v7
+/// fixtures + v8/v9 snapshot envelopes that embed the legacy body. Instead,
+/// the per-entity wire format in `entity_to_bytes` / `entity_from_bytes`
+/// writes V10 (this struct) and reads try V10 first then fall back to V9
+/// (`SerializableEntityState`).
+///
+/// Pre-Phase-57 rows loaded via the V9 fallback get `contributing_inputs =
+/// None` (D-A5 "cannot-retract" semantic).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializableEntityStateV10 {
+    pub streams: Vec<(String, SerializableStreamEntityState)>,
+    pub static_features: Vec<(String, StaticFeature)>,
+    pub table_rows: Vec<(String, SerializableTableRow)>,
+    /// Phase 57-02: contributing-inputs tracking record (TPC-CORR-10).
+    pub contributing_inputs: Option<crate::state::store::ContribSet>,
 }
 
 /// Phase 24: Legacy v6 per-entity layout (no `table_rows`). Used exclusively

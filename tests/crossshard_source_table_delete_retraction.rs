@@ -240,8 +240,12 @@ fn spawn_drain(
 ///   - beava_retractions_applied_total{operator="enrich_from_table"} ≥ 1
 ///   - RetractReason::SourceTableDelete { table_name: "Countries", table_key: "US", .. }
 #[test]
-#[ignore = "57-W2"]
-// flips GREEN in Plan 57-02 (EnrichFromTable retraction path)
+#[ignore = "57-W3"]
+// Plan 57-02 scope is Stream→Table contributing_inputs + tombstone fan-out.
+// SC-1 (source-table DELETE → EnrichFromTable retraction) requires the
+// PendingRetraction marker consumer + EnrichFromTable.contributing_inputs.
+// source_table_keys emission — both Wave 3 territory. Marker rewritten to
+// `57-W3` accordingly.
 fn source_table_delete_retracts_enriched_downstream() {
     const N: usize = 4;
 
