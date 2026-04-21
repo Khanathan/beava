@@ -106,7 +106,6 @@ async fn negotiate(
 /// on `status == STATUS_OK` triggers).
 /// Post-Wave-2: GREEN — server advertises binary-passthrough support.
 #[tokio::test]
-#[ignore = "59-W2"]
 async fn op_negotiate_wire_format_round_trips_capability_bits() {
     let state = build_state_n_shards("round_trip", 2);
 

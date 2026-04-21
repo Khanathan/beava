@@ -206,6 +206,40 @@ pub const OP_DELETE_TABLE_ROW: u8 = 0x15;
 pub const OP_UPSERT_TABLE_BATCH: u8 = 0x16;
 pub const OP_DELETE_TABLE_BATCH: u8 = 0x17;
 
+// Phase 59 Wave 2 D-B1 (TPC-PERF-09): wire-format capability handshake opcode.
+//
+// Request frame:
+//   [u8 0x18]
+//   [u32 BE client_capability_bits]
+//   [u16 BE client_version_tag]
+//
+// Response frame (STATUS_OK):
+//   [u8 0x00]
+//   [u32 BE server_capability_bits]
+//   [u16 BE server_version_tag]
+//
+// Response frame (STATUS_ERROR — e.g., malformed request):
+//   [u8 0x01][error bytes]
+//
+// Capability bits (see `src/wire/mod.rs`):
+//   bit 0 = WIRE_BINARY_PASSTHROUGH (Phase 59 delivers this bit)
+//   bits 1..31 reserved. Server treats unknown client bits as no-op;
+//   future phases may add more bits. Server echoes ONLY actually-
+//   supported bits in its response so a negotiation round-trip tells
+//   the client exactly what the server supports.
+//
+// Per D-B2, this opcode is OPTIONAL. Servers accept OP_PUSH frames
+// with either binary OR JSON bodies regardless of whether
+// OP_NEGOTIATE_WIRE_FORMAT was ever exchanged on this connection.
+// Clients that send it get to stop paying the auto-detect cost and
+// know the server version tag explicitly.
+pub const OP_NEGOTIATE_WIRE_FORMAT: u8 = 0x18;
+
+/// Phase 59 Wave 2 D-B1: server's wire-protocol version tag. Bump on
+/// breaking wire-surface changes. Version 2 = Phase 59 Bytes-passthrough
+/// + dual binary/JSON accept on OP_PUSH.
+pub const WIRE_VERSION_TAG_SERVER: u16 = 2;
+
 // Response status codes
 pub const STATUS_OK: u8 = 0x00;
 pub const STATUS_ERROR: u8 = 0x01;
@@ -257,6 +291,13 @@ pub enum Command {
         raw_payload: Vec<u8>,
     },
     Flush,
+    /// Phase 59 Wave 2 D-B1 (TPC-PERF-09): wire-format capability handshake.
+    /// Client announces its capability bits + version tag; server echoes its
+    /// own (see `OP_NEGOTIATE_WIRE_FORMAT` / `WIRE_VERSION_TAG_SERVER`).
+    NegotiateWireFormat {
+        client_bits: u32,
+        client_version: u16,
+    },
     /// Client-side batch of events for one stream. Decoded into per-event
     /// (payload, raw_payload) pairs; converted to Vec<PendingAsync> at the
     /// dispatch site in handle_connection where the seq counter lives
@@ -678,6 +719,16 @@ pub fn encode_response(status: u8, payload: &[u8]) -> Vec<u8> {
     buf.push(status);
     buf.extend_from_slice(payload);
     buf
+}
+
+/// Phase 59 Wave 2 D-B1: encode the 6-byte body of an
+/// `OP_NEGOTIATE_WIRE_FORMAT` response: `[u32 BE server_bits][u16 BE
+/// server_version]`. Caller wraps in `encode_response(STATUS_OK, &body)`.
+pub fn encode_negotiate_response_body(server_bits: u32, server_version: u16) -> Vec<u8> {
+    let mut body = Vec::with_capacity(6);
+    body.extend_from_slice(&server_bits.to_be_bytes());
+    body.extend_from_slice(&server_version.to_be_bytes());
+    body
 }
 
 /// Read a protocol string: [u16 BE length][UTF-8 bytes].
@@ -1255,6 +1306,20 @@ pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, BeavaError> 
                 rows.push((key, source_lsn));
             }
             Ok(Command::DeleteTableBatch { table_name, rows })
+        }
+        OP_NEGOTIATE_WIRE_FORMAT => {
+            // Phase 59 Wave 2 D-B1: [u32 BE client_bits][u16 BE client_version]
+            if payload.len() < 6 {
+                return Err(BeavaError::Protocol(
+                    "OP_NEGOTIATE_WIRE_FORMAT: payload truncated (need 6 bytes: u32 bits + u16 version)".into(),
+                ));
+            }
+            let client_bits = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+            let client_version = u16::from_be_bytes([payload[4], payload[5]]);
+            Ok(Command::NegotiateWireFormat {
+                client_bits,
+                client_version,
+            })
         }
         OP_GET_MULTI => {
             // Wire: [u16 count][count × u16-string table_name][u16-string key]
@@ -2789,6 +2854,54 @@ mod tests {
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         assert!(err_msg.contains("unknown opcode"));
+    }
+
+    #[test]
+    fn test_parse_command_negotiate_wire_format_happy_path() {
+        // Phase 59 Wave 2 D-B1: 6-byte body → NegotiateWireFormat variant.
+        let mut payload = Vec::with_capacity(6);
+        payload.extend_from_slice(&0x00000001u32.to_be_bytes()); // client_bits
+        payload.extend_from_slice(&2u16.to_be_bytes()); // client_version
+        let cmd = parse_command(OP_NEGOTIATE_WIRE_FORMAT, &payload).unwrap();
+        match cmd {
+            Command::NegotiateWireFormat {
+                client_bits,
+                client_version,
+            } => {
+                assert_eq!(client_bits, 0x00000001);
+                assert_eq!(client_version, 2);
+            }
+            other => panic!("expected NegotiateWireFormat, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_command_negotiate_wire_format_truncated() {
+        // Phase 59 Wave 2 D-B1: < 6 bytes → Protocol error with "truncated".
+        let short = [0u8; 3];
+        let result = parse_command(OP_NEGOTIATE_WIRE_FORMAT, &short);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            BeavaError::Protocol(msg) => {
+                assert!(
+                    msg.contains("truncated"),
+                    "error must mention 'truncated': {msg}"
+                );
+                assert!(msg.contains("OP_NEGOTIATE_WIRE_FORMAT"));
+            }
+            _ => panic!("expected Protocol error"),
+        }
+    }
+
+    #[test]
+    fn test_encode_negotiate_response_body_roundtrip() {
+        // Phase 59 Wave 2 D-B1: body encode → decode recovers (bits, version).
+        let body = encode_negotiate_response_body(0x00000001, 2);
+        assert_eq!(body.len(), 6);
+        let bits = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
+        let ver = u16::from_be_bytes([body[4], body[5]]);
+        assert_eq!(bits, 0x00000001);
+        assert_eq!(ver, 2);
     }
 
     #[test]

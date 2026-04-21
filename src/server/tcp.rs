@@ -3245,6 +3245,20 @@ async fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8
             "{} reserved in v0; not implemented",
             op_name
         ))),
+        Command::NegotiateWireFormat {
+            client_bits: _,
+            client_version: _,
+        } => {
+            // Phase 59 Wave 2 D-B1: echo ONLY server-supported bits. Phase 59
+            // advertises bit 0 = WIRE_BINARY_PASSTHROUGH. Future phases grow
+            // this mask. Client bits are intentionally ignored (spoof-safe per
+            // T-59-02-01); the client learns server support from the echo.
+            const SERVER_SUPPORTED_BITS: u32 = crate::wire::WIRE_BINARY_PASSTHROUGH;
+            Ok(protocol::encode_negotiate_response_body(
+                SERVER_SUPPORTED_BITS,
+                protocol::WIRE_VERSION_TAG_SERVER,
+            ))
+        }
         Command::Mset { .. } => unreachable!("MSET handled separately"),
         // I-2: PushAsync and Flush are intercepted in `handle_connection`
         // BEFORE this function is called — see the three-way match on
