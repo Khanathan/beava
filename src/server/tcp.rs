@@ -317,6 +317,31 @@ pub struct ConcurrentAppState {
     /// `accept_threads_spawned_total`.
     pub inline_handler_events_total: std::sync::atomic::AtomicU64,
 
+    /// Phase 59 D-C3 (TPC-PERF-09 JSON-reserialize WASTE probe):
+    /// counter incremented every time the TCP PUSH hot path calls
+    /// `serde_json::to_vec(payload)` between the listener's `parse_command`
+    /// and the shard thread's engine call. On Wave-0 HEAD this counter
+    /// is fired twice per event (tcp.rs:2159 + tcp.rs:2538). Wave 1
+    /// deletes those call sites (Bytes passthrough via `ShardEvent.payload`
+    /// + new `PayloadFmt` tag); Wave 4 samply verifies the counter stays
+    /// at 0 after a push load run.
+    ///
+    /// Always-on (not `cfg(test)`) per the 50.5-02 `conn_interns_total`
+    /// and Phase 58 `accept_threads_spawned_total` precedents.
+    pub json_reserialize_count_total: std::sync::atomic::AtomicU64,
+
+    /// Phase 59 D-A3 (TPC-PERF-09 binary-passthrough probe):
+    /// counter incremented every time the TCP PUSH hot path forwards
+    /// binary wire bytes from `parse_command` → `ShardEvent.payload`
+    /// WITHOUT a JSON round-trip. On Wave-0 HEAD this counter is 0
+    /// (no passthrough path exists yet); Wave 1 wires the `.fetch_add(1)`
+    /// call at the new Bytes-forward site. Wave 4 samply verifies the
+    /// counter is ≥ N events after a push load run.
+    ///
+    /// Always-on (not `cfg(test)`) per the same rationale as
+    /// `json_reserialize_count_total`.
+    pub binary_passthrough_count_total: std::sync::atomic::AtomicU64,
+
     /// Phase 51-02 (TPC-PERF-05): flat lock-free global watermark store.
     ///
     /// Indexed as shard_id × stream_capacity + stream_ord. All N shards publish
@@ -539,6 +564,17 @@ pub fn make_concurrent_state_full(
         // Phase 58 D-A3 (Wave 0 RED): inline-handler event counter, bumped by
         // Wave 1/2's per-shard accept loops. Zero today.
         inline_handler_events_total: std::sync::atomic::AtomicU64::new(0),
+        // Phase 59 D-C3 (Wave 0): WASTE counter — fired at the two
+        // `serde_json::to_vec(payload|r.payload)` sites Wave 1 deletes.
+        // Zero today (no .fetch_add call sites yet); Wave 0 Task 2 is
+        // struct-only per plan spec so the counter baseline is explicitly
+        // AtomicU64::new(0). Wave 1 adds the fires; Wave 4 samply verifies
+        // it stays at zero after Wave 1's deletion.
+        json_reserialize_count_total: std::sync::atomic::AtomicU64::new(0),
+        // Phase 59 D-A3 (Wave 0): binary-passthrough counter; bumped by
+        // Wave 1's new Bytes-forward site. Zero today — Wave 0 plants the
+        // field only; Wave 1 wires the .fetch_add(1) call site.
+        binary_passthrough_count_total: std::sync::atomic::AtomicU64::new(0),
         // Phase 51-02: global watermark store. n_shards rows × 64 stream-ordinal columns.
         // stream_capacity=64 matches GlobalWatermarkStore default; panics on overflow (T-51-01-03).
         global_watermark: parking_lot::RwLock::new(
@@ -2156,6 +2192,15 @@ pub fn handle_push_core_ex(
     // Always re-serialize the parsed payload as JSON: the shard worker parses
     // `event.payload` via `serde_json::from_slice` (thread.rs:285), so binary
     // TCP wire bytes would fail. Matches http_ingest.rs Pass A behavior.
+    //
+    // Phase 59 Wave 0 D-C3: fire the WASTE probe counter BEFORE the
+    // `serde_json::to_vec` call so Wave 4 can verify (a) the counter
+    // moves pre-Wave-1, (b) the counter is 0 post-Wave-1 (Bytes passthrough
+    // lands here). `Relaxed` ordering is sufficient — this is a monotonic
+    // diagnostic counter read only by /debug and samply.
+    state
+        .json_reserialize_count_total
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let payload_bytes = bytes::Bytes::from(serde_json::to_vec(payload).unwrap_or_default());
 
     // Phase 50.5-02 Task 2: use pre-interned Arc<str> when available.
@@ -2534,6 +2579,14 @@ pub fn handle_push_batch(
         // parses `event.payload` via `serde_json::from_slice` (thread.rs:285),
         // so TCP's binary wire bytes (in batch[i].raw_payload) would fail
         // parsing. Mirrors http_ingest.rs Pass A.
+        //
+        // Phase 59 Wave 0 D-C3: fire the WASTE probe counter before the
+        // `serde_json::to_vec` call. Wave 1 deletes the round-trip and
+        // this `.fetch_add` site. See `json_reserialize_count_total`
+        // field docs on `ConcurrentAppState`.
+        state
+            .json_reserialize_count_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let payload_bytes =
             bytes::Bytes::from(serde_json::to_vec(r.payload).unwrap_or_default());
         let shard_stream_name: Arc<str> = Arc::from(r.stream_name);
