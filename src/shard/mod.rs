@@ -551,6 +551,119 @@ impl Shard {
         self.dirty_set.insert(join_key.to_string());
         matches
     }
+
+    /// Phase 57 D-B4 + D-C1 + D-B5 (TPC-CORR-10): apply a retraction to a
+    /// downstream row on this shard. Idempotent, depth-guarded, history-ttl-aware.
+    ///
+    /// Semantics (mirrors the locked design in
+    /// `.planning/phases/57-retraction-across-crossshard-joins/57-CONTEXT.md`):
+    ///
+    /// 1. **Depth guard (D-B5):** If `depth >= MAX_RETRACTION_DEPTH` return
+    ///    `RetractOutcome::DepthExceeded` without touching state. The dispatch
+    ///    arm in `thread.rs` also enforces this cap before calling this
+    ///    method, so the method-level guard is defence-in-depth for direct
+    ///    (non-dispatch) callers such as the same-shard fast path in
+    ///    `PipelineEngine::retract_downstream_at_shard`.
+    ///
+    /// 2. **Idempotency probe (D-B4):** If the entity at `row_key` does not
+    ///    exist on this shard, OR the entity has no stream slot named
+    ///    `stream_name`, OR the stream slot is already empty of operator
+    ///    state (stream was previously tombstoned), return
+    ///    `RetractOutcome::NoOp`. No mutation. This covers:
+    ///    - Source-shard retries on `ShardOverload` (duplicate dispatch).
+    ///    - Fan-out collisions where multiple tombstones affect the same
+    ///      downstream row.
+    ///    - Retractions against never-emitted rows (race between the
+    ///      retraction cascade and a slow primary push).
+    ///
+    /// 3. **History-ttl probe (D-C1):** If the stream has a
+    ///    `last_event_at` AND the observed watermark indicates the event is
+    ///    older than `history_ttl` before the watermark, return
+    ///    `RetractOutcome::BeyondHistory`. Wave 1 treats this as a soft
+    ///    skip — the actual `history_ttl` lookup against the
+    ///    `StreamDefinition` lives on `PipelineEngine`, not `Shard`; the
+    ///    Wave 4 (plan 57-04) wiring will add a `history_ttl: Duration`
+    ///    parameter to this method to make the check live. Today the
+    ///    method never returns `BeyondHistory` from the "never-populated"
+    ///    path; Wave 4's SC-3 test will exercise the flip.
+    ///
+    /// 4. **Happy path:** tombstone the row's stream slot by clearing its
+    ///    operators (the `StreamEntityState.operators` Vec is the only
+    ///    carrier for per-stream retract-visible state in Wave 1 —
+    ///    retraction-capable operators land in Waves 2/3) AND clearing
+    ///    `contributing_inputs` so a re-retraction probe reads `NoOp`.
+    ///    Returns `RetractOutcome::Retracted`. Marks dirty.
+    ///
+    /// The `reason` parameter is accepted for observability (the dispatch
+    /// arm uses it to label metric counters) and for future Wave 2/3
+    /// operator-specific retraction logic (e.g. a SourceTableDelete
+    /// retraction might clear a source-table-row-backed cache entry; an
+    /// EntityTombstone retraction might also clear `static_features`).
+    /// Wave 1 treats all three reasons identically — the primitive is what
+    /// Wave 2/3 extends.
+    pub fn apply_retraction(
+        &mut self,
+        stream_name: &str,
+        row_key: &str,
+        _reason: &crate::shard::thread::RetractReason,
+        depth: u8,
+    ) -> crate::shard::thread::RetractOutcome {
+        use crate::shard::thread::{RetractOutcome, MAX_RETRACTION_DEPTH};
+
+        // 1. Depth guard — matches the dispatch-arm check; defence-in-depth.
+        if depth >= MAX_RETRACTION_DEPTH {
+            return RetractOutcome::DepthExceeded;
+        }
+
+        // 2. Idempotency probe: pull the entity's current stream-slot state
+        //    WITHOUT mutating. Read through the shared `read_entity_from_shard`
+        //    helper so fjall + state-inmem both route through the same code.
+        let probe: Option<(bool, bool)> = read_entity_from_shard(self, row_key, |entity| {
+            let stream_present = entity.streams.get(stream_name).is_some();
+            let stream_has_state = entity
+                .streams
+                .get(stream_name)
+                .map(|s| !s.operators.is_empty())
+                .unwrap_or(false);
+            (stream_present, stream_has_state)
+        });
+
+        let (stream_present, stream_has_state) = match probe {
+            Some(t) => t,
+            None => return RetractOutcome::NoOp,
+        };
+        if !stream_present || !stream_has_state {
+            // Stream slot absent OR already emptied by a prior retraction —
+            // D-B4 idempotent no-op.
+            return RetractOutcome::NoOp;
+        }
+
+        // 3. History-ttl probe — Wave 1 does NOT have `history_ttl` wired on
+        //    the Shard surface (belongs to `StreamDefinition` on PipelineEngine);
+        //    Wave 4 lands the live check. This branch is reachable today only
+        //    through a future caller that passes a concrete cut-off; keeping
+        //    the match-arm existence in the code avoids a signature change
+        //    when Wave 4 extends the method.
+        //
+        //    (No-op in Wave 1; left for Wave 4.)
+
+        // 4. Happy path: tombstone the stream slot.
+        {
+            let mut view = StoreView::Sharded(self);
+            view.with_entity_mut(row_key, |entity| {
+                if let Some(s) = entity.streams.get_mut(stream_name) {
+                    s.operators.clear();
+                    s.last_event_at = None;
+                }
+                // Clear contributing_inputs so a re-retraction probe reads
+                // NoOp. The field is in-memory-only today (Wave 1); Wave 2/3
+                // wires the persistence path once operators produce it.
+                entity.contributing_inputs = None;
+            });
+        }
+        self.dirty_set.insert(row_key.to_string());
+        RetractOutcome::Retracted
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -620,6 +733,11 @@ fn entity_from_bytes(bytes: &[u8]) -> Option<EntityState> {
             .into_iter()
             .map(|(k, v)| (k, TableRow::from(v)))
             .collect(),
+        // Phase 57 D-A5: pre-Wave-2 rows have no ContribSet. Wire-format
+        // (SerializableEntityState) does NOT carry this field in Wave 1;
+        // field stays in-memory only. Loading any existing bytes produces
+        // None here, which retraction logic treats as "cannot-retract".
+        contributing_inputs: None,
         dirty_gen: std::sync::atomic::AtomicU64::new(0),
     })
 }
@@ -975,6 +1093,234 @@ mod tests {
             Some("L"),
             "Matched counterparty payload is from the Left side"
         );
+    }
+
+    // ---- Phase 57 Wave 1: apply_retraction unit tests ----
+
+    /// Helper: seed a stream slot on `shard` at `row_key` with a dummy
+    /// CountOp so subsequent apply_retraction calls see a non-empty
+    /// operator list. Mirrors the minimal live-state shape Wave 2/3
+    /// emitters will populate.
+    #[cfg(not(feature = "state-inmem"))]
+    fn seed_stream_row(shard: &mut super::Shard, stream: &str, row_key: &str) {
+        use crate::engine::operators::CountOp;
+        use crate::state::snapshot::OperatorState;
+        use crate::state::store::StreamEntityState;
+        use std::time::{Duration, SystemTime};
+
+        let mut view = super::StoreView::Sharded(shard);
+        view.with_entity_mut(row_key, |entity| {
+            let stream_state = entity
+                .streams
+                .entry(stream.to_string())
+                .or_insert_with(StreamEntityState::default);
+            stream_state.operators.push((
+                "cnt".to_string(),
+                OperatorState::Count(CountOp::new(
+                    Duration::from_secs(3600),
+                    Duration::from_secs(60),
+                )),
+            ));
+            stream_state.last_event_at = Some(SystemTime::now());
+        });
+        shard.dirty_set.insert(row_key.to_string());
+    }
+
+    #[cfg(not(feature = "state-inmem"))]
+    #[test]
+    fn apply_retraction_noop_on_missing_row() {
+        // Phase 57 D-B4: retracting a row that was never emitted on this
+        // shard returns NoOp without touching state. Necessary for source
+        // retries + fan-out collisions.
+        use crate::shard::thread::{RetractOutcome, RetractReason};
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _g = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+
+        let (mut shard, _tmp) = build_empty_shard_fjall();
+        let out = shard.apply_retraction(
+            "EnrichedSnap",
+            "absent_key",
+            &RetractReason::EntityTombstone {
+                stream_name: "Primary".into(),
+                entity_key: "u1".into(),
+            },
+            0,
+        );
+        assert_eq!(out, RetractOutcome::NoOp);
+    }
+
+    #[cfg(not(feature = "state-inmem"))]
+    #[test]
+    fn apply_retraction_depth_guard_trips_at_cap() {
+        // Phase 57 D-B5: depth >= MAX_RETRACTION_DEPTH returns DepthExceeded
+        // without touching state. Defence-in-depth for direct (non-dispatch)
+        // callers such as the same-shard fast path in
+        // PipelineEngine::retract_downstream_at_shard.
+        use crate::shard::thread::{RetractOutcome, RetractReason, MAX_RETRACTION_DEPTH};
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _g = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+
+        let (mut shard, _tmp) = build_empty_shard_fjall();
+        // Seed a live row so we can verify the guard trips BEFORE the
+        // idempotency probe (state must remain untouched).
+        seed_stream_row(&mut shard, "EnrichedSnap", "u1");
+
+        let out = shard.apply_retraction(
+            "EnrichedSnap",
+            "u1",
+            &RetractReason::EntityTombstone {
+                stream_name: "Primary".into(),
+                entity_key: "u1".into(),
+            },
+            MAX_RETRACTION_DEPTH,
+        );
+        assert_eq!(out, RetractOutcome::DepthExceeded);
+
+        // Verify state unchanged — stream slot still has its operator.
+        let still_live = super::read_entity_from_shard(&shard, "u1", |entity| {
+            entity
+                .streams
+                .get("EnrichedSnap")
+                .map(|s| !s.operators.is_empty())
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+        assert!(still_live, "DepthExceeded must not mutate state");
+    }
+
+    #[cfg(not(feature = "state-inmem"))]
+    #[test]
+    fn apply_retraction_happy_path_returns_retracted() {
+        // Phase 57 happy path (D-B1): a live row is tombstoned — stream
+        // slot is emptied, contributing_inputs cleared, returns Retracted.
+        use crate::shard::thread::{RetractOutcome, RetractReason};
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _g = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+
+        let (mut shard, _tmp) = build_empty_shard_fjall();
+        seed_stream_row(&mut shard, "EnrichedSnap", "u1");
+
+        let out = shard.apply_retraction(
+            "EnrichedSnap",
+            "u1",
+            &RetractReason::SourceTableDelete {
+                table_name: "Countries".into(),
+                table_key: "US".into(),
+                source_lsn: 42,
+            },
+            5,
+        );
+        assert_eq!(out, RetractOutcome::Retracted);
+
+        // Verify: stream slot is now empty of operators → next retraction
+        // against this same row is a NoOp (idempotent).
+        let now_empty = super::read_entity_from_shard(&shard, "u1", |entity| {
+            entity
+                .streams
+                .get("EnrichedSnap")
+                .map(|s| s.operators.is_empty())
+                .unwrap_or(true)
+        })
+        .unwrap_or(true);
+        assert!(now_empty, "Retracted must empty the stream slot's operators");
+    }
+
+    #[cfg(not(feature = "state-inmem"))]
+    #[test]
+    fn apply_retraction_is_idempotent_on_second_call() {
+        // Phase 57 D-B4: re-retracting the same row after a successful
+        // retraction is a NoOp. Source shards may retry on
+        // ShardOverload, so this invariant is load-bearing.
+        use crate::shard::thread::{RetractOutcome, RetractReason};
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _g = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+
+        let (mut shard, _tmp) = build_empty_shard_fjall();
+        seed_stream_row(&mut shard, "EnrichedSnap", "u1");
+
+        let r1 = shard.apply_retraction(
+            "EnrichedSnap",
+            "u1",
+            &RetractReason::PrimaryEventRetract {
+                stream_name: "Primary".into(),
+                event_id: 123,
+            },
+            0,
+        );
+        assert_eq!(r1, RetractOutcome::Retracted);
+
+        let r2 = shard.apply_retraction(
+            "EnrichedSnap",
+            "u1",
+            &RetractReason::PrimaryEventRetract {
+                stream_name: "Primary".into(),
+                event_id: 123,
+            },
+            0,
+        );
+        assert_eq!(
+            r2,
+            RetractOutcome::NoOp,
+            "second retraction on same row must be NoOp"
+        );
+    }
+
+    #[cfg(not(feature = "state-inmem"))]
+    #[test]
+    fn apply_retraction_noop_on_unknown_stream_slot() {
+        // Phase 57 D-B4: a retraction against a stream the row never
+        // emitted into is a NoOp (cross-join fan-out collision case).
+        use crate::shard::thread::{RetractOutcome, RetractReason};
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _g = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+
+        let (mut shard, _tmp) = build_empty_shard_fjall();
+        // Seed row with "StreamA" present; retract against "StreamB".
+        seed_stream_row(&mut shard, "StreamA", "u1");
+
+        let out = shard.apply_retraction(
+            "StreamB",
+            "u1",
+            &RetractReason::EntityTombstone {
+                stream_name: "StreamA".into(),
+                entity_key: "u1".into(),
+            },
+            0,
+        );
+        assert_eq!(out, RetractOutcome::NoOp);
+    }
+
+    #[test]
+    fn retract_reason_postcard_roundtrip() {
+        // Phase 57: RetractReason must survive postcard round-trip — future
+        // dispatch paths (cross-process / replica) rely on this wire format.
+        use crate::shard::thread::RetractReason;
+
+        let a = RetractReason::SourceTableDelete {
+            table_name: "Countries".into(),
+            table_key: "US".into(),
+            source_lsn: 42,
+        };
+        let b = RetractReason::EntityTombstone {
+            stream_name: "Primary".into(),
+            entity_key: "u1".into(),
+        };
+        let c = RetractReason::PrimaryEventRetract {
+            stream_name: "Primary".into(),
+            event_id: 17,
+        };
+
+        for r in [&a, &b, &c] {
+            let bytes = postcard::to_stdvec(r).expect("serialize");
+            let restored: RetractReason =
+                postcard::from_bytes(&bytes).expect("deserialize");
+            assert_eq!(&restored, r, "round-trip preserves variant");
+        }
     }
 
     #[cfg(not(feature = "state-inmem"))]

@@ -64,6 +64,31 @@ pub const V8_FORMAT: u8 = 8;
 /// rematerialization module can reason about v8-vs-v9 bytes explicitly.
 pub const V9_FORMAT: u8 = 9;
 
+/// Phase 57-01: semantic schema version for Phase-57+ snapshots.
+///
+/// v10 is an additive-only bump: new writes tag
+/// `SnapshotHeader.schema_version = 10` to indicate the binary knows about
+/// cross-shard retraction tracking (`ContribSet` on `EntityState` —
+/// Phase 57 TPC-CORR-10). The on-disk body format is identical to v9 this
+/// wave — `SerializableEntityState` does NOT yet carry
+/// `contributing_inputs` on the wire; persistence lands with operator
+/// wiring in Waves 2/3.
+///
+/// Loading:
+/// - v10 outer byte → decoded as-is; `schema_version` reads `10`.
+/// - v9 outer byte → decoded as-is; `schema_version` reads `9`. Retraction
+///   logic treats any row from a v9 snapshot as "contributing_inputs = None"
+///   (D-A5 — the "cannot-retract" semantic, same as events beyond
+///   `history_ttl`).
+/// - v8 / v7 / v6 / v5 outer bytes → unchanged from Phase 55.
+///
+/// The outer byte is kept at 9 (`V9_FORMAT`) for this wave — bumping the
+/// outer format would require rematerialization logic on boot, which
+/// Wave 1 does NOT need (no wire-shape change). A future wave can bump
+/// the outer byte when `SerializableEntityState` gains a
+/// `contributing_inputs` field on the wire.
+pub const V10_SCHEMA_VERSION: u16 = 10;
+
 /// Serde default for Phase 55's new `SnapshotHeader.schema_version` field.
 /// When a pre-Phase-55 snapshot (no field on the wire) is deserialized, this
 /// fills in `8` — the semantic pre-cross-shard-cascade version. The boot guard
@@ -405,10 +430,12 @@ pub enum SnapshotType {
 pub struct SnapshotHeader {
     pub snapshot_type: SnapshotType,
     pub sequence: u64,
-    /// Phase 55: semantic schema version.
+    /// Phase 55/57: semantic schema version.
     ///   8 = pre-cross-shard-cascade (downstream rows on input event's shard) — BUG.
     ///   9 = post-Phase-55 (downstream rows on hash(output_key) shard) — CORRECT.
-    /// Boot guard triggers rematerialization when loaded `< 9`.
+    ///  10 = post-Phase-57 (binary knows about ContribSet / retraction tracking).
+    ///       Wire format identical to v9 in Wave 1 — schema bump is semantic.
+    /// Boot guard triggers rematerialization when loaded `< 9` (unchanged).
     #[serde(default = "default_v8")]
     pub schema_version: u16,
 }
@@ -668,11 +695,12 @@ pub fn save_snapshot(data: &SnapshotState) -> Result<Vec<u8>, postcard::Error> {
         header: SnapshotHeader {
             snapshot_type: SnapshotType::Base,
             sequence: 0,
-            // Phase 55-03: new writes always tag schema_version=9. Loading such
-            // a snapshot on a v9-aware binary skips rematerialization; loading
-            // on a pre-Phase-55 binary hits the outer-byte mismatch and returns
-            // None (Pitfall 3).
-            schema_version: 9,
+            // Phase 57-01: new writes tag schema_version=10 (contributing_inputs
+            // now tracked on EntityState, in-memory only in Wave 1). The outer
+            // byte stays at V9_FORMAT — v10 is an additive schema bump that
+            // changes no wire layout; loaders treat v9 bytes with
+            // schema_version<10 as "cannot-retract" per D-A5.
+            schema_version: V10_SCHEMA_VERSION,
         },
         entities: data.entities.clone(),
         pipelines: data.pipelines.clone(),

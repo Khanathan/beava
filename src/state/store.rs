@@ -1,5 +1,6 @@
 //! Co-located state types: `EntityState`, `StaticFeature`, `TableRow`, `StreamEntityState`,
-//! plus the `check_shard_count_guard` / `read_beava_shards` boot helpers.
+//! `ContribSet` (Phase 57 retraction tracking), plus the `check_shard_count_guard` /
+//! `read_beava_shards` boot helpers.
 //!
 //! Phase 54-04 Pass A6b: the `StateStore` struct (DashMap-backed global entity map),
 //! its `Default`/`Debug`/`impl StateStore` blocks, its `to_concurrent`/`from_concurrent`
@@ -162,6 +163,45 @@ pub struct StreamEntityState {
     pub last_event_at: Option<SystemTime>,
 }
 
+/// Phase 57 D-A1 (TPC-CORR-10): tracking record for the input events that
+/// contributed to an emitted downstream row. Attached to `EntityState` as
+/// `Option<ContribSet>` and consumed by the Wave 2/3 retraction cascade walk.
+///
+/// Per-operator semantics (D-A1):
+///   - **Stream→Table:** `primary_event_id = Some(...)`; other fields unset.
+///   - **EnrichFromTable:** `primary_event_id = Some(...)` + `source_table_keys`
+///     carries the 1-2 enrichment-table lookups that fed the row.
+///   - **StreamStreamJoin:** `left_event_id = Some(...)` + `right_event_id = Some(...)`
+///     carries the matched pair.
+///
+/// Wave 1 adds the TYPE and the in-memory field on `EntityState`; actual
+/// population by operators lands in Waves 2/3. Pre-Phase-57 rows (loaded from
+/// v9 snapshots) do NOT set this field — retraction logic treats `None` as
+/// "cannot-retract" (D-A5), identical to late-retraction beyond `history_ttl`.
+///
+/// `source_table_keys` is a `Vec<String>` (not `SmallVec` — plan suggested
+/// SmallVec but the crate is not in Cargo.toml; keeping Vec avoids adding a
+/// new dependency in Wave 1. Heap overhead is negligible because the typical
+/// case is 1-2 entries and this struct is only materialized for rows emitted
+/// by retraction-capable operators once Wave 2/3 wires them in).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContribSet {
+    /// Stream→Table / EnrichFromTable: primary event id that triggered the
+    /// emission. `None` for StreamStreamJoin rows (use left/right ids).
+    #[serde(default)]
+    pub primary_event_id: Option<u64>,
+    /// EnrichFromTable: 1-2 source-table keys consulted during enrichment.
+    /// Empty for other operator shapes.
+    #[serde(default)]
+    pub source_table_keys: Vec<String>,
+    /// StreamStreamJoin: left-side event id.
+    #[serde(default)]
+    pub left_event_id: Option<u64>,
+    /// StreamStreamJoin: right-side event id.
+    #[serde(default)]
+    pub right_event_id: Option<u64>,
+}
+
 /// Per-entity state. Holds live features grouped by stream name (from streaming
 /// operators) and static features (from direct SET/MSET writes).
 ///
@@ -170,6 +210,12 @@ pub struct StreamEntityState {
 /// table row named "X" does not populate `static_features["X"]`, and vice
 /// versa. The legacy `static_features` path is preserved for backward
 /// compatibility with existing SET/MSET callers.
+///
+/// Phase 57 (TPC-CORR-10): gains `contributing_inputs: Option<ContribSet>` —
+/// tracking record for the input events that fed this entity's downstream row.
+/// In-memory only in Wave 1 (not persisted through `SerializableEntityState`
+/// this wave; pre-Phase-57 rows load with `None`, the "cannot-retract"
+/// semantic per D-A5). Wave 2/3 wires operator-level population.
 ///
 /// `dirty_gen` is a per-entity generation watermark used by the legacy
 /// (now-removed) DashMap-backed store to short-circuit hot-key dirty-set
@@ -187,6 +233,13 @@ pub struct EntityState {
     /// row (Live or Tombstoned) addressed by `(entity_key, table_name)`. See
     /// `TableRow` for the lifecycle contract.
     pub table_rows: AHashMap<String, TableRow>,
+    /// Phase 57 D-A1 (TPC-CORR-10): optional tracking of the input events
+    /// that contributed to this row's emission. `None` for pre-Phase-57
+    /// rows (D-A5: "cannot-retract" per history_ttl semantics) and for
+    /// operators that don't populate it yet (Wave 2/3 adds the emitters).
+    /// Not persisted through `SerializableEntityState` in Wave 1 — this
+    /// field is in-memory only until operators produce it.
+    pub contributing_inputs: Option<ContribSet>,
     /// Per-entity generation watermark; see struct-level doc. Preserved for
     /// binary compatibility with the legacy DashMap store semantics.
     pub dirty_gen: std::sync::atomic::AtomicU64,
@@ -198,6 +251,7 @@ impl Clone for EntityState {
             streams: self.streams.clone(),
             static_features: self.static_features.clone(),
             table_rows: self.table_rows.clone(),
+            contributing_inputs: self.contributing_inputs.clone(),
             dirty_gen: std::sync::atomic::AtomicU64::new(
                 self.dirty_gen.load(std::sync::atomic::Ordering::Relaxed),
             ),
@@ -211,6 +265,7 @@ impl Default for EntityState {
             streams: AHashMap::new(),
             static_features: AHashMap::new(),
             table_rows: AHashMap::new(),
+            contributing_inputs: None,
             dirty_gen: std::sync::atomic::AtomicU64::new(0),
         }
     }

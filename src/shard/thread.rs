@@ -298,7 +298,95 @@ pub enum ShardOp {
         event: serde_json::Value,
         within_ms: u64,
     },
+    /// Phase 57 D-B1 (TPC-CORR-10): cross-shard retraction dispatch.
+    /// Source shards emit this for every downstream row whose
+    /// `contributing_inputs` intersects a tombstoned event (Stream→Table
+    /// primary tombstone, EnrichFromTable source-table DELETE, or
+    /// StreamStreamJoin side tombstone). Target shard idempotently
+    /// retracts the row: NoOp if already-retracted (D-B4), DepthExceeded
+    /// if `depth >= MAX_RETRACTION_DEPTH` (D-B5), BeyondHistory if the
+    /// contributing event is older than `watermark - history_ttl` (D-C1),
+    /// otherwise tombstones the row (Retracted).
+    ///
+    /// Dispatch pattern mirrors `SsjInsert` — source try_sends + blocks on
+    /// `crossbeam::bounded(1)` oneshot + `BeavaError::ShardOverload` on
+    /// Full (D-B3). Source-side bumps `beava_retractions_sent_total`
+    /// (single emission site). Target dispatch arm bumps exactly one of
+    /// `{applied,nooped,beyond_history,depth_exceeded}_total`.
+    RetractDownstream {
+        target_shard: u16,
+        stream_name: String,
+        row_key: String,
+        reason: RetractReason,
+        depth: u8,
+    },
 }
+
+/// Phase 57 D-B2 (TPC-CORR-10): evidence carried with each `RetractDownstream`
+/// dispatch so observability dashboards can distinguish tombstone origins.
+///
+/// Serialize + Deserialize derived for forward-compat with a future
+/// cross-process dispatch path; today all dispatch is intra-process SPSC so
+/// the variant flows by move.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum RetractReason {
+    /// A source-table row (Phase 55-02 D-B5) was hard-deleted; downstream
+    /// rows whose `contributing_inputs.source_table_keys` references
+    /// `(table_name, table_key)` must retract.
+    SourceTableDelete {
+        table_name: String,
+        table_key: String,
+        source_lsn: u64,
+    },
+    /// An entity's stream slot was tombstoned (e.g. SET with empty object
+    /// or an explicit Tombstone op); downstream rows whose
+    /// `contributing_inputs` references any event from that
+    /// (stream_name, entity_key) must retract.
+    EntityTombstone {
+        stream_name: String,
+        entity_key: String,
+    },
+    /// A primary event was retracted directly (Wave 2/3 consumer). Downstream
+    /// rows whose `contributing_inputs.primary_event_id == event_id` must
+    /// retract.
+    PrimaryEventRetract {
+        stream_name: String,
+        event_id: u64,
+    },
+}
+
+/// Phase 57 D-B4 (TPC-CORR-10): idempotent outcome reported by the target
+/// shard's `apply_retraction` path. Each variant corresponds to exactly one
+/// metric counter bump in the dispatch arm.
+///
+/// `Copy` because it carries no heap data — travels freely through the
+/// oneshot and the `ShardResult::RetractOk` envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetractOutcome {
+    /// The row was present and live; now tombstoned. Bumps
+    /// `beava_retractions_applied_total`.
+    Retracted,
+    /// The row was absent or already tombstoned (idempotent — D-B4). Bumps
+    /// `beava_retractions_nooped_total`. Necessary because source shards
+    /// may retry on `ShardOverload` and multiple tombstones on the same
+    /// event can fan out to the same downstream.
+    NoOp,
+    /// The contributing event is older than `watermark - history_ttl`
+    /// (D-C1). Retraction is skipped; row unchanged. Bumps
+    /// `beava_retraction_beyond_history_total`. Caller may choose to log
+    /// a `/debug/warnings` entry (Wave 4).
+    BeyondHistory,
+    /// `depth >= MAX_RETRACTION_DEPTH` (D-B5). Target returns this without
+    /// touching state; caller may propagate `BeavaError::Protocol(...)`.
+    /// Bumps `beava_retraction_depth_exceeded_total`.
+    DepthExceeded,
+}
+
+/// Phase 57 D-B5 (TPC-CORR-10): hard cap on retraction cascade depth. 16
+/// hops is generous for fraud workloads (typical 2–3). The cap is a safety
+/// net for accidentally self-referential pipelines, not a hard limit on
+/// real use — alarms via `beava_retraction_depth_exceeded_total`.
+pub const MAX_RETRACTION_DEPTH: u8 = 16;
 
 /// Result sent from shard back to listener via response_tx.
 /// Phase 50.5-01: widened to carry FeatureMap so read_features=true round-trips.
@@ -343,6 +431,9 @@ pub enum ShardResult {
     /// source shard consumes these to emit joined outputs via its
     /// existing downstream cascade path.
     SsjInsertOk(Vec<serde_json::Map<String, serde_json::Value>>),
+    /// Phase 57 D-B4: reply to `RetractDownstream`. Carries the
+    /// idempotent outcome — see `RetractOutcome` for semantics.
+    RetractOk(RetractOutcome),
     /// Shard failed to process the event.
     Err(ShardDispatchError),
 }
@@ -1117,6 +1208,73 @@ fn shard_event_loop(
                     ).increment(1);
                     if let Some(tx) = event.response_tx {
                         let _ = tx.send(ShardResult::SsjInsertOk(matches));
+                    }
+                }
+                ShardOp::RetractDownstream {
+                    target_shard: _target_shard,
+                    stream_name,
+                    row_key,
+                    reason,
+                    depth,
+                } => {
+                    // Phase 57 D-B1 (TPC-CORR-10): target-shard retraction
+                    // dispatch. Enforces D-B5 depth cap BEFORE touching state
+                    // so a deep cascade cannot infinite-loop. Delegates the
+                    // idempotent "is-already-retracted?" probe + history_ttl
+                    // check to `Shard::apply_retraction`.
+                    //
+                    // Exactly ONE metric counter bump per invocation —
+                    // mirrors the SsjInsert single-emission-site discipline.
+                    // Source-side bumps `RETRACTIONS_SENT_TOTAL` separately
+                    // in `PipelineEngine::retract_downstream_at_shard` so
+                    // "sent - (applied+nooped+beyond_history+depth_exceeded)"
+                    // surfaces target-unreachable dispatch failures.
+                    let outcome = if depth >= MAX_RETRACTION_DEPTH {
+                        metrics::counter!(
+                            crate::shard::metrics::RETRACTION_DEPTH_EXCEEDED_TOTAL
+                        )
+                        .increment(1);
+                        RetractOutcome::DepthExceeded
+                    } else {
+                        let o = shard.apply_retraction(
+                            &stream_name,
+                            &row_key,
+                            &reason,
+                            depth,
+                        );
+                        match o {
+                            RetractOutcome::Retracted => {
+                                metrics::counter!(
+                                    crate::shard::metrics::RETRACTIONS_APPLIED_TOTAL,
+                                    "operator" => stream_name.clone()
+                                )
+                                .increment(1);
+                            }
+                            RetractOutcome::NoOp => {
+                                metrics::counter!(
+                                    crate::shard::metrics::RETRACTIONS_NOOPED_TOTAL,
+                                    "operator" => stream_name.clone()
+                                )
+                                .increment(1);
+                            }
+                            RetractOutcome::BeyondHistory => {
+                                metrics::counter!(
+                                    crate::shard::metrics::RETRACTION_BEYOND_HISTORY_TOTAL,
+                                    "operator" => stream_name.clone()
+                                )
+                                .increment(1);
+                            }
+                            RetractOutcome::DepthExceeded => {
+                                metrics::counter!(
+                                    crate::shard::metrics::RETRACTION_DEPTH_EXCEEDED_TOTAL
+                                )
+                                .increment(1);
+                            }
+                        }
+                        o
+                    };
+                    if let Some(tx) = event.response_tx {
+                        let _ = tx.send(ShardResult::RetractOk(outcome));
                     }
                 }
             }

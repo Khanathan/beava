@@ -91,6 +91,53 @@ pub const SSJ_CROSS_SHARD_TOTAL: &str = "beava_ssj_cross_shard_total";
 pub const CROSSSHARD_JOINS_REGISTERED_TOTAL: &str =
     "beava_crossshard_joins_registered_total";
 
+// ---- Phase 57: cross-shard retraction counters (TPC-CORR-10) ----
+//
+// Five new series for SC-1 (source-table DELETE retraction), SC-2 (SSJ
+// tombstone retraction), SC-3 (late-retraction warning), and D-B5 (depth
+// guard). Emitted by the new `ShardOp::RetractDownstream` dispatch arm +
+// `PipelineEngine::retract_downstream_at_shard` helper. Wave 1 registers +
+// emits from the primitives; Waves 2/3 drive real label traffic via
+// operator wiring.
+//
+// Single-emission-site discipline: `RETRACTIONS_SENT_TOTAL` emits ONLY
+// from the source-side helper; the target dispatch arm emits exactly one
+// of `{APPLIED,NOOPED,BEYOND_HISTORY,DEPTH_EXCEEDED}`. This gives
+// dashboards an exact "sent - (applied+nooped+beyond_history+depth_exceeded)"
+// leak detector for target-unreachable dispatch failures.
+
+/// Phase 57 D-D2 (TPC-CORR-10): total retraction dispatches issued from
+/// source shards. One increment per `ShardOp::RetractDownstream` try_send
+/// OR same-shard fast-path call in
+/// `PipelineEngine::retract_downstream_at_shard`. Labelled by `operator`
+/// (the downstream stream's name) and `reason` (SourceTableDelete /
+/// EntityTombstone / PrimaryEventRetract).
+pub const RETRACTIONS_SENT_TOTAL: &str = "beava_retractions_sent_total";
+/// Phase 57 D-D2: successful target-side retractions — the row was live,
+/// is now tombstoned. Incremented exactly once per
+/// `RetractOutcome::Retracted` on the target dispatch arm (and on the
+/// same-shard fast path in the pipeline helper). Labelled by `operator`.
+pub const RETRACTIONS_APPLIED_TOTAL: &str = "beava_retractions_applied_total";
+/// Phase 57 D-B4 idempotency surface: retractions that no-op'd because
+/// the row was absent or already-tombstoned. Incremented on the target
+/// dispatch arm whenever `apply_retraction` returns
+/// `RetractOutcome::NoOp`. Labelled by `operator`. High no-op rates are
+/// expected under source-side retry + fan-out collisions — not an error.
+pub const RETRACTIONS_NOOPED_TOTAL: &str = "beava_retractions_nooped_total";
+/// Phase 57 D-C1 surface (SC-3): retractions skipped because the
+/// contributing event is older than `watermark - history_ttl`. Wave 1
+/// registers the series but does NOT emit (the live check lands with
+/// Wave 4's plan 57-04). Labelled by `operator`.
+pub const RETRACTION_BEYOND_HISTORY_TOTAL: &str =
+    "beava_retraction_beyond_history_total";
+/// Phase 57 D-B5 guard trip (SC-4 adjacent): retractions that tripped the
+/// 16-hop cascade cap. Unlabelled — trips are rare and the dashboards
+/// need a single alertable series. Incremented exactly once per trip
+/// (either the dispatch arm's pre-probe or the defence-in-depth check
+/// inside `Shard::apply_retraction`, NOT both).
+pub const RETRACTION_DEPTH_EXCEEDED_TOTAL: &str =
+    "beava_retraction_depth_exceeded_total";
+
 // ---- Phase 53-05 (W-4 revision): per-shard fjall metrics ----
 //
 // Three UNCONDITIONAL series are emitted per shard:
@@ -238,6 +285,23 @@ pub fn register_shard_metrics(shard_count: usize) {
     metrics::counter!(SSJ_CROSS_SHARD_TOTAL, "join_id" => "__init__").increment(0);
     metrics::counter!(CROSSSHARD_JOINS_REGISTERED_TOTAL, "join_id" => "__init__")
         .increment(0);
+
+    // Phase 57: touch retraction counters with placeholder labels so the
+    // series appear in /metrics from the first scrape. Real labels
+    // (`operator` / `reason`) come in at runtime from the
+    // `ShardOp::RetractDownstream` dispatch arm +
+    // `PipelineEngine::retract_downstream_at_shard` helper.
+    metrics::counter!(
+        RETRACTIONS_SENT_TOTAL,
+        "operator" => "__init__",
+        "reason" => "__init__"
+    )
+    .increment(0);
+    metrics::counter!(RETRACTIONS_APPLIED_TOTAL, "operator" => "__init__").increment(0);
+    metrics::counter!(RETRACTIONS_NOOPED_TOTAL, "operator" => "__init__").increment(0);
+    metrics::counter!(RETRACTION_BEYOND_HISTORY_TOTAL, "operator" => "__init__")
+        .increment(0);
+    metrics::counter!(RETRACTION_DEPTH_EXCEEDED_TOTAL).increment(0);
 }
 
 // ---- update helpers called from hot path ----
