@@ -1461,6 +1461,7 @@ impl PipelineEngine {
                             fields: merged,
                             now,
                         },
+                        payload_fmt: crate::wire::PayloadFmt::Binary,
                     };
                     // Phase 55-01 SC-5: high-watermark + cross-shard counter
                     // emission site for the per-event (non-batched) cascade
@@ -1532,6 +1533,7 @@ impl PipelineEngine {
                             table_name: output_name.clone(),
                             now,
                         },
+                        payload_fmt: crate::wire::PayloadFmt::Binary,
                     };
                     match target.inbox_tx.try_send(ev) {
                         Ok(()) => pending.push((target_shard_idx, rx)),
@@ -1680,6 +1682,7 @@ impl PipelineEngine {
                 table_name: table_name.to_string(),
                 key: key.to_string(),
             },
+            payload_fmt: crate::wire::PayloadFmt::Binary,
         };
         let depth = target.inbox_tx.len();
         let cap = target.inbox_tx.capacity().unwrap_or(usize::MAX);
@@ -1786,6 +1789,7 @@ impl PipelineEngine {
                 table_name: table_name.to_string(),
                 keys: keys.to_vec(),
             },
+            payload_fmt: crate::wire::PayloadFmt::Binary,
         };
         let depth = target.inbox_tx.len();
         let cap = target.inbox_tx.capacity().unwrap_or(usize::MAX);
@@ -1878,6 +1882,7 @@ impl PipelineEngine {
                 event,
                 within_ms,
             },
+            payload_fmt: crate::wire::PayloadFmt::Binary,
         };
         let depth = target.inbox_tx.len();
         let cap = target.inbox_tx.capacity().unwrap_or(usize::MAX);
@@ -2063,6 +2068,7 @@ impl PipelineEngine {
                 reason,
                 depth,
             },
+            payload_fmt: crate::wire::PayloadFmt::Binary,
         };
         let inbox_depth = target.inbox_tx.len();
         let cap = target.inbox_tx.capacity().unwrap_or(usize::MAX);

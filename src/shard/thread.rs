@@ -29,6 +29,12 @@ use crossbeam_channel::{Receiver, Sender};
 pub struct ShardEvent {
     /// Raw event bytes — bytes::Bytes is O(1) clone (Arc-backed). Zero copy.
     /// Used only for `ShardOp::Push`; empty for non-Push ops.
+    ///
+    /// Phase 59 Wave 1 (D-A2/D-A3): the bytes are forwarded verbatim from
+    /// the listener's wire frame (binary OP_PUSH tail or legacy JSON body).
+    /// The shard thread decodes them according to `payload_fmt` via
+    /// [`crate::wire::decode_event_on_shard`]. No `serde_json::to_vec`
+    /// re-serialize on the TCP hot path.
     pub payload: bytes::Bytes,
     /// Stream name for routing to correct Shard state machine.
     /// Used only for `ShardOp::Push`; empty Arc<str> for non-Push ops.
@@ -42,16 +48,41 @@ pub struct ShardEvent {
     /// Phase 53-01: command variant. Defaults to Push for backwards compatibility
     /// with code paths that have not yet been migrated to the expanded enum.
     pub op: ShardOp,
+    /// Phase 59 D-A2: format tag for `payload`. Only meaningful when
+    /// `op == ShardOp::Push`. Default is `Binary` (D-C2) — the TCP +
+    /// Python primary path. HTTP PUSH + replica `LOG_FMT_JSON` set
+    /// `Json` explicitly.
+    pub payload_fmt: crate::wire::PayloadFmt,
 }
 
 impl ShardEvent {
     /// Convenience constructor for the legacy Push path — equivalent to
-    /// constructing with `op: ShardOp::Push`.
+    /// constructing with `op: ShardOp::Push` and default `payload_fmt`
+    /// (`PayloadFmt::Binary` per D-C2).
     pub fn push(
         payload: bytes::Bytes,
         stream_name: Arc<str>,
         shard_hint: u32,
         response_tx: Option<tokio::sync::oneshot::Sender<ShardResult>>,
+    ) -> Self {
+        Self::push_with_fmt(
+            payload,
+            stream_name,
+            shard_hint,
+            response_tx,
+            crate::wire::PayloadFmt::Binary,
+        )
+    }
+
+    /// Phase 59 D-A2: construct a Push event with an explicit payload-format
+    /// tag. Used by HTTP ingest (sets `PayloadFmt::Json`) and the legacy
+    /// JSON-over-TCP fallback (D-B3).
+    pub fn push_with_fmt(
+        payload: bytes::Bytes,
+        stream_name: Arc<str>,
+        shard_hint: u32,
+        response_tx: Option<tokio::sync::oneshot::Sender<ShardResult>>,
+        payload_fmt: crate::wire::PayloadFmt,
     ) -> Self {
         Self {
             payload,
@@ -59,6 +90,7 @@ impl ShardEvent {
             shard_hint,
             response_tx,
             op: ShardOp::Push,
+            payload_fmt,
         }
     }
 }
@@ -720,8 +752,17 @@ fn process_shard_event(
     let op = std::mem::replace(&mut event.op, ShardOp::Push);
     match op {
                 ShardOp::Push => {
-                    // Parse JSON payload from bytes.
-                    let payload: serde_json::Value = match serde_json::from_slice(&event.payload) {
+                    // Phase 59 D-C1: decode on the shard thread according to
+                    // the listener-set `payload_fmt` tag. Binary → single
+                    // `decode_event_binary` parse (the ONE necessary parse on
+                    // the TCP hot path); Json → `serde_json::from_slice` for
+                    // HTTP / replica-JSON / legacy-TCP-JSON-fallback paths.
+                    // No `serde_json::to_vec` round-trip on the listener side
+                    // (that's the ~11% CPU Phase 59 recovers).
+                    let payload: serde_json::Value = match crate::wire::decode_event_on_shard(
+                        &event.payload,
+                        event.payload_fmt,
+                    ) {
                         Ok(v) => v,
                         Err(e) => {
                             crate::shard::metrics::record_shard_event(
@@ -730,7 +771,7 @@ fn process_shard_event(
                             );
                             if let Some(tx) = event.response_tx {
                                 let _ = tx.send(ShardResult::Err(ShardDispatchError::ProcessingError(
-                                    format!("JSON parse error: {}", e),
+                                    format!("payload decode error ({:?}): {}", event.payload_fmt, e),
                                 )));
                             }
                             // Phase 58-01 Task 2: was `continue;` inside the
@@ -1858,6 +1899,30 @@ pub(crate) async fn send_to_shard(
     payload: bytes::Bytes,
     shard_hint: u32,
 ) -> Result<crate::types::FeatureMap, crate::error::BeavaError> {
+    // Phase 59 D-A4: HTTP callers pass JSON wire bytes. Preserve the
+    // pre-Phase-59 behavior (JSON decode on the shard thread) by
+    // delegating to the _with_fmt variant tagged Json.
+    send_to_shard_with_fmt(
+        handle,
+        stream_name,
+        payload,
+        shard_hint,
+        crate::wire::PayloadFmt::Json,
+    )
+    .await
+}
+
+/// Phase 59 D-A2/D-A4: variant of `send_to_shard` that carries the
+/// payload-format tag through to the shard's `decode_event_on_shard`
+/// dispatch. HTTP ingest stays `Json` (D-A4); TCP legacy callers route
+/// through `handle_push_core_ex` instead of this helper.
+pub(crate) async fn send_to_shard_with_fmt(
+    handle: &ShardHandle,
+    stream_name: std::sync::Arc<str>,
+    payload: bytes::Bytes,
+    shard_hint: u32,
+    payload_fmt: crate::wire::PayloadFmt,
+) -> Result<crate::types::FeatureMap, crate::error::BeavaError> {
     use crate::error::BeavaError;
 
     // Phase 50-04: short-circuit if the shard is quarantined (panicked).
@@ -1870,7 +1935,7 @@ pub(crate) async fn send_to_shard(
     }
 
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let evt = ShardEvent::push(payload, stream_name, shard_hint, Some(tx));
+    let evt = ShardEvent::push_with_fmt(payload, stream_name, shard_hint, Some(tx), payload_fmt);
 
     match handle.inbox_tx.try_send(evt) {
         Ok(()) => {}
@@ -1941,6 +2006,7 @@ pub async fn get_features_via_shard(
         shard_hint: 0,
         response_tx: Some(tx),
         op: ShardOp::Get { key },
+        payload_fmt: crate::wire::PayloadFmt::Binary,
     };
 
     match handle.inbox_tx.try_send(evt) {
@@ -2000,6 +2066,7 @@ pub async fn send_op_await_setok(
         shard_hint: 0,
         response_tx: Some(tx),
         op,
+        payload_fmt: crate::wire::PayloadFmt::Binary,
     };
 
     match handle.inbox_tx.try_send(evt) {
@@ -2055,6 +2122,7 @@ pub async fn get_multi_via_shard(
         shard_hint: 0,
         response_tx: Some(tx),
         op: ShardOp::GetMulti { table_names, key },
+        payload_fmt: crate::wire::PayloadFmt::Binary,
     };
 
     match handle.inbox_tx.try_send(evt) {
@@ -2108,6 +2176,7 @@ pub async fn list_entity_keys_via_shard(
         shard_hint: 0,
         response_tx: Some(tx),
         op: ShardOp::ListEntityKeys,
+        payload_fmt: crate::wire::PayloadFmt::Binary,
     };
 
     match handle.inbox_tx.try_send(evt) {
@@ -2166,6 +2235,7 @@ pub async fn entity_count_via_shard(
         shard_hint: 0,
         response_tx: Some(tx),
         op: ShardOp::EntityCount,
+        payload_fmt: crate::wire::PayloadFmt::Binary,
     };
 
     match handle.inbox_tx.try_send(evt) {
@@ -2222,6 +2292,7 @@ pub async fn evict_expired_via_shard(
         shard_hint: 0,
         response_tx: Some(tx),
         op: ShardOp::EvictExpired { now, ttl_multiplier },
+        payload_fmt: crate::wire::PayloadFmt::Binary,
     };
 
     match handle.inbox_tx.try_send(evt) {
@@ -2277,6 +2348,7 @@ pub async fn evict_expired_table_rows_via_shard(
         shard_hint: 0,
         response_tx: Some(tx),
         op: ShardOp::EvictExpiredTableRows { now },
+        payload_fmt: crate::wire::PayloadFmt::Binary,
     };
 
     match handle.inbox_tx.try_send(evt) {

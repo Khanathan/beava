@@ -68,6 +68,7 @@ pub fn evict_expired_keys_on_shards(
             shard_hint: 0,
             response_tx: Some(tx),
             op: ShardOp::EvictExpired { now, ttl_multiplier },
+            payload_fmt: crate::wire::PayloadFmt::Binary,
         };
         match handle.inbox_tx.try_send(evt) {
             Ok(()) => pending.push(rx),
@@ -137,6 +138,7 @@ pub fn evict_expired_table_rows_on_shards(
             shard_hint: 0,
             response_tx: Some(tx),
             op: ShardOp::EvictExpiredTableRows { now },
+            payload_fmt: crate::wire::PayloadFmt::Binary,
         };
         match handle.inbox_tx.try_send(evt) {
             Ok(()) => pending.push(rx),

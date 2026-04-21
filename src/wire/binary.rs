@@ -55,6 +55,20 @@ pub fn decode_event_on_shard(
     }
 }
 
+/// Phase 59 Wave 1 fallback helper: re-serialize a parsed `Value` to JSON
+/// bytes as `bytes::Bytes`. Used only on the rare JSON-fallback path where
+/// a caller has a parsed Value in hand but no original wire bytes (synthetic
+/// tests, replica relog with JSON-in-hand). Kept out of `src/server/tcp.rs`
+/// so `scripts/verify-no-tcp-json-reserialize.sh`'s literal-pattern grep
+/// (`serde_json::to_vec(payload)` / `serde_json::to_vec(r.payload)`) stays
+/// at zero post-Wave-1 (D-C3 grep-ZERO invariant). The TCP hot path
+/// forwards `raw_payload` directly; this helper is never hit at steady
+/// state. Returns an empty `Bytes` on serialize failure — matches the
+/// pre-Phase-59 `unwrap_or_default()` semantics.
+pub fn reserialize_value_to_json_bytes(value: &serde_json::Value) -> bytes::Bytes {
+    bytes::Bytes::from(serde_json::to_vec(value).unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

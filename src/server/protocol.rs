@@ -886,38 +886,103 @@ pub fn decode_event_binary(buf: &mut &[u8]) -> Result<serde_json::Value, BeavaEr
     Ok(serde_json::Value::Object(map))
 }
 
+/// Phase 59 Wave 1 D-B2/D-B3 helper: parse an OP_PUSH / OP_PUSH_ASYNC
+/// payload body, accepting both the default binary wire shape (TYPE_*
+/// tags + u16 BE field_count header) AND a JSON-body fallback for
+/// backward compat. JSON is detected by the first byte being `b'{'`
+/// (object) or `b'['` (array) — the two valid JSON-root openers that a
+/// binary-tagged body could NEVER start with (binary's first byte is
+/// the high byte of a u16 BE field_count; a legitimate field_count
+/// would start `0x00..0x0F` for typical events, never `0x5B`/`0x7B`).
+///
+/// Returns `(parsed_value, forwarded_raw_payload)`. On the binary path
+/// `forwarded_raw_payload` == `wire_tail` so the TCP hot path in
+/// `handle_push_core_ex` takes the Bytes-passthrough branch. On the
+/// JSON-fallback path we return `Vec::new()` so `handle_push_core_ex`
+/// takes the Json fallback branch (which re-serializes via
+/// `crate::wire::reserialize_value_to_json_bytes` and tags the
+/// ShardEvent `PayloadFmt::Json`).
+///
+/// Note: `wire_tail` must be the slice AFTER `read_string(stream_name)`
+/// has already advanced the outer buffer. `raw_payload` is the
+/// caller's pre-computed `wire_tail.to_vec()` — we avoid re-cloning.
+fn parse_push_body(
+    wire_tail: &[u8],
+    raw_payload: &[u8],
+) -> Result<(serde_json::Value, Vec<u8>), BeavaError> {
+    // JSON-fallback discriminator: first byte is `{` or `[`. Zero-cost
+    // when the payload is binary (the common path).
+    if let Some(&first) = wire_tail.first() {
+        if first == b'{' || first == b'[' {
+            let value: serde_json::Value = serde_json::from_slice(wire_tail).map_err(|e| {
+                BeavaError::Protocol(format!("invalid JSON-over-TCP push body: {}", e))
+            })?;
+            // D-B3: clear the raw bytes so handle_push_core_ex's JSON
+            // fallback branch fires (re-serialize via wire helper, tag
+            // PayloadFmt::Json). Avoids teaching the whole stack about
+            // an unexpanded wire-format enum just for the legacy path.
+            return Ok((value, Vec::new()));
+        }
+    }
+    // Binary path — the default since Phase 11.
+    let mut buf: &[u8] = wire_tail;
+    let payload_value = decode_event_binary(&mut buf)?;
+    Ok((payload_value, raw_payload.to_vec()))
+}
+
 /// Parse a command from opcode + payload bytes.
 ///
-/// - PUSH (0x01): read_string for stream_name, remaining bytes as JSON
+/// - PUSH (0x01): read_string for stream_name, remaining bytes as binary
+///   (Phase 11+) OR JSON (Phase 59 Wave 1 D-B3 legacy fallback — detected
+///   by first-byte `{` or `[`)
 /// - GET (0x02): read_string for key
 /// - SET (0x03): read_string for key, remaining bytes as JSON
 /// - MSET (0x04): u32 BE count, then for each: read_string key + u32 json_len + json_bytes
 /// - REGISTER (0x05): entire payload as JSON
 /// - Unknown: BeavaError::Protocol
+///
+/// Phase 59 Wave 1 D-E1: first enforces `BEAVA_MAX_PAYLOAD_BYTES` (default
+/// 1 MiB, clamp [1 KiB, 64 MiB]) on the incoming frame to prevent
+/// unbounded allocation inside the decoder. Cached in a
+/// `std::sync::OnceLock` at first call.
 pub fn parse_command(opcode: u8, payload: &[u8]) -> Result<Command, BeavaError> {
+    // Phase 59 Wave 1 D-E1: payload-size DoS cap, enforced BEFORE any
+    // `read_string` / `decode_event_binary` read. Cached in a
+    // `std::sync::OnceLock` so the hot path reads at most one atomic
+    // pointer per call (env-var lookup is ~300ns and can't live on a
+    // per-frame dispatch). Default 1 MiB; clamp [1 KiB, 64 MiB].
+    static MAX_PAYLOAD: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let max_bytes = *MAX_PAYLOAD.get_or_init(crate::wire::max_payload_bytes_from_env);
+    if payload.len() > max_bytes {
+        return Err(BeavaError::Protocol(format!(
+            "payload size {} exceeds BEAVA_MAX_PAYLOAD_BYTES={}",
+            payload.len(),
+            max_bytes
+        )));
+    }
+
     let mut buf: &[u8] = payload;
     match opcode {
         OP_PUSH => {
             let stream_name = read_string(&mut buf)?;
             // Capture the raw binary payload bytes before decoding so we
-            // can forward them verbatim to the event log (Plan 11-06, no
-            // JSON re-serialize on the hot path).
+            // can forward them verbatim to the shard inbox (Phase 59 D-A3).
             let raw_payload = buf.to_vec();
-            let payload_value = decode_event_binary(&mut buf)?;
+            let (payload_value, forward_raw) = parse_push_body(buf, &raw_payload)?;
             Ok(Command::Push {
                 stream_name,
                 payload: payload_value,
-                raw_payload,
+                raw_payload: forward_raw,
             })
         }
         OP_PUSH_ASYNC => {
             let stream_name = read_string(&mut buf)?;
             let raw_payload = buf.to_vec();
-            let payload_value = decode_event_binary(&mut buf)?;
+            let (payload_value, forward_raw) = parse_push_body(buf, &raw_payload)?;
             Ok(Command::PushAsync {
                 stream_name,
                 payload: payload_value,
-                raw_payload,
+                raw_payload: forward_raw,
             })
         }
         OP_FLUSH => Ok(Command::Flush),
@@ -2147,16 +2212,36 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_command_push_rejects_json() {
-        // v1.1 JSON-style payload should now fail: the JSON '{' byte (0x7B)
-        // is interpreted as a u16 field_count header, leading to truncation or unknown tag.
+    fn test_parse_command_push_accepts_json_fallback() {
+        // Phase 59 Wave 1 D-B3: JSON-body OP_PUSH is ACCEPTED via the
+        // `{`/`[` first-byte discriminator. Wave 1 establishes this
+        // fallback so legacy TCP clients continue to work for ≥ 1
+        // release cycle. Pre-Wave-1 this test's predecessor asserted
+        // `result.is_err()` (Phase 11 binary-lockdown); the contract is
+        // deliberately flipped.
         let mut payload = write_string("tx");
         payload.extend_from_slice(b"{\"user_id\":\"u1\"}");
         let result = parse_command(OP_PUSH, &payload);
-        assert!(
-            result.is_err(),
-            "v1.1 JSON payload must be rejected by the binary decoder"
-        );
+        let cmd = result.expect("JSON-over-TCP OP_PUSH body must be accepted (D-B3)");
+        match cmd {
+            Command::Push {
+                stream_name,
+                payload,
+                raw_payload,
+            } => {
+                assert_eq!(stream_name, "tx");
+                assert_eq!(payload["user_id"], "u1");
+                // D-B3: the JSON-fallback path clears `raw_payload` so
+                // handle_push_core_ex takes the Json fallback branch
+                // (re-serialize via wire helper, tag PayloadFmt::Json).
+                assert!(
+                    raw_payload.is_empty(),
+                    "JSON-fallback parse must clear raw_payload so the \
+                     tcp.rs Json branch fires (see handle_push_core_ex)."
+                );
+            }
+            other => panic!("expected Command::Push, got {:?}", other),
+        }
     }
 
     #[test]

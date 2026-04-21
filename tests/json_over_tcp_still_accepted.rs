@@ -106,7 +106,6 @@ async fn push_one_json_over_tcp(addr: std::net::SocketAddr, stream: &str, json_b
 /// part of its Bytes-passthrough reshape (see header docstring — plan
 /// premise that this "already passes" was factually wrong on HEAD).
 #[tokio::test]
-#[ignore = "59-W1"]
 async fn json_over_tcp_op_push_accepted_after_phase_59() {
     let state = build_single_shard_state("accepted");
 

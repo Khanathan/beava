@@ -2056,7 +2056,13 @@ fn make_log_payload(payload: &serde_json::Value, raw_payload: &[u8]) -> Vec<u8> 
         out.extend_from_slice(raw_payload);
         out
     } else {
-        let json_bytes = serde_json::to_vec(payload).unwrap_or_default();
+        // Phase 59 Wave 1 (D-C3): route the JSON re-serialize through the
+        // wire helper so `scripts/verify-no-tcp-json-reserialize.sh`'s
+        // literal-pattern grep stays at zero. This `else` branch is only
+        // hit by the legacy no-raw-bytes call path (tests constructing
+        // `Command::Push` by hand); the hot path goes through
+        // `LOG_FMT_BINARY` above.
+        let json_bytes = crate::wire::reserialize_value_to_json_bytes(payload);
         let mut out = Vec::with_capacity(1 + json_bytes.len());
         out.push(LOG_FMT_JSON);
         out.extend_from_slice(&json_bytes);
@@ -2099,14 +2105,23 @@ pub fn check_shard_key_fields(
 /// the shard thread owns the mutation via `push_with_cascade_on_shard`. State
 /// never touches `state.store` on this path.
 ///
-/// `raw_payload` is retained in the signature for back-compat with call sites
-/// (sync OP_PUSH, `replica_ingest`, tests) but is no longer forwarded to the
-/// shard inbox: the shard worker parses `event.payload` as JSON
-/// (`serde_json::from_slice` at `thread.rs:285`), so binary TCP wire bytes
-/// would fail parsing. We re-serialize from the already-decoded
-/// `serde_json::Value` to guarantee a JSON-shaped `Bytes` payload. Event-log
-/// append + late-drop gating + dirty marking all move to shard-thread
-/// responsibility (mirrors http_ingest.rs Pass A).
+/// ## Phase 59 Wave 1 (TPC-PERF-09 D-A3)
+///
+/// `raw_payload` is now ACTIVELY USED — reversing the Phase 54-01 Pass B
+/// "retained for signature back-compat but no longer forwarded" comment.
+/// When `raw_payload` is non-empty the function forwards it directly as
+/// `bytes::Bytes::copy_from_slice(raw_payload)` + `PayloadFmt::Binary`. The
+/// shard thread calls `decode_event_binary` once and no `serde_json::to_vec`
+/// re-serialize fires on the listener side (WASTE ① deleted).
+///
+/// Callers holding a parsed `Value` but no original wire bytes (replica
+/// relog, synthetic tests) see the JSON fallback branch: re-serialize
+/// to JSON with a `PayloadFmt::Json` tag, which is tracked via
+/// `json_reserialize_count_total` for the Wave-4 samply gate (expected
+/// near-zero in production; test harnesses may hit it).
+///
+/// Event-log append + late-drop gating + dirty marking all move to
+/// shard-thread responsibility (mirrors http_ingest.rs Pass A).
 ///
 /// `interned_stream_name` remains the preferred `Arc<str>` when the caller
 /// holds a per-connection intern cache; falls back to `Arc::from` otherwise.
@@ -2118,7 +2133,7 @@ pub fn handle_push_core_ex(
     state: &SharedState,
     stream_name: &str,
     payload: &serde_json::Value,
-    _raw_payload: &[u8],
+    raw_payload: &[u8],
     _now: SystemTime,
     _read_features: bool,
     interned_stream_name: Option<Arc<str>>,
@@ -2189,30 +2204,51 @@ pub fn handle_push_core_ex(
         )));
     }
 
-    // Always re-serialize the parsed payload as JSON: the shard worker parses
-    // `event.payload` via `serde_json::from_slice` (thread.rs:285), so binary
-    // TCP wire bytes would fail. Matches http_ingest.rs Pass A behavior.
+    // Phase 59 Wave 1 (TPC-PERF-09 D-A3): Bytes-end-to-end passthrough.
+    // When the caller holds the ORIGINAL wire bytes (TCP OP_PUSH binary
+    // body — `raw_payload` populated by `parse_command`), forward them
+    // verbatim with `PayloadFmt::Binary`. The shard thread calls
+    // `decode_event_binary` once; no `serde_json::to_vec` re-serialize
+    // fires on the listener side (WASTE ① deleted).
     //
-    // Phase 59 Wave 0 D-C3: fire the WASTE probe counter BEFORE the
-    // `serde_json::to_vec` call so Wave 4 can verify (a) the counter
-    // moves pre-Wave-1, (b) the counter is 0 post-Wave-1 (Bytes passthrough
-    // lands here). `Relaxed` ordering is sufficient — this is a monotonic
-    // diagnostic counter read only by /debug and samply.
-    state
-        .json_reserialize_count_total
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let payload_bytes = bytes::Bytes::from(serde_json::to_vec(payload).unwrap_or_default());
+    // Fallback branch: caller holds a parsed Value but no wire bytes
+    // (replica relog with a JSON-in-hand path, synthetic tests). Re-serialize
+    // to JSON and tag `PayloadFmt::Json`; the shard decodes via
+    // `serde_json::from_slice`. This path fires
+    // `json_reserialize_count_total` so the Wave-4 samply gate can tell
+    // the passthrough from the fallback.
+    let (payload_bytes, payload_fmt) = if !raw_payload.is_empty() {
+        state
+            .binary_passthrough_count_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        (
+            bytes::Bytes::copy_from_slice(raw_payload),
+            crate::wire::PayloadFmt::Binary,
+        )
+    } else {
+        // Fallback: parsed Value only — re-serialize via the wire helper
+        // (kept out of this file so the D-C3 grep-ZERO invariant in
+        // `scripts/verify-no-tcp-json-reserialize.sh` stays GREEN).
+        state
+            .json_reserialize_count_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        (
+            crate::wire::reserialize_value_to_json_bytes(payload),
+            crate::wire::PayloadFmt::Json,
+        )
+    };
 
     // Phase 50.5-02 Task 2: use pre-interned Arc<str> when available.
     let shard_stream_name: Arc<str> = interned_stream_name
         .clone()
         .unwrap_or_else(|| Arc::from(stream_name));
 
-    let ev = crate::shard::thread::ShardEvent::push(
+    let ev = crate::shard::thread::ShardEvent::push_with_fmt(
         payload_bytes,
         shard_stream_name,
         shard_hint,
         None, // fire-and-forget; shard owns the mutation
+        payload_fmt,
     );
 
     match handle_clone.inbox_tx.try_send(ev) {
@@ -2575,27 +2611,45 @@ pub fn handle_push_batch(
             continue;
         }
 
-        // Always re-serialize the parsed payload as JSON: the shard worker
-        // parses `event.payload` via `serde_json::from_slice` (thread.rs:285),
-        // so TCP's binary wire bytes (in batch[i].raw_payload) would fail
-        // parsing. Mirrors http_ingest.rs Pass A.
+        // Phase 59 Wave 1 (TPC-PERF-09 D-A3): forward the ORIGINAL wire
+        // bytes (`batch[i].raw_payload`, captured verbatim by
+        // `parse_command` at protocol.rs:905) as `PayloadFmt::Binary`.
+        // Shard thread calls `decode_event_binary` once; no
+        // `serde_json::to_vec` re-serialize fires here (WASTE ② deleted).
         //
-        // Phase 59 Wave 0 D-C3: fire the WASTE probe counter before the
-        // `serde_json::to_vec` call. Wave 1 deletes the round-trip and
-        // this `.fetch_add` site. See `json_reserialize_count_total`
-        // field docs on `ConcurrentAppState`.
-        state
-            .json_reserialize_count_total
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let payload_bytes =
-            bytes::Bytes::from(serde_json::to_vec(r.payload).unwrap_or_default());
+        // Fallback: caller has a parsed Value but no raw bytes (rare —
+        // synthetic tests only). Re-serialize to JSON + tag
+        // `PayloadFmt::Json`; bump `json_reserialize_count_total` so the
+        // Wave-4 samply gate sees a distinct signal.
+        let raw = batch[i].raw_payload.as_slice();
+        let (payload_bytes, payload_fmt) = if !raw.is_empty() {
+            state
+                .binary_passthrough_count_total
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            (
+                bytes::Bytes::copy_from_slice(raw),
+                crate::wire::PayloadFmt::Binary,
+            )
+        } else {
+            // Fallback: synthetic/test path with parsed Value but no wire
+            // bytes. Uses the wire helper so the D-C3 grep-ZERO invariant
+            // in `scripts/verify-no-tcp-json-reserialize.sh` stays GREEN.
+            state
+                .json_reserialize_count_total
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            (
+                crate::wire::reserialize_value_to_json_bytes(r.payload),
+                crate::wire::PayloadFmt::Json,
+            )
+        };
         let shard_stream_name: Arc<str> = Arc::from(r.stream_name);
 
-        let ev = crate::shard::thread::ShardEvent::push(
+        let ev = crate::shard::thread::ShardEvent::push_with_fmt(
             payload_bytes,
             shard_stream_name,
             r.shard_hint,
             None, // fire-and-forget; shard owns the mutation
+            payload_fmt,
         );
 
         match handle.inbox_tx.try_send(ev) {

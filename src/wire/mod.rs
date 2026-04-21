@@ -13,7 +13,7 @@
 
 pub mod binary;
 
-pub use binary::{decode_event_on_shard, PayloadFmt};
+pub use binary::{decode_event_on_shard, reserialize_value_to_json_bytes, PayloadFmt};
 
 /// D-B1: capability bit advertised via `OP_NEGOTIATE_WIRE_FORMAT`.
 /// Bit 0 (= `1u32`) means the server accepts raw-binary OP_PUSH bodies and

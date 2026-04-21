@@ -42,6 +42,7 @@ fn target_inbox_full_returns_shard_overload_over_tcp() {
             shard_hint: 0,
             response_tx: None,
             op: ShardOp::Push,
+            payload_fmt: beava::wire::PayloadFmt::Binary,
         })
         .expect("seed filler into capacity-1 inbox");
 

@@ -124,7 +124,6 @@ async fn push_one_binary(addr: std::net::SocketAddr, stream: &str, amount: i64) 
 /// replaces WASTE with Bytes-passthrough, but the OP_PUSH contract is
 /// preserved).
 #[tokio::test]
-#[ignore = "59-W1"]
 async fn binary_op_push_flows_without_json_reserialize() {
     let state = build_single_shard_state("flow");
 
@@ -183,14 +182,17 @@ async fn binary_op_push_flows_without_json_reserialize() {
         })
         .count();
 
-    assert!(
-        non_comment_hits >= 1,
-        "TPC-PERF-09 D-D1 RED contract FAILED: src/server/tcp.rs has \
-         ZERO `serde_json::to_vec(payload|r.payload)` hits (expected ≥ 1 \
-         on Wave-0 HEAD). Two possibilities: \
-         (a) Wave 1 already landed — remove `#[ignore = \"59-W1\"]` and \
-         flip the assertion to `== 0`. \
-         (b) The WASTE was moved/renamed — update the grep pattern here \
-         and in `scripts/verify-no-tcp-json-reserialize.sh`."
+    // Wave 1 flipped: the WASTE call sites are gone. If this assertion
+    // fires on a Wave ≥ 1 commit the D-C3 grep-ZERO invariant was broken —
+    // roll back and re-run `scripts/verify-no-tcp-json-reserialize.sh`
+    // for the operator-side mirror.
+    assert_eq!(
+        non_comment_hits, 0,
+        "TPC-PERF-09 D-D1 GREEN contract FAILED: src/server/tcp.rs \
+         has {} `serde_json::to_vec(payload|r.payload)` hit(s) (expected \
+         0 after Wave 1). Either the passthrough rewire got reverted or \
+         a new WASTE site landed — see \
+         `scripts/verify-no-tcp-json-reserialize.sh`.",
+        non_comment_hits
     );
 }

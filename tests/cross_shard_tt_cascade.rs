@@ -444,6 +444,7 @@ fn cross_shard_tt_cascade_backpressure_returns_protocol_error() {
         shard_hint: 0,
         response_tx: None,
         op: ShardOp::Push,
+        payload_fmt: beava::wire::PayloadFmt::Binary,
     };
     sibling_tx
         .try_send(filler)
