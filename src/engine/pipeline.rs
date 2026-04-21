@@ -1559,6 +1559,333 @@ impl PipelineEngine {
         Ok(())
     }
 
+    // ======================================================================
+    // Phase 56 Wave 1: cross-shard primitives for EnrichFromTable + SSJ.
+    // ----------------------------------------------------------------------
+    // Three helpers that encapsulate the same-shard fast path + cross-shard
+    // dispatch contract. Wave 2 (EnrichFromTable) and Wave 3 (StreamStream-
+    // Join + register() relaxation) consume these; Wave 1 only adds them.
+    //
+    // Deadlock analysis (3-point, mirrors Phase 54-02 cascade helper):
+    //   1. These helpers run inside `push_with_cascade_on_shard` (or its
+    //      future operator-eval callers) on the SOURCE shard's OS thread.
+    //      The source shard owns its own inbox; it never try_sends to its
+    //      own handle — only to sibling target shards.
+    //   2. `try_send` is non-blocking on the send side. If the target's
+    //      inbox is Full we return `BeavaError::Protocol("...shard inbox
+    //      full...")` (shape of BeavaError::ShardOverload) immediately and
+    //      the caller propagates up. No blocking send → no wait-chain edge
+    //      into the target shard's thread.
+    //   3. The target shard runs on its own pinned OS thread + its own
+    //      current_thread tokio runtime. It drains its inbox sequentially
+    //      and replies via `oneshot::Sender`. Our blocking `recv_timeout`
+    //      (or futures::executor::block_on on an unbounded oneshot) waits
+    //      only for that single reply; the target never calls back into
+    //      the source shard's inbox during this window. Hence no cycle
+    //      is possible, even under N shards with concurrent cross-shard
+    //      traffic.
+    // ======================================================================
+
+    /// Phase 56 D-A1 + D-A3: EnrichFromTable cross-shard single-key read with
+    /// same-shard fast path.
+    ///
+    /// Returns `Ok(Option<EntityState>)` — `None` means the target shard
+    /// had no entity at `key` (caller treats as Missing per D-A4). Returns
+    /// `Err(BeavaError::Protocol(...))` on target-inbox-full (ShardOverload),
+    /// target-disconnected, oneshot timeout, or unexpected reply variant.
+    ///
+    /// Same-shard fast path (D-A3): when `target_shard_idx == input_shard_idx`
+    /// (or there is effectively one shard) this reads directly from the
+    /// caller's `&Shard` with no inbox hop and increments
+    /// `beava_enrich_intra_shard_total{table}`. Cross-shard path increments
+    /// `beava_enrich_cross_shard_total` on the TARGET dispatch arm — this
+    /// helper does not double-count.
+    ///
+    /// Deadlock analysis: see the module-level 3-point comment above.
+    #[allow(clippy::too_many_arguments)]
+    pub fn read_entity_at_shard(
+        &self,
+        sibling_shards: Option<&[crate::shard::thread::ShardHandle]>,
+        target_shard_idx: usize,
+        input_shard: &crate::shard::Shard,
+        input_shard_idx: usize,
+        table_name: &str,
+        key: &str,
+    ) -> Result<Option<crate::state::store::EntityState>, BeavaError> {
+        // Same-shard fast path (D-A3): no inbox hop. Also covers the N=1
+        // test harness case where sibling_shards is None or len ≤ 1.
+        let n_shards = sibling_shards.map(|s| s.len()).unwrap_or(0);
+        if n_shards <= 1 || target_shard_idx == input_shard_idx {
+            metrics::counter!(
+                crate::shard::metrics::ENRICH_INTRA_SHARD_TOTAL,
+                "table" => table_name.to_string()
+            ).increment(1);
+            let out = input_shard.read_entity_at(table_name, key);
+            if out.is_none() {
+                metrics::counter!(
+                    crate::shard::metrics::ENRICH_MISSING_TOTAL,
+                    "table" => table_name.to_string()
+                ).increment(1);
+            }
+            return Ok(out);
+        }
+
+        // Cross-shard path: try_send + blocking recv + ShardOverload on Full.
+        // Metric increment lives on the target's dispatch arm (single
+        // emission site) to avoid double-counting.
+        let handles = sibling_shards.expect("sibling_shards non-empty checked above");
+        let target = &handles[target_shard_idx];
+        if target.is_down.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(BeavaError::Protocol(format!(
+                "enrich cross-shard: target shard {} is down (quarantined)",
+                target_shard_idx
+            )));
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let ev = crate::shard::thread::ShardEvent {
+            payload: bytes::Bytes::new(),
+            stream_name: std::sync::Arc::from(""),
+            shard_hint: 0,
+            response_tx: Some(tx),
+            op: crate::shard::thread::ShardOp::ReadEntityAt {
+                table_name: table_name.to_string(),
+                key: key.to_string(),
+            },
+        };
+        let depth = target.inbox_tx.len();
+        let cap = target.inbox_tx.capacity().unwrap_or(usize::MAX);
+        crate::shard::metrics::record_inbox_depth(target_shard_idx, depth, cap);
+        match target.inbox_tx.try_send(ev) {
+            Ok(()) => {}
+            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                crate::shard::metrics::record_inbox_full(target_shard_idx);
+                return Err(BeavaError::Protocol(format!(
+                    "shard inbox full — enrich cross-shard read backpressure (target={})",
+                    target_shard_idx
+                )));
+            }
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                return Err(BeavaError::Protocol(format!(
+                    "shard inbox disconnected (target={})",
+                    target_shard_idx
+                )));
+            }
+        }
+        match futures::executor::block_on(rx) {
+            Ok(crate::shard::thread::ShardResult::ReadEntityOk(v)) => Ok(v),
+            Ok(crate::shard::thread::ShardResult::Err(e)) => Err(BeavaError::Protocol(format!(
+                "enrich cross-shard dispatch to shard {} failed: {:?}",
+                target_shard_idx, e
+            ))),
+            Ok(other) => Err(BeavaError::Protocol(format!(
+                "enrich cross-shard dispatch to shard {} returned unexpected ShardResult: {:?}",
+                target_shard_idx, other
+            ))),
+            Err(_) => Err(BeavaError::Protocol(format!(
+                "enrich cross-shard dispatch to shard {} oneshot closed",
+                target_shard_idx
+            ))),
+        }
+    }
+
+    /// Phase 56 D-A2: per-target coalesced batch read.
+    ///
+    /// Caller (operator eval, Wave 2) MUST pre-bucket keys by
+    /// `(target_shard, table_name)` and ensure each bucket is ≤
+    /// `MAX_ENRICH_BATCH_KEYS` (4096); the target shard enforces the
+    /// same guard as a defense-in-depth measure (T-56-01-01). Returns a
+    /// `Vec<Option<EntityState>>` parallel to the input `keys` slice.
+    ///
+    /// Same-shard fast path: reads directly without an inbox hop and
+    /// increments `beava_enrich_intra_shard_total` once per key (matches
+    /// the cross-shard dispatch-arm's per-key emission so dashboards are
+    /// apples-to-apples).
+    ///
+    /// Deadlock analysis: see the module-level 3-point comment above.
+    #[allow(clippy::too_many_arguments)]
+    pub fn read_entity_batch_at_shard(
+        &self,
+        sibling_shards: Option<&[crate::shard::thread::ShardHandle]>,
+        target_shard_idx: usize,
+        input_shard: &crate::shard::Shard,
+        input_shard_idx: usize,
+        table_name: &str,
+        keys: &[String],
+    ) -> Result<Vec<Option<crate::state::store::EntityState>>, BeavaError> {
+        let n_shards = sibling_shards.map(|s| s.len()).unwrap_or(0);
+        if n_shards <= 1 || target_shard_idx == input_shard_idx {
+            let mut n_missing: u64 = 0;
+            let out: Vec<Option<_>> = keys
+                .iter()
+                .map(|k| {
+                    let r = input_shard.read_entity_at(table_name, k);
+                    if r.is_none() {
+                        n_missing += 1;
+                    }
+                    r
+                })
+                .collect();
+            metrics::counter!(
+                crate::shard::metrics::ENRICH_INTRA_SHARD_TOTAL,
+                "table" => table_name.to_string()
+            ).increment(keys.len() as u64);
+            if n_missing > 0 {
+                metrics::counter!(
+                    crate::shard::metrics::ENRICH_MISSING_TOTAL,
+                    "table" => table_name.to_string()
+                ).increment(n_missing);
+            }
+            return Ok(out);
+        }
+
+        // Cross-shard path.
+        let handles = sibling_shards.expect("sibling_shards non-empty checked above");
+        let target = &handles[target_shard_idx];
+        if target.is_down.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(BeavaError::Protocol(format!(
+                "enrich cross-shard batch: target shard {} is down (quarantined)",
+                target_shard_idx
+            )));
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let ev = crate::shard::thread::ShardEvent {
+            payload: bytes::Bytes::new(),
+            stream_name: std::sync::Arc::from(""),
+            shard_hint: 0,
+            response_tx: Some(tx),
+            op: crate::shard::thread::ShardOp::ReadEntityBatch {
+                table_name: table_name.to_string(),
+                keys: keys.to_vec(),
+            },
+        };
+        let depth = target.inbox_tx.len();
+        let cap = target.inbox_tx.capacity().unwrap_or(usize::MAX);
+        crate::shard::metrics::record_inbox_depth(target_shard_idx, depth, cap);
+        match target.inbox_tx.try_send(ev) {
+            Ok(()) => {}
+            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                crate::shard::metrics::record_inbox_full(target_shard_idx);
+                return Err(BeavaError::Protocol(format!(
+                    "shard inbox full — enrich cross-shard batch backpressure (target={})",
+                    target_shard_idx
+                )));
+            }
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                return Err(BeavaError::Protocol(format!(
+                    "shard inbox disconnected (target={})",
+                    target_shard_idx
+                )));
+            }
+        }
+        match futures::executor::block_on(rx) {
+            Ok(crate::shard::thread::ShardResult::ReadEntityBatchOk(v)) => Ok(v),
+            Ok(crate::shard::thread::ShardResult::Err(e)) => Err(BeavaError::Protocol(format!(
+                "enrich cross-shard batch dispatch to shard {} failed: {:?}",
+                target_shard_idx, e
+            ))),
+            Ok(other) => Err(BeavaError::Protocol(format!(
+                "enrich cross-shard batch dispatch to shard {} returned unexpected ShardResult: {:?}",
+                target_shard_idx, other
+            ))),
+            Err(_) => Err(BeavaError::Protocol(format!(
+                "enrich cross-shard batch dispatch to shard {} oneshot closed",
+                target_shard_idx
+            ))),
+        }
+    }
+
+    /// Phase 56 D-B1 + D-B5: StreamStreamJoin buffer insert on the
+    /// join-key-owning shard, with co-located fast path.
+    ///
+    /// Returns `Ok(Vec<Map>)` of matched counterparty events. When both
+    /// sides are already co-located on `hash(join_key) % N == input_shard_idx`
+    /// (D-B5) this runs inline with no inbox hop and does NOT bump
+    /// `beava_ssj_cross_shard_total` — the co-located case is the unchanged
+    /// Phase 55 path. Cross-shard path increments the counter on the
+    /// TARGET dispatch arm (single emission site).
+    ///
+    /// Deadlock analysis: see the module-level 3-point comment above.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ssj_insert_at_shard(
+        &self,
+        sibling_shards: Option<&[crate::shard::thread::ShardHandle]>,
+        target_shard_idx: usize,
+        input_shard: &mut crate::shard::Shard,
+        input_shard_idx: usize,
+        join_id: &str,
+        side: crate::engine::operators::JoinSide,
+        join_key: &str,
+        event: serde_json::Value,
+        within_ms: u64,
+    ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>, BeavaError> {
+        let n_shards = sibling_shards.map(|s| s.len()).unwrap_or(0);
+        // D-B5: co-location preserved — no extra hop, no counter bump.
+        if n_shards <= 1 || target_shard_idx == input_shard_idx {
+            let matches = input_shard.apply_ssj_insert(
+                join_id, side, join_key, event, within_ms,
+            );
+            return Ok(matches);
+        }
+
+        // Cross-shard path (D-B1): try_send SsjInsert + blocking recv.
+        let handles = sibling_shards.expect("sibling_shards non-empty checked above");
+        let target = &handles[target_shard_idx];
+        if target.is_down.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(BeavaError::Protocol(format!(
+                "ssj cross-shard: target shard {} is down (quarantined)",
+                target_shard_idx
+            )));
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let ev = crate::shard::thread::ShardEvent {
+            payload: bytes::Bytes::new(),
+            stream_name: std::sync::Arc::from(""),
+            shard_hint: 0,
+            response_tx: Some(tx),
+            op: crate::shard::thread::ShardOp::SsjInsert {
+                join_id: join_id.to_string(),
+                side,
+                join_key: join_key.to_string(),
+                event,
+                within_ms,
+            },
+        };
+        let depth = target.inbox_tx.len();
+        let cap = target.inbox_tx.capacity().unwrap_or(usize::MAX);
+        crate::shard::metrics::record_inbox_depth(target_shard_idx, depth, cap);
+        match target.inbox_tx.try_send(ev) {
+            Ok(()) => {}
+            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                crate::shard::metrics::record_inbox_full(target_shard_idx);
+                return Err(BeavaError::Protocol(format!(
+                    "shard inbox full — ssj cross-shard insert backpressure (target={})",
+                    target_shard_idx
+                )));
+            }
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                return Err(BeavaError::Protocol(format!(
+                    "shard inbox disconnected (target={})",
+                    target_shard_idx
+                )));
+            }
+        }
+        match futures::executor::block_on(rx) {
+            Ok(crate::shard::thread::ShardResult::SsjInsertOk(v)) => Ok(v),
+            Ok(crate::shard::thread::ShardResult::Err(e)) => Err(BeavaError::Protocol(format!(
+                "ssj cross-shard dispatch to shard {} failed: {:?}",
+                target_shard_idx, e
+            ))),
+            Ok(other) => Err(BeavaError::Protocol(format!(
+                "ssj cross-shard dispatch to shard {} returned unexpected ShardResult: {:?}",
+                target_shard_idx, other
+            ))),
+            Err(_) => Err(BeavaError::Protocol(format!(
+                "ssj cross-shard dispatch to shard {} oneshot closed",
+                target_shard_idx
+            ))),
+        }
+    }
+
     /// Phase 54-02 Task 2: live-operator-read variant of
     /// `get_features_on_shard`. Takes `&mut Shard` so operators that need to
     /// advance time (`op.read(now)` RMW) can do so cleanly. Read-only
