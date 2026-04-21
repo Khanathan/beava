@@ -118,6 +118,12 @@ pub enum V0RegisterPayload {
     StatelessChain(StatelessChainDescriptor),
     /// StreamSource / TableSource.
     Source(SourceDescriptor),
+    /// Phase 56-NEXT #6: `@bv.source_table` CDC source. Declared LAST so
+    /// untagged serde prefers `Source` for `kind=stream|table` payloads —
+    /// the two structs share a structural shape. `parse()` pre-dispatches
+    /// on `kind == "source_table"` so this variant is only reached for
+    /// explicit source_table payloads.
+    SourceTable(SourceTableDescriptor),
 }
 
 /// StreamSource / TableSource.
@@ -239,6 +245,28 @@ pub struct UnionDescriptor {
     pub depends_on: Vec<String>,
 }
 
+/// Phase 56-NEXT #6: `@bv.source_table` wire-registration payload.
+///
+/// Discriminated by `kind == "source_table"`. The parser pre-dispatches on
+/// this string before falling through to the untagged `V0RegisterPayload`
+/// serde match, because `SourceTable` and `Source` share the same field
+/// surface (untagged would otherwise pick the first matching variant by
+/// structural shape alone).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SourceTableDescriptor {
+    pub name: String,
+    pub kind: String, // always "source_table"
+    #[serde(default)]
+    pub key_field: Option<String>,
+    #[serde(default)]
+    pub key_fields: Option<Vec<String>>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    pub fields: serde_json::Value,
+    #[serde(default)]
+    pub entity_ttl: Option<String>,
+}
+
 /// One feature inside an AggregationSpec.features[]. Fields match
 /// `_agg_ops.AggOp.to_json()` — hybrid params are flattened at top level.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -300,10 +328,22 @@ impl V0RegisterPayload {
                     .into(),
             ));
         }
-        if raw.get("kind").is_none() {
+        let Some(kind) = raw.get("kind").and_then(|v| v.as_str()) else {
             return Err(BeavaError::Protocol(
                 "v0 REGISTER: payload missing required 'kind' field".into(),
             ));
+        };
+        // Phase 56-NEXT #6: untagged serde would otherwise fall through to
+        // `Source(SourceDescriptor)` (structural overlap — both carry
+        // name/kind/fields/key_fields).
+        if kind == SOURCE_TABLE_KIND {
+            let desc: SourceTableDescriptor = serde_json::from_value(raw).map_err(|e| {
+                BeavaError::Protocol(format!(
+                    "v0 REGISTER: source_table payload shape mismatch: {}",
+                    e
+                ))
+            })?;
+            return Ok(V0RegisterPayload::SourceTable(desc));
         }
         serde_json::from_value::<V0RegisterPayload>(raw).map_err(|e| {
             BeavaError::Protocol(format!("v0 REGISTER: payload shape mismatch: {}", e))
@@ -314,6 +354,7 @@ impl V0RegisterPayload {
     pub fn descriptor_kind(&self) -> &'static str {
         match self {
             V0RegisterPayload::Source(_) => "source",
+            V0RegisterPayload::SourceTable(_) => "source_table",
             V0RegisterPayload::StatelessChain(_) => "op_chain",
             V0RegisterPayload::Aggregation(_) => "aggregation",
             V0RegisterPayload::Join(_) => "join",
@@ -325,6 +366,7 @@ impl V0RegisterPayload {
     pub fn descriptor_name(&self) -> &str {
         match self {
             V0RegisterPayload::Source(d) => &d.name,
+            V0RegisterPayload::SourceTable(d) => &d.name,
             V0RegisterPayload::StatelessChain(d) => &d.name,
             V0RegisterPayload::Aggregation(d) => &d.name,
             V0RegisterPayload::Join(d) => &d.name,

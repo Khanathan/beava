@@ -80,10 +80,22 @@ def _compile_source(descriptor: Any) -> dict[str, Any]:
             elif isinstance(sk, tuple):
                 d["shard_key"] = list(sk)
     elif isinstance(descriptor, TableSource):
-        d["kind"] = "table"
+        # Phase 56-NEXT #6: @bv.source_table emits kind="source_table" so the
+        # server's REGISTER dispatch routes it through SourceTableDescriptor
+        # and has_registered_source_table(name) returns true — a prerequisite
+        # for OP_UPSERT_TABLE_ROW / OP_DELETE_TABLE_ROW to be accepted.
+        from beava._table import SourceTable
+
+        is_source_table = isinstance(descriptor, SourceTable)
+        d["kind"] = "source_table" if is_source_table else "table"
         d["mode"] = descriptor._mode
         key = list(descriptor._key)
-        if len(key) == 1:
+        if is_source_table:
+            # Always emit key_fields array for source tables — matches the
+            # in-process `register_source_table()` helper's signature.
+            d["key_field"] = None
+            d["key_fields"] = key
+        elif len(key) == 1:
             d["key_field"] = key[0]
         else:
             d["key_field"] = None

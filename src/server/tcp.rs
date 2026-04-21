@@ -2930,6 +2930,38 @@ async fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8
                     BeavaError::Protocol(format!("v0 REGISTER: re-serialize failed: {}", e))
                 })?;
                 let parsed = crate::engine::register::V0RegisterPayload::parse(&v0_bytes)?;
+                // Phase 56-NEXT #6: @bv.source_table short-circuits here. It is
+                // not a stream — no StreamDefinition, no event-log register,
+                // no backfill. Store the raw REGISTER JSON so
+                // `PipelineEngine::has_registered_source_table(name)` flips
+                // true; subsequent OP_UPSERT_TABLE_ROW / OP_DELETE_TABLE_ROW
+                // frames then pass the gate in `handle_upsert_table_row` /
+                // `handle_delete_table_row`.
+                if let crate::engine::register::V0RegisterPayload::SourceTable(desc) = &parsed {
+                    let key_fields: Vec<String> = desc
+                        .key_fields
+                        .clone()
+                        .or_else(|| desc.key_field.as_ref().map(|k| vec![k.clone()]))
+                        .unwrap_or_default();
+                    if key_fields.is_empty() {
+                        return Err(BeavaError::Protocol(
+                            "v0 REGISTER source_table: key_fields must be non-empty".into(),
+                        ));
+                    }
+                    let def_name = desc.name.clone();
+                    let mut engine = state.engine.write();
+                    engine.store_raw_register_json(&def_name, raw_json);
+                    let empty: Vec<String> = Vec::new();
+                    let diff_json = serde_json::json!({
+                        "status": "ok",
+                        "kind": "v0",
+                        "name": def_name,
+                        "added": empty,
+                        "removed": empty,
+                        "backfilling": empty,
+                    });
+                    return Ok(serde_json::to_vec(&diff_json).unwrap());
+                }
                 let stream_def = match &parsed {
                     crate::engine::register::V0RegisterPayload::Source(desc) => {
                         crate::engine::register::v0_source_to_stream_def(desc)?
@@ -3009,6 +3041,9 @@ async fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8
                              execution (Phase 23 lands joins/stateless-chains/union)",
                             parsed.descriptor_kind()
                         )));
+                    }
+                    crate::engine::register::V0RegisterPayload::SourceTable(_) => {
+                        unreachable!("SourceTable is short-circuited above the match")
                     }
                 };
                 let def_name = stream_def.name.clone();
