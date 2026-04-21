@@ -224,7 +224,13 @@ Plans:
 **Locked decisions (carryover from Phase 55 scoping)**:
   - EnrichFromTable: synchronous cross-shard read (block shard thread on oneshot); batched + pipelined where a downstream has multiple enrichments (decision: Q6-b from phase-55 scoping — revisit if p99 budget is exceeded).
   - StreamStreamJoin buffer ownership: shard owning `hash(join.on) % N` (decision: Q5b-a from phase-55 scoping).
-**Plans**: TBD
+**Plans**: 5 plans
+Plans:
+- [ ] 56-00-PLAN.md — Wave 0: RED tests for SC-1..SC-5 + REQUIREMENTS.md TPC-CORR-04 relaxation + TPC-CORR-08 + TPC-CORR-09
+- [ ] 56-01-PLAN.md — Wave 1: ShardOp::ReadEntityAt / ReadEntityBatch / SsjInsert + Shard::read_entity_at + Shard::apply_ssj_insert + pipeline.rs helpers + 5 metric counters
+- [ ] 56-02-PLAN.md — Wave 2: EnrichFromTable cross-shard read with same-shard fast path + per-batch coalesce by (target_shard, table)
+- [ ] 56-03-PLAN.md — Wave 3: StreamStreamJoin routes via hash(join.on)%N + TPC-CORR-04 relaxation (CrossShardJoinWarning) + /debug/warnings cross_shard_joins field
+- [ ] 56-04-PLAN.md — Wave 4: perf gate (>= 1,059,261 EPS floor) + 56-VERIFICATION.md + close
 **UI hint**: no
 
 ### Phase 57: 57-retraction-across-crossshard-joins
