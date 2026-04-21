@@ -73,6 +73,7 @@ fn mixed_typed_untyped_streams_coexist_via_enrich() {
     let snap = TypedStateSnapshotV11 {
         typed_entities: vec![typed_entity.clone()],
         value_entities: vec![value_entity],
+        typed_ringbuffers: vec![],
     };
 
     let bytes = save_typed_state_v11(&snap).expect("save");

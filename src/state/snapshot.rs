@@ -274,6 +274,22 @@ pub struct TypedStateSnapshotV11 {
     /// shards, test fixtures), this is `Vec::new()`.
     #[serde(default)]
     pub value_entities: Vec<(String, SerializableEntityState)>,
+    /// Phase 59.7 Wave 2 (TPC-PERF-11 extension) — per-entity, per-op
+    /// windowed ring buffers for typed aggregation. Keyed by
+    /// `(stream_name, entity_key, op_index)`; value is the packed
+    /// [`crate::engine::operators_typed_aggs_windowed::TypedRingBufferEnum`].
+    ///
+    /// `#[serde(default)]` preserves V10-via-V11 transparent upgrade and
+    /// pre-59.7 V11 snapshot byte compatibility — old snapshots decode with
+    /// `typed_ringbuffers = Vec::new()`. On write, a new binary always
+    /// serializes the full current set; readers that don't know about the
+    /// field (pre-59.7 V11 consumers — there were none in production yet)
+    /// skip it via postcard's schema-driven decode.
+    #[serde(default)]
+    pub typed_ringbuffers: Vec<(
+        (String, String, u16),
+        crate::engine::operators_typed_aggs_windowed::TypedRingBufferEnum,
+    )>,
 }
 
 /// Phase 59.6 Wave 5: encode a `TypedStateSnapshotV11` into bytes with
@@ -320,6 +336,7 @@ pub fn load_typed_state_v11(bytes: &[u8]) -> Option<TypedStateSnapshotV11> {
         return Some(TypedStateSnapshotV11 {
             typed_entities: Vec::new(),
             value_entities: entities,
+            typed_ringbuffers: Vec::new(),
         });
     }
     None
