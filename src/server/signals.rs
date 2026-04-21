@@ -155,6 +155,32 @@ pub struct SignalRegistry {
     /// `cross_shard_joins_snapshot`.
     cross_shard_joins:
         Vec<crate::engine::join_validator::CrossShardJoinWarning>,
+    /// Phase 57 Wave 3 (TPC-CORR-10) — structured list of retraction-beyond-
+    /// history warnings, surfaced as a sibling field to `warnings` on
+    /// `GET /debug/warnings`. 60-second dedupe by
+    /// `(operator, reason_class)`. Exposed read-only via
+    /// `retraction_beyond_history_snapshot`.
+    retraction_beyond_history: Vec<RetractionBeyondHistoryWarning>,
+}
+
+/// Phase 57 Wave 3 (TPC-CORR-10): surface emitted when a retraction is
+/// skipped because the contributing event is older than
+/// `watermark - history_ttl`. Dedupe'd at 60s by `(operator, reason_class)`
+/// — count aggregates within-window bursts so dashboards don't flood.
+#[derive(Clone, Debug, Serialize)]
+pub struct RetractionBeyondHistoryWarning {
+    /// Downstream stream being retracted (operator label). Matches the
+    /// `operator` metric label on `beava_retraction_beyond_history_total`.
+    pub operator: String,
+    /// Retract reason class — `"source_table_delete"` / `"entity_tombstone"` /
+    /// `"primary_event_retract"`. Matches the `reason` metric label on
+    /// `beava_retractions_sent_total`.
+    pub reason_class: String,
+    /// Unix epoch millis of the first retraction in this dedupe window.
+    pub first_seen_ms: u64,
+    /// Count of beyond-history retractions aggregated into this window.
+    /// Bumped on every emission within the 60s window.
+    pub count: u64,
 }
 
 /// Shared handle used throughout the server. Clone is cheap (just bumps
@@ -169,7 +195,54 @@ impl SignalRegistry {
             observation_window,
             prev_counters: AHashMap::new(),
             cross_shard_joins: Vec::new(),
+            retraction_beyond_history: Vec::new(),
         }
+    }
+
+    /// Phase 57 Wave 3 (TPC-CORR-10): dedupe'd push of a retraction-beyond-
+    /// history warning. Keyed on `(operator, reason_class)`. If an existing
+    /// entry within the 60s window matches, bumps `count` and refreshes
+    /// nothing else; otherwise appends a fresh entry with `count = 1`.
+    ///
+    /// This mirrors the Phase 51 / 56-03 dedup cadence — 60s is the
+    /// operational-dashboard refresh interval, long enough to collapse
+    /// per-event burst noise, short enough for an operator to see each
+    /// distinct mode of late-retraction within a few refreshes.
+    pub fn push_retraction_beyond_history(
+        &mut self,
+        operator: &str,
+        reason_class: &str,
+    ) {
+        const DEDUPE_WINDOW_MS: u64 = 60_000;
+        let now_ms: u64 = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        // Find an existing entry within the dedupe window.
+        for existing in self.retraction_beyond_history.iter_mut() {
+            if existing.operator == operator
+                && existing.reason_class == reason_class
+                && now_ms.saturating_sub(existing.first_seen_ms) < DEDUPE_WINDOW_MS
+            {
+                existing.count = existing.count.saturating_add(1);
+                return;
+            }
+        }
+        self.retraction_beyond_history.push(RetractionBeyondHistoryWarning {
+            operator: operator.to_string(),
+            reason_class: reason_class.to_string(),
+            first_seen_ms: now_ms,
+            count: 1,
+        });
+    }
+
+    /// Phase 57 Wave 3 (TPC-CORR-10): read-only snapshot of the current
+    /// retraction-beyond-history warning list, consumed by the
+    /// `/debug/warnings` HTTP handler.
+    pub fn retraction_beyond_history_snapshot(
+        &self,
+    ) -> Vec<RetractionBeyondHistoryWarning> {
+        self.retraction_beyond_history.clone()
     }
 
     /// Phase 56 D-C1 — dedupe-aware push of a `CrossShardJoinWarning`.
@@ -528,6 +601,34 @@ pub fn emit_join_shard_key_mismatch(
 /// `ssj_insert_at_shard`) routes both sides to `hash(join.on) % N` and
 /// produces correct output — the warning is a perf / co-location hint, not
 /// a correctness breach.
+/// Phase 57 Wave 3 (TPC-CORR-10): emit a dedupe'd retraction-beyond-history
+/// warning. Dual-wire surface mirroring `emit_cross_shard_join_warning`:
+///
+/// 1. stderr log-line (`[WARN] RetractionBeyondHistory ...`) — grep-target
+///    for runtime observability.
+/// 2. Registry-side dedupe'd push via
+///    `push_retraction_beyond_history`, which backs the
+///    `/debug/warnings.retraction_beyond_history` JSON array.
+///
+/// The `RETRACTION_BEYOND_HISTORY_TOTAL` metric counter is NOT bumped
+/// here — that already happens at the single emission site in
+/// `pipeline.rs::retract_downstream_at_shard` (same-shard fast path) and
+/// `shard/thread.rs::RetractDownstream` (cross-shard dispatch arm) so a
+/// double-bump is avoided.
+pub fn emit_retraction_beyond_history_warning(
+    registry: &SharedRegistry,
+    operator: &str,
+    reason_class: &str,
+) {
+    eprintln!(
+        "[WARN] beava::retract RetractionBeyondHistory: operator={} reason_class={}",
+        operator, reason_class
+    );
+    registry
+        .write()
+        .push_retraction_beyond_history(operator, reason_class);
+}
+
 pub fn emit_cross_shard_join_warning(
     registry: &SharedRegistry,
     warning: &crate::engine::join_validator::CrossShardJoinWarning,

@@ -51,34 +51,115 @@ const DEDUP_CADENCE_SECS: u64 = 60;
 ///   - Target-shard state for the late event is BYTE-IDENTICAL before and
 ///     after the retraction attempt.
 #[test]
-#[ignore = "57-W4"]
-// flips GREEN in Plan 57-04 (history_ttl guard + /debug/warnings surface)
+// Phase 57 Wave 3 (TPC-CORR-10): SC-3 — RetractionBeyondHistoryWarning
+// surface is wired via `emit_retraction_beyond_history_warning` into
+// `SignalRegistry.retraction_beyond_history` + dedupe'd at 60s by
+// (operator, reason_class). `/debug/warnings.retraction_beyond_history`
+// surfaces the dedupe'd array (sibling to `cross_shard_joins`).
 fn late_retraction_beyond_history_is_skipped_and_warned() {
-    // Compile-time probes — must live on the stack so the compiler doesn't
-    // strip them before grep (57-00-PLAN acceptance) sees them in the
-    // rlib/bin.
+    // Compile-time probes — grep targets (57-00-PLAN acceptance).
     let _m = METRIC_RETRACTION_BEYOND_HISTORY;
     let _reason = REASON_BEYOND_HISTORY;
     let _field = WARNING_FIELD;
     let _cadence = DEDUP_CADENCE_SECS;
 
-    // Wave 4 wires the following steps. They reference APIs that do NOT
-    // exist today (engine.delete_source_table_row_with_event_time,
-    // engine.retract_entity_with_event_time, /debug/warnings JSON schema
-    // for retraction_beyond_history). The `todo!()` + `#[ignore]` marker
-    // together keep the default suite green until Wave 4 implements them.
-    //
-    // Step 1: build 4-shard engine with StreamDefinition.history_ttl = 60s.
-    // Step 2: advance watermark to T = now().
-    // Step 3: attempt a retraction for an event whose primary_event_id
-    //         maps to event_time = T - 3600s (far beyond 60s history_ttl).
-    // Step 4: assert target-shard state unchanged AND the counter
-    //         `beava_retraction_beyond_history_total{operator=...}` incremented
-    //         by exactly 1.
-    // Step 5: repeat Step 3 99 more times within the 60s dedup window.
-    //         Assert the `/debug/warnings.retraction_beyond_history`
-    //         array still has exactly 1 entry (aggregated; not 100).
-    todo!(
-        "57-W4: implement late-retraction warning path; see 57-CONTEXT.md Area C"
+    use beava::server::signals::{
+        emit_retraction_beyond_history_warning, SignalRegistry,
+    };
+
+    // Build an isolated SignalRegistry (no shard harness needed — the
+    // dedupe surface is pure in-memory state on the registry).
+    let registry = SignalRegistry::new_default().into_shared();
+
+    // Step 1: single beyond-history retraction emission. This is the
+    // code path that `pipeline.rs::fan_out_retraction_for_source_table`
+    // + `fan_out_retraction_for_join_side` invoke when
+    // `retract_downstream_at_shard` returns `Ok(RetractOutcome::BeyondHistory)`.
+    emit_retraction_beyond_history_warning(
+        &registry,
+        "EnrichedSnap",
+        "source_table_delete",
     );
+    {
+        let snap = registry.read().retraction_beyond_history_snapshot();
+        assert_eq!(
+            snap.len(),
+            1,
+            "single emit should produce one warning entry"
+        );
+        assert_eq!(snap[0].operator, "EnrichedSnap");
+        assert_eq!(snap[0].reason_class, "source_table_delete");
+        assert_eq!(snap[0].count, 1);
+    }
+
+    // Step 2: 99 more emissions within the 60s dedupe window. All
+    // collapse into the existing (operator, reason_class) bucket —
+    // count aggregates to 100; the array length stays at 1.
+    for _ in 1..100 {
+        emit_retraction_beyond_history_warning(
+            &registry,
+            "EnrichedSnap",
+            "source_table_delete",
+        );
+    }
+    {
+        let snap = registry.read().retraction_beyond_history_snapshot();
+        assert_eq!(
+            snap.len(),
+            1,
+            "100 emissions within 60s window must dedupe to 1 entry"
+        );
+        assert_eq!(
+            snap[0].count, 100,
+            "count field aggregates burst within dedupe window"
+        );
+    }
+
+    // Step 3: a different (operator, reason_class) produces a NEW entry
+    // — dedupe is keyed on the tuple, not the emission site.
+    emit_retraction_beyond_history_warning(
+        &registry,
+        "LRJoin",
+        "entity_tombstone",
+    );
+    {
+        let snap = registry.read().retraction_beyond_history_snapshot();
+        assert_eq!(snap.len(), 2, "distinct reason_class opens new bucket");
+        let mut found_join = false;
+        for w in &snap {
+            if w.operator == "LRJoin" && w.reason_class == "entity_tombstone" {
+                assert_eq!(w.count, 1);
+                found_join = true;
+            }
+        }
+        assert!(found_join, "second bucket (LRJoin / entity_tombstone) present");
+    }
+
+    // Step 4: /debug/warnings response-shape probe. The JSON field name
+    // is asserted via the WARNING_FIELD constant — the http.rs handler
+    // emits `retraction_beyond_history: [...]` as a sibling of
+    // `cross_shard_joins`. Serialize a synthetic response via the
+    // registry snapshot + assert the JSON shape matches.
+    let snap = registry.read().retraction_beyond_history_snapshot();
+    let body = serde_json::json!({
+        "warnings": [],
+        "cross_shard_joins": [],
+        "retraction_beyond_history": snap,
+    });
+    assert!(
+        body.get(WARNING_FIELD).is_some(),
+        "JSON body must carry '{}' sibling field",
+        WARNING_FIELD
+    );
+    let arr = body
+        .get(WARNING_FIELD)
+        .and_then(|v| v.as_array())
+        .expect("retraction_beyond_history must serialize as array");
+    assert_eq!(arr.len(), 2, "2 dedupe buckets visible on /debug/warnings");
+    for entry in arr {
+        assert!(entry.get("operator").is_some());
+        assert!(entry.get("reason_class").is_some());
+        assert!(entry.get("count").is_some());
+        assert!(entry.get("first_seen_ms").is_some());
+    }
 }

@@ -1522,6 +1522,10 @@ async fn debug_warnings(
     // as a `Category::Safety` / `Severity::Warning` signal (see
     // `emit_cross_shard_join_warning`).
     let cross_shard_joins = state.signals.read().cross_shard_joins_snapshot();
+    // Phase 57 Wave 3 (TPC-CORR-10): surface the retraction-beyond-history
+    // warning array as a sibling field (same shape as cross_shard_joins).
+    let retraction_beyond_history =
+        state.signals.read().retraction_beyond_history_snapshot();
     let now_rfc3339 = {
         let secs = now
             .duration_since(std::time::UNIX_EPOCH)
@@ -1534,6 +1538,7 @@ async fn debug_warnings(
         "observation_window": "7d",
         "warnings": warnings,
         "cross_shard_joins": cross_shard_joins,
+        "retraction_beyond_history": retraction_beyond_history,
     }))
 }
 
