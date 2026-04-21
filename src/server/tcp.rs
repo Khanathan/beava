@@ -359,20 +359,34 @@ pub struct ConcurrentAppState {
     /// (`run_typed_direct_cascade`) instead of the Wave-3 Value-bridge
     /// `run_typed_enrich_cascade`. Pre-seeded in W0 (engine reads the
     /// `BEAVA_TYPED_CASCADE_DIRECT` env flag but does not yet consume it);
-    /// W4 wires the `.fetch_add(1)` call site inside `push_typed_on_shard`.
+    /// W3/W4 wire the `.fetch_add(1)` call sites — W3 bumps on the
+    /// `ShardOp::RunTypedAggCascadeStep` dispatch arm (cross-shard hop);
+    /// W4 additionally bumps per typed-dispatched downstream inside the
+    /// cascade walker itself (see `PipelineEngine::run_typed_direct_cascade`).
     /// Exposed as `beava_typed_cascade_direct_dispatched_total` via the
     /// metrics layer in W5.
-    pub typed_cascade_direct_dispatched: std::sync::atomic::AtomicU64,
+    ///
+    /// Phase 59.7 Wave 4 — rewrapped as `Arc<AtomicU64>` so
+    /// `PipelineEngine::share_cascade_counters` can alias the same cell,
+    /// letting the walker in `src/engine/pipeline.rs` bump without
+    /// threading a `ConcurrentAppState` reference through every call site.
+    /// Existing `.fetch_add` call sites continue to work via Arc's Deref.
+    pub typed_cascade_direct_dispatched: std::sync::Arc<std::sync::atomic::AtomicU64>,
 
     /// Phase 59.7 Wave 0 (TPC-PERF-11 extension) — count of events that
     /// the typed-cascade walker DOWNGRADED to the Value path because at
     /// least one downstream feature in the cascade is not typed-compatible
-    /// (e.g. an SSJ feature on a secondary downstream). This is the same
-    /// "whole cascade falls back, not just the non-typed hop" semantic
-    /// the parity test `parity_value_fallback_for_nontyped_downstream`
-    /// asserts. Pre-seeded in W0; W3/W4 wire the `.fetch_add(1)` sites.
+    /// (e.g. an SSJ feature on a secondary downstream). W4 refines the
+    /// semantic to "per-downstream" — every downstream that falls back
+    /// to Value increments this counter once (vs W0/W3's "whole cascade"
+    /// semantic). Parity test `parity_value_fallback_for_nontyped_downstream`
+    /// asserts this counter is non-zero when the cascade mixes typed and
+    /// non-typed downstreams.
     /// Exposed as `beava_typed_cascade_value_fallback_total`.
-    pub typed_cascade_value_fallback: std::sync::atomic::AtomicU64,
+    ///
+    /// Phase 59.7 Wave 4 — rewrapped as `Arc<AtomicU64>` (see sibling
+    /// `typed_cascade_direct_dispatched` doc-comment for rationale).
+    pub typed_cascade_value_fallback: std::sync::Arc<std::sync::atomic::AtomicU64>,
 
     /// Phase 51-02 (TPC-PERF-05): flat lock-free global watermark store.
     ///
@@ -533,6 +547,22 @@ pub fn make_concurrent_state_full(
     // Phase 51-04: wire signal registry so register() can emit JoinShardKeyMismatch signals.
     engine.install_signals(signals.clone());
 
+    // Phase 59.7 Wave 4 (TPC-PERF-11 extension) — share the two
+    // typed-cascade counter cells with the engine so the cascade walker
+    // in `src/engine/pipeline.rs::run_typed_direct_cascade` can bump
+    // them without threading a `ConcurrentAppState` reference through
+    // every push_typed_on_shard call site. Construct the Arc<AtomicU64>
+    // cells here; install on the engine; then clone-move into the
+    // `ConcurrentAppState` below (both sides alias the same AtomicU64).
+    let typed_cascade_direct_dispatched =
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let typed_cascade_value_fallback =
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    engine.share_cascade_counters(
+        std::sync::Arc::clone(&typed_cascade_direct_dispatched),
+        std::sync::Arc::clone(&typed_cascade_value_fallback),
+    );
+
     // Phase 53-03B: open the default-build fjall keyspace + per-shard
     // partitions up-front so every call to `make_concurrent_state_full`
     // yields a `ConcurrentAppState` that's ready to hand out partition
@@ -614,11 +644,12 @@ pub fn make_concurrent_state_full(
         typed_row_path_total: std::sync::atomic::AtomicU64::new(0),
         value_fallback_path_total: std::sync::atomic::AtomicU64::new(0),
         // Phase 59.7 Wave 0 (TPC-PERF-11 extension): typed-cascade-direct
-        // dispatch + Value-fallback counters. Pre-seeded to zero. W3/W4
-        // wire the `.fetch_add(1)` call sites inside `push_typed_on_shard`
-        // / `run_typed_direct_cascade` once the direct walker ships.
-        typed_cascade_direct_dispatched: std::sync::atomic::AtomicU64::new(0),
-        typed_cascade_value_fallback: std::sync::atomic::AtomicU64::new(0),
+        // dispatch + Value-fallback counters. W4 (Phase 59.7) — same
+        // Arc<AtomicU64> cells shared with `PipelineEngine` via
+        // `share_cascade_counters` above so the engine's cascade walker
+        // bumps the identical AtomicU64 observed by the tcp server.
+        typed_cascade_direct_dispatched,
+        typed_cascade_value_fallback,
         // Phase 51-02: global watermark store. n_shards rows × 64 stream-ordinal columns.
         // stream_capacity=64 matches GlobalWatermarkStore default; panics on overflow (T-51-01-03).
         global_watermark: parking_lot::RwLock::new(

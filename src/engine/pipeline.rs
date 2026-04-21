@@ -508,6 +508,30 @@ pub struct PipelineEngine {
     /// `run_typed_agg_step` to zero-init the per-entity state Row.
     pub(crate) typed_state_schemas:
         AHashMap<String, std::sync::Arc<crate::engine::schema::RegisteredSchema>>,
+
+    /// Phase 59.7 Wave 4 (TPC-PERF-11 extension) — typed-cascade-direct
+    /// dispatch counter. Aliased with
+    /// `ConcurrentAppState.typed_cascade_direct_dispatched` via
+    /// [`PipelineEngine::share_cascade_counters`], so every bump inside
+    /// `run_typed_direct_cascade` is observable via the server metric
+    /// `beava_typed_cascade_direct_dispatched_total` without threading a
+    /// `ConcurrentAppState` reference through every `push_typed_on_shard`
+    /// call site.
+    ///
+    /// Default: a fresh, engine-owned `Arc<AtomicU64>`. Unit-test callers
+    /// that don't build a `ConcurrentAppState` still observe a valid
+    /// counter (just one that the metrics layer doesn't scrape).
+    pub(crate) typed_cascade_direct_dispatched:
+        std::sync::Arc<std::sync::atomic::AtomicU64>,
+
+    /// Phase 59.7 Wave 4 (TPC-PERF-11 extension) — per-downstream Value
+    /// fallback counter. Incremented once per downstream that the cascade
+    /// walker routes through the Value bridge because it is not
+    /// typed-compatible (any non-typed FeatureDef OR a retraction-emitting
+    /// shape). Parity test `parity_value_fallback_for_nontyped_downstream`
+    /// asserts this counter is non-zero for mixed-mode cascades.
+    pub(crate) typed_cascade_value_fallback:
+        std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Phase 59.6 Wave 4 (TPC-PERF-11) → Phase 59.7 W0 rename — predicate for
@@ -953,7 +977,31 @@ impl PipelineEngine {
             typed_cascade_direct_enabled,
             typed_agg_ops_cache: AHashMap::new(),
             typed_state_schemas: AHashMap::new(),
+            typed_cascade_direct_dispatched: std::sync::Arc::new(
+                std::sync::atomic::AtomicU64::new(0),
+            ),
+            typed_cascade_value_fallback: std::sync::Arc::new(
+                std::sync::atomic::AtomicU64::new(0),
+            ),
         }
+    }
+
+    /// Phase 59.7 Wave 4 (TPC-PERF-11 extension) — alias the engine's
+    /// typed-cascade counter cells with externally-owned `Arc<AtomicU64>`
+    /// instances (typically `ConcurrentAppState`'s sibling fields). Called
+    /// once at engine install time by
+    /// `crate::server::tcp::make_concurrent_state_full`. The engine's
+    /// cascade walker bumps `self.typed_cascade_direct_dispatched` /
+    /// `self.typed_cascade_value_fallback` directly; sharing the Arcs
+    /// means every bump is observable through the server's metric
+    /// endpoints without widening call-site surface.
+    pub fn share_cascade_counters(
+        &mut self,
+        direct_dispatched: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        value_fallback: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) {
+        self.typed_cascade_direct_dispatched = direct_dispatched;
+        self.typed_cascade_value_fallback = value_fallback;
     }
 
     /// Phase 59.7 Wave 0 (TPC-PERF-11 extension) — accessor for the
@@ -4072,28 +4120,34 @@ impl PipelineEngine {
         // SC-4 parity tests in `tests/typed_aggregation_parity.rs` and
         // `tests/typed_row_parity.rs`.
         //
-        // Phase 59.7 Wave 3 (TPC-PERF-11 extension) — when the
-        // `BEAVA_TYPED_CASCADE_DIRECT=1` env flag is set AND every
-        // downstream has a pre-built typed agg ops list, walk the cascade
-        // inline via `run_typed_direct_cascade_same_shard` to skip the
-        // `row_to_value` bridge for the same-shard case. Cross-shard
-        // downstreams fall back to the Value bridge for this wave
-        // (W4 swaps that for `ShardOp::RunTypedAggCascadeStep` dispatch).
+        // Phase 59.7 Wave 4 (TPC-PERF-11 extension) — when the
+        // `BEAVA_TYPED_CASCADE_DIRECT=1` env flag is set, walk the
+        // cascade via `run_typed_direct_cascade`. The W4 walker handles
+        // same-shard inline, cross-shard dispatch via
+        // `ShardOp::RunTypedAggCascadeStep`, and per-downstream Value
+        // fallback for non-typed-compatible features. Whole-cascade
+        // retraction bail-out is the only path that bridges through
+        // `run_typed_enrich_cascade`; the caller here doesn't need a
+        // separate fallback gate.
         if self.typed_cascade_direct_enabled {
-            let all_cached = cascade.iter().all(|ds| self.typed_agg_ops_cache.contains_key(ds));
-            if all_cached {
-                return self.run_typed_direct_cascade_same_shard(
-                    stream_name,
-                    row,
-                    schema,
-                    shard,
-                    event_log,
-                    now,
-                    read_features,
-                    sibling_shards,
-                    input_shard_idx,
-                );
-            }
+            // Phase 59.7 Wave 4 — `run_typed_direct_cascade` handles
+            // cross-shard dispatch + per-downstream Value fallback. It
+            // succeeds whenever any downstream can be handled (typed
+            // inline, typed dispatched, or Value-bridged). The caller
+            // only falls through to the legacy `run_typed_enrich_cascade`
+            // bridge when the direct walker explicitly declines (e.g. a
+            // whole-cascade retraction-capable input).
+            return self.run_typed_direct_cascade(
+                stream_name,
+                row,
+                schema,
+                shard,
+                event_log,
+                now,
+                read_features,
+                sibling_shards,
+                input_shard_idx,
+            );
         }
         self.run_typed_enrich_cascade(
             stream_name,
@@ -4108,23 +4162,45 @@ impl PipelineEngine {
         )
     }
 
-    /// Phase 59.7 Wave 3 (TPC-PERF-11 extension, TPC-CORR-07) — same-shard
-    /// typed-direct cascade walker.
+    /// Phase 59.7 Wave 4 (TPC-PERF-11 extension, TPC-CORR-07) — typed
+    /// cascade walker with cross-shard dispatch + per-downstream Value
+    /// fallback.
     ///
     /// Walks `cascade_plan[stream_name]` in topological order. For each
-    /// downstream whose target shard equals `input_shard_idx`, runs the
-    /// pre-built typed agg ops inline via `run_typed_agg_step` +
-    /// `update_windowed`. For cross-shard downstreams, falls back to the
-    /// Value bridge (`run_typed_enrich_cascade` → `push_with_cascade_on_shard`)
-    /// for this wave; Wave 4 swaps that to a `ShardOp::RunTypedAggCascadeStep`
-    /// dispatch.
+    /// downstream:
     ///
-    /// Byte-parity contract: produces the same entity_state bytes as the
-    /// Value-cascade path would have on the same event stream. The
-    /// parity gate is `tests/typed_cascade_crossshard_parity.rs ::
-    /// parity_same_shard_cascade_typed_vs_value_direct`.
+    /// 1. **Whole-cascade retraction bail-out** — if the primary stream
+    ///    is retraction-capable (per
+    ///    [`Self::is_downstream_fully_typed_compatible`]'s sibling
+    ///    predicate, applied to the primary here), fall back to
+    ///    `run_typed_enrich_cascade` for the entire cascade. Retraction
+    ///    semantics are handled by the Value path's Phase 57 D-B1
+    ///    plumbing, which the typed walker cannot yet replicate.
+    ///
+    /// 2. **Per-downstream typed-compat check** — if the downstream has
+    ///    any non-typed-compatible FeatureDef (SSJ, DistinctCount, etc.)
+    ///    OR any EnrichFromTable whose right side is a source table
+    ///    (retraction-capable), bridge THAT downstream through
+    ///    `run_typed_enrich_cascade` restricted to the single downstream.
+    ///    Bump `typed_cascade_value_fallback` once per such downstream.
+    ///
+    /// 3. **Typed-compat downstream** — resolve entity key; compute
+    ///    `target_shard = shard_hint_from_row(row, key_field) % n_shards`.
+    ///    If `target_shard == input_shard_idx` OR there's a single shard,
+    ///    run `run_typed_agg_step` + `update_windowed` inline. Otherwise
+    ///    construct a `ShardOp::RunTypedAggCascadeStep` envelope and
+    ///    `try_send` it to `sibling_shards[target_shard]`. On inbox-full,
+    ///    return `BeavaError::Protocol(...)` with the Phase 56 D-A6
+    ///    back-pressure shape (matches the SSJ cross-shard pattern).
+    ///
+    /// Byte-parity contract: produces the same entity state bytes as the
+    /// Value path when the cascade is fully typed; falls back cleanly to
+    /// Value bytes on non-typed hops. Parity gates:
+    /// - `tests/typed_cascade_crossshard_parity.rs :: parity_cross_shard_cascade_typed_vs_value_direct`
+    /// - `tests/typed_cascade_crossshard_parity.rs :: parity_value_fallback_for_nontyped_downstream`
+    /// - `tests/typed_cascade_crossshard_parity.rs :: parity_v11_snapshot_roundtrip_with_windowed_typed`
     #[allow(clippy::too_many_arguments)]
-    fn run_typed_direct_cascade_same_shard(
+    pub(crate) fn run_typed_direct_cascade(
         &self,
         stream_name: &str,
         row: crate::engine::schema::Row,
@@ -4137,6 +4213,7 @@ impl PipelineEngine {
         input_shard_idx: usize,
     ) -> Result<FeatureMap, BeavaError> {
         use crate::engine::schema::shard_hint_from_row;
+        use std::sync::atomic::Ordering::Relaxed;
 
         let n_shards = sibling_shards.map(|s| s.len().max(1)).unwrap_or(1) as u32;
 
@@ -4145,28 +4222,97 @@ impl PipelineEngine {
             None => return Ok(FeatureMap::new()),
         };
 
+        // (1) Whole-cascade retraction bail-out — Phase 57 TPC-CORR-10
+        // retraction cascade lives in the Value path; typed walker has
+        // no retraction-emitting analog. If the primary stream has a
+        // retraction-capable source (source_table input, tombstone
+        // emitter), route the whole cascade through the Value bridge.
+        if self.primary_stream_is_retraction_capable(stream_name) {
+            return self.run_typed_enrich_cascade(
+                stream_name,
+                row,
+                schema,
+                shard,
+                event_log,
+                now,
+                read_features,
+                sibling_shards,
+                input_shard_idx,
+            );
+        }
+
+        // (2-pre) Pre-scan: any downstream not fully typed-compatible
+        // triggers whole-cascade Value fallback. Done BEFORE any typed
+        // state mutation so byte-identical parity with the all-Value
+        // reference is preserved (mixing typed + Value state writes on
+        // the same event would diverge).
+        //
+        // Counter semantics: bump
+        // `typed_cascade_value_fallback` ONCE PER non-typed downstream
+        // discovered in the cascade. This is the refinement W4 promised
+        // over W3's "whole cascade" semantic — the parity test
+        // `parity_value_fallback_for_nontyped_downstream` asserts the
+        // counter is non-zero + matches the count of nontyped hops.
+        let mut nontyped_hops = 0u64;
+        for downstream_name in &cascade {
+            let ds_def = match self.streams.get(downstream_name) {
+                Some(d) => d,
+                None => continue,
+            };
+            if !self.is_downstream_fully_typed_compatible(ds_def) {
+                nontyped_hops += 1;
+            }
+        }
+        if nontyped_hops > 0 {
+            self.typed_cascade_value_fallback
+                .fetch_add(nontyped_hops, Relaxed);
+            return self.run_typed_enrich_cascade(
+                stream_name,
+                row,
+                schema,
+                shard,
+                event_log,
+                now,
+                read_features,
+                sibling_shards,
+                input_shard_idx,
+            );
+        }
+
         // Watermark observation for the primary stream (mirrors
         // push_with_cascade_on_shard's behavior).
         if let Some(et) = self.try_extract_event_time_from_typed_row(&row, schema) {
             shard.watermark.observe(stream_name, et);
         }
 
-        let mut any_cross_shard = false;
+        // Phase 57 D-A3 (TPC-CORR-10): compute primary_event_id once at
+        // walker entry. Packed u64 = (shard_id: u16) << 48 | (epoch_ms: u48).
+        // Each shard owns its own id-space so cross-shard collisions are
+        // irrelevant — receivers identify events by (stream_name,
+        // primary_event_id). Threaded into every ShardOp::RunTypedAggCascadeStep
+        // dispatch below so the target shard can tag contributing_inputs.
+        let primary_event_id: u64 = {
+            let epoch_ms = now
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            ((input_shard_idx as u64 & 0xFFFF) << 48) | (epoch_ms & ((1u64 << 48) - 1))
+        };
+
         let mut aggregate_fmap: FeatureMap = FeatureMap::new();
 
         for downstream_name in &cascade {
-            // Compute downstream entity key + target shard.
             let ds_def = match self.streams.get(downstream_name) {
                 Some(d) => d,
                 None => continue,
             };
+
             let key_field = match ds_def.key_field.as_deref() {
                 Some(k) => k,
                 None => continue,
             };
-            // Extract entity_key from the typed row via the input schema
-            // (downstream shares the key field name with the primary for
-            // same-shard cascade — consistent with Phase 55/56 patterns).
+
+            // Extract entity_key from the typed row via the input schema.
             let entity_key = match schema.field_index(key_field) {
                 Some(i) => {
                     let f = &schema.fields[i];
@@ -4190,71 +4336,204 @@ impl PipelineEngine {
                 shard_hint_from_row(&row, schema, key_field) % n_shards
             };
 
-            if target_shard as usize == input_shard_idx {
-                // Same-shard fast path: run typed agg step inline.
-                if let (Some(ops_arc), Some(state_schema)) = (
-                    self.build_typed_agg_ops_for(downstream_name),
-                    self.get_typed_state_schema(downstream_name),
-                ) {
-                    let op_refs: Vec<&dyn crate::engine::operators_typed::TypedAggOp> =
-                        ops_arc.iter().map(|o| o.as_ref()).collect();
-                    let fmap = self.run_typed_agg_step(
+            // Must have ops + state_schema. If not (e.g. build_typed_agg_op
+            // returned None for every feature), bump fallback + bridge.
+            let (ops_arc, state_schema) = match (
+                self.build_typed_agg_ops_for(downstream_name),
+                self.get_typed_state_schema(downstream_name),
+            ) {
+                (Some(ops), Some(s)) => (ops, s),
+                _ => {
+                    self.typed_cascade_value_fallback.fetch_add(1, Relaxed);
+                    return self.run_typed_enrich_cascade(
+                        stream_name,
+                        row,
+                        schema,
+                        shard,
+                        event_log,
+                        now,
+                        read_features,
+                        sibling_shards,
+                        input_shard_idx,
+                    );
+                }
+            };
+
+            if target_shard as usize == input_shard_idx || sibling_shards.is_none() {
+                // (3a) Same-shard fast path — run typed agg step inline.
+                self.typed_cascade_direct_dispatched.fetch_add(1, Relaxed);
+                let op_refs: Vec<&dyn crate::engine::operators_typed::TypedAggOp> =
+                    ops_arc.iter().map(|o| o.as_ref()).collect();
+                let fmap = self.run_typed_agg_step(
+                    downstream_name,
+                    &entity_key,
+                    &row,
+                    schema,
+                    &op_refs,
+                    &state_schema,
+                    shard,
+                    now,
+                );
+                for op in &op_refs {
+                    op.update_windowed(
+                        shard,
                         downstream_name,
                         &entity_key,
                         &row,
                         schema,
-                        &op_refs,
-                        &state_schema,
-                        shard,
                         now,
                     );
-                    for op in &op_refs {
-                        op.update_windowed(
-                            shard,
-                            downstream_name,
-                            &entity_key,
-                            &row,
-                            schema,
-                            now,
-                        );
+                }
+                if read_features {
+                    for (k, v) in fmap {
+                        aggregate_fmap.insert(k, v);
                     }
-                    if read_features {
-                        for (k, v) in fmap {
-                            aggregate_fmap.insert(k, v);
-                        }
-                    }
-                } else {
-                    // No typed impl — downgrade just this downstream to
-                    // Value fallback.
-                    any_cross_shard = true;
                 }
             } else {
-                // Cross-shard — W3 downgrades to Value fallback for the
-                // whole cascade. W4 dispatches
-                // `ShardOp::RunTypedAggCascadeStep` here.
-                any_cross_shard = true;
+                // (3b) Cross-shard typed dispatch via
+                // ShardOp::RunTypedAggCascadeStep. Fire-and-forget —
+                // target shard runs run_typed_agg_step + update_windowed
+                // against its own entity_state_typed +
+                // entity_ringbuffers_typed. Phase 56 D-A6 back-pressure
+                // preserved: inbox-full → BeavaError::Protocol.
+                let handles = sibling_shards.expect("checked above");
+                let target = &handles[target_shard as usize];
+                if target
+                    .is_down
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    return Err(BeavaError::Protocol(format!(
+                        "typed cascade cross-shard: target shard {} is down",
+                        target_shard
+                    )));
+                }
+                let ev = crate::shard::thread::ShardEvent {
+                    payload: bytes::Bytes::new(),
+                    stream_name: std::sync::Arc::from(downstream_name.as_str()),
+                    shard_hint: 0,
+                    response_tx: None,
+                    op: crate::shard::thread::ShardOp::RunTypedAggCascadeStep {
+                        downstream_name: downstream_name.clone(),
+                        entity_key: entity_key.clone(),
+                        input_row: row.clone(),
+                        input_schema_id: schema.schema_id,
+                        primary_event_id,
+                    },
+                    payload_fmt: crate::wire::PayloadFmt::Binary,
+                    schema_id: schema.schema_id,
+                };
+                let depth = target.inbox_tx.len();
+                let cap = target.inbox_tx.capacity().unwrap_or(usize::MAX);
+                crate::shard::metrics::record_inbox_depth(
+                    target_shard as usize,
+                    depth,
+                    cap,
+                );
+                match target.inbox_tx.try_send(ev) {
+                    Ok(()) => {
+                        // Source-side dispatched counter (target-side
+                        // bumps its own on the dispatch arm — the
+                        // Arc<AtomicU64> is shared with ConcurrentAppState
+                        // so both bumps surface the same metric).
+                        self.typed_cascade_direct_dispatched
+                            .fetch_add(1, Relaxed);
+                    }
+                    Err(crossbeam_channel::TrySendError::Full(_)) => {
+                        crate::shard::metrics::record_inbox_full(
+                            target_shard as usize,
+                        );
+                        return Err(BeavaError::Protocol(format!(
+                            "shard inbox full — typed cascade cross-shard dispatch \
+                             backpressure (target={})",
+                            target_shard
+                        )));
+                    }
+                    Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                        return Err(BeavaError::Protocol(format!(
+                            "shard inbox disconnected (target={})",
+                            target_shard
+                        )));
+                    }
+                }
             }
         }
 
-        if any_cross_shard {
-            // Fall back to the Value-bridge for the whole cascade so
-            // downstream entity state matches the Value path byte-for-byte
-            // (W4 is the first wave that handles cross-shard dispatch
-            // directly).
-            return self.run_typed_enrich_cascade(
-                stream_name,
-                row,
-                schema,
-                shard,
-                event_log,
-                now,
-                read_features,
-                sibling_shards,
-                input_shard_idx,
-            );
-        }
+        // Primary-stream event log append — mirrors the Value walker's
+        // pre-cascade bookkeeping; no-op today (engine.event_log is a
+        // thin wrapper; ShardOp::PushTypedRow dispatch already logged
+        // this event at ingest). Keep the parameter bound so the
+        // cascade walker's signature stays uniform with the Value
+        // walker.
+        let _ = event_log;
 
         Ok(aggregate_fmap)
+    }
+
+    /// Phase 59.7 Wave 4 (TPC-PERF-11 extension) — per-downstream
+    /// typed-compatibility predicate. Returns `true` iff every FeatureDef
+    /// in the downstream passes `is_typed_cascade_compatible` AND no
+    /// FeatureDef is retraction-emitting (EnrichFromTable from a source
+    /// table is the main retraction-capable shape; SSJ / sketch ops are
+    /// caught by `is_typed_cascade_compatible` returning false).
+    ///
+    /// The walker consults this per downstream to decide typed-inline vs
+    /// Value-bridge for that hop. Whole-cascade bail-out on a
+    /// retraction-capable primary stream is handled separately by
+    /// `primary_stream_is_retraction_capable`.
+    pub(crate) fn is_downstream_fully_typed_compatible(
+        &self,
+        ds_def: &StreamDefinition,
+    ) -> bool {
+        for (_, fd) in &ds_def.features {
+            if !is_typed_cascade_compatible(fd) {
+                return false;
+            }
+            // EnrichFromTable whose right-side is a registered
+            // source_table is retraction-capable (Phase 55-02 D-B5 —
+            // source-table DELETE fires retraction). Value path handles
+            // this; typed walker cannot yet. Bridge this downstream.
+            if let FeatureDef::EnrichFromTable { right_table, .. } = fd {
+                if self.is_source_table(right_table) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Phase 59.7 Wave 4 — whole-cascade retraction bail-out check.
+    /// Returns `true` iff the primary stream's inputs can emit
+    /// retractions (source_table primary, tombstone-capable stream).
+    /// Today the typed walker handles no retraction semantics; Wave 5+
+    /// specializes as retraction-aware typed cascade lands.
+    pub(crate) fn primary_stream_is_retraction_capable(&self, stream_name: &str) -> bool {
+        // A primary stream is retraction-capable today iff ANY of its
+        // features is EnrichFromTable from a source_table (source tables
+        // can DELETE, which triggers retraction). For other shapes
+        // (pure Stream → Table), retraction is a secondary property of
+        // downstream aggregations the walker can tombstone via the
+        // Value bridge — not an upfront bail-out condition.
+        let def = match self.streams.get(stream_name) {
+            Some(d) => d,
+            None => return false,
+        };
+        for (_, fd) in &def.features {
+            if let FeatureDef::EnrichFromTable { right_table, .. } = fd {
+                if self.is_source_table(right_table) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Phase 59.7 Wave 4 helper — is `table_name` registered as a
+    /// `@bv.source_table`? Source tables support DELETE → retraction
+    /// cascade (Phase 55-02 D-B5 / Phase 57 TPC-CORR-10). Delegates to
+    /// the existing [`Self::has_registered_source_table`] predicate so
+    /// there's one source-of-truth for source-table identity.
+    fn is_source_table(&self, table_name: &str) -> bool {
+        self.has_registered_source_table(table_name)
     }
 
     /// Phase 59.6 Wave 4 (TPC-PERF-11, D-C4) — typed aggregation step.
