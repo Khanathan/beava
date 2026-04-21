@@ -108,21 +108,29 @@ pub const V11_FORMAT: u8 = 11;
 pub const V11_SCHEMA_VERSION: u16 = 11;
 
 /// Phase 59.6 Wave 4 (TPC-PERF-11) — marker struct reserved for typed
-/// per-entity agg state serialization.
+/// per-entity agg state serialization. Wave 5 promotes this to a full
+/// serde type (see `#[derive(Serialize, Deserialize)]` below).
 ///
 /// Named `TypedAggState` to match the Wave 4 grep invariant
 /// `grep -cE 'TypedAggState|agg_state_typed' src/state/snapshot.rs`.
-/// The actual wire shape (schema_id, payload, arena) is implemented in
-/// Wave 5's v11 body writer/reader — Wave 4 only reserves the name so
-/// downstream planners can reference it in CONTEXT + future PLAN bodies.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
+/// The wire shape is `schema_id + payload + arena` — the same triple
+/// that [`crate::engine::schema::Row`] carries in memory.
+///
+/// Wave 5 (TPC-PERF-11) adds serde derives + `From<&Row>` so the v11
+/// snapshot writer can serialize `Shard.entity_state_typed` as a
+/// `Vec<(String /* stream */, String /* entity_key */, TypedAggState)>`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TypedAggState {
     /// Associated schema id — matches
     /// [`crate::engine::schema::RegisteredSchema::schema_id`]. Wave 5
     /// consumers look up the `RegisteredSchema` by this id for on-disk
     /// payload interpretation.
     pub schema_id: u32,
+    /// Resilience: `RegisteredSchema.name` so re-registration after
+    /// restart (which may reassign `schema_id` values) can still
+    /// resolve the original schema by name. See threat
+    /// `T-59.6-05-02` in the 59.6-05 plan's `<threat_model>`.
+    pub schema_name: String,
     /// Packed-row payload bytes. See
     /// [`crate::engine::schema::Row::payload`] — length equals
     /// `RegisteredSchema.row_size`.
@@ -130,6 +138,191 @@ pub struct TypedAggState {
     /// Per-row arena (long strings + bytes). See
     /// [`crate::engine::schema::Row::arena`].
     pub arena: Vec<u8>,
+}
+
+impl TypedAggState {
+    /// Phase 59.6 Wave 5: construct a `TypedAggState` from an in-memory
+    /// [`crate::engine::schema::Row`] + schema name.
+    ///
+    /// Returns a new allocation that clones payload + arena. Used by
+    /// the v11 snapshot writer (`save_typed_entities_v11`) to lift
+    /// typed entity state from `Shard.entity_state_typed` into a
+    /// serializable envelope.
+    pub fn from_row(row: &crate::engine::schema::Row, schema_name: &str) -> Self {
+        Self {
+            schema_id: row.schema_id,
+            schema_name: schema_name.to_string(),
+            payload: row.payload.clone(),
+            arena: row.arena.clone(),
+        }
+    }
+
+    /// Phase 59.6 Wave 5: construct an in-memory
+    /// [`crate::engine::schema::Row`] from this envelope. The resulting
+    /// Row is semantically identical to the one the writer saw — payload
+    /// + arena byte-identical; `schema_id` preserved.
+    pub fn to_row(&self) -> crate::engine::schema::Row {
+        crate::engine::schema::Row {
+            schema_id: self.schema_id,
+            payload: self.payload.clone(),
+            arena: self.arena.clone(),
+        }
+    }
+}
+
+/// Phase 59.6 Wave 5 (TPC-PERF-11) v11 per-entity wire layout.
+///
+/// Extends [`SerializableEntityStateV10`] with an optional typed-row
+/// envelope. When the entity's stream has a registered typed schema,
+/// `typed_row` carries the packed [`TypedAggState`]; for
+/// Value-fallback entities (unschema'd streams) `typed_row` is `None`
+/// and the entity is represented purely by the V10 fields.
+///
+/// Writers always emit V11 from now on (V11_FORMAT outer byte);
+/// readers dispatch on the outer byte (V11 → this struct; v9/v10 →
+/// existing Value-path readers). V10 → V11 is transparent: a V10
+/// snapshot decodes into [`SerializableEntityState`] + contributing
+/// inputs; the next snapshot cycle rewrites as V11 with
+/// `typed_row = None` for any stream that lacks a typed schema.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SerializableEntityStateV11 {
+    #[serde(default)]
+    pub streams: Vec<(String, SerializableStreamEntityState)>,
+    #[serde(default)]
+    pub static_features: Vec<(String, StaticFeature)>,
+    #[serde(default)]
+    pub table_rows: Vec<(String, SerializableTableRow)>,
+    #[serde(default)]
+    pub contributing_inputs: Option<crate::state::store::ContribSet>,
+    /// Wave 5 addition: present when the entity's stream has a typed
+    /// schema registered. Absent for Value-fallback entities.
+    #[serde(default)]
+    pub typed_row: Option<TypedRowEnvelope>,
+}
+
+/// Phase 59.6 Wave 5 (TPC-PERF-11) — per-entity typed-row envelope.
+/// Shape mirrors [`TypedAggState`] with `schema_name` for resilience
+/// across schema_id reassignment on restart (threat `T-59.6-05-02`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TypedRowEnvelope {
+    pub schema_id: u32,
+    pub schema_name: String,
+    pub payload: Vec<u8>,
+    pub arena: Vec<u8>,
+}
+
+impl From<&crate::engine::schema::Row> for TypedRowEnvelope {
+    fn from(row: &crate::engine::schema::Row) -> Self {
+        Self {
+            schema_id: row.schema_id,
+            schema_name: String::new(),
+            payload: row.payload.clone(),
+            arena: row.arena.clone(),
+        }
+    }
+}
+
+impl TypedRowEnvelope {
+    /// Construct a `TypedRowEnvelope` from a Row + schema name.
+    pub fn from_row(row: &crate::engine::schema::Row, schema_name: &str) -> Self {
+        Self {
+            schema_id: row.schema_id,
+            schema_name: schema_name.to_string(),
+            payload: row.payload.clone(),
+            arena: row.arena.clone(),
+        }
+    }
+
+    /// Reconstruct a Row from this envelope. Byte-identical round-trip:
+    /// `TypedRowEnvelope::from_row(&r, n).to_row() == r` structurally.
+    pub fn to_row(&self) -> crate::engine::schema::Row {
+        crate::engine::schema::Row {
+            schema_id: self.schema_id,
+            payload: self.payload.clone(),
+            arena: self.arena.clone(),
+        }
+    }
+}
+
+/// Phase 59.6 Wave 5 (TPC-PERF-11) — top-level V11 typed-state snapshot.
+///
+/// A V11 snapshot consists of:
+///   `[V11_FORMAT=11][TYPE_TAG_BASE=0x00][postcard(TypedStateSnapshotV11)]`
+///
+/// The payload holds both the V10-compatible entity state (so
+/// unregistered/Value streams still round-trip cleanly — SC-7 +
+/// SC-10) AND a parallel typed-row map for registered streams.
+///
+/// This is a **body-only** format — it does NOT replace the v9
+/// `BaseSnapshotStateV8` envelope used for the main snapshot cycle in
+/// `src/state/recovery.rs`. Instead, it's emitted as a sidecar file
+/// on the snapshot cycle when any shard has non-empty
+/// `entity_state_typed`. The reader dispatches on outer byte: V11 →
+/// `load_typed_state_snapshot`; otherwise → existing
+/// `load_snapshot_file`. Phase 59.6 Wave 7 unifies them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TypedStateSnapshotV11 {
+    /// Per-entity typed state: (stream_name, entity_key) → TypedAggState.
+    /// Empty vec when no typed streams are registered — the snapshot
+    /// still emits with outer byte V11 for consistent dispatch.
+    #[serde(default)]
+    pub typed_entities: Vec<((String, String), TypedAggState)>,
+    /// Optional Value-path fallback body — mirrors
+    /// [`BaseSnapshotStateV8.entities`]. A V11 snapshot can carry this
+    /// alongside typed entities so the reader sees a complete picture
+    /// in one file. When only typed state is snapshotted (small
+    /// shards, test fixtures), this is `Vec::new()`.
+    #[serde(default)]
+    pub value_entities: Vec<(String, SerializableEntityState)>,
+}
+
+/// Phase 59.6 Wave 5: encode a `TypedStateSnapshotV11` into bytes with
+/// outer byte [`V11_FORMAT`] + type tag [`TYPE_TAG_BASE`]. This is the
+/// primary V11 writer — used by the snapshot cycle when typed state
+/// is present, and by the SC-10 round-trip test.
+///
+/// Format: `[V11_FORMAT=11][TYPE_TAG_BASE=0x00][postcard(TypedStateSnapshotV11)]`
+pub fn save_typed_state_v11(
+    snap: &TypedStateSnapshotV11,
+) -> Result<Vec<u8>, postcard::Error> {
+    let mut buf = vec![V11_FORMAT, TYPE_TAG_BASE];
+    buf.extend_from_slice(&postcard::to_stdvec(snap)?);
+    Ok(buf)
+}
+
+/// Phase 59.6 Wave 5: decode bytes into a `TypedStateSnapshotV11`.
+///
+/// Dispatch rule:
+///   - outer byte == V11_FORMAT → postcard-decode into
+///     `TypedStateSnapshotV11`.
+///   - outer byte == V9_FORMAT or V10-era byte (still V9 envelope per
+///     Phase 57-01) → decode the Value body via `load_snapshot_file`
+///     and wrap its entities into `value_entities`; `typed_entities`
+///     stays empty (SC-10 transparent upgrade — the next snapshot
+///     write emits V11).
+///   - unknown byte → `None`.
+pub fn load_typed_state_v11(bytes: &[u8]) -> Option<TypedStateSnapshotV11> {
+    if bytes.len() < 2 {
+        return None;
+    }
+    if bytes[0] == V11_FORMAT {
+        if bytes[1] != TYPE_TAG_BASE {
+            return None;
+        }
+        return postcard::from_bytes::<TypedStateSnapshotV11>(&bytes[2..]).ok();
+    }
+    // V10 / V9 fallback — transparent upgrade per SC-10.
+    if let Some(snap_file) = load_snapshot_file(bytes) {
+        let entities = match snap_file {
+            SnapshotFile::Base(v8) => v8.entities,
+            SnapshotFile::Delta(_) => return None,
+        };
+        return Some(TypedStateSnapshotV11 {
+            typed_entities: Vec::new(),
+            value_entities: entities,
+        });
+    }
+    None
 }
 
 /// Serde default for Phase 55's new `SnapshotHeader.schema_version` field.

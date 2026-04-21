@@ -53,6 +53,136 @@ impl std::fmt::Debug for ShardedStateStoreFjall {
     }
 }
 
+/// Phase 59.6 Wave 5 (TPC-PERF-11, D-D1) — key prefix reserving the
+/// typed-row keyspace on a fjall `PartitionHandle` from the Value-path
+/// `entity_key` keys. The V9/V10 Value-path writer stores
+/// `key = entity_key.as_bytes()`; the typed-row path stores
+/// `key = [TYPED_ROW_KEY_PREFIX, stream..., 0x00, entity_key...]` so
+/// the two paths coexist on the same partition without collisions (SC-7).
+pub const TYPED_ROW_KEY_PREFIX: u8 = 0xFF;
+
+/// Phase 59.6 Wave 5 (TPC-PERF-11, D-D1) — build the fjall key for a
+/// typed entity state row. The layout is:
+/// `[TYPED_ROW_KEY_PREFIX=0xFF][stream_name_bytes][0x00][entity_key_bytes]`
+///
+/// The `0xFF` prefix reserves the typed namespace (no Value-path key
+/// starts with 0xFF because entity_key strings are UTF-8; the 0x00
+/// separator is harmless for UTF-8 data). The 0x00 separator splits
+/// the stream name from the entity key unambiguously — no escaping
+/// needed because UTF-8 strings don't contain NUL bytes. Any `\0` in
+/// a stream name would be rejected at register time (schema validation).
+pub fn make_typed_fjall_key(stream: &str, entity_key: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(1 + stream.len() + 1 + entity_key.len());
+    k.push(TYPED_ROW_KEY_PREFIX);
+    k.extend_from_slice(stream.as_bytes());
+    k.push(0x00);
+    k.extend_from_slice(entity_key.as_bytes());
+    k
+}
+
+/// Phase 59.6 Wave 5 (TPC-PERF-11, D-D1) — pure memcpy encoder for typed
+/// rows. Produces a byte vector in the packed layout:
+/// `[schema_id: u32 BE][payload_len: u32 BE][payload][arena_len: u32 BE][arena]`
+///
+/// No serde_json. No postcard. Direct byte concatenation — target
+/// write cost is `payload_len + arena_len + 12` bytes / memcpy time,
+/// which is the ~10-50× improvement called out in D-D1 over the
+/// Value-path `postcard(SerializableEntityState)` encoder.
+pub fn encode_typed_row_body(row: &crate::engine::schema::Row) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(row.payload.len() + row.arena.len() + 12);
+    buf.extend_from_slice(&row.schema_id.to_be_bytes());
+    buf.extend_from_slice(&(row.payload.len() as u32).to_be_bytes());
+    buf.extend_from_slice(&row.payload);
+    buf.extend_from_slice(&(row.arena.len() as u32).to_be_bytes());
+    buf.extend_from_slice(&row.arena);
+    buf
+}
+
+/// Phase 59.6 Wave 5 (TPC-PERF-11, D-D1) — pure memcpy decoder for
+/// typed rows. Inverse of [`encode_typed_row_body`]. Validates every
+/// offset boundary before slicing so corrupt bytes cannot trigger
+/// out-of-bounds reads (threat `T-59.6-05-01`).
+pub fn decode_typed_row_body(
+    bytes: &[u8],
+) -> Result<crate::engine::schema::Row, crate::error::BeavaError> {
+    use crate::error::BeavaError;
+    if bytes.len() < 12 {
+        return Err(BeavaError::Protocol(format!(
+            "decode_typed_row_body: short body ({} bytes, need >= 12)",
+            bytes.len()
+        )));
+    }
+    let schema_id = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
+    let payload_len = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    if bytes.len() < 8 + payload_len + 4 {
+        return Err(BeavaError::Protocol(format!(
+            "decode_typed_row_body: payload out of bounds (need {}, have {})",
+            8 + payload_len + 4,
+            bytes.len()
+        )));
+    }
+    let payload = bytes[8..8 + payload_len].to_vec();
+    let arena_len_off = 8 + payload_len;
+    let arena_len = u32::from_be_bytes(
+        bytes[arena_len_off..arena_len_off + 4].try_into().unwrap(),
+    ) as usize;
+    let arena_off = arena_len_off + 4;
+    if bytes.len() < arena_off + arena_len {
+        return Err(BeavaError::Protocol(format!(
+            "decode_typed_row_body: arena out of bounds (need {}, have {})",
+            arena_off + arena_len,
+            bytes.len()
+        )));
+    }
+    let arena = bytes[arena_off..arena_off + arena_len].to_vec();
+    Ok(crate::engine::schema::Row {
+        schema_id,
+        payload,
+        arena,
+    })
+}
+
+/// Phase 59.6 Wave 5 (TPC-PERF-11, D-D1) — put a typed entity-state
+/// row into a fjall partition. Encodes via [`encode_typed_row_body`]
+/// under the `[0xFF stream \0 entity_key]` key. Direct
+/// `PartitionHandle::insert`; the caller (shard thread) holds the
+/// single-writer invariant for the partition.
+pub fn put_entity_typed(
+    partition: &fjall::PartitionHandle,
+    stream: &str,
+    entity_key: &str,
+    row: &crate::engine::schema::Row,
+) -> Result<(), crate::error::BeavaError> {
+    use crate::error::BeavaError;
+    let key = make_typed_fjall_key(stream, entity_key);
+    let body = encode_typed_row_body(row);
+    partition
+        .insert(key, body)
+        .map_err(|e| BeavaError::Protocol(format!("fjall put_entity_typed: {e}")))?;
+    Ok(())
+}
+
+/// Phase 59.6 Wave 5 (TPC-PERF-11, D-D1) — read a typed entity-state
+/// row back from a fjall partition. Returns `None` if the key is
+/// absent (fresh entity / evicted state). Decodes via
+/// [`decode_typed_row_body`]; propagates any corruption / OOB errors.
+pub fn get_entity_typed(
+    partition: &fjall::PartitionHandle,
+    stream: &str,
+    entity_key: &str,
+) -> Result<Option<crate::engine::schema::Row>, crate::error::BeavaError> {
+    use crate::error::BeavaError;
+    let key = make_typed_fjall_key(stream, entity_key);
+    let Some(bytes) = partition
+        .get(&key)
+        .map_err(|e| BeavaError::Protocol(format!("fjall get_entity_typed: {e}")))?
+    else {
+        return Ok(None);
+    };
+    let row = decode_typed_row_body(bytes.as_ref())?;
+    Ok(Some(row))
+}
+
 impl ShardedStateStoreFjall {
     /// Open (or create) N partitions inside `ks` and wrap each in a
     /// `Shard::with_partition`.
