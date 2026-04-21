@@ -392,10 +392,11 @@ mod retraction_after_cascade {
         /// and N=8 engines; tombstone a chosen L entity at event `step`;
         /// assert the retraction fan-out yields byte-identical joined
         /// output state on every join-key shard across routings.
-        // Phase 57 Wave 0 (57-00-PLAN): #[ignore = "57-W3"]'d — flips
-        // GREEN at Plan 57-03 when StreamStreamJoin retraction lands.
+        // Phase 57 Wave 3 (57-03-PLAN): StreamStreamJoin retraction now
+        // dispatches via `fan_out_retraction_for_join_side`; the
+        // proptest body enforces hash-routing invariants across every
+        // generated SSJ event pair at N=8.
         #[test]
-        #[ignore = "57-W3"]
         fn retraction_after_cascade_ssj_parity_n1_vs_n8(
             events in prop::collection::vec(arb_retraction_event(), 1..24)
         ) {

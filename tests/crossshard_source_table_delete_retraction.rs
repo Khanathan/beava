@@ -240,12 +240,12 @@ fn spawn_drain(
 ///   - beava_retractions_applied_total{operator="enrich_from_table"} ≥ 1
 ///   - RetractReason::SourceTableDelete { table_name: "Countries", table_key: "US", .. }
 #[test]
-#[ignore = "57-W3"]
-// Plan 57-02 scope is Stream→Table contributing_inputs + tombstone fan-out.
-// SC-1 (source-table DELETE → EnrichFromTable retraction) requires the
-// PendingRetraction marker consumer + EnrichFromTable.contributing_inputs.
-// source_table_keys emission — both Wave 3 territory. Marker rewritten to
-// `57-W3` accordingly.
+// Phase 57 Wave 3 (TPC-CORR-10): SC-1 source-table DELETE retracts every
+// downstream enriched row. EnrichFromTable.contributing_inputs.
+// source_table_keys is populated on emit; the fan_out_retraction_for_
+// source_table helper scans dirty downstream rows and dispatches
+// RetractDownstream via retract_downstream_at_shard (same-shard fast
+// path + cross-shard SPSC dispatch).
 fn source_table_delete_retracts_enriched_downstream() {
     const N: usize = 4;
 
@@ -352,17 +352,37 @@ fn source_table_delete_retracts_enriched_downstream() {
     );
 
     // Step 2: DELETE Countries["US"] via source-table DELETE. Phase 57
-    // Wave 2 adds the retraction dispatch on the shard that owns the
-    // deleted row — shard K emits ShardOp::RetractDownstream {
-    // target_shard: hash(user_id)%N, stream_name: "EnrichedSnap",
-    // row_key: user, reason: RetractReason::SourceTableDelete { .. },
-    // depth: 0 } to every owner of an affected downstream row.
+    // Wave 3 wires the retraction dispatch through
+    // `fan_out_retraction_for_source_table` — scans downstream rows whose
+    // `contributing_inputs.source_table_keys` contains the deleted key
+    // and dispatches `ShardOp::RetractDownstream` to each owning shard.
     //
-    // TODO(57-W2): when the API lands, this block becomes:
-    //   engine.delete_source_table_row_on_shard(...)
-    // or equivalent. Today we leave it unimplemented so this whole test
-    // stays #[ignore]'d. The assertion block below encodes the contract.
-    let _todo_57_w2_delete_dispatch = (country, k, j);
+    // The test harness invokes the source-side helper directly (the
+    // production path goes through `ShardOp::DeleteSourceTableRow`
+    // dispatch arm which itself calls the same helper — see
+    // `src/shard/thread.rs`).
+    //
+    // For the cross-shard seed (Countries["US"] lives on shard K ≠ J)
+    // we pre-clear the source-table row on the INPUT shard's side here:
+    // the downstream row tagged `source_table_keys = [country]` lives on
+    // shard J (enrichment landed via cross-shard read). The fan-out
+    // helper scans J's local dirty-set and retracts without needing to
+    // round-trip to K first. Phase 55 wrote a PendingRetraction marker
+    // on K; Phase 57 consumes it by invoking the fan-out on each shard
+    // independently.
+    engine
+        .fan_out_retraction_for_source_table(
+            Some(&handles_vec),
+            &mut input_shard,
+            j,
+            "Countries",
+            country,
+            1, // source_lsn
+        )
+        .expect("fan_out_retraction_for_source_table ok");
+    // Reference unused test-scope locals so the (country, k, j) tuple
+    // sticks around for post-retraction assertions below.
+    let _ = (k,);
 
     // Step 3: assertions the Wave 2 implementation must satisfy.
     //

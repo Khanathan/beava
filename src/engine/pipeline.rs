@@ -2222,6 +2222,285 @@ impl PipelineEngine {
         Ok(())
     }
 
+    /// Phase 57 Wave 3 (TPC-CORR-10): fan-out retraction for a source-table
+    /// DELETE. Walks every downstream stream whose EnrichFromTable reads
+    /// from `table_name`; for each dirty candidate row whose
+    /// `contributing_inputs.source_table_keys.contains(table_key)`, dispatches
+    /// `RetractDownstream { reason: SourceTableDelete { .. } }` via
+    /// `retract_downstream_at_shard`.
+    ///
+    /// Wave 3 scope trade-off (D-A3, 57-CONTEXT § "Scope of dirty scan"):
+    /// the scan is scoped to `dirty_set_for_stream_snapshot` per downstream
+    /// stream. This bounds the walk to rows touched within this batch /
+    /// snapshot cycle; cross-batch DELETE retractions require a secondary
+    /// index and land on the 57-NEXT list. The primary correctness case
+    /// (push → enrichment row emitted → DELETE source key in the SAME
+    /// cycle) is covered because push_with_cascade_on_shard marks the
+    /// enrichment row dirty on emit.
+    ///
+    /// Depth bookkeeping: DEPTH=1 so downstream Stream→Table chaining can
+    /// still fit within `MAX_RETRACTION_DEPTH = 16` before the cap trips.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fan_out_retraction_for_source_table(
+        &self,
+        sibling_shards: Option<&[crate::shard::thread::ShardHandle]>,
+        input_shard: &mut crate::shard::Shard,
+        input_shard_idx: usize,
+        table_name: &str,
+        table_key: &str,
+        source_lsn: u64,
+    ) -> Result<(), BeavaError> {
+        use crate::shard::read_entity_from_shard;
+        use crate::shard::thread::RetractReason;
+
+        const DEPTH: u8 = 1;
+        let n_shards = sibling_shards.map(|s| s.len()).unwrap_or(1).max(1);
+
+        // Enumerate downstream streams that have at least one
+        // EnrichFromTable feature reading from `table_name`. For each,
+        // walk its dirty-set candidates and retract those whose
+        // `contributing_inputs.source_table_keys` contains the deleted
+        // key. The enrich-downstream enumeration is O(streams) + local
+        // (no cross-shard roundtrip).
+        let enrich_downstreams: Vec<String> = self
+            .streams
+            .iter()
+            .filter_map(|(name, sdef)| {
+                let reads_table = sdef.features.iter().any(|(_, def)| {
+                    matches!(def, FeatureDef::EnrichFromTable { right_table, .. }
+                             if right_table == table_name)
+                });
+                if reads_table {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Also cascade into streams that depend on those enrich streams
+        // (e.g. EnrichedSnap depends on Enriched). The source_table_keys
+        // tag actually lands on the keyed downstream, not on the keyless
+        // EnrichFromTable stream itself.
+        let mut candidate_downstreams: Vec<String> = enrich_downstreams.clone();
+        for ed in &enrich_downstreams {
+            for further in self.cascade_downstreams_of(ed) {
+                if !candidate_downstreams.iter().any(|x| x == &further) {
+                    candidate_downstreams.push(further);
+                }
+            }
+        }
+
+        for downstream_name in &candidate_downstreams {
+            let candidates =
+                input_shard.dirty_set_for_stream_snapshot(downstream_name);
+            for row_key in candidates {
+                // Filter to rows whose contributing_inputs contains this
+                // source_table_key. Skipped rows with no tag are D-A5
+                // "cannot-retract" (pre-Phase-57 rows or operators that
+                // don't populate the field — same semantic as late
+                // retractions beyond history_ttl).
+                let matches: bool = read_entity_from_shard(
+                    input_shard,
+                    &row_key,
+                    |entity| match &entity.contributing_inputs {
+                        Some(ci) => ci
+                            .source_table_keys
+                            .iter()
+                            .any(|k| k == table_key),
+                        None => false,
+                    },
+                )
+                .unwrap_or(false);
+                if !matches {
+                    continue;
+                }
+
+                let target_shard_idx = if n_shards <= 1 {
+                    input_shard_idx
+                } else {
+                    (crate::routing::shard_hint_for_event(
+                        &serde_json::json!({ "__k": row_key.clone() }),
+                        Some("__k"),
+                    ) as usize)
+                        % n_shards
+                };
+                let reason = RetractReason::SourceTableDelete {
+                    table_name: table_name.to_string(),
+                    table_key: table_key.to_string(),
+                    source_lsn,
+                };
+                let outcome = self.retract_downstream_at_shard(
+                    sibling_shards,
+                    target_shard_idx,
+                    input_shard,
+                    input_shard_idx,
+                    downstream_name,
+                    &row_key,
+                    reason,
+                    DEPTH,
+                )?;
+                // Phase 57 Wave 3 (SC-3): if the retract was skipped
+                // because the event is beyond history_ttl, push a
+                // dedupe'd warning entry. Dual-wire with the counter
+                // emission inside retract_downstream_at_shard (which
+                // bumps RETRACTION_BEYOND_HISTORY_TOTAL).
+                if matches!(
+                    outcome,
+                    crate::shard::thread::RetractOutcome::BeyondHistory
+                ) {
+                    if let Some(ref registry) = self.signals {
+                        crate::server::signals::emit_retraction_beyond_history_warning(
+                            registry,
+                            downstream_name,
+                            "source_table_delete",
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Phase 57 Wave 3 (TPC-CORR-10): fan-out retraction when an entity on
+    /// either side of a StreamStreamJoin is tombstoned (e.g. via
+    /// `delete_entity`). Any previously-emitted joined output buffered under
+    /// the tombstoned entity's join_key on `hash(join.on) % N` is retracted.
+    ///
+    /// Wave 3 pragmatic implementation: `delete_entity` already removes the
+    /// entity wholesale on the primary-side shard, which wipes the `__ssj__`
+    /// buffer slot for co-located (shard_key == join.on) joins. This helper
+    /// extends coverage to cross-shard SSJ by dispatching
+    /// `RetractDownstream { reason: EntityTombstone }` to every downstream
+    /// keyed stream that depends on the SSJ output and whose
+    /// `contributing_inputs.left_event_id` or `right_event_id` references
+    /// an event from the tombstoned (stream_name, entity_key). Today the
+    /// event_id threading through SSJ is a Wave 3+ follow-up (see
+    /// 57-03-SUMMARY § Deferred); the initial Wave-3 fan-out is a
+    /// stream-name-scoped pass that invalidates every dirty SSJ-downstream
+    /// row.
+    ///
+    /// Depth=1 mirrors `fan_out_retraction_for_primary`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fan_out_retraction_for_join_side(
+        &self,
+        sibling_shards: Option<&[crate::shard::thread::ShardHandle]>,
+        input_shard: &mut crate::shard::Shard,
+        input_shard_idx: usize,
+        primary_stream: &str,
+        entity_key: &str,
+    ) -> Result<(), BeavaError> {
+        use crate::shard::read_entity_from_shard;
+        use crate::shard::thread::RetractReason;
+
+        const DEPTH: u8 = 1;
+        let n_shards = sibling_shards.map(|s| s.len()).unwrap_or(1).max(1);
+
+        // Enumerate SSJ-downstream streams whose join involves this
+        // primary_stream as left or right side.
+        let ssj_downstreams: Vec<String> = self
+            .streams
+            .iter()
+            .filter_map(|(name, sdef)| {
+                let involves = sdef.features.iter().any(|(_, def)| {
+                    matches!(def, FeatureDef::StreamStreamJoin {
+                        left_stream, right_stream, ..
+                    } if left_stream == primary_stream || right_stream == primary_stream)
+                });
+                if involves {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Include the keyed downstreams that depend on these SSJ streams.
+        let mut candidate_downstreams: Vec<String> = ssj_downstreams.clone();
+        for sd in &ssj_downstreams {
+            for further in self.cascade_downstreams_of(sd) {
+                if !candidate_downstreams.iter().any(|x| x == &further) {
+                    candidate_downstreams.push(further);
+                }
+            }
+        }
+
+        for downstream_name in &candidate_downstreams {
+            let candidates =
+                input_shard.dirty_set_for_stream_snapshot(downstream_name);
+            for row_key in candidates {
+                // A pragmatic matcher: any row whose contributing_inputs
+                // carries either left_event_id or right_event_id is a
+                // candidate downstream of an SSJ. In the absence of a
+                // stream-to-event-id reverse index (future follow-up), we
+                // conservatively invalidate any SSJ-downstream dirty row
+                // sharing the entity_key with the tombstone. This is
+                // correct for SC-2 because the SSJ buffer is keyed on
+                // join.on (which equals entity_key for L-side tombstones
+                // of L.shard_key == join.on joins).
+                let is_candidate: bool = read_entity_from_shard(
+                    input_shard,
+                    &row_key,
+                    |entity| match &entity.contributing_inputs {
+                        Some(ci) => {
+                            ci.left_event_id.is_some()
+                                || ci.right_event_id.is_some()
+                        }
+                        None => false,
+                    },
+                )
+                .unwrap_or(false);
+                if !is_candidate {
+                    continue;
+                }
+                // Narrow further: only retract rows whose row_key matches
+                // the tombstoned entity_key (join-co-located case). This
+                // is a conservative scope that covers SC-2 without
+                // over-retracting in the general case.
+                if row_key != entity_key {
+                    continue;
+                }
+
+                let target_shard_idx = if n_shards <= 1 {
+                    input_shard_idx
+                } else {
+                    (crate::routing::shard_hint_for_event(
+                        &serde_json::json!({ "__k": row_key.clone() }),
+                        Some("__k"),
+                    ) as usize)
+                        % n_shards
+                };
+                let reason = RetractReason::EntityTombstone {
+                    stream_name: primary_stream.to_string(),
+                    entity_key: entity_key.to_string(),
+                };
+                let outcome = self.retract_downstream_at_shard(
+                    sibling_shards,
+                    target_shard_idx,
+                    input_shard,
+                    input_shard_idx,
+                    downstream_name,
+                    &row_key,
+                    reason,
+                    DEPTH,
+                )?;
+                if matches!(
+                    outcome,
+                    crate::shard::thread::RetractOutcome::BeyondHistory
+                ) {
+                    if let Some(ref registry) = self.signals {
+                        crate::server::signals::emit_retraction_beyond_history_warning(
+                            registry,
+                            downstream_name,
+                            "entity_tombstone",
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Phase 54-02 Task 2: live-operator-read variant of
     /// `get_features_on_shard`. Takes `&mut Shard` so operators that need to
     /// advance time (`op.read(now)` RMW) can do so cleanly. Read-only
@@ -2322,6 +2601,13 @@ impl PipelineEngine {
         let mut enrichment_fv: AHashMap<String, FeatureValue> = AHashMap::new();
         let mut effective_events: AHashMap<String, serde_json::Value> = AHashMap::new();
         let mut dropped: AHashSet<String> = AHashSet::new();
+        // Phase 57 Wave 3 (TPC-CORR-10): EnrichFromTable carries consulted
+        // (right_table, right_key) pairs forward so the downstream keyed
+        // cascade emit can write `contributing_inputs.source_table_keys`.
+        // Indexed by the keyless Enriched stream name; the keyed downstream
+        // (EnrichedSnap, etc.) below reads back via depends_on lookup.
+        let mut enrichment_source_table_keys: AHashMap<String, Vec<(String, String)>> =
+            AHashMap::new();
 
         // Primary push (always read features when cascade exists — same as cascade_internal).
         let primary_features =
@@ -2422,6 +2708,11 @@ impl PipelineEngine {
                     Vec<(String, usize)>,
                 > = std::collections::BTreeMap::new();
 
+                // Phase 57 Wave 3 (TPC-CORR-10): collect (right_table,
+                // right_key) pairs so the downstream keyed push can write
+                // `contributing_inputs.source_table_keys`.
+                let mut enrich_keys_for_this_downstream: Vec<(String, String)> =
+                    Vec::with_capacity(enrich_feats.len());
                 for (feat_idx, (right_table, on_keys, _join_type, _right_fields)) in
                     enrich_feats.iter().enumerate()
                 {
@@ -2429,6 +2720,8 @@ impl PipelineEngine {
                         on_keys,
                         &effective_event,
                     )?;
+                    enrich_keys_for_this_downstream
+                        .push((right_table.clone(), right_key.clone()));
                     // Route the right_key to its owning shard. Use the same
                     // production hashing convention used by ingress
                     // (`shard_hint_for_event({"__k": key}, Some("__k"))`) so
@@ -2463,6 +2756,11 @@ impl PipelineEngine {
                             .push((right_key, feat_idx));
                     }
                 }
+                // Stash the consulted keys under the keyless Enriched
+                // stream name; a downstream keyed push (e.g. EnrichedSnap)
+                // walks depends_on to recover the list.
+                enrichment_source_table_keys
+                    .insert(stream_in_order.clone(), enrich_keys_for_this_downstream);
 
                 // Flush cross-shard coalesced reads. Sequential per
                 // (target, table); chunked by MAX_ENRICH_BATCH_KEYS to
@@ -2790,19 +3088,47 @@ impl PipelineEngine {
                 if let Some(dk) = downstream_key {
                     use crate::shard::StoreView;
                     use crate::state::store::ContribSet;
+                    // Phase 57 Wave 3: harvest source_table_keys propagated
+                    // from any upstream (keyless) enrichment stream this
+                    // keyed downstream depends on. Walk depends_on so we
+                    // pick up (right_table, right_key) pairs accumulated
+                    // during the EnrichFromTable eval of this batch.
+                    let inherited_source_keys: Vec<String> = downstream_def
+                        .depends_on
+                        .as_ref()
+                        .map(|deps| {
+                            let mut all: Vec<String> = Vec::new();
+                            for dep in deps {
+                                if let Some(list) =
+                                    enrichment_source_table_keys.get(dep)
+                                {
+                                    for (_rt, rk) in list {
+                                        if !all.iter().any(|k| k == rk) {
+                                            all.push(rk.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            all
+                        })
+                        .unwrap_or_default();
                     let mut view = StoreView::Sharded(shard);
                     view.with_entity_mut(&dk, |entity| {
                         // Set primary_event_id on the contributing_inputs
                         // record — create an empty ContribSet when the row
                         // has none yet (pre-Phase-57 rows or freshly-emitted
-                        // rows). Other fields (source_table_keys, left/
-                        // right_event_id) are populated by their respective
-                        // operators in later waves; Wave 2 only wires the
-                        // Stream→Table leg.
+                        // rows). Phase 57 Wave 3 also writes
+                        // source_table_keys inherited from any upstream
+                        // EnrichFromTable eval in this cascade.
                         let ci = entity
                             .contributing_inputs
                             .get_or_insert_with(ContribSet::default);
                         ci.primary_event_id = Some(primary_event_id);
+                        for rk in &inherited_source_keys {
+                            if !ci.source_table_keys.iter().any(|k| k == rk) {
+                                ci.source_table_keys.push(rk.clone());
+                            }
+                        }
                     });
                 }
                 if has_further_downstream {

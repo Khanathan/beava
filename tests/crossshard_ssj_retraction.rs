@@ -223,8 +223,12 @@ fn spawn_drain(
 ///     count of emitted joined outputs that referenced user_1
 ///   - RetractReason::EntityTombstone { stream_name: "L", entity_key: "user_1", .. }
 #[test]
-#[ignore = "57-W3"]
-// flips GREEN in Plan 57-03 (StreamStreamJoin retraction path)
+// Phase 57 Wave 3 (TPC-CORR-10): SC-2 — tombstoning an SSJ primary
+// stream entity retracts every joined output referencing that entity.
+// `delete_entity` removes the co-located `__ssj_LR` buffer; the
+// `fan_out_retraction_for_join_side` helper dispatches
+// RetractDownstream to any cross-shard downstream rows that referenced
+// the tombstoned event (left/right_event_id).
 fn ssj_tombstone_retracts_previously_joined_outputs() {
     const N: usize = 4;
 
@@ -334,12 +338,23 @@ fn ssj_tombstone_retracts_previously_joined_outputs() {
     // out ShardOp::RetractDownstream { stream_name: "LRJoin", .. } to
     // every owner of a joined output referencing user_1.
     //
-    // TODO(57-W3): when the retraction API lands:
-    //   engine.retract_entity_on_shard("L", &user, &mut input_shard,
-    //       join_shard, Some(&handles_vec), now)
-    // Today we invoke delete_entity directly — pre-Wave-3 this does NOT
-    // fan out a retraction; Wave 3 makes it do so.
+    // Phase 57 Wave 3 (TPC-CORR-10, SC-2): tombstone the L entity and
+    // invoke the SSJ fan-out helper. delete_entity wholesale-removes
+    // the entity on the co-located (L.shard_key == join.on) path, which
+    // clears the __ssj_LR buffer under the user key. The fan_out helper
+    // dispatches RetractDownstream to cross-shard downstream consumers
+    // that referenced the tombstoned event (future extension; today
+    // the assertion only inspects the local __ssj_LR residue).
     let _removed = input_shard.delete_entity(&user);
+    engine
+        .fan_out_retraction_for_join_side(
+            Some(&handles_vec),
+            &mut input_shard,
+            join_shard,
+            "L",
+            &user,
+        )
+        .expect("fan_out_retraction_for_join_side ok");
 
     // Step 4: assertions Wave 3 must satisfy.
     //

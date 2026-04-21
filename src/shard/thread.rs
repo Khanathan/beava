@@ -869,6 +869,35 @@ fn shard_event_loop(
                             .increment(1);
                         }
                     }
+                    // Phase 57 Wave 3 (TPC-CORR-10, SC-1): consume the
+                    // PendingRetraction immediately by fanning out
+                    // `RetractDownstream` to every downstream row whose
+                    // `contributing_inputs.source_table_keys` references
+                    // the deleted (table_name, key).
+                    {
+                        let engine = state.engine.read();
+                        let handles_guard = state.shard_handles.read();
+                        let handles_slice: Option<&[ShardHandle]> =
+                            if handles_guard.is_empty() {
+                                None
+                            } else {
+                                Some(&handles_guard[..])
+                            };
+                        if let Err(e) = engine.fan_out_retraction_for_source_table(
+                            handles_slice,
+                            &mut shard,
+                            shard_index,
+                            &table_name,
+                            &key,
+                            source_lsn,
+                        ) {
+                            eprintln!(
+                                "[WARN] fan_out_retraction_for_source_table \
+                                 (table={}, key={}): {:?}",
+                                table_name, key, e
+                            );
+                        }
+                    }
                     if let Some(tx) = event.response_tx {
                         let _ = tx.send(ShardResult::SetOk);
                     }
@@ -931,6 +960,33 @@ fn shard_event_loop(
                                         crate::shard::metrics::PENDING_RETRACTION_APPEND_FAILED_TOTAL
                                     )
                                     .increment(1);
+                                }
+                            }
+                            // Phase 57 Wave 3 (TPC-CORR-10, SC-1): fan-out
+                            // retraction per deleted key (multiplicative:
+                            // per-affected-row per-deleted-key).
+                            {
+                                let engine = state.engine.read();
+                                let handles_guard = state.shard_handles.read();
+                                let handles_slice: Option<&[ShardHandle]> =
+                                    if handles_guard.is_empty() {
+                                        None
+                                    } else {
+                                        Some(&handles_guard[..])
+                                    };
+                                if let Err(e) = engine.fan_out_retraction_for_source_table(
+                                    handles_slice,
+                                    &mut shard,
+                                    shard_index,
+                                    &table_name,
+                                    &k,
+                                    lsn,
+                                ) {
+                                    eprintln!(
+                                        "[WARN] fan_out_retraction_for_source_table \
+                                         (batch, table={}, key={}): {:?}",
+                                        table_name, k, e
+                                    );
                                 }
                             }
                         }
