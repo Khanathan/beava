@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: Completed 59.6-03-PLAN.md
-last_updated: "2026-04-21T19:28:17.921Z"
+stopped_at: Completed 59.6-04-PLAN.md (Wave 4 — typed aggregation operators)
+last_updated: "2026-04-21T19:46:12.906Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 19
   completed_phases: 11
   total_plans: 87
-  completed_plans: 76
-  percent: 87
+  completed_plans: 77
+  percent: 89
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 ## Current Position
 
 Phase: 59.6 (typed-pipeline-records) — EXECUTING
-Plan: 5 of 8 (59.6-00 Wave 0 RED scaffolding complete; next is 59.6-01 Wave 1 schema runtime)
+Plan: 6 of 8 (59.6-00 Wave 0 RED scaffolding complete; next is 59.6-01 Wave 1 schema runtime)
 **Status:** Ready to execute
-**Progress:** [█████████░] 87%
+**Progress:** [█████████░] 89%
 
 **Last activity:** 2026-04-21
 
@@ -163,6 +163,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 59.6 P01 | 20min | 3 tasks | 13 files |
 | Phase 59.6 P02 | 30min | 3 tasks | 17 files |
 | Phase 59.6 P03 | 10min | 3 tasks | 8 files |
+| Phase 59.6 P04 | 15min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -356,7 +357,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 59.6-03-PLAN.md
+**Stopped at:** Completed 59.6-04-PLAN.md (Wave 4 — typed aggregation operators)
 
 **Next action (engineering):** Phase 58 is engineering-complete. The engineering-facing next action is one of:
   (a) **Start Phase 59** (Binary wire format for PUSH — TPC-PERF-09). Goal: eliminate JSON re-serialization on the PUSH hot path (~11% of CPU per 2026-04 samply notes). Replace JSON with a binary codec (length-prefixed postcard or custom) for TCP PUSH; HTTP PUSH stays JSON for compatibility; zero-copy `bytes::Bytes` end-to-end from wire → shard inbox → fjall insert. Phase 58 left the per-connection runtime dispatch overhead structurally eliminated — JSON is now the top-of-profile leaf to attack.
