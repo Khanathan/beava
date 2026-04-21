@@ -2738,9 +2738,29 @@ impl PipelineEngine {
                     // (`shard_hint_for_event({"__k": key}, Some("__k"))`) so
                     // hash assignments are byte-identical between the
                     // harness routing helper and operator eval.
+                    //
+                    // Phase 59.5: for replicated source tables every shard
+                    // has a local copy, so force `target_shard_idx ==
+                    // input_shard_idx` to take the same-shard fast path
+                    // and avoid the blocking `ShardOp::ReadEntityAt`
+                    // hop. Only `sharded=true` source tables pay the
+                    // cross-shard round-trip. Regular (non-source) tables
+                    // keep the Phase 56 hash-partitioned routing.
                     let target_shard_idx = if n_shards <= 1 {
                         input_shard_idx
+                    } else if self.is_sharded_source_table(right_table) {
+                        // Phase 56 partitioned path (opt-in).
+                        (crate::routing::shard_hint_for_event(
+                            &serde_json::json!({ "__k": right_key.clone() }),
+                            Some("__k"),
+                        ) as usize)
+                            % n_shards
+                    } else if self.has_registered_source_table(right_table) {
+                        // Phase 59.5 replicated default — read local copy.
+                        input_shard_idx
                     } else {
+                        // Non-source regular table (pre-Phase-55 path):
+                        // preserve existing hash-based routing.
                         (crate::routing::shard_hint_for_event(
                             &serde_json::json!({ "__k": right_key.clone() }),
                             Some("__k"),

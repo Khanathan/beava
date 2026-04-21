@@ -2098,6 +2098,103 @@ pub async fn send_op_await_setok(
     }
 }
 
+/// Phase 59.5 D-B1 (TPC-SHARED-SOURCE-TABLE): fan a `ShardOp` out to
+/// every shard and await all acks. Used by the replicated source_table
+/// write path — `OP_UPSERT_TABLE_ROW` / `OP_DELETE_TABLE_ROW` dispatch
+/// this helper when `is_sharded_source_table(name) == false`.
+///
+/// Semantics (D-B2):
+/// - First-error-wins: if any shard returns an error, the first one
+///   observed is returned to the caller. Other oneshot replies are
+///   drained but their results are discarded (we do not emit Phase 57
+///   retractions on the ones that succeeded — callers upstream can
+///   surface that via normal retry / tombstone logic).
+/// - The `op_factory` closure is invoked once per shard so each send
+///   gets a fresh `ShardOp` (required because `ShardOp` contains
+///   non-Clone payloads).
+pub async fn send_op_await_setok_all_shards(
+    handles: &[ShardHandle],
+    op_factory: impl Fn() -> ShardOp,
+) -> Result<(), crate::error::BeavaError> {
+    use crate::error::BeavaError;
+
+    if handles.is_empty() {
+        return Err(BeavaError::Protocol(
+            "fanout: no shards registered".to_string(),
+        ));
+    }
+
+    // Issue all sends first so shards work concurrently; collect oneshot
+    // receivers for the drain below.
+    let mut receivers = Vec::with_capacity(handles.len());
+    for handle in handles {
+        if handle.is_down.load(Ordering::Relaxed) {
+            crate::shard::metrics::record_shard_down(handle.shard_index);
+            return Err(BeavaError::Protocol(format!(
+                "shard {} is down (quarantined after panic)",
+                handle.shard_index
+            )));
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let evt = ShardEvent {
+            payload: bytes::Bytes::new(),
+            stream_name: std::sync::Arc::from(""),
+            shard_hint: 0,
+            response_tx: Some(tx),
+            op: op_factory(),
+            payload_fmt: crate::wire::PayloadFmt::Binary,
+        };
+        match handle.inbox_tx.try_send(evt) {
+            Ok(()) => {}
+            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                crate::shard::metrics::record_inbox_full(handle.shard_index);
+                return Err(BeavaError::Protocol(format!(
+                    "shard {} inbox full — backpressure",
+                    handle.shard_index
+                )));
+            }
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                return Err(BeavaError::Protocol(format!(
+                    "shard {} inbox disconnected",
+                    handle.shard_index
+                )));
+            }
+        }
+        receivers.push((handle.shard_index, rx));
+    }
+
+    // Drain all oneshots; first error wins.
+    let mut first_error: Option<BeavaError> = None;
+    for (shard_idx, rx) in receivers {
+        let observed = match rx.await {
+            Ok(ShardResult::SetOk) => Ok(()),
+            Ok(ShardResult::Err(e)) => Err(BeavaError::Protocol(format!(
+                "shard {} dispatch: {:?}",
+                shard_idx, e
+            ))),
+            Ok(_) => Err(BeavaError::Protocol(format!(
+                "shard {} returned unexpected ShardResult variant",
+                shard_idx
+            ))),
+            Err(_) => Err(BeavaError::Protocol(format!(
+                "shard {} oneshot channel closed",
+                shard_idx
+            ))),
+        };
+        if let Err(e) = observed {
+            if first_error.is_none() {
+                first_error = Some(e);
+            }
+        }
+    }
+
+    if let Some(e) = first_error {
+        Err(e)
+    } else {
+        Ok(())
+    }
+}
+
 /// Phase 54-04 Pass A1: dispatch a `ShardOp::GetMulti` and await the
 /// per-table JSON map. Used by TCP Command::GetMulti (handle_get_multi).
 pub async fn get_multi_via_shard(

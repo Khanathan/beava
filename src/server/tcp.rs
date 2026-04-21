@@ -3537,7 +3537,7 @@ async fn handle_upsert_source_table_row(
             "OP_UPSERT_TABLE_ROW: key must not be empty".into(),
         ));
     }
-    {
+    let is_sharded = {
         let engine = state.engine.read();
         if !engine.has_registered_source_table(table_name) {
             return Err(BeavaError::Protocol(format!(
@@ -3545,33 +3545,60 @@ async fn handle_upsert_source_table_row(
                 table_name
             )));
         }
-    }
+        engine.is_sharded_source_table(table_name)
+    };
     let fields = source_table_fields_from_json(fields)?;
     let shard_count = state.shard_handles.read().len();
-    let shard_idx = crate::server::http::shard_index_for_key(key, shard_count);
-    let handle_clone = {
-        let handles = state.shard_handles.read();
-        match handles.get(shard_idx) {
-            Some(h) => crate::shard::thread::clone_handle(h),
-            None => {
-                return Err(BeavaError::Protocol(format!(
-                    "shard {} not registered (shard_count={})",
-                    shard_idx, shard_count
-                )));
+
+    if is_sharded {
+        // Phase 56 partitioned path (opt-in via sharded=True): route to
+        // the owning shard only. Enrichment lookups on non-owner shards
+        // trigger ShardOp::ReadEntityAt.
+        let shard_idx = crate::server::http::shard_index_for_key(key, shard_count);
+        let handle_clone = {
+            let handles = state.shard_handles.read();
+            match handles.get(shard_idx) {
+                Some(h) => crate::shard::thread::clone_handle(h),
+                None => {
+                    return Err(BeavaError::Protocol(format!(
+                        "shard {} not registered (shard_count={})",
+                        shard_idx, shard_count
+                    )));
+                }
             }
-        }
-    };
-    crate::shard::thread::send_op_await_setok(
-        &handle_clone,
-        crate::shard::thread::ShardOp::UpsertSourceTableRow {
-            table_name: table_name.to_string(),
-            key: key.to_string(),
-            fields,
-            source_lsn,
-            now,
-        },
-    )
-    .await?;
+        };
+        crate::shard::thread::send_op_await_setok(
+            &handle_clone,
+            crate::shard::thread::ShardOp::UpsertSourceTableRow {
+                table_name: table_name.to_string(),
+                key: key.to_string(),
+                fields,
+                source_lsn,
+                now,
+            },
+        )
+        .await?;
+    } else {
+        // Phase 59.5 default: replicated. Fan the write out to all N
+        // shards so every shard has a local copy. Enrichment reads are
+        // then local on any shard.
+        let all_handles: Vec<_> = {
+            let handles = state.shard_handles.read();
+            handles.iter().map(crate::shard::thread::clone_handle).collect()
+        };
+        let table_name_owned = table_name.to_string();
+        let key_owned = key.to_string();
+        crate::shard::thread::send_op_await_setok_all_shards(&all_handles, || {
+            crate::shard::thread::ShardOp::UpsertSourceTableRow {
+                table_name: table_name_owned.clone(),
+                key: key_owned.clone(),
+                fields: fields.clone(),
+                source_lsn,
+                now,
+            }
+        })
+        .await?;
+    }
     // Ack body echoes `source_lsn` as u64 LE (per D-B3).
     Ok(source_lsn.to_le_bytes().to_vec())
 }
@@ -3590,7 +3617,7 @@ async fn handle_delete_source_table_row(
             "OP_DELETE_TABLE_ROW: key must not be empty".into(),
         ));
     }
-    {
+    let is_sharded = {
         let engine = state.engine.read();
         if !engine.has_registered_source_table(table_name) {
             return Err(BeavaError::Protocol(format!(
@@ -3598,31 +3625,56 @@ async fn handle_delete_source_table_row(
                 table_name
             )));
         }
-    }
-    let shard_count = state.shard_handles.read().len();
-    let shard_idx = crate::server::http::shard_index_for_key(key, shard_count);
-    let handle_clone = {
-        let handles = state.shard_handles.read();
-        match handles.get(shard_idx) {
-            Some(h) => crate::shard::thread::clone_handle(h),
-            None => {
-                return Err(BeavaError::Protocol(format!(
-                    "shard {} not registered (shard_count={})",
-                    shard_idx, shard_count
-                )));
-            }
-        }
+        engine.is_sharded_source_table(table_name)
     };
-    crate::shard::thread::send_op_await_setok(
-        &handle_clone,
-        crate::shard::thread::ShardOp::DeleteSourceTableRow {
-            table_name: table_name.to_string(),
-            key: key.to_string(),
-            source_lsn,
-            now,
-        },
-    )
-    .await?;
+    let shard_count = state.shard_handles.read().len();
+
+    if is_sharded {
+        // Phase 56 partitioned path: delete lands on the owning shard
+        // only; Phase 57 fans out retractions cross-shard.
+        let shard_idx = crate::server::http::shard_index_for_key(key, shard_count);
+        let handle_clone = {
+            let handles = state.shard_handles.read();
+            match handles.get(shard_idx) {
+                Some(h) => crate::shard::thread::clone_handle(h),
+                None => {
+                    return Err(BeavaError::Protocol(format!(
+                        "shard {} not registered (shard_count={})",
+                        shard_idx, shard_count
+                    )));
+                }
+            }
+        };
+        crate::shard::thread::send_op_await_setok(
+            &handle_clone,
+            crate::shard::thread::ShardOp::DeleteSourceTableRow {
+                table_name: table_name.to_string(),
+                key: key.to_string(),
+                source_lsn,
+                now,
+            },
+        )
+        .await?;
+    } else {
+        // Phase 59.5 replicated: fan the delete out to every shard so
+        // every shard's local copy is tombstoned and retractions cascade
+        // locally on each shard (Phase 57 ContribSet is unchanged).
+        let all_handles: Vec<_> = {
+            let handles = state.shard_handles.read();
+            handles.iter().map(crate::shard::thread::clone_handle).collect()
+        };
+        let table_name_owned = table_name.to_string();
+        let key_owned = key.to_string();
+        crate::shard::thread::send_op_await_setok_all_shards(&all_handles, || {
+            crate::shard::thread::ShardOp::DeleteSourceTableRow {
+                table_name: table_name_owned.clone(),
+                key: key_owned.clone(),
+                source_lsn,
+                now,
+            }
+        })
+        .await?;
+    }
     Ok(source_lsn.to_le_bytes().to_vec())
 }
 
