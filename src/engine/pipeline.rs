@@ -471,6 +471,14 @@ pub struct PipelineEngine {
     /// build uses Plan 03B's `ShardedStateStoreFjall` sibling, not this field.
     #[cfg(feature = "state-inmem")]
     pub sharded_store: crate::shard::store::ShardedStateStoreV1,
+
+    /// Phase 59.6 Wave 1 (TPC-PERF-11 D-B2): typed-schema registry. Streams
+    /// registered via `@bv.stream` with a `schema:` block in their REGISTER
+    /// JSON get an entry here; Wave 2+ wire codec and operator paths branch
+    /// on `schema_registry.get(stream_name)` to decide typed-row vs.
+    /// `serde_json::Value` fallback. At Wave 1, only schema registration
+    /// wires up — no operator behavior change yet.
+    pub schema_registry: crate::engine::schema::SchemaRegistry,
 }
 
 /// Create an operator instance from a FeatureDef (non-derive only).
@@ -746,7 +754,45 @@ impl PipelineEngine {
             signals: None,
             #[cfg(feature = "state-inmem")]
             sharded_store: crate::shard::store::ShardedStateStoreV1::new(1),
+            schema_registry: crate::engine::schema::SchemaRegistry::new(),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 59.6 Wave 1 (TPC-PERF-11) — typed-schema accessors.
+    //
+    // Wave 1 lands the schema runtime foundation. Wave 2+ wire codec and
+    // operator paths consume these accessors to decide typed-vs-Value
+    // dispatch. No hot-path operator calls them yet.
+    // -----------------------------------------------------------------------
+
+    /// Phase 59.6 Wave 1 (D-B2): check whether a stream has a registered
+    /// typed schema.
+    pub fn is_typed_stream(&self, name: &str) -> bool {
+        self.schema_registry.is_registered(name)
+    }
+
+    /// Phase 59.6 Wave 1 (D-B2): get the typed schema for a stream, if
+    /// registered. Returns an `Arc` clone so operators can cache the
+    /// schema without borrowing from the engine.
+    pub fn get_schema(
+        &self,
+        name: &str,
+    ) -> Option<std::sync::Arc<crate::engine::schema::RegisteredSchema>> {
+        self.schema_registry.get(name)
+    }
+
+    /// Phase 59.6 Wave 1 (D-A1): register a typed schema under the given
+    /// stream name. Called by the REGISTER JSON consumer
+    /// (`src/engine/register.rs`) when the payload contains a `schema:`
+    /// sub-object. Returns the monotonic `SchemaId` assigned by the
+    /// registry.
+    pub fn register_typed_schema(
+        &mut self,
+        name: &str,
+        schema: crate::engine::schema::RegisteredSchema,
+    ) -> crate::engine::schema::SchemaId {
+        self.schema_registry.insert(name, schema)
     }
 
     /// Phase 49-05: construct engine with a specific shard count.

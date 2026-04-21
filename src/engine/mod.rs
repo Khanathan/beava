@@ -11,5 +11,14 @@ pub mod pipeline;
 pub mod recommend;
 pub mod register;
 pub mod retracting_ring;
+/// Phase 59.6 Wave 1 (TPC-PERF-11): typed-row runtime schema.
+/// See `src/engine/schema.rs` module doc for the full design.
+pub mod schema;
 pub mod uddsketch;
 pub mod window;
+
+// Phase 59.6 Wave 1 (TPC-PERF-11) — convenience re-exports for the typed
+// row runtime. Consumers (`engine::register`, `PipelineEngine` accessors,
+// and future Wave 2+ wire codec paths) import via `crate::engine::schema::*`
+// but these aliases keep the public surface discoverable from `engine::`.
+pub use schema::{FieldSpec, FieldTy, RegisteredSchema, Row, SchemaId, SchemaRegistry};
