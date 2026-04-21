@@ -150,3 +150,12 @@ harness = false
 [[bench]]
 name = "typed_pipeline_phase_latency"
 harness = false
+
+# Phase 59.7 Wave 0 (TPC-PERF-11 extension): regression-tripwire bench pinning
+# three per-event cells against Phase 59.6 baselines (±3 % tolerance) so W1
+# windowed-aggs and W4 cascade-direct waves catch regressions loudly.
+# `PINNED_WINDOWED_COUNT_NS` / `PINNED_CASCADE_DIRECT_NS` / `PINNED_CASCADE_BRIDGE_NS`
+# are grepped by scripts/verify-typed-path.sh.
+[[bench]]
+name = "typed_windowed_cascade_regression"
+harness = false
