@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: Completed 59.6-05-PLAN.md (Wave 5 — state store + snapshot v11 + typed SSJ)
-last_updated: "2026-04-21T20:12:48.079Z"
+stopped_at: Completed 59.6-06-PLAN.md (Wave 6 — advanced aggs + SDK v0.3.0 + SC-6 GREEN)
+last_updated: "2026-04-21T20:42:48.556Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 19
   completed_phases: 11
   total_plans: 87
-  completed_plans: 78
-  percent: 90
+  completed_plans: 79
+  percent: 91
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 ## Current Position
 
 Phase: 59.6 (typed-pipeline-records) — EXECUTING
-Plan: 7 of 8 (59.6-00 Wave 0 RED scaffolding complete; next is 59.6-01 Wave 1 schema runtime)
+Plan: 8 of 8 (59.6-00 Wave 0 RED scaffolding complete; next is 59.6-01 Wave 1 schema runtime)
 **Status:** Ready to execute
-**Progress:** [█████████░] 90%
+**Progress:** [█████████░] 91%
 
 **Last activity:** 2026-04-21
 
@@ -42,7 +42,7 @@ Plan: 7 of 8 (59.6-00 Wave 0 RED scaffolding complete; next is 59.6-01 Wave 1 sc
 | 59.6-03 (W3 EnrichFromTable typed path) | Pending | — |
 | 59.6-04 (W4 aggregation typed operators) | Pending | — |
 | 59.6-05 (W5 state store + fallback cleanup) | Pending | — |
-| 59.6-06 (W6 remaining operators + parity battery) | Pending | — |
+| 59.6-06 (W6 remaining operators + parity battery) | Complete 2026-04-21 | e867e20, 2453933 |
 | 59.6-07 (W7 ship gate + docs) | Pending | — |
 
 ### Phase 59 plans
@@ -165,6 +165,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 59.6 P03 | 10min | 3 tasks | 8 files |
 | Phase 59.6 P04 | 15min | 2 tasks | 9 files |
 | Phase 59.6 P59.6-05 | 16m | 2 tasks | 12 files |
+| Phase 59.6 P59.6-06 | 32min | 2 tasks | 15 files |
 
 ## Accumulated Context
 
@@ -358,7 +359,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 59.6-05-PLAN.md (Wave 5 — state store + snapshot v11 + typed SSJ)
+**Stopped at:** Completed 59.6-06-PLAN.md (Wave 6 — advanced aggs + SDK v0.3.0 + SC-6 GREEN)
 
 **Next action (engineering):** Phase 58 is engineering-complete. The engineering-facing next action is one of:
   (a) **Start Phase 59** (Binary wire format for PUSH — TPC-PERF-09). Goal: eliminate JSON re-serialization on the PUSH hot path (~11% of CPU per 2026-04 samply notes). Replace JSON with a binary codec (length-prefixed postcard or custom) for TCP PUSH; HTTP PUSH stays JSON for compatibility; zero-copy `bytes::Bytes` end-to-end from wire → shard inbox → fjall insert. Phase 58 left the per-connection runtime dispatch overhead structurally eliminated — JSON is now the top-of-profile leaf to attack.
