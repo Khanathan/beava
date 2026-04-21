@@ -128,14 +128,43 @@ class App:
                         continue
                     seen.add(reg["name"])
                     payload = encode_register(reg)
-                    self._send(OP_REGISTER, payload)
+                    ack = self._send(OP_REGISTER, payload)
+                    self._parse_register_ack_extended(ack, reg["name"])
             elif hasattr(desc, "_to_register_json"):
                 definition = desc._to_register_json()
                 if definition["name"] in seen:
                     continue
                 seen.add(definition["name"])
                 payload = encode_register(definition)
-                self._send(OP_REGISTER, payload)
+                ack = self._send(OP_REGISTER, payload)
+                self._parse_register_ack_extended(ack, definition["name"])
+
+    def _parse_register_ack_extended(
+        self, response_bytes: bytes, stream_name: str
+    ) -> None:
+        """Phase 59.6 Wave 6 (TPC-PERF-11): cache server-assigned schema_id.
+
+        The REGISTER ack JSON carries an optional ``schema_id`` field when
+        the stream was registered with a typed schema. Store it in
+        ``self._client._schema_ids`` so subsequent ``_pack_typed_batch``
+        calls can send the real id (tightening the Wave 2 shortcut that
+        Wave 6 removed server-side).
+
+        Silently ignores pre-Wave-6 ack bodies that lack the field, empty
+        responses, and malformed JSON — pre-Wave-6 servers never send
+        a ``schema_id`` so their clients still work unchanged.
+        """
+        if not response_bytes:
+            return
+        try:
+            obj = json.loads(response_bytes.decode("utf-8", errors="replace"))
+        except (ValueError, json.JSONDecodeError):
+            return
+        if not isinstance(obj, dict):
+            return
+        sid = obj.get("schema_id")
+        if isinstance(sid, int):
+            self._client._schema_ids[stream_name] = sid
 
     def validate(self, *descriptors) -> list:
         """Run local validation without any TCP contact.
@@ -273,12 +302,17 @@ class App:
             # monotonic batch id as the token so async error reporting
             # can still correlate.
             ack_token = self._next_batch_id()
+            # Phase 59.6 Wave 6 (TPC-PERF-11): send the schema_id cached
+            # from the REGISTER ack. Falls back to 0 only for pre-Wave-6
+            # servers that didn't echo one — post-Wave-6 the decoder
+            # rejects schema_id=0 (shortcut removed in src/wire/typed.rs).
+            schema_id = self._client._schema_ids.get(stream_name, 0)
             payload = self._client._pack_typed_batch(
                 stream_name,
                 schema.to_json(),
                 events,
                 ack_token,
-                schema_id=0,  # Wave 2 shortcut: server falls back to stream_name lookup.
+                schema_id=schema_id,
             )
             self._client.send_frame_no_recv(OP_PUSH_TYPED_BATCH, payload)
             return

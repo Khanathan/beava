@@ -63,10 +63,20 @@ pub fn decode_typed_row_push_batch(
     }
     let schema_id = u32::from_be_bytes(bytes[pos..pos + 4].try_into().unwrap());
     pos += 4;
-    // Wave 2 shortcut: schema_id=0 → trust the stream-name lookup the
-    // caller performed. Wave 6 removes this once REGISTER ack carries the
-    // schema_id back to the client.
-    if schema_id != 0 && schema_id != schema.schema_id {
+    // Phase 59.6 Wave 6: schema_id MUST match the registered schema. The
+    // Wave 2 `schema_id=0` shortcut is removed now that the REGISTER ack
+    // echoes the assigned schema_id back to the client (see
+    // src/server/tcp.rs Command::Register handler) and the Python SDK
+    // v0.3.0 caches it in `_schema_ids[stream_name]`. Strict matching
+    // protects against:
+    //   - Stale client state after a restart-with-schema-reassignment.
+    //   - Mis-routed frames carrying the wrong stream's schema id.
+    //
+    // Back-compat for pre-Wave-6 Python SDK clients that still send
+    // `schema_id=0`: those clients must upgrade to v0.3.0 or fall back
+    // to the OP_PUSH_BATCH (Value) path (which the Value fallback
+    // counter path handles transparently).
+    if schema_id != schema.schema_id {
         return Err(BeavaError::Protocol(format!(
             "typed push: schema_id {} does not match registered schema for {:?} (id={})",
             schema_id, schema.name, schema.schema_id
@@ -260,16 +270,19 @@ mod tests {
     }
 
     #[test]
-    fn decode_typed_row_push_batch_accepts_schema_id_zero_as_shortcut() {
-        // Wave 2 D-B1 convenience: schema_id = 0 means "trust stream_name
-        // lookup". The decoder accepts it and uses the registered schema's
-        // actual id for the decoded Row's `schema_id` field.
+    fn decode_typed_row_push_batch_rejects_schema_id_zero_after_wave6() {
+        // Phase 59.6 Wave 6: the Wave 2 `schema_id=0` shortcut was removed
+        // once the REGISTER ack started echoing the assigned schema_id
+        // back to the client (SC-6 / Python SDK v0.3.0). A pre-Wave-6
+        // client still sending schema_id=0 now gets a clear protocol
+        // error with the registered id in the message so it can log +
+        // upgrade.
         let schema = txns_schema(42);
         let frame = build_frame(0, &[("ned", 7.5)], &schema, &[], 1);
-        let (rows, _ack, _consumed) =
-            decode_typed_row_push_batch(&frame, &schema).expect("schema_id=0 shortcut ok");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].schema_id, 42);
+        let err = decode_typed_row_push_batch(&frame, &schema)
+            .expect_err("schema_id=0 must now fail (Wave 6 strict mode)");
+        let msg = format!("{}", err);
+        assert!(msg.contains("schema_id 0"), "unexpected error: {msg}");
     }
 
     #[test]

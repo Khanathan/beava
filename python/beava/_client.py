@@ -58,6 +58,13 @@ class BeavaClient:
         # STATUS_ERROR) — client keeps emitting binary without handshake.
         self.server_capability_bits: int | None = None
         self.server_version_tag: int | None = None
+        # Phase 59.6 Wave 6 (TPC-PERF-11): per-stream schema_id cache. The
+        # REGISTER ack JSON carries the assigned ``schema_id`` field when
+        # the stream has a typed schema. ``App.register`` parses the ack
+        # and populates this map so subsequent ``_pack_typed_batch`` calls
+        # can send the real id instead of the Wave-2 ``schema_id=0``
+        # shortcut (which Wave 6 removed server-side).
+        self._schema_ids: dict[str, int] = {}
 
         # Phase 59 Wave 3 D-B4: BEAVA_WIRE_NEGOTIATE=1 opt-in handshake on
         # connect. Default off — backwards compat for users on pre-59

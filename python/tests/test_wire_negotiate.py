@@ -48,8 +48,11 @@ def test_wire_binary_passthrough_is_bit_zero() -> None:
     assert WIRE_BINARY_PASSTHROUGH == 1
 
 
-def test_wire_version_tag_client_is_2() -> None:
-    assert WIRE_VERSION_TAG_CLIENT == 2
+def test_wire_version_tag_client_is_3() -> None:
+    # Phase 59.6 Wave 6 bumps v0.2.0 (tag 2) → v0.3.0 (tag 3) for the
+    # REGISTER ack schema_id echo + `_schema_ids` cache + strict
+    # schema_id (removed the Wave 2 `schema_id=0` shortcut).
+    assert WIRE_VERSION_TAG_CLIENT == 3
 
 
 # ---------------------------------------------------------------------------

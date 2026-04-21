@@ -83,8 +83,12 @@ WIRE_TYPED_PIPELINE: int = 1 << 1
 
 # Phase 59 Wave 3 D-B4: client-side wire version tag. Advertise to server on
 # negotiate; server echoes its own WIRE_VERSION_TAG_SERVER back. Bump on
-# breaking Python-side wire changes (none planned through v1.3).
-WIRE_VERSION_TAG_CLIENT: int = 2
+# breaking Python-side wire changes.
+#
+# Phase 59.6 Wave 6 (TPC-PERF-11): bump 2 → 3 for v0.3.0 — REGISTER ack
+# schema_id echo + `_schema_ids` cache + strict schema_id (removed the
+# Wave 2 `schema_id=0` shortcut).
+WIRE_VERSION_TAG_CLIENT: int = 3
 
 STATUS_OK: int = 0x00
 STATUS_ERROR: int = 0x01

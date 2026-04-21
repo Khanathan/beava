@@ -95,3 +95,35 @@ not fix.
 **Owner / resolution:** next phase to touch Phase 56 cross-shard
 EnrichFromTable or whoever fixes the E2E join flake. The typed-path
 Wave 3 tests use the same-shard path and are unaffected.
+
+---
+
+### Wave 6 follow-up: pre-existing Python E2E TCP flakes (7 tests) unchanged by Wave 6
+
+Python pytest full suite (excluding integration dir) on Wave 6 HEAD shows
+7 pre-existing failures, all in TCP e2e tests that spin up a live
+`beava_server`:
+
+- `test_v0_joins_e2e.py::test_stream_stream_join_tcp` (same as Wave 1)
+- `test_v0_joins_e2e.py::test_stream_table_enrich_tcp` (same as Wave 1)
+- `test_v0_register_roundtrip.py::test_full_tcp_roundtrip_register_push_get`
+- `test_v0_stream_table_join.py::test_stream_table_enrich_tcp_roundtrip`
+- `test_v0_stream_table_join.py::test_stream_table_enrich_composite_key_tcp`
+- `test_watermark_e2e.py::test_event_time_populated_by_user_lands_in_correct_bucket`
+- `test_watermark_e2e.py::test_event_time_absent_uses_wall_clock`
+
+**Verified pre-existing:** reproduced with `git stash` of all Wave 6
+changes (including python/ edits + src/server/tcp.rs REGISTER ack change
++ wire/typed.rs schema_id tightening); same 7 failures, identical error
+shapes (`KeyError: 'n'`, `row == {}`). Unrelated to Wave 6.
+
+**Why deferred:** Wave 6's scope is advanced typed aggs + SDK v0.3.0
+handshake. The failing e2e tests exercise the push → feature-read path,
+which has been flaky since Phase 60's in-progress salt sweep landed on
+the branch (per Wave 1 + Wave 3 notes above). Wave 6 changes make no
+modification to the push or feature-read code paths.
+
+**Owner / resolution:** Phase 60 salt-sweep closure, or a dedicated
+debugging session on the e2e harness. 520/527 unit tests pass; the 7 are
+pre-existing and non-blocking for Wave 6 acceptance (SC-4 + SC-6 flip
+GREEN on Rust-side tests that don't depend on the e2e harness).

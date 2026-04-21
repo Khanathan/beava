@@ -3254,21 +3254,31 @@ async fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8
                 // block if present and register it with the engine's
                 // SchemaRegistry. Downstream waves branch on
                 // `engine.is_typed_stream(&def_name)` to take the typed path.
-                if let Some((sname, schema_json)) = typed_schema {
-                    let registered = schema_json.to_registered_schema(&sname);
-                    if let Err(e) = registered.validate_layout() {
-                        return Err(BeavaError::Protocol(format!(
-                            "v0 REGISTER {}: typed schema layout invalid: {}",
-                            sname, e
-                        )));
-                    }
-                    let schema_id = engine.register_typed_schema(&sname, registered);
-                    eprintln!(
-                        "[beava-register] Phase 59.6 (TPC-PERF-11): registered typed schema \
-                         stream={} schema_id={}",
-                        sname, schema_id
-                    );
-                }
+                //
+                // Phase 59.6 Wave 6 (TPC-PERF-11 / SCHEMA_ID echo): capture the
+                // assigned schema_id so the REGISTER ack JSON can echo it back
+                // to the client for `_schema_ids[stream_name]` caching. This
+                // tightens the Wave 2 `schema_id=0` shortcut — Wave-6 SDK
+                // clients send the real id.
+                let echoed_schema_id: Option<u32> =
+                    if let Some((sname, schema_json)) = typed_schema {
+                        let registered = schema_json.to_registered_schema(&sname);
+                        if let Err(e) = registered.validate_layout() {
+                            return Err(BeavaError::Protocol(format!(
+                                "v0 REGISTER {}: typed schema layout invalid: {}",
+                                sname, e
+                            )));
+                        }
+                        let schema_id = engine.register_typed_schema(&sname, registered);
+                        eprintln!(
+                            "[beava-register] Phase 59.6 (TPC-PERF-11): registered typed schema \
+                             stream={} schema_id={}",
+                            sname, schema_id
+                        );
+                        Some(schema_id)
+                    } else {
+                        None
+                    };
                 // Phase 50-06 (D-11/D-12): warn if stream has no shard_key at N>1.
                 {
                     let no_shard_key = engine
@@ -3284,7 +3294,7 @@ async fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8
                         );
                     }
                 }
-                let diff_json = serde_json::json!({
+                let mut diff_obj = serde_json::json!({
                     "status": "ok",
                     "kind": "v0",
                     "name": def_name,
@@ -3292,7 +3302,20 @@ async fn handle_sync_command(cmd: Command, state: &SharedState) -> Result<Vec<u8
                     "removed": diff.removed,
                     "backfilling": diff.backfilling,
                 });
-                return Ok(serde_json::to_vec(&diff_json).unwrap());
+                // Phase 59.6 Wave 6 (TPC-PERF-11): SCHEMA_ID echo. The ack
+                // body gains a `schema_id` field when the stream was
+                // registered with a typed schema. Pre-Wave-6 clients
+                // parse the JSON with serde and ignore the extra field
+                // (serde_json::Map order-independent); Wave-6 clients
+                // populate `self._schema_ids[stream_name] = schema_id`
+                // and send the real id on subsequent OP_PUSH_TYPED_BATCH
+                // frames.
+                if let Some(sid) = echoed_schema_id {
+                    if let serde_json::Value::Object(ref mut map) = diff_obj {
+                        map.insert("schema_id".to_string(), serde_json::Value::from(sid));
+                    }
+                }
+                return Ok(serde_json::to_vec(&diff_obj).unwrap());
             }
 
             let req: protocol::RegisterRequest = serde_json::from_value(payload)

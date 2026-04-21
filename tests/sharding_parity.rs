@@ -594,4 +594,29 @@ mod typed_parity {
             assert_eq!(a.arena, b.arena);
         }
     }
+
+    /// Phase 59.6 Wave 6 SC-9 extension — coverage assertion for all 17
+    /// typed aggregation operators through the `is_typed_agg` dispatcher.
+    /// Complements `typed_parity_n1_n8` (which covers SSJ operator-boundary
+    /// parity) by proving the register-time typed dispatcher recognizes
+    /// every D-F1 op kind — Waves 4 + 6.
+    #[test]
+    fn typed_ops_coverage_matches_wave_4_plus_wave_6() {
+        use beava::engine::register::{is_typed_agg, TYPED_AGG_OP_COUNT};
+        // Wave 4 — 7 simple aggs.
+        for kind in ["count", "sum", "avg", "min", "max", "last", "first"] {
+            assert!(is_typed_agg(kind), "Wave 4 op {kind} must be typed-covered");
+        }
+        // Wave 6 — 9 advanced aggs (note: first_n / last_n are separate ops from first / last).
+        for kind in [
+            "count_distinct", "percentile", "top_k", "stddev", "variance",
+            "ema", "lag", "first_n", "last_n",
+        ] {
+            assert!(is_typed_agg(kind), "Wave 6 op {kind} must be typed-covered");
+        }
+        // Negative: unknown ops are not covered.
+        assert!(!is_typed_agg("derive"));
+        assert!(!is_typed_agg(""));
+        assert_eq!(TYPED_AGG_OP_COUNT, 16, "16 typed ops (7 simple + 9 advanced)");
+    }
 }
