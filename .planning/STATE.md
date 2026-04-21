@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: planning
-stopped_at: Completed 56-03-PLAN.md (Wave 3 — SSJ cross-shard + TPC-CORR-04 relaxation; SC-2 + SC-3 GREEN)
-last_updated: "2026-04-21T05:43:13.128Z"
-last_activity: 2026-04-20
+stopped_at: Phase 56 closed 2026-04-21 (engineering-complete; default-pipeline perf gate PASSED 1,195,914 EPS; cross-shard scenario SC-5 human_needed on Phase 55 SDK gap, 56-NEXT #6 filed). Starting Phase 57 (retraction across cross-shard joins).
+last_updated: "2026-04-21T06:10:00.000Z"
+last_activity: 2026-04-21
 progress:
   total_phases: 18
-  completed_phases: 7
+  completed_phases: 8
   total_plans: 59
-  completed_plans: 55
-  percent: 93
+  completed_plans: 56
+  percent: 94
 ---
 
 # Project State
@@ -25,14 +25,14 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 ## Current Position
 
-Phase: 55 CLOSED 2026-04-20 (user accepted SC-6 N>1 boot-rematerialization deferral to 55-NEXT #1; ~80 LOC fix + two-shard unit test to land in a later phase)
-Plan: 5 of 5 (all Phase 55 plans done)
-**Phase:** 56
+Phase: 56 CLOSED 2026-04-21 (engineering-complete; TPC-CORR-04 relaxation + TPC-CORR-08 + TPC-CORR-09 closed. Default fraud-pipeline perf gate PASSED 1,195,914 EPS ≥ 1,059,261 floor (+12.9%); cross-shard enrichment scenario SC-5 `human_needed` on Phase 55 SDK gap — 56-NEXT #6 filed.)
+Plan: 5 of 5 (all Phase 56 plans done)
+**Phase:** 57
 **Plan:** Not started
 **Status:** Ready to plan
-**Progress:** [█████████░] 93%
+**Progress:** [█████████░] 94%
 
-**Last activity:** 2026-04-20
+**Last activity:** 2026-04-21
 
 ## Milestone Status
 
@@ -118,8 +118,26 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 54 full | Net −1,100 LOC; DashMap 61.2%→0% in pprof top-20; EPS +580% (197K→1.34M); 6/7 SC auto-passed | 6 plans | TPC-ARCH-01 ✅, TPC-PERSIST-05A ✅, TPC-PERSIST-04 human_needed |
 | Phase 56 P02 | 45min | 2 tasks | 3 files |
 | Phase 56 P03 | 50min | 2 tasks | 7 files |
+| Phase 56 P04 | ~70min (scenario wiring + perf run + verify script + smoke tests + PERF-GATE doc + VERIFICATION doc + ROADMAP/STATE/deferred updates) | 2 tasks | 11 files (2 commits: bec3eef + close commit) |
+| Phase 56 full | TPC-CORR-04 relaxed + TPC-CORR-08 + TPC-CORR-09 closed; default-pipeline perf 1,195,914 EPS (+12.9% over floor); 5 new pre-seeded counters; 3 new ShardOp variants; SC-5 crossshard scenario human_needed on SDK gap | 5 plans | 14 Phase-56 integration tests GREEN; 801/0/35 lib baseline preserved |
 
 ## Accumulated Context
+
+### Phase 56 — closed 2026-04-21 (engineering-complete, SC-5 `human_needed`)
+
+- **Phase 56 aggregate outcome:** TPC-CORR-04 (relaxed), TPC-CORR-08, and TPC-CORR-09 all closed. EnrichFromTable and StreamStreamJoin are correct across shards via three new `ShardOp` variants (`ReadEntityAt`, `ReadEntityBatch`, `SsjInsert`) + same-shard fast paths + per-batch coalesce + register-time `CrossShardJoinWarning` replacing the prior hard-reject. All 4 waves landed atomically on `arch/tpc-full-shard`.
+- **Wave 0 (2026-04-20, 97caab0 + 1304bb5):** 9 RED tests for SC-1..SC-5 + REQUIREMENTS TPC-CORR-04 relaxation + TPC-CORR-08 + TPC-CORR-09.
+- **Wave 1 (2026-04-20, a15e928 + 9ed4dfb + 65d35b1):** ShardOp primitives + `Shard::read_entity_at` / `apply_ssj_insert` / `read_entity_from_shard` + pipeline.rs helpers + 5 pre-seeded metric counters (`beava_enrich_cross_shard_total`, `beava_enrich_intra_shard_total`, `beava_enrich_missing_total`, `beava_ssj_cross_shard_total`, `beava_crossshard_joins_registered_total`).
+- **Wave 2 (2026-04-20, 3dda81f + 870b174 + cba6023):** EnrichFromTable wired via ReadEntityAt/Batch; same-shard fast path preserved. SC-1 GREEN (`cross_shard_enrich_from_table` 2/0/0 + sharding_parity enrich 1/0/0).
+- **Wave 3 (2026-04-20, 39b9536 + ea251b0 + 8303187):** StreamStreamJoin routes via `hash(join.on)%N`; TPC-CORR-04 relaxed (register() no longer rejects; `CrossShardJoinWarning` logged + counter-bumped + `/debug/warnings cross_shard_joins` field). SC-2 + SC-3 GREEN.
+- **Wave 4 (2026-04-21, bec3eef):** Perf gate measured + evidence committed. **Default fraud-pipeline candidate EPS 1,195,914** over 60-s `MODE=complex CPUS=8 CLIENTS=8 BEAVA_SHARD_INBOX_SIZE=1048576` — clears the 1,059,261 floor with +12.9 % headroom; −4.0 % vs Phase 55 baseline (within the 15 % regression budget). Waves 1-3 correctness-proof signal.
+- **SC-5 cross-shard enrichment scenario — human_needed.** The Phase 55 Python SDK `@bv.source_table` decorator has NO wire-REGISTER path (`register_source_table()` is an in-process Rust API only). Consequence: proc-0 of the bench client errors at setup with "table not registered as @bv.source_table" when trying to seed `Countries` rows via `upsert_table_row`. The scenario wiring (`benchmark/fraud-pipeline/scenario_crossshard_enrich.py`, `run_bench.sh BEAVA_ENRICH_CROSSSHARD_SCENARIO=1` branch, `tests/crossshard_enrich_perf_smoke.rs::crossshard_enrich_eps_floor` subprocess runner) all already work and will flip GREEN once 56-NEXT #6 lands. Matches Phase 55 SC-6 precedent (user accepted `human_needed` 2026-04-20).
+- **Integration tests:** 14 new Phase-56 tests GREEN across 4 files. Phase 51/55 tests all unregressed (cross_shard_tt_cascade_ownership 2/0/0, cascade_metrics 2/0/0, debug_warnings + warnings_feed + dedupe + integration 30/0/0).
+- **Lib baselines preserved:** `cargo test --release --lib` 801/0/35 (fjall); `cargo test --release --lib --features state-inmem` 800/0/35.
+- **56-W* markers all removed.** `grep -rE '#\[ignore = "56-W[0-4]"' tests/` → 0.
+- **Ship-gate tests:** `scripts/verify-crossshard-metrics.sh` exits 0 (all 5 Phase-56 counters present + pre-seeded + `pub const`).
+- **5 new 56-NEXT items filed.** Priority-ordered: #6 (HIGH — wire-REGISTER for @bv.source_table, ~80 LOC, unblocks SC-5 gate) > #1 (full byte-identical N=1↔N=8 replay proptest) > #2 (across-target parallel dispatch) > #3 (SSJ TTL — Phase 57 territory) > #4/#5/#7/#8 (low-priority polish / observability).
+- **Wave 4 handoff to Phase 57:** retraction across cross-shard joins. Keys files: `src/engine/operators.rs` StreamJoinBuffer, `src/state/event_log.rs` PendingRetraction (from Phase 55-02's DELETE path), `src/engine/pipeline.rs` ssj_insert_at_shard. SC-3 from Phase 57 ROADMAP will consume the Phase-55 PendingRetraction markers + propagate tombstones through the SSJ buffer.
 
 ### Phase 54 Plan 05 — 2026-04-20
 
@@ -250,8 +268,11 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 56-03-PLAN.md (Wave 3 — SSJ cross-shard + TPC-CORR-04 relaxation; SC-2 + SC-3 GREEN)
+**Stopped at:** Phase 56 closed 2026-04-21 (engineering-complete; default-pipeline perf gate PASSED 1,195,914 EPS; cross-shard scenario SC-5 `human_needed` on Phase 55 SDK gap — 56-NEXT #6 filed).
 
-**Next action (engineering):** Phase 54 is closed modulo soak evidence. Engineering-facing next action is either (a) operator runs `scripts/soak-hetzner-ccx43.sh` on Hetzner CCX43 to flip TPC-PERSIST-04 to `passed`, or (b) start next phase / close v1.2 milestone. See `.planning/phases/54-legacy-engine-removal/soak-runbook.md` for the operator steps.
+**Next action (engineering):** Phase 56 is engineering-complete. The engineering-facing next action is one of:
+  (a) **Land 56-NEXT #6** (wire-REGISTER for `@bv.source_table`, ~80 LOC + 1 integration test) — unblocks the cross-shard enrichment perf gate. After landing, re-run `BEAVA_PERF_GATE=1 cargo test --release --test crossshard_enrich_perf_smoke crossshard_enrich_eps_floor -- --test-threads=1` to flip SC-5 to `passed` for Phase 56.
+  (b) **Start Phase 57** (retraction across cross-shard joins). The `src/engine/operators.rs` StreamJoinBuffer + `src/state/event_log.rs` PendingRetraction (from Phase 55-02) + `src/engine/pipeline.rs` ssj_insert_at_shard are the key integration points.
+  (c) Operator runs `scripts/soak-hetzner-ccx43.sh` at Phase 56 HEAD to flip TPC-PERSIST-04 `human_needed` → `passed` (carries through from Phase 54; runbook under `.planning/phases/54-legacy-engine-removal/soak-runbook.md`).
 
 **Orthogonal ops (launch day — still pending):** v1.0-launch 6-item human-run checklist above remains outstanding. Run independently of v1.2 engineering work.

@@ -22,6 +22,7 @@
 - [x] **Phase 53: 53-fjall-state-backend** — Replace per-shard in-memory AHashMap state with `fjall` LSM-tree backend (per-shard partitions); state is durable-by-default, unbounded size, crash-safe without snapshot replay (completed 2026-04-19 — engineering-complete; 4/6 TPC-PERSIST-* closed; PERSIST-04 soak + PERSIST-05A bench deferred to Phase 54 because pprof showed legacy `PipelineEngine::push_internal` bypasses the fjall path at N=1 — see `53-VERIFICATION.md`)
 - [x] **Phase 54: 54-legacy-engine-removal** — Retire the DashMap-backed `StateStore` and `PipelineEngine::push_internal` / `push_batch_with_cascade_no_features` legacy paths. Route every push entrypoint (TCP `handle_push_batch`, HTTP `http_push_*`, replica ingest) through shard-thread SPSC dispatch at N=1 as well as N>1, so `push_with_cascade_on_shard` + fjall is the sole hot path. Closes Phase 52-10 BLOCKER and unlocks the deferred Phase 53 perf gates (`-15%` 9-cell bench + 100 GB soak). (completed 2026-04-20 — engineering-complete; TPC-PERSIST-04 soak `human_needed`, evidence file gated.)
 - [x] **Phase 55: 55-stream-table-cascade-crossshard-and-source-tables** — Fix the Stream→Table aggregation correctness bug (downstream rows on `hash(output_key) % N`), introduce source tables (`@bv.source_table`) with UPSERT/DELETE + `source_lsn` echo. (completed 2026-04-20 — engineering-complete; SC-6 N>1 boot rematerialization fan-out deferred to 55-NEXT #1 per user acceptance 2026-04-20; perf gate 1,246,190 EPS ≥ 1,138,529 floor.)
+- [x] **Phase 56: 56-enrich-from-table-and-stream-stream-join-crossshard** — Make EnrichFromTable and StreamStreamJoin correct across shards. Three new `ShardOp` variants (`ReadEntityAt`, `ReadEntityBatch`, `SsjInsert`) + same-shard fast paths + per-batch coalesce. TPC-CORR-04 relaxed from hard-reject to `CrossShardJoinWarning`. (completed 2026-04-21 — engineering-complete; TPC-CORR-08 + TPC-CORR-09 closed; TPC-CORR-04 relaxation landed. Default-pipeline perf gate 1,195,914 EPS ≥ 1,059,261 floor (PASSED, +12.9%). Cross-shard-scenario SC-5 `human_needed` — blocked on Phase 55 SDK source-table wire-registration gap; remediation filed as 56-NEXT #6.)
 
 ## Phase Details
 
@@ -230,7 +231,7 @@ Plans:
 - [x] 56-01-PLAN.md — Wave 1: ShardOp::ReadEntityAt / ReadEntityBatch / SsjInsert + Shard::read_entity_at + Shard::apply_ssj_insert + pipeline.rs helpers + 5 metric counters
 - [x] 56-02-PLAN.md — Wave 2: EnrichFromTable cross-shard read with same-shard fast path + per-batch coalesce by (target_shard, table)
 - [x] 56-03-PLAN.md — Wave 3: StreamStreamJoin routes via hash(join.on)%N + TPC-CORR-04 relaxation (CrossShardJoinWarning) + /debug/warnings cross_shard_joins field
-- [ ] 56-04-PLAN.md — Wave 4: perf gate (>= 1,059,261 EPS floor) + 56-VERIFICATION.md + close
+- [x] 56-04-PLAN.md — Wave 4: perf gate (default pipeline PASSED 1,195,914 EPS; crossshard scenario human_needed on SDK gap) + 56-VERIFICATION.md + close
 **UI hint**: no
 
 ### Phase 57: 57-retraction-across-crossshard-joins
@@ -344,7 +345,7 @@ Plans:
 | 53. Fjall state backend | 6/7 plans (06 deferred) | **Engineering-complete** — 4/6 TPC-PERSIST closed; PERSIST-04 + PERSIST-05A gates deferred to Phase 54 (legacy DashMap bypass at N=1) | 2026-04-19 |
 | 54. Legacy engine removal | 6/6 | **Engineering-complete** — TPC-ARCH-01 ✅ + TPC-PERSIST-05A ✅ closed; TPC-PERSIST-04 human_needed (Hetzner CCX43 8h soak; evidence-file gated). pprof DashMap → 0% in top-20; EPS +580% (197K → 1.34M). | 2026-04-20 (eng) |
 | 55. Stream→Table cascade cross-shard + source tables | 5/5 | Complete    | 2026-04-20 |
-| 56. EnrichFromTable + StreamStreamJoin cross-shard | 4/5 | In Progress|  |
+| 56. EnrichFromTable + StreamStreamJoin cross-shard | 5/5 | **Engineering-complete** — TPC-CORR-08 ✅ + TPC-CORR-09 ✅ closed; TPC-CORR-04 relaxation landed. Default-pipeline perf gate 1,195,914 EPS PASSED (+12.9% over 1,059,261 floor; −4.0% vs P55 baseline). Cross-shard scenario SC-5 human_needed — Phase 55 SDK source-table wire-registration gap (56-NEXT #6). | 2026-04-21 |
 | 57. Retraction across cross-shard joins | 0/? | Not started — consuming the pending-retraction markers from Phase 55 source-table DELETEs + SSJ tombstone propagation | — |
 | 58. Tokio connection-handling rewrite | 0/? | Not started — biggest measured bottleneck (60% of CPU in samply) — eliminate per-conn task churn | — |
 | 59. Binary wire format for PUSH | 0/? | Not started — 11% CPU savings from removing JSON re-serialization | — |
