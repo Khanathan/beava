@@ -11,6 +11,10 @@ pub mod operators;
 /// See `src/engine/operators_typed.rs` for the `TypedOperator` trait +
 /// `EnrichFromTableTyped` + `derive_enriched_schema`.
 pub mod operators_typed;
+/// Phase 59.6 Wave 4 (TPC-PERF-11): typed aggregation operator impls
+/// (CountOp, SumOp, AvgOp, MinOp, MaxOp, LastOp, FirstOp) implementing
+/// the `TypedAggOp` trait. See `src/engine/operators_typed_aggs.rs`.
+pub mod operators_typed_aggs;
 pub mod pipeline;
 pub mod recommend;
 pub mod register;
@@ -29,5 +33,12 @@ pub use schema::{FieldSpec, FieldTy, RegisteredSchema, Row, SchemaId, SchemaRegi
 
 // Phase 59.6 Wave 3 (TPC-PERF-11) — typed operator re-exports.
 pub use operators_typed::{
-    derive_enriched_schema, EnrichFromTableTyped, ProjectedField, TypedOperator,
+    derive_enriched_schema, EnrichFromTableTyped, ProjectedField, TypedAggOp, TypedOperator,
+};
+
+// Phase 59.6 Wave 4 (TPC-PERF-11) — typed aggregation operator re-exports.
+pub use operators_typed_aggs::{
+    AvgOpTypedF64, CountOpTyped, FirstOpTypedInlineStr, LastOpTypedInlineStr,
+    MaxOpTypedF64, MaxOpTypedI64, MinOpTypedF64, MinOpTypedI64, SumOpTypedF64,
+    SumOpTypedI64,
 };

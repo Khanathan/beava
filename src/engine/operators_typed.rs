@@ -37,7 +37,8 @@ use crate::engine::schema::{FieldSpec, FieldTy, RegisteredSchema, Row};
 use std::sync::Arc;
 
 /// Phase 59.6 D-C1 — minimal typed-operator trait. Wave 3 implements
-/// [`EnrichFromTableTyped`]. Wave 4 will add `TypedAggOp`.
+/// [`EnrichFromTableTyped`]. Wave 4 adds [`TypedAggOp`] for aggregation
+/// operators (see `src/engine/operators_typed_aggs.rs`).
 pub trait TypedOperator: Send + Sync {
     /// Operator name, matches the feature name on the registered stream.
     fn name(&self) -> &str;
@@ -45,6 +46,45 @@ pub trait TypedOperator: Send + Sync {
     fn input_schema(&self) -> &Arc<RegisteredSchema>;
     /// Schema of the output row produced by this operator.
     fn output_schema(&self) -> &Arc<RegisteredSchema>;
+}
+
+/// Phase 59.6 Wave 4 (TPC-PERF-11, D-C1, D-C4) — typed aggregation operator trait.
+///
+/// Each impl holds pre-resolved field offsets (resolved at register time)
+/// so the hot path is offset arithmetic + scalar read/write — no HashMap
+/// lookup, no enum dispatch, no allocation after state init.
+///
+/// Per-entity agg state is stored as a typed [`Row`] owned by
+/// [`crate::shard::Shard::entity_state_typed`]. `init_state` is called
+/// exactly once when the entity state Row is created (zero-cost identity
+/// write); `update_typed` is called for every event; `read_feature`
+/// produces a [`crate::types::FeatureValue`] for downstream consumption.
+pub trait TypedAggOp: Send + Sync + std::fmt::Debug {
+    /// Initialize this op's columns inside the shared per-entity agg
+    /// state Row. Called exactly once when the entity's state Row is
+    /// first created.
+    fn init_state(&self, state_schema: &RegisteredSchema, state: &mut Row);
+
+    /// Update the agg state given an input event Row. MUST mutate state
+    /// in place with no allocation (D-C4 invariant).
+    fn update_typed(
+        &self,
+        state: &mut Row,
+        state_schema: &RegisteredSchema,
+        event: &Row,
+        event_schema: &RegisteredSchema,
+        now: std::time::SystemTime,
+    );
+
+    /// Read the op's current feature value from the per-entity state Row.
+    fn read_feature(
+        &self,
+        state: &Row,
+        state_schema: &RegisteredSchema,
+    ) -> crate::types::FeatureValue;
+
+    /// Operator / feature name.
+    fn name(&self) -> &str;
 }
 
 /// Declaration of a single projected field lifted from the right-side
