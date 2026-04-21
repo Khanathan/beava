@@ -49,7 +49,18 @@ set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BENCH_DIR="$REPO/benchmark/fraud-pipeline"
-BENCH="$BENCH_DIR/bench.py"
+# Phase 56 Wave 4: select the cross-shard enrichment scenario when
+# BEAVA_ENRICH_CROSSSHARD_SCENARIO=1. That scenario registers Countries
+# (source_table with shard_key=country_code) + Txns (stream with
+# shard_key=user_id) — uniform country_code × Zipf user_id drives ~87.5%
+# of enrichment reads across shard boundaries at N=8. Other scenarios
+# (the default fraud pipeline) stay on bench.py.
+if [[ "${BEAVA_ENRICH_CROSSSHARD_SCENARIO:-0}" = "1" ]]; then
+    BENCH="$BENCH_DIR/scenario_crossshard_enrich.py"
+    echo "[bench] Phase 56 cross-shard enrichment scenario selected ($BENCH)"
+else
+    BENCH="$BENCH_DIR/bench.py"
+fi
 
 MODE="${MODE:-complex}"
 WARMUP="${WARMUP:-5}"
@@ -175,6 +186,7 @@ TALLY_WORKER_THREADS="$CPUS" BEAVA_WORKER_THREADS="$CPUS" \
 TALLY_TCP_PORT="$TCP_PORT"    BEAVA_TCP_PORT="$TCP_PORT" \
 TALLY_HTTP_PORT="$HTTP_PORT"  BEAVA_HTTP_PORT="$HTTP_PORT" \
 TALLY_DATA_DIR="$DATA_DIR"    BEAVA_DATA_DIR="$DATA_DIR" \
+BEAVA_SHARD_INBOX_SIZE="${BEAVA_SHARD_INBOX_SIZE:-}" \
     "$BIN" > "$SRV_LOG" 2>&1 &
 SERVER_PID=$!
 
@@ -449,6 +461,9 @@ print(f"    Config:       {cfg['mode']} pipeline, {cfg['clients']} clients, {cfg
 print(f"    Duration:     {cfg['duration_seconds']:.0f}s measured (+{cfg['warmup_seconds']:.0f}s warmup)")
 print(f"    Events:       {tp['total_events']:,}")
 print(f"    Aggregate:    {tp['aggregate_eps']:,} events/sec")
+# Phase 56 Wave 4: machine-parseable "Aggregate EPS: N" line for the
+# perf-gate test harness (crossshard_enrich_eps_floor) to grep out.
+print(f"Aggregate EPS: {tp['aggregate_eps']}")
 print(f"    Per event:    {tp['per_event_us']:.2f} microseconds")
 print()
 print(f"    Client push_many latency (microseconds per 1000-event batch call):")
