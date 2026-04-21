@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: planning
-stopped_at: Completed 56-02-PLAN.md
-last_updated: "2026-04-21T05:15:58.888Z"
+stopped_at: Completed 56-03-PLAN.md (Wave 3 — SSJ cross-shard + TPC-CORR-04 relaxation; SC-2 + SC-3 GREEN)
+last_updated: "2026-04-21T05:43:13.128Z"
 last_activity: 2026-04-20
 progress:
   total_phases: 18
   completed_phases: 7
   total_plans: 59
-  completed_plans: 54
-  percent: 92
+  completed_plans: 55
+  percent: 93
 ---
 
 # Project State
@@ -30,7 +30,7 @@ Plan: 5 of 5 (all Phase 55 plans done)
 **Phase:** 56
 **Plan:** Not started
 **Status:** Ready to plan
-**Progress:** [█████████░] 92%
+**Progress:** [█████████░] 93%
 
 **Last activity:** 2026-04-20
 
@@ -117,6 +117,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 54 P05 | ~45 min (pprof×3 + bench×2 + artifacts) | 3 tasks | 11 files (3 committed; 8 on-disk .planning/) |
 | Phase 54 full | Net −1,100 LOC; DashMap 61.2%→0% in pprof top-20; EPS +580% (197K→1.34M); 6/7 SC auto-passed | 6 plans | TPC-ARCH-01 ✅, TPC-PERSIST-05A ✅, TPC-PERSIST-04 human_needed |
 | Phase 56 P02 | 45min | 2 tasks | 3 files |
+| Phase 56 P03 | 50min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -249,7 +250,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 56-02-PLAN.md
+**Stopped at:** Completed 56-03-PLAN.md (Wave 3 — SSJ cross-shard + TPC-CORR-04 relaxation; SC-2 + SC-3 GREEN)
 
 **Next action (engineering):** Phase 54 is closed modulo soak evidence. Engineering-facing next action is either (a) operator runs `scripts/soak-hetzner-ccx43.sh` on Hetzner CCX43 to flip TPC-PERSIST-04 to `passed`, or (b) start next phase / close v1.2 milestone. See `.planning/phases/54-legacy-engine-removal/soak-runbook.md` for the operator steps.
 
