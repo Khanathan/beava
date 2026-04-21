@@ -188,14 +188,55 @@ def main() -> None:
     batches_since_sample = 0
     latency_samples_ns: list[int] = []
 
+    # File-based barrier: proc-0 seeds Countries, then drops a sentinel file;
+    # procs 1..N wait for it before pushing so proc-0's 50 upsert_table_row
+    # calls aren't competing with the push flood for shard inbox capacity
+    # (N concurrent push_many() saturated inboxes fast enough to exceed
+    # the 5 s client socket timeout on proc-0's upserts).
+    #
+    # Staleness: warmup and measurement phases run the same scenario file
+    # back-to-back, so procs 1..N must reject a sentinel left over from
+    # warmup's proc-0. Each proc records its own start time and only
+    # accepts a sentinel whose mtime is AFTER that moment.
+    proc_start_time = time.time()
+    seed_sentinel = os.path.join(
+        os.environ.get("TMPDIR", "/tmp"),
+        f"beava-bench-crossshard-seeded-{args.host.replace(':', '_')}",
+    )
     try:
         app = bv.App(args.host)
         app.register(*PIPELINES)
-        # Only proc-0 seeds the Countries table (source-table upserts are
-        # idempotent by (table, key) but the source_lsn contract prefers
-        # a single writer per key to avoid lsn-echo noise).
         if args.proc_id == 0:
+            # Clear any stale sentinel from a prior run/phase so
+            # subsequent procs only see our fresh write.
+            try:
+                os.unlink(seed_sentinel)
+            except FileNotFoundError:
+                pass
             _seed_countries_once(app)
+            # Drop the sentinel with a fresh mtime.
+            with open(seed_sentinel, "w") as f:
+                f.write(str(time.monotonic()))
+        else:
+            # Wait up to 30 s for THIS phase's proc-0 to finish seeding.
+            # A sentinel from a prior phase (older mtime) is ignored.
+            # 30 s accommodates scenarios where proc-0's 50 upsert_table_row
+            # calls compete with cascade processing on the Countries-owner
+            # shards (each upsert is a sync round-trip).
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                try:
+                    sentinel_mtime = os.path.getmtime(seed_sentinel)
+                except FileNotFoundError:
+                    sentinel_mtime = 0.0
+                if sentinel_mtime >= proc_start_time:
+                    break
+                time.sleep(0.05)
+            else:
+                raise TimeoutError(
+                    f"proc-0 did not seed Countries within 30 s "
+                    f"(sentinel={seed_sentinel} missing or stale)"
+                )
     except KeyboardInterrupt:
         error_kind = "KeyboardInterrupt"
         error_msg = "interrupted during setup"

@@ -41,10 +41,21 @@ fn compute_shard_idx(
 ) -> (usize, u32) {
     let shard_hint: u32 = {
         let engine = state.engine.read();
-        let key_field_ref = engine
-            .get_stream(stream_name)
-            .and_then(|s| s.key_field.as_deref());
-        crate::routing::shard_hint_for_event(payload, key_field_ref)
+        let stream_def = engine.get_stream(stream_name);
+        let key_field_ref = stream_def.and_then(|s| s.key_field.as_deref());
+        // 56-NEXT #7: fall through to raw_register_json["shard_key"] when
+        // key_field is None (stream-shaped sources declare shard_key on the
+        // @bv.stream decorator rather than a primary key), and round-robin
+        // when neither is present — aggregations reshuffle via cross-shard
+        // ShardOps so correctness holds.
+        let raw_shard_key = if key_field_ref.is_some() {
+            None
+        } else {
+            engine
+                .get_raw_register_json(stream_name)
+                .and_then(|j| j.get("shard_key"))
+        };
+        crate::routing::compute_ingest_shard_hint(payload, key_field_ref, raw_shard_key)
     };
     let idx = if shard_count == 0 {
         0

@@ -290,11 +290,17 @@ async fn create_pipeline(
                     let _ = log.register_stream(&def_name, history_ttl);
                 }
                 // Phase 50-06 (D-11/D-12): warn if stream has no shard_key at N>1.
-                let no_shard_key = engine
+                // 56-NEXT #7: check raw REGISTER JSON rather than
+                // `StreamDefinition.shard_key` — matches the check in tcp.rs.
+                let has_shard_key = engine
+                    .get_raw_register_json(&def_name)
+                    .and_then(|j| j.get("shard_key"))
+                    .is_some();
+                let has_key_field = engine
                     .get_stream(&def_name)
-                    .map(|s| s.shard_key.is_none())
-                    .unwrap_or(false);
-                if no_shard_key {
+                    .and_then(|s| s.key_field.as_deref())
+                    .is_some();
+                if !has_shard_key && !has_key_field {
                     let shard_count = state.shard_handles.read().len();
                     crate::server::signals::emit_shard_key_missing_warning(
                         &state.signals,
