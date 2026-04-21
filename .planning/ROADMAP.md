@@ -310,7 +310,20 @@ Plans:
   3. Perf gate: under Pareto-80/20 workload (matching TPC-PERF-07 cell), aggregate EPS ≥ +50% vs Phase 59 baseline on the same hardware; hot-shard `inbox_depth` stays ≤ 50% of `BEAVA_SHARD_INBOX_SIZE` under steady load.
   4. No correctness regression on uniform workload — salt is opt-in per stream.
   5. Metric `beava_shard_hot_key_owner_ratio` exposes "what % of events on this shard came from the top-1% of keys" so operators can identify candidates for salting.
-**Plans**: TBD
+**Locked decisions (2026-04-20)**:
+  - Salt cardinality: power-of-2 in [2, 256] (D-A2); source tables cannot declare salt (D-D3); at most one tuple element may carry `:salt(N)` (D-A5).
+  - Suffix derivation: `ahash(primary_event_id) % N` — deterministic across retries/replicas (D-B1); storage key = `"<key>:<salt_idx>"` (D-B2).
+  - Read fan-out: reuse Phase 56 `ShardOp::ReadEntityBatch` — per-target-shard coalesce; same-shard salt hits stay inline (D-C3). Combine via operator's existing commutative semantics (D-C2).
+  - Register-time sample-event guard rejects salt declaration when key contains `:` (D-G1); mixed-salt joins emit `SaltedJoinWarning` (D-D2) — not reject.
+  - Perf-gate harness: extended `benches/pareto_workload.rs` + `benchmark/fraud-pipeline/run_bench.sh` with a fraud-pipeline variant declaring `salt(16)` on Transactions; uniform workload regression budget ±2% of Phase 59 baseline (D-F4).
+  - Contingency ladder: C1 salt(64) → C2 double-salting → C3 human_needed (D-F5).
+**Plans**: 5 plans
+Plans:
+- [ ] 60-00-PLAN.md — Wave 0: TPC-PERF-10 row + 4 RED integration tests (tagged `#[ignore = "60-W[1-4]"]`) + `scripts/verify-salt-feature-complete.sh` grep-gate (exits 1 pre-Wave 1) + `pareto_salted_c8_x8` bench placeholder
+- [ ] 60-01-PLAN.md — Wave 1: `parse_shard_key_with_salt` + `ShardKeyParseError` + `SaltedJoinWarning` + `StreamDefinition.salt_cardinality: Option<u8> (#[serde(default)])` + Python SDK client-side parse + REGISTER payload emission
+- [ ] 60-02-PLAN.md — Wave 2: `shard_hint_for_event_salted` + `derive_storage_key` + 6 `derive_shard_idx` call-site threads + TCP/HTTP ingest wiring + D-G1 colon-in-key guard
+- [ ] 60-03-PLAN.md — Wave 3: `expand_salt_variants` + `combine_salt_variants` + `dispatch_salted_read_scatter` (per-target-shard coalesce via `ShardOp::ReadEntityBatch`) + EnrichFromTable salted-right-side + `tests/sharding_parity.rs` salted proptest subcase
+- [ ] 60-04-PLAN.md — Wave 4: 3 new metrics (`beava_shard_hot_key_owner_ratio`, `beava_salt_fanout_reads_total`, `beava_salt_ingest_writes_total`) + `salted_streams` on `/debug/shards` + Pareto +50% perf-gate (Criterion A/B + `run_bench.sh` 3× best-of-3) + `60-PERF-GATE.md` + `60-VERIFICATION.md` + human verify + close
 **UI hint**: no
 
 ### Phase 61: 61-metrics-hot-path-hoist
@@ -375,7 +388,7 @@ Plans:
 | 57. Retraction across cross-shard joins | 4/5 | In Progress|  |
 | 58. Tokio connection-handling rewrite | 5/5 | **Engineering-complete** — structural tokio-churn elimination landed on both Linux (SO_REUSEPORT per-shard + FuturesUnordered inline handler) and macOS (dedicated `std::thread` per shard + handle_connection_blocking); 0 `tokio::spawn(handle_connection)` in production PUSH path. Perf gate 1,376,450 EPS (+6.1% vs P57) on macOS dev host — 15.1% below 1,621,616 floor; p99 parity (−0.11%); SC-1 + SC-3 `human_needed` pending Linux prod-host run + probe-harness extension (58-NEXT #1). | 2026-04-21 (eng) |
 | 59. Binary wire format for PUSH | 5/5 | **Engineering-complete** — TCP OP_PUSH `bytes::Bytes` end-to-end (no JSON re-serialize); `OP_NEGOTIATE_WIRE_FORMAT=0x18` + Python SDK handshake (v0.2.0); D-B3 JSON-over-TCP compat ≥1 release cycle; `BEAVA_MAX_PAYLOAD_BYTES` DoS cap. Samply D-D3 PASSED (JSON_SHARE_PCT=2.5 ≤ 3.0). p99 latency −15% IMPROVED. Perf gate best-of-3 1,494,631 EPS = −1.3% below 1,514,095 floor within 6% run variance on macOS; SC-4 human_needed pending Linux prod-host re-run (59-NEXT #1). | 2026-04-21 (eng) |
-| 60. Hot-key mitigation via application salting | 0/? | Not started — architectural fix for Zipf hot-shard ceiling (≥+50% under Pareto-80/20) | — |
+| 60. Hot-key mitigation via application salting | 0/5 | Planned 2026-04-20 — plans landed; awaiting Wave 0 execution. Architectural fix for Zipf hot-shard ceiling (≥+50% under Pareto-80/20); delivers TPC-PERF-10. | — |
 | 61. Metrics hot-path hoist | 0/? | Not started — 3.5% CPU savings | — |
 | 62. Allocator + feature-row pooling | 0/? | Not started — 5-10% CPU savings | — |
 | 63. fjall cache + compaction tuning | 0/? | Not started — close fjall→inmem gap to ≥95% | — |
