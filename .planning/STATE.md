@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: Ready to start Phase 59
-stopped_at: Completed 59-00-PLAN.md (Wave 0 RED scaffolding for TPC-PERF-09)
-last_updated: "2026-04-21T10:53:17.832Z"
+stopped_at: Completed 59-01-PLAN.md
+last_updated: "2026-04-21T11:23:16.966Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 18
   completed_phases: 10
   total_plans: 74
-  completed_plans: 67
-  percent: 91
+  completed_plans: 68
+  percent: 92
 ---
 
 # Project State
@@ -27,12 +27,31 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 Phase: 58 CLOSED 2026-04-21 (engineering-complete; **TPC-PERF-08 structural change delivered**; SC-2 + SC-4 GREEN; SC-1 + SC-3 `human_needed` pending Linux prod-host run + probe harness extension — 58-NEXT #1. `tokio::spawn`-per-connection eliminated on all production PUSH paths on both Linux and macOS. Best candidate EPS 1,376,450 on macOS dev host = +6.1% vs Phase 57 baseline, −15.1% below 1,621,616 floor; p99 parity (−0.11%).)
 Plan: Phase 58 closed — next is Phase 59 (binary wire format for PUSH — TPC-PERF-09).
-**Phase:** 59 (binary-wire-format-for-push — not started)
-**Plan:** Phase 59 plans TBD (plan step for Phase 59 pending)
-**Status:** Ready to start Phase 59
-**Progress:** [█████████░] 91%
+**Phase:** 59 (binary-wire-format-for-push — in progress)
+**Plan:** 59-01 complete 2026-04-21 (`acffc40`, `f1a23d7`); next is 59-02 (OP_NEGOTIATE_WIRE_FORMAT)
+**Status:** Phase 59 Wave 1 engineering done — Bytes-end-to-end passthrough landed, D-C3 grep-ZERO GREEN, D-B3 JSON fallback GREEN, D-E1 DoS cap live
+**Progress:** [█████████░] 92%
 
-**Last activity:** 2026-04-21
+**Last activity:** 2026-04-21 (59-01-SUMMARY.md landed)
+
+### Phase 59 plans
+
+| Plan | Status | Commits |
+|------|--------|---------|
+| 59-00 (RED scaffolding) | Complete 2026-04-20 | bb96db2, 12988af, e5e956e, 940f562 |
+| 59-01 (Bytes passthrough + PayloadFmt) | Complete 2026-04-21 | acffc40, f1a23d7 |
+| 59-02 (OP_NEGOTIATE_WIRE_FORMAT 0x18) | Pending | — |
+| 59-03 (Python SDK handshake) | Pending | — |
+| 59-04 (Perf gate + samply re-run) | Pending | — |
+
+### Phase 59 Wave 1 decisions (key)
+
+- **Bytes-end-to-end passthrough lands** — listener-side `serde_json::to_vec(payload)` WASTE deleted (D-C3 grep-ZERO GREEN).
+- **`PayloadFmt::Binary` default** on `ShardEvent` per D-C2; HTTP path keeps Json via `send_to_shard_with_fmt`.
+- **D-B3 JSON-over-TCP fallback** live in `parse_command` (`{`/`[` first-byte discriminator). Regression guard: `tests/json_over_tcp_still_accepted`.
+- **D-E1 `BEAVA_MAX_PAYLOAD_BYTES` DoS cap** enforced at `parse_command` top; default 1 MiB, clamp [1 KiB, 64 MiB]; `OnceLock` cached.
+- **Rule-2 deviation** — `send_to_shard_with_fmt` helper added so HTTP ingest stays Json without touching http_ingest.rs call sites.
+- **Pre-existing out-of-scope failure** — `tests/test_concurrent.rs` (6 tests) broken on HEAD independent of Wave 1; filed in `.planning/phases/59-binary-wire-format-for-push/deferred-items.md`.
 
 ## Milestone Status
 
@@ -133,6 +152,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 58 P04 | ~25min (60s perf C0 + 60s C1 + samply probe + samply-live attempt + PERF-GATE + VERIFICATION + ROADMAP/STATE + SUMMARY) | 2 tasks | 7 files (2 commits: W4 evidence + close) |
 | Phase 58 full | Structural tokio-churn elimination on Linux + macOS: 0 tokio::spawn(handle_connection) in production PUSH; per-shard SO_REUSEPORT + FuturesUnordered (Linux) + dedicated std::thread + per-thread current_thread runtime bridge (macOS); N LISTEN sockets / N accept threads smoke + replica guardrail; perf 1,376,450 EPS on macOS dev host (+6.1% vs P57, −15.1% below floor); SC-1 + SC-3 human_needed pending Linux-host run + probe-harness extension | 5 plans | 812/0/35 lib baseline preserved; 0 DashMap / StateStore / legacy-push regressions |
 | Phase 59 P00 | ~35min | 2 tasks | 7 files |
+| Phase 59 P01 | 25min | 2 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -310,7 +330,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 59-00-PLAN.md (Wave 0 RED scaffolding for TPC-PERF-09)
+**Stopped at:** Completed 59-01-PLAN.md
 
 **Next action (engineering):** Phase 58 is engineering-complete. The engineering-facing next action is one of:
   (a) **Start Phase 59** (Binary wire format for PUSH — TPC-PERF-09). Goal: eliminate JSON re-serialization on the PUSH hot path (~11% of CPU per 2026-04 samply notes). Replace JSON with a binary codec (length-prefixed postcard or custom) for TCP PUSH; HTTP PUSH stays JSON for compatibility; zero-copy `bytes::Bytes` end-to-end from wire → shard inbox → fjall insert. Phase 58 left the per-connection runtime dispatch overhead structurally eliminated — JSON is now the top-of-profile leaf to attack.
