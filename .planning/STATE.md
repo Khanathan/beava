@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: planning
-stopped_at: Phase 56 closed 2026-04-21 (engineering-complete; default-pipeline perf gate PASSED 1,195,914 EPS; cross-shard scenario SC-5 human_needed on Phase 55 SDK gap, 56-NEXT #6 filed). Starting Phase 57 (retraction across cross-shard joins).
-last_updated: "2026-04-21T06:10:00.000Z"
+stopped_at: Completed 57-00-PLAN.md (Wave 0 RED tests + TPC-CORR-10)
+last_updated: "2026-04-21T06:49:20.997Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 18
   completed_phases: 8
-  total_plans: 59
-  completed_plans: 56
-  percent: 94
+  total_plans: 64
+  completed_plans: 57
+  percent: 89
 ---
 
 # Project State
@@ -30,7 +30,7 @@ Plan: 5 of 5 (all Phase 56 plans done)
 **Phase:** 57
 **Plan:** Not started
 **Status:** Ready to plan
-**Progress:** [█████████░] 94%
+**Progress:** [█████████░] 89%
 
 **Last activity:** 2026-04-21
 
@@ -120,6 +120,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 56 P03 | 50min | 2 tasks | 7 files |
 | Phase 56 P04 | ~70min (scenario wiring + perf run + verify script + smoke tests + PERF-GATE doc + VERIFICATION doc + ROADMAP/STATE/deferred updates) | 2 tasks | 11 files (2 commits: bec3eef + close commit) |
 | Phase 56 full | TPC-CORR-04 relaxed + TPC-CORR-08 + TPC-CORR-09 closed; default-pipeline perf 1,195,914 EPS (+12.9% over floor); 5 new pre-seeded counters; 3 new ShardOp variants; SC-5 crossshard scenario human_needed on SDK gap | 5 plans | 14 Phase-56 integration tests GREEN; 801/0/35 lib baseline preserved |
+| Phase 57 P00 | 25min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -268,7 +269,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Phase 56 closed 2026-04-21 (engineering-complete; default-pipeline perf gate PASSED 1,195,914 EPS; cross-shard scenario SC-5 `human_needed` on Phase 55 SDK gap — 56-NEXT #6 filed).
+**Stopped at:** Completed 57-00-PLAN.md (Wave 0 RED tests + TPC-CORR-10)
 
 **Next action (engineering):** Phase 56 is engineering-complete. The engineering-facing next action is one of:
   (a) **Land 56-NEXT #6** (wire-REGISTER for `@bv.source_table`, ~80 LOC + 1 integration test) — unblocks the cross-shard enrichment perf gate. After landing, re-run `BEAVA_PERF_GATE=1 cargo test --release --test crossshard_enrich_perf_smoke crossshard_enrich_eps_floor -- --test-threads=1` to flip SC-5 to `passed` for Phase 56.
