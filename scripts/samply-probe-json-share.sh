@@ -156,11 +156,18 @@ fi
 
 PCT="$(
     awk '
-        BEGIN { sum = 0.0 }
-        /serde_json::|std::str::from_utf8|format_escaped_str/ {
-            # Find the first numeric-looking column; treat it as self%.
+        BEGIN { sum = 0.0; in_leaf_section = 0 }
+        # Phase 59 Wave 4 fix: top.txt has TWO sections — leaf + inclusive.
+        # Only sum leaf samples (D-D3 compares against the leaf ≤ 3% target);
+        # inclusive would double-count callers-of-serde. Also must match
+        # ONLY percent columns (value ending in "%"), not the raw-sample
+        # column which has no suffix and would false-match the regex.
+        /^## Top .* leaf functions/ { in_leaf_section = 1; next }
+        /^## Top .* inclusive/ { in_leaf_section = 0; next }
+        (in_leaf_section == 1) && /serde_json::|std::str::from_utf8|format_escaped_str/ {
             for (i = 1; i <= NF; i++) {
-                if ($i ~ /^-?[0-9]+(\.[0-9]+)?%?$/) {
+                # Require a trailing "%" to pin to the percent column.
+                if ($i ~ /^-?[0-9]+(\.[0-9]+)?%$/) {
                     v = $i; gsub("%", "", v);
                     sum += v + 0.0;
                     break;

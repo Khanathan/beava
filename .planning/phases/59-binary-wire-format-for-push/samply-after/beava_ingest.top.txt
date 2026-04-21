@@ -1,0 +1,97 @@
+# Beava ingest profile
+
+Workload: 8 threads, 8.01s, 1072453 events, 133858 EPS total.
+Samples: 14907
+
+## Top 40 leaf functions (self-samples, on-CPU time)
+
+```
+samples  self %   function
+-------  ------   --------------------------------------------------------------------------------
+   3647   24.5%  beava::server::tcp::handle_push_batch
+   3025   20.3%  std::sys::backtrace::__rust_begin_short_backtrace
+   1303    8.7%  indexmap::inner::Core<K,V>::insert_full
+   1283    8.6%  hashbrown::table::HashTable<T,A>::entry
+   1073    7.2%  std::io::buffered::bufwriter::BufWriter<W>::flush_buf
+    924    6.2%  core::ops::function::FnOnce::call_once{{vtable.shim}}
+    784    5.3%  <alloc::vec::Vec<T,A> as core::ops::drop::Drop>::drop
+    505    3.4%  alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle
+    501    3.4%  fjall::journal::Journal::get_writer
+    314    2.1%  profile_ingest::synth_batch
+    286    1.9%  serde_core::ser::SerializeMap::serialize_entry
+    201    1.3%  beava::wire::binary::reserialize_value_to_json_bytes
+    184    1.2%  beava::shard::StoreView::with_entity_mut
+    157    1.1%  serde_json::value::ser::<impl serde_core::ser::Serialize for serde_json::value::Value>::serialize
+     98    0.7%  serde_json::ser::to_vec
+     95    0.6%  core::fmt::num::imp::<impl core::fmt::Display for usize>::fmt
+     92    0.6%  core::fmt::Formatter::pad_integral
+     54    0.4%  <serde_json::number::Number as serde_core::ser::Serialize>::serialize
+     41    0.3%  alloc::fmt::format::format_inner
+     39    0.3%  indexmap::map::IndexMap<K,V,S>::get_mut
+     35    0.2%  beava::shard::metrics::record_inbox_full
+     35    0.2%  core::fmt::write
+     33    0.2%  metrics::key::Key::builder
+     31    0.2%  core::ptr::drop_in_place<alloc::vec::Vec<indexmap::Bucket<alloc::string::String,serde_json::value::Value>>>
+     29    0.2%  beava::routing::shard_hint::shard_hint_for_event
+     17    0.1%  core::ptr::drop_in_place<core::result::Result<(),crossbeam_channel::err::TrySendError<beava::shard::thread::ShardEvent>>>
+     17    0.1%  beava::shard::thread::shard_event_loop::{{closure}}
+     12    0.1%  fjall::partition::PartitionHandle::insert
+     11    0.1%  alloc::sync::Arc<T,A>::drop_slow
+      8    0.1%  serde_json::de::from_trait
+      7    0.0%  beava::shard::thread::process_shard_event
+      6    0.0%  crossbeam_skiplist::base::RefRange<Q,R,K,V>::next
+      6    0.0%  lsm_tree::memtable::Memtable::get
+      6    0.0%  core::option::Option<T>::get_or_insert_with
+      5    0.0%  <alloc::string::String as core::fmt::Write>::write_str
+      4    0.0%  <alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter
+      4    0.0%  core::ptr::drop_in_place<beava::state::snapshot::SerializableEntityStateV10>
+      4    0.0%  indexmap::inner::Core<K,V>::push_entry
+      4    0.0%  hashbrown::raw::RawTable<T,A>::reserve_rehash
+      3    0.0%  beava::engine::window::_::<impl serde_core::de::Deserialize for beava::engine::window::RingBuffer<T>>::deserialize
+```
+
+## Top 40 functions by inclusive samples (time in this function OR anything it called)
+
+```
+samples  incl %   function
+-------  ------   --------------------------------------------------------------------------------
+  14906  100.0%  core::ops::function::FnOnce::call_once{{vtable.shim}}
+  14906  100.0%  std::sys::thread::unix::Thread::new::thread_start
+  13983   93.8%  std::sys::backtrace::__rust_begin_short_backtrace
+   4812   32.3%  beava::server::tcp::handle_push_batch
+   3453   23.2%  profile_ingest::synth_batch
+   2590   17.4%  indexmap::inner::Core<K,V>::insert_full
+   1855   12.4%  tokio::runtime::scheduler::current_thread::Context::enter
+   1855   12.4%  beava::shard::thread::shard_event_loop::{{closure}}
+   1855   12.4%  beava::shard::thread::shard_event_loop
+   1855   12.4%  tokio::runtime::runtime::Runtime::block_on
+   1855   12.4%  tokio::runtime::context::scoped::Scoped<T>::set
+   1838   12.3%  beava::shard::thread::process_shard_event
+   1813   12.2%  beava::engine::pipeline::PipelineEngine::push_internal_on_shard
+   1809   12.1%  beava::shard::StoreView::with_entity_mut
+   1586   10.6%  fjall::partition::PartitionHandle::insert
+   1283    8.6%  hashbrown::table::HashTable<T,A>::entry
+   1073    7.2%  fjall::journal::writer::Writer::persist
+   1073    7.2%  std::io::buffered::bufwriter::BufWriter<W>::flush_buf
+   1009    6.8%  beava::wire::binary::reserialize_value_to_json_bytes
+    815    5.5%  <alloc::vec::Vec<T,A> as core::ops::drop::Drop>::drop
+    809    5.4%  serde_json::ser::to_vec
+    711    4.8%  serde_core::ser::SerializeMap::serialize_entry
+    557    3.7%  alloc::fmt::format::format_inner
+    516    3.5%  core::fmt::write
+    505    3.4%  alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle
+    501    3.4%  fjall::journal::Journal::get_writer
+    294    2.0%  <alloc::string::String as core::fmt::Write>::write_str
+    232    1.6%  serde_json::value::ser::<impl serde_core::ser::Serialize for serde_json::value::Value>::serialize
+    187    1.3%  core::fmt::num::imp::<impl core::fmt::Display for usize>::fmt
+     92    0.6%  core::fmt::Formatter::pad_integral
+     69    0.5%  beava::shard::metrics::record_inbox_full
+     68    0.5%  beava::routing::shard_hint::shard_hint_for_event
+     54    0.4%  <serde_json::number::Number as serde_core::ser::Serialize>::serialize
+     39    0.3%  indexmap::map::IndexMap<K,V,S>::get_mut
+     33    0.2%  metrics::key::Key::builder
+     31    0.2%  core::ptr::drop_in_place<alloc::vec::Vec<indexmap::Bucket<alloc::string::String,serde_json::value::Value>>>
+     21    0.1%  serde_json::ser::format_escaped_str
+     17    0.1%  serde_json::de::from_trait
+     17    0.1%  beava::wire::binary::decode_event_on_shard
+     17    0.1%  core::ptr::drop_in_place<core::result::Result<(),crossbeam_channel::err::TrySendError<beava::shard::thread::ShardEvent>>>

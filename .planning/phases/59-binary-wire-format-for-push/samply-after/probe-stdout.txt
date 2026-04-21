@@ -1,0 +1,3 @@
+[samply-probe-json-share] running profile_ingest harness (shards=8, duration~8s)...
+JSON_SHARE_PCT=2.5
+samply_probe_exit=0
