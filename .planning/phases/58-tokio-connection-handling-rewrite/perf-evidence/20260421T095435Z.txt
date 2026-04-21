@@ -1,0 +1,70 @@
+
+[1m==> Beava fraud-pipeline benchmark — 2026-04-21 09:54:35Z[0m
+Host: Darwin arm64, 10 cores
+Config: MODE=complex CLIENTS=8 WORKER_THREADS=8 WARMUP=5s DURATION=60s
+Results: /Users/petrpan26/work/tally/benchmark/fraud-pipeline/results/20260421T095435Z
+Binary: /Users/petrpan26/work/tally/target/release/beava
+
+[1m==> Starting server on TCP=6400 HTTP=6401 threads=8[0m
+Server ready (pid=3492, data=/var/folders/m2/s1yp9jkj11b68p2mgcr3thw80000gn/T/beava-bench-data.XXXXXX.UbGCBvbref)
+
+[1m==> Warmup 5s (output discarded)[0m
+[33m[warn][0m one or more warmup clients exited non-zero
+
+[1m==> Measuring 60s (live EPS every 5s)[0m
+    t=  5.0s  events=     7143000  instant=   1420079 eps  avg=   1420079 eps
+    t= 15.0s  events=    17669000  instant=   1054709 eps  avg=   1177148 eps
+    t= 20.1s  events=    27635000  instant=   1977380 eps  avg=   1378304 eps
+    t= 25.1s  events=    34213000  instant=   1307753 eps  avg=   1364154 eps
+    t= 30.1s  events=    40583000  instant=   1274000 eps  avg=   1349168 eps
+    t= 35.1s  events=    46925000  instant=   1265868 eps  avg=   1337275 eps
+    t= 40.1s  events=    53494000  instant=   1313800 eps  avg=   1334347 eps
+    t= 45.1s  events=    60169000  instant=   1332335 eps  avg=   1334124 eps
+    t= 50.1s  events=    66658000  instant=   1297800 eps  avg=   1330499 eps
+    t= 55.1s  events=    73126000  instant=   1291017 eps  avg=   1326909 eps
+    t= 60.6s  events=    79516000  instant=   1168190 eps  avg=   1312578 eps
+[33m[warn][0m some clients exited non-zero — partial data may be missing
+
+[1m==> Aggregating[0m
+
+[1m==> STEADY-STATE SUMMARY[0m
+    Config:       complex pipeline, 8 clients, 8 server threads
+    Duration:     60s measured (+5s warmup)
+    Events:       79,516,000
+    Aggregate:    1,312,527 events/sec
+Aggregate EPS: 1312527
+    Per event:    0.76 microseconds
+
+    Client push_many latency (microseconds per 1000-event batch call):
+                   median across clients    worst across clients
+      p50       :       3,984.6                 4,265.6
+      p99       :      25,863.3                39,832.4
+      p99.9     :      36,919.5                80,393.8
+
+    Server-side PUSH latency (microseconds; from /debug/latency):
+      p50       :           0.0
+      p95       :           0.0
+      p99       :           0.0
+      count     :             0
+
+    Per-client throughput:
+      proc-0: 10,036,000 events in  60.52s =   165,816 eps  [ERROR flush:ProtocolError: [batch:0 event:0] protocol error: shard inbox full — backpressure]
+      proc-1: 9,945,000 events in  60.52s =   164,325 eps  [ERROR flush:ProtocolError: [batch:0 event:0] protocol error: shard inbox full — backpressure]
+      proc-2: 9,612,000 events in  60.55s =   158,757 eps  [ERROR flush:ProtocolError: [batch:0 event:0] protocol error: shard inbox full — backpressure]
+      proc-3: 10,139,000 events in  60.58s =   167,358 eps  [ERROR flush:ProtocolError: [batch:0 event:0] protocol error: shard inbox full — backpressure]
+      proc-4: 9,804,000 events in  60.53s =   161,968 eps  [ERROR flush:ProtocolError: [batch:0 event:0] protocol error: shard inbox full — backpressure]
+      proc-5: 9,975,000 events in  60.55s =   164,728 eps  [ERROR flush:ProtocolError: [batch:0 event:29] protocol error: shard inbox full — backpressure]
+      proc-6: 10,094,000 events in  60.54s =   166,738 eps  [ERROR flush:ProtocolError: [batch:0 event:0] protocol error: shard inbox full — backpressure]
+      proc-7: 9,911,000 events in  60.55s =   163,681 eps  [ERROR flush:ProtocolError: [batch:0 event:0] protocol error: shard inbox full — backpressure]
+    NOTE: 8/8 client(s) exited with error — aggregate EPS includes their partial data
+
+
+[1m==> DONE[0m
+    summary.json:  /Users/petrpan26/work/tally/benchmark/fraud-pipeline/results/20260421T095435Z/summary.json
+    stdout.log:    /Users/petrpan26/work/tally/benchmark/fraud-pipeline/results/20260421T095435Z/stdout.log
+    server.log:    /Users/petrpan26/work/tally/benchmark/fraud-pipeline/results/20260421T095435Z/server.log
+    per-client:    /Users/petrpan26/work/tally/benchmark/fraud-pipeline/results/20260421T095435Z/measure-*.jsonl
+
+Compare throughput against the Phase-42 Hetzner baseline (544K eps, 16-core).
+On laptops, 60-200K eps is typical; numbers scale near-linearly with core count up to
+~8 client/worker pairs before lock and kernel-network overhead flattens the curve.

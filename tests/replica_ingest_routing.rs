@@ -387,7 +387,7 @@ fn count_listen_sockets_on_port_w3(port: u16) -> usize {
 
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "58-W3"]
+#[ignore = "guardrail-opens-real-tcp-socket; run with --ignored"]
 async fn replica_ingest_lands_on_per_shard_accept_linux_at_n4() {
     use std::sync::atomic::Ordering;
 
@@ -460,7 +460,7 @@ async fn replica_ingest_lands_on_per_shard_accept_linux_at_n4() {
 
 #[cfg(not(target_os = "linux"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "58-W3"]
+#[ignore = "guardrail-opens-real-tcp-socket; run with --ignored"]
 async fn replica_ingest_lands_on_per_shard_accept_macos_at_n4() {
     use std::sync::atomic::Ordering;
 

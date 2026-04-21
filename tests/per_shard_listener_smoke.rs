@@ -80,7 +80,7 @@ fn count_listen_sockets_on_port(port: u16) -> usize {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-#[ignore = "58-W1"]
+#[ignore = "guardrail-opens-real-tcp-socket; run with --ignored"]
 async fn n_shards_produces_n_listeners_linux() {
     let state = make_concurrent_state_full(
         PipelineEngine::new(),
