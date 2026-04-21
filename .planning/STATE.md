@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: Completed 57-00-PLAN.md (Wave 0 RED tests + TPC-CORR-10)
-last_updated: "2026-04-21T07:45:17.972Z"
+stopped_at: Completed 57-03-PLAN.md (Wave 3 — EnrichFromTable + SSJ retraction + /debug/warnings.retraction_beyond_history; 4 Wave-0 RED tests GREEN)
+last_updated: "2026-04-21T08:07:11.116Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 18
   completed_phases: 8
   total_plans: 64
-  completed_plans: 59
-  percent: 92
+  completed_plans: 60
+  percent: 94
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 ## Current Position
 
 Phase: 56 CLOSED 2026-04-21 (engineering-complete; TPC-CORR-04 relaxation + TPC-CORR-08 + TPC-CORR-09 closed. Default fraud-pipeline perf gate PASSED 1,195,914 EPS ≥ 1,059,261 floor (+12.9%); cross-shard enrichment scenario SC-5 `human_needed` on Phase 55 SDK gap — 56-NEXT #6 filed.)
-Plan: 3 of 5 (57-00 Wave 0 + 57-01 Wave 1 retraction primitives landed; 57-02/03/04 pending)
+Plan: 4 of 5 (57-00 Wave 0 + 57-01 Wave 1 retraction primitives landed; 57-02/03/04 pending)
 **Phase:** 57 (retraction-across-crossshard-joins)
-**Plan:** 3 of 5 (57-00 Wave 0 + 57-01 Wave 1 retraction primitives landed; 57-02/03/04 pending)
+**Plan:** 4 of 5 (57-00 Wave 0 + 57-01 Wave 1 retraction primitives landed; 57-02/03/04 pending)
 **Status:** Ready to execute
-**Progress:** [█████████░] 92%
+**Progress:** [█████████░] 94%
 
 **Last activity:** 2026-04-21
 
@@ -123,6 +123,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 57 P00 | 25min | 2 tasks | 6 files |
 | Phase 57 P01 | ~35min | 2 tasks | 7 files (6 src + 1 test flip); 6 new lib tests; 57-W1 GREEN; lib 807/0/35 |
 | Phase 57 P02 | ~45min | 1 tasks | 6 files |
+| Phase 57 P03 | 75min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -271,7 +272,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 57-00-PLAN.md (Wave 0 RED tests + TPC-CORR-10)
+**Stopped at:** Completed 57-03-PLAN.md (Wave 3 — EnrichFromTable + SSJ retraction + /debug/warnings.retraction_beyond_history; 4 Wave-0 RED tests GREEN)
 
 **Next action (engineering):** Phase 56 is engineering-complete. The engineering-facing next action is one of:
   (a) **Land 56-NEXT #6** (wire-REGISTER for `@bv.source_table`, ~80 LOC + 1 integration test) — unblocks the cross-shard enrichment perf gate. After landing, re-run `BEAVA_PERF_GATE=1 cargo test --release --test crossshard_enrich_perf_smoke crossshard_enrich_eps_floor -- --test-threads=1` to flip SC-5 to `passed` for Phase 56.
