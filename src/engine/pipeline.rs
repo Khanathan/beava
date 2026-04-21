@@ -490,6 +490,24 @@ pub struct PipelineEngine {
     /// W0 only READS + EXPOSES this value. W4 consumes it inside
     /// `push_typed_on_shard` to choose typed-direct vs. bridge walk.
     pub(crate) typed_cascade_direct_enabled: bool,
+
+    /// Phase 59.7 Wave 3 (TPC-PERF-11 extension, TPC-CORR-07) — pre-built
+    /// typed agg ops per downstream stream. Populated eagerly by
+    /// [`PipelineEngine::rebuild_typed_agg_ops_cache`] after each successful
+    /// `register`; consumed by [`PipelineEngine::build_typed_agg_ops_for`]
+    /// on the cascade hot path and by the `ShardOp::RunTypedAggCascadeStep`
+    /// dispatch arm on target shards.
+    ///
+    /// `Arc<dyn TypedAggOp>` (not `Box`) so clones are O(1); the Vec clone
+    /// on the hot path is a single Arc bump per op.
+    pub(crate) typed_agg_ops_cache:
+        AHashMap<String, Vec<std::sync::Arc<dyn crate::engine::operators_typed::TypedAggOp>>>,
+
+    /// Phase 59.7 Wave 3 — derived typed agg-state schema per downstream
+    /// stream. Populated alongside `typed_agg_ops_cache`; used by
+    /// `run_typed_agg_step` to zero-init the per-entity state Row.
+    pub(crate) typed_state_schemas:
+        AHashMap<String, std::sync::Arc<crate::engine::schema::RegisteredSchema>>,
 }
 
 /// Phase 59.6 Wave 4 (TPC-PERF-11) → Phase 59.7 W0 rename — predicate for
@@ -518,6 +536,123 @@ pub struct PipelineEngine {
 /// windowed-agg impl exists for the op's window + bucket pair (gated via
 /// the new `operators_typed_aggs_windowed` module), so windowed call
 /// sites fall back to Value automatically until W1 flips.
+/// Phase 59.7 Wave 3 — placeholder typed agg-state schema. Windowed typed
+/// ops keep their state in `Shard.entity_ringbuffers_typed`, so the packed
+/// Row is effectively unused — but `Shard::get_or_init_entity_state_typed`
+/// allocates a zeroed Row of `state_schema.row_size` and runs every op's
+/// `init_state`. A tiny 8-byte reserved slot keeps the allocation valid.
+pub(crate) fn placeholder_typed_state_schema(
+    name: &str,
+) -> crate::engine::schema::RegisteredSchema {
+    use crate::engine::schema::{FieldSpec, FieldTy, RegisteredSchema};
+    RegisteredSchema {
+        schema_id: 0,
+        name: name.to_string(),
+        fields: vec![FieldSpec {
+            name: "_reserved".to_string(),
+            ty: FieldTy::I64,
+            offset: 0,
+            nullable: false,
+        }],
+        row_size: 8,
+        inline_str_cap: 0,
+    }
+}
+
+/// Phase 59.7 Wave 3 — build a single typed windowed/unwindowed agg op for
+/// a feature. Returns `None` if no typed impl exists for this FeatureDef
+/// shape (the cascade walker downgrades to Value in that case). Prefers
+/// windowed variants when `window > 0`; falls back to unwindowed (lifetime)
+/// typed ops when `window == 0` (or — for the FeatureDef variants that
+/// carry a non-Option Duration — when the window is effectively a
+/// lifetime-sized sentinel via `big_window`).
+///
+/// `input_schema` is used to resolve column offsets for ops that read a
+/// scalar input field (Sum/Avg/Min/Max/Last/First). Without an input
+/// schema we cannot construct offset-precise typed ops, so the function
+/// returns `None` and the caller downgrades to Value.
+pub(crate) fn build_typed_agg_op(
+    feature_name: &str,
+    fd: &FeatureDef,
+    op_idx: u16,
+    input_schema: Option<&std::sync::Arc<crate::engine::schema::RegisteredSchema>>,
+) -> Option<std::sync::Arc<dyn crate::engine::operators_typed::TypedAggOp>> {
+    use crate::engine::operators_typed_aggs_windowed as w;
+    use std::sync::Arc;
+    // Wave 3 scope: windowed variants of Count only. Other ops require
+    // per-field offset resolution via `input_schema`; if `input_schema` is
+    // None we cannot resolve offsets, so return None (Value fallback).
+    match fd {
+        FeatureDef::Count { window, bucket, .. } => {
+            Some(Arc::new(w::CountOpTypedWindowed {
+                name: feature_name.to_string(),
+                op_idx,
+                window: *window,
+                bucket: *bucket,
+            }))
+        }
+        FeatureDef::Sum {
+            field,
+            window,
+            bucket,
+            ..
+        } => {
+            let schema = input_schema?;
+            let f_idx = schema.field_index(field)?;
+            let f = &schema.fields[f_idx];
+            match f.ty {
+                crate::engine::schema::FieldTy::I64 => {
+                    Some(Arc::new(w::SumOpTypedWindowedI64 {
+                        name: feature_name.to_string(),
+                        op_idx,
+                        window: *window,
+                        bucket: *bucket,
+                        input_offset: f.offset,
+                    }))
+                }
+                crate::engine::schema::FieldTy::F64 => {
+                    Some(Arc::new(w::SumOpTypedWindowedF64 {
+                        name: feature_name.to_string(),
+                        op_idx,
+                        window: *window,
+                        bucket: *bucket,
+                        input_offset: f.offset,
+                    }))
+                }
+                _ => None,
+            }
+        }
+        FeatureDef::Avg {
+            field,
+            window,
+            bucket,
+            ..
+        } => {
+            let schema = input_schema?;
+            let f_idx = schema.field_index(field)?;
+            let f = &schema.fields[f_idx];
+            match f.ty {
+                crate::engine::schema::FieldTy::F64 => {
+                    Some(Arc::new(w::AvgOpTypedWindowedF64 {
+                        name: feature_name.to_string(),
+                        op_idx,
+                        window: *window,
+                        bucket: *bucket,
+                        input_offset: f.offset,
+                    }))
+                }
+                _ => None,
+            }
+        }
+        // Other typed-cascade-compatible variants (Min/Max/Last/First/
+        // EnrichFromTable) exist but require more plumbing than W3's
+        // same-shard walker exercises. The cascade walker downgrades
+        // those downstreams to Value for Wave 3; Wave 4 extends the
+        // factory.
+        _ => None,
+    }
+}
+
 pub(crate) fn is_typed_cascade_compatible(fd: &FeatureDef) -> bool {
     matches!(
         fd,
@@ -816,6 +951,8 @@ impl PipelineEngine {
             sharded_store: crate::shard::store::ShardedStateStoreV1::new(1),
             schema_registry: crate::engine::schema::SchemaRegistry::new(),
             typed_cascade_direct_enabled,
+            typed_agg_ops_cache: AHashMap::new(),
+            typed_state_schemas: AHashMap::new(),
         }
     }
 
@@ -826,6 +963,138 @@ impl PipelineEngine {
     /// works without reaching into private fields.
     pub fn typed_cascade_direct_enabled(&self) -> bool {
         self.typed_cascade_direct_enabled
+    }
+
+    /// Phase 59.7 Wave 3 (TPC-PERF-11 extension, TPC-CORR-07) — look up
+    /// pre-built typed agg ops for a downstream stream. Returns `None`
+    /// when either the stream is not registered or none of its features
+    /// have a typed windowed/unwindowed impl (the cascade walker downgrades
+    /// to Value in that case).
+    ///
+    /// Populated by [`Self::rebuild_typed_agg_ops_cache`] after each
+    /// `register`. The returned `Vec` is a cheap Arc-clone list — each
+    /// element is `Arc<dyn TypedAggOp>` so pushing through the cascade
+    /// hot path is a single atomic bump per op.
+    pub fn build_typed_agg_ops_for(
+        &self,
+        stream_name: &str,
+    ) -> Option<Vec<std::sync::Arc<dyn crate::engine::operators_typed::TypedAggOp>>> {
+        self.typed_agg_ops_cache.get(stream_name).cloned()
+    }
+
+    /// Phase 59.7 Wave 3 — look up the derived typed agg-state schema for
+    /// a downstream stream. Populated alongside `typed_agg_ops_cache`;
+    /// returns `None` if the stream has no typed agg impl.
+    pub fn get_typed_state_schema(
+        &self,
+        stream_name: &str,
+    ) -> Option<std::sync::Arc<crate::engine::schema::RegisteredSchema>> {
+        self.typed_state_schemas.get(stream_name).cloned()
+    }
+
+    /// Phase 59.7 Wave 3 — panic-free helper: read `event_time` /
+    /// `bv_event_time` off a typed Row if the field exists. Used by the
+    /// `RunTypedAggCascadeStep` dispatch arm for watermark observation
+    /// on the target shard.
+    ///
+    /// Field ty hierarchy: accepts I64 (epoch ns), F64 (epoch secs), or
+    /// falls through to `None`. Missing column → `None`.
+    pub fn try_extract_event_time_from_typed_row(
+        &self,
+        row: &crate::engine::schema::Row,
+        schema: &crate::engine::schema::RegisteredSchema,
+    ) -> Option<std::time::SystemTime> {
+        let idx = schema
+            .field_index("event_time")
+            .or_else(|| schema.field_index("bv_event_time"))?;
+        let f = &schema.fields[idx];
+        match f.ty {
+            crate::engine::schema::FieldTy::I64 => {
+                let ns = row.read_i64(f.offset);
+                if ns <= 0 {
+                    return None;
+                }
+                Some(
+                    std::time::UNIX_EPOCH
+                        + std::time::Duration::from_nanos(ns as u64),
+                )
+            }
+            crate::engine::schema::FieldTy::F64 => {
+                let secs = row.read_f64(f.offset);
+                if !secs.is_finite() || secs <= 0.0 {
+                    return None;
+                }
+                Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(secs))
+            }
+            _ => None,
+        }
+    }
+
+    /// Phase 59.7 Wave 3 — rebuild `typed_agg_ops_cache` and
+    /// `typed_state_schemas` from the current `streams` map. Called by
+    /// `register` after each successful registration so the cache stays in
+    /// sync with the registered pipeline. Idempotent — re-runs overwrite
+    /// any existing entries.
+    ///
+    /// For each stream whose features are ALL typed-cascade-compatible
+    /// (per [`is_typed_cascade_compatible`]), construct the right
+    /// windowed-typed-agg op for each feature and store them in
+    /// declaration order. Windowed ops consume `Shard.entity_ringbuffers_typed`
+    /// — their packed state Row is effectively empty (every op's
+    /// init_state is a no-op), so the derived state schema is a tiny
+    /// placeholder with a single reserved offset.
+    ///
+    /// Streams with any non-compatible feature OR streams with zero
+    /// features get no cache entry; the cascade walker falls back to the
+    /// Value bridge for them.
+    pub(crate) fn rebuild_typed_agg_ops_cache(&mut self) {
+        use std::sync::Arc;
+        self.typed_agg_ops_cache.clear();
+        self.typed_state_schemas.clear();
+        // Keep collection of stream names first so we don't borrow self
+        // immutably while building the ops.
+        let stream_names: Vec<String> = self.streams.keys().cloned().collect();
+        for stream_name in stream_names {
+            let features = match self.streams.get(&stream_name) {
+                Some(def) => def.features.clone(),
+                None => continue,
+            };
+            if features.is_empty() {
+                continue;
+            }
+            // Only build the cache if EVERY feature is typed-cascade-
+            // compatible — matches the `push_typed_on_shard` gate.
+            let all_compatible = features.iter().all(|(_, fd)| is_typed_cascade_compatible(fd));
+            if !all_compatible {
+                continue;
+            }
+            let input_schema = self.schema_registry.get(&stream_name);
+            let mut ops: Vec<Arc<dyn crate::engine::operators_typed::TypedAggOp>> =
+                Vec::with_capacity(features.len());
+            let mut built_all = true;
+            for (op_idx, (fname, fd)) in features.iter().enumerate() {
+                let op_idx_u16 = op_idx as u16;
+                let op = build_typed_agg_op(fname, fd, op_idx_u16, input_schema.as_ref());
+                match op {
+                    Some(o) => ops.push(o),
+                    None => {
+                        built_all = false;
+                        break;
+                    }
+                }
+            }
+            if !built_all || ops.is_empty() {
+                continue;
+            }
+            // State schema: placeholder with one i64 reserved slot so
+            // Row::zeroed produces a non-empty body (windowed ops keep
+            // their state in `entity_ringbuffers_typed`, not in the
+            // packed Row, so this is just a container).
+            let state_schema = placeholder_typed_state_schema(&stream_name);
+            self.typed_agg_ops_cache.insert(stream_name.clone(), ops);
+            self.typed_state_schemas
+                .insert(stream_name, Arc::new(state_schema));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1201,6 +1470,13 @@ impl PipelineEngine {
             cascade_plan.insert(primary.clone(), plan);
         }
         self.cascade_plan = cascade_plan;
+
+        // Phase 59.7 Wave 3 (TPC-PERF-11 extension): rebuild the typed
+        // agg ops cache alongside `cascade_plan` so the
+        // `ShardOp::RunTypedAggCascadeStep` dispatch arm and the
+        // `build_typed_agg_ops_for` accessor can resolve downstream ops
+        // in O(1) on the cascade hot path.
+        self.rebuild_typed_agg_ops_cache();
         Ok(())
     }
 

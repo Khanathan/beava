@@ -421,6 +421,31 @@ pub enum ShardOp {
         reason: RetractReason,
         depth: u8,
     },
+    /// Phase 59.7 Wave 3 (TPC-PERF-11 extension, TPC-CORR-07): dispatch a
+    /// typed agg step on a downstream-owned shard. Target handler runs the
+    /// downstream's typed agg ops against `Shard::entity_state_typed` +
+    /// `Shard::entity_ringbuffers_typed` WITHOUT triggering further
+    /// cascade. Sibling of `PushTypedRow` and `SsjInsertTyped` — the
+    /// third typed-row dispatch primitive.
+    ///
+    /// This variant is a TERMINAL cascade step: the cascade walker on the
+    /// input shard has already decided this downstream is eligible for
+    /// typed-direct dispatch, computed the target shard, and pre-resolved
+    /// the entity key. The target shard just runs `run_typed_agg_step`.
+    ///
+    /// `primary_event_id` is bound for Phase 57 retraction lineage
+    /// (TPC-CORR-10); Wave 3 preserves the field on the dispatch envelope
+    /// but does not yet wire it into retraction-aware storage — Wave 4
+    /// handles that. Fire-and-forget (no `response_tx` wiring in the
+    /// variant because dispatch path bypasses the response channel per
+    /// 59.7-CONTEXT Gap 2).
+    RunTypedAggCascadeStep {
+        downstream_name: String,
+        entity_key: String,
+        input_row: crate::engine::schema::Row,
+        input_schema_id: crate::engine::schema::SchemaId,
+        primary_event_id: u64,
+    },
 }
 
 /// Phase 57 D-B2 (TPC-CORR-10): evidence carried with each `RetractDownstream`
@@ -831,6 +856,7 @@ fn process_shard_event(
         ShardOp::UpsertSourceTableBatch { .. } => "upsert_batch",
         ShardOp::DeleteSourceTableBatch { .. } => "delete_batch",
         ShardOp::RetractDownstream { .. } => "retract",
+        ShardOp::RunTypedAggCascadeStep { .. } => "typed_cascade_step",
         _ => "other",
     };
 
@@ -1643,6 +1669,113 @@ fn process_shard_event(
                     if let Some(tx) = event.response_tx {
                         let _ = tx.send(ShardResult::SsjInsertOk(Vec::new()));
                     }
+                }
+                ShardOp::RunTypedAggCascadeStep {
+                    downstream_name,
+                    entity_key,
+                    input_row,
+                    input_schema_id,
+                    primary_event_id,
+                } => {
+                    // Phase 59.7 Wave 3 (TPC-PERF-11 extension, TPC-CORR-07):
+                    // terminal typed cascade step on downstream-owned shard.
+                    // Runs `run_typed_agg_step` against `entity_state_typed`
+                    // + `entity_ringbuffers_typed`; does NOT trigger further
+                    // cascade. Caller (the cascade walker on the input
+                    // shard) has already decided this downstream is
+                    // typed-compatible and resolved the entity key.
+                    //
+                    // `primary_event_id` preserved for Phase 57 retraction
+                    // lineage; Wave 4 wires it into retraction-aware
+                    // storage. Suppressed here so the dispatch path compiles
+                    // cleanly in Wave 3.
+                    let _ = primary_event_id;
+                    state
+                        .typed_cascade_direct_dispatched
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let engine = state.engine.read();
+                    let input_schema = match engine
+                        .schema_registry
+                        .get_by_id(input_schema_id)
+                    {
+                        Some(s) => s,
+                        None => {
+                            eprintln!(
+                                "[WARN] RunTypedAggCascadeStep: unknown schema_id {} \
+                                 (downstream={}, entity_key={})",
+                                input_schema_id, downstream_name, entity_key
+                            );
+                            crate::shard::metrics::record_shard_event(
+                                shard_index,
+                                crate::shard::metrics::Outcome::Dropped,
+                            );
+                            return;
+                        }
+                    };
+                    let ops_arc = match engine.build_typed_agg_ops_for(&downstream_name) {
+                        Some(v) => v,
+                        None => {
+                            eprintln!(
+                                "[WARN] RunTypedAggCascadeStep: no typed agg ops \
+                                 registered for downstream={}",
+                                downstream_name
+                            );
+                            crate::shard::metrics::record_shard_event(
+                                shard_index,
+                                crate::shard::metrics::Outcome::Dropped,
+                            );
+                            return;
+                        }
+                    };
+                    let state_schema = match engine.get_typed_state_schema(&downstream_name) {
+                        Some(s) => s,
+                        None => {
+                            eprintln!(
+                                "[WARN] RunTypedAggCascadeStep: no typed state schema \
+                                 registered for downstream={}",
+                                downstream_name
+                            );
+                            crate::shard::metrics::record_shard_event(
+                                shard_index,
+                                crate::shard::metrics::Outcome::Dropped,
+                            );
+                            return;
+                        }
+                    };
+                    // Watermark observation — preserve Phase 55/56 semantics
+                    // on the target shard.
+                    if let Some(et) = engine
+                        .try_extract_event_time_from_typed_row(&input_row, &input_schema)
+                    {
+                        shard.watermark.observe(&downstream_name, et);
+                    }
+                    let op_refs: Vec<&dyn crate::engine::operators_typed::TypedAggOp> =
+                        ops_arc.iter().map(|o| o.as_ref()).collect();
+                    let _fmap = engine.run_typed_agg_step(
+                        &downstream_name,
+                        &entity_key,
+                        &input_row,
+                        &input_schema,
+                        &op_refs,
+                        &state_schema,
+                        &mut shard,
+                        now,
+                    );
+                    // Drive windowed side-band ops too (W1/W2 ring buffers).
+                    for op in &op_refs {
+                        op.update_windowed(
+                            &mut shard,
+                            &downstream_name,
+                            &entity_key,
+                            &input_row,
+                            &input_schema,
+                            now,
+                        );
+                    }
+                    crate::shard::metrics::record_shard_event(
+                        shard_index,
+                        crate::shard::metrics::Outcome::Accepted,
+                    );
                 }
                 ShardOp::RetractDownstream {
                     target_shard: _target_shard,
