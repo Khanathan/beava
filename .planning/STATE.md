@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: Phase 59.7 Wave 0 RED scaffolding landed (14 RED parity tests + 3 pinned bench cells + rename + env flag + 2 counters). Regression gate GREEN — all 5 Phase-59.6 parity tests (12/12) pass on release profile.
-stopped_at: Completed 59.7-00-PLAN.md (Phase 59.7 W0 RED scaffolding)
-last_updated: "2026-04-21T22:42:55.232Z"
+stopped_at: Completed 59.7-01-PLAN.md (W1 windowed typed aggs — 4 parity tests GREEN)
+last_updated: "2026-04-21T22:56:57.300Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 20
   completed_phases: 12
   total_plans: 93
-  completed_plans: 81
-  percent: 87
+  completed_plans: 82
+  percent: 88
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 Phase: 59.7 (typed-windowed-cascade) — **W0 COMPLETE** 2026-04-21
 Next: Phase 59.7 Plan 01 (W1 windowed typed aggs — operators_typed_aggs_windowed.rs + TypedRingBuffer)
 **Status:** Phase 59.7 Wave 0 RED scaffolding landed (14 RED parity tests + 3 pinned bench cells + rename + env flag + 2 counters). Regression gate GREEN — all 5 Phase-59.6 parity tests (12/12) pass on release profile.
-**Progress:** [█████████░] 87%
+**Progress:** [█████████░] 88%
 
 **Last activity:** 2026-04-21
 
@@ -178,6 +178,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 59.6 P59.6-05 | 16m | 2 tasks | 12 files |
 | Phase 59.6 P59.6-06 | 32min | 2 tasks | 15 files |
 | Phase 59.7 P00 | 10m | 2 tasks | 7 files |
+| Phase 59.7 P01 | 9min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -398,7 +399,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 59.7-00-PLAN.md (Phase 59.7 W0 RED scaffolding)
+**Stopped at:** Completed 59.7-01-PLAN.md (W1 windowed typed aggs — 4 parity tests GREEN)
 
 **Next action (engineering):** Phase 58 is engineering-complete. The engineering-facing next action is one of:
   (a) **Start Phase 59** (Binary wire format for PUSH — TPC-PERF-09). Goal: eliminate JSON re-serialization on the PUSH hot path (~11% of CPU per 2026-04 samply notes). Replace JSON with a binary codec (length-prefixed postcard or custom) for TCP PUSH; HTTP PUSH stays JSON for compatibility; zero-copy `bytes::Bytes` end-to-end from wire → shard inbox → fjall insert. Phase 58 left the per-connection runtime dispatch overhead structurally eliminated — JSON is now the top-of-profile leaf to attack.
