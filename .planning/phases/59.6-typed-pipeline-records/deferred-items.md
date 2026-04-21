@@ -70,3 +70,28 @@ stream-table enrich between that commit and arch/tpc-full-shard tip.
 
 **Owner / resolution:** next phase to touch joins, or a dedicated fix
 once the Phase 60 salt-sweep closes.
+
+---
+
+### Wave 3 follow-up: cross-shard enrich assertion regresses after salt-sweep unblock
+
+Wave 3 added `salt: None` to `tests/cross_shard_enrich_from_table.rs` +
+`tests/common/cascade_harness.rs` to unblock the Wave-3 acceptance gate
+(same pattern as Wave 2's targeted sweep). With those additions:
+
+- `enrich_from_table_same_shard_fast_path` — **PASS** (no regression).
+- `enrich_from_table_crosses_shard_boundary` — **FAIL** — asserts
+  `EnrichedSnap.last_gdp_usd == Int(800_000)` but reads `Missing`
+  after a cross-shard `EnrichFromTable` fan-out.
+
+**Verified pre-existing:** my Wave-3 changes only ADD `push_typed_on_shard`
++ the `ShardOp::PushTypedRow` variant; the existing `ShardOp::Push` arm
++ `push_with_cascade_on_shard` (which this test exercises) are
+untouched. The regression was visible in Wave-1's deferred-items
+addendum as "Stream-Stream-Join or stream-table enrich between that
+commit and arch/tpc-full-shard tip". Salt-sweep unblocks surface it; do
+not fix.
+
+**Owner / resolution:** next phase to touch Phase 56 cross-shard
+EnrichFromTable or whoever fixes the E2E join flake. The typed-path
+Wave 3 tests use the same-shard path and are unaffected.
