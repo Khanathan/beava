@@ -1995,63 +1995,199 @@ impl PipelineEngine {
                 .and_then(|deps| deps.iter().find_map(|d| effective_events.get(d).cloned()))
                 .unwrap_or_else(|| payload.clone());
 
-            // EnrichFromTable: read-only lookup in shard.state, then skip push.
-            let enrich_feat = downstream_def.features.iter().find_map(|(_n, def)| {
-                if let FeatureDef::EnrichFromTable {
-                    right_table,
-                    on,
-                    join_type,
-                    right_fields,
-                } = def
-                {
-                    Some((right_table.clone(), on.clone(), *join_type, right_fields.clone()))
-                } else {
-                    None
-                }
-            });
-            if let Some((right_table, on_keys, join_type, right_fields)) = enrich_feat {
-                let _ = right_table;
+            // Phase 56 Wave 2 (TPC-CORR-08): EnrichFromTable cross-shard
+            // wiring. Collect ALL EnrichFromTable features on this
+            // downstream stream (Phase 23 codepath supported only one; the
+            // coalesce contract D-A2 requires iterating every enrichment
+            // feature so we can bucket cross-shard reads by target shard).
+            //
+            // For each feature:
+            //   1. Compute right_key via encode_group_by (unchanged).
+            //   2. Compute target_shard_idx = shard_hint_for_event(..) % N.
+            //   3. If same-shard (D-A3): call read_entity_at_shard inline
+            //      (the helper handles the N<=1 + target==input_shard_idx
+            //      fast path internally, bumping ENRICH_INTRA_SHARD_TOTAL).
+            //   4. Otherwise: accumulate into a per-batch BTreeMap<(target,
+            //      table), Vec<(right_key, feat_idx)>> coalesce buffer.
+            //
+            // After the collect pass: flush each cross-shard (target, table)
+            // bucket via read_entity_batch_at_shard, chunked by
+            // MAX_ENRICH_BATCH_KEYS=4096 (T-56-01-01 DoS guard). Sequential
+            // across targets is the Wave-2 contract (across-target
+            // parallelism is 56-NEXT if Wave 4 perf needs it).
+            //
+            // Finally: merge same-shard + cross-shard results and splice
+            // into enriched_map. Inner-join with ANY missing feature drops
+            // the downstream event (D-A4 preserves existing semantics).
+            let enrich_feats: Vec<(String, Vec<String>, JoinType, Vec<(String, String)>)> =
+                downstream_def
+                    .features
+                    .iter()
+                    .filter_map(|(_n, def)| {
+                        if let FeatureDef::EnrichFromTable {
+                            right_table,
+                            on,
+                            join_type,
+                            right_fields,
+                        } = def
+                        {
+                            Some((
+                                right_table.clone(),
+                                on.clone(),
+                                *join_type,
+                                right_fields.clone(),
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+            if !enrich_feats.is_empty() {
                 self.wm_propagate_stateless(stream_name, stream_in_order);
-                let right_key =
-                    crate::engine::register::encode_group_by(&on_keys, &effective_event)?;
-                // Read from shard state (read-only). Under default (fjall)
-                // build route through `read_entity_from_shard`; under
-                // `state-inmem` use the AHashMap direct lookup.
-                #[cfg(not(feature = "state-inmem"))]
-                let right_row: Option<AHashMap<String, serde_json::Value>> =
-                    crate::shard::read_entity_from_shard(shard, &right_key, |entity_ref| {
-                        entity_ref
-                            .static_features
-                            .iter()
-                            .map(|(n, sf)| (n.clone(), sf.value.to_json_value()))
-                            .collect()
-                    });
-                #[cfg(feature = "state-inmem")]
-                let right_row: Option<AHashMap<String, serde_json::Value>> =
-                    shard.state.get(&right_key).map(|entity_ref| {
-                        entity_ref
-                            .static_features
-                            .iter()
-                            .map(|(n, sf)| (n.clone(), sf.value.to_json_value()))
-                            .collect()
-                    });
-                if right_row.is_none() && join_type == JoinType::Inner {
+
+                let n_shards = sibling_shards.map(|s| s.len()).unwrap_or(0);
+                // Per-feature resolved EntityState (either fast-path same-shard
+                // result or cross-shard batch result). Index parallel to enrich_feats.
+                let mut resolved_rows: Vec<Option<crate::state::store::EntityState>> =
+                    vec![None; enrich_feats.len()];
+                // Cross-shard coalesce buffer keyed by (target_shard_idx, right_table).
+                // Value: Vec<(right_key, feat_idx)> so we can scatter results back
+                // into resolved_rows after the batch dispatch returns.
+                let mut coalesce: std::collections::BTreeMap<
+                    (usize, String),
+                    Vec<(String, usize)>,
+                > = std::collections::BTreeMap::new();
+
+                for (feat_idx, (right_table, on_keys, _join_type, _right_fields)) in
+                    enrich_feats.iter().enumerate()
+                {
+                    let right_key = crate::engine::register::encode_group_by(
+                        on_keys,
+                        &effective_event,
+                    )?;
+                    // Route the right_key to its owning shard. Use the same
+                    // production hashing convention used by ingress
+                    // (`shard_hint_for_event({"__k": key}, Some("__k"))`) so
+                    // hash assignments are byte-identical between the
+                    // harness routing helper and operator eval.
+                    let target_shard_idx = if n_shards <= 1 {
+                        input_shard_idx
+                    } else {
+                        (crate::routing::shard_hint_for_event(
+                            &serde_json::json!({ "__k": right_key.clone() }),
+                            Some("__k"),
+                        ) as usize)
+                            % n_shards
+                    };
+                    if n_shards <= 1 || target_shard_idx == input_shard_idx {
+                        // Same-shard fast path (D-A3). Helper bumps
+                        // ENRICH_INTRA_SHARD_TOTAL + ENRICH_MISSING_TOTAL
+                        // internally so we don't double-count here.
+                        let row = self.read_entity_at_shard(
+                            sibling_shards,
+                            target_shard_idx,
+                            shard,
+                            input_shard_idx,
+                            right_table,
+                            &right_key,
+                        )?;
+                        resolved_rows[feat_idx] = row;
+                    } else {
+                        coalesce
+                            .entry((target_shard_idx, right_table.clone()))
+                            .or_default()
+                            .push((right_key, feat_idx));
+                    }
+                }
+
+                // Flush cross-shard coalesced reads. Sequential per
+                // (target, table); chunked by MAX_ENRICH_BATCH_KEYS to
+                // satisfy the DoS guard (T-56-01-01). Across-target
+                // parallelism deferred to 56-NEXT pending Wave-4 perf data.
+                const CAP: usize = crate::shard::thread::MAX_ENRICH_BATCH_KEYS;
+                for ((target_shard_idx, right_table), bucket) in coalesce.into_iter() {
+                    let keys: Vec<String> =
+                        bucket.iter().map(|(k, _)| k.clone()).collect();
+                    let mut seen: usize = 0;
+                    for chunk in keys.chunks(CAP) {
+                        let results = self.read_entity_batch_at_shard(
+                            sibling_shards,
+                            target_shard_idx,
+                            shard,
+                            input_shard_idx,
+                            &right_table,
+                            chunk,
+                        )?;
+                        debug_assert_eq!(results.len(), chunk.len());
+                        for (i, row) in results.into_iter().enumerate() {
+                            let (_right_key, feat_idx) = bucket[seen + i].clone();
+                            resolved_rows[feat_idx] = row;
+                        }
+                        seen += chunk.len();
+                    }
+                }
+
+                // Inner-join semantics: if ANY feature's row is missing,
+                // drop this downstream event (preserves pre-Phase-56
+                // behaviour). Left / Outer variants null-fill downstream.
+                let mut any_missing_inner = false;
+                for (feat_idx, (_rt, _on, join_type, _rf)) in
+                    enrich_feats.iter().enumerate()
+                {
+                    if resolved_rows[feat_idx].is_none()
+                        && *join_type == JoinType::Inner
+                    {
+                        any_missing_inner = true;
+                        break;
+                    }
+                }
+                if any_missing_inner {
                     dropped.insert(stream_in_order.clone());
                     continue;
                 }
+
+                // Splice resolved rows back into the enriched event.
+                // Row fields are resolved from `entity.table_rows[right_table].fields`
+                // (source-table path — Phase 55 register_source_table) with a
+                // fallback to the legacy `static_features` slot for backward
+                // compatibility with pre-Phase-24 SET/MSET-populated Tables.
                 let mut enriched = effective_event.clone();
                 let enriched_map = enriched.as_object_mut().ok_or_else(|| {
-                    BeavaError::Protocol("EnrichFromTable: event is not a JSON object".into())
+                    BeavaError::Protocol(
+                        "EnrichFromTable: event is not a JSON object".into(),
+                    )
                 })?;
-                for (right_src, emitted) in &right_fields {
-                    if enriched_map.contains_key(emitted) && emitted != right_src {
-                        continue;
+                for (feat_idx, (right_table, _on, _join_type, right_fields)) in
+                    enrich_feats.iter().enumerate()
+                {
+                    let row_fields_json: Option<AHashMap<String, serde_json::Value>> =
+                        resolved_rows[feat_idx].as_ref().map(|e| {
+                            // Prefer the source-table row (Phase 24+
+                            // `table_rows[right_table].fields`); fall
+                            // back to legacy `static_features`.
+                            let mut out: AHashMap<String, serde_json::Value> =
+                                AHashMap::new();
+                            if let Some(row) = e.table_rows.get(right_table) {
+                                for (k, v) in row.fields.iter() {
+                                    out.insert(k.clone(), v.to_json_value());
+                                }
+                            }
+                            for (n, sf) in e.static_features.iter() {
+                                out.entry(n.clone())
+                                    .or_insert_with(|| sf.value.to_json_value());
+                            }
+                            out
+                        });
+                    for (right_src, emitted) in right_fields {
+                        if enriched_map.contains_key(emitted) && emitted != right_src {
+                            continue;
+                        }
+                        let v = row_fields_json
+                            .as_ref()
+                            .and_then(|r| r.get(right_src).cloned())
+                            .unwrap_or(serde_json::Value::Null);
+                        enriched_map.insert(emitted.clone(), v);
                     }
-                    let v = right_row
-                        .as_ref()
-                        .and_then(|r| r.get(right_src).cloned())
-                        .unwrap_or(serde_json::Value::Null);
-                    enriched_map.insert(emitted.clone(), v);
                 }
                 effective_events.insert(stream_in_order.clone(), enriched);
                 continue;
