@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
-status: in_progress
-stopped_at: Phase 55 closed (SC-6 deferred to 55-NEXT #1 per user); starting Phase 56
-last_updated: "2026-04-20T23:00:00.000Z"
+status: planning
+stopped_at: Completed 56-02-PLAN.md
+last_updated: "2026-04-21T05:15:58.888Z"
 last_activity: 2026-04-20
 progress:
   total_phases: 18
   completed_phases: 7
-  total_plans: 54
-  completed_plans: 51
-  percent: 94
+  total_plans: 59
+  completed_plans: 54
+  percent: 92
 ---
 
 # Project State
@@ -30,7 +30,7 @@ Plan: 5 of 5 (all Phase 55 plans done)
 **Phase:** 56
 **Plan:** Not started
 **Status:** Ready to plan
-**Progress:** [█████████▊] 94%
+**Progress:** [█████████░] 92%
 
 **Last activity:** 2026-04-20
 
@@ -116,6 +116,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 54 P04 | 3h (A1..A6b + close) | 4 tasks | 7 files (close commit) |
 | Phase 54 P05 | ~45 min (pprof×3 + bench×2 + artifacts) | 3 tasks | 11 files (3 committed; 8 on-disk .planning/) |
 | Phase 54 full | Net −1,100 LOC; DashMap 61.2%→0% in pprof top-20; EPS +580% (197K→1.34M); 6/7 SC auto-passed | 6 plans | TPC-ARCH-01 ✅, TPC-PERSIST-05A ✅, TPC-PERSIST-04 human_needed |
+| Phase 56 P02 | 45min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -248,7 +249,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Phase 55 context gathered — 4 gray areas locked (cascade mechanics, wire format, rematerialization, test scope + perf gate)
+**Stopped at:** Completed 56-02-PLAN.md
 
 **Next action (engineering):** Phase 54 is closed modulo soak evidence. Engineering-facing next action is either (a) operator runs `scripts/soak-hetzner-ccx43.sh` on Hetzner CCX43 to flip TPC-PERSIST-04 to `passed`, or (b) start next phase / close v1.2 milestone. See `.planning/phases/54-legacy-engine-removal/soak-runbook.md` for the operator steps.
 

@@ -226,9 +226,9 @@ Plans:
   - StreamStreamJoin buffer ownership: shard owning `hash(join.on) % N` (decision: Q5b-a from phase-55 scoping).
 **Plans**: 5 plans
 Plans:
-- [ ] 56-00-PLAN.md — Wave 0: RED tests for SC-1..SC-5 + REQUIREMENTS.md TPC-CORR-04 relaxation + TPC-CORR-08 + TPC-CORR-09
-- [ ] 56-01-PLAN.md — Wave 1: ShardOp::ReadEntityAt / ReadEntityBatch / SsjInsert + Shard::read_entity_at + Shard::apply_ssj_insert + pipeline.rs helpers + 5 metric counters
-- [ ] 56-02-PLAN.md — Wave 2: EnrichFromTable cross-shard read with same-shard fast path + per-batch coalesce by (target_shard, table)
+- [x] 56-00-PLAN.md — Wave 0: RED tests for SC-1..SC-5 + REQUIREMENTS.md TPC-CORR-04 relaxation + TPC-CORR-08 + TPC-CORR-09
+- [x] 56-01-PLAN.md — Wave 1: ShardOp::ReadEntityAt / ReadEntityBatch / SsjInsert + Shard::read_entity_at + Shard::apply_ssj_insert + pipeline.rs helpers + 5 metric counters
+- [x] 56-02-PLAN.md — Wave 2: EnrichFromTable cross-shard read with same-shard fast path + per-batch coalesce by (target_shard, table)
 - [ ] 56-03-PLAN.md — Wave 3: StreamStreamJoin routes via hash(join.on)%N + TPC-CORR-04 relaxation (CrossShardJoinWarning) + /debug/warnings cross_shard_joins field
 - [ ] 56-04-PLAN.md — Wave 4: perf gate (>= 1,059,261 EPS floor) + 56-VERIFICATION.md + close
 **UI hint**: no
@@ -344,7 +344,7 @@ Plans:
 | 53. Fjall state backend | 6/7 plans (06 deferred) | **Engineering-complete** — 4/6 TPC-PERSIST closed; PERSIST-04 + PERSIST-05A gates deferred to Phase 54 (legacy DashMap bypass at N=1) | 2026-04-19 |
 | 54. Legacy engine removal | 6/6 | **Engineering-complete** — TPC-ARCH-01 ✅ + TPC-PERSIST-05A ✅ closed; TPC-PERSIST-04 human_needed (Hetzner CCX43 8h soak; evidence-file gated). pprof DashMap → 0% in top-20; EPS +580% (197K → 1.34M). | 2026-04-20 (eng) |
 | 55. Stream→Table cascade cross-shard + source tables | 5/5 | Complete    | 2026-04-20 |
-| 56. EnrichFromTable + StreamStreamJoin cross-shard | 0/? | Not started — relaxes TPC-CORR-04 to runtime warning; both sides route to join-key-owning shard | — |
+| 56. EnrichFromTable + StreamStreamJoin cross-shard | 3/5 | In Progress|  |
 | 57. Retraction across cross-shard joins | 0/? | Not started — consuming the pending-retraction markers from Phase 55 source-table DELETEs + SSJ tombstone propagation | — |
 | 58. Tokio connection-handling rewrite | 0/? | Not started — biggest measured bottleneck (60% of CPU in samply) — eliminate per-conn task churn | — |
 | 59. Binary wire format for PUSH | 0/? | Not started — 11% CPU savings from removing JSON re-serialization | — |
