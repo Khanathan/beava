@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: Completed 58-02-PLAN.md
-last_updated: "2026-04-21T09:41:53.740Z"
+stopped_at: Completed 58-03-PLAN.md
+last_updated: "2026-04-21T09:51:52.830Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 18
   completed_phases: 9
   total_plans: 69
-  completed_plans: 64
-  percent: 93
+  completed_plans: 65
+  percent: 94
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 ## Current Position
 
 Phase: 57 CLOSED 2026-04-21 (engineering-complete; **TPC-CORR-10 closed**; all SC-1..SC-4 + D-B5 depth guard GREEN. Default fraud-pipeline perf gate PASSED **1,297,293 EPS ≥ 1,076,322 floor** (+20.5% headroom; +8.5% vs Phase 56 baseline). Advisory D-D4 retraction-firing micro-bench deferred on same Phase 55 SDK gap as 56-NEXT #6; NOT a gate per plan.)
-Plan: 3 of 5 (58-00 RED scaffolding landed 2026-04-21; next is 58-01 Wave 1 Linux per-shard accept loop)
+Plan: 4 of 5 (58-00 RED scaffolding landed 2026-04-21; next is 58-01 Wave 1 Linux per-shard accept loop)
 **Phase:** 58 (tokio-connection-handling-rewrite — Wave 0 landed; TPC-PERF-08 in flight)
-**Plan:** 3 of 5 (58-00 RED scaffolding landed 2026-04-21; next is 58-01 Wave 1 Linux per-shard accept loop)
+**Plan:** 4 of 5 (58-00 RED scaffolding landed 2026-04-21; next is 58-01 Wave 1 Linux per-shard accept loop)
 **Status:** Ready to execute
-**Progress:** [█████████░] 93%
+**Progress:** [█████████░] 94%
 
 **Last activity:** 2026-04-21
 
@@ -129,6 +129,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 | Phase 58 P00 | ~8min | 2 tasks | 7 files |
 | Phase 58 P01 | 18min | 2 tasks | 12 files |
 | Phase 58 P02 | 30min | 2 tasks | 2 files |
+| Phase 58 P03 | 25min | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -292,7 +293,7 @@ depend on item 1 (Docker Hub image live). Full detail in
 
 ## Session Continuity
 
-**Stopped at:** Completed 58-02-PLAN.md
+**Stopped at:** Completed 58-03-PLAN.md
 
 **Next action (engineering):** Phase 57 is engineering-complete. The engineering-facing next action is one of:
   (a) **Start Phase 58** (Tokio connection-handling rewrite — TPC-PERF-08). Goal: eliminate the per-connection Tokio task spawn/drop churn (~60% of samply leaf samples); long-lived accept-loops via SO_REUSEPORT (Linux) and dedicated accept-thread-per-shard (macOS). Phase 57 left the write path with 20.5% headroom, giving Phase 58 room to consume several percent on its way to the +25% EPS goal. Key integration points: `src/server/tcp.rs` per-connection task spawn, `src/server/http.rs` axum handlers, `src/shard/thread.rs::shard_event_loop` (already pinned, does NOT need rewriting).
