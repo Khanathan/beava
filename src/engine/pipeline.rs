@@ -481,6 +481,29 @@ pub struct PipelineEngine {
     pub schema_registry: crate::engine::schema::SchemaRegistry,
 }
 
+/// Phase 59.6 Wave 4 (TPC-PERF-11) — predicate for the Wave-4 typed
+/// fast-path compatibility check inside `push_typed_on_shard`. Returns
+/// `true` for `FeatureDef` variants whose operator has a typed twin in
+/// `src/engine/operators_typed_aggs.rs` (or the Wave-3
+/// `EnrichFromTableTyped`).
+///
+/// Waves 5-6 flip more variants to `true` as they gain typed impls.
+/// Anything returning `false` routes through the `row_to_value` + Value
+/// cascade bridge so behavior is unchanged until the typed op ships.
+pub(crate) fn is_wave4_typed_compatible(fd: &FeatureDef) -> bool {
+    matches!(
+        fd,
+        FeatureDef::EnrichFromTable { .. }
+            | FeatureDef::Count { .. }
+            | FeatureDef::Sum { .. }
+            | FeatureDef::Avg { .. }
+            | FeatureDef::Min { .. }
+            | FeatureDef::Max { .. }
+            | FeatureDef::Last { .. }
+            | FeatureDef::First { .. }
+    )
+}
+
 /// Create an operator instance from a FeatureDef (non-derive only).
 /// Returns OperatorState enum (not Box<dyn Operator>) for serialization support.
 fn create_operator(def: &FeatureDef) -> Option<OperatorState> {
@@ -3678,19 +3701,21 @@ impl PipelineEngine {
         };
 
         // Step 2: check whether every cascade feature on every downstream
-        // is EnrichFromTable — Wave 3's typed-compatible set. Any other
-        // operator (agg, SSJ, Derive) downgrades the whole cascade to
-        // the Value path. Wave 4+ grows this predicate.
-        let wave3_compatible = cascade.iter().all(|downstream_name| {
+        // is typed-path compatible. Wave 4 expands the Wave-3 set (which
+        // only accepted EnrichFromTable) to also include the simple
+        // aggregation variants covered by the Wave-4 TypedAggOp trait
+        // (Count/Sum/Avg/Min/Max/Last/First). Any other operator (SSJ,
+        // Derive, sketch aggs, window-anchored aggs) downgrades the
+        // whole cascade to the Value path. Waves 5-6 grow this
+        // predicate further as the remaining ops gain typed fast-paths.
+        let wave4_compatible = cascade.iter().all(|downstream_name| {
             match self.streams.get(downstream_name) {
-                Some(def) => def.features.iter().all(|(_, fd)| {
-                    matches!(fd, FeatureDef::EnrichFromTable { .. })
-                }),
+                Some(def) => def.features.iter().all(|(_, fd)| is_wave4_typed_compatible(fd)),
                 None => true,
             }
         });
 
-        if !wave3_compatible {
+        if !wave4_compatible {
             // Value fallback for the whole cascade. Waves 4-6 narrow this.
             let value = crate::engine::schema::row_to_value(&row, schema);
             return self.push_with_cascade_on_shard(
@@ -3715,6 +3740,14 @@ impl PipelineEngine {
         // (Phase 56/57) byte-identical with the Value path while still
         // letting us measure the typed operator construction cost
         // through the Wave 3 perf bench.
+        // Wave 4 "run_typed_cascade" dispatch. Current implementation
+        // delegates to `run_typed_enrich_cascade` which bridges to the
+        // Value cascade walk (preserving Wave-3 parity). A dedicated
+        // `run_typed_agg_step` helper lives below for downstream callers
+        // that want to drive typed aggs against `Shard.entity_state_typed`
+        // without going through the cascade bridge — used by the
+        // SC-4 parity tests in `tests/typed_aggregation_parity.rs` and
+        // `tests/typed_row_parity.rs`.
         self.run_typed_enrich_cascade(
             stream_name,
             row,
@@ -3726,6 +3759,47 @@ impl PipelineEngine {
             sibling_shards,
             input_shard_idx,
         )
+    }
+
+    /// Phase 59.6 Wave 4 (TPC-PERF-11, D-C4) — typed aggregation step.
+    ///
+    /// Drives a single event [`Row`] through a list of [`TypedAggOp`]
+    /// instances, mutating the per-entity agg-state Row stored in
+    /// [`crate::shard::Shard::entity_state_typed`] in place. Returns a
+    /// [`FeatureMap`] containing each op's current feature value for
+    /// downstream cascade/emit consumption.
+    ///
+    /// This is the hot-path alternative to
+    /// `push_with_cascade_on_shard`'s aggregation branch. Used by:
+    /// - SC-4 parity tests (`typed_aggregation_parity.rs`,
+    ///   `typed_row_parity.rs`) to drive typed-only agg state.
+    /// - Future `run_typed_cascade` growth (Wave 5+) replaces the
+    ///   Wave-3 Value bridge with a direct typed cascade walk.
+    pub fn run_typed_agg_step(
+        &self,
+        stream_name: &str,
+        entity_key: &str,
+        input: &crate::engine::schema::Row,
+        input_schema: &crate::engine::schema::RegisteredSchema,
+        ops: &[&dyn crate::engine::operators_typed::TypedAggOp],
+        state_schema: &crate::engine::schema::RegisteredSchema,
+        shard: &mut crate::shard::Shard,
+        now: SystemTime,
+    ) -> FeatureMap {
+        let state = shard.get_or_init_entity_state_typed(
+            stream_name,
+            entity_key,
+            state_schema,
+            ops,
+        );
+        for op in ops {
+            op.update_typed(state, state_schema, input, input_schema, now);
+        }
+        let mut fmap = FeatureMap::new();
+        for op in ops {
+            fmap.insert(op.name().to_string(), op.read_feature(state, state_schema));
+        }
+        fmap
     }
 
     /// Phase 59.6 Wave 3 (TPC-PERF-11): typed EnrichFromTable cascade

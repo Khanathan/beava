@@ -81,6 +81,14 @@ pub struct Shard {
     /// `beava_fjall_write_bytes_total{shard=N}`. Non-atomic because the
     /// shard is single-writer (thread owns it exclusively).
     pub write_bytes_since_sample: u64,
+    /// Phase 59.6 Wave 4 (TPC-PERF-11, D-C4): typed per-entity agg state.
+    /// Keyed by `(stream_name, entity_key)`; value is a packed [`Row`]
+    /// whose layout matches the stream's Wave-4-derived agg-state schema
+    /// (one column per agg feature + any per-op sidecar fields — see
+    /// `src/engine/operators_typed_aggs.rs`). In-memory only in this
+    /// wave; Wave 5 extends fjall serialization (V11 snapshot) so typed
+    /// agg state survives restart.
+    pub entity_state_typed: ahash::AHashMap<(String, String), crate::engine::schema::Row>,
 }
 
 /// Per-shard state container (dev-only `state-inmem` build). Single writer.
@@ -98,6 +106,10 @@ pub struct Shard {
     pub event_log: Option<EventLog>,
     /// Per-shard watermark state (replaces WatermarkTracker on PipelineEngine — Plan 49-03).
     pub watermark: WatermarkState,
+    /// Phase 59.6 Wave 4 (TPC-PERF-11, D-C4): typed per-entity agg state.
+    /// See the fjall-build variant for the full docstring; dev-mode
+    /// build carries the same field so API surface is consistent.
+    pub entity_state_typed: AHashMap<(String, String), crate::engine::schema::Row>,
 }
 
 impl Shard {
@@ -114,6 +126,7 @@ impl Shard {
             event_log: None,
             watermark: WatermarkState::new(),
             write_bytes_since_sample: 0,
+            entity_state_typed: ahash::AHashMap::new(),
         }
     }
 
@@ -133,6 +146,7 @@ impl Shard {
             dirty_set: HashSet::new(),
             event_log: None,
             watermark: WatermarkState::new(),
+            entity_state_typed: AHashMap::new(),
         }
     }
 
@@ -144,7 +158,44 @@ impl Shard {
             dirty_set: HashSet::new(),
             event_log: Some(event_log),
             watermark: WatermarkState::new(),
+            entity_state_typed: AHashMap::new(),
         }
+    }
+
+    /// Phase 59.6 Wave 4 (TPC-PERF-11, D-C4) — get-or-init the typed
+    /// per-entity agg-state [`crate::engine::schema::Row`] for
+    /// `(stream, entity_key)`.
+    ///
+    /// If no state exists for this pair, allocates a zeroed Row of
+    /// `state_schema.row_size` and runs each op's `init_state` against
+    /// it so the first hot-path `update_typed` call can assume the
+    /// identity value is already populated. Subsequent lookups return
+    /// the cached Row without re-running init.
+    ///
+    /// # Allocation profile (D-C4)
+    ///
+    /// One `Row::zeroed` call per new entity; the first event for an
+    /// entity pays a ~row_size-byte `Vec<u8>` allocation + per-op
+    /// scalar writes. Every event after is a HashMap lookup + in-place
+    /// mutation — no allocation in the hot path.
+    pub fn get_or_init_entity_state_typed(
+        &mut self,
+        stream: &str,
+        entity_key: &str,
+        state_schema: &crate::engine::schema::RegisteredSchema,
+        init_ops: &[&dyn crate::engine::operators_typed::TypedAggOp],
+    ) -> &mut crate::engine::schema::Row {
+        let key = (stream.to_string(), entity_key.to_string());
+        if !self.entity_state_typed.contains_key(&key) {
+            let mut row = crate::engine::schema::Row::zeroed(state_schema);
+            for op in init_ops {
+                op.init_state(state_schema, &mut row);
+            }
+            self.entity_state_typed.insert(key.clone(), row);
+        }
+        self.entity_state_typed
+            .get_mut(&key)
+            .expect("inserted above")
     }
 }
 

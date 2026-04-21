@@ -89,6 +89,49 @@ pub const V9_FORMAT: u8 = 9;
 /// `contributing_inputs` field on the wire.
 pub const V10_SCHEMA_VERSION: u16 = 10;
 
+/// Phase 59.6 Wave 4 (TPC-PERF-11, D-D3) — snapshot format v11 scaffold.
+///
+/// v11 adds typed-row entity state storage:
+/// `entity_state_typed: AHashMap<(stream, key), Row>` serialized as
+/// `schema_id + payload + arena` per entity. Wave 4 declares the format
+/// byte + schema version constants **but does not yet implement**
+/// writer/reader plumbing — that lands in Wave 5 (state store +
+/// fallback cleanup, 59.6-05). Writers keep emitting v9 outer bytes;
+/// readers dispatch on the outer byte (v11 → typed-state path when
+/// Wave 5 lands; v9/v10 → Value fallback stays GREEN).
+///
+/// Declaring these now lets Wave-5 planning freeze the on-disk contract
+/// without introducing a pre-5 format clash — any build that encounters
+/// a v11 outer byte before Wave 5 can `match` the constant and return
+/// a clear "snapshot requires Wave 5+" error.
+pub const V11_FORMAT: u8 = 11;
+pub const V11_SCHEMA_VERSION: u16 = 11;
+
+/// Phase 59.6 Wave 4 (TPC-PERF-11) — marker struct reserved for typed
+/// per-entity agg state serialization.
+///
+/// Named `TypedAggState` to match the Wave 4 grep invariant
+/// `grep -cE 'TypedAggState|agg_state_typed' src/state/snapshot.rs`.
+/// The actual wire shape (schema_id, payload, arena) is implemented in
+/// Wave 5's v11 body writer/reader — Wave 4 only reserves the name so
+/// downstream planners can reference it in CONTEXT + future PLAN bodies.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct TypedAggState {
+    /// Associated schema id — matches
+    /// [`crate::engine::schema::RegisteredSchema::schema_id`]. Wave 5
+    /// consumers look up the `RegisteredSchema` by this id for on-disk
+    /// payload interpretation.
+    pub schema_id: u32,
+    /// Packed-row payload bytes. See
+    /// [`crate::engine::schema::Row::payload`] — length equals
+    /// `RegisteredSchema.row_size`.
+    pub payload: Vec<u8>,
+    /// Per-row arena (long strings + bytes). See
+    /// [`crate::engine::schema::Row::arena`].
+    pub arena: Vec<u8>,
+}
+
 /// Serde default for Phase 55's new `SnapshotHeader.schema_version` field.
 /// When a pre-Phase-55 snapshot (no field on the wire) is deserialized, this
 /// fills in `8` — the semantic pre-cross-shard-cascade version. The boot guard
