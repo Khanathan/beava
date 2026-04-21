@@ -160,8 +160,25 @@ async fn n_shards_produces_n_listeners_linux() {
 
 #[cfg(not(target_os = "linux"))]
 #[tokio::test]
-#[ignore = "58-W2"]
 async fn n_shards_produces_n_accept_threads_macos() {
+    // Phase 58-02 D-B2 escape-hatch: when `BEAVA_SHARDS_SINGLE_LISTENER=1`,
+    // the fallback spawns exactly ONE accept thread (counter == 1, not N).
+    // Skip the D-B1 N-counter assertion in that mode rather than falsely
+    // failing — this mirrors Wave 2 plan §<behavior> bullet:
+    // "the macOS smoke test is SKIPPED in this mode".
+    let single_listener = std::env::var("BEAVA_SHARDS_SINGLE_LISTENER")
+        .ok()
+        .and_then(|s| s.parse::<u8>().ok())
+        .map(|n| n != 0)
+        .unwrap_or(false);
+    if single_listener {
+        eprintln!(
+            "[58-02] D-B2 fallback active (BEAVA_SHARDS_SINGLE_LISTENER=1) — \
+             skipping D-B1 per-shard-accept-thread assertion"
+        );
+        return;
+    }
+
     let state = make_concurrent_state_full(
         PipelineEngine::new(),
         None,
@@ -176,8 +193,11 @@ async fn n_shards_produces_n_accept_threads_macos() {
 
     let shard_count = N_SHARDS as usize;
     let inbox_size = beava::shard::thread::inbox_size_from_env();
-    // Phase 58-01 Task 1: macOS test passes None (Wave 2 macOS path wires its
-    // own accept_cfg handling — plumbing-only at Task 1/Wave 1).
+    // Phase 58-02 Task 2: macOS accept threads spawn AFTER shard handles are
+    // installed (to avoid the boot-race where a client could connect before
+    // `state.shard_handles.write()` runs). We replicate `run_tcp_server`'s
+    // ordering here instead of calling it directly — the test binds its own
+    // loopback ephemeral port rather than relying on a shared public addr.
     let handles = beava::shard::thread::spawn_shard_threads(
         shard_count,
         inbox_size,
@@ -189,21 +209,31 @@ async fn n_shards_produces_n_accept_threads_macos() {
     beava::metrics::install_prometheus_recorder();
     beava::shard::metrics::register_shard_metrics(shard_count);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // Pre-bind a loopback ephemeral port and drop it so the macOS per-shard
+    // accept threads can bind their own SO_REUSEPORT sockets on that port.
+    // (macOS BSD-style REUSEPORT permits the new binds even if a prior
+    // non-REUSEPORT listener briefly held the port.)
+    let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = probe_listener.local_addr().unwrap().port();
+    drop(probe_listener);
 
-    let srv_state = state.clone();
-    tokio::spawn(async move {
-        let _ = beava::server::tcp::run_tcp_server_with_listener(listener, srv_state).await;
-    });
+    let accept_addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let max_conns = beava::shard::thread::max_conns_per_shard_from_env();
+    let _accept_threads = beava::server::tcp::spawn_macos_per_shard_accept_threads(
+        accept_addr,
+        shard_count,
+        state.clone(),
+        max_conns,
+    )
+    .expect("macOS per-shard accept thread bind");
 
-    // Give the server time to spawn dedicated accept threads (Wave 2) —
-    // at Wave 0 this sleep is harmless (counter stays 0).
+    // Give the OS time for each accept thread's `fetch_add` bump to land
+    // before we observe the counter. The threads bump before entering the
+    // blocking `accept()` call, so 100 ms is ample on a loaded CI box.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let threads_spawned = state.accept_threads_spawned_total.load(Ordering::Relaxed);
 
-    // RED until Wave 2 wires the macOS dedicated-accept-thread spawner.
-    // Today this reads 0 → assertion fails → intended RED.
     assert_eq!(
         threads_spawned as u64, N_SHARDS as u64,
         "TPC-PERF-08 D-B1 gate FAIL: expected {} dedicated macOS accept threads \

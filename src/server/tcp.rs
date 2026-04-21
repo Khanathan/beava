@@ -631,24 +631,30 @@ pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::i
     // `TcpListener::bind` below is kept for compatibility (it's dropped by
     // `run_tcp_server_with_listener` on Linux) and for non-Linux builds
     // where the Phase 50.5 single-listener path is preserved until Wave 2.
+    // Phase 58-01/58-02: resolve `addr` once. Both Linux (D-A1) and macOS
+    // (D-B1) need the `SocketAddr` for per-shard REUSEPORT binds.
+    let accept_addr: std::net::SocketAddr = addr.parse().unwrap_or_else(|_| {
+        use std::net::ToSocketAddrs;
+        addr.to_socket_addrs()
+            .ok()
+            .and_then(|mut it| it.next())
+            .unwrap_or_else(|| {
+                panic!("Phase 58-01/02: unable to resolve TCP listen addr {addr:?}")
+            })
+    });
+    let max_conns_per_shard = crate::shard::thread::max_conns_per_shard_from_env();
+
+    // Phase 58-01 Task 2 (Linux): each shard threads its own accept loop via
+    // `accept_cfg`. Phase 58-02 (macOS): `accept_cfg` is still relayed through
+    // `spawn_shard_threads` as a signal but the accept threads themselves
+    // spawn AFTER `state.shard_handles.write()` completes (below) to avoid a
+    // boot-race where clients could connect before the handles are
+    // installed.
     #[cfg(target_os = "linux")]
-    let accept_cfg = {
-        let accept_addr: std::net::SocketAddr = addr.parse().unwrap_or_else(|_| {
-            // `addr` may be a hostname:port string (e.g. "0.0.0.0:8080") —
-            // resolve via ToSocketAddrs if direct parse fails.
-            use std::net::ToSocketAddrs;
-            addr.to_socket_addrs()
-                .ok()
-                .and_then(|mut it| it.next())
-                .unwrap_or_else(|| {
-                    panic!("Phase 58-01: unable to resolve TCP listen addr {addr:?}")
-                })
-        });
-        Some(crate::shard::thread::PerShardAcceptCfg {
-            accept_addr,
-            max_conns_per_shard: crate::shard::thread::max_conns_per_shard_from_env(),
-        })
-    };
+    let accept_cfg = Some(crate::shard::thread::PerShardAcceptCfg {
+        accept_addr,
+        max_conns_per_shard,
+    });
     #[cfg(not(target_os = "linux"))]
     let accept_cfg: Option<crate::shard::thread::PerShardAcceptCfg> = None;
 
@@ -678,8 +684,44 @@ pub async fn run_tcp_server(addr: &str, state: SharedState) -> Result<(), std::i
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let listener = TcpListener::bind(addr).await?;
-        run_tcp_server_with_listener(listener, state).await
+        // Phase 58-02 D-B1 / D-B2 (macOS): spawn either N dedicated accept
+        // threads (per-shard) or 1 single round-robin accept thread
+        // (`BEAVA_SHARDS_SINGLE_LISTENER=1`). Both paths bump
+        // `state.accept_threads_spawned_total`: N for D-B1, 1 for D-B2.
+        //
+        // Accept threads MUST spawn AFTER `state.shard_handles.write()` has
+        // installed the handles — otherwise there's a brief boot-race where
+        // a client connecting immediately would hit empty shard_handles and
+        // receive a dispatch error. We spawn here instead of inside
+        // `spawn_shard_threads` so the ordering is lexical and clear.
+        let single_listener_mode = std::env::var("BEAVA_SHARDS_SINGLE_LISTENER")
+            .ok()
+            .and_then(|s| s.parse::<u8>().ok())
+            .map(|n| n != 0)
+            .unwrap_or(false);
+
+        if single_listener_mode {
+            let _handles = spawn_macos_single_accept_thread(
+                accept_addr,
+                shard_count,
+                state.clone(),
+                max_conns_per_shard,
+            )?;
+            // Synthetic loopback listener so the fn signature stays stable;
+            // the macOS branch of `run_tcp_server_with_listener` drops it
+            // and becomes `future::pending` (mirrors the Linux branch).
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            return run_tcp_server_with_listener(listener, state).await;
+        } else {
+            let _handles = spawn_macos_per_shard_accept_threads(
+                accept_addr,
+                shard_count,
+                state.clone(),
+                max_conns_per_shard,
+            )?;
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            return run_tcp_server_with_listener(listener, state).await;
+        }
     }
 }
 
@@ -1092,16 +1134,40 @@ pub async fn run_tcp_server_with_listener(
 
     #[cfg(not(target_os = "linux"))]
     {
-        // macOS (Wave 2 rewrites this) — Phase 57 single-listener + tokio::spawn
-        // preserved to keep the platform on a known-good path during Wave 1.
-        loop {
-            let (stream, _addr) = listener.accept().await?;
-            let state = state.clone();
-            tokio::spawn(async move {
-                if let Err(_e) = handle_connection(stream, state).await {
-                    // Connection closed or error -- debug log only
-                }
-            });
+        // Phase 58-02 D-B1 / D-B2 (macOS): per-shard accept threads (or the
+        // single-listener fallback) were spawned from `run_tcp_server` before
+        // this future was awaited. They own the accept sockets + dispatch
+        // `handle_connection_blocking` on per-connection worker threads. The
+        // passed-in `listener` is a synthetic loopback ephemeral listener
+        // (see `run_tcp_server`); drop it. Mirrors the Linux branch above.
+        //
+        // For callers that invoke this function directly WITHOUT going
+        // through `run_tcp_server` (e.g. test harnesses that pre-bind a
+        // listener and want the legacy tokio-spawn-per-conn path), we keep
+        // a compat-shim behind `state.accept_threads_spawned_total == 0`: if
+        // no macOS accept threads were ever installed, fall back to the
+        // Phase 50.5 single-listener + tokio::spawn path. This preserves
+        // `tests/test_concurrent.rs` et al while the Wave-2 production path
+        // via `run_tcp_server` uses the new spawners.
+        if state
+            .accept_threads_spawned_total
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
+        {
+            let _ = &state;
+            drop(listener);
+            std::future::pending::<Result<(), std::io::Error>>().await
+        } else {
+            // Compat: no accept threads spawned — legacy single-listener path.
+            loop {
+                let (stream, _addr) = listener.accept().await?;
+                let state = state.clone();
+                tokio::spawn(async move {
+                    if let Err(_e) = handle_connection(stream, state).await {
+                        // Connection closed or error -- debug log only
+                    }
+                });
+            }
         }
     }
 }
