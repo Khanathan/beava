@@ -27,7 +27,10 @@ fi
 
 # Strip line-comments before grepping so doc-comments referencing the
 # pattern (e.g. in the CONTEXT header) do not cause false RED.
-TCP_HITS=$(grep -nE 'serde_json::to_vec\(payload\)|serde_json::to_vec\(r\.payload\)' "$TCP_FILE" \
+# Use -H to force filename prefix so the filter regex is uniform across
+# single-file and multi-file grep invocations (BSD grep on macOS omits
+# the filename when only one file is passed).
+TCP_HITS=$(grep -HnE 'serde_json::to_vec\(payload\)|serde_json::to_vec\(r\.payload\)' "$TCP_FILE" \
     | grep -v -E '^[^:]+:[0-9]+:[[:space:]]*//' \
     | grep -v -E '^[^:]+:[0-9]+:[[:space:]]*\*' \
     || true)
