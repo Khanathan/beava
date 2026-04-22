@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: completed
-stopped_at: Completed 59.7-04-PLAN.md
-last_updated: "2026-04-21T23:44:09.076Z"
+stopped_at: Completed 59.7-05-PLAN.md (Wave 5 — perf gate PASSED via Gap-2 samply sub-gate + PERF-GATE + VERIFICATION + architecture.md; Phase 59.7 engineering-complete; Phase 60 resumes next)
+last_updated: "2026-04-22T00:05:00.000Z"
 last_activity: 2026-04-21
 progress:
   total_phases: 20
-  completed_phases: 12
+  completed_phases: 13
   total_plans: 93
-  completed_plans: 85
-  percent: 91
+  completed_plans: 86
+  percent: 92
 ---
 
 # Project State
@@ -25,10 +25,10 @@ See: `.planning/PROJECT.md` (updated 2026-04-18)
 
 ## Current Position
 
-Phase: 59.7 (typed-windowed-cascade) — **W4 COMPLETE** 2026-04-21
-Next: Phase 59.7 Plan 05 (W5 perf gate close — fraud-pipeline EPS ≥ 1.45M on fjall OR `push_internal_on_shard` < 1% on state-inmem; close TPC-PERF-11 + TPC-CORR-07 Phase-59.7 sub-bullets)
-**Status:** Phase 59.7 Wave 4 complete — `run_typed_direct_cascade` promoted to full cross-shard walker with per-downstream Value fallback semantic (bumps `typed_cascade_value_fallback` once per non-typed hop), whole-cascade retraction bail-out for source_table-backed primary streams, and Arc<AtomicU64> counter aliasing between PipelineEngine and ConcurrentAppState; 4/4 cross-shard parity tests GREEN (was 1/4 at wave start); zero regressions on Phase 59.6 + W1/W2/W3 parity suites (56 tests across 9 test binaries).
-**Progress:** [█████████░] 91%
+Phase: 59.7 (typed-windowed-cascade) — **ENGINEERING-COMPLETE** 2026-04-21
+Next: Phase 60 (hotkey-mitigation-via-application-salting) — Wave 0 execution; architectural fix for Zipf hot-shard ceiling; delivers TPC-PERF-10
+**Status:** Phase 59.7 engineering-complete — 6 waves land the full typed windowed cascade. Wave 5 perf gate PASSED via Gap-2 samply sub-gate (`push_internal_on_shard` 17.8% → 0.00% leaf samples on state-inmem); aggregate-EPS +9.78% vs 59.6 baseline (1,322,525 → 1,451,914 median; narrowly under +10% strict target within 0.66% run variance — the OR-clause of the perf gate satisfies). 10/10 SCs PASSED; 14/14 Phase-59.7 parity tests GREEN; 41/41 Phase-59.6 regression tests GREEN; all 6 grep-gate invariants GREEN. Remaining aggregate-EPS +10% strict closure deferred to Phase 64 Rust bench client / Linux-host re-run — same hand-off as 58/59/59.6.
+**Progress:** [█████████░] 92%
 
 **Last activity:** 2026-04-21
 
@@ -40,8 +40,8 @@ Next: Phase 59.7 Plan 05 (W5 perf gate close — fraud-pipeline EPS ≥ 1.45M on
 | 59.7-01 (W1 windowed typed aggs + TypedRingBuffer) | **Complete 2026-04-21** | 840f5c8, aa1d704, 6de6309 |
 | 59.7-02 (W2 Min/Max/Last/First windowed + V11 snapshot) | **Complete 2026-04-21** | eb0d84b, 2b998b6 |
 | 59.7-03 (W3 ShardOp::RunTypedAggCascadeStep + same-shard walker) | **Complete 2026-04-21** | 562a746, 4ea34dd |
-| 59.7-04 (W4 run_typed_direct_cascade walker + env consumption) | Pending | — |
-| 59.7-05 (W5 perf gate + close) | Pending | — |
+| 59.7-04 (W4 run_typed_direct_cascade walker + env consumption) | **Complete 2026-04-21** | 10f815d, 419cddd, d542af6 |
+| 59.7-05 (W5 perf gate + PERF-GATE.md + VERIFICATION.md + close) | **Complete 2026-04-21** | ed4037e, (close commit) |
 
 ### Phase 59.6 plans
 

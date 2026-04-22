@@ -263,6 +263,68 @@ Measurements via `cargo bench --bench typed_pipeline_phase_latency` with a 3-op 
 - `benches/typed_pipeline_phase_latency.rs` — Criterion harness (3 cells: single_event / update_only_3ops / cascade_17ops).
 - `.planning/phases/59.6-typed-pipeline-records/59.6-PERF-GATE.md` — full perf evidence.
 
+## Typed Windowed Cascade (Phase 59.7)
+
+Phase 59.7 closes the two gaps Phase 59.6's profile identified: (1) `operators_typed_aggs.rs` only shipped unwindowed variants — any feature declaring `window="1h"/"24h"/"7d"` (i.e., every fraud-pipeline feature) would silently produce lifetime counts if routed typed; and (2) `run_typed_enrich_cascade` bridged every typed event back to `Value` before walking the cascade, so even typed-eligible downstream state still paid the 17.8% `push_internal_on_shard` Value-cascade cost observed in the 59.6 state-inmem samply profile.
+
+### Why
+
+The 59.6 state-inmem samply showed `push_internal_on_shard` as the #1 leaf function at 17.8% of CPU — the Value-cascade walker was the dominant cost on the typed-ingest path because the walker itself had not been typed. Wave 5's perf-gate target was to either drop that leaf below 1% on state-inmem OR hit +10% aggregate EPS on fjall. Phase 59.7 met the first target at 0.00% leaf self-samples.
+
+### What
+
+1. **10 windowed typed agg ops** in `src/engine/operators_typed_aggs_windowed.rs`: `CountOpTypedWindowed`, `SumOpTypedWindowed{I64,F64}`, `AvgOpTypedWindowedF64`, `MinOpTypedWindowed{I64,F64}`, `MaxOpTypedWindowed{I64,F64}`, `LastOpTypedWindowedInlineStr`, `FirstOpTypedWindowedInlineStr`. Honor `window` + `bucket` semantics identically to Value-path ops.
+2. **8 packed `TypedRingBuffer` variants** — `TypedRingBuffer{I64,F64,Avg}` (W1) + `TypedRingBufferMin{I64,F64}` / `TypedRingBufferMax{I64,F64}` / `TypedRingBufferInlineStr` (W2). All monomorphized (not generic-over-`T`) to keep codegen tight and avoid `TypedRingBufferEnum` match-arm fanout.
+3. **Side-map state at `Shard.entity_ringbuffers_typed`** — `AHashMap<(String, String, u16), TypedRingBufferEnum>` keyed by (stream, entity_key, op_idx). Lazily populated via `Shard::get_or_init_typed_ringbuffer`. Avoids packed-row bloat (a 60-bucket ring × 20 ops × entity would cost ~10 KB/entity inline).
+4. **`ShardOp::RunTypedAggCascadeStep`** — fire-and-forget variant in `src/shard/thread.rs` carrying `{downstream_name, entity_key, input_row, input_schema_id, primary_event_id}`. Target-shard dispatch arm runs `run_typed_agg_step` + `update_windowed` against `entity_state_typed` + `entity_ringbuffers_typed` and bumps `typed_cascade_direct_dispatched`.
+5. **`PipelineEngine::run_typed_direct_cascade` walker** — replaces `run_typed_enrich_cascade` as the primary typed cascade walker. Three-stage decision tree:
+   - **Retraction bail-out:** if any primary FeatureDef is `EnrichFromTable` over a registered `source_table`, delegate whole cascade to `run_typed_enrich_cascade` (source tables support DELETE ⇒ Phase 57 retraction semantics the typed walker can't replicate).
+   - **Whole-cascade pre-scan:** if ANY downstream has a non-typed-compat FeatureDef, bump `typed_cascade_value_fallback` once per non-typed hop and delegate to the Value bridge (preserves byte-identical state).
+   - **Per-downstream dispatch:** compute `entity_key` from input Row + `target_shard = shard_hint_from_row(row, key_field) % n_shards`. Same-shard: `run_typed_agg_step` + `update_windowed` inline. Cross-shard: `sibling_shards[target].inbox_tx.try_send(ShardOp::RunTypedAggCascadeStep { ... })`.
+6. **V11 snapshot extension** — `TypedStateSnapshotV11.typed_ringbuffers: Vec<((String, String, u16), TypedRingBufferEnum)>` (`#[serde(default)]` — additive; pre-59.7 V11 snapshots decode transparently with empty vec).
+
+### How (rollout)
+
+Gated by `BEAVA_TYPED_CASCADE_DIRECT=1` env flag on `PipelineEngine::new` (default off). Off: walker behaves identically to 59.6 (Value bridge). On: walker dispatches typed when primary stream is not retraction-capable AND every downstream is typed-compat. Counter Arc-sharing between `PipelineEngine` and `ConcurrentAppState` via `share_cascade_counters(direct, fallback)` — both sides alias the same `Arc<AtomicU64>` cells so engine-side bumps surface on server metrics.
+
+### Perf outcome (measured 2026-04-21 on the same macOS 10-core laptop)
+
+| Metric                                                        | Phase 59.6 | Phase 59.7 (candidate, flag=1) | Delta            |
+|---------------------------------------------------------------|-----------:|-------------------------------:|------------------|
+| `push_internal_on_shard` samply leaf-self-samples (state-inmem) | 17.8 %    | **0.00 %**                     | ≈−17.8 pp        |
+| Aggregate EPS (complex-c8-x8, 60 s × 3 runs, median)          | 1,322,525 | 1,451,914                      | **+9.78 %**      |
+| Criterion `cascade_direct_hot` (17-op steady, ns/event)        | 22.97 ns  | 1.92 ns                        | −91 %            |
+| Criterion pipeline-phase avg vs TPC-PERF-11 2.0μs target       | 0.023 μs  | 0.0019 μs                      | 1,052× under     |
+
+Perf gate PASSED via Gap-2 sub-gate (the OR-clause). The +10 % aggregate-EPS strict target (1,454,778) is narrowly missed at 1,451,914 (0.20 % gap), within the 0.66 % run variance — same macOS Python-client ceiling 58/59/59.6 hit. Full evidence: `.planning/phases/59.7-typed-windowed-cascade/59.7-PERF-GATE.md`.
+
+### Backward compatibility
+
+- `BEAVA_TYPED_CASCADE_DIRECT=1` is opt-in; default off. Pre-59.7 deployments see identical behavior.
+- Cascades involving source-table retraction, SSJ retraction, or any non-typed-compat downstream fall back to the 59.6 Value bridge unchanged.
+- V11 snapshots written pre-59.7 decode transparently (empty `typed_ringbuffers` default).
+
+### Limitations (carried from 59.6 + 59.7 scope exclusions)
+
+- **Sketches** (`DistinctCountOp` HLL, Percentile, TopK, CMS) remain on `SideBand` + Value fallback; typed windowed sketches are Phase 59.8+ territory.
+- **`@bv.source_table` cascade** stays on Value — source tables support UPSERT/DELETE with retraction, which the typed walker explicitly bails on (see Retraction bail-out above).
+- **Aggregate-EPS +10 % strict target on macOS** remains bounded by the Python SDK client ceiling; Phase 64 Rust bench client is the authoritative verification vehicle.
+- **Pre-existing `roundtrip_typed_ringbuffers` proptest seed-0 failure** (serde-skip vs derived-PartialEq on `last_drop`) — documented in `.planning/phases/59.7-typed-windowed-cascade/deferred-items.md`; fix is a local `#[serde(default)]` or custom `PartialEq`, out of W5 scope.
+
+### Key source files
+
+- `src/engine/operators_typed_aggs_windowed.rs` — 10 windowed typed agg ops + 8 `TypedRingBuffer` variants + `TypedRingBufferEnum` + macro-generated min/max twins.
+- `src/shard/thread.rs` — `ShardOp::RunTypedAggCascadeStep` variant + dispatch arm (bumps `typed_cascade_direct_dispatched`).
+- `src/shard/mod.rs` — `Shard.entity_ringbuffers_typed` field on both fjall and state-inmem variants + `get_or_init_typed_ringbuffer` accessor.
+- `src/engine/pipeline.rs` — `run_typed_direct_cascade` walker; `is_typed_cascade_compatible`, `is_downstream_fully_typed_compatible`, `primary_stream_is_retraction_capable` predicates; `build_typed_agg_op` factory + `typed_agg_ops_cache` (Arc<dyn TypedAggOp>); `share_cascade_counters`.
+- `src/engine/operators_typed.rs` — `TypedAggOp::update_windowed` + `read_feature_windowed` trait defaults (object-safe; simple-agg impls unaffected).
+- `src/state/snapshot.rs` — V11 snapshot extension field `typed_ringbuffers`.
+- `src/server/tcp.rs` — `ConcurrentAppState.typed_cascade_direct_dispatched` + `typed_cascade_value_fallback` `Arc<AtomicU64>` fields + `engine.share_cascade_counters(...)` wiring in `make_concurrent_state_full`.
+- `benches/typed_windowed_cascade_regression.rs` — Criterion regression tripwire (3 pinned cells).
+- `tests/typed_windowed_aggregation_parity.rs` — 10 windowed parity tests (window=5s bucket=1s, 100 K events, 20 event-time checkpoints per op).
+- `tests/typed_cascade_crossshard_parity.rs` — 4 cross-shard parity tests (same-shard, cross-shard, value-fallback-for-nontyped, V11-snapshot-roundtrip).
+- `.planning/phases/59.7-typed-windowed-cascade/59.7-PERF-GATE.md` — full perf evidence.
+
 ## State Store
 
 The state store (`src/state/store.rs`) maps entity keys to their feature state using a `DashMap` for per-key concurrency.

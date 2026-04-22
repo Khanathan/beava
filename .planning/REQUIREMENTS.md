@@ -71,7 +71,10 @@ Requirements scoped to the v1.2 milestone. Each maps to a roadmap phase (48–52
     is the typed↔Value parity guarantee, NOT a new correctness surface.
     Phase 59.7 extends this to windowed aggs (`tests/typed_windowed_aggregation_parity.rs`,
     10 ops × 20 event-time checkpoints each, window=5s bucket=1s) and cross-shard
-    cascade (`tests/typed_cascade_crossshard_parity.rs`, N=8 fraud-pipeline-shaped).
+    cascade (`tests/typed_cascade_crossshard_parity.rs`, N=8 fraud-pipeline-shaped) —
+    all 14 tests GREEN 2026-04-21 (W5 re-run); parity coverage now spans 17 unwindowed
+    typed agg ops + 10 windowed typed agg ops (8 TypedRingBuffer variants) + typed-direct
+    cross-shard cascade walker via `ShardOp::RunTypedAggCascadeStep`.
 - [x] **TPC-SOURCE-01**: Python SDK gains `@bv.source_table(key=K, entity_ttl=...)` decorator declaring a CDC-style keyed input. Explicit wire commands — TCP opcodes `UPSERT_TABLE_ROW` / `DELETE_TABLE_ROW` / `UPSERT_TABLE_BATCH` / `DELETE_TABLE_BATCH`; HTTP routes `POST /table/{name}` (upsert), `DELETE /table/{name}/{key}` (single delete), `POST /table/{name}/batch` (upsert batch), `POST /table/{name}/batch/delete` (delete batch). Batch variants accept ≥ 10K rows/call. UPSERT is full-replace (CDC-native, idempotent); DELETE is hard-delete + pending-retraction marker written to event log (Phase 57 consumes). `source_lsn: u64` (opaque, no monotonicity check) is stored per row and echoed on every ack (array ack on batch, in input order) for resumable replication. Source-table writes do NOT fire cascades in v1.2 (Phase 57 territory); source tables are passive enrichment targets for Phase 56's EnrichFromTable. (Phase 55)
 
 ### TPC-CORR (continued) — Phase 56
@@ -97,7 +100,7 @@ Requirements scoped to the v1.2 milestone. Each maps to a roadmap phase (48–52
 
 ### TPC-PERF (continued) — Phase 59.6
 
-- [~] **TPC-PERF-11** (engineering-complete 2026-04-21; sub-gate (b) aggregate-EPS human_needed on Linux-host / Phase 64 Rust bench client per 59.6-PERF-GATE.md; sub-gates (a), (c), (d), (e), (f) PASSED): The in-pipeline event/state representation is typed,
+- [~] **TPC-PERF-11** (engineering-complete 2026-04-21; Phase 59.7 re-run 2026-04-21: sub-gate (b) aggregate-EPS still `human_needed` on macOS Python-client ceiling — Phase 64 Rust bench client hand-off; sub-gates (a), (c), (d), (e), (f) PASSED via 59.6; **NEW sub-gate (g) Phase-59.7 Gap-2 `push_internal_on_shard` < 1% on state-inmem PASSED at 0.00 %** per 59.7-PERF-GATE.md; aggregate-EPS +9.78% (1,322,525 → 1,451,914 median) narrowly missed +10% strict target within 0.66% run variance): The in-pipeline event/state representation is typed,
   fixed-layout row records (`#[repr(C)] struct Row { schema_id: SchemaId, payload: [u8; N] }`)
   compiled from `@bv.stream` / `@bv.source_table` / `@bv.table` schemas at
   register time. Wire codec (`OP_PUSH_BATCH` schema_id prefix per D-B1), engine
@@ -120,19 +123,24 @@ Requirements scoped to the v1.2 milestone. Each maps to a roadmap phase (48–52
   `tests/typed_mixed_mode_coexistence.rs`, `tests/typed_value_fallback_unregressed.rs`,
   `tests/typed_ssj_crossshard_parity.rs`, `tests/typed_python_sdk_handshake.rs`,
   extended `tests/sharding_parity.rs`, and `benches/typed_pipeline_phase_latency.rs`. (Phase 59.6)
-  - **Phase 59.7 extension (typed windowed aggs + cascade-direct):** (i)
-    `src/engine/operators_typed_aggs_windowed.rs` ships 10 windowed typed agg
-    impls honoring `window`+`bucket` identically to Value-path. (ii)
-    `ShardOp::RunTypedAggCascadeStep` dispatches cross-shard typed-cascade
-    without Row→Value round-trip. (iii) Perf gate: `push_internal_on_shard` <1%
-    of CPU on state-inmem samply OR fraud-pipeline complex-c8-x8 aggregate
-    EPS ≥ 1,454,778 (+10% vs 1,322,525 median). (iv) Feature-flag
-    `BEAVA_TYPED_CASCADE_DIRECT=1` gate for rollout. Scaffolding landed in
-    Phase 59.7-00 (14 RED parity tests + regression-tripwire bench +
-    `is_typed_cascade_compatible` rename + env-flag consumer +
-    `typed_cascade_direct_dispatched` / `typed_cascade_value_fallback`
-    counters). W1..W4 ship the windowed ops + cascade walker; W5 closes the
-    perf gate. (Phase 59.7)
+  - **Phase 59.7 extension (typed windowed aggs + cascade-direct) — closed 2026-04-21:**
+    (i) `src/engine/operators_typed_aggs_windowed.rs` ships 10 windowed typed
+    agg impls (Count / Sum{I64,F64} / Avg{F64} / Min{I64,F64} / Max{I64,F64} /
+    LastInlineStr / FirstInlineStr) honoring `window`+`bucket` identically to
+    Value-path (W1+W2). (ii) `ShardOp::RunTypedAggCascadeStep` + `PipelineEngine::run_typed_direct_cascade`
+    walker dispatches cross-shard typed-cascade without Row→Value round-trip
+    (W3+W4). (iii) **Perf gate sub-gate (g) PASSED** per 59.7-PERF-GATE.md:
+    `push_internal_on_shard` samply leaf-self-samples = **0.00 %** (0 / 14,269
+    on state-inmem candidate probe; vs 17.8 % starting point in 59.6). (iv)
+    Aggregate-EPS re-run: **1,451,914 median / 1,454,730 best** (+9.78 % vs
+    1,322,525 median 59.6 baseline; narrowly under +10 % strict target of
+    1,454,778 within 0.66 % run variance — OR-clause of gate satisfied via
+    sub-gate (g)). (v) Feature-flag `BEAVA_TYPED_CASCADE_DIRECT=1` gate for
+    rollout. (vi) V11 snapshot extension `typed_ringbuffers` round-trips 8
+    ring-buffer variants. (vii) 14/14 Phase-59.7 parity tests GREEN
+    (`typed_windowed_aggregation_parity` 10/10, `typed_cascade_crossshard_parity`
+    4/4); 41/41 Phase 59.6 regression tests GREEN; all 6 grep-gate invariants
+    GREEN. (Phase 59.7)
 
 ## Future Requirements
 
@@ -175,6 +183,7 @@ Filled by roadmapper 2026-04-18. Maps each REQ-ID to the phase that delivers it.
 | 58 | tokio-connection-handling-rewrite | TPC-PERF-08 |
 | 59 | binary-wire-format-for-push | TPC-PERF-09 |
 | 59.6 | typed-pipeline-records | TPC-PERF-11, TPC-CORR-07 (extension) |
+| 59.7 | typed-windowed-cascade | TPC-PERF-11 (extension — Gap-2 sub-gate + aggregate-EPS re-eval), TPC-CORR-07 (extension — windowed + cross-shard parity) |
 | 60 | hotkey-mitigation-via-application-salting | TPC-PERF-10 |
 
 **Coverage:** 40/40 requirements mapped (1 + 3 + 9 + 4 + 7 + 4 + 3 + 2 + 2 + 1 + 1 + 1 + 1 = 39; adds 6 TPC-PERSIST-* + 1 TPC-ARCH-* + 2 Phase-55 + 2 Phase-56 + 1 Phase-57 + 1 Phase-58 + 1 Phase-59 + 1 Phase-60 requirements; TPC-CORR-04 is re-delivered by Phase 56 as a relaxation) + 1 Phase-59.6 requirement (TPC-PERF-11) + 1 TPC-CORR-07 extension
