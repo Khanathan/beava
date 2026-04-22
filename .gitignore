@@ -15,11 +15,6 @@ build/
 venv/
 
 # Beava-specific
-.planning/
-# NOTE: Phase 54 TPC-PERSIST-04 soak evidence at
-# .planning/phases/54-legacy-engine-removal/soak-evidence/*.json is
-# committed via `git add -f` per the soak-runbook.md (operator step 8).
-# The rest of .planning/ remains gitignored.
 .thoughts/
 deck/
 *.snapshot*
