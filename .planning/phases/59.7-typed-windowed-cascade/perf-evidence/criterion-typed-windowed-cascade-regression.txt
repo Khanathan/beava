@@ -1,0 +1,63 @@
+warning: type `MacosConnSlot` is more private than the item `handle_connection_blocking`
+   --> src/server/tcp.rs:977:1
+    |
+977 | / pub fn handle_connection_blocking(
+978 | |     stream: std::net::TcpStream,
+979 | |     state: SharedState,
+980 | |     _shard_index: usize,
+981 | |     _slot: MacosConnSlot,
+982 | | ) -> Result<(), crate::error::BeavaError> {
+    | |_________________________________________^ function `handle_connection_blocking` is reachable at visibility `pub`
+    |
+note: but type `MacosConnSlot` is only usable at visibility `pub(crate)`
+   --> src/server/tcp.rs:904:1
+    |
+904 | pub(crate) struct MacosConnSlot {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(private_interfaces)]` on by default
+
+warning: method `as_str` is never used
+   --> src/shard/metrics.rs:214:8
+    |
+213 | impl DropReason {
+    | --------------- method in this implementation
+214 |     fn as_str(self) -> &'static str {
+    |        ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `beava` (lib) generated 2 warnings
+   Compiling beava v0.1.0 (/Users/petrpan26/work/tally)
+    Finished `bench` profile [optimized] target(s) in 2.04s
+     Running benches/typed_windowed_cascade_regression.rs (target/release/deps/typed_windowed_cascade_regression-978232436dd7c668)
+Benchmarking typed_windowed_cascade_regression_windowed_count_hot
+Benchmarking typed_windowed_cascade_regression_windowed_count_hot: Warming up for 3.0000 s
+Benchmarking typed_windowed_cascade_regression_windowed_count_hot: Collecting 100 samples in estimated 5.0000 s (14B iterations)
+Benchmarking typed_windowed_cascade_regression_windowed_count_hot: Analyzing
+typed_windowed_cascade_regression_windowed_count_hot
+                        time:   [349.34 ps 351.55 ps 354.22 ps]
+Found 13 outliers among 100 measurements (13.00%)
+  4 (4.00%) high mild
+  9 (9.00%) high severe
+
+Benchmarking typed_windowed_cascade_regression_cascade_direct_hot
+Benchmarking typed_windowed_cascade_regression_cascade_direct_hot: Warming up for 3.0000 s
+Benchmarking typed_windowed_cascade_regression_cascade_direct_hot: Collecting 100 samples in estimated 5.0000 s (2.6B iterations)
+Benchmarking typed_windowed_cascade_regression_cascade_direct_hot: Analyzing
+typed_windowed_cascade_regression_cascade_direct_hot
+                        time:   [1.9105 ns 1.9192 ns 1.9302 ns]
+Found 12 outliers among 100 measurements (12.00%)
+  5 (5.00%) high mild
+  7 (7.00%) high severe
+
+Benchmarking typed_windowed_cascade_regression_cascade_bridge_hot
+Benchmarking typed_windowed_cascade_regression_cascade_bridge_hot: Warming up for 3.0000 s
+Benchmarking typed_windowed_cascade_regression_cascade_bridge_hot: Collecting 100 samples in estimated 5.0000 s (2.6B iterations)
+Benchmarking typed_windowed_cascade_regression_cascade_bridge_hot: Analyzing
+typed_windowed_cascade_regression_cascade_bridge_hot
+                        time:   [1.9003 ns 1.9022 ns 1.9044 ns]
+Found 12 outliers among 100 measurements (12.00%)
+  5 (5.00%) low mild
+  2 (2.00%) high mild
+  5 (5.00%) high severe
+

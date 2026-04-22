@@ -271,13 +271,17 @@ fn profile_ingest_hot_path() {
     for (frames, &count) in report.data.iter() {
         let count = count as i64;
         total_samples += count;
-        if let Some(leaf) = frames.frames.first().and_then(|frame| frame.first()) {
-            *leaf_counts.entry(leaf.name()).or_insert(0) += count;
+        if let Some(frame) = frames.frames.first() {
+            if let Some(leaf) = frame.first() {
+                let leaf: &pprof::Symbol = leaf;
+                *leaf_counts.entry(leaf.name()).or_insert(0) += count;
+            }
         }
         // Inclusive: every distinct symbol in the stack gets credited.
         let mut seen_in_stack: std::collections::HashSet<String> = std::collections::HashSet::new();
         for frame in &frames.frames {
             for sym in frame {
+                let sym: &pprof::Symbol = sym;
                 let name = sym.name();
                 if seen_in_stack.insert(name.clone()) {
                     *inclusive_counts.entry(name).or_insert(0) += count;
@@ -412,8 +416,11 @@ fn profile_ingest_thread_per_core_simulation() {
     for (frames, &count) in report.data.iter() {
         let count = count as i64;
         total_samples += count;
-        if let Some(leaf) = frames.frames.first().and_then(|frame| frame.first()) {
-            *leaf_counts.entry(leaf.name()).or_insert(0) += count;
+        if let Some(frame) = frames.frames.first() {
+            if let Some(leaf) = frame.first() {
+                let leaf: &pprof::Symbol = leaf;
+                *leaf_counts.entry(leaf.name()).or_insert(0) += count;
+            }
         }
     }
     let mut leaf: Vec<(String, i64)> = leaf_counts.into_iter().collect();

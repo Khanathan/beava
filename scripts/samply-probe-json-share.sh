@@ -123,7 +123,7 @@ export BEAVA_SHARD_INBOX_SIZE="${BEAVA_SHARD_INBOX_SIZE:-1048576}"
 
 echo "[$SCRIPT_NAME] running profile_ingest harness (shards=$SHARDS, duration~${DURATION_S}s)..." >&2
 
-if ! cargo test --release --test profile_ingest \
+if ! cargo test --release --features pprof-endpoint --test profile_ingest \
         -- --ignored --nocapture profile_ingest_hot_path >/tmp/beava_ingest.probe.log 2>&1; then
     echo "[$SCRIPT_NAME] ERROR: profile_ingest harness failed. See /tmp/beava_ingest.probe.log" >&2
     tail -40 /tmp/beava_ingest.probe.log >&2 || true
