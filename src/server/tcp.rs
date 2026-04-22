@@ -198,6 +198,15 @@ pub struct ConcurrentAppState {
     /// rarely written and stay behind the mutex.
     pub events_total: std::sync::atomic::AtomicU64,
 
+    /// Count of events the shard thread has ACTUALLY PROCESSED end-to-end
+    /// (incremented only after `engine.push_*_on_shard` returns successfully
+    /// in `process_shard_event`). Distinct from `events_total` which
+    /// double-counts inbox-accept + shard-process under the same
+    /// `shard_events_total{outcome="accepted"}` Prometheus label. Source of
+    /// truth for benchmark throughput reporting — `/debug/processed-events`
+    /// exposes it. 2026-04-21.
+    pub server_processed_events: std::sync::atomic::AtomicU64,
+
     /// Phase 45-04 A5: per-protocol event counters for the dual-emit
     /// `beava_events_total{proto="http"|"tcp"}` labeled series. Bumped by HTTP
     /// handlers (`events_http`) and TCP push sites (`events_tcp`). The unlabeled
@@ -601,6 +610,7 @@ pub fn make_concurrent_state_full(
         replica_mode: AtomicBool::new(false),
         replica_last_applied_ts_ms: std::sync::atomic::AtomicU64::new(0),
         events_total: std::sync::atomic::AtomicU64::new(0),
+        server_processed_events: std::sync::atomic::AtomicU64::new(0),
         events_http: std::sync::atomic::AtomicU64::new(0), // Phase 45-04 A5
         events_tcp: std::sync::atomic::AtomicU64::new(0),  // Phase 45-04 A5
         last_push_latency_nanos: std::sync::atomic::AtomicU64::new(0),

@@ -256,6 +256,22 @@ wait_clients || warn "one or more warmup clients exited non-zero"
 rm -f "$CLIENT_TMP"/warmup-*.jsonl
 
 log "Measuring ${DURATION}s (live EPS every ${CHECKPOINT}s)"
+
+# Capture server-truth counter BEFORE spawning measurement clients.
+# Source of truth: /debug/processed-events counts events the shard threads
+# actually processed end-to-end, distinct from events_total which
+# double-counts inbox-accept + shard-process. Fire-and-forget OP_PUSH_ASYNC
+# in bench.py means client-reported EPS is "events submitted" not "events
+# processed" — most events hit inbox_tx.try_send → Full → silently rejected
+# at saturation. Server-truth EPS is the only number that reflects actual
+# throughput. 2026-04-21.
+SERVER_TRUTH_BEFORE=$(curl -s -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN:-dev-admin-token}" \
+    "http://127.0.0.1:$HTTP_PORT/debug/processed-events" 2>/dev/null \
+    | python3 -c "import json,sys
+try: print(json.load(sys.stdin).get('server_processed_events', 0))
+except: print(0)" 2>/dev/null || echo 0)
+SERVER_TRUTH_T0_NS=$(python3 -c "import time; print(int(time.time()*1e9))")
+
 spawn_clients "$DURATION" measure
 
 # Poll checkpoint files on a 5s cadence; print live aggregate eps until all
@@ -299,6 +315,15 @@ wait_clients
 clients_exit=$?
 set -uo pipefail
 
+# Capture server-truth counter AFTER measurement clients finished.
+SERVER_TRUTH_AFTER=$(curl -s -H "Authorization: Bearer ${BEAVA_ADMIN_TOKEN:-dev-admin-token}" \
+    "http://127.0.0.1:$HTTP_PORT/debug/processed-events" 2>/dev/null \
+    | python3 -c "import json,sys
+try: print(json.load(sys.stdin).get('server_processed_events', 0))
+except: print(0)" 2>/dev/null || echo 0)
+SERVER_TRUTH_T1_NS=$(python3 -c "import time; print(int(time.time()*1e9))")
+export SERVER_TRUTH_BEFORE SERVER_TRUTH_AFTER SERVER_TRUTH_T0_NS SERVER_TRUTH_T1_NS
+
 if [[ "$clients_exit" != "0" ]]; then
     warn "some clients exited non-zero — partial data may be missing"
 fi
@@ -311,12 +336,20 @@ cp "$CLIENT_TMP"/measure-*.jsonl "$RESULTS_DIR/" 2>/dev/null || true
 # --------------------------------------------------------------------------
 
 log "Aggregating"
-if ! python3 - "$CLIENT_TMP" "$MODE" "$CLIENTS" "$CPUS" "$HTTP_PORT" "$SUMMARY_JSON" "$TS" "$DURATION" "$WARMUP" <<'PY'
+if ! python3 - "$CLIENT_TMP" "$MODE" "$CLIENTS" "$CPUS" "$HTTP_PORT" "$SUMMARY_JSON" "$TS" "$DURATION" "$WARMUP" "$SERVER_TRUTH_BEFORE" "$SERVER_TRUTH_AFTER" "$SERVER_TRUTH_T0_NS" "$SERVER_TRUTH_T1_NS" <<'PY'
 import glob, json, socket, sys, urllib.request, urllib.error
 from pathlib import Path
 
-tmp, mode, clients, threads, http, out_path, ts, duration, warmup = sys.argv[1:]
+tmp, mode, clients, threads, http, out_path, ts, duration, warmup, st_before, st_after, st_t0, st_t1 = sys.argv[1:]
 clients_i = int(clients)
+# Server-truth EPS — the ground-truth counter. Clients' events/sec reflects
+# submissions (which include inbox-rejected batches); server_processed_events
+# counts only events the shard threads actually handled end-to-end.
+st_before_i = int(st_before)
+st_after_i = int(st_after)
+st_delta = max(0, st_after_i - st_before_i)
+st_dt = max(1e-9, (int(st_t1) - int(st_t0)) / 1e9)
+server_truth_eps = st_delta / st_dt
 
 finals = []
 for f in sorted(glob.glob(f"{tmp}/measure-*.jsonl")):
@@ -409,6 +442,13 @@ summary = {
         "wall_seconds": round(float(wall), 3),
         "aggregate_eps": agg_eps,
         "per_event_us": round(per_event_us, 2),
+        # Server-truth — events the shard threads actually processed
+        # end-to-end during the measurement window. Authoritative.
+        "server_truth_events": st_delta,
+        "server_truth_seconds": round(st_dt, 3),
+        "server_truth_eps": int(server_truth_eps),
+        "server_truth_per_event_us": round(st_dt / st_delta * 1e6, 2) if st_delta > 0 else None,
+        "client_over_server_ratio": round(agg_eps / server_truth_eps, 2) if server_truth_eps > 0 else None,
     },
     "client_push_latency_us": {
         "note": "per-push_many call time in microseconds (batch=1000 events). Each client samples every 64th call.",
@@ -460,11 +500,28 @@ mem = s["memory"]
 print(f"    Config:       {cfg['mode']} pipeline, {cfg['clients']} clients, {cfg['worker_threads']} server threads")
 print(f"    Duration:     {cfg['duration_seconds']:.0f}s measured (+{cfg['warmup_seconds']:.0f}s warmup)")
 print(f"    Events:       {tp['total_events']:,}")
-print(f"    Aggregate:    {tp['aggregate_eps']:,} events/sec")
-# Phase 56 Wave 4: machine-parseable "Aggregate EPS: N" line for the
-# perf-gate test harness (crossshard_enrich_eps_floor) to grep out.
+print(f"    Aggregate:    {tp['aggregate_eps']:,} events/sec   [CLIENT-REPORTED]")
+print(f"    Per event:    {tp['per_event_us']:.2f} microseconds (client-reported)")
+print()
+# Server-truth — the authoritative counter. Clients count submission attempts
+# (fire-and-forget OP_PUSH_ASYNC, no ACK), so client-reported EPS includes
+# events that hit inbox_tx.try_send → Full and were silently rejected. The
+# server_truth_eps counter increments only after shard threads process the
+# event end-to-end via engine.push_*_on_shard.
+st_ev = tp.get('server_truth_events', 0)
+st_eps = tp.get('server_truth_eps', 0)
+ratio = tp.get('client_over_server_ratio')
+print(f"    SERVER-TRUE:  {st_eps:>12,} events/sec  [{st_ev:,} events in {tp.get('server_truth_seconds', 0):.1f}s]")
+if tp.get('server_truth_per_event_us') is not None:
+    print(f"    Per event:    {tp['server_truth_per_event_us']:.2f} microseconds (server-true)")
+if ratio is not None and ratio > 1.5:
+    print(f"    ⚠ Client over-reports by {ratio:.1f}x — most push attempts hit inbox backpressure and were silently rejected.")
+print()
+# Phase 56 Wave 4: machine-parseable line for the perf-gate test harness
+# (crossshard_enrich_eps_floor) to grep out. Kept as CLIENT-reported
+# aggregate for backwards compatibility with existing grep gates.
 print(f"Aggregate EPS: {tp['aggregate_eps']}")
-print(f"    Per event:    {tp['per_event_us']:.2f} microseconds")
+print(f"Server-Truth EPS: {st_eps}")
 print()
 print(f"    Client push_many latency (microseconds per 1000-event batch call):")
 print(f"                   median across clients    worst across clients")

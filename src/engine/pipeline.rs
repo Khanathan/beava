@@ -3066,9 +3066,12 @@ impl PipelineEngine {
         let mut enrichment_source_table_keys: AHashMap<String, Vec<(String, String)>> =
             AHashMap::new();
 
+        let __hp_cascade_start = std::time::Instant::now();
+        let __hp_primary_start = std::time::Instant::now();
         // Primary push (always read features when cascade exists — same as cascade_internal).
         let primary_features =
             self.push_internal_on_shard(stream_name, payload, None, None, shard, now, true)?;
+        let __hp_primary_dur = __hp_primary_start.elapsed();
 
         // Populate enrichment from primary results.
         for (name, value) in &primary_features {
@@ -3079,6 +3082,7 @@ impl PipelineEngine {
             enrichment_fv.insert(name.clone(), value.clone());
         }
 
+        let __hp_walk_start = std::time::Instant::now();
         // Walk cascade plan in topological order.
         for stream_in_order in &cascade {
             let downstream_def = match self.streams.get(stream_in_order) {
@@ -3787,6 +3791,13 @@ impl PipelineEngine {
             )?;
         }
 
+        let __hp_walk_dur = __hp_walk_start.elapsed();
+        let __hp_total_dur = __hp_cascade_start.elapsed();
+        crate::shard::hotpath_trace::record_cascade(
+            __hp_primary_dur,
+            __hp_walk_dur,
+            __hp_total_dur,
+        );
         if read_features {
             Ok(primary_features)
         } else {
@@ -3810,6 +3821,14 @@ impl PipelineEngine {
         now: SystemTime,
         read_features: bool,
     ) -> Result<FeatureMap, BeavaError> {
+        let __hp_downstream_start = std::time::Instant::now();
+        struct __HpGuard(std::time::Instant);
+        impl Drop for __HpGuard {
+            fn drop(&mut self) {
+                crate::shard::hotpath_trace::record_downstream(self.0.elapsed());
+            }
+        }
+        let _hp_guard = __HpGuard(__hp_downstream_start);
         // 1. Look up stream definition.
         let stream = self
             .streams

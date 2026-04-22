@@ -25,6 +25,7 @@
 pub mod cascade_buffer;
 pub mod fjall_backend;
 pub mod global_watermark;
+pub mod hotpath_trace;
 /// Per-shard Prometheus metrics (Phase 50-02, D-07).
 pub mod metrics;
 /// Phase 53-03 (D-03): legacy `ShardedStateStoreV1` is gated behind the
@@ -983,6 +984,7 @@ impl<'a> StoreView<'a> {
                 // Zero-alloc fast path: existing entity looks up via Borrow<str>.
                 // One alloc on first-time entity creation only. Matches fjall
                 // path's byte-slice lookup semantics.
+                let __hp_t0 = std::time::Instant::now();
                 if !shard.state.contains_key(key) {
                     shard.state.insert(key.to_string(), Default::default());
                 }
@@ -990,7 +992,14 @@ impl<'a> StoreView<'a> {
                     .state
                     .get_mut(key)
                     .expect("just inserted if missing");
-                f(entity)
+                let __hp_t1 = std::time::Instant::now();
+                let r = f(entity);
+                let __hp_t2 = std::time::Instant::now();
+                crate::shard::hotpath_trace::record_wem(
+                    __hp_t1.duration_since(__hp_t0),
+                    __hp_t2.duration_since(__hp_t1),
+                );
+                r
             }
         }
     }

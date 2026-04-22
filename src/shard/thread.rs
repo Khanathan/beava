@@ -977,6 +977,16 @@ fn process_shard_event(
                         shard_index,
                         crate::shard::metrics::Outcome::Accepted,
                     );
+                    // Bench-truth counter: only incremented after the shard
+                    // has actually processed the push. Distinct from
+                    // `record_shard_event(Accepted)` which also fires at
+                    // inbox-try_send success (tcp.rs:2687, :2899) so that
+                    // label double-counts.
+                    if result.is_ok() {
+                        state
+                            .server_processed_events
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
 
                     if let Some(tx) = event.response_tx {
                         let shard_result = match result {
@@ -1044,6 +1054,12 @@ fn process_shard_event(
                         shard_index,
                         crate::shard::metrics::Outcome::Accepted,
                     );
+                    // Bench-truth counter — mirror of Push arm.
+                    if result.is_ok() {
+                        state
+                            .server_processed_events
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
 
                     if let Some(tx) = event.response_tx {
                         let shard_result = match result {

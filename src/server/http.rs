@@ -1086,6 +1086,24 @@ async fn debug_topology(State(state): State<SharedState>) -> Json<serde_json::Va
     }))
 }
 
+/// GET /debug/processed-events — authoritative event-processed counter.
+/// Distinct from `events_total` which double-counts inbox-accept + shard-
+/// process. Source of truth for benchmark throughput reporting.
+async fn debug_processed_events(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    use std::sync::atomic::Ordering;
+    Json(serde_json::json!({
+        "server_processed_events": state.server_processed_events.load(Ordering::Relaxed),
+        "events_total_labeled_accepted": state.events_total.load(Ordering::Relaxed),
+        "note": "server_processed_events is the authoritative count of events the shard threads actually processed end-to-end; events_total double-counts inbox-accept + shard-process.",
+    }))
+}
+
+/// GET /debug/hotpath — per-segment timing breakdown of
+/// `push_with_cascade_on_shard`. Call to snapshot + reset.
+async fn debug_hotpath() -> Json<serde_json::Value> {
+    Json(crate::shard::hotpath_trace::snapshot_and_reset())
+}
+
 /// GET /debug/pprof?secs=N — CPU sample profile via pprof-rs. Writes a
 /// flamegraph SVG to /tmp/beava-pprof-{now}.svg and returns its path. N
 /// defaults to 10. Sampling frequency fixed at 997 Hz (common prime).
@@ -1758,7 +1776,9 @@ pub fn build_router(state: SharedState) -> Router {
         )
         .route("/debug/warnings", get(debug_warnings))
         .route("/debug/topology", get(debug_topology))
-        .route("/debug/throughput", get(debug_throughput));
+        .route("/debug/throughput", get(debug_throughput))
+        .route("/debug/processed-events", get(debug_processed_events))
+        .route("/debug/hotpath", get(debug_hotpath));
 
     #[cfg(feature = "pprof-endpoint")]
     let admin_router = admin_router.route("/debug/pprof", get(debug_pprof));
