@@ -34,7 +34,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 4 | Stateless ops + expression evaluator (server-side) | 7/7 | Complete   | 2026-04-23 |
 | 5 | Aggregation framework + core operators (8) | 7/8 | In Progress|  |
 | 5.5 | Perf harness + retroactive baselines | 5/6 | In Progress|  |
-| 6 | WAL + idempotency | Every push write-through fsynced before ACK; stream-level idempotency keys cached with TTL | 5 | 4 |
+| 6 | WAL + idempotency | 1/4 | In Progress|  |
 | 7 | Snapshot + recovery | Periodic full-state snapshot; restart replays snapshot + WAL; schema evolution survives restart | 5 | 4 |
 | 8 | Point / ordinal / recency operators | first, last, first_n, last_n, lag, first_seen, last_seen, age, has_seen, time_since, time_since_last_n, streak, max_streak, negative_streak, first_seen_in_window | 15 | 4 |
 | 9 | Decay + velocity operators | ewma, ewvar, ew_zscore, decayed_sum, decayed_count, twa, rate_of_change, inter_arrival_stats, burst_count, delta_from_prev, trend, trend_residual, outlier_count, value_change_count, z_score | 16 | 4 |
@@ -243,8 +243,8 @@ Feature authoring as composable Python code that ships to production unchanged. 
 3. Group-commit fsync adds P50 < 2ms to push-ACK latency at default config
 4. WAL rotation: segments ≤ snapshot-covered LSN truncated; disk usage bounded
 
-**Plans:** 4 plans
-- [ ] 06-01-PLAN.md — beava-persistence crate + WAL record frame + WalWriter/WalReader (no fsync)
+**Plans:** 1/4 plans executed
+- [x] 06-01-PLAN.md — beava-persistence crate + WAL record frame + WalWriter/WalReader (no fsync)
 - [ ] 06-02-PLAN.md — Group-commit fsync worker + segment rotation + truncate_up_to
 - [ ] 06-03-PLAN.md — IdemCache + /push HTTP endpoint wiring (durable ACK + byte-identical dedupe replay)
 - [ ] 06-04-PLAN.md — Crash UAT subprocess tests + criterion perf baselines + phase smoke + PHASE-SUMMARY
