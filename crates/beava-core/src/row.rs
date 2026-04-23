@@ -35,15 +35,35 @@ pub enum Value {
 }
 
 impl PartialEq for Value {
-    fn eq(&self, _other: &Self) -> bool {
-        todo!()
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Null, Value::Null) => true,
+            // NaN is never equal to anything, including itself (IEEE-754).
+            (Value::F64(a), Value::F64(b)) => !a.is_nan() && !b.is_nan() && a == b,
+            (Value::Str(a), Value::Str(b)) => a == b,
+            (Value::I64(a), Value::I64(b)) => a == b,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Bytes(a), Value::Bytes(b)) => a == b,
+            (Value::Datetime(a), Value::Datetime(b)) => a == b,
+            // Cross-variant comparisons are always false.
+            _ => false,
+        }
     }
 }
 
 impl Value {
     /// Returns the corresponding `FieldType` for non-Null values, or `None` for `Null`.
     pub fn type_of(&self) -> Option<crate::schema::FieldType> {
-        todo!()
+        use crate::schema::FieldType;
+        match self {
+            Value::Null => None,
+            Value::Str(_) => Some(FieldType::Str),
+            Value::I64(_) => Some(FieldType::I64),
+            Value::F64(_) => Some(FieldType::F64),
+            Value::Bool(_) => Some(FieldType::Bool),
+            Value::Bytes(_) => Some(FieldType::Bytes),
+            Value::Datetime(_) => Some(FieldType::Datetime),
+        }
     }
 
     /// SQL three-valued AND.
@@ -56,8 +76,22 @@ impl Value {
     /// - `null  AND true  = null`
     /// - `null  AND null  = null`
     /// - Non-bool/non-null operands → `Null` (runtime-tolerant per §D-04)
-    pub fn and_three_valued(&self, _other: &Self) -> Self {
-        todo!()
+    pub fn and_three_valued(&self, other: &Self) -> Self {
+        match (self, other) {
+            // Short-circuit: false on either side always yields false.
+            (Value::Bool(false), Value::Bool(_))
+            | (Value::Bool(false), Value::Null)
+            | (Value::Bool(_), Value::Bool(false))
+            | (Value::Null, Value::Bool(false)) => Value::Bool(false),
+            // Both true.
+            (Value::Bool(true), Value::Bool(true)) => Value::Bool(true),
+            // At least one null, no short-circuit false → null.
+            (Value::Null, Value::Null)
+            | (Value::Null, Value::Bool(true))
+            | (Value::Bool(true), Value::Null) => Value::Null,
+            // Any non-bool/non-null operand → Null (runtime-tolerant).
+            _ => Value::Null,
+        }
     }
 
     /// SQL three-valued OR.
@@ -70,8 +104,22 @@ impl Value {
     /// - `null  OR false = null`
     /// - `null  OR null  = null`
     /// - Non-bool/non-null operands → `Null` (runtime-tolerant per §D-04)
-    pub fn or_three_valued(&self, _other: &Self) -> Self {
-        todo!()
+    pub fn or_three_valued(&self, other: &Self) -> Self {
+        match (self, other) {
+            // Short-circuit: true on either side always yields true.
+            (Value::Bool(true), Value::Bool(_))
+            | (Value::Bool(true), Value::Null)
+            | (Value::Bool(_), Value::Bool(true))
+            | (Value::Null, Value::Bool(true)) => Value::Bool(true),
+            // Both false.
+            (Value::Bool(false), Value::Bool(false)) => Value::Bool(false),
+            // At least one null, no short-circuit true → null.
+            (Value::Null, Value::Null)
+            | (Value::Null, Value::Bool(false))
+            | (Value::Bool(false), Value::Null) => Value::Null,
+            // Any non-bool/non-null operand → Null (runtime-tolerant).
+            _ => Value::Null,
+        }
     }
 
     /// SQL three-valued NOT.
@@ -81,7 +129,11 @@ impl Value {
     /// - `NOT null  = null`
     /// - Non-bool/non-null → `Null` (runtime-tolerant per §D-04)
     pub fn not_three_valued(&self) -> Self {
-        todo!()
+        match self {
+            Value::Bool(b) => Value::Bool(!b),
+            Value::Null => Value::Null,
+            _ => Value::Null,
+        }
     }
 }
 
@@ -99,12 +151,12 @@ pub struct Row(pub BTreeMap<String, Value>);
 impl Row {
     /// Creates an empty Row.
     pub fn new() -> Self {
-        todo!()
+        Row(BTreeMap::new())
     }
 
     /// Returns a reference to the value for `field`, or `None` if absent.
-    pub fn get(&self, _field: &str) -> Option<&Value> {
-        todo!()
+    pub fn get(&self, field: &str) -> Option<&Value> {
+        self.0.get(field)
     }
 
     /// Consumes `self`, inserts or overwrites `field` with `value`, and returns
@@ -113,36 +165,41 @@ impl Row {
     /// SDK-OPS-09: callers that need to preserve the upstream `Row` must
     /// `.clone()` before calling this method. Derivation op steps construct a
     /// fresh copy per step and do not share mutable state.
-    pub fn with_field(self, _field: &str, _value: Value) -> Self {
-        todo!()
+    pub fn with_field(mut self, field: &str, value: Value) -> Self {
+        self.0.insert(field.to_string(), value);
+        self
     }
 
     /// Consumes `self`, removes `field` (no-op if absent), and returns the
     /// updated `Row`.
-    pub fn without_field(self, _field: &str) -> Self {
-        todo!()
+    pub fn without_field(mut self, field: &str) -> Self {
+        self.0.remove(field);
+        self
     }
 
     /// Consumes `self`, renames `old` to `new` (preserving the value), and
     /// returns the updated `Row`. If `old` is absent this is a no-op. If `new`
     /// already exists it is overwritten.
-    pub fn renamed(self, _old: &str, _new: &str) -> Self {
-        todo!()
+    pub fn renamed(mut self, old: &str, new: &str) -> Self {
+        if let Some(value) = self.0.remove(old) {
+            self.0.insert(new.to_string(), value);
+        }
+        self
     }
 
     /// Returns an iterator over `(field, value)` pairs in BTreeMap order.
     pub fn iter(&self) -> std::collections::btree_map::Iter<'_, String, Value> {
-        todo!()
+        self.0.iter()
     }
 
     /// Returns the number of fields in this Row.
     pub fn len(&self) -> usize {
-        todo!()
+        self.0.len()
     }
 
     /// Returns `true` if this Row contains no fields.
     pub fn is_empty(&self) -> bool {
-        todo!()
+        self.0.is_empty()
     }
 }
 
