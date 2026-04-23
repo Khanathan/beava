@@ -45,7 +45,10 @@ Not yet measured. Perf harness introduced in Phase 5; hit-gate in Phase 13.
 ### Architectural decisions (locked — from PROJECT.md)
 
 - Python SDK is the canonical authoring UX
-- Dual wire: HTTP/JSON (curl-testable, LB/WAF-compatible) + custom-framed TCP `[u32 len][u16 op][u32 req_id][payload]` (low-latency SDK fast-path). Same JSON payload body over both. No Protobuf. Full opcode table designed in Phase 2.5; handlers wired incrementally as feature phases land.
+- Dual wire: HTTP/JSON (curl-testable, LB/WAF-compatible) + custom-framed TCP `[u32 len][u16 op][u8 content_type][payload]` — Redis-style strict-FIFO correlation (no request_id); `content_type` 0x01 JSON in v0, 0x02 MessagePack reserved for Phase 6/12 hot-path; `op=0xFFFF` error_response. Full opcode table designed in Phase 2.5; handlers wired incrementally as feature phases land.
+- **beava-core WASM-portability invariant** (codified 2026-04-23): `beava-core` crate (expression, registry, ops, aggregations, sketches) stays syscall-free. Only `beava-server` + WAL/snapshot crates touch fs/net. Unlocks v0.1+ browser-WASM + edge deployment without refactor.
+- **Phase 13 adds `playground.beava.dev`** (hosted interactive tutorial) — not browser-WASM. Browser-WASM `@beava/browser` npm library is v0.1+.
+- **Phase 13 perf gate expanded** from single fraud shape to three pipelines: simple fraud, complex fraud, recommendations.
 - `@bv.event` (immutable append-only, was v1's `@bv.stream`) and `@bv.table(key=..., ttl=...)` (upsertable, with tombstone delete)
 - Aggregations via `Event.group_by(keys).agg(name=bv.<op>(...), ...)` produce Tables
 - Stateless ops chain: `.filter .select .drop .rename .with_columns .map .cast .fillna`
