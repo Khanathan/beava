@@ -171,10 +171,26 @@ pub fn compile_aggregations_from_nodes(
             };
 
             // SDK-AGG-05: reject aggregation on Table source.
+            // A "Table source" includes:
+            //   1. Explicit @bv.table nodes (registry.tables)
+            //   2. Derivations with output_kind=Table already in the registry
+            //   3. Table nodes in the current payload
+            //   4. Derivations with output_kind=Table in the current payload
             let upstream_is_table = registry.tables.contains_key(upstream_name)
-                || nodes
-                    .iter()
-                    .any(|n| matches!(n, PayloadNode::Table(t) if t.name == upstream_name));
+                || registry
+                    .derivations
+                    .get(upstream_name)
+                    .map(|d| d.output_kind == crate::registry::OutputKind::Table)
+                    .unwrap_or(false)
+                || nodes.iter().any(|n| {
+                    matches!(n, PayloadNode::Table(t) if t.name == upstream_name)
+                        || matches!(
+                            n,
+                            PayloadNode::Derivation(d)
+                                if d.name == upstream_name
+                                    && d.output_kind == crate::registry::OutputKind::Table
+                        )
+                });
             if upstream_is_table {
                 errors.push(ValidationError {
                     code: ErrorCode::AggregationOnTableNotSupported,
