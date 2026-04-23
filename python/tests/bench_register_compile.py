@@ -1,37 +1,146 @@
-"""Phase 3 SDK REGISTER-compile bench (plan 05.5-05). RED state — pytest-benchmark
-is not yet installed; this test errors on fixture lookup until Task 1.b lands.
+"""Phase 3 SDK REGISTER-compile bench (plan 05.5-05).
+
+Measures the full Python-side REGISTER JSON compile pipeline for a realistic
+10-descriptor DAG (validate_descriptors + topo_sort + _to_register_json per
+descriptor + json.dumps().encode()).  No network I/O.
+
+NOTE: No 'from __future__ import annotations' — @bv.event function-form reads
+param.annotation directly at decoration time (must be the live descriptor object,
+not a string).  All 10 descriptors are defined at module scope.
+
+Run:
+    pytest tests/bench_register_compile.py -v
+    pytest tests/bench_register_compile.py --benchmark-only
+    pytest -m bench
 """
 
-from __future__ import annotations
-
 import json
+from typing import Any
 
 import pytest
 
 import beava as bv
 from beava._validate import topo_sort, validate_descriptors
 
+# ---------------------------------------------------------------------------
+# 10-descriptor DAG — module-level so @bv.event function-form annotations
+# resolve to live descriptor objects (not deferred strings).
+# Mix: 3 event sources, 3 event derivations, 2 table sources, 2 table derivations.
+# ---------------------------------------------------------------------------
 
-def _build_10_descriptor_dag() -> list[object]:
-    """Return a list of exactly 10 decorator-produced descriptors."""
-    # FILL AT WRITE TIME — see python/tests/test_phase3_smoke.py / test_app.py
-    # for multi-descriptor DAG patterns. Must produce 10 distinct objects.
-    raise NotImplementedError("populated in Task 1.b")
+# -- event sources (3) --
+
+
+@bv.event
+class BenchTx:
+    user_id: str
+    amount: float
+    status: str
+    event_time: int
+
+
+@bv.event
+class BenchLogin:
+    user_id: str
+    ip: str
+    event_time: int
+
+
+@bv.event
+class BenchPageView:
+    user_id: str
+    url: str
+    event_time: int
+
+
+# -- event derivations (3): filter → with_columns → select chain on BenchTx --
+
+
+@bv.event
+def bench_tx_positive(src: BenchTx):  # type: ignore[no-untyped-def]
+    return src.filter(bv.col("amount") > 0)
+
+
+@bv.event
+def bench_tx_big(src: bench_tx_positive):  # type: ignore[no-untyped-def]
+    return src.with_columns(is_big=bv.col("amount") > 500)
+
+
+@bv.event
+def bench_tx_final(src: bench_tx_big):  # type: ignore[no-untyped-def]
+    return src.select("user_id", "amount", "is_big")
+
+
+# -- table sources (2) --
+
+
+@bv.table(key="user_id")
+class BenchUserBaseline:
+    user_id: str
+    lifetime_spend: float
+    last_seen: int
+
+
+@bv.table(key="user_id")
+class BenchUserFlags:
+    user_id: str
+    is_vip: bool
+
+
+# -- table derivations (2): filter on BenchUserBaseline + standalone table source --
+
+
+@bv.table(key="user_id")
+def bench_user_filtered(base: BenchUserBaseline):  # type: ignore[no-untyped-def]
+    return base.filter(bv.col("lifetime_spend") > 0)
+
+
+@bv.table(key=["user_id", "ip"])
+class BenchLoginHistory:
+    user_id: str
+    ip: str
+    count: int
+
+
+# Ordered list — topo_sort will reorder as needed; input order here is valid.
+_DESCRIPTORS: list[Any] = [
+    BenchTx,
+    BenchLogin,
+    BenchPageView,
+    bench_tx_positive,
+    bench_tx_big,
+    bench_tx_final,
+    BenchUserBaseline,
+    BenchUserFlags,
+    bench_user_filtered,
+    BenchLoginHistory,
+]
+
+assert len(_DESCRIPTORS) == 10, f"Expected 10 descriptors, got {len(_DESCRIPTORS)}"
+
+
+# ---------------------------------------------------------------------------
+# Bench
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.bench
-def test_register_compile_10_descriptors(benchmark):  # type: ignore[no-untyped-def]
-    descriptors = _build_10_descriptor_dag()
-    assert len(descriptors) == 10
+def test_register_compile_10_descriptors(benchmark: Any) -> None:
+    """Benchmark the full SDK-side REGISTER JSON compile pipeline.
+
+    Measures: validate_descriptors + topo_sort + _to_register_json (per descriptor)
+    + json.dumps().encode() for a 10-descriptor DAG.  No network I/O.
+    """
+    assert len(_DESCRIPTORS) == 10
 
     def compile_register_json() -> bytes:
-        errs = validate_descriptors(descriptors)
+        errs = validate_descriptors(_DESCRIPTORS)
         assert errs == []
-        sorted_descs = topo_sort(descriptors)
+        sorted_descs = topo_sort(_DESCRIPTORS)
         payload = {"nodes": [d._to_register_json() for d in sorted_descs]}
         return json.dumps(payload).encode("utf-8")
 
     result = benchmark(compile_register_json)
-    # Sanity: output is non-empty JSON bytes.
+    # Sanity: output is non-empty JSON bytes with expected structure.
     assert result.startswith(b"{")
     assert b'"nodes"' in result

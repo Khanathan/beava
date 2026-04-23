@@ -25,7 +25,7 @@ classifiers = [
 dependencies = ["httpx>=0.27,<1"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9", "ruff>=0.5,<1", "mypy>=1.10,<2", "hypothesis>=6"]
+dev = ["pytest>=8,<9", "ruff>=0.5,<1", "mypy>=1.10,<2", "hypothesis>=6", "pytest-benchmark>=4,<5"]
 
 [project.urls]
 Homepage = "https://beava.dev"
@@ -41,6 +41,7 @@ addopts = "-ra --strict-markers"
 markers = [
     "phase4: Phase 4 Python acceptance smoke tests (SC1-SC5)",
     "phase5: Phase 5 Python acceptance smoke tests (SC1-SC6)",
+    "bench: pytest-benchmark perf baseline tests (Phase 5.5)",
 ]
 
 [tool.ruff]
