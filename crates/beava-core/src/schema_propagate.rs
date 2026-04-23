@@ -567,7 +567,11 @@ fn infer_arithmetic_type(
     rt: &InferredType,
     errors: &mut Vec<PropagationError>,
 ) -> Option<InferredType> {
-    // Division always widens to F64 (from the plan spec).
+    // Division type rules (v1 decision, aligned with runtime eval.rs):
+    //   I64 / I64 → I64 (truncating integer division — matches arith_div in eval.rs).
+    //   F64 / anything-numeric → F64; I64 / F64 → F64 (type promotion).
+    // This mirrors the runtime exactly, so downstream schema consumers see the
+    // correct type without needing to special-case division widening.
     if op == "/" {
         // Validate both are numeric (or null).
         match (lt, rt) {
@@ -592,8 +596,12 @@ fn infer_arithmetic_type(
                     });
                     return None;
                 }
-                // Division always widens to F64.
-                return Some(InferredType::Known(FieldType::F64));
+                // I64 / I64 → I64 (v1 decision: integer division stays integer).
+                // Any F64 operand → F64 (type promotion).
+                if *l == FieldType::F64 || *r == FieldType::F64 {
+                    return Some(InferredType::Known(FieldType::F64));
+                }
+                return Some(InferredType::Known(FieldType::I64));
             }
         }
     }
@@ -629,18 +637,20 @@ fn infer_arithmetic_type(
 }
 
 fn resolve_null_arithmetic(op: &str, other: &InferredType) -> Option<InferredType> {
-    // NullLiteral passes through as the other operand's type.
-    // Division always widens to F64.
+    // NullLiteral propagation for arithmetic: the result type follows the
+    // non-null operand's type. For division (v1 decision): null / I64 → I64
+    // (not F64), because the runtime returns Null when either operand is Null
+    // (before division executes), and the schema type should match the non-null
+    // case — which for I64/I64 is I64. null / F64 → F64 (promotion).
     if op == "/" {
         match other {
-            InferredType::Known(FieldType::I64) | InferredType::Known(FieldType::F64) => {
-                Some(InferredType::Known(FieldType::F64))
-            }
-            InferredType::NullLiteral => Some(InferredType::Known(FieldType::F64)),
-            InferredType::Known(_) => Some(InferredType::Known(FieldType::F64)),
+            InferredType::Known(FieldType::F64) => Some(InferredType::Known(FieldType::F64)),
+            InferredType::Known(FieldType::I64) => Some(InferredType::Known(FieldType::I64)),
+            InferredType::NullLiteral => Some(InferredType::NullLiteral),
+            InferredType::Known(_) => None, // non-numeric — caller already validates
         }
     } else {
-        // Propagate the other operand's type.
+        // Propagate the other operand's type for +, -, *.
         Some(other.clone())
     }
 }
@@ -1376,13 +1386,22 @@ mod tests {
             "I64+F64 should be F64"
         );
 
-        // I64 / I64 → F64 (division widens)
+        // I64 / I64 → I64 (v1 decision: integer division stays integer — matches runtime)
         let s2 = schema_with(&[("x", FieldType::I64), ("y", FieldType::I64)]);
         let r3 = parse_and_infer("(x / y)", &s2).expect("should not error");
         assert_eq!(
             r3,
+            InferredType::Known(FieldType::I64),
+            "I64/I64 should be I64 (v1: integer division, matching runtime arith_div)"
+        );
+
+        // F64 / I64 → F64 (type promotion)
+        let s3 = schema_with(&[("a", FieldType::F64), ("y", FieldType::I64)]);
+        let r4 = parse_and_infer("(a / y)", &s3).expect("should not error");
+        assert_eq!(
+            r4,
             InferredType::Known(FieldType::F64),
-            "I64/I64 should widen to F64"
+            "F64/I64 should be F64 (promotion)"
         );
     }
 
