@@ -84,6 +84,19 @@ class App:
     # Lifecycle
     # ------------------------------------------------------------------ #
 
+    def __del__(self) -> None:
+        # Safety net: close transport if the App is garbage-collected without an
+        # explicit close().  __del__ is not guaranteed to run (e.g. circular refs,
+        # interpreter shutdown), but it prevents common forget-to-close bugs from
+        # leaking sockets/connections indefinitely.  Uses _closed flag to ensure
+        # at-most-once cleanup and swallows all exceptions (GC must not raise).
+        if not self._closed and self._transport is not None:
+            try:
+                self._transport.close()
+            except Exception:
+                pass
+            self._closed = True
+
     def close(self) -> None:
         """Close the underlying transport (idempotent)."""
         if self._closed:
