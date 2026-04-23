@@ -18,7 +18,7 @@ use axum::{
     Json, Router,
 };
 use beava_core::{
-    register_validate::validate_payload,
+    register_validate::{validate_payload, ErrorCode},
     registry::Registry,
     registry_diff::{compute_diff, ConflictDetail, PayloadNode},
 };
@@ -82,6 +82,236 @@ pub struct ResponseDiff {
     pub changed: Vec<ConflictDetail>,
 }
 
+// ─── Transport-agnostic register core (Phase 2.5 Plan 03) ─────────────────────
+
+/// Outcome of executing a registration, independent of transport (HTTP / TCP).
+///
+/// HTTP's `post_register` maps this to `(StatusCode, Json<Value>)`; the TCP
+/// `handle_register` (Phase 2.5 Plan 04) maps the same cases to response frames
+/// with op=OP_REGISTER (success) or op=OP_ERROR_RESPONSE (validation/conflict).
+#[derive(Debug)]
+pub(crate) enum RegisterOutcome {
+    /// Additive install succeeded; version bumped.
+    Success {
+        version: u64,
+        registered_descriptors: Vec<String>,
+        added: Vec<String>,
+        already_present: Vec<String>,
+    },
+    /// Payload was empty (zero nodes). 200 OK, version unchanged.
+    EmptyPayload { version: u64 },
+    /// Every node already present, none added. 200 OK, version unchanged.
+    Noop {
+        version: u64,
+        registered_descriptors: Vec<String>,
+        already_present: Vec<String>,
+    },
+    /// validate_payload returned at least one error. 400.
+    /// v0 exposes "first-error-wins" on the wire; full Vec is logged at WARN.
+    ValidationFailed {
+        version: u64,
+        #[allow(dead_code)]
+        first_error_code: ErrorCode,
+        first_error_path: String,
+        first_error_reason: String,
+        #[allow(dead_code)]
+        all_errors_count: usize,
+    },
+    /// compute_diff found changed descriptors. 409.
+    Conflict {
+        version: u64,
+        added: Vec<String>,
+        changed: Vec<ConflictDetail>,
+    },
+}
+
+/// Run the transport-agnostic register pipeline. Caller has already parsed the
+/// JSON body into `RegisterPayload` (HTTP parses from axum's `Bytes`; TCP
+/// parses from the frame's `Bytes` payload).
+///
+/// Single source of truth for validation + diff + apply. Every success path
+/// bumps the registry version exactly once; every error path leaves the
+/// registry untouched. Phase 6 will wrap a WAL record around the apply step
+/// inside this function.
+pub(crate) async fn execute_register(
+    registry: &Arc<Registry>,
+    payload: RegisterPayload,
+) -> RegisterOutcome {
+    // 1. Empty-payload fast path (matches HTTP handler §pre-validation)
+    if payload.nodes.is_empty() {
+        let version = registry.version();
+        info!(
+            kind = "register.noop",
+            version,
+            nodes = 0,
+            "register empty payload"
+        );
+        return RegisterOutcome::EmptyPayload { version };
+    }
+
+    // 2. Snapshot for validation + diff
+    let current_snapshot = registry.snapshot();
+
+    // 3. Validate (fail-soft: collects all errors)
+    let validated = match validate_payload(&current_snapshot, payload.nodes) {
+        Ok(v) => v,
+        Err(errs) => {
+            let first = &errs[0];
+            warn!(
+                kind = "register.validation_failed",
+                path = %first.path,
+                code = ?first.code,
+                error_count = errs.len(),
+                "register validation failed"
+            );
+            return RegisterOutcome::ValidationFailed {
+                version: current_snapshot.version,
+                first_error_code: first.code,
+                first_error_path: first.path.clone(),
+                first_error_reason: first.reason.clone(),
+                all_errors_count: errs.len(),
+            };
+        }
+    };
+
+    let nodes = validated.into_inner();
+    let registered_descriptors: Vec<String> = nodes.iter().map(|n| n.name().to_string()).collect();
+
+    // 4. Diff
+    let diff = compute_diff(&current_snapshot, &nodes);
+
+    // 5. Conflict → no mutation
+    if !diff.changed.is_empty() {
+        warn!(
+            kind = "register.conflict",
+            version = current_snapshot.version,
+            changed = ?diff.changed.iter().map(|c| &c.name).collect::<Vec<_>>(),
+            "register conflict"
+        );
+        return RegisterOutcome::Conflict {
+            version: current_snapshot.version,
+            added: diff.added,
+            changed: diff.changed,
+        };
+    }
+
+    // 6. No-op (only already_present, no added)
+    if diff.added.is_empty() {
+        info!(
+            kind = "register.noop",
+            version = current_snapshot.version,
+            nodes = registered_descriptors.len(),
+            "register no-op"
+        );
+        return RegisterOutcome::Noop {
+            version: current_snapshot.version,
+            registered_descriptors,
+            already_present: diff.already_present,
+        };
+    }
+
+    // 7. Additive install
+    let new_version = registry.apply_registration(nodes);
+    info!(
+        kind = "register.success",
+        version = new_version,
+        added = ?diff.added,
+        already_present_count = diff.already_present.len(),
+        "register succeeded"
+    );
+    RegisterOutcome::Success {
+        version: new_version,
+        registered_descriptors,
+        added: diff.added,
+        already_present: diff.already_present,
+    }
+}
+
+fn map_outcome_to_http(outcome: RegisterOutcome) -> (StatusCode, Json<serde_json::Value>) {
+    match outcome {
+        RegisterOutcome::Success {
+            version,
+            registered_descriptors,
+            added,
+            already_present,
+        } => {
+            let resp = RegisterSuccess {
+                status: "ok",
+                registry_version: version,
+                registered_descriptors,
+                added,
+                already_present,
+            };
+            (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()))
+        }
+        RegisterOutcome::EmptyPayload { version } => {
+            let resp = RegisterSuccess {
+                status: "ok",
+                registry_version: version,
+                registered_descriptors: vec![],
+                added: vec![],
+                already_present: vec![],
+            };
+            (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()))
+        }
+        RegisterOutcome::Noop {
+            version,
+            registered_descriptors,
+            already_present,
+        } => {
+            let resp = RegisterSuccess {
+                status: "ok",
+                registry_version: version,
+                registered_descriptors,
+                added: vec![],
+                already_present,
+            };
+            (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()))
+        }
+        RegisterOutcome::ValidationFailed {
+            version,
+            first_error_path,
+            first_error_reason,
+            ..
+        } => {
+            let body = RegisterErrorBody {
+                error: RegisterError::Validation {
+                    code: "invalid_registration",
+                    path: first_error_path,
+                    reason: first_error_reason,
+                },
+                registry_version: version,
+            };
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::to_value(body).unwrap()),
+            )
+        }
+        RegisterOutcome::Conflict {
+            version,
+            added,
+            changed,
+        } => {
+            let body = RegisterErrorBody {
+                error: RegisterError::Conflict {
+                    code: "registration_conflict",
+                    message: "Registration would change or remove existing descriptors",
+                    diff: ResponseDiff {
+                        added,
+                        removed: vec![],
+                        changed,
+                    },
+                },
+                registry_version: version,
+            };
+            (
+                StatusCode::CONFLICT,
+                Json(serde_json::to_value(body).unwrap()),
+            )
+        }
+    }
+}
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 pub fn register_router(state: RegisterAppState) -> Router {
@@ -98,7 +328,7 @@ pub async fn post_register(
     State(state): State<RegisterAppState>,
     body: Bytes,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    // 1. Content-Type check (SRV-API-11)
+    // 1. Content-Type check (SRV-API-11) — transport-specific.
     if !is_json_content_type(headers.get(header::CONTENT_TYPE)) {
         let current_version = state.registry.version();
         let err_body = RegisterErrorBody {
@@ -115,7 +345,7 @@ pub async fn post_register(
         );
     }
 
-    // 2. JSON parse → 400
+    // 2. JSON parse → 400 — transport-specific.
     let payload: RegisterPayload = match serde_json::from_slice(&body) {
         Ok(p) => p,
         Err(e) => {
@@ -142,122 +372,9 @@ pub async fn post_register(
         }
     };
 
-    // Empty payload fast-path (no validation needed)
-    if payload.nodes.is_empty() {
-        let current_version = state.registry.version();
-        let resp = RegisterSuccess {
-            status: "ok",
-            registry_version: current_version,
-            registered_descriptors: vec![],
-            added: vec![],
-            already_present: vec![],
-        };
-        info!(
-            kind = "register.noop",
-            version = current_version,
-            nodes = 0,
-            "register empty payload"
-        );
-        return (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()));
-    }
-
-    // 3. Snapshot current for validation + diff
-    let current_snapshot = state.registry.snapshot();
-
-    // 4. Validate
-    let validated = match validate_payload(&current_snapshot, payload.nodes) {
-        Ok(v) => v,
-        Err(errs) => {
-            let first = &errs[0];
-            warn!(
-                kind = "register.validation_failed",
-                path = %first.path,
-                code = ?first.code,
-                error_count = errs.len(),
-                "register validation failed"
-            );
-            let err_body = RegisterErrorBody {
-                error: RegisterError::Validation {
-                    code: "invalid_registration",
-                    path: first.path.clone(),
-                    reason: first.reason.clone(),
-                },
-                registry_version: current_snapshot.version,
-            };
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::to_value(err_body).unwrap()),
-            );
-        }
-    };
-
-    let nodes = validated.into_inner();
-    let descriptor_names: Vec<String> = nodes.iter().map(|n| n.name().to_string()).collect();
-
-    // 5. Diff
-    let diff = compute_diff(&current_snapshot, &nodes);
-
-    // 6. Conflict → 409 (no mutation)
-    if !diff.changed.is_empty() {
-        warn!(
-            kind = "register.conflict",
-            version = current_snapshot.version,
-            changed = ?diff.changed.iter().map(|c| &c.name).collect::<Vec<_>>(),
-            "register conflict"
-        );
-        let err_body = RegisterErrorBody {
-            error: RegisterError::Conflict {
-                code: "registration_conflict",
-                message: "Registration would change or remove existing descriptors",
-                diff: ResponseDiff {
-                    added: diff.added,
-                    removed: Vec::new(),
-                    changed: diff.changed,
-                },
-            },
-            registry_version: current_snapshot.version,
-        };
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::to_value(err_body).unwrap()),
-        );
-    }
-
-    // 7. No-op? (only already_present, no added) → 200 with SAME version
-    if diff.added.is_empty() {
-        let resp = RegisterSuccess {
-            status: "ok",
-            registry_version: current_snapshot.version,
-            registered_descriptors: descriptor_names,
-            added: Vec::new(),
-            already_present: diff.already_present,
-        };
-        info!(
-            kind = "register.noop",
-            version = current_snapshot.version,
-            nodes = resp.registered_descriptors.len(),
-            "register no-op"
-        );
-        return (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()));
-    }
-
-    // 8. Additive install — atomic under write lock
-    let new_version = state.registry.apply_registration(nodes);
-    info!(
-        kind = "register.success",
-        version = new_version,
-        added = ?diff.added,
-        already_present_count = diff.already_present.len(),
-        "register succeeded"
-    );
-    let resp = RegisterSuccess {
-        status: "ok",
-        registry_version: new_version,
-        registered_descriptors: descriptor_names,
-        added: diff.added,
-        already_present: diff.already_present,
-    };
-    (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()))
+    // 3-8. Delegate to shared transport-agnostic core.
+    let outcome = execute_register(&state.registry, payload).await;
+    map_outcome_to_http(outcome)
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -787,5 +904,221 @@ mod tests {
         fn make_writer(&'a self) -> Self::Writer {
             WriterCapture(self.0.clone())
         }
+    }
+
+    // ─── Plan 02.5-03: execute_register unit tests (transport-free) ──────────
+
+    fn parse_payload(val: serde_json::Value) -> RegisterPayload {
+        serde_json::from_value(val).expect("parse payload")
+    }
+
+    #[tokio::test]
+    async fn execute_register_empty_payload_returns_empty_payload_variant() {
+        let reg = Arc::new(Registry::new());
+        let outcome = execute_register(&reg, RegisterPayload { nodes: Vec::new() }).await;
+        match outcome {
+            RegisterOutcome::EmptyPayload { version } => assert_eq!(version, 0),
+            other => panic!("expected EmptyPayload, got {other:?}"),
+        }
+        assert_eq!(reg.version(), 0);
+    }
+
+    #[tokio::test]
+    async fn execute_register_valid_event_returns_success_v1() {
+        let reg = Arc::new(Registry::new());
+        let payload = parse_payload(transaction_payload());
+        let outcome = execute_register(&reg, payload).await;
+        match outcome {
+            RegisterOutcome::Success {
+                version,
+                added,
+                already_present,
+                registered_descriptors,
+            } => {
+                assert_eq!(version, 1);
+                assert_eq!(added, vec!["Transaction".to_string()]);
+                assert_eq!(already_present, Vec::<String>::new());
+                assert_eq!(registered_descriptors, vec!["Transaction".to_string()]);
+            }
+            other => panic!("expected Success, got {other:?}"),
+        }
+        assert_eq!(reg.version(), 1);
+    }
+
+    #[tokio::test]
+    async fn execute_register_identical_repost_returns_noop() {
+        let reg = Arc::new(Registry::new());
+        let _ = execute_register(&reg, parse_payload(transaction_payload())).await;
+        let outcome = execute_register(&reg, parse_payload(transaction_payload())).await;
+        match outcome {
+            RegisterOutcome::Noop {
+                version,
+                registered_descriptors,
+                already_present,
+            } => {
+                assert_eq!(version, 1);
+                assert_eq!(registered_descriptors, vec!["Transaction".to_string()]);
+                assert_eq!(already_present, vec!["Transaction".to_string()]);
+            }
+            other => panic!("expected Noop, got {other:?}"),
+        }
+        assert_eq!(reg.version(), 1);
+    }
+
+    #[tokio::test]
+    async fn execute_register_additive_bumps_version() {
+        let reg = Arc::new(Registry::new());
+        let a = serde_json::json!({
+            "nodes": [event_node("A", &[("event_time", "i64"), ("x", "f64")], "event_time")]
+        });
+        let _ = execute_register(&reg, parse_payload(a)).await;
+
+        let ab = serde_json::json!({
+            "nodes": [
+                event_node("A", &[("event_time", "i64"), ("x", "f64")], "event_time"),
+                event_node("B", &[("event_time", "i64"), ("y", "f64")], "event_time"),
+            ]
+        });
+        let outcome = execute_register(&reg, parse_payload(ab)).await;
+        match outcome {
+            RegisterOutcome::Success {
+                version,
+                added,
+                already_present,
+                ..
+            } => {
+                assert_eq!(version, 2);
+                assert_eq!(added, vec!["B".to_string()]);
+                assert_eq!(already_present, vec!["A".to_string()]);
+            }
+            other => panic!("expected Success, got {other:?}"),
+        }
+        assert_eq!(reg.version(), 2);
+    }
+
+    #[tokio::test]
+    async fn execute_register_conflict_returns_conflict_variant() {
+        let reg = Arc::new(Registry::new());
+        let a_f64 = serde_json::json!({
+            "nodes": [event_node("A", &[("event_time", "i64"), ("amount", "f64")], "event_time")]
+        });
+        let _ = execute_register(&reg, parse_payload(a_f64)).await;
+        assert_eq!(reg.version(), 1);
+
+        let a_i64 = serde_json::json!({
+            "nodes": [event_node("A", &[("event_time", "i64"), ("amount", "i64")], "event_time")]
+        });
+        let outcome = execute_register(&reg, parse_payload(a_i64)).await;
+        match outcome {
+            RegisterOutcome::Conflict {
+                version,
+                added,
+                changed,
+            } => {
+                assert_eq!(version, 1);
+                assert!(added.is_empty());
+                assert_eq!(changed.len(), 1);
+                assert_eq!(changed[0].name, "A");
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+        assert_eq!(reg.version(), 1, "conflict must not mutate");
+    }
+
+    #[tokio::test]
+    async fn execute_register_validation_failure_returns_validation_failed() {
+        let reg = Arc::new(Registry::new());
+        // event_time_field = "ts" but schema has no "ts" field
+        let payload = parse_payload(serde_json::json!({
+            "nodes": [{
+                "kind": "event",
+                "name": "A",
+                "schema": {"fields": {"x": "f64"}, "optional_fields": []},
+                "event_time_field": "ts"
+            }]
+        }));
+        let outcome = execute_register(&reg, payload).await;
+        match outcome {
+            RegisterOutcome::ValidationFailed {
+                version,
+                first_error_path,
+                all_errors_count,
+                ..
+            } => {
+                assert_eq!(version, 0);
+                assert!(
+                    first_error_path.contains("event_time") || first_error_path.contains("ts"),
+                    "path: {first_error_path}"
+                );
+                assert!(all_errors_count >= 1);
+            }
+            other => panic!("expected ValidationFailed, got {other:?}"),
+        }
+        assert_eq!(reg.version(), 0);
+    }
+
+    #[tokio::test]
+    async fn execute_register_validation_failure_records_error_count() {
+        let reg = Arc::new(Registry::new());
+        // Two events with reserved prefix → at least 2 errors.
+        let payload = parse_payload(serde_json::json!({
+            "nodes": [
+                {
+                    "kind": "event",
+                    "name": "_beava_one",
+                    "schema": {"fields": {"event_time": "i64"}, "optional_fields": []},
+                    "event_time_field": "event_time"
+                },
+                {
+                    "kind": "event",
+                    "name": "_beava_two",
+                    "schema": {"fields": {"event_time": "i64"}, "optional_fields": []},
+                    "event_time_field": "event_time"
+                }
+            ]
+        }));
+        let outcome = execute_register(&reg, payload).await;
+        match outcome {
+            RegisterOutcome::ValidationFailed {
+                all_errors_count,
+                first_error_path,
+                ..
+            } => {
+                assert!(all_errors_count >= 2, "got {all_errors_count}");
+                assert!(first_error_path.contains("nodes[0]"), "{first_error_path}");
+            }
+            other => panic!("expected ValidationFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_register_noop_does_not_mutate_version() {
+        let reg = Arc::new(Registry::new());
+        let _ = execute_register(&reg, parse_payload(transaction_payload())).await;
+        assert_eq!(reg.version(), 1);
+        let _ = execute_register(&reg, parse_payload(transaction_payload())).await;
+        assert_eq!(reg.version(), 1);
+    }
+
+    #[tokio::test]
+    async fn execute_register_success_then_conflict_leaves_registry_at_first_version() {
+        let reg = Arc::new(Registry::new());
+        let _ = execute_register(
+            &reg,
+            parse_payload(serde_json::json!({
+                "nodes": [event_node("A", &[("event_time", "i64"), ("amount", "f64")], "event_time")]
+            })),
+        )
+        .await;
+        assert_eq!(reg.version(), 1);
+        let outcome = execute_register(
+            &reg,
+            parse_payload(serde_json::json!({
+                "nodes": [event_node("A", &[("event_time", "i64"), ("amount", "i64")], "event_time")]
+            })),
+        )
+        .await;
+        assert!(matches!(outcome, RegisterOutcome::Conflict { .. }));
+        assert_eq!(reg.version(), 1);
     }
 }
