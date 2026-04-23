@@ -78,6 +78,23 @@ impl WindowedOp {
             .update(row, event_time_ms, field, where_matched);
     }
 
+    /// Update the windowed state with one event row, evaluating `where_expr`
+    /// (if any) before forwarding to the inner bucket's AggOp.
+    ///
+    /// Same bucket routing + stale-reset logic as `update`; the predicate is
+    /// threaded into the per-bucket `AggOp::update_with_row` call.
+    ///
+    /// # SDK-AGG-04
+    pub fn update_with_row(
+        &mut self,
+        _row: &Row,
+        _event_time_ms: i64,
+        _field: Option<&str>,
+        _where_expr: Option<&std::sync::Arc<crate::expr::Expr>>,
+    ) {
+        todo!("05-02 Task 1.b: implement WindowedOp::update_with_row")
+    }
+
     /// Query the windowed aggregation value at `query_time_ms`.
     ///
     /// Active buckets: those where `query_time_ms - bucket_epoch_start >= 0`
@@ -576,6 +593,31 @@ mod tests {
             Value::F64(v) => assert!((v - 0.6).abs() < 1e-10, "ratio should be 3/5=0.6, got {v}"),
             other => panic!("expected F64, got {:?}", other),
         }
+    }
+
+    // ── update_with_row (Plan 05-02) ─────────────────────────────────────
+
+    /// Windowed count with predicate "amount > 25": only matching rows counted
+    /// in buckets. 5 rows [10, 20, 30, 40, 50] → 3 match (30, 40, 50) → I64(3).
+    #[test]
+    fn windowed_count_with_where_predicate_drops_non_matching() {
+        let window_ms: u64 = 64_000; // bucket_ms = 1000
+        let mut op = WindowedOp::new(AggKind::Count, window_ms);
+        let where_expr = std::sync::Arc::new(
+            crate::expr::parse("(amount > 25)").expect("should parse"),
+        );
+        for (i, &amount) in [10.0_f64, 20.0, 30.0, 40.0, 50.0].iter().enumerate() {
+            let row = Row::new().with_field("amount", Value::F64(amount));
+            // spread across different buckets to exercise bucket routing
+            op.update_with_row(&row, (i as i64) * 1_000, None, Some(&where_expr));
+        }
+        // query at t=4999: all 5 buckets in window; only 3 had matching rows
+        let result = op.query(4_999);
+        assert_eq!(
+            result,
+            Value::I64(3),
+            "only rows with amount > 25 should be counted (30, 40, 50)"
+        );
     }
 
     // ── Replay determinism ────────────────────────────────────────────────

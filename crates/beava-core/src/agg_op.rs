@@ -46,7 +46,8 @@ pub enum AggKind {
 
 /// Register-time descriptor for one aggregation feature.
 ///
-/// `where_expr` will be added in Plan 05-02 (predicate threading).
+/// `where_expr` gates the apply-path update via `agg_where::evaluate_where_predicate`.
+/// Added in Plan 05-02 (predicate threading, SDK-AGG-04).
 #[derive(Debug, Clone)]
 pub struct AggOpDescriptor {
     pub kind: AggKind,
@@ -54,6 +55,10 @@ pub struct AggOpDescriptor {
     pub field: Option<String>,
     /// Tumbling window duration in milliseconds. None = lifetime (windowless).
     pub window_ms: Option<u64>,
+    /// Optional where-predicate (Plan 05-02). Evaluated via
+    /// `agg_where::evaluate_where_predicate` at apply time.
+    /// None = unconditional update (backwards-compatible with Plan 05-01).
+    pub where_expr: Option<std::sync::Arc<crate::expr::Expr>>,
 }
 
 // ─── AggTypeError ────────────────────────────────────────────────────────────
@@ -153,6 +158,24 @@ impl AggOp {
         }
     }
 
+    /// Apply-path entry point: evaluates `where_expr` (if any) before
+    /// forwarding to the underlying state's update.
+    ///
+    /// For Ratio: predicate gates the numerator only; total always increments
+    /// unconditionally on every seen row (D-03 semantics).
+    /// For all other ops: predicate gates the whole update.
+    ///
+    /// # SDK-AGG-04
+    pub fn update_with_row(
+        &mut self,
+        _row: &Row,
+        _event_time_ms: i64,
+        _field: Option<&str>,
+        _where_expr: Option<&std::sync::Arc<crate::expr::Expr>>,
+    ) {
+        todo!("05-02 Task 1.b: implement update_with_row")
+    }
+
     /// Query current aggregation value. Dispatches to the concrete per-op impl.
     ///
     /// `query_time_ms` is the query-time event clock (used by WindowedOp to
@@ -221,6 +244,7 @@ mod tests {
             kind,
             field: None,
             window_ms: None,
+            where_expr: None,
         }
     }
 
@@ -229,6 +253,7 @@ mod tests {
             kind,
             field: Some(field.to_string()),
             window_ms: None,
+            where_expr: None,
         }
     }
 
@@ -237,6 +262,7 @@ mod tests {
             kind,
             field: None,
             window_ms: Some(window_ms),
+            where_expr: None,
         }
     }
 
@@ -383,6 +409,93 @@ mod tests {
             result,
             Err(AggTypeError::FieldRequired { kind: AggKind::Min })
         );
+    }
+
+    // ── update_with_row tests (Plan 05-02) ────────────────────────────────
+
+    fn make_where_expr(src: &str) -> std::sync::Arc<crate::expr::Expr> {
+        std::sync::Arc::new(crate::expr::parse(src).expect("should parse where expr"))
+    }
+
+    fn row_amount(v: f64) -> Row {
+        Row::new().with_field("amount", Value::F64(v))
+    }
+
+    fn row_status(s: &str) -> Row {
+        Row::new().with_field("status", Value::Str(s.to_string()))
+    }
+
+    /// 5 rows, 3 match predicate "(amount > 100)" → Count == I64(3).
+    #[test]
+    fn count_with_where_true_increments() {
+        let where_expr = make_where_expr("(amount > 100)");
+        let mut op = AggOp::Count(CountState::default());
+        let amounts = [50.0, 150.0, 200.0, 80.0, 300.0]; // 3 > 100
+        for &a in &amounts {
+            op.update_with_row(&row_amount(a), 0, None, Some(&where_expr));
+        }
+        assert_eq!(op.query(0), Value::I64(3), "only 3 rows match amount > 100");
+    }
+
+    /// 5 rows, all fail predicate → Count == I64(0).
+    #[test]
+    fn count_with_where_false_does_not_increment() {
+        let where_expr = make_where_expr("(amount > 1000)");
+        let mut op = AggOp::Count(CountState::default());
+        for &a in &[10.0_f64, 20.0, 30.0, 40.0, 50.0] {
+            op.update_with_row(&row_amount(a), 0, None, Some(&where_expr));
+        }
+        assert_eq!(op.query(0), Value::I64(0), "no rows match amount > 1000");
+    }
+
+    /// 5 rows amounts [10,20,30,40,50] with predicate "(amount > 25)" → sum == 120.0.
+    #[test]
+    fn sum_with_where_skips_non_matching() {
+        let where_expr = make_where_expr("(amount > 25)");
+        let mut op = AggOp::Sum(SumState::default());
+        for &a in &[10.0_f64, 20.0, 30.0, 40.0, 50.0] {
+            op.update_with_row(&row_amount(a), 0, Some("amount"), Some(&where_expr));
+        }
+        // 30 + 40 + 50 = 120
+        match op.query(0) {
+            Value::F64(v) => assert!((v - 120.0).abs() < 1e-10, "sum should be 120.0, got {v}"),
+            other => panic!("expected F64, got {:?}", other),
+        }
+    }
+
+    /// Ratio "gate numerator only": predicate "(status == 'ok')", 10 events (3 match)
+    /// → ratio == 0.3 (matching=3, total=10). D-03 semantics: total always increments.
+    #[test]
+    fn ratio_with_where_gates_numerator_only() {
+        let where_expr = make_where_expr("(status == 'ok')");
+        let mut op = AggOp::Ratio(RatioState::default());
+        // 3 "ok" rows, 7 other rows
+        for i in 0..10 {
+            let row = if i < 3 {
+                row_status("ok")
+            } else {
+                row_status("fail")
+            };
+            op.update_with_row(&row, 0, None, Some(&where_expr));
+        }
+        match op.query(0) {
+            Value::F64(v) => assert!(
+                (v - 0.3).abs() < 1e-10,
+                "ratio should be 3/10=0.3, got {v}"
+            ),
+            other => panic!("expected F64, got {:?}", other),
+        }
+    }
+
+    /// where_expr=None → always updates, identical to Plan 05-01 update (regression guard).
+    #[test]
+    fn update_with_none_where_always_updates() {
+        let mut op = AggOp::Count(CountState::default());
+        let r = Row::new();
+        for _ in 0..5 {
+            op.update_with_row(&r, 0, None, None);
+        }
+        assert_eq!(op.query(0), Value::I64(5), "None where_expr → all 5 rows counted");
     }
 
     // ── Determinism guard ─────────────────────────────────────────────────
