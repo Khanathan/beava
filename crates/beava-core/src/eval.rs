@@ -40,11 +40,27 @@ use crate::expr::{Expr, Literal};
 use crate::expr_builtins::lookup_builtin;
 use crate::row::{Row, Value};
 
+/// Maximum recursion depth for expression evaluation.
+/// Expressions deeper than this return `Value::Null` rather than overflowing
+/// the stack. 512 levels is far beyond any legitimate SDK-generated expression;
+/// a depth-1000+ expression indicates a bug or a crafted DoS input.
+const MAX_EVAL_DEPTH: usize = 512;
+
 /// Evaluate `expr` against `row`, returning the resulting `Value`.
 ///
 /// This function is pure and deterministic: the same `(expr, row)` always
 /// produces the same `Value`.
+///
+/// Depth is bounded to `MAX_EVAL_DEPTH`; expressions exceeding that limit
+/// return `Value::Null` rather than overflowing the call stack.
 pub fn eval(expr: &Expr, row: &Row) -> Value {
+    eval_depth(expr, row, 0)
+}
+
+fn eval_depth(expr: &Expr, row: &Row, depth: usize) -> Value {
+    if depth > MAX_EVAL_DEPTH {
+        return Value::Null;
+    }
     match expr {
         // ── Field reference ───────────────────────────────────────────────────
         Expr::Field { name, .. } => row.get(name).cloned().unwrap_or(Value::Null),
@@ -64,19 +80,22 @@ pub fn eval(expr: &Expr, row: &Row) -> Value {
         // ── Unary NOT ─────────────────────────────────────────────────────────
         Expr::UnaryOp { operand, .. } => {
             // Only "not" exists in Phase 4; future ops would branch on `op`.
-            let v = eval(operand, row);
+            let v = eval_depth(operand, row, depth + 1);
             v.not_three_valued()
         }
 
         // ── Binary ops ────────────────────────────────────────────────────────
         Expr::BinOp {
             op, left, right, ..
-        } => eval_binop(op, left, right, row),
+        } => eval_binop(op, left, right, row, depth),
 
         // ── Call (builtins) ───────────────────────────────────────────────────
         Expr::Call { fn_name, args, .. } => {
             // Evaluate all args to Values first.
-            let arg_vals: Vec<Value> = args.iter().map(|a| eval(a, row)).collect();
+            let arg_vals: Vec<Value> = args
+                .iter()
+                .map(|a| eval_depth(a, row, depth + 1))
+                .collect();
             match lookup_builtin(fn_name) {
                 Some(builtin) => (builtin.eval)(&arg_vals),
                 // Unknown function → Null (register-time catches; runtime defensive).
@@ -88,32 +107,32 @@ pub fn eval(expr: &Expr, row: &Row) -> Value {
 
 // ─── Binary operator dispatch ─────────────────────────────────────────────────
 
-fn eval_binop(op: &str, left: &Expr, right: &Expr, row: &Row) -> Value {
+fn eval_binop(op: &str, left: &Expr, right: &Expr, row: &Row, depth: usize) -> Value {
     match op {
         // Boolean operators: short-circuit evaluation delegated to three-valued helpers.
         "and" => {
-            let lv = eval(left, row);
+            let lv = eval_depth(left, row, depth + 1);
             // Short-circuit: false AND _ = false (skip right).
             if lv == Value::Bool(false) {
                 return Value::Bool(false);
             }
-            let rv = eval(right, row);
+            let rv = eval_depth(right, row, depth + 1);
             lv.and_three_valued(&rv)
         }
         "or" => {
-            let lv = eval(left, row);
+            let lv = eval_depth(left, row, depth + 1);
             // Short-circuit: true OR _ = true (skip right).
             if lv == Value::Bool(true) {
                 return Value::Bool(true);
             }
-            let rv = eval(right, row);
+            let rv = eval_depth(right, row, depth + 1);
             lv.or_three_valued(&rv)
         }
 
         // Arithmetic and comparison: evaluate both operands, then dispatch.
         _ => {
-            let lv = eval(left, row);
-            let rv = eval(right, row);
+            let lv = eval_depth(left, row, depth + 1);
+            let rv = eval_depth(right, row, depth + 1);
             // Null propagates for arithmetic and comparison (D-04).
             if matches!(lv, Value::Null) || matches!(rv, Value::Null) {
                 return Value::Null;
@@ -792,8 +811,7 @@ mod tests {
     // ── Test 22: deep nesting does not stack overflow ─────────────────────────
     //
     // Construct a BinOp chain of depth 200 and verify eval completes.
-    // If recursive eval overflows the stack on complex SDK expressions,
-    // migrate to an iterative evaluator with an explicit work stack.
+    // 200 levels is within MAX_EVAL_DEPTH (512) so returns I64, not Null.
 
     #[test]
     fn eval_deep_nesting_does_not_stack_overflow() {
@@ -802,12 +820,32 @@ mod tests {
         for _ in 0..200 {
             expr = binop("+", expr, lit_int(1));
         }
-        // Just assert it completes without panic; don't assert the exact value
-        // (i64 saturates at MAX for very deep expressions).
+        // 200 < MAX_EVAL_DEPTH(512), so should complete and return I64.
         let result = eval(&expr, &Row::new());
         assert!(
             matches!(result, Value::I64(_)),
-            "deep nesting must return I64, got {result:?}"
+            "deep nesting (depth 200) must return I64 (within limit), got {result:?}"
+        );
+    }
+
+    // ── Test 22b: expression exceeding MAX_EVAL_DEPTH returns Null ────────────
+    //
+    // A BinOp chain of depth 600 (> MAX_EVAL_DEPTH=512) must return Null
+    // rather than overflowing the stack. This is the DoS guard for CR-01.
+
+    #[test]
+    fn eval_exceeds_max_depth_returns_null() {
+        // Build: ((...(1 + 1) + 1)...) of depth 600 — exceeds MAX_EVAL_DEPTH.
+        let mut expr = lit_int(1);
+        for _ in 0..600 {
+            expr = binop("+", expr, lit_int(1));
+        }
+        // Must return Null (depth guard) without panicking.
+        let result = eval(&expr, &Row::new());
+        assert_eq!(
+            result,
+            Value::Null,
+            "expression exceeding MAX_EVAL_DEPTH must return Null, got {result:?}"
         );
     }
 
