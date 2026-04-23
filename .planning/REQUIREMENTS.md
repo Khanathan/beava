@@ -46,7 +46,7 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 ### SDK-AGG — Aggregation framework
 
 - [ ] **SDK-AGG-01**: `Event.group_by(*keys)` returns a `GroupBy` builder; keys must exist in upstream schema
-- [ ] **SDK-AGG-02**: `GroupBy.agg(**named_features)` accepts named aggregation operator descriptors; returns a `TableDerivation`
+- [x] **SDK-AGG-02**: `GroupBy.agg(**named_features)` accepts named aggregation operator descriptors; returns a `TableDerivation`
 - [ ] **SDK-AGG-03**: Aggregation output schema: group keys preserve upstream types; feature columns get types inferred by each operator's `output_type_for(schema)` method
 - [ ] **SDK-AGG-04**: `group_by().agg()` validates every operator's field references exist in upstream schema; errors with path
 - [x] **SDK-AGG-05**: Aggregation on a `Table` is explicitly rejected in v0 (deferred to v0.1 pending retraction propagation)
@@ -62,7 +62,7 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 - [ ] **AGG-CORE-06**: `bv.variance(field, window=..., where=...)` — sample variance via Welford; float output
 - [ ] **AGG-CORE-07**: `bv.stddev(field, window=..., where=...)` — sqrt of variance; float output
 - [ ] **AGG-CORE-08**: `bv.ratio(where=..., window=...)` — count matching / count total; float in [0,1]
-- [ ] **AGG-CORE-09**: All core aggregations require `window=` except `ratio`/`count` which accept windowless via implicit `forever`
+- [x] **AGG-CORE-09**: All core aggregations require `window=` except `ratio`/`count` which accept windowless via implicit `forever`
 
 ### AGG-SKETCH — Sketch aggregations
 
