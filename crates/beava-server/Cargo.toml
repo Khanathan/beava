@@ -70,6 +70,11 @@ name = "phase6_smoke"
 path = "tests/phase6_smoke.rs"
 required-features = ["testing"]
 
+[[test]]
+name = "phase7_smoke"
+path = "tests/phase7_smoke.rs"
+required-features = ["testing"]
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
