@@ -114,9 +114,9 @@ def beava_server(beava_binary: Path) -> Generator[tuple[str, str], None, None]:
     if not ready.wait(timeout=5.0):
         proc.kill()
         proc.wait()
-        error_detail = (
-            f"http_addr={http_addr}, tcp_addr={tcp_addr}"
-        )
+        if proc.stdout:
+            proc.stdout.close()  # unblocks the _reader thread; prevents fd leak on CI
+        error_detail = f"http_addr={http_addr}, tcp_addr={tcp_addr}"
         pytest.fail(
             f"beava server did not emit both bind log lines within 5s: {error_detail}"
         )
