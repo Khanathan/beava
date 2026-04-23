@@ -129,7 +129,16 @@ async fn get_feature_handler(
     };
 
     // Parse entity key (pipe-separated for multi-key group_by).
-    let entity_key = parse_entity_key(&key, &descriptor.group_keys);
+    // Returns None when segment count mismatches group_keys length (WR-02).
+    let entity_key = match parse_entity_key(&key, &descriptor.group_keys) {
+        Some(k) => k,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": {"code": "key_parse_failure"}})),
+            );
+        }
+    };
 
     // Query state under the lock.
     let tables = state.dev_agg_state.state_tables.lock();
@@ -202,7 +211,13 @@ async fn post_get_batch_handler(
                 Some(d) => d,
                 None => continue,
             };
-            let entity_key = parse_entity_key(key_str, &descriptor.group_keys);
+            // Skip features where the key is malformed for this group_by arity.
+            // Malformed keys (wrong pipe-segment count) are silently omitted from
+            // the batch result rather than failing the whole request (WR-02).
+            let entity_key = match parse_entity_key(key_str, &descriptor.group_keys) {
+                Some(k) => k,
+                None => continue,
+            };
             if let Some(val) = tables
                 .get(agg_node)
                 .and_then(|t| t.query_feature(&entity_key, *feature_idx, query_time_ms))
@@ -227,21 +242,24 @@ async fn post_get_batch_handler(
 /// For multi-key group_by, the key string uses `|` as a separator:
 /// e.g., `"alice|merchant1"` → `[("user_id", "alice"), ("merchant_id", "merchant1")]`.
 ///
-/// If the number of pipe-separated segments does not match `group_keys.len()`,
-/// the key is malformed → returns a sentinel `EntityKey` that will not match
-/// any stored entity (query returns 404 key_not_found).
-pub(crate) fn parse_entity_key(key_str: &str, group_keys: &[String]) -> EntityKey {
+/// Returns `None` when the number of pipe-separated segments does not match
+/// `group_keys.len()`. Callers should return a `key_parse_failure` error code in
+/// that case so it is distinguishable from `key_not_found` (WR-02).
+///
+/// **Limitation:** pipe characters inside key values must be percent-encoded as `%7C`
+/// because `|` is the multi-key separator. Full URL-decoding of `%7C` → `|` is deferred
+/// to Phase 12 API completion.
+pub(crate) fn parse_entity_key(key_str: &str, group_keys: &[String]) -> Option<EntityKey> {
     let segments: Vec<&str> = key_str.split('|').collect();
     if segments.len() != group_keys.len() {
-        // Malformed → sentinel that won't match anything stored.
-        return EntityKey(vec![("__malformed__".to_string(), key_str.to_string())]);
+        return None;
     }
     let pairs: Vec<(String, String)> = group_keys
         .iter()
         .zip(segments.iter())
         .map(|(k, v)| (k.clone(), v.to_string()))
         .collect();
-    EntityKey(pairs)
+    Some(EntityKey(pairs))
 }
 
 /// Compute the query time as max(event_time_ms) observed across all applied events.
