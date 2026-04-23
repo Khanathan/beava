@@ -174,7 +174,8 @@ pub(crate) async fn execute_register(
         }
     };
 
-    let (nodes, compiled_chains, propagated_schemas) = validated.into_parts();
+    let (nodes, compiled_chains, propagated_schemas, compiled_aggregations) =
+        validated.into_parts();
     let registered_descriptors: Vec<String> = nodes.iter().map(|n| n.name().to_string()).collect();
 
     // 4. Diff
@@ -210,8 +211,14 @@ pub(crate) async fn execute_register(
         };
     }
 
-    // 7. Additive install (Phase 4: also installs compiled chains + propagated schemas)
-    let new_version = registry.apply_registration(nodes, compiled_chains, propagated_schemas);
+    // 7. Additive install (Phase 4: compiled chains + propagated schemas;
+    //    Phase 5 Plan 04: compiled aggregations)
+    let new_version = registry.apply_registration(
+        nodes,
+        compiled_chains,
+        propagated_schemas,
+        compiled_aggregations,
+    );
     info!(
         kind = "register.success",
         version = new_version,
@@ -409,12 +416,26 @@ pub async fn post_register(
 /// `SchemaPropagationFailure`, and `InvalidCastTarget` all surface as
 /// `"invalid_expression"` on the wire (distinct from `"invalid_registration"`
 /// for structural rules 1-9).
+///
+/// Phase 5 Plan 04 (Rule 11): aggregation-specific error codes map to their
+/// own wire strings so clients can distinguish aggregation failures from
+/// general registration/expression failures.
 pub(crate) fn error_code_to_wire_str(code: ErrorCode) -> &'static str {
     match code {
         ErrorCode::InvalidExpression
         | ErrorCode::UnknownFieldReference
         | ErrorCode::SchemaPropagationFailure
         | ErrorCode::InvalidCastTarget => "invalid_expression",
+        // Rule 11 aggregation codes
+        ErrorCode::AggregationOnTableNotSupported => "aggregation_on_table_not_supported",
+        ErrorCode::AggregationUnknownField => "aggregation_unknown_field",
+        ErrorCode::AggregationInvalidWhere => "aggregation_invalid_where",
+        ErrorCode::AggregationInvalidWindow => "aggregation_invalid_window",
+        ErrorCode::AggregationUnknownOp => "aggregation_unknown_op",
+        ErrorCode::AggregationDuplicateFeatureName => "aggregation_duplicate_feature_name",
+        ErrorCode::AggregationGroupKeyCollidesWithFeature => {
+            "aggregation_group_key_collides_with_feature"
+        }
         _ => "invalid_registration",
     }
 }
@@ -1085,6 +1106,179 @@ mod tests {
         assert!(
             compiled.is_some(),
             "registry.compiled_chain('D') must return Some after registration with ops"
+        );
+    }
+
+    // ─── Plan 05-04: Rule 11 aggregation validation tests (HTTP) ─────────────
+
+    /// A valid event "Txn" with user_id:str + amount:f64 + event_time:i64.
+    fn txn_event_node() -> serde_json::Value {
+        serde_json::json!({
+            "kind": "event",
+            "name": "Txn",
+            "schema": {"fields": {
+                "event_time": "i64",
+                "user_id": "str",
+                "amount": "f64"
+            }, "optional_fields": []},
+            "event_time_field": "event_time"
+        })
+    }
+
+    /// A valid Table "Merchants" with merchant_id:str.
+    fn merchants_table_node() -> serde_json::Value {
+        serde_json::json!({
+            "kind": "table",
+            "name": "Merchants",
+            "primary_key": ["merchant_id"],
+            "schema": {"fields": {"merchant_id": "str"}, "optional_fields": []},
+            "mode": "upsert"
+        })
+    }
+
+    /// Build a GroupBy derivation over Txn with given keys, agg spec, and derivation schema.
+    fn txn_agg_derivation(
+        keys: &[&str],
+        agg: serde_json::Value,
+        schema_fields: serde_json::Value,
+        pk: &[&str],
+    ) -> serde_json::Value {
+        let keys_json: Vec<serde_json::Value> = keys.iter().map(|k| serde_json::json!(k)).collect();
+        let pk_json: Vec<serde_json::Value> = pk.iter().map(|k| serde_json::json!(k)).collect();
+        serde_json::json!({
+            "kind": "derivation",
+            "name": "AggTable",
+            "output_kind": "table",
+            "upstreams": ["Txn"],
+            "ops": [{"op": "group_by", "keys": keys_json, "agg": agg}],
+            "schema": {"fields": schema_fields, "optional_fields": []},
+            "table_primary_key": pk_json
+        })
+    }
+
+    /// Test 17: POST register with derivation grouping over a Table → 400 aggregation_on_table_not_supported
+    #[tokio::test]
+    async fn test_17_http_rejects_aggregation_on_table_source() {
+        let (r, _) = test_router();
+        let payload = serde_json::json!({
+            "nodes": [
+                merchants_table_node(),
+                {
+                    "kind": "derivation",
+                    "name": "AggTable",
+                    "output_kind": "table",
+                    "upstreams": ["Merchants"],
+                    "ops": [{"op": "group_by", "keys": ["merchant_id"],
+                             "agg": {"cnt": {"op": "count", "params": {}}}}],
+                    "schema": {"fields": {"merchant_id": "str", "cnt": "i64"}, "optional_fields": []},
+                    "table_primary_key": ["merchant_id"]
+                }
+            ]
+        });
+        let (status, body) = post(r, json_body(payload), Some("application/json")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:#}");
+        assert_eq!(
+            body["error"]["code"], "aggregation_on_table_not_supported",
+            "expected 'aggregation_on_table_not_supported', body: {body:#}"
+        );
+    }
+
+    /// Test 18: POST register with group_by["no_such_key"] (not in upstream schema) → 400 aggregation_unknown_field
+    #[tokio::test]
+    async fn test_18_http_rejects_aggregation_unknown_field() {
+        let (r, _) = test_router();
+        // group_by on "no_such_key" which is NOT in Txn schema (user_id, amount, event_time)
+        let payload = serde_json::json!({
+            "nodes": [
+                txn_event_node(),
+                txn_agg_derivation(
+                    &["no_such_key"],
+                    serde_json::json!({"cnt": {"op": "count", "params": {}}}),
+                    serde_json::json!({"no_such_key": "str", "cnt": "i64"}),
+                    &["no_such_key"]
+                )
+            ]
+        });
+        let (status, body) = post(r, json_body(payload), Some("application/json")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:#}");
+        assert_eq!(
+            body["error"]["code"], "aggregation_unknown_field",
+            "expected 'aggregation_unknown_field', body: {body:#}"
+        );
+    }
+
+    /// Test 19: POST register with window="5seconds" → 400 aggregation_invalid_window
+    #[tokio::test]
+    async fn test_19_http_rejects_aggregation_invalid_window() {
+        let (r, _) = test_router();
+        let payload = serde_json::json!({
+            "nodes": [
+                txn_event_node(),
+                txn_agg_derivation(
+                    &["user_id"],
+                    serde_json::json!({"cnt": {"op": "count", "params": {"window": "5seconds"}}}),
+                    serde_json::json!({"user_id": "str", "cnt": "i64"}),
+                    &["user_id"]
+                )
+            ]
+        });
+        let (status, body) = post(r, json_body(payload), Some("application/json")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:#}");
+        assert_eq!(
+            body["error"]["code"], "aggregation_invalid_window",
+            "expected 'aggregation_invalid_window', body: {body:#}"
+        );
+    }
+
+    /// Test 20: valid count-5m aggregation → 200, registry_version bumped
+    #[tokio::test]
+    async fn test_20_http_accepts_valid_aggregation() {
+        let (_, reg) = test_router();
+        let r = router(ReadinessFlag::new(), reg.clone(), true);
+        let payload = serde_json::json!({
+            "nodes": [
+                txn_event_node(),
+                txn_agg_derivation(
+                    &["user_id"],
+                    serde_json::json!({"cnt": {"op": "count", "params": {"window": "5m"}}}),
+                    serde_json::json!({"user_id": "str", "cnt": "i64"}),
+                    &["user_id"]
+                )
+            ]
+        });
+        let (status, body) = post(r.clone(), json_body(payload), Some("application/json")).await;
+        assert_eq!(status, StatusCode::OK, "body: {body:#}");
+        assert_eq!(body["registry_version"], 1, "version should bump to 1");
+        assert_eq!(body["status"], "ok");
+
+        // Verify compiled_aggregation is cached
+        let cached = reg.compiled_aggregation("AggTable");
+        assert!(
+            cached.is_some(),
+            "compiled_aggregation('AggTable') must be Some after successful registration"
+        );
+
+        // GET /registry should show the derivation
+        let get_resp = axum::Router::oneshot(
+            r,
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/registry")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /registry");
+        let get_bytes = get_resp
+            .into_body()
+            .collect()
+            .await
+            .expect("collect")
+            .to_bytes();
+        let reg_dump: serde_json::Value = serde_json::from_slice(&get_bytes).expect("json");
+        assert!(
+            reg_dump["derivations"]["AggTable"].is_object(),
+            "AggTable derivation should appear in /registry dump"
         );
     }
 

@@ -1,6 +1,7 @@
 //! Registry data model: descriptor structs, OutputKind, TableMode, RegistryInner,
 //! and the parking_lot::RwLock-guarded Registry wrapper.
 
+use crate::agg_descriptor::AggregationDescriptor;
 use crate::op_chain::OpChain;
 use crate::op_node::OpNode;
 use crate::schema::{DerivedSchema, EventSchema, TableSchema};
@@ -126,6 +127,9 @@ pub struct RegistryInner {
     /// Phase 4: compiled op-chains keyed by derivation name.
     /// Populated by `apply_registration` when a derivation with ops is installed.
     pub compiled_chains: BTreeMap<String, Arc<OpChain>>,
+    /// Phase 5 Plan 04: compiled aggregation descriptors keyed by derivation name.
+    /// Populated by `apply_registration` when a derivation with GroupBy ops is installed.
+    pub compiled_aggregations: BTreeMap<String, Arc<AggregationDescriptor>>,
 }
 
 #[derive(Debug, Default)]
@@ -156,6 +160,19 @@ impl Registry {
         self.inner
             .read()
             .compiled_chains
+            .get(derivation_name)
+            .cloned()
+    }
+
+    /// Phase 5 Plan 04: Return the compiled AggregationDescriptor for a derivation (if cached).
+    /// Returns `None` if the derivation has no GroupBy ops or was not yet registered.
+    pub fn compiled_aggregation(
+        &self,
+        derivation_name: &str,
+    ) -> Option<Arc<AggregationDescriptor>> {
+        self.inner
+            .read()
+            .compiled_aggregations
             .get(derivation_name)
             .cloned()
     }
@@ -202,6 +219,10 @@ impl Registry {
     /// derivation schema for any derivation that has a server-propagated schema
     /// (`propagated_schemas`). Both lists come from `ValidatedPayload::into_parts()`.
     ///
+    /// Phase 5 Plan 04: Also installs compiled AggregationDescriptors (`compiled_aggregations`).
+    /// For aggregation derivations, the schema is overwritten with the server-authoritative
+    /// aggregation output schema (D-05).
+    ///
     /// Precondition: `nodes` has passed `validate_payload` and `compute_diff` yielded
     /// `changed = []` AND `added != []`. Caller (Plan 05 endpoint) enforces this.
     ///
@@ -211,19 +232,23 @@ impl Registry {
         nodes: Vec<crate::registry_diff::PayloadNode>,
         compiled_chains: Vec<(String, Arc<OpChain>)>,
         propagated_schemas: Vec<(String, crate::schema::DerivedSchema)>,
+        compiled_aggregations: Vec<(String, Arc<AggregationDescriptor>)>,
     ) -> u64 {
         let mut w = self.inner.write();
         let new_version = w.version + 1;
 
-        // Build lookup maps for propagated schemas and compiled chains so we can
-        // apply them alongside their descriptor in the same write-lock pass.
-        // Chains are inserted ONLY when the derivation descriptor is new — this
-        // prevents stale entries from accumulating if apply_registration is ever
-        // called with a derivation that is already present (WR-01).
+        // Build lookup maps for propagated schemas, compiled chains, and
+        // compiled aggregations so we can apply them alongside their descriptor
+        // in the same write-lock pass.
+        // Chains/aggregations are inserted ONLY when the derivation descriptor is
+        // new — this prevents stale entries from accumulating if apply_registration
+        // is ever called with a derivation that is already present (WR-01).
         let schema_map: std::collections::HashMap<String, crate::schema::DerivedSchema> =
             propagated_schemas.into_iter().collect();
         let mut chains_map: std::collections::HashMap<String, Arc<OpChain>> =
             compiled_chains.into_iter().collect();
+        let mut agg_map: std::collections::HashMap<String, Arc<AggregationDescriptor>> =
+            compiled_aggregations.into_iter().collect();
 
         for n in nodes {
             match n {
@@ -251,6 +276,10 @@ impl Registry {
                         // new derivations, so stale chains never accumulate.
                         if let Some(chain) = chains_map.remove(&d.name) {
                             w.compiled_chains.insert(d.name.clone(), chain);
+                        }
+                        // Phase 5 Plan 04: install compiled aggregation descriptor.
+                        if let Some(agg) = agg_map.remove(&d.name) {
+                            w.compiled_aggregations.insert(d.name.clone(), agg);
                         }
                         w.derivations.insert(d.name.clone(), d);
                     }
@@ -584,7 +613,8 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
         };
-        let new_version = r.apply_registration(vec![PayloadNode::Event(event_a)], vec![], vec![]);
+        let new_version =
+            r.apply_registration(vec![PayloadNode::Event(event_a)], vec![], vec![], vec![]);
         assert_eq!(new_version, 1);
         assert_eq!(r.version(), 1);
         let snap = r.snapshot();
@@ -607,7 +637,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
         };
-        let v1 = r.apply_registration(vec![PayloadNode::Event(e1)], vec![], vec![]);
+        let v1 = r.apply_registration(vec![PayloadNode::Event(e1)], vec![], vec![], vec![]);
         assert_eq!(v1, 1);
 
         let e2 = EventDescriptor {
@@ -620,7 +650,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
         };
-        let v2 = r.apply_registration(vec![PayloadNode::Event(e2)], vec![], vec![]);
+        let v2 = r.apply_registration(vec![PayloadNode::Event(e2)], vec![], vec![], vec![]);
         assert_eq!(v2, 2);
 
         let snap = r.snapshot();
@@ -644,7 +674,12 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
         };
-        r.apply_registration(vec![PayloadNode::Event(event_a.clone())], vec![], vec![]);
+        r.apply_registration(
+            vec![PayloadNode::Event(event_a.clone())],
+            vec![],
+            vec![],
+            vec![],
+        );
         assert_eq!(r.version(), 1);
 
         // Apply [EventA (identical), EventB (new)]
@@ -662,6 +697,7 @@ mod tests {
             vec![PayloadNode::Event(event_a), PayloadNode::Event(event_b)],
             vec![],
             vec![],
+            vec![],
         );
         assert_eq!(v2, 2);
         let snap = r.snapshot();
@@ -669,5 +705,80 @@ mod tests {
         assert_eq!(snap.events["A"].registered_at_version, 1);
         // B is stamped at v2
         assert_eq!(snap.events["B"].registered_at_version, 2);
+    }
+
+    // Plan 05-04 test: compiled_aggregations cached after apply_registration
+    #[test]
+    fn compiled_aggregations_cached_after_apply_registration() {
+        use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
+        use crate::agg_op::{AggKind, AggOpDescriptor};
+        use crate::registry_diff::PayloadNode;
+
+        let r = Registry::new();
+
+        // Build a minimal event + aggregation derivation
+        let event = EventDescriptor {
+            name: "Txn".to_string(),
+            schema: make_event_schema(),
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
+            registered_at_version: 0,
+        };
+
+        let agg_desc = AggregationDescriptor {
+            node_name: "AggTable".to_string(),
+            source_node_name: "Txn".to_string(),
+            group_keys: vec!["card_id".to_string()],
+            features: vec![NamedAggOp {
+                feature_name: "cnt".to_string(),
+                descriptor: AggOpDescriptor {
+                    kind: AggKind::Count,
+                    field: None,
+                    window_ms: Some(300_000),
+                    where_expr: None,
+                },
+            }],
+        };
+        let agg_arc = Arc::new(agg_desc);
+
+        let deriv = crate::registry::DerivationDescriptor {
+            name: "AggTable".to_string(),
+            output_kind: crate::registry::OutputKind::Table,
+            upstreams: vec!["Txn".to_string()],
+            ops: vec![],
+            schema: crate::schema::DerivedSchema {
+                fields: {
+                    let mut m = BTreeMap::new();
+                    m.insert("card_id".to_string(), crate::schema::FieldType::Str);
+                    m.insert("cnt".to_string(), crate::schema::FieldType::I64);
+                    m
+                },
+                optional_fields: vec![],
+            },
+            table_primary_key: Some(vec!["card_id".to_string()]),
+            registered_at_version: 0,
+        };
+
+        r.apply_registration(
+            vec![PayloadNode::Event(event), PayloadNode::Derivation(deriv)],
+            vec![],
+            vec![],
+            vec![("AggTable".to_string(), agg_arc)],
+        );
+
+        let cached = r.compiled_aggregation("AggTable");
+        assert!(
+            cached.is_some(),
+            "registry.compiled_aggregation('AggTable') must return Some after registration"
+        );
+        let cached = cached.unwrap();
+        assert_eq!(cached.node_name, "AggTable");
+        assert_eq!(cached.source_node_name, "Txn");
+        assert_eq!(cached.group_keys, vec!["card_id"]);
+        assert_eq!(cached.features.len(), 1);
+        assert_eq!(cached.features[0].feature_name, "cnt");
     }
 }

@@ -61,6 +61,21 @@ pub enum ErrorCode {
     /// does NOT emit this for UnsupportedOp errors — it treats them as warnings.
     #[allow(dead_code)]
     UnsupportedOpInPhase4,
+    // Phase 5, Rule 11 additions (aggregation validation):
+    /// Aggregation source is a Table — not supported in v0 (SDK-AGG-05).
+    AggregationOnTableNotSupported,
+    /// group_by key or op.field references a field not in the upstream schema.
+    AggregationUnknownField,
+    /// where predicate parse error or references an unknown field.
+    AggregationInvalidWhere,
+    /// window duration string does not match `\d+(ms|s|m|h|d)` or `forever`.
+    AggregationInvalidWindow,
+    /// aggregation op string is not in the hardcoded whitelist.
+    AggregationUnknownOp,
+    /// Two features within one GroupBy share the same name.
+    AggregationDuplicateFeatureName,
+    /// A feature name collides with a group_by key.
+    AggregationGroupKeyCollidesWithFeature,
 }
 
 /// A single structured validation error. `path` uses pseudo-JSON-pointer format
@@ -77,6 +92,7 @@ pub struct ValidationError {
 /// The endpoint (Plan 05) extracts the inner vec via `into_inner()`.
 ///
 /// Phase 4 extends this with compiled chains and propagated schemas (Plan 04-05).
+/// Phase 5 Plan 04 extends this with compiled aggregation descriptors (Rule 11).
 #[derive(Debug)]
 pub struct ValidatedPayload {
     pub(crate) nodes: Vec<PayloadNode>,
@@ -86,6 +102,12 @@ pub struct ValidatedPayload {
     /// Server-propagated DerivedSchema per derivation name.
     /// Replaces the client-supplied schema for derivations with ops (CONTEXT D-06).
     pub propagated_schemas: Vec<(String, crate::schema::DerivedSchema)>,
+    /// Compiled AggregationDescriptor per derivation name (Arc-wrapped).
+    /// Populated by Rule 11 (validate_aggregations). Empty until Phase 5 Plan 04.
+    pub compiled_aggregations: Vec<(
+        String,
+        std::sync::Arc<crate::agg_descriptor::AggregationDescriptor>,
+    )>,
 }
 
 impl ValidatedPayload {
@@ -96,6 +118,7 @@ impl ValidatedPayload {
             nodes,
             compiled_chains: vec![],
             propagated_schemas: vec![],
+            compiled_aggregations: vec![],
         }
     }
 
@@ -108,7 +131,7 @@ impl ValidatedPayload {
         self.nodes
     }
 
-    /// Phase 4: decompose into (nodes, compiled_chains, propagated_schemas).
+    /// Phase 5 Plan 04: decompose into (nodes, compiled_chains, propagated_schemas, compiled_aggregations).
     #[allow(clippy::type_complexity)]
     pub fn into_parts(
         self,
@@ -116,8 +139,17 @@ impl ValidatedPayload {
         Vec<PayloadNode>,
         Vec<(String, std::sync::Arc<crate::op_chain::OpChain>)>,
         Vec<(String, crate::schema::DerivedSchema)>,
+        Vec<(
+            String,
+            std::sync::Arc<crate::agg_descriptor::AggregationDescriptor>,
+        )>,
     ) {
-        (self.nodes, self.compiled_chains, self.propagated_schemas)
+        (
+            self.nodes,
+            self.compiled_chains,
+            self.propagated_schemas,
+            self.compiled_aggregations,
+        )
     }
 }
 
@@ -177,11 +209,26 @@ pub fn validate_payload(
         );
     }
 
+    // Rule 11: aggregation validation (Phase 5 Plan 04)
+    let mut compiled_aggregations: Vec<(
+        String,
+        std::sync::Arc<crate::agg_descriptor::AggregationDescriptor>,
+    )> = Vec::new();
+    if errors.is_empty() {
+        // Only run Rule 11 if Rules 1-10 passed (avoids cascading errors from
+        // missing upstreams or expressions that failed Rule 10).
+        let (agg_compiled, agg_errors) =
+            crate::agg_compile::compile_aggregations_from_nodes(&payload, current);
+        compiled_aggregations = agg_compiled;
+        errors.extend(agg_errors);
+    }
+
     if errors.is_empty() {
         Ok(ValidatedPayload {
             nodes: payload,
             compiled_chains,
             propagated_schemas,
+            compiled_aggregations,
         })
     } else {
         Err(errors)

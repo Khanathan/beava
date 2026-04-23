@@ -954,4 +954,112 @@ mod tests {
             .expect("join");
         assert!(result.is_ok());
     }
+
+    // ─── Plan 05-04: Rule 11 aggregation validation tests (TCP) ──────────────
+
+    fn table_node_json(name: &str, pk: &str) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "table",
+            "name": name,
+            "primary_key": [pk],
+            "schema": {"fields": {pk: "str"}, "optional_fields": []},
+            "mode": "upsert"
+        })
+    }
+
+    /// Test 21: TCP register frame with aggregation on Table source →
+    /// OP_ERROR_RESPONSE with code="aggregation_on_table_not_supported"
+    #[tokio::test]
+    async fn test_21_tcp_rejects_aggregation_on_table_source() {
+        use crate::testing::TestServerBuilder;
+
+        let ts = TestServerBuilder::new()
+            .dev_endpoints(false)
+            .spawn()
+            .await
+            .expect("spawn test server");
+
+        let payload = serde_json::json!({
+            "nodes": [
+                table_node_json("Merchants", "merchant_id"),
+                {
+                    "kind": "derivation",
+                    "name": "AggTable",
+                    "output_kind": "table",
+                    "upstreams": ["Merchants"],
+                    "ops": [{
+                        "op": "group_by",
+                        "keys": ["merchant_id"],
+                        "agg": {"cnt": {"op": "count", "params": {}}}
+                    }],
+                    "schema": {"fields": {"merchant_id": "str", "cnt": "i64"}, "optional_fields": []},
+                    "table_primary_key": ["merchant_id"]
+                }
+            ]
+        });
+
+        let mut tcp = ts.tcp_client().await.expect("tcp connect");
+        let (resp_op, body) = tcp.register_json(payload).await.expect("tcp register");
+
+        assert_eq!(
+            resp_op, OP_ERROR_RESPONSE,
+            "expected OP_ERROR_RESPONSE, got op={resp_op:#06x}, body: {body:#}"
+        );
+        assert_eq!(
+            body["error"]["code"], "aggregation_on_table_not_supported",
+            "TCP must use 'aggregation_on_table_not_supported' code, body: {body:#}"
+        );
+
+        ts.shutdown().await.expect("shutdown");
+    }
+
+    /// Test 22: TCP register frame with invalid window string →
+    /// OP_ERROR_RESPONSE with code="aggregation_invalid_window"
+    #[tokio::test]
+    async fn test_22_tcp_rejects_aggregation_invalid_window() {
+        use crate::testing::TestServerBuilder;
+
+        let ts = TestServerBuilder::new()
+            .dev_endpoints(false)
+            .spawn()
+            .await
+            .expect("spawn test server");
+
+        let payload = serde_json::json!({
+            "nodes": [
+                event_node_json(
+                    "Txn",
+                    &[("event_time", "i64"), ("user_id", "str"), ("amount", "f64")],
+                    "event_time"
+                ),
+                {
+                    "kind": "derivation",
+                    "name": "AggTable",
+                    "output_kind": "table",
+                    "upstreams": ["Txn"],
+                    "ops": [{
+                        "op": "group_by",
+                        "keys": ["user_id"],
+                        "agg": {"cnt": {"op": "count", "params": {"window": "5seconds"}}}
+                    }],
+                    "schema": {"fields": {"user_id": "str", "cnt": "i64"}, "optional_fields": []},
+                    "table_primary_key": ["user_id"]
+                }
+            ]
+        });
+
+        let mut tcp = ts.tcp_client().await.expect("tcp connect");
+        let (resp_op, body) = tcp.register_json(payload).await.expect("tcp register");
+
+        assert_eq!(
+            resp_op, OP_ERROR_RESPONSE,
+            "expected OP_ERROR_RESPONSE, got op={resp_op:#06x}, body: {body:#}"
+        );
+        assert_eq!(
+            body["error"]["code"], "aggregation_invalid_window",
+            "TCP must use 'aggregation_invalid_window' code, body: {body:#}"
+        );
+
+        ts.shutdown().await.expect("shutdown");
+    }
 }
