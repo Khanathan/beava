@@ -17,11 +17,15 @@ row) pairs — zero divergence is the Phase 4 load-bearing correctness claim.
 - `not None → None`.
 - `isnull(x)` always returns bool (True/False), never None.
 
-## `(x == null)` rewrite (Plan 04-02 Rust parser, mirrored here)
-The Rust parser rewrites `BinOp("==", e, Literal::Null)` and
-`BinOp("==", Literal::Null, e)` to `Call("isnull", [e])` BEFORE the AST
-reaches eval.rs.  This evaluator applies the same rewrite at the top of
-`evaluate()` so the oracle is faithful to what the server sees.
+## `(x == null)` and `(x != null)` rewrites (Plan 04-02 Rust parser, mirrored here)
+The Rust parser (Pass B in expr.rs) rewrites both:
+  - `BinOp("==", e, Literal::Null)` → `Call("isnull", [e])`
+  - `BinOp("!=", e, Literal::Null)` → `UnaryOp("not", Call("isnull", [e]))`
+(and their symmetric null-on-left forms) BEFORE the AST reaches eval.rs.
+This evaluator applies the same rewrites at the top of `evaluate()` so the
+oracle is faithful to what the server sees.  Without the `!=` rewrite,
+`(a != null)` with `a=None` diverges: Python null-propagation returns None
+while Rust's rewritten `(not isnull(a))` returns False.
 
 ## Integer division (v1 decision)
 I64 / I64 → I64 (truncating toward zero).  Rust uses `x / y` which truncates
@@ -84,10 +88,18 @@ def _clamp_i64(n: int) -> int:
 
 
 def _rewrite_null_eq(expr: _ExprAST) -> _ExprAST:
-    """Walk the AST and rewrite BinOp('==', e, Literal(None)) → isnull(e).
+    """Walk the AST and rewrite null-equality/inequality BinOps to isnull calls.
 
-    This mirrors Plan 04-02's Rust parser Pass B so the Python reference
-    evaluator sees the same AST shape as the Rust evaluator.
+    Mirrors Plan 04-02's Rust parser Pass B rewrites exactly:
+      (x == null) → isnull(x)
+      (null == x) → isnull(x)
+      (x != null) → (not isnull(x))
+      (null != x) → (not isnull(x))
+
+    Both == and != rewrites are required because the Rust parser applies both
+    in expr.rs `rewrite_null_eq`. Without the != rewrite, `(a != null)` where
+    a=None diverges: Python returns None (null propagation) while Rust returns
+    False (not isnull(a) = not True = False).
     """
     if isinstance(expr, _BinOp):
         left = _rewrite_null_eq(expr.left)
@@ -99,6 +111,13 @@ def _rewrite_null_eq(expr: _ExprAST) -> _ExprAST:
             # (null == x) → isnull(x)
             if isinstance(left, _Literal) and left.value is None:
                 return _Call("isnull", [right])
+        if expr.op == "!=":
+            # (x != null) → (not isnull(x))
+            if isinstance(right, _Literal) and right.value is None:
+                return _UnaryOp("not", _Call("isnull", [left]))
+            # (null != x) → (not isnull(x))
+            if isinstance(left, _Literal) and left.value is None:
+                return _UnaryOp("not", _Call("isnull", [right]))
         # Reconstruct with rewritten children.
         return _BinOp(expr.op, left, right)
     if isinstance(expr, _UnaryOp):
