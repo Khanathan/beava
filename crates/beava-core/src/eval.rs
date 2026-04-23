@@ -92,10 +92,7 @@ fn eval_depth(expr: &Expr, row: &Row, depth: usize) -> Value {
         // ── Call (builtins) ───────────────────────────────────────────────────
         Expr::Call { fn_name, args, .. } => {
             // Evaluate all args to Values first.
-            let arg_vals: Vec<Value> = args
-                .iter()
-                .map(|a| eval_depth(a, row, depth + 1))
-                .collect();
+            let arg_vals: Vec<Value> = args.iter().map(|a| eval_depth(a, row, depth + 1)).collect();
             match lookup_builtin(fn_name) {
                 Some(builtin) => (builtin.eval)(&arg_vals),
                 // Unknown function → Null (register-time catches; runtime defensive).

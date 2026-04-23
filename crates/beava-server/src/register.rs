@@ -392,10 +392,7 @@ pub async fn post_register(
                 registry_version: current_version,
             };
             // infallible: RegisterErrorBody contains only &str/u64/String fields
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(to_json_value(err_body)),
-            );
+            return (StatusCode::BAD_REQUEST, Json(to_json_value(err_body)));
         }
     };
 
