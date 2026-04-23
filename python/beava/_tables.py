@@ -65,12 +65,12 @@ class _TableOpsMixin:
     def key(self) -> list[str]:
         """Current key field list (may have been cascaded by rename)."""
         if hasattr(self, "_table_primary_key"):
-            return list(self._table_primary_key)  # type: ignore[attr-defined]
+            return list(self._table_primary_key)
         return list(self._primary_key)  # type: ignore[attr-defined]
 
     def named(self, name: str) -> "TableDerivation":
         """Return a copy of this derivation with a different name."""
-        upstream_name = _table_source_name(self)  # type: ignore[arg-type]
+        upstream_name = _table_source_name(self)
         return TableDerivation(
             name=name,
             schema=self._schema,  # type: ignore[attr-defined]
@@ -153,7 +153,7 @@ class _TableOpsMixin:
         self, op: dict[str, Any], key_override: list[str] | None
     ) -> "TableDerivation":
         existing_ops: list[Any] = list(self._ops)  # type: ignore[attr-defined]
-        upstream_name = _table_source_name(self)  # type: ignore[arg-type]
+        upstream_name = _table_source_name(self)
         effective_key = key_override if key_override is not None else self.key
         return TableDerivation(
             name=upstream_name,
@@ -168,10 +168,11 @@ class _TableOpsMixin:
 
 def _table_source_name(obj: Any) -> str:
     """Return the root source name for *obj* (TableSource or TableDerivation)."""
-    current = obj
+    current: Any = obj
     while hasattr(current, "_upstream") and current._upstream is not None:
         current = current._upstream
-    return current._name
+    name: str = current._name
+    return name
 
 
 # ---------------------------------------------------------------------------

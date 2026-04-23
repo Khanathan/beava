@@ -100,11 +100,9 @@ def _rewrite_null_eq(expr: _ExprAST) -> _ExprAST:
             if isinstance(left, _Literal) and left.value is None:
                 return _Call("isnull", [right])
         # Reconstruct with rewritten children.
-        new_node = _BinOp(expr.op, left, right)
-        return new_node
+        return _BinOp(expr.op, left, right)
     if isinstance(expr, _UnaryOp):
-        new_node = _UnaryOp(expr.op, _rewrite_null_eq(expr.operand))
-        return new_node
+        return _UnaryOp(expr.op, _rewrite_null_eq(expr.operand))
     if isinstance(expr, _Call):
         new_args = [_rewrite_null_eq(a) for a in expr.args]
         return _Call(expr.fn, new_args)
@@ -338,25 +336,25 @@ def _try_compare(a: Any, b: Any) -> int | None:
     """
     # Same-type pairs (strictly typed).
     if _is_int(a) and _is_int(b):
-        return (a > b) - (a < b)
+        return int(a > b) - int(a < b)
     if _is_float(a) and _is_float(b):
         if math.isnan(a) or math.isnan(b):
             return None  # NaN comparisons undefined → None
-        return (a > b) - (a < b)
+        return int(a > b) - int(a < b)
     if _is_int(a) and _is_float(b):
         fa = float(a)
         if math.isnan(b):
             return None
-        return (fa > b) - (fa < b)
+        return int(fa > b) - int(fa < b)
     if _is_float(a) and _is_int(b):
         fb = float(b)
         if math.isnan(a):
             return None
-        return (a > fb) - (a < fb)
+        return int(a > fb) - int(a < fb)
     if isinstance(a, str) and isinstance(b, str):
-        return (a > b) - (a < b)
+        return int(a > b) - int(a < b)
     if isinstance(a, bool) and isinstance(b, bool):
-        return (a > b) - (a < b)
+        return int(a > b) - int(a < b)
     # Cross-type → None
     return None
 

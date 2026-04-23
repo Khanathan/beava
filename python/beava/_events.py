@@ -66,7 +66,7 @@ class _EventOpsMixin:
         Returns ``self`` if already an EventDerivation (copies with new name);
         for EventSource, wraps in a zero-op EventDerivation with the given name.
         """
-        upstream_name = _source_name(self)  # type: ignore[arg-type]
+        upstream_name = _source_name(self)
         return EventDerivation(
             name=name,
             schema=self._schema,  # type: ignore[attr-defined]
@@ -153,7 +153,7 @@ class _EventOpsMixin:
     def _new_derivation(self, op: dict[str, Any]) -> "EventDerivation":
         """Construct a new EventDerivation with *op* appended to the ops list."""
         existing_ops: list[Any] = list(self._ops)  # type: ignore[attr-defined]
-        upstream_name = _source_name(self)  # type: ignore[arg-type]
+        upstream_name = _source_name(self)
         return EventDerivation(
             name=upstream_name,  # placeholder; callers use .named() to assign
             schema=self._schema,  # type: ignore[attr-defined]
@@ -167,10 +167,11 @@ class _EventOpsMixin:
 def _source_name(obj: Any) -> str:
     """Return the effective source name for *obj* (EventSource or EventDerivation)."""
     # For EventDerivation chains, trace back to the root source name.
-    current = obj
+    current: Any = obj
     while hasattr(current, "_upstream") and current._upstream is not None:
         current = current._upstream
-    return current._name
+    name: str = current._name
+    return name
 
 
 # ---------------------------------------------------------------------------
