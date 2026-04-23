@@ -68,7 +68,6 @@ async fn apply_event(
 /// Checks: 200 response, registry_version bumped, GET /registry shows output_kind=table,
 /// table_primary_key=["user_id"], schema contains {user_id: str, cnt: i64}.
 #[tokio::test]
-#[ignore] // Plan 05-08 Task 1.b: un-ignore after cross-plan integration verified
 async fn sc1_register_groupby_produces_table() {
     let ts = TestServerBuilder::new()
         .dev_endpoints(true)
@@ -141,7 +140,6 @@ async fn sc1_register_groupby_produces_table() {
 
 /// SC2a: Push 10 events via /dev/apply_events; GET /get/cnt/alice → {"value": 10}.
 #[tokio::test]
-#[ignore] // Plan 05-08 Task 1.b: un-ignore after cross-plan integration verified
 async fn sc2_push_then_get_returns_count() {
     let ts = TestServerBuilder::new()
         .dev_endpoints(true)
@@ -201,7 +199,6 @@ async fn sc2_push_then_get_returns_count() {
 
 /// SC2b: Push events with where-predicate filtering (7 ok, 3 failed); GET → 7.
 #[tokio::test]
-#[ignore] // Plan 05-08 Task 1.b: un-ignore after cross-plan integration verified
 async fn sc2_push_with_where_filters() {
     let ts = TestServerBuilder::new()
         .dev_endpoints(true)
@@ -283,7 +280,6 @@ async fn sc2_push_with_where_filters() {
 ///   count=5, sum=150.0, avg=30.0, min=10.0, max=50.0, variance=250.0,
 ///   stddev=sqrt(250.0)≈15.8113883..., ratio(ok)=5/6≈0.8333...
 #[tokio::test]
-#[ignore] // Plan 05-08 Task 1.b: un-ignore after cross-plan integration verified
 async fn sc3_all_8_operators_e2e() {
     let ts = TestServerBuilder::new()
         .dev_endpoints(true)
@@ -451,7 +447,6 @@ async fn sc3_all_8_operators_e2e() {
 /// Comparison: raw response bodies from GET /get/cnt/u0, /get/cnt/u1, /get/cnt/u2 are
 /// asserted byte-identical across the two runs (assert_eq! on String, not parsed values).
 #[tokio::test]
-#[ignore] // Plan 05-08 Task 1.b: un-ignore after cross-plan integration verified
 async fn sc4_replay_determinism() {
     async fn run_instance(events: &[(i64, serde_json::Value)]) -> Vec<String> {
         let ts = TestServerBuilder::new()
@@ -561,7 +556,6 @@ async fn sc4_replay_determinism() {
 
 /// SC5a: Windowless (lifetime) count — window= omitted; all 100 events are counted.
 #[tokio::test]
-#[ignore] // Plan 05-08 Task 1.b: un-ignore after cross-plan integration verified
 async fn sc5_lifetime_count_works() {
     let ts = TestServerBuilder::new()
         .dev_endpoints(true)
@@ -627,7 +621,6 @@ async fn sc5_lifetime_count_works() {
 
 /// SC5b: Windowless (lifetime) ratio — 10 events (3 ok, 7 bad); ratio = 3/10 = 0.3.
 #[tokio::test]
-#[ignore] // Plan 05-08 Task 1.b: un-ignore after cross-plan integration verified
 async fn sc5_lifetime_ratio_works() {
     let ts = TestServerBuilder::new()
         .dev_endpoints(true)
@@ -707,7 +700,6 @@ async fn sc5_lifetime_ratio_works() {
 
 /// SC6a: POST /register with sum(field="nonexistent") → 400 with aggregation_unknown_field.
 #[tokio::test]
-#[ignore] // Plan 05-08 Task 1.b: un-ignore after cross-plan integration verified
 async fn sc6_unknown_field_rejected() {
     let ts = TestServerBuilder::new()
         .dev_endpoints(true)
@@ -761,7 +753,6 @@ async fn sc6_unknown_field_rejected() {
 /// SC6b: POST /register with aggregation on a Table source → 400 with
 /// aggregation_on_table_not_supported.
 #[tokio::test]
-#[ignore] // Plan 05-08 Task 1.b: un-ignore after cross-plan integration verified
 async fn sc6_aggregation_on_table_rejected() {
     let ts = TestServerBuilder::new()
         .dev_endpoints(true)
@@ -839,7 +830,6 @@ async fn sc6_aggregation_on_table_rejected() {
 /// D-02: GET /get response has exactly one top-level key, "value".
 /// No "meta", no "updated_at", no "value_and_meta".
 #[tokio::test]
-#[ignore] // Plan 05-08 Task 1.b: un-ignore after cross-plan integration verified
 async fn envelope_shape_is_value_only() {
     let ts = TestServerBuilder::new()
         .dev_endpoints(true)

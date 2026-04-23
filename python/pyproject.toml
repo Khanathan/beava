@@ -38,7 +38,10 @@ packages = ["beava"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
-markers = ["phase4: Phase 4 Python acceptance smoke tests (SC1-SC5)"]
+markers = [
+    "phase4: Phase 4 Python acceptance smoke tests (SC1-SC5)",
+    "phase5: Phase 5 Python acceptance smoke tests (SC1-SC6)",
+]
 
 [tool.ruff]
 line-length = 100
