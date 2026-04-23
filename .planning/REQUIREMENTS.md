@@ -10,14 +10,14 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 ### SDK-DEC — Python SDK decorators (source declarations)
 
 - [ ] **SDK-DEC-01**: `@bv.event` decorator accepts a class with type-hinted fields; extracts schema (types, optional flags, Field metadata); stores as an `EventSource` descriptor
-- [ ] **SDK-DEC-02**: `@bv.event` class form accepts optional `history_ttl` (duration string) and `watermark_lateness` (duration string) parameters
+- [ ] **SDK-DEC-02**: `@bv.event` class form accepts optional `keep_events_for` (duration string) and `tolerate_delay` (duration string) parameters
 - [ ] **SDK-DEC-03**: `@bv.event` function form: function with upstream-class parameters returns an `Event` / `EventDerivation`; decorator invokes the function once at registration with upstream descriptors and captures the result
-- [ ] **SDK-DEC-04**: `@bv.table(key=..., ttl=..., mode="append")` decorator accepts string or list primary key, optional TTL duration; validates key fields exist in schema
+- [ ] **SDK-DEC-04**: `@bv.table(key=..., ttl=..., mode="upsert")` decorator accepts string or list primary key, optional TTL duration; validates key fields exist in schema
 - [ ] **SDK-DEC-05**: `@bv.table` function form: returns a `Table`/`TableDerivation`; upstream descriptors passed as typed parameters
 - [ ] **SDK-DEC-06**: Schema extraction supports `str`, `f64`/`float`, `i64`/`int`, `bool`, `bytes`, `datetime` field types; rejects unsupported types at decorator time with a clear error message
 - [ ] **SDK-DEC-07**: `bv.Optional[T]` marks a field nullable; `bv.Field(desc=..., default=...)` attaches per-field metadata
 - [ ] **SDK-DEC-08**: Every `@bv.event` requires an `event_time: int` (milliseconds since epoch) field; decorator rejects events without it
-- [ ] **SDK-DEC-09**: `@bv.event` accepts optional `idempotency_key` + `idempotency_ttl` for stream-level deduplication at push time
+- [ ] **SDK-DEC-09**: `@bv.event` accepts optional `dedupe_key` + `dedupe_window` for stream-level deduplication at push time
 
 ### SDK-COL — Expression DSL (`bv.col`)
 
@@ -212,7 +212,7 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 - [ ] **SRV-DUR-02**: `/push` ACK returns only after event's LSN has been fsynced
 - [ ] **SRV-DUR-03**: WAL format: header with `registry_version`, `stream_id`, `event_time`, entity key(s), event body; sufficient for full state rebuild
 - [ ] **SRV-DUR-04**: WAL rotation: old segments truncated past the latest snapshot's covered LSN
-- [ ] **SRV-DUR-05**: Stream-level idempotency: `idempotency_key` + `idempotency_ttl` stored at registration; duplicate request within TTL replays byte-identical response, no state mutation
+- [ ] **SRV-DUR-05**: Stream-level idempotency: `dedupe_key` + `dedupe_window` stored at registration; duplicate request within TTL replays byte-identical response, no state mutation
 
 ### SRV-RECOV — Recovery
 

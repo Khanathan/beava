@@ -192,7 +192,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ### Phase 6: WAL + idempotency
 
-**Goal:** `/push` ACK returns only after event's LSN has been fsynced. Stream-level `idempotency_key` + TTL enforced: duplicate requests return the cached response byte-identical.
+**Goal:** `/push` ACK returns only after event's LSN has been fsynced. Stream-level `dedupe_key` + window enforced: duplicate requests return the cached response byte-identical.
 
 **Depends on:** Phase 5.
 
@@ -200,7 +200,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 **Success criteria:**
 1. Push event, kill process before fsync, restart → event NOT present. Push event, wait for ACK, kill → event IS present.
-2. Duplicate push with same idempotency key within TTL returns byte-identical response; state unchanged between first and duplicate
+2. Duplicate push with same dedupe key within window returns byte-identical response; state unchanged between first and duplicate
 3. Group-commit fsync adds P50 < 2ms to push-ACK latency at default config
 4. WAL rotation: segments ≤ snapshot-covered LSN truncated; disk usage bounded
 

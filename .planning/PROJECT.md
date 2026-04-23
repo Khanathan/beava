@@ -89,7 +89,7 @@ Listed with reasoning to prevent re-adding.
 - **State exceeding single-box RAM** — no SSD overflow, no tiered storage, no cold cache. Users size their box; exceed → refuse new entities.
 - **Multi-instance coordination / replication / HA in OSS** — horizontal scale belongs to commercial tier. Multi-instance via user-sharded deploys allowed; server does not coordinate.
 - **Table aggregation with retraction propagation** — v0 forbids `table.group_by(...)`. v1 of beava already made this call; v2 inherits it. Retraction-aware table→table aggregations are v0.1 work.
-- **Table mode: `"changelog"`** — only `"append"` upsert mode in v0 (matches v1).
+- **Table mode: `"changelog"`** — only `"upsert"` mode in v0 (matches v1).
 - **Timers / autonomous emission** — no `on_timer` callbacks, no debouncer, no session-end-by-timeout. Deferred to post-v0.
 - **CEP / sequence pattern detection / state machines as operators** — not in the aggregation operator framework. Deferred.
 - **Backfill + replay + branching** — the `bv.fork()` replica covers some of this use case; full branch/promote/discard semantics deferred.
@@ -149,6 +149,8 @@ Locked. Each is load-bearing for phase planning.
 |----------|-----------|---------|
 | Python SDK is the canonical authoring UX | v1 validated this shape; feature engineers live in Python; Feast/Tecton/Chronon converged on it | — Pending ship |
 | Wire format is dual: HTTP/JSON + custom-framed TCP | HTTP: curl-testable, LB/WAF/CDN-compatible, serverless-friendly. TCP: low-latency SDK fast-path without HTTP header overhead. Same JSON payload body; no Protobuf | — Pending ship |
+| Devex-first naming (plain English over streaming jargon) | Surfaced terms that made devs google ("lateness", "idempotency", "watermark") replaced with plain forms (tolerate_delay, dedupe_key/window, keep_events_for). Table mode "append" → "upsert" to describe the real semantic. Zero-config defaults (5s tolerate_delay, 7d keep_events_for, 24h dedupe_window) baked in — `@bv.event` works without a single soft knob set | — Pending ship (retroactive to Phase 2 wire on 2026-04-23; see commit 26daa41) |
+| event_time field is optional on @bv.event | If the user omits event_time_field on an EventDescriptor, server stamps wall-clock time on push receipt. Tables still REQUIRE an explicit `key`. Keeps the time axis explicit where it shapes the contract (aggregations, windows) while getting simple logging-style events to zero-config. | — Pending ship |
 | TCP frame: `[u32 length][u16 op][u32 request_id][payload]` | Simpler than v1's framing, sufficient for v0 ops; opcode table designed up front in Phase 2.5 so later phases only fill in handlers | — Pending ship |
 | Rename `@bv.stream` → `@bv.event` | "Event" is unambiguous for append-only immutable sources; "stream" was overloaded in v1 | — Pending ship |
 | Additive-only registration with monotonic `registry_version` bumps | Prevents silent breaking changes; makes "just re-run your registration" safe | — Pending ship |

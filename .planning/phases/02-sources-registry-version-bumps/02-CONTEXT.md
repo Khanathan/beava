@@ -1,5 +1,18 @@
 # Phase 2: Sources + registry + version bumps - Context
 
+> **⚠ Amendment 2026-04-23 (post-ship):** The wire field names locked below were
+> retroactively renamed for devex-first plain English before Phase 2.5 / Phase 3
+> shipped. Historical record preserved; effective names below are the renamed ones.
+> See commit `26daa41` and `PROJECT.md` Key Decisions for the full rename map.
+>
+> - `idempotency_key` → `dedupe_key`
+> - `idempotency_ttl_ms` → `dedupe_window_ms`
+> - `history_ttl_ms` → `keep_events_for_ms`
+> - `watermark_lateness_ms` → `tolerate_delay_ms`
+> - `TableMode::Append` (`"append"`) → `TableMode::Upsert` (`"upsert"`)
+> - `event_time_field: String` → `event_time_field: Option<String>` (None ⇒ server stamps wall-clock on push receipt; Some(name) ⇒ validated as before)
+> - New: `crates/beava-core/src/defaults.rs` centralizes runtime defaults (5s tolerate_delay, 7d keep_events_for, 24h dedupe_window).
+
 **Gathered:** 2026-04-22
 **Status:** Ready for planning
 **Mode:** Auto-generated (decisive synthesis from PROJECT.md + REQUIREMENTS.md + Phase 1 handoff + v1 API research)
