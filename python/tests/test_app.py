@@ -16,7 +16,6 @@ from beava._errors import RegistrationError, ValidationError
 from beava._events import EventDerivation, EventSource
 from beava._schema import FieldSpec
 
-
 # ---------------------------------------------------------------------------
 # Shared descriptor factories (inline, no import from test_validate)
 # ---------------------------------------------------------------------------
@@ -25,7 +24,7 @@ from beava._schema import FieldSpec
 def _make_event(name: str, upstreams: list[str] | None = None) -> EventSource:
     src = EventSource(
         name=name,
-        schema={"x": FieldSpec(py_type=str, optional=False)},
+        schema={"x": FieldSpec(name="x", py_type=str, optional=False)},
         event_time_field=None,
         dedupe_key=None,
         dedupe_window_ms=None,
@@ -40,7 +39,7 @@ def _make_event(name: str, upstreams: list[str] | None = None) -> EventSource:
 def _make_derivation(name: str, upstreams: list[str]) -> EventDerivation:
     return EventDerivation(
         name=name,
-        schema={"x": FieldSpec(py_type=str, optional=False)},
+        schema={"x": FieldSpec(name="x", py_type=str, optional=False)},
         upstreams=upstreams,
         ops=[],
         output_kind="event",
@@ -254,17 +253,12 @@ def test_app_register_topological_order_in_payload(
     """Upstream descriptors appear before dependents in the REGISTER nodes array."""
     http_url, _tcp_url = beava_server
 
-    @bv.event
-    class Transactions:  # type: ignore[no-redef]
-        amount: float
-        user_id: str
-
-    @bv.event
-    def Checkouts(src: Transactions) -> object:  # type: ignore[no-redef]
-        return src
+    # Use manual construction to avoid @bv.event function-form annotation issues
+    # (from __future__ import annotations stringifies all annotations in this file).
+    txns = _make_event("TxnSource2")
+    checkouts = _make_derivation("CheckoutsDeriv2", upstreams=["TxnSource2"])
 
     # Spy on the transport: capture what payload bytes would be sent.
-    # We do this by subclassing the transport and intercepting send_register.
     captured: list[dict] = []  # type: ignore[type-arg]
 
     from beava._transport import HttpTransport
@@ -278,15 +272,16 @@ def test_app_register_topological_order_in_payload(
     # Replace the transport with our spy
     app._transport = SpyTransport(http_url)  # type: ignore[attr-defined]
     try:
-        app.register(Checkouts, Transactions)  # intentionally wrong order
+        # Pass derivation before its upstream intentionally — topo-sort must fix order
+        app.register(checkouts, txns)
     finally:
         app.close()
 
     assert captured, "No payload was captured"
     nodes = captured[0]["nodes"]
     names = [n["name"] for n in nodes]
-    assert names.index("Transactions") < names.index("Checkouts"), (
-        f"Expected Transactions before Checkouts, got: {names}"
+    assert names.index("TxnSource2") < names.index("CheckoutsDeriv2"), (
+        f"Expected TxnSource2 before CheckoutsDeriv2, got: {names}"
     )
 
 

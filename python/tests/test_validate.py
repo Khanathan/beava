@@ -12,7 +12,6 @@ from beava._events import EventDerivation, EventSource
 from beava._schema import FieldSpec
 from beava._tables import TableSource
 
-
 # ---------------------------------------------------------------------------
 # Helpers: build minimal descriptors without using the decorators
 # ---------------------------------------------------------------------------
@@ -22,7 +21,7 @@ def _make_event(name: str, upstreams: list[str] | None = None) -> EventSource:
     """Return a minimal EventSource with a single str field."""
     src = EventSource(
         name=name,
-        schema={"x": FieldSpec(py_type=str, optional=False)},
+        schema={"x": FieldSpec(name="x", py_type=str, optional=False)},
         event_time_field=None,
         dedupe_key=None,
         dedupe_window_ms=None,
@@ -38,7 +37,7 @@ def _make_derivation(name: str, upstreams: list[str]) -> EventDerivation:
     """Return a minimal EventDerivation with given upstreams."""
     return EventDerivation(
         name=name,
-        schema={"x": FieldSpec(py_type=str, optional=False)},
+        schema={"x": FieldSpec(name="x", py_type=str, optional=False)},
         upstreams=upstreams,
         ops=[],
         output_kind="event",
@@ -49,7 +48,7 @@ def _make_table(name: str, key: str = "id") -> TableSource:
     """Return a minimal TableSource."""
     return TableSource(
         name=name,
-        schema={key: FieldSpec(py_type=str, optional=False)},
+        schema={key: FieldSpec(name=key, py_type=str, optional=False)},
         primary_key=[key],
         ttl_ms=None,
         mode="upsert",
