@@ -242,6 +242,15 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 - [ ] **PERF-03**: WAL group-commit adds P50 < 2ms to push ACK latency at default config
 - [ ] **PERF-04**: Benchmark harness exposes a reproducible scenario covering each operator family; checked into `benches/`
 
+### THROUGHPUT — End-to-end throughput harness (Phase 7.5 + per-phase ledger)
+
+- [ ] **THROUGHPUT-HARNESS-01**: Reusable harness binary (e.g. `crates/beava-bench/`) drives a live `beava` server over HTTP and TCP; emits a structured result (JSON + markdown row) with EPS, P50/P95/P99 push latency, P99 batch-get latency, RSS at peak, hw-class tag
+- [ ] **THROUGHPUT-HARNESS-02**: `.planning/throughput-baselines.md` ledger format + hw-class tagging matches the `.planning/perf-baselines.md` convention (one section per hw-class, append-only rows keyed by phase + pipeline-shape + transport)
+- [ ] **THROUGHPUT-HARNESS-03**: Per-phase regression thresholds — 10% slower than prior baseline on the simple-fraud shape → WARNING in VERIFICATION.md; 25% slower → BLOCKER. Plan-checker contract: every phase from 8 onward MUST include a "throughput run" task or the plan is rejected
+- [ ] **THROUGHPUT-PIPELINES-01**: Three pipeline configs ship with the harness — small (1 feature, 1 entity, 1 window), medium (5 features), large (15 features). Each runnable independently; results recorded per size
+- [ ] **THROUGHPUT-WORKLOAD-01**: 60s wall-time time-bounded workload (count events processed, not "process N events"). Standardizes comparisons across hw-classes since faster boxes do more events per second
+- [ ] **THROUGHPUT-FIRST-BASELINE-01**: Phase 7.5 ships the first baseline using ONLY Phase 5 operators (count/sum/avg/min/max/variance/stddev/ratio) over Phase 6 WAL durability + Phase 7 snapshot/recovery in the path. Captured for all 3 pipeline sizes × HTTP + TCP on at least one hw-class. This is the "start of the line" that subsequent phases compare against
+
 ### TEST — Testing + quality
 
 - [ ] **TEST-01**: Table-driven unit tests per operator: push known events, assert expected feature values

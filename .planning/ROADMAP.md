@@ -36,6 +36,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 5.5 | Perf harness + retroactive baselines | 5/6 | In Progress|  |
 | 6 | WAL + idempotency | 2/4 | In Progress|  |
 | 7 | Snapshot + recovery | Periodic full-state snapshot; restart replays snapshot + WAL; schema evolution survives restart | 5 | 4 |
+| 7.5 | End-to-end throughput harness + first baseline | Reusable harness measuring sustained EPS + push/get latency through the live HTTP+TCP server. Tiered pipelines (small=1 / medium=5 / large=15 features). 60s wall-time time-bounded runs. Baselines committed to `.planning/throughput-baselines.md` keyed by hw-class. Establishes the per-phase throughput-run convention every operator phase (8–12) must honor. | ~6 | 4 |
 | 8 | Point / ordinal / recency operators | first, last, first_n, last_n, lag, first_seen, last_seen, age, has_seen, time_since, time_since_last_n, streak, max_streak, negative_streak, first_seen_in_window | 15 | 4 |
 | 9 | Decay + velocity operators | ewma, ewvar, ew_zscore, decayed_sum, decayed_count, twa, rate_of_change, inter_arrival_stats, burst_count, delta_from_prev, trend, trend_residual, outlier_count, value_change_count, z_score | 16 | 4 |
 | 10 | Sketch operators | count_distinct (HLL), percentile (DDSketch), top_k (SpaceSaving), bloom_member, entropy | 5 | 4 |
@@ -44,17 +45,17 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 12 | Joins + unions + push/get API completion | Event↔event windowed join, event↔table enrichment (incl. event-time PIT against temporal tables), table↔table join, `bv.union`; `push_sync` + `push_many` + `push_table` + `delete_table` + `set` + `mset` + `mget` + `get_multi` wired end-to-end | 13 | 5 |
 | 13 | Observability + performance + docs + packaging + `bv.fork` + playground | `/metrics`, structured logs, perf gates on THREE pipelines (simple fraud, complex fraud, recommendations) ≥3M EPS, <10ms P99 batch get, SDK polish, docs, hosted interactive tutorial at playground.beava.dev, PyPI, GitHub Releases, Docker, `beava fork` subcommand | ~18 | 7 |
 
-**Total:** 16 phases (Phase 2.5 inserted 2026-04-23 for dual HTTP+TCP wire; Phase 5.5 inserted 2026-04-23 for perf harness + retroactive baselines + per-phase regression gates; Phase 11.5 inserted 2026-04-23 for temporal tables + retraction primitive required by PIT stream↔table joins), ~173 requirements mapped (actual count confirmed after plan-time verification), ~84 success criteria.
+**Total:** 17 phases (Phase 2.5 inserted 2026-04-23 for dual HTTP+TCP wire; Phase 5.5 inserted 2026-04-23 for perf harness + retroactive baselines + per-phase regression gates; Phase 11.5 inserted 2026-04-23 for temporal tables + retraction primitive required by PIT stream↔table joins; Phase 7.5 inserted 2026-04-23 for end-to-end throughput harness + per-phase throughput-run convention so EPS numbers track incrementally instead of landing as a Phase 13 surprise), ~179 requirements mapped (actual count confirmed after plan-time verification), ~88 success criteria.
 
 **Phase 1 status:** ✅ **COMPLETE** on commits `b100e51`..`c21b6b7`. Cargo workspace, axum HTTP server, `/health` + `/ready` stubs, graceful shutdown, integration TestServer harness — all gates green. See `.planning/phases/01-foundation/01-SUMMARY.md`, `.planning/phases/01-foundation/01-VERIFICATION.md`.
 
 ## Parallelization
 
-- **Phases 1 → 2 → 3 → 4 → 5 → 6 → 7** are strictly sequential — each depends on the one before. Phase 5 is where the apply loop first runs real aggregations; Phases 6–7 harden durability around it.
-- **Phases 8 / 9 / 10 / 11** can run in parallel after Phase 7 — each operator family attaches to the existing apply loop + registry + window infra, touching independent operator modules. Recommended: sequence 8 → 9 → 10 → 11 unless explicitly running parallel worktrees.
-- **Phase 11.5** (temporal tables + retraction) depends on 7 (needs WAL + snapshot); can run parallel with 8–11 since it touches its own table-storage module. MUST ship before Phase 12 because joins consume the `as_of=...` kwarg.
-- **Phase 12** (joins/unions + push/get completion) depends on 7 AND 11.5; can overlap with 8–11 since joins live in their own module.
-- **Phase 13** waits on everything for perf benchmarks + docs sign-off.
+- **Phases 1 → 2 → 3 → 4 → 5 → 6 → 7 → 7.5** are strictly sequential — each depends on the one before. Phase 5 is where the apply loop first runs real aggregations; Phases 6–7 harden durability around it; Phase 7.5 builds the throughput harness on top of stable durability so EPS numbers reflect production shape (WAL fsync + snapshot/recovery in the path).
+- **Phases 8 / 9 / 10 / 11** can run in parallel after Phase 7.5 — each operator family attaches to the existing apply loop + registry + window infra, touching independent operator modules. Recommended: sequence 8 → 9 → 10 → 11 unless explicitly running parallel worktrees. Each must include a "throughput run" task that re-runs the Phase 7.5 harness with that family's operators added to the medium/large pipelines and appends the result to `.planning/throughput-baselines.md`.
+- **Phase 11.5** (temporal tables + retraction) depends on 7 (needs WAL + snapshot); can run parallel with 8–11 since it touches its own table-storage module. MUST ship before Phase 12 because joins consume the `as_of=...` kwarg. Throughput run measures upsert/retract path against the temporal-table workload variant.
+- **Phase 12** (joins/unions + push/get completion) depends on 7 AND 11.5; can overlap with 8–11 since joins live in their own module. Throughput run adds the join-shape pipeline (event↔table enrichment) to the harness.
+- **Phase 13** waits on everything for the final three-shape perf gate (simple fraud / complex fraud / recommendations ≥ 3M EPS) + `/metrics` + docs sign-off. By Phase 13 the throughput-baselines ledger has ~6 rows showing how EPS evolved phase-by-phase.
 
 ## Dependency graph
 
@@ -82,12 +83,16 @@ Feature authoring as composable Python code that ships to production unchanged. 
        ▼
   Phase 7 (Snapshot + recovery + schema evolution)
        │
+       ▼
+  Phase 7.5 (End-to-end throughput harness + first baseline)
+       │
        ├────────────┬────────────┬────────────┬────────────┐
        ▼            ▼            ▼            ▼            ▼
   Phase 8       Phase 9      Phase 10     Phase 11     Phase 12
   (recency/     (decay/      (sketches)   (buffer+geo) (joins +
   point ops)    velocity)                              unions + API
                                                         completion)
+  ↓ each phase 8-12 ships a "throughput run" task using the 7.5 harness
        └────────────┴────────────┴────────────┴────────────┘
                                    │
                                    ▼
@@ -263,11 +268,27 @@ Feature authoring as composable Python code that ships to production unchanged. 
 3. RTO: 10GB state snapshot + 1GB WAL tail → server online within 30s on NVMe
 4. Corrupt snapshot (flipped byte) detected + logged; operator can fall back to previous
 
+### Phase 7.5: End-to-end throughput harness + first baseline
+
+**Goal:** Build a reusable, hardware-tagged throughput harness that drives a live `beava` server (HTTP + TCP) end-to-end and produces sustained EPS + push/get latency numbers. Capture the first baseline using only Phase 5 operators (count/sum/avg/min/max/variance/stddev/ratio) over Phase 6 WAL durability + Phase 7 snapshot/recovery in the path. Establish the per-phase "throughput run" convention so every operator phase from 8 onward appends a row to `.planning/throughput-baselines.md`. This is NOT about hitting 3M EPS — it is about starting the line and having a stable, comparable measurement system before the operator catalog grows.
+
+**Depends on:** Phase 7 (needs durable + recoverable server in the loop so numbers are production-shaped, not toy-mode).
+
+**Requirements:** THROUGHPUT-HARNESS-01 (harness crate + result schema), THROUGHPUT-HARNESS-02 (`.planning/throughput-baselines.md` ledger format + hw-class tagging matching perf-baselines.md convention), THROUGHPUT-HARNESS-03 (per-phase regression thresholds 10% warn / 25% block on the simple-fraud shape), THROUGHPUT-PIPELINES-01 (small/medium/large pipeline configs: 1 / 5 / 15 features, 1 entity type, 1 window), THROUGHPUT-WORKLOAD-01 (60s wall-time time-bounded run; record EPS, P50/P95/P99 push latency, P99 batch-get, RSS at peak), THROUGHPUT-FIRST-BASELINE-01 (Phase 5-operators-only baseline committed for all 3 sizes on at least one hw-class) — 6 REQ-IDs.
+
+**Success criteria:**
+1. `cargo bench --bench throughput` (or equivalent CLI) drives a real server over HTTP + TCP and returns structured results for the small / medium / large pipelines
+2. `.planning/throughput-baselines.md` exists with hw-class-tagged rows for the first baseline (small/medium/large × HTTP/TCP) on at least one machine class
+3. Plan-checker contract: every phase from 8 onward MUST include a "throughput run" task that re-runs the harness, appends a row, and asserts no > 25% regression on the simple-fraud shape
+4. Harness output schema documented and stable across phases (numeric comparisons across phases must work mechanically)
+
+**Plans:** to be written at plan-time (estimated 4 plans: harness crate + result schema, pipeline configs, baseline capture + ledger, smoke + SUMMARY).
+
 ### Phase 8: Point / ordinal / recency operators
 
 **Goal:** The point-shaped operator family lands — values, sequences, streaks, recency markers.
 
-**Depends on:** Phase 7. **Parallelizable with Phases 9, 10, 11, 12.**
+**Depends on:** Phase 7.5 (uses throughput harness). **Parallelizable with Phases 9, 10, 11, 12.**
 
 **Requirements:** AGG-POINT-01 through AGG-POINT-11, AGG-RECENCY-01 through AGG-RECENCY-04 — 15 REQ-IDs.
 
@@ -276,12 +297,13 @@ Feature authoring as composable Python code that ships to production unchanged. 
 2. Operators round-trip through WAL + snapshot + recovery
 3. Docs entry per operator in `docs/operators.md`
 4. SDK descriptor constructors match v1 API (same parameter names)
+5. Throughput run: harness re-run with this phase's operators added to medium/large pipelines; row appended to `.planning/throughput-baselines.md`; no > 25% regression on simple-fraud shape vs Phase 7.5 baseline
 
 ### Phase 9: Decay + velocity operators
 
 **Goal:** Exponentially-decayed and velocity-shaped operators land.
 
-**Depends on:** Phase 7. **Parallelizable with 8, 10, 11, 12.**
+**Depends on:** Phase 7.5 (uses throughput harness). **Parallelizable with 8, 10, 11, 12.**
 
 **Requirements:** AGG-DECAY-01 through AGG-DECAY-07, AGG-VEL-01 through AGG-VEL-08, AGG-Z-01 — 16 REQ-IDs.
 
@@ -290,12 +312,13 @@ Feature authoring as composable Python code that ships to production unchanged. 
 2. `bv.ema()` alias resolves to `bv.ewma()` in the SDK
 3. Half-life parameter validation at decoration time (duration string format)
 4. Operators replay byte-identically after restart
+5. Throughput run: harness re-run with decay/velocity ops in the medium/large pipelines; row appended to `.planning/throughput-baselines.md`; no > 25% regression on simple-fraud shape
 
 ### Phase 10: Sketch operators
 
 **Goal:** Approximate-algorithm operators land with documented error bounds.
 
-**Depends on:** Phase 7. **Parallelizable with 8, 9, 11, 12.**
+**Depends on:** Phase 7.5 (uses throughput harness). **Parallelizable with 8, 9, 11, 12.**
 
 **Requirements:** AGG-SKETCH-01 through AGG-SKETCH-05 — 5 REQ-IDs.
 
@@ -304,12 +327,13 @@ Feature authoring as composable Python code that ships to production unchanged. 
 2. Sketch serialization round-trips through snapshot + WAL replay; deterministic under sketched inputs
 3. `bloom_member` and `entropy` pass table-driven tests
 4. Memory bounded per-entity by operator configuration
+5. Throughput run: harness re-run with sketch ops in the medium/large pipelines; row appended to `.planning/throughput-baselines.md`; no > 25% regression on simple-fraud shape (note: sketches add memory + CPU per insert — large-pipeline regression most likely here)
 
 ### Phase 11: Bounded-buffer + geo operators
 
 **Goal:** Histograms, per-user baselines, and geo-shaped operators land.
 
-**Depends on:** Phase 7. **Parallelizable with 8, 9, 10, 12.**
+**Depends on:** Phase 7.5 (uses throughput harness). **Parallelizable with 8, 9, 10, 12.**
 
 **Requirements:** AGG-BUFFER-01 through AGG-BUFFER-07, AGG-GEO-01 through AGG-GEO-06 — 13 REQ-IDs.
 
@@ -318,6 +342,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 2. Geo math verified against a reference implementation (`haversine` crate)
 3. Structured outputs (histograms, reservoir samples) round-trip through `GET /get/{feature}/{key}` with `{value, meta?}` shape
 4. Replay determinism preserved
+5. Throughput run: harness re-run with buffer/geo ops in the medium/large pipelines + a recommendation-shape pipeline variant exercising geo-velocity; row appended to `.planning/throughput-baselines.md`; no > 25% regression on simple-fraud shape
 
 ### Phase 11.5: Temporal tables + retraction primitive
 
@@ -334,6 +359,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 4. Stream retraction is explicitly rejected in v0: `POST /retract` against a stream event_id returns 501 with message pointing at the forward-compat plan
 5. Acceptance smoke: register a temporal table, upsert value at t=0, upsert at t=1, retract the t=1 event, assert GET returns t=0 value; assert `GET /table?as_of=t=0` returns t=0 value regardless of retraction state
 6. Memory budget: temporal storage ≤ N× non-temporal equivalent for retention window R; measured in Phase 13 perf gate
+7. Throughput run: harness re-run with a temporal-table workload variant (upsert-heavy + occasional retract) appended; row added to `.planning/throughput-baselines.md`; baseline table-write throughput captured for the first time
 
 ### Phase 12: Joins + unions + push/get API completion
 
@@ -349,6 +375,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 3. Table↔table join: key-matched; schema collision handled with `_right` suffix
 4. `bv.union` produces concatenated stream; field-mismatch detected at registration
 5. All push/get API variants pass end-to-end Python SDK tests against a real server
+6. Throughput run: harness re-run with a join-shape pipeline (event↔table enrichment) appended to medium/large; row added to `.planning/throughput-baselines.md`; this is the last incremental data point before Phase 13's three-shape ship gate
 
 ### Phase 13: Observability + performance + docs + packaging + `bv.fork` — ship
 
