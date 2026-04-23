@@ -4,8 +4,10 @@
 //! logic lives here so core stays syscall-free.
 
 mod error;
+mod fsync_worker;
 mod reader;
 mod record;
+mod rotation;
 mod segment;
 mod writer;
 
@@ -31,5 +33,6 @@ pub struct WalRecord {
 }
 
 pub use error::PersistError;
+pub use fsync_worker::{WalSink, WalSinkConfig};
 pub use reader::WalReader;
 pub use writer::WalWriter;

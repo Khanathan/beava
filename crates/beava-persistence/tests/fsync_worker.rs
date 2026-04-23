@@ -54,7 +54,9 @@ async fn concurrent_appends_get_distinct_lsns() {
     let mut tasks = Vec::new();
     for _ in 0..10 {
         let s = sink.clone();
-        tasks.push(tokio::spawn(async move { s.append_event(b"p".to_vec()).await }));
+        tasks.push(tokio::spawn(
+            async move { s.append_event(b"p".to_vec()).await },
+        ));
     }
 
     let mut lsns = Vec::new();
