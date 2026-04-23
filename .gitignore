@@ -2,6 +2,8 @@
 /target
 **/*.rs.bk
 !/Cargo.lock
+# proptest regression files (generated at test time; not committed per proptest convention)
+proptest-regressions/
 
 # Python
 __pycache__/

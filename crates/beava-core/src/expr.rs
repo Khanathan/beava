@@ -110,13 +110,42 @@ pub enum Expr {
 impl Expr {
     /// Returns the byte-offset span of this node in the original source.
     pub fn span(&self) -> Span {
-        todo!()
+        match self {
+            Expr::Field { span, .. }
+            | Expr::Literal(_, span)
+            | Expr::BinOp { span, .. }
+            | Expr::UnaryOp { span, .. }
+            | Expr::Call { span, .. } => span.clone(),
+        }
     }
 
     /// Collects every `Expr::Field` name referenced anywhere in this subtree
     /// into a sorted set. Literal values (including `BareIdent`) are excluded.
     pub fn referenced_fields(&self) -> BTreeSet<String> {
-        todo!()
+        let mut out = BTreeSet::new();
+        collect_fields(self, &mut out);
+        out
+    }
+}
+
+fn collect_fields(expr: &Expr, out: &mut BTreeSet<String>) {
+    match expr {
+        Expr::Field { name, .. } => {
+            out.insert(name.clone());
+        }
+        Expr::Literal(..) => {}
+        Expr::BinOp { left, right, .. } => {
+            collect_fields(left, out);
+            collect_fields(right, out);
+        }
+        Expr::UnaryOp { operand, .. } => {
+            collect_fields(operand, out);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                collect_fields(arg, out);
+            }
+        }
     }
 }
 
@@ -131,8 +160,886 @@ impl Expr {
 /// Post-parse normalization passes are applied before returning:
 /// - Pass A: cast's second-arg `Field` rewritten to `Literal::BareIdent`.
 /// - Pass B: `(x == null)` / `(null == x)` rewritten to `Call("isnull", [x])`.
-pub fn parse(_source: &str) -> Result<Expr, ParseError> {
-    todo!()
+pub fn parse(source: &str) -> Result<Expr, ParseError> {
+    let mut parser = Parser::new(source)?;
+    let expr = parser.parse_expr()?;
+    // Reject trailing tokens — check the lookahead buffer (the lexer pre-scans ahead,
+    // so `pos` may already be at `source.len()` while a buffered token remains).
+    if let Some(trailing) = parser.peek() {
+        let col = trailing.span.start + 1;
+        let snippet = if trailing.text.is_empty() {
+            format!("{:?}", &source[trailing.span.start..trailing.span.end])
+        } else {
+            format!("{:?}", trailing.text)
+        };
+        return Err(ParseError {
+            col,
+            reason: format!("col {col}: unexpected token {snippet}"),
+        });
+    }
+    // Pass A: cast second-arg bare-ident normalization.
+    let expr = normalize_cast(expr);
+    // Pass B: null-equality rewrite.
+    let expr = rewrite_null_eq(expr);
+    Ok(expr)
+}
+
+// ─── Tokenizer ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+enum TokenKind {
+    LParen,
+    RParen,
+    Comma,
+    // Operators
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Gt,
+    GtEq,
+    Lt,
+    LtEq,
+    EqEq,
+    BangEq,
+    // Keywords / identifiers
+    And,
+    Or,
+    Not,
+    True,
+    False,
+    Null,
+    Ident,
+    // Literals
+    IntLit,
+    FloatLit,
+    StrLit,
+}
+
+#[derive(Debug, Clone)]
+struct Token {
+    kind: TokenKind,
+    span: Span,
+    /// The parsed/unescaped string value for Ident and StrLit tokens.
+    text: String,
+    /// Parsed integer value (for IntLit).
+    int_val: i64,
+    /// Parsed float value (for FloatLit).
+    float_val: f64,
+}
+
+// ─── Parser ───────────────────────────────────────────────────────────────────
+
+struct Parser<'src> {
+    source: &'src str,
+    pos: usize,
+    /// One-token lookahead buffer.
+    peeked: Option<Token>,
+    /// Tracks how many unclosed `(` we are inside.
+    /// Binary ops (add/mul/cmp/and/or) are only consumed when depth > 0,
+    /// enforcing the SDK invariant that every binary op is parenthesized.
+    paren_depth: usize,
+}
+
+impl<'src> Parser<'src> {
+    fn new(source: &'src str) -> Result<Self, ParseError> {
+        let mut p = Parser {
+            source,
+            pos: 0,
+            peeked: None,
+            paren_depth: 0,
+        };
+        // Pre-fill the lookahead so `peek()` is always valid.
+        p.advance_lookahead()?;
+        Ok(p)
+    }
+
+    // ── Whitespace ────────────────────────────────────────────────────────────
+
+    fn skip_whitespace(&mut self) {
+        while self.pos < self.source.len()
+            && matches!(
+                self.source.as_bytes()[self.pos],
+                b' ' | b'\t' | b'\n' | b'\r'
+            )
+        {
+            self.pos += 1;
+        }
+    }
+
+    // ── Lexer ─────────────────────────────────────────────────────────────────
+
+    /// Scan the next token from `self.pos`, storing it into `self.peeked`.
+    /// Called after consuming a token (via `next()`) to refill the lookahead.
+    fn advance_lookahead(&mut self) -> Result<(), ParseError> {
+        self.skip_whitespace();
+        if self.pos >= self.source.len() {
+            self.peeked = None;
+            return Ok(());
+        }
+        let start = self.pos;
+        let b = self.source.as_bytes()[self.pos];
+
+        // Single-char punctuation
+        match b {
+            b'(' => {
+                self.pos += 1;
+                self.peeked = Some(self.make_token(TokenKind::LParen, start, "", 0, 0.0));
+                return Ok(());
+            }
+            b')' => {
+                self.pos += 1;
+                self.peeked = Some(self.make_token(TokenKind::RParen, start, "", 0, 0.0));
+                return Ok(());
+            }
+            b',' => {
+                self.pos += 1;
+                self.peeked = Some(self.make_token(TokenKind::Comma, start, "", 0, 0.0));
+                return Ok(());
+            }
+            b'+' => {
+                self.pos += 1;
+                self.peeked = Some(self.make_token(TokenKind::Plus, start, "", 0, 0.0));
+                return Ok(());
+            }
+            b'-' => {
+                self.pos += 1;
+                self.peeked = Some(self.make_token(TokenKind::Minus, start, "", 0, 0.0));
+                return Ok(());
+            }
+            b'*' => {
+                self.pos += 1;
+                self.peeked = Some(self.make_token(TokenKind::Star, start, "", 0, 0.0));
+                return Ok(());
+            }
+            b'/' => {
+                self.pos += 1;
+                self.peeked = Some(self.make_token(TokenKind::Slash, start, "", 0, 0.0));
+                return Ok(());
+            }
+            b'>' => {
+                if self.pos + 1 < self.source.len() && self.source.as_bytes()[self.pos + 1] == b'='
+                {
+                    self.pos += 2;
+                    self.peeked = Some(self.make_token(TokenKind::GtEq, start, "", 0, 0.0));
+                } else {
+                    self.pos += 1;
+                    self.peeked = Some(self.make_token(TokenKind::Gt, start, "", 0, 0.0));
+                }
+                return Ok(());
+            }
+            b'<' => {
+                if self.pos + 1 < self.source.len() && self.source.as_bytes()[self.pos + 1] == b'='
+                {
+                    self.pos += 2;
+                    self.peeked = Some(self.make_token(TokenKind::LtEq, start, "", 0, 0.0));
+                } else {
+                    self.pos += 1;
+                    self.peeked = Some(self.make_token(TokenKind::Lt, start, "", 0, 0.0));
+                }
+                return Ok(());
+            }
+            b'=' => {
+                if self.pos + 1 < self.source.len() && self.source.as_bytes()[self.pos + 1] == b'='
+                {
+                    self.pos += 2;
+                    self.peeked = Some(self.make_token(TokenKind::EqEq, start, "", 0, 0.0));
+                } else {
+                    let col = start + 1;
+                    return Err(ParseError {
+                        col,
+                        reason: format!(
+                            "col {col}: unexpected character '='; use '==' for equality"
+                        ),
+                    });
+                }
+                return Ok(());
+            }
+            b'!' => {
+                if self.pos + 1 < self.source.len() && self.source.as_bytes()[self.pos + 1] == b'='
+                {
+                    self.pos += 2;
+                    self.peeked = Some(self.make_token(TokenKind::BangEq, start, "", 0, 0.0));
+                } else {
+                    let col = start + 1;
+                    return Err(ParseError {
+                        col,
+                        reason: format!("col {col}: unexpected character '!'"),
+                    });
+                }
+                return Ok(());
+            }
+            b'\'' => {
+                // Single-quoted string with \\ and \' unescaping.
+                self.pos += 1; // skip opening '
+                let mut s = String::new();
+                loop {
+                    if self.pos >= self.source.len() {
+                        let col = self.pos + 1;
+                        return Err(ParseError {
+                            col,
+                            reason: format!("col {col}: unterminated string literal"),
+                        });
+                    }
+                    let c = self.source.as_bytes()[self.pos];
+                    if c == b'\'' {
+                        self.pos += 1; // skip closing '
+                        break;
+                    } else if c == b'\\' {
+                        self.pos += 1;
+                        if self.pos >= self.source.len() {
+                            let col = self.pos + 1;
+                            return Err(ParseError {
+                                col,
+                                reason: format!("col {col}: unterminated string literal"),
+                            });
+                        }
+                        let esc = self.source.as_bytes()[self.pos];
+                        match esc {
+                            b'\\' => s.push('\\'),
+                            b'\'' => s.push('\''),
+                            _ => {
+                                s.push('\\');
+                                s.push(esc as char);
+                            }
+                        }
+                        self.pos += 1;
+                    } else {
+                        s.push(c as char);
+                        self.pos += 1;
+                    }
+                }
+                self.peeked = Some(self.make_token(TokenKind::StrLit, start, &s, 0, 0.0));
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        // Number (digits, optional leading minus handled at Atom level via Minus token)
+        if b.is_ascii_digit() {
+            return self.lex_number(start);
+        }
+
+        // Identifier or keyword
+        if b.is_ascii_alphabetic() || b == b'_' {
+            let name_start = self.pos;
+            while self.pos < self.source.len() {
+                let c = self.source.as_bytes()[self.pos];
+                if c.is_ascii_alphanumeric() || c == b'_' {
+                    self.pos += 1;
+                } else if c == b'.' {
+                    // Allow one level of dot qualification: a.b
+                    // Only extend if next char is alpha/underscore (avoids consuming trailing dot)
+                    if self.pos + 1 < self.source.len() {
+                        let nc = self.source.as_bytes()[self.pos + 1];
+                        if nc.is_ascii_alphabetic() || nc == b'_' {
+                            self.pos += 1; // consume '.'
+                                           // consume rest of second segment
+                            while self.pos < self.source.len() {
+                                let c2 = self.source.as_bytes()[self.pos];
+                                if c2.is_ascii_alphanumeric() || c2 == b'_' {
+                                    self.pos += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            let name = &self.source[name_start..self.pos];
+            let kind = match name {
+                "and" => TokenKind::And,
+                "or" => TokenKind::Or,
+                "not" => TokenKind::Not,
+                "true" => TokenKind::True,
+                "false" => TokenKind::False,
+                "null" => TokenKind::Null,
+                _ => TokenKind::Ident,
+            };
+            self.peeked = Some(self.make_token(kind, start, name, 0, 0.0));
+            return Ok(());
+        }
+
+        // Unknown character
+        let ch = b as char;
+        let col = start + 1;
+        Err(ParseError {
+            col,
+            reason: format!("col {col}: unknown character '{ch}'"),
+        })
+    }
+
+    fn lex_number(&mut self, start: usize) -> Result<(), ParseError> {
+        let num_start = self.pos;
+        while self.pos < self.source.len() && self.source.as_bytes()[self.pos].is_ascii_digit() {
+            self.pos += 1;
+        }
+        // Check for decimal point
+        let is_float = self.pos < self.source.len()
+            && self.source.as_bytes()[self.pos] == b'.'
+            && self.pos + 1 < self.source.len()
+            && self.source.as_bytes()[self.pos + 1].is_ascii_digit();
+        if is_float {
+            self.pos += 1; // consume '.'
+            while self.pos < self.source.len() && self.source.as_bytes()[self.pos].is_ascii_digit()
+            {
+                self.pos += 1;
+            }
+            // Optional exponent: e/E [+-] digits
+            if self.pos < self.source.len()
+                && (self.source.as_bytes()[self.pos] == b'e'
+                    || self.source.as_bytes()[self.pos] == b'E')
+            {
+                self.pos += 1;
+                if self.pos < self.source.len()
+                    && (self.source.as_bytes()[self.pos] == b'+'
+                        || self.source.as_bytes()[self.pos] == b'-')
+                {
+                    self.pos += 1;
+                }
+                while self.pos < self.source.len()
+                    && self.source.as_bytes()[self.pos].is_ascii_digit()
+                {
+                    self.pos += 1;
+                }
+            }
+            let text = &self.source[num_start..self.pos];
+            let val: f64 = text.parse().map_err(|_| {
+                let col = start + 1;
+                ParseError {
+                    col,
+                    reason: format!("col {col}: invalid float literal {text:?}"),
+                }
+            })?;
+            self.peeked = Some(self.make_token(TokenKind::FloatLit, start, text, 0, val));
+        } else {
+            let text = &self.source[num_start..self.pos];
+            let val: i64 = text.parse().map_err(|_| {
+                let col = start + 1;
+                ParseError {
+                    col,
+                    reason: format!("col {col}: invalid integer literal {text:?}"),
+                }
+            })?;
+            self.peeked = Some(self.make_token(TokenKind::IntLit, start, text, val, 0.0));
+        }
+        Ok(())
+    }
+
+    fn make_token(
+        &self,
+        kind: TokenKind,
+        start: usize,
+        text: &str,
+        int_val: i64,
+        float_val: f64,
+    ) -> Token {
+        Token {
+            kind,
+            span: Span {
+                start,
+                end: self.pos,
+            },
+            text: text.to_string(),
+            int_val,
+            float_val,
+        }
+    }
+
+    // ── Token stream helpers ──────────────────────────────────────────────────
+
+    fn peek(&self) -> Option<&Token> {
+        self.peeked.as_ref()
+    }
+
+    /// Consume and return the current lookahead; advance to next token.
+    fn next(&mut self) -> Result<Token, ParseError> {
+        let tok = self.peeked.take().ok_or_else(|| {
+            let col = self.pos + 1;
+            ParseError {
+                col,
+                reason: format!("col {col}: unexpected end of input"),
+            }
+        })?;
+        self.advance_lookahead()?;
+        Ok(tok)
+    }
+
+    fn expect(&mut self, kind: TokenKind, msg: &str) -> Result<Token, ParseError> {
+        match self.peek() {
+            Some(t) if t.kind == kind => self.next(),
+            Some(t) => {
+                let col = t.span.start + 1;
+                Err(ParseError {
+                    col,
+                    reason: format!("col {col}: {msg}"),
+                })
+            }
+            None => {
+                let col = self.pos + 1;
+                Err(ParseError {
+                    col,
+                    reason: format!("col {col}: {msg}"),
+                })
+            }
+        }
+    }
+
+    // ── Grammar non-terminals ─────────────────────────────────────────────────
+
+    fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+        self.parse_or()
+    }
+
+    fn parse_or(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_and()?;
+        while self.paren_depth > 0 {
+            match self.peek() {
+                Some(tok) if tok.kind == TokenKind::Or => {}
+                _ => break,
+            }
+            self.next()?; // consume 'or'
+            let right = self.parse_and()?;
+            let span = Span {
+                start: left.span().start,
+                end: right.span().end,
+            };
+            left = Expr::BinOp {
+                op: "or".to_string(),
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_and(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_not()?;
+        while self.paren_depth > 0 {
+            match self.peek() {
+                Some(tok) if tok.kind == TokenKind::And => {}
+                _ => break,
+            }
+            self.next()?; // consume 'and'
+            let right = self.parse_not()?;
+            let span = Span {
+                start: left.span().start,
+                end: right.span().end,
+            };
+            left = Expr::BinOp {
+                op: "and".to_string(),
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_not(&mut self) -> Result<Expr, ParseError> {
+        // Note: 'not' only appears parenthesized in the SDK canonical form: "(not x)"
+        // The grammar allows it as a prefix here; the parentheses are consumed by parse_atom.
+        self.parse_cmp()
+    }
+
+    fn parse_cmp(&mut self) -> Result<Expr, ParseError> {
+        let left = self.parse_add()?;
+        // Only consume comparison operators when inside parentheses.
+        if self.paren_depth == 0 {
+            return Ok(left);
+        }
+        let op_str = match self.peek().map(|t| &t.kind) {
+            Some(TokenKind::Gt) => ">",
+            Some(TokenKind::GtEq) => ">=",
+            Some(TokenKind::Lt) => "<",
+            Some(TokenKind::LtEq) => "<=",
+            Some(TokenKind::EqEq) => "==",
+            Some(TokenKind::BangEq) => "!=",
+            _ => return Ok(left),
+        }
+        .to_string();
+        self.next()?; // consume operator
+        let right = self.parse_add()?;
+        let span = Span {
+            start: left.span().start,
+            end: right.span().end,
+        };
+        Ok(Expr::BinOp {
+            op: op_str,
+            left: Box::new(left),
+            right: Box::new(right),
+            span,
+        })
+    }
+
+    fn parse_add(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_mul()?;
+        while self.paren_depth > 0 {
+            let op_str = match self.peek().map(|t| &t.kind) {
+                Some(TokenKind::Plus) => "+",
+                Some(TokenKind::Minus) => "-",
+                _ => break,
+            }
+            .to_string();
+            self.next()?;
+            let right = self.parse_mul()?;
+            let span = Span {
+                start: left.span().start,
+                end: right.span().end,
+            };
+            left = Expr::BinOp {
+                op: op_str,
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_mul(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_atom()?;
+        while self.paren_depth > 0 {
+            let op_str = match self.peek().map(|t| &t.kind) {
+                Some(TokenKind::Star) => "*",
+                Some(TokenKind::Slash) => "/",
+                _ => break,
+            }
+            .to_string();
+            self.next()?;
+            let right = self.parse_atom()?;
+            let span = Span {
+                start: left.span().start,
+                end: right.span().end,
+            };
+            left = Expr::BinOp {
+                op: op_str,
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_atom(&mut self) -> Result<Expr, ParseError> {
+        let tok = match self.peek() {
+            None => {
+                let col = self.pos + 1;
+                return Err(ParseError {
+                    col,
+                    reason: format!("col {col}: expected expression"),
+                });
+            }
+            Some(t) => t,
+        };
+
+        match tok.kind.clone() {
+            TokenKind::LParen => {
+                let lp = self.next()?; // consume '('
+                let open_start = lp.span.start;
+                self.paren_depth += 1;
+
+                // Peek: if next is 'not', parse as UnaryOp.
+                if self
+                    .peek()
+                    .map(|t| t.kind == TokenKind::Not)
+                    .unwrap_or(false)
+                {
+                    self.next()?; // consume 'not'
+                    let operand = self.parse_expr()?;
+                    self.paren_depth -= 1;
+                    let rp = self.expect(TokenKind::RParen, "expected ')'")?;
+                    return Ok(Expr::UnaryOp {
+                        op: "not".to_string(),
+                        operand: Box::new(operand),
+                        span: Span {
+                            start: open_start,
+                            end: rp.span.end,
+                        },
+                    });
+                }
+
+                // General parenthesized expression.
+                let inner = self.parse_expr()?;
+                self.paren_depth -= 1;
+                let rp = self.expect(TokenKind::RParen, "expected ')'")?;
+                let outer_span = Span {
+                    start: open_start,
+                    end: rp.span.end,
+                };
+                // Propagate inner node but replace span to cover the parens.
+                let spanned = match inner {
+                    Expr::Field { name, .. } => Expr::Field {
+                        name,
+                        span: outer_span,
+                    },
+                    Expr::Literal(lit, _) => Expr::Literal(lit, outer_span),
+                    Expr::BinOp {
+                        op, left, right, ..
+                    } => Expr::BinOp {
+                        op,
+                        left,
+                        right,
+                        span: outer_span,
+                    },
+                    Expr::UnaryOp { op, operand, .. } => Expr::UnaryOp {
+                        op,
+                        operand,
+                        span: outer_span,
+                    },
+                    Expr::Call { fn_name, args, .. } => Expr::Call {
+                        fn_name,
+                        args,
+                        span: outer_span,
+                    },
+                };
+                Ok(spanned)
+            }
+
+            TokenKind::True => {
+                let t = self.next()?;
+                Ok(Expr::Literal(Literal::Bool(true), t.span))
+            }
+            TokenKind::False => {
+                let t = self.next()?;
+                Ok(Expr::Literal(Literal::Bool(false), t.span))
+            }
+            TokenKind::Null => {
+                let t = self.next()?;
+                Ok(Expr::Literal(Literal::Null, t.span))
+            }
+
+            TokenKind::And | TokenKind::Or | TokenKind::Not => {
+                let t = self.next()?;
+                let col = t.span.start + 1;
+                Err(ParseError {
+                    col,
+                    reason: format!("col {col}: unexpected keyword {:?} in expression", t.text),
+                })
+            }
+
+            TokenKind::Ident => {
+                let t = self.next()?;
+                let tok_text = t.text.clone();
+                let tok_span = t.span.clone();
+                // Check if followed by '(' → Call.
+                if self
+                    .peek()
+                    .map(|p| p.kind == TokenKind::LParen)
+                    .unwrap_or(false)
+                {
+                    self.next()?; // consume '('
+                    let args = self.parse_arglist()?;
+                    let rp = self.expect(TokenKind::RParen, "expected ',' or ')'")?;
+                    Ok(Expr::Call {
+                        fn_name: tok_text,
+                        args,
+                        span: Span {
+                            start: tok_span.start,
+                            end: rp.span.end,
+                        },
+                    })
+                } else {
+                    Ok(Expr::Field {
+                        name: tok_text,
+                        span: tok_span,
+                    })
+                }
+            }
+
+            TokenKind::IntLit => {
+                let t = self.next()?;
+                Ok(Expr::Literal(Literal::Int(t.int_val), t.span))
+            }
+            TokenKind::FloatLit => {
+                let t = self.next()?;
+                Ok(Expr::Literal(Literal::Float(t.float_val), t.span))
+            }
+            TokenKind::StrLit => {
+                let t = self.next()?;
+                Ok(Expr::Literal(Literal::Str(t.text.clone()), t.span))
+            }
+
+            // Negative literal: leading `-` followed immediately by a number atom.
+            TokenKind::Minus => {
+                let minus_tok = self.next()?; // consume '-'
+                match self.peek().map(|t| t.kind.clone()) {
+                    Some(TokenKind::IntLit) => {
+                        let num = self.next()?;
+                        let span = Span {
+                            start: minus_tok.span.start,
+                            end: num.span.end,
+                        };
+                        Ok(Expr::Literal(
+                            Literal::Int(num.int_val.wrapping_neg()),
+                            span,
+                        ))
+                    }
+                    Some(TokenKind::FloatLit) => {
+                        let num = self.next()?;
+                        let span = Span {
+                            start: minus_tok.span.start,
+                            end: num.span.end,
+                        };
+                        Ok(Expr::Literal(Literal::Float(-num.float_val), span))
+                    }
+                    _ => {
+                        let col = minus_tok.span.start + 1;
+                        Err(ParseError {
+                            col,
+                            reason: format!("col {col}: '-' must be followed by a number literal"),
+                        })
+                    }
+                }
+            }
+
+            _ => {
+                let t = self.peek().unwrap();
+                let col = t.span.start + 1;
+                let snippet = t.text.clone();
+                Err(ParseError {
+                    col,
+                    reason: format!("col {col}: unexpected token {snippet:?} in expression"),
+                })
+            }
+        }
+    }
+
+    fn parse_arglist(&mut self) -> Result<Vec<Expr>, ParseError> {
+        // Empty arglist: immediately ')'
+        if self
+            .peek()
+            .map(|t| t.kind == TokenKind::RParen)
+            .unwrap_or(false)
+        {
+            return Ok(vec![]);
+        }
+        let mut args = vec![self.parse_expr()?];
+        while self
+            .peek()
+            .map(|t| t.kind == TokenKind::Comma)
+            .unwrap_or(false)
+        {
+            self.next()?; // consume ','
+            args.push(self.parse_expr()?);
+        }
+        Ok(args)
+    }
+}
+
+// ─── Post-parse normalization ─────────────────────────────────────────────────
+
+/// Pass A: for `cast(x, Field { name })`, rewrite second arg to `Literal::BareIdent(name)`.
+/// Recurses into all nodes.
+fn normalize_cast(expr: Expr) -> Expr {
+    match expr {
+        Expr::Call {
+            fn_name,
+            args,
+            span,
+        } => {
+            // Recurse first (bottom-up).
+            let mut args: Vec<Expr> = args.into_iter().map(normalize_cast).collect();
+            if fn_name == "cast" && args.len() == 2 {
+                if let Expr::Field {
+                    name,
+                    span: field_span,
+                } = &args[1]
+                {
+                    let bare = Expr::Literal(Literal::BareIdent(name.clone()), field_span.clone());
+                    args[1] = bare;
+                }
+            }
+            Expr::Call {
+                fn_name,
+                args,
+                span,
+            }
+        }
+        Expr::BinOp {
+            op,
+            left,
+            right,
+            span,
+        } => Expr::BinOp {
+            op,
+            left: Box::new(normalize_cast(*left)),
+            right: Box::new(normalize_cast(*right)),
+            span,
+        },
+        Expr::UnaryOp { op, operand, span } => Expr::UnaryOp {
+            op,
+            operand: Box::new(normalize_cast(*operand)),
+            span,
+        },
+        leaf => leaf,
+    }
+}
+
+/// Pass B: rewrite `BinOp("==", e, Literal::Null)` / `BinOp("==", Literal::Null, e)`
+/// → `Call("isnull", [e])`. Only `==` is rewritten; `!=` is left unchanged.
+/// Applied bottom-up (recurse into children first).
+fn rewrite_null_eq(expr: Expr) -> Expr {
+    match expr {
+        Expr::BinOp {
+            op,
+            left,
+            right,
+            span,
+        } => {
+            let lhs = rewrite_null_eq(*left);
+            let rhs = rewrite_null_eq(*right);
+            if op == "==" {
+                match (&lhs, &rhs) {
+                    (_, Expr::Literal(Literal::Null, _)) => {
+                        return Expr::Call {
+                            fn_name: "isnull".to_string(),
+                            args: vec![lhs],
+                            span,
+                        };
+                    }
+                    (Expr::Literal(Literal::Null, _), _) => {
+                        return Expr::Call {
+                            fn_name: "isnull".to_string(),
+                            args: vec![rhs],
+                            span,
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            Expr::BinOp {
+                op,
+                left: Box::new(lhs),
+                right: Box::new(rhs),
+                span,
+            }
+        }
+        Expr::UnaryOp { op, operand, span } => Expr::UnaryOp {
+            op,
+            operand: Box::new(rewrite_null_eq(*operand)),
+            span,
+        },
+        Expr::Call {
+            fn_name,
+            args,
+            span,
+        } => Expr::Call {
+            fn_name,
+            args: args.into_iter().map(rewrite_null_eq).collect(),
+            span,
+        },
+        leaf => leaf,
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
