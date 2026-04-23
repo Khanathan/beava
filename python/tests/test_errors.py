@@ -4,7 +4,7 @@ These tests are written FIRST (TDD red commit) before the implementation exists.
 All tests are expected to FAIL at this point with ImportError / ModuleNotFoundError.
 """
 
-from beava import ValidationError, RegistrationError, BinaryNotFoundError
+from beava import BinaryNotFoundError, RegistrationError, ValidationError
 from beava._errors import VALIDATION_ERROR_KINDS
 
 

@@ -20,7 +20,10 @@ def test_public_exports_present() -> None:
 
 
 def test_package_exports_stubs_for_phase3() -> None:
-    """Stub attributes event, table, col, App must exist (may raise NotImplementedError when called)."""
+    """Stub attributes event, table, col, App must exist.
+
+    These may raise NotImplementedError when called; the attribute itself must be present.
+    """
     assert hasattr(bv, "event")
     assert hasattr(bv, "table")
     assert hasattr(bv, "col")

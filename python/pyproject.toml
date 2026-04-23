@@ -22,31 +22,32 @@ classifiers = [
     "Topic :: Database",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+dependencies = ["httpx>=0.27,<1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "ruff>=0.5,<1", "mypy>=1.10,<2"]
 
 [project.urls]
 Homepage = "https://beava.dev"
 Repository = "https://github.com/petrpan26/beava"
 Issues = "https://github.com/petrpan26/beava/issues"
 
-[project.scripts]
-# Plan 25-03: stdlib-only operator CLI. Backs `beava suggest-config`,
-# which pretty-prints /debug/config-recommendations output grouped by
-# decorator target. Also ships `beava install-skill` which installs the
-# AI-editor skill to ~/.agents/skills/beava so Claude Code, Cursor, Codex,
-# and other agents can discover it.
-beava = "beava._cli:main"
-
 [tool.hatch.build.targets.wheel]
 packages = ["beava"]
 
-# Bundle the agent skill into the wheel at `beava/_skill/SKILL.md` so
-# `beava install-skill` can copy it out at runtime via importlib.resources.
-# Source of truth lives at repo-root `.agents/skills/beava/SKILL.md`.
-[tool.hatch.build.targets.wheel.force-include]
-"../.agents/skills/beava/SKILL.md" = "beava/_skill/SKILL.md"
-
-[tool.hatch.build.targets.sdist.force-include]
-"../.agents/skills/beava/SKILL.md" = "beava/_skill/SKILL.md"
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B"]
+ignore = []
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_ignores = true
