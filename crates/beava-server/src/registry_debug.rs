@@ -402,7 +402,7 @@ mod tests {
     #[tokio::test]
     async fn get_registry_empty_returns_version_0() {
         let registry = Arc::new(Registry::new());
-        let r = router(ReadinessFlag::new(), registry, true);
+        let r = router(ReadinessFlag::new(), registry, true, None);
         let (status, body) = get(r, "/registry").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["version"], 0);
@@ -419,7 +419,7 @@ mod tests {
         let desc = minimal_event_descriptor("T");
         registry.apply_registration(vec![PayloadNode::Event(desc)], vec![], vec![], vec![]);
 
-        let r = router(ReadinessFlag::new(), registry, true);
+        let r = router(ReadinessFlag::new(), registry, true, None);
         let (status, body) = get(r, "/registry").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["version"], 1);
@@ -432,7 +432,7 @@ mod tests {
     #[tokio::test]
     async fn get_registry_when_disabled_returns_404() {
         let registry = Arc::new(Registry::new());
-        let r = router(ReadinessFlag::new(), registry, false);
+        let r = router(ReadinessFlag::new(), registry, false, None);
         let (status, _) = get(r, "/registry").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
@@ -443,7 +443,7 @@ mod tests {
         let desc = minimal_event_descriptor("T");
         registry.apply_registration(vec![PayloadNode::Event(desc)], vec![], vec![], vec![]);
 
-        let r = router(ReadinessFlag::new(), registry, true);
+        let r = router(ReadinessFlag::new(), registry, true, None);
         let (status, body) = get(r, "/registry").await;
         assert_eq!(status, StatusCode::OK);
         let rav = &body["events"]["T"]["registered_at_version"];
@@ -553,7 +553,7 @@ mod tests {
     #[tokio::test]
     async fn dev_apply_ops_endpoint_returns_404_without_derivation() {
         let registry = Arc::new(Registry::new());
-        let r = router(ReadinessFlag::new(), registry, true);
+        let r = router(ReadinessFlag::new(), registry, true, None);
         let (status, _body) = post_json(
             r,
             "/dev/apply_ops",
@@ -572,7 +572,7 @@ mod tests {
     #[tokio::test]
     async fn dev_apply_ops_endpoint_filters_drops_row() {
         let registry = registry_with_filter_derivation("BigTx", "(amount > 100)");
-        let r = router(ReadinessFlag::new(), registry, true);
+        let r = router(ReadinessFlag::new(), registry, true, None);
         let (status, body) = post_json(
             r,
             "/dev/apply_ops",
@@ -654,7 +654,7 @@ mod tests {
             vec![],
         );
 
-        let r = router(ReadinessFlag::new(), registry, true);
+        let r = router(ReadinessFlag::new(), registry, true, None);
         let (status, body) = post_json(
             r,
             "/dev/apply_ops",
@@ -687,6 +687,7 @@ mod tests {
             ReadinessFlag::new(),
             registry,
             false, /* dev_endpoints=false */
+            None,
         );
         let (status, _body) = post_json(
             r,

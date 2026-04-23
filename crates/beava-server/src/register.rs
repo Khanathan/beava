@@ -436,6 +436,9 @@ pub(crate) fn error_code_to_wire_str(code: ErrorCode) -> &'static str {
         ErrorCode::AggregationGroupKeyCollidesWithFeature => {
             "aggregation_group_key_collides_with_feature"
         }
+        ErrorCode::AggregationFeatureNameCollisionAcrossAggregations => {
+            "aggregation_feature_name_collision_across_aggregations"
+        }
         _ => "invalid_registration",
     }
 }
@@ -478,7 +481,7 @@ mod tests {
     fn test_router() -> (axum::Router, Arc<Registry>) {
         let registry = Arc::new(Registry::new());
         let readiness = ReadinessFlag::new();
-        let r = router(readiness, registry.clone(), false);
+        let r = router(readiness, registry.clone(), false, None);
         (r, registry)
     }
 
@@ -561,7 +564,7 @@ mod tests {
         let (r, reg) = test_router();
         // First POST
         let (s1, b1) = post(
-            router(ReadinessFlag::new(), reg.clone(), false),
+            router(ReadinessFlag::new(), reg.clone(), false, None),
             json_body(transaction_payload()),
             Some("application/json"),
         )
@@ -571,7 +574,7 @@ mod tests {
 
         // Second POST — identical
         let (s2, b2) = post(
-            router(ReadinessFlag::new(), reg.clone(), false),
+            router(ReadinessFlag::new(), reg.clone(), false, None),
             json_body(transaction_payload()),
             Some("application/json"),
         )
@@ -589,7 +592,7 @@ mod tests {
 
         // POST EventA → v1
         let (s1, _) = post(
-            router(ReadinessFlag::new(), reg.clone(), false),
+            router(ReadinessFlag::new(), reg.clone(), false, None),
             json_body(serde_json::json!({
                 "nodes": [event_node("A", &[("event_time", "i64"), ("x", "f64")], "event_time")]
             })),
@@ -600,7 +603,7 @@ mod tests {
 
         // POST [A, B] → v2
         let (s2, b2) = post(
-            router(ReadinessFlag::new(), reg.clone(), false),
+            router(ReadinessFlag::new(), reg.clone(), false, None),
             json_body(serde_json::json!({
                 "nodes": [
                     event_node("A", &[("event_time", "i64"), ("x", "f64")], "event_time"),
@@ -662,7 +665,7 @@ mod tests {
 
         // Register EventA with amount: f64
         let (s1, _) = post(
-            router(ReadinessFlag::new(), reg.clone(), false),
+            router(ReadinessFlag::new(), reg.clone(), false, None),
             json_body(serde_json::json!({
                 "nodes": [event_node("A", &[("event_time", "i64"), ("amount", "f64")], "event_time")]
             })),
@@ -673,7 +676,7 @@ mod tests {
 
         // Re-register EventA with amount: i64 → 409
         let (s2, b2) = post(
-            router(ReadinessFlag::new(), reg.clone(), false),
+            router(ReadinessFlag::new(), reg.clone(), false, None),
             json_body(serde_json::json!({
                 "nodes": [event_node("A", &[("event_time", "i64"), ("amount", "i64")], "event_time")]
             })),
@@ -700,7 +703,7 @@ mod tests {
 
         // Confirm registry was NOT mutated — original A still works
         let (s3, b3) = post(
-            router(ReadinessFlag::new(), reg.clone(), false),
+            router(ReadinessFlag::new(), reg.clone(), false, None),
             json_body(serde_json::json!({
                 "nodes": [event_node("A", &[("event_time", "i64"), ("amount", "f64")], "event_time")]
             })),
@@ -1028,7 +1031,7 @@ mod tests {
     async fn test_register_with_columns_chain_propagates_schema_and_200s() {
         let (_, reg) = test_router();
         // Build router with dev_endpoints=true so GET /registry works
-        let r = router(ReadinessFlag::new(), reg.clone(), true);
+        let r = router(ReadinessFlag::new(), reg.clone(), true, None);
         let payload = serde_json::json!({
             "nodes": [
                 event_node("A", &[("event_time", "i64"), ("amount", "f64")], "event_time"),
@@ -1084,7 +1087,7 @@ mod tests {
     #[tokio::test]
     async fn test_register_chained_ops_compile_is_cached_on_install() {
         let (_, reg) = test_router();
-        let r = router(ReadinessFlag::new(), reg.clone(), false);
+        let r = router(ReadinessFlag::new(), reg.clone(), false, None);
         let payload = serde_json::json!({
             "nodes": [
                 event_node("A", &[("event_time", "i64"), ("amount", "f64")], "event_time"),
@@ -1234,7 +1237,7 @@ mod tests {
     #[tokio::test]
     async fn test_20_http_accepts_valid_aggregation() {
         let (_, reg) = test_router();
-        let r = router(ReadinessFlag::new(), reg.clone(), true);
+        let r = router(ReadinessFlag::new(), reg.clone(), true, None);
         let payload = serde_json::json!({
             "nodes": [
                 txn_event_node(),

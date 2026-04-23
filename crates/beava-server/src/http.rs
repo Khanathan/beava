@@ -3,6 +3,7 @@
 //! Phase 2+ will add handlers onto this router. Keep this file narrow:
 //! route wiring only, no business logic.
 
+use crate::feature_query::{feature_query_router, FeatureQueryState};
 use crate::register::{register_router, RegisterAppState};
 use crate::registry_debug::{
     dev_apply_events_router, dev_apply_ops_router, registry_debug_router, DevAggState,
@@ -36,13 +37,20 @@ impl ReadinessFlag {
     }
 }
 
-/// Build the Phase 2 router.
+/// Build the Phase 2+ router.
 /// Merges /health + /ready (Phase 1) with /register (Phase 2).
-/// When `dev_endpoints_enabled` is true, also mounts GET /registry (Plan 02-06).
+/// When `dev_endpoints_enabled` is true, also mounts GET /registry (Plan 02-06),
+/// POST /dev/apply_ops, POST /dev/apply_events, GET /get/:feature/:key, POST /get.
+///
+/// `dev_agg_state`: if `Some`, the provided `DevAggState` is shared between
+/// `/dev/apply_events` and `/get` so queries reflect pushed events immediately.
+/// If `None`, a fresh `DevAggState` is constructed from `registry` (backward
+/// compat for callers that don't need shared state).
 pub fn router(
     readiness: ReadinessFlag,
     registry: Arc<Registry>,
     dev_endpoints_enabled: bool,
+    dev_agg_state: Option<DevAggState>,
 ) -> Router {
     let mut r = Router::new()
         .route("/health", get(health))
@@ -53,12 +61,14 @@ pub fn router(
         }));
 
     if dev_endpoints_enabled {
+        let agg_state = dev_agg_state.unwrap_or_else(|| DevAggState::new(registry.clone()));
         r = r
             .merge(registry_debug_router(RegistryDebugState {
                 registry: registry.clone(),
             }))
             .merge(dev_apply_ops_router(registry.clone()))
-            .merge(dev_apply_events_router(DevAggState::new(registry)));
+            .merge(dev_apply_events_router(agg_state.clone()))
+            .merge(feature_query_router(FeatureQueryState::new(agg_state)));
     }
     r
 }
@@ -108,7 +118,7 @@ mod tests {
 
     fn test_router() -> Router {
         let registry = Arc::new(Registry::new());
-        router(ReadinessFlag::new(), registry, false)
+        router(ReadinessFlag::new(), registry, false, None)
     }
 
     #[tokio::test]
@@ -123,7 +133,7 @@ mod tests {
     async fn ready_returns_starting_before_flag_flip() {
         let flag = ReadinessFlag::new();
         let registry = Arc::new(Registry::new());
-        let r = router(flag, registry, false);
+        let r = router(flag, registry, false, None);
         let (status, body) = call(r, "/ready").await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(body, serde_json::json!({ "status": "starting" }));
@@ -134,7 +144,7 @@ mod tests {
         let flag = ReadinessFlag::new();
         flag.set_ready();
         let registry = Arc::new(Registry::new());
-        let r = router(flag, registry, false);
+        let r = router(flag, registry, false, None);
         let (status, body) = call(r, "/ready").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, serde_json::json!({ "status": "ready" }));
@@ -149,9 +159,9 @@ mod tests {
 
     #[tokio::test]
     async fn router_accepts_registry_state() {
-        // Confirms the 3-arg router signature doesn't break Phase 1 health check
+        // Confirms the 4-arg router signature doesn't break Phase 1 health check
         let registry = Arc::new(Registry::new());
-        let r = router(ReadinessFlag::new(), registry, false);
+        let r = router(ReadinessFlag::new(), registry, false, None);
         let (status, body) = call(r, "/health").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ok");

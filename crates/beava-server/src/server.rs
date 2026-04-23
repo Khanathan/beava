@@ -183,7 +183,7 @@ impl Server {
         });
 
         // HTTP serve with graceful shutdown tied to the same cancel.
-        let app = router(self.readiness, self.registry, self.dev_endpoints);
+        let app = router(self.readiness, self.registry, self.dev_endpoints, None);
         let http_cancel = cancel.clone();
         let http_shutdown = async move {
             http_cancel.cancelled().await;

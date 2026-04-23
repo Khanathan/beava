@@ -76,6 +76,9 @@ pub enum ErrorCode {
     AggregationDuplicateFeatureName,
     /// A feature name collides with a group_by key.
     AggregationGroupKeyCollidesWithFeature,
+    /// Plan 05-06: two different aggregation nodes expose the same feature name.
+    /// e.g., AggA exposes "cnt" AND AggB exposes "cnt" → reject at register time.
+    AggregationFeatureNameCollisionAcrossAggregations,
 }
 
 /// A single structured validation error. `path` uses pseudo-JSON-pointer format

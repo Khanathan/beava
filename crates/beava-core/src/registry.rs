@@ -130,6 +130,10 @@ pub struct RegistryInner {
     /// Phase 5 Plan 04: compiled aggregation descriptors keyed by derivation name.
     /// Populated by `apply_registration` when a derivation with GroupBy ops is installed.
     pub compiled_aggregations: BTreeMap<String, Arc<AggregationDescriptor>>,
+    /// Phase 5 Plan 06: reverse index from feature name to (aggregation node_name, feature_index).
+    /// Built at register time alongside compiled_aggregations.
+    /// Enables O(1) feature-name → aggregation lookup at query time.
+    pub feature_index: BTreeMap<String, (String, usize)>,
 }
 
 #[derive(Debug, Default)]
@@ -174,6 +178,17 @@ impl Registry {
             .read()
             .compiled_aggregations
             .get(derivation_name)
+            .cloned()
+    }
+
+    /// Phase 5 Plan 06: Return the (aggregation node_name, feature_index) for a
+    /// feature name, or `None` if the feature name is not registered.
+    /// O(1) reverse lookup into `feature_index`.
+    pub fn resolve_feature(&self, feature_name: &str) -> Option<(String, usize)> {
+        self.inner
+            .read()
+            .feature_index
+            .get(feature_name)
             .cloned()
     }
 
@@ -303,6 +318,30 @@ impl Registry {
                     }
                 }
             }
+        }
+
+        // Phase 5 Plan 06: rebuild feature_index from all compiled_aggregations.
+        // Additive-only: existing entries are preserved; new ones are inserted only
+        // if the name is not already present (first-registration wins per plan spec).
+        // Collect new entries first to avoid simultaneous mutable + immutable borrows of `w`.
+        let new_index_entries: Vec<(String, String, usize)> = w
+            .compiled_aggregations
+            .iter()
+            .flat_map(|(node_name, agg_desc)| {
+                agg_desc
+                    .features
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, named_op)| {
+                        (named_op.feature_name.clone(), node_name.clone(), idx)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for (feature_name, node_name, feature_idx) in new_index_entries {
+            w.feature_index
+                .entry(feature_name)
+                .or_insert((node_name, feature_idx));
         }
 
         w.version = new_version;
@@ -723,6 +762,213 @@ mod tests {
         assert_eq!(snap.events["A"].registered_at_version, 1);
         // B is stamped at v2
         assert_eq!(snap.events["B"].registered_at_version, 2);
+    }
+
+    // Plan 05-06 tests: feature_index + resolve_feature
+
+    #[test]
+    fn resolve_feature_after_register() {
+        use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
+        use crate::agg_op::{AggKind, AggOpDescriptor};
+        use crate::registry_diff::PayloadNode;
+
+        let r = Registry::new();
+        let event = EventDescriptor {
+            name: "Txn".to_string(),
+            schema: make_event_schema(),
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
+            registered_at_version: 0,
+        };
+        let agg_desc = AggregationDescriptor {
+            node_name: "AggTable".to_string(),
+            source_node_name: "Txn".to_string(),
+            group_keys: vec!["card_id".to_string()],
+            features: vec![
+                NamedAggOp {
+                    feature_name: "cnt".to_string(),
+                    descriptor: AggOpDescriptor {
+                        kind: AggKind::Count,
+                        field: None,
+                        window_ms: Some(300_000),
+                        where_expr: None,
+                    },
+                },
+                NamedAggOp {
+                    feature_name: "total".to_string(),
+                    descriptor: AggOpDescriptor {
+                        kind: AggKind::Sum,
+                        field: Some("amount".to_string()),
+                        window_ms: None,
+                        where_expr: None,
+                    },
+                },
+            ],
+        };
+        let deriv = DerivationDescriptor {
+            name: "AggTable".to_string(),
+            output_kind: OutputKind::Table,
+            upstreams: vec!["Txn".to_string()],
+            ops: vec![],
+            schema: crate::schema::DerivedSchema {
+                fields: {
+                    let mut m = BTreeMap::new();
+                    m.insert("card_id".to_string(), crate::schema::FieldType::Str);
+                    m.insert("cnt".to_string(), crate::schema::FieldType::I64);
+                    m.insert("total".to_string(), crate::schema::FieldType::F64);
+                    m
+                },
+                optional_fields: vec![],
+            },
+            table_primary_key: Some(vec!["card_id".to_string()]),
+            registered_at_version: 0,
+        };
+        r.apply_registration(
+            vec![PayloadNode::Event(event), PayloadNode::Derivation(deriv)],
+            vec![],
+            vec![],
+            vec![("AggTable".to_string(), Arc::new(agg_desc))],
+        );
+
+        // cnt is at feature_index 0
+        let cnt = r.resolve_feature("cnt");
+        assert!(cnt.is_some(), "resolve_feature('cnt') must return Some");
+        let (node, idx) = cnt.unwrap();
+        assert_eq!(node, "AggTable");
+        assert_eq!(idx, 0, "cnt is at feature_index 0");
+
+        // total is at feature_index 1
+        let total = r.resolve_feature("total");
+        assert!(total.is_some(), "resolve_feature('total') must return Some");
+        let (node2, idx2) = total.unwrap();
+        assert_eq!(node2, "AggTable");
+        assert_eq!(idx2, 1, "total is at feature_index 1");
+    }
+
+    #[test]
+    fn resolve_feature_missing_returns_none() {
+        let r = Registry::new();
+        assert!(
+            r.resolve_feature("unknown").is_none(),
+            "resolve_feature('unknown') must return None on empty registry"
+        );
+    }
+
+    #[test]
+    fn resolve_feature_index_rebuilt_on_register() {
+        use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
+        use crate::agg_op::{AggKind, AggOpDescriptor};
+        use crate::registry_diff::PayloadNode;
+
+        let r = Registry::new();
+
+        // First registration: event + AggA with feature "cnt"
+        let event_a = EventDescriptor {
+            name: "EvA".to_string(),
+            schema: make_event_schema(),
+            event_time_field: None,
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
+            registered_at_version: 0,
+        };
+        let agg_a = Arc::new(AggregationDescriptor {
+            node_name: "AggA".to_string(),
+            source_node_name: "EvA".to_string(),
+            group_keys: vec!["card_id".to_string()],
+            features: vec![NamedAggOp {
+                feature_name: "cnt".to_string(),
+                descriptor: AggOpDescriptor {
+                    kind: AggKind::Count,
+                    field: None,
+                    window_ms: None,
+                    where_expr: None,
+                },
+            }],
+        });
+        let deriv_a = DerivationDescriptor {
+            name: "AggA".to_string(),
+            output_kind: OutputKind::Table,
+            upstreams: vec!["EvA".to_string()],
+            ops: vec![],
+            schema: crate::schema::DerivedSchema {
+                fields: {
+                    let mut m = BTreeMap::new();
+                    m.insert("card_id".to_string(), crate::schema::FieldType::Str);
+                    m.insert("cnt".to_string(), crate::schema::FieldType::I64);
+                    m
+                },
+                optional_fields: vec![],
+            },
+            table_primary_key: Some(vec!["card_id".to_string()]),
+            registered_at_version: 0,
+        };
+        r.apply_registration(
+            vec![PayloadNode::Event(event_a), PayloadNode::Derivation(deriv_a)],
+            vec![],
+            vec![],
+            vec![("AggA".to_string(), agg_a)],
+        );
+        assert!(r.resolve_feature("cnt").is_some(), "cnt must be in index after first register");
+
+        // Second registration: event + AggB with feature "revenue"
+        let event_b = EventDescriptor {
+            name: "EvB".to_string(),
+            schema: make_event_schema(),
+            event_time_field: None,
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
+            registered_at_version: 0,
+        };
+        let agg_b = Arc::new(AggregationDescriptor {
+            node_name: "AggB".to_string(),
+            source_node_name: "EvB".to_string(),
+            group_keys: vec!["card_id".to_string()],
+            features: vec![NamedAggOp {
+                feature_name: "revenue".to_string(),
+                descriptor: AggOpDescriptor {
+                    kind: AggKind::Sum,
+                    field: Some("amount".to_string()),
+                    window_ms: None,
+                    where_expr: None,
+                },
+            }],
+        });
+        let deriv_b = DerivationDescriptor {
+            name: "AggB".to_string(),
+            output_kind: OutputKind::Table,
+            upstreams: vec!["EvB".to_string()],
+            ops: vec![],
+            schema: crate::schema::DerivedSchema {
+                fields: {
+                    let mut m = BTreeMap::new();
+                    m.insert("card_id".to_string(), crate::schema::FieldType::Str);
+                    m.insert("revenue".to_string(), crate::schema::FieldType::F64);
+                    m
+                },
+                optional_fields: vec![],
+            },
+            table_primary_key: Some(vec!["card_id".to_string()]),
+            registered_at_version: 0,
+        };
+        r.apply_registration(
+            vec![PayloadNode::Event(event_b), PayloadNode::Derivation(deriv_b)],
+            vec![],
+            vec![],
+            vec![("AggB".to_string(), agg_b)],
+        );
+
+        // Both features must be in the index now
+        assert!(r.resolve_feature("cnt").is_some(), "cnt must still be in index after second register");
+        assert!(r.resolve_feature("revenue").is_some(), "revenue must be in index after second register");
+        let (node, _) = r.resolve_feature("revenue").unwrap();
+        assert_eq!(node, "AggB");
     }
 
     // Plan 05-04 test: compiled_aggregations cached after apply_registration

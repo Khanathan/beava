@@ -7,6 +7,7 @@
 //! - Plan 05: `testing::TestServer`
 
 pub mod cli;
+pub mod feature_query;
 pub mod http;
 pub mod logging;
 pub mod register;
