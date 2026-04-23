@@ -1,6 +1,7 @@
 //! Registry data model: descriptor structs, OutputKind, TableMode, RegistryInner,
 //! and the parking_lot::RwLock-guarded Registry wrapper.
 
+use crate::op_node::OpNode;
 use crate::schema::{DerivedSchema, EventSchema, TableSchema};
 use parking_lot::{RwLock, RwLockReadGuard};
 use serde::{Deserialize, Serialize};
@@ -85,9 +86,9 @@ pub struct DerivationDescriptor {
     pub name: String,
     pub output_kind: OutputKind,
     pub upstreams: Vec<String>,
-    /// Placeholder: Plan 02-02 replaces this with Vec<OpNode>.
+    /// Strongly-typed op pipeline. Plan 02-02 swapped this from Vec<serde_json::Value>.
     #[serde(default)]
-    pub ops: Vec<serde_json::Value>,
+    pub ops: Vec<OpNode>,
     pub schema: DerivedSchema,
     #[serde(default)]
     pub table_primary_key: Option<Vec<String>>,
@@ -382,5 +383,100 @@ mod tests {
         assert!(snap.events.contains_key("Transaction"));
         assert!(snap.derivations.contains_key("BigTx"));
         assert_eq!(snap.derivations["BigTx"].registered_at_version, 2);
+    }
+
+    // Test 8 (Plan 02-02): DerivationDescriptor with OpNode round-trip (BigTx)
+    // NOTE: The outer JSON uses "kind" discrimination which is handled at the payload-parsing
+    // layer (Plan 05). Here we test the inner descriptor shape directly without "kind".
+    #[test]
+    fn derivation_with_ops_round_trip() {
+        let json = r#"{
+            "name": "BigTx",
+            "output_kind": "event",
+            "upstreams": ["Transaction"],
+            "ops": [{"op": "filter", "expr": "(amount > 500)"}],
+            "schema": {
+                "fields": {
+                    "card_id": "str",
+                    "amount": "f64",
+                    "event_time": "i64"
+                },
+                "optional_fields": []
+            }
+        }"#;
+        let d: DerivationDescriptor = serde_json::from_str(json).unwrap();
+        assert_eq!(d.ops.len(), 1);
+        assert_eq!(
+            d.ops[0],
+            crate::op_node::OpNode::Filter {
+                expr: "(amount > 500)".to_string()
+            }
+        );
+        // Round-trip
+        let j2 = serde_json::to_string(&d).unwrap();
+        let d2: DerivationDescriptor = serde_json::from_str(&j2).unwrap();
+        assert_eq!(d.name, d2.name);
+        assert_eq!(d.ops, d2.ops);
+    }
+
+    // Test 9 (Plan 02-02): Derivation with GroupBy op round-trip
+    #[test]
+    fn derivation_with_group_by_round_trip() {
+        let json = r#"{
+            "name": "UserTxCount",
+            "output_kind": "table",
+            "upstreams": ["Transaction"],
+            "ops": [{"op": "group_by", "keys": ["card_id"], "agg": {"cnt": {"op": "count", "params": {}}}}],
+            "schema": {"fields": {"card_id": "str", "cnt": "i64"}, "optional_fields": []},
+            "table_primary_key": ["card_id"]
+        }"#;
+        let d: DerivationDescriptor = serde_json::from_str(json).unwrap();
+        assert_eq!(d.output_kind, OutputKind::Table);
+        assert_eq!(d.table_primary_key, Some(vec!["card_id".to_string()]));
+        let j2 = serde_json::to_string(&d).unwrap();
+        let d2: DerivationDescriptor = serde_json::from_str(&j2).unwrap();
+        assert_eq!(d.ops, d2.ops);
+    }
+
+    // Test 10 (Plan 02-02): equiv_ignoring_version still works with OpNode ops
+    #[test]
+    fn derivation_equiv_ignoring_version_with_ops() {
+        let schema = crate::schema::DerivedSchema {
+            fields: {
+                let mut m = BTreeMap::new();
+                m.insert("amount".to_string(), FieldType::F64);
+                m
+            },
+            optional_fields: vec![],
+        };
+        let base = DerivationDescriptor {
+            name: "D".to_string(),
+            output_kind: OutputKind::Event,
+            upstreams: vec!["A".to_string()],
+            ops: vec![crate::op_node::OpNode::Filter {
+                expr: "(amount > 1)".to_string(),
+            }],
+            schema: schema.clone(),
+            table_primary_key: None,
+            registered_at_version: 1,
+        };
+
+        // Same except version — equiv
+        let mut same_diff_version = base.clone();
+        same_diff_version.registered_at_version = 99;
+        assert!(
+            base.equiv_ignoring_version(&same_diff_version),
+            "must be equiv when only version differs"
+        );
+
+        // Different ops — not equiv
+        let mut diff_ops = base.clone();
+        diff_ops.ops = vec![crate::op_node::OpNode::Filter {
+            expr: "(amount > 999)".to_string(),
+        }];
+        assert!(
+            !base.equiv_ignoring_version(&diff_ops),
+            "must NOT be equiv when ops differ"
+        );
     }
 }
