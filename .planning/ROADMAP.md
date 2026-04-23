@@ -28,8 +28,8 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | # | Phase | Goal | Reqs | Success criteria |
 |---|-------|------|------|------------------|
 | 1 | Foundation | Rust workspace, axum HTTP scaffolding, config, logging, test harness | 0 (infrastructure) | 4 ✅ **COMPLETE** |
-| 2 | Sources + registry + version bumps | `/register` accepts DAG of event/table/derivation nodes; additive-only; monotonic version; registry persists in-memory | 12 | 5 |
-| 2.5 | TCP wire listener + framing + full opcode table | Custom-framed TCP listener alongside HTTP; full v0 opcode table designed; `register` + `ping` handlers wired; rest return `op_not_implemented` placeholder | ~8 | 8 |
+| 2 | Sources + registry + version bumps | `/register` accepts DAG of event/table/derivation nodes; additive-only; monotonic version; registry persists in-memory | 12 | 5 ✅ **COMPLETE** |
+| 2.5 | TCP wire listener + framing + full opcode table | Custom-framed TCP listener alongside HTTP; full v0 opcode table designed; `register` + `ping` handlers wired; rest return `op_not_implemented` placeholder | ~8 | 8 ✅ **COMPLETE** |
 | 3 | Python SDK skeleton + decorators + expression DSL | `@bv.event`, `@bv.table`, `bv.col`, `bv.App(url)` (HTTP + TCP), register + validate, REGISTER JSON compiler | 21 | 7 |
 | 4 | Stateless ops + expression evaluator (server-side) | Server parses + evaluates `bv.col` expression strings; executes filter/select/drop/rename/with_columns/map/cast/fillna chains per event | 12 | 5 |
 | 5 | Aggregation framework + core operators (8) | `group_by().agg()` DAG lands server-side; windowed bucket infra; core aggregations: count, sum, avg, min, max, variance, stddev, ratio | 15 | 6 |

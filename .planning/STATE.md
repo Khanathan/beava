@@ -13,18 +13,19 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Current Focus
 
-**Phase 2.5: TCP wire listener + framing + full opcode table** — server adds a second listener on a configurable TCP port using a custom framed protocol `[u32 length][u16 op][u8 content_type][payload bytes]` (no request_id — Redis-style strict-FIFO correlation). Full v0 opcode table designed; `register` + `ping` handlers wired over `ct=JSON (0x01)`; MessagePack (`ct=0x02`) reserved for push/get in Phase 6/12; other opcodes return `op_not_implemented`. Context captured; plan-phase running as background agent under `/gsd-autonomous --interactive`.
+**Phase 3: Python SDK skeleton + decorators + expression DSL** — CONTEXT captured (1804cae). Ships `@bv.event` / `@bv.table` decorators, `bv.col` DSL, sync `bv.App` with URL-scheme transport dispatch; `bv.App()` with no URL auto-embeds a local Rust subprocess. Clean-room impl referencing v1 only for shape. Plan-phase to be dispatched under new TDD discipline (red commits before green commits, per CLAUDE.md §Conventions).
 
-**Phase 3: Python SDK skeleton + decorators + expression DSL** — context captured (awaiting Phase 2.5 to land before plan+execute). Ships `@bv.event` / `@bv.table` decorators, `bv.col` DSL, sync `bv.App` with URL-scheme transport dispatch. Clean-room impl referencing v1 only for shape. Key scope additions this session: `bv.App()` with no URL auto-embeds a local Rust subprocess (closes "pip install + also install server" gap); redis-py-style parallel-class plan for `bv.AsyncApp` in Phase 6.
+**Just shipped — Phase 2.5: TCP wire listener** (5 commits 4f390ed..2c47354): 256 tests green (+94), clippy + fmt clean, 8/8 ROADMAP criteria proven by `phase2_5_smoke.rs`. Frame codec `[u32 len][u16 op][u8 ct][payload]`, Redis-style strict-FIFO correlation, JSON (ct=0x01) body for register+ping, MessagePack (0x02) reserved for push/get, dedicated `op=0xFFFF` error response, single tokio current_thread runtime, shared `execute_register` between HTTP and TCP paths.
+
+**Phase 4: Stateless ops + expression evaluator** — CONTEXT captured (603dea9). Hand-rolled recursive-descent parser for v1 grammar with column-pointing errors; `Row(BTreeMap<String, Value>)` data model; SQL-style three-valued null logic; server-side schema propagation through op chains at register time; `cast` + `isnull` builtins extensible via function-call grammar hook.
 
 ## Current Position
 
 - **Milestone:** v0
-- **Phase:** 2.5 of 14 (TCP wire listener — plan-phase running in background)
-- **Next after 2.5:** Phase 3 (context already captured)
-- **Plans:** Phase 2 complete (6/6 executed, 162 tests green); Phase 2.5 plan in flight
-- **Status:** Wire contract retroactively renamed devex-first (26daa41); planning docs caught up (b534c97); Phase 2.5 CONTEXT (bc78e5e); Phase 3 CONTEXT (1804cae); roadmap amended to 14 phases
-- **Progress:** ██▱▱▱▱▱▱▱▱▱▱▱▱ 2/14 phases (plus 2 contexts ready for plan)
+- **Phase:** 3 of 14 (Python SDK — CONTEXT captured, plan-phase pending under new TDD discipline)
+- **Plans:** Phases 1, 2, 2.5 all shipped (Phase 2.5 256 tests green, 8/8 criteria proven)
+- **Status:** Phase 2.5 TCP wire live; dual HTTP+TCP server binds on startup; shared validation+diff engine; redis-style FIFO framing; devex-first naming throughout. CLAUDE.md §Conventions TDD Discipline locked for Phase 3 onward
+- **Progress:** ███▱▱▱▱▱▱▱▱▱▱▱ 3/14 phases (+2 CONTEXTs ready: Phase 3, Phase 4)
 
 ## Performance Metrics
 
