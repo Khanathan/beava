@@ -17,10 +17,10 @@ Declare a feature, push events, query it — in under 10 minutes, with curl alon
 ## Current Position
 
 - **Milestone:** v0
-- **Phase:** 1 of 10 (Foundation)
-- **Plan:** not yet planned
-- **Status:** roadmap approved, awaiting `/gsd-plan-phase 1`
-- **Progress:** ▱▱▱▱▱▱▱▱▱▱ 0/10 phases
+- **Phase:** 2 of 10 (Primitive infra + registration)
+- **Plan:** Phase 1 complete — 5/5 plans executed
+- **Status:** Phase 1 complete, ready for Phase 2
+- **Progress:** █▱▱▱▱▱▱▱▱▱ 1/10 phases
 
 ## Performance Metrics
 
@@ -60,11 +60,20 @@ Not yet measured. Baseline established in Phase 5, hit-gate in Phase 9.
 - TCP binary wire protocol in OSS
 - Multi-process / multi-instance coordination
 
+### Decisions (Phase 1)
+
+- Mutex-based EnvGuard serializes env-var-touching tests (process-global env is not thread-safe)
+- Manual Debug impl for Server (TcpListener lacks Debug)
+- cli_smoke tests use spawn+SIGTERM because binary now starts a real HTTP server
+- foundation_smoke uses `required-features = ["testing"]` — cfg(test) does NOT propagate to integration tests in tests/
+- libc dev-dep added for SIGTERM in subprocess smoke tests
+
 ### Active Todos
 
 - [x] Roadmap drafted and approved (auto-approved under yolo mode)
-- [ ] Plan Phase 1 (`/gsd-plan-phase 1`)
-- [ ] Execute Phase 1 through Phase 10
+- [x] Plan Phase 1 (5 plans executed)
+- [x] Execute Phase 1 (complete — 36 tests green, acceptance gate passed)
+- [ ] Execute Phase 2 through Phase 10
 
 ### Blockers
 
@@ -77,11 +86,20 @@ None.
 
 ## Session Continuity
 
+Last session: 2026-04-22 — Phase 1 fully executed (5 plans, 36 tests, foundation_smoke green).
+
 Next session should:
 
 1. Read `.planning/PROJECT.md`, `.planning/ROADMAP.md`, this file.
-2. Confirm Phase 1 is the current focus.
-3. Run `/gsd-plan-phase 1` to decompose Phase 1 into plans.
+2. Confirm Phase 2 (Primitive infra + registration) is the current focus.
+3. Run `/gsd-plan-phase 2` to decompose Phase 2 into plans.
+
+Key Phase 2 attach points:
+- HTTP: `crates/beava-server/src/http.rs` — add `.merge(phase2_router())` in `router()`
+- Config: `crates/beava-core/src/config.rs` — extend `Config` struct additively
+- Operator trait: new `crates/beava-core/src/operator.rs`
+- Test harness: `TestServer::spawn()` in `beava-server = { features = ["testing"] }`
 
 ---
 *State initialized: 2026-04-22 after roadmap creation.*
+*Phase 1 complete: 2026-04-22 — workspace, HTTP, config, logging, test harness.*
