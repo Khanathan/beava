@@ -32,7 +32,7 @@ import datetime as _dt
 from collections import deque
 from typing import Any, Sequence
 
-from beava._errors import ValidationError
+from beava._errors import RegistrationError, ValidationError
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -156,7 +156,7 @@ def _detect_cycle_dfs(graph: dict[str, set[str]]) -> list[str] | None:
 def topo_sort(descriptors: Sequence[Any]) -> list[Any]:
     """Sort descriptors so every upstream appears before its dependents (Kahn's algorithm).
 
-    Raises ``ValidationError(kind='cycle', ...)`` if the graph contains a cycle.
+    Raises ``RegistrationError(code='cycle', ...)`` if the graph contains a cycle.
     Preserves input order as the tiebreaker for nodes with the same in-degree.
 
     Args:
@@ -166,7 +166,7 @@ def topo_sort(descriptors: Sequence[Any]) -> list[Any]:
         New list in dependency order.
 
     Raises:
-        ValidationError: If a cycle is detected.
+        RegistrationError: If a cycle is detected (code='cycle').
     """
     desc_list = list(descriptors)
     name_to_desc: dict[str, Any] = {_descriptor_name(d): d for d in desc_list}
@@ -207,19 +207,17 @@ def topo_sort(descriptors: Sequence[Any]) -> list[Any]:
         cycle_path = _detect_cycle_dfs(graph)
         if cycle_path:
             path_str = " -> ".join(cycle_path)
-            err = ValidationError(
-                kind="cycle",
+            raise RegistrationError(
+                code="cycle",
                 path=path_str,
                 message=f"dependency cycle detected: {path_str}",
             )
-            raise ValueError(str(err)) from None
         # Fallback: cycle exists but DFS couldn't reconstruct it
-        err_fallback = ValidationError(
-            kind="cycle",
+        raise RegistrationError(
+            code="cycle",
             path="(unknown)",
             message="dependency cycle detected (could not reconstruct path)",
         )
-        raise ValueError(str(err_fallback)) from None
 
     return [name_to_desc[n] for n in sorted_names]
 
