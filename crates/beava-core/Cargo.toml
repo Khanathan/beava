@@ -23,3 +23,12 @@ tracing = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "phase4_expr"
+harness = false
+
+[[bench]]
+name = "phase5_agg"
+harness = false

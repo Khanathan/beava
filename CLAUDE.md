@@ -58,6 +58,21 @@ Technology stack not yet documented. Will populate after codebase mapping or fir
 # touching the same plan/scope.
 git log --format='%s' <base>..<head> | grep -E '^(test|feat|fix|refactor):'
 ```
+
+### Performance Discipline (regression gates, enforced Phase 6 onward)
+
+**Rule:** Every phase from Phase 6 onward ships at least one `criterion` microbench covering its hot path. Baselines live in `.planning/perf-baselines.md` keyed by hw-class. Verification compares current numbers to the same hw-class's prior baseline:
+
+- **10% slower** than prior baseline → WARNING in the phase's VERIFICATION.md (must be investigated before Phase 13)
+- **25% slower** than prior baseline → BLOCKER (phase verification fails; must fix or explicit override)
+
+**Scope:** measurement, not optimization. Phase 13 is the final ship gate (≥3M EPS/core, P99 < 10ms batch-get). Phase 5.5's benches are a regression tripwire, not a target.
+
+**Plan-checker contract:** plans for Phase 6+ must include at least one task whose `files_modified` contains a path under `crates/*/benches/` (or language-equivalent). Plans that don't are rejected.
+
+**Do NOT bench:** cold-path code (register compile, schema propagation at register-time), I/O paths that will change (WAL pre-Phase 6, snapshot pre-Phase 7), end-to-end network roundtrips (that's Phase 13).
+
+**Retroactive coverage landed in Phase 5.5:** Phase 2.5 frame codec, Phase 3 SDK REGISTER compile (Python), Phase 4 expr parse/eval/op-chain, Phase 5 AggOp::update / WindowedOp fold / apply_event_to_aggregations.
 <!-- GSD:conventions-end -->
 
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->
