@@ -39,10 +39,11 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 9 | Decay + velocity operators | ewma, ewvar, ew_zscore, decayed_sum, decayed_count, twa, rate_of_change, inter_arrival_stats, burst_count, delta_from_prev, trend, trend_residual, outlier_count, value_change_count, z_score | 16 | 4 |
 | 10 | Sketch operators | count_distinct (HLL), percentile (DDSketch), top_k (SpaceSaving), bloom_member, entropy | 5 | 4 |
 | 11 | Bounded-buffer + geo operators | histogram, hour_of_day/dow_hour histograms, seasonal_deviation, event_type_mix, most_recent_n, reservoir_sample, geo_velocity, geo_distance, geo_spread, unique_cells, geo_entropy, distance_from_home | 13 | 4 |
-| 12 | Joins + unions + push/get API completion | Event↔event windowed join, event↔table enrichment, table↔table join, `bv.union`; `push_sync` + `push_many` + `push_table` + `delete_table` + `set` + `mset` + `mget` + `get_multi` wired end-to-end | 13 | 5 |
+| 11.5 | Temporal tables + retraction primitive | MVCC storage for `@bv.table(temporal=True, retention=...)`; `app.retract(event_id)` scoped to table upserts/deletes; wires `as_of=...` kwarg that Phase 12 joins consume; stream retraction deferred to v1 but event-IDs land now | ~10 | 6 |
+| 12 | Joins + unions + push/get API completion | Event↔event windowed join, event↔table enrichment (incl. event-time PIT against temporal tables), table↔table join, `bv.union`; `push_sync` + `push_many` + `push_table` + `delete_table` + `set` + `mset` + `mget` + `get_multi` wired end-to-end | 13 | 5 |
 | 13 | Observability + performance + docs + packaging + `bv.fork` + playground | `/metrics`, structured logs, perf gates on THREE pipelines (simple fraud, complex fraud, recommendations) ≥3M EPS, <10ms P99 batch get, SDK polish, docs, hosted interactive tutorial at playground.beava.dev, PyPI, GitHub Releases, Docker, `beava fork` subcommand | ~18 | 7 |
 
-**Total:** 14 phases (Phase 2.5 inserted 2026-04-23 when user expanded v0 wire to dual HTTP + TCP), ~153 requirements mapped (actual count confirmed after plan-time verification), ~73 success criteria.
+**Total:** 15 phases (Phase 2.5 inserted 2026-04-23 for dual HTTP+TCP wire; Phase 11.5 inserted 2026-04-23 for temporal tables + retraction primitive required by PIT stream↔table joins), ~163 requirements mapped (actual count confirmed after plan-time verification), ~79 success criteria.
 
 **Phase 1 status:** ✅ **COMPLETE** on commits `b100e51`..`c21b6b7`. Cargo workspace, axum HTTP server, `/health` + `/ready` stubs, graceful shutdown, integration TestServer harness — all gates green. See `.planning/phases/01-foundation/01-SUMMARY.md`, `.planning/phases/01-foundation/01-VERIFICATION.md`.
 
@@ -50,7 +51,8 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 - **Phases 1 → 2 → 3 → 4 → 5 → 6 → 7** are strictly sequential — each depends on the one before. Phase 5 is where the apply loop first runs real aggregations; Phases 6–7 harden durability around it.
 - **Phases 8 / 9 / 10 / 11** can run in parallel after Phase 7 — each operator family attaches to the existing apply loop + registry + window infra, touching independent operator modules. Recommended: sequence 8 → 9 → 10 → 11 unless explicitly running parallel worktrees.
-- **Phase 12** (joins/unions + push/get completion) depends on 7; can overlap with 8–11 since joins live in their own module.
+- **Phase 11.5** (temporal tables + retraction) depends on 7 (needs WAL + snapshot); can run parallel with 8–11 since it touches its own table-storage module. MUST ship before Phase 12 because joins consume the `as_of=...` kwarg.
+- **Phase 12** (joins/unions + push/get completion) depends on 7 AND 11.5; can overlap with 8–11 since joins live in their own module.
 - **Phase 13** waits on everything for perf benchmarks + docs sign-off.
 
 ## Dependency graph
@@ -174,6 +176,15 @@ Feature authoring as composable Python code that ships to production unchanged. 
 4. Proptest-covered: random predicate + random event → truth-table equivalence between client-side eval and server-side eval
 5. Malformed predicate in registration returns 400 with path pointing to the offending expression
 
+**Plans:** 7 plans (2 tasks each, red-green TDD)
+- [ ] 04-01-PLAN.md — Row + Value + SQL three-valued null logic (beava-core foundation)
+- [ ] 04-02-PLAN.md — Recursive-descent expression parser with Span tracking + column-pointing errors
+- [ ] 04-03-PLAN.md — Expression evaluator + cast/isnull builtins + determinism proptest
+- [ ] 04-04-PLAN.md — Op-chain executor + register-time schema propagator (8 ops + SDK-OPS-01..10 mechanics)
+- [ ] 04-05-PLAN.md — Register integration: HTTP/TCP parity for invalid_expression errors; OpChain caching
+- [ ] 04-06-PLAN.md — Phase 4 Rust acceptance: /dev/apply_ops endpoint (gated) + Rust SC1/SC2/SC3/SC5 smokes over HTTP + TCP
+- [ ] 04-07-PLAN.md — Phase 4 Python acceptance: 8 SDK op methods + Python reference evaluator + SC1/SC2/SC3/SC5 Python smokes + SC4 hypothesis proptest (256 cases, client/server eval equivalence)
+
 ### Phase 5: Aggregation framework + core operators
 
 **Goal:** `group_by(keys).agg(name=bv.<op>(...), ...)` produces a Table in the DAG; server's apply loop updates per-entity aggregation state for every registered feature touching the event's source. Core 8 operators land (count, sum, avg, min, max, variance, stddev, ratio). `Windowed<Op>` bucket infra.
@@ -274,11 +285,27 @@ Feature authoring as composable Python code that ships to production unchanged. 
 3. Structured outputs (histograms, reservoir samples) round-trip through `GET /get/{feature}/{key}` with `{value, meta?}` shape
 4. Replay determinism preserved
 
+### Phase 11.5: Temporal tables + retraction primitive
+
+**Goal:** Server-side MVCC storage for `@bv.table(temporal=True, retention=...)` tables, plus an `app.retract(event_id)` primitive scoped to tables in v0. Wires the `as_of=...` kwarg the SDK already ships so Phase 12 joins can resolve event-time PIT lookups. Stream retraction is intentionally deferred to v1 — but the WAL + aggregation format land with stable event-IDs so stream retraction is additive later, not a breaking change.
+
+**Depends on:** Phase 7 (needs WAL + snapshot; temporal versions ride on LSN). **Must ship before Phase 12** (joins consume `as_of=...`).
+
+**Requirements:** SRV-TBL-TEMPORAL-01 through SRV-TBL-TEMPORAL-06 (MVCC storage, retention enforcement, version-at-lsn lookup, tombstone semantics, snapshot of historical versions, memory budget cap), SRV-RETRACT-01 through SRV-RETRACT-03 (retract API wire + idempotency + error shape for non-temporal targets), SDK-TBL-TEMPORAL-01 (already landed — decorator flag), SDK-APP-RETRACT-01 (Python client `app.retract(event_id)`). New REQ-IDs to be defined at plan-time.
+
+**Success criteria:**
+1. `@bv.table(temporal=True, retention="7d")` registered via SDK — server stores every version keyed by `(entity_key, lsn)`; evicts versions older than retention window
+2. `GET /registry` reports temporal vs non-temporal tables; `as_of=<lsn>` query param on GET returns the version-at-lsn for temporal tables; 400 for non-temporal
+3. `POST /retract` with `{event_id}` undoes a table upsert/delete (restores prior version); returns 404 for unknown event_id; returns 409 for events outside retention window
+4. Stream retraction is explicitly rejected in v0: `POST /retract` against a stream event_id returns 501 with message pointing at the forward-compat plan
+5. Acceptance smoke: register a temporal table, upsert value at t=0, upsert at t=1, retract the t=1 event, assert GET returns t=0 value; assert `GET /table?as_of=t=0` returns t=0 value regardless of retraction state
+6. Memory budget: temporal storage ≤ N× non-temporal equivalent for retention window R; measured in Phase 13 perf gate
+
 ### Phase 12: Joins + unions + push/get API completion
 
-**Goal:** Joins (event↔event windowed, event↔table enrichment, table↔table) and `bv.union` implemented end-to-end. `push_sync`, `push_many`, `push_table`, `delete_table`, `set`, `mset`, `mget`, `get_multi` wired.
+**Goal:** Joins (event↔event windowed, event↔table enrichment, table↔table) and `bv.union` implemented end-to-end. `push_sync`, `push_many`, `push_table`, `delete_table`, `set`, `mset`, `mget`, `get_multi` wired. Joins against temporal tables use the `as_of=...` kwarg from Phase 11.5 to resolve event-time PIT lookups.
 
-**Depends on:** Phase 7. **Parallelizable with 8, 9, 10, 11.**
+**Depends on:** Phase 7 and Phase 11.5 (for temporal join resolution). **Parallelizable with 8, 9, 10, 11.**
 
 **Requirements:** SDK-JOIN-01, SDK-JOIN-02, SDK-JOIN-03, SDK-JOIN-04, SDK-JOIN-05, SDK-APP-04 through SDK-APP-14, SRV-API-03 through SRV-API-10, SRV-APPLY-08 — 13 REQ-IDs (some may overlap with Phase 3).
 
