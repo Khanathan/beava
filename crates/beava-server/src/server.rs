@@ -153,6 +153,12 @@ impl Server {
         self.tcp_local_addr
     }
 
+    /// Return a clone of the shared registry Arc.  Used by `TestServer::registry()`
+    /// to give acceptance tests direct access to compiled chains without HTTP round-trips.
+    pub fn registry(&self) -> Arc<Registry> {
+        Arc::clone(&self.registry)
+    }
+
     /// Run the server until `shutdown` completes. Emits JSON log events on
     /// shutdown initiation (from the signal handler) and shutdown complete
     /// (here). Returns after in-flight requests drain on both listeners.

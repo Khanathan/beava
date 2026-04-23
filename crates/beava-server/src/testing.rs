@@ -30,6 +30,7 @@ use beava_core::wire::{decode_frame, encode_frame, Frame, CT_JSON, OP_PING, OP_R
 use bytes::{Bytes, BytesMut};
 use serde::Serialize;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -134,6 +135,8 @@ impl TestServerBuilder {
         let server = Server::bind(&self.cfg, self.dev_endpoints).await?;
         let base_url = format!("http://{}", server.local_addr());
         let tcp_addr = server.tcp_local_addr();
+        // Grab the shared registry Arc before `serve()` consumes the Server.
+        let registry = server.registry();
 
         let (tx, rx) = oneshot::channel::<()>();
         let shutdown = async move {
@@ -148,6 +151,7 @@ impl TestServerBuilder {
             tcp_addr,
             shutdown_tx: Some(tx),
             serve_task: Some(serve_task),
+            registry,
         };
 
         harness
@@ -163,6 +167,10 @@ pub struct TestServer {
     tcp_addr: Option<SocketAddr>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     serve_task: Option<JoinHandle<Result<(), ServerError>>>,
+    /// Shared registry — same Arc the server uses internally.  Phase 4 acceptance
+    /// tests call `.registry().compiled_chain(name)` to assert in-process state
+    /// without a round-trip through an HTTP endpoint.
+    registry: Arc<beava_core::registry::Registry>,
 }
 
 impl TestServer {
@@ -182,6 +190,13 @@ impl TestServer {
     /// (HTTP-only mode). Populated from `Server::tcp_local_addr()` at spawn.
     pub fn tcp_addr(&self) -> Option<SocketAddr> {
         self.tcp_addr
+    }
+
+    /// Phase 4: Direct reference to the shared registry Arc.
+    /// Acceptance tests call `.registry().compiled_chain(name)` for in-process
+    /// assertions without an HTTP round-trip.
+    pub fn registry(&self) -> &Arc<beava_core::registry::Registry> {
+        &self.registry
     }
 
     /// Phase 2.5: Connect a `TcpClient` to the TCP listener. Returns an error if
