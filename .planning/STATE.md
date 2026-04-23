@@ -1,3 +1,17 @@
+---
+gsd_state_version: 1.0
+milestone: v0.1
+milestone_name: milestone
+status: planning
+last_updated: "2026-04-23T06:19:48.466Z"
+progress:
+  total_phases: 14
+  completed_phases: 1
+  total_plans: 22
+  completed_plans: 9
+  percent: 41
+---
+
 # State: Beava v2 — v0 OSS Launch
 
 **Project reference:** `.planning/PROJECT.md` (rewritten 2026-04-22; wire pivoted to dual HTTP+TCP 2026-04-23)
@@ -21,10 +35,13 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Current Position
 
+Phase: 03 (Python SDK skeleton + decorators + expression DSL) — EXECUTING
+Plan: Not started
+
 - **Milestone:** v0
-- **Phase:** 3 of 14 (Python SDK — CONTEXT captured, plan-phase pending under new TDD discipline)
+- **Phase:** 04 of 14 (stateless ops expression evaluator)
 - **Plans:** Phases 1, 2, 2.5 all shipped (Phase 2.5 256 tests green, 8/8 criteria proven)
-- **Status:** Phase 2.5 TCP wire live; dual HTTP+TCP server binds on startup; shared validation+diff engine; redis-style FIFO framing; devex-first naming throughout. CLAUDE.md §Conventions TDD Discipline locked for Phase 3 onward
+- **Status:** Ready to plan
 - **Progress:** ███▱▱▱▱▱▱▱▱▱▱▱ 3/14 phases (+2 CONTEXTs ready: Phase 3, Phase 4)
 
 ## Performance Metrics
