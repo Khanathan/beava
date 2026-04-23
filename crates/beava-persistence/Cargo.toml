@@ -20,7 +20,13 @@ tempfile = { workspace = true }
 crc32c = "0.6"
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "io-util"] }
 criterion = { workspace = true }
+beava-core = { path = "../beava-core" }
+serde_json = { workspace = true }
 
 [[bench]]
 name = "phase6_wal"
+harness = false
+
+[[bench]]
+name = "phase7_snapshot_recovery"
 harness = false
