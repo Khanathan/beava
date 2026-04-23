@@ -14,12 +14,14 @@ pub mod defaults;
 pub mod eval;
 pub mod expr;
 pub mod expr_builtins;
+pub mod op_chain;
 pub mod op_node;
 pub mod register_validate;
 pub mod registry;
 pub mod registry_diff;
 pub mod row;
 pub mod schema;
+pub mod schema_propagate;
 pub mod wire;
 
 /// Compile-time crate version exposed for banner / diagnostics.

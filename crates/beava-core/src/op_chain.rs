@@ -1,0 +1,488 @@
+//! Op-chain executor: `OpChain::compile` + `OpChain::apply`.
+//!
+//! Compiles a `&[OpNode]` into a sequence of `CompiledOp`s — parsing
+//! expression strings once at compile time and caching the `Expr` ASTs —
+//! then evaluates the chain per event row via `OpChain::apply(row)`.
+//!
+//! # Error type
+//!
+//! Compile errors re-use `PropagationError` (aliased as `CompileError`) so
+//! the caller only deals with one error type.
+//!
+//! # Apply semantics
+//!
+//! - Filter: `eval(expr, row)` → `Bool(true)` keeps the row; anything else
+//!   (Bool(false), Null, or any other Value) drops it (returns `None`).
+//! - All other ops return `Some(updated_row)`.
+//! - Filter short-circuits: once a Filter drops the row, subsequent ops are
+//!   skipped.
+
+// RED commit: implementation stubs — dead_code/unused_imports expected until green.
+#![allow(dead_code, unused_imports)]
+
+use std::collections::BTreeMap;
+
+use crate::expr::{self, Expr};
+use crate::op_node::OpNode;
+use crate::row::{Row, Value};
+use crate::schema_propagate::{propagate_schema, Schema};
+
+/// Compile-time error — re-exported from `schema_propagate` so callers only
+/// import one error type.
+pub use crate::schema_propagate::PropagationError as CompileError;
+
+// ─── CastTarget ──────────────────────────────────────────────────────────────
+
+/// Internal target type for Cast (mirrors cast-target string at compile time).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CastTarget {
+    Str,
+    Int,
+    Float,
+    Bool,
+}
+
+impl CastTarget {
+    fn as_value_str(self) -> Value {
+        match self {
+            CastTarget::Str => Value::Str("str".to_string()),
+            CastTarget::Int => Value::Str("int".to_string()),
+            CastTarget::Float => Value::Str("float".to_string()),
+            CastTarget::Bool => Value::Str("bool".to_string()),
+        }
+    }
+}
+
+fn cast_target_from_str(s: &str) -> Option<CastTarget> {
+    match s {
+        "str" => Some(CastTarget::Str),
+        "int" => Some(CastTarget::Int),
+        "float" => Some(CastTarget::Float),
+        "bool" => Some(CastTarget::Bool),
+        _ => None,
+    }
+}
+
+// ─── CompiledOp ──────────────────────────────────────────────────────────────
+
+/// A compiled representation of a single op — expression strings have been
+/// parsed into `Expr` ASTs; all compile-time checks have passed.
+#[derive(Debug, Clone)]
+enum CompiledOp {
+    Filter(Expr),
+    Select(Vec<String>),
+    Drop(Vec<String>),
+    Rename(BTreeMap<String, String>),
+    WithColumns(Vec<(String, Expr)>),
+    Cast(Vec<(String, CastTarget)>),
+    Fillna(Vec<(String, Value)>),
+}
+
+// ─── OpChain ─────────────────────────────────────────────────────────────────
+
+/// A compiled op-chain ready for per-row execution.
+#[derive(Debug)]
+pub struct OpChain {
+    ops: Vec<CompiledOp>,
+}
+
+impl OpChain {
+    /// Compile `ops` against `input_schema`.
+    ///
+    /// Calls `propagate_schema` first (validates field refs + type compat).
+    /// On success, parses all expression strings and materialises the
+    /// `CompiledOp` sequence.
+    ///
+    /// Returns `(OpChain, output_schema)` or a list of `CompileError`s.
+    pub fn compile(
+        _input_schema: &Schema,
+        _ops: &[OpNode],
+    ) -> Result<(Self, Schema), Vec<CompileError>> {
+        todo!("OpChain::compile not yet implemented")
+    }
+
+    /// Execute the compiled chain against `row`.
+    ///
+    /// Returns `None` if a Filter drops the row; `Some(updated_row)` otherwise.
+    pub fn apply(&self, _row: Row) -> Option<Row> {
+        todo!("OpChain::apply not yet implemented")
+    }
+}
+
+// ─── JSON → Value conversion ─────────────────────────────────────────────────
+
+fn json_to_value(v: &serde_json::Value) -> Value {
+    match v {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::I64(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::F64(f)
+            } else {
+                Value::Null
+            }
+        }
+        serde_json::Value::String(s) => Value::Str(s.clone()),
+        _ => Value::Null, // Array / Object → Null (not a scalar)
+    }
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::op_node::OpNode;
+    use crate::schema::FieldType;
+
+    // ── Fixtures ──────────────────────────────────────────────────────────────
+
+    mod fixtures {
+        use super::*;
+
+        pub fn schema(pairs: &[(&str, FieldType)]) -> Schema {
+            let mut fields = BTreeMap::new();
+            for (k, v) in pairs {
+                fields.insert(k.to_string(), *v);
+            }
+            Schema {
+                fields,
+                optional_fields: Vec::new(),
+            }
+        }
+
+        pub fn schema_opt(pairs: &[(&str, FieldType)], opt: &[&str]) -> Schema {
+            let mut s = schema(pairs);
+            s.optional_fields = opt.iter().map(|f| f.to_string()).collect();
+            s
+        }
+
+        pub fn row(pairs: &[(&str, Value)]) -> Row {
+            let mut r = Row::new();
+            for (k, v) in pairs {
+                r = r.with_field(k, v.clone());
+            }
+            r
+        }
+
+        pub fn compile_ok(input: &Schema, ops: Vec<OpNode>) -> (OpChain, Schema) {
+            OpChain::compile(input, &ops).expect("expected compile to succeed")
+        }
+
+        pub fn compile_err(input: &Schema, ops: Vec<OpNode>) -> Vec<CompileError> {
+            OpChain::compile(input, &ops).expect_err("expected compile to fail")
+        }
+    }
+
+    // ── Test 29: Filter keeps passing row ─────────────────────────────────────
+
+    #[test]
+    fn chain_filter_keeps_passing_row() {
+        let input = fixtures::schema(&[("amount", FieldType::I64)]);
+        let ops = vec![OpNode::Filter {
+            expr: "(amount > 100)".to_string(),
+        }];
+        let (chain, _) = fixtures::compile_ok(&input, ops);
+        let row = fixtures::row(&[("amount", Value::I64(150))]);
+        let result = chain.apply(row);
+        assert!(result.is_some(), "row with amount=150 should pass filter");
+        let r = result.unwrap();
+        assert_eq!(r.get("amount"), Some(&Value::I64(150)));
+    }
+
+    // ── Test 30: Filter drops failing row ─────────────────────────────────────
+
+    #[test]
+    fn chain_filter_drops_failing_row() {
+        let input = fixtures::schema(&[("amount", FieldType::I64)]);
+        let ops = vec![OpNode::Filter {
+            expr: "(amount > 100)".to_string(),
+        }];
+        let (chain, _) = fixtures::compile_ok(&input, ops);
+        let row = fixtures::row(&[("amount", Value::I64(50))]);
+        assert_eq!(
+            chain.apply(row),
+            None,
+            "row with amount=50 should be dropped"
+        );
+    }
+
+    // ── Test 31: Filter null predicate drops row ──────────────────────────────
+
+    #[test]
+    fn chain_filter_null_predicate_drops_row() {
+        // amount is optional (can be null); filter on null predicate → drop.
+        let input = fixtures::schema_opt(&[("amount", FieldType::F64)], &["amount"]);
+        let ops = vec![OpNode::Filter {
+            expr: "(amount > 0)".to_string(),
+        }];
+        let (chain, _) = fixtures::compile_ok(&input, ops);
+        let row = fixtures::row(&[("amount", Value::Null)]);
+        assert_eq!(
+            chain.apply(row),
+            None,
+            "null predicate (amount=Null, filter amount > 0) should drop row"
+        );
+    }
+
+    // ── Test 32: Select keeps listed ──────────────────────────────────────────
+
+    #[test]
+    fn chain_select_keeps_listed() {
+        let input = fixtures::schema(&[
+            ("a", FieldType::I64),
+            ("b", FieldType::I64),
+            ("c", FieldType::I64),
+        ]);
+        let ops = vec![OpNode::Select {
+            fields: vec!["a".to_string(), "b".to_string()],
+        }];
+        let (chain, _) = fixtures::compile_ok(&input, ops);
+        let row = fixtures::row(&[
+            ("a", Value::I64(1)),
+            ("b", Value::I64(2)),
+            ("c", Value::I64(3)),
+        ]);
+        let result = chain.apply(row).unwrap();
+        assert_eq!(result.get("a"), Some(&Value::I64(1)));
+        assert_eq!(result.get("b"), Some(&Value::I64(2)));
+        assert_eq!(result.get("c"), None, "c should be dropped by select");
+    }
+
+    // ── Test 33: Drop removes listed ──────────────────────────────────────────
+
+    #[test]
+    fn chain_drop_removes_listed() {
+        let input = fixtures::schema(&[
+            ("a", FieldType::I64),
+            ("b", FieldType::I64),
+            ("c", FieldType::I64),
+        ]);
+        let ops = vec![OpNode::Drop {
+            fields: vec!["b".to_string()],
+        }];
+        let (chain, _) = fixtures::compile_ok(&input, ops);
+        let row = fixtures::row(&[
+            ("a", Value::I64(1)),
+            ("b", Value::I64(2)),
+            ("c", Value::I64(3)),
+        ]);
+        let result = chain.apply(row).unwrap();
+        assert_eq!(result.get("a"), Some(&Value::I64(1)));
+        assert_eq!(result.get("b"), None, "b should be dropped");
+        assert_eq!(result.get("c"), Some(&Value::I64(3)));
+    }
+
+    // ── Test 34: Rename applies ───────────────────────────────────────────────
+
+    #[test]
+    fn chain_rename_applies() {
+        let input = fixtures::schema(&[("a", FieldType::I64)]);
+        let mut mapping = BTreeMap::new();
+        mapping.insert("a".to_string(), "x".to_string());
+        let ops = vec![OpNode::Rename { mapping }];
+        let (chain, _) = fixtures::compile_ok(&input, ops);
+        let row = fixtures::row(&[("a", Value::I64(5))]);
+        let result = chain.apply(row).unwrap();
+        assert_eq!(
+            result.get("x"),
+            Some(&Value::I64(5)),
+            "x should have a's value"
+        );
+        assert_eq!(result.get("a"), None, "a should be gone after rename");
+    }
+
+    // ── Test 35: WithColumns adds field ───────────────────────────────────────
+
+    #[test]
+    fn chain_with_columns_adds_field() {
+        let input = fixtures::schema(&[("amount", FieldType::I64)]);
+        let mut exprs = BTreeMap::new();
+        exprs.insert("is_big".to_string(), "(amount > 500)".to_string());
+        let ops = vec![OpNode::WithColumns { exprs }];
+        let (chain, _) = fixtures::compile_ok(&input, ops);
+        let row = fixtures::row(&[("amount", Value::I64(1000))]);
+        let result = chain.apply(row).unwrap();
+        assert_eq!(result.get("amount"), Some(&Value::I64(1000)));
+        assert_eq!(
+            result.get("is_big"),
+            Some(&Value::Bool(true)),
+            "1000 > 500 should be true"
+        );
+    }
+
+    // ── Test 36: Map adds field (alias) ───────────────────────────────────────
+
+    #[test]
+    fn chain_map_adds_field_alias() {
+        let input = fixtures::schema(&[("amount", FieldType::I64)]);
+        let mut exprs = BTreeMap::new();
+        exprs.insert("is_big".to_string(), "(amount > 500)".to_string());
+        let ops = vec![OpNode::Map { exprs }];
+        let (chain, _) = fixtures::compile_ok(&input, ops);
+        let row = fixtures::row(&[("amount", Value::I64(1000))]);
+        let result = chain.apply(row).unwrap();
+        assert_eq!(
+            result.get("is_big"),
+            Some(&Value::Bool(true)),
+            "Map with same expr as WithColumns should produce same result"
+        );
+    }
+
+    // ── Test 37: Cast converts value ──────────────────────────────────────────
+
+    #[test]
+    fn chain_cast_converts_value() {
+        let input = fixtures::schema(&[("amount", FieldType::Str)]);
+        let mut type_map = BTreeMap::new();
+        type_map.insert("amount".to_string(), "int".to_string());
+        let ops = vec![OpNode::Cast { type_map }];
+        let (chain, _) = fixtures::compile_ok(&input, ops);
+        let row = fixtures::row(&[("amount", Value::Str("42".to_string()))]);
+        let result = chain.apply(row).unwrap();
+        assert_eq!(
+            result.get("amount"),
+            Some(&Value::I64(42)),
+            "Str('42') cast to int should produce I64(42)"
+        );
+    }
+
+    // ── Test 38: Cast failure yields Null ─────────────────────────────────────
+
+    #[test]
+    fn chain_cast_failure_yields_null() {
+        let input = fixtures::schema(&[("amount", FieldType::Str)]);
+        let mut type_map = BTreeMap::new();
+        type_map.insert("amount".to_string(), "int".to_string());
+        let ops = vec![OpNode::Cast { type_map }];
+        let (chain, _) = fixtures::compile_ok(&input, ops);
+        let row = fixtures::row(&[("amount", Value::Str("abc".to_string()))]);
+        let result = chain.apply(row).unwrap();
+        assert_eq!(
+            result.get("amount"),
+            Some(&Value::Null),
+            "Str('abc') cast to int should yield Null (parse failure)"
+        );
+    }
+
+    // ── Test 39: Fillna replaces Null ─────────────────────────────────────────
+
+    #[test]
+    fn chain_fillna_replaces_null() {
+        let input = fixtures::schema_opt(&[("amount", FieldType::I64)], &["amount"]);
+        let mut defaults = BTreeMap::new();
+        defaults.insert("amount".to_string(), serde_json::json!(0));
+        let ops = vec![OpNode::Fillna { defaults }];
+        let (chain, _) = fixtures::compile_ok(&input, ops);
+        let row = fixtures::row(&[("amount", Value::Null)]);
+        let result = chain.apply(row).unwrap();
+        assert_eq!(
+            result.get("amount"),
+            Some(&Value::I64(0)),
+            "Null amount should be replaced with 0"
+        );
+    }
+
+    // ── Test 40: Fillna leaves non-Null unchanged ─────────────────────────────
+
+    #[test]
+    fn chain_fillna_leaves_non_null_unchanged() {
+        let input = fixtures::schema(&[("amount", FieldType::I64)]);
+        let mut defaults = BTreeMap::new();
+        defaults.insert("amount".to_string(), serde_json::json!(0));
+        let ops = vec![OpNode::Fillna { defaults }];
+        let (chain, _) = fixtures::compile_ok(&input, ops);
+        let row = fixtures::row(&[("amount", Value::I64(5))]);
+        let result = chain.apply(row).unwrap();
+        assert_eq!(
+            result.get("amount"),
+            Some(&Value::I64(5)),
+            "non-Null amount should not be overwritten by fillna"
+        );
+    }
+
+    // ── Test 41: Compose filter + with_columns + cast ─────────────────────────
+
+    #[test]
+    fn chain_composes_filter_with_columns_cast() {
+        let input = fixtures::schema(&[("amount", FieldType::F64)]);
+        let mut with_exprs = BTreeMap::new();
+        with_exprs.insert("is_big".to_string(), "(amount > 500)".to_string());
+        let mut cast_map = BTreeMap::new();
+        cast_map.insert("is_big".to_string(), "int".to_string());
+
+        let ops = vec![
+            OpNode::Filter {
+                expr: "(amount > 0)".to_string(),
+            },
+            OpNode::WithColumns { exprs: with_exprs },
+            OpNode::Cast { type_map: cast_map },
+        ];
+
+        let (chain, _) = fixtures::compile_ok(&input, ops);
+
+        // Passing row: amount=1000.0 > 0 ✓; is_big = true → cast int = 1
+        let row_pass = fixtures::row(&[("amount", Value::F64(1000.0))]);
+        let result = chain.apply(row_pass).unwrap();
+        assert_eq!(result.get("amount"), Some(&Value::F64(1000.0)));
+        assert_eq!(
+            result.get("is_big"),
+            Some(&Value::I64(1)),
+            "Bool(true) cast to int should be I64(1)"
+        );
+
+        // Failing row: amount=-1.0, filtered out
+        let row_fail = fixtures::row(&[("amount", Value::F64(-1.0))]);
+        assert_eq!(
+            chain.apply(row_fail),
+            None,
+            "negative amount should be filtered out"
+        );
+    }
+
+    // ── Test 42: compile returns output schema ────────────────────────────────
+
+    #[test]
+    fn chain_compile_returns_output_schema() {
+        let input = fixtures::schema(&[("amount", FieldType::F64)]);
+        let mut with_exprs = BTreeMap::new();
+        with_exprs.insert("is_big".to_string(), "(amount > 500)".to_string());
+        let mut cast_map = BTreeMap::new();
+        cast_map.insert("is_big".to_string(), "int".to_string());
+
+        let ops = vec![
+            OpNode::Filter {
+                expr: "(amount > 0)".to_string(),
+            },
+            OpNode::WithColumns { exprs: with_exprs },
+            OpNode::Cast { type_map: cast_map },
+        ];
+
+        let (_chain, output_schema) = fixtures::compile_ok(&input, ops);
+        assert_eq!(output_schema.fields.get("amount"), Some(&FieldType::F64));
+        assert_eq!(
+            output_schema.fields.get("is_big"),
+            Some(&FieldType::I64),
+            "output schema should reflect cast I64 for is_big"
+        );
+    }
+
+    // ── Test 43: compile fails on bad expr ────────────────────────────────────
+
+    #[test]
+    fn chain_compile_fails_on_bad_expr() {
+        let input = fixtures::schema(&[("amount", FieldType::F64)]);
+        let ops = vec![OpNode::Filter {
+            expr: "(".to_string(),
+        }];
+        let errs = fixtures::compile_err(&input, ops);
+        assert!(!errs.is_empty(), "expected at least one CompileError");
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, CompileError::InvalidExpr { .. })),
+            "expected InvalidExpr error, got {errs:?}"
+        );
+    }
+}
