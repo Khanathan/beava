@@ -279,6 +279,9 @@ impl Registry {
         let mut agg_map: std::collections::HashMap<String, Arc<AggregationDescriptor>> =
             compiled_aggregations.into_iter().collect();
 
+        // Track newly inserted aggregation node names for O(N_new) index update (WR-03).
+        let mut newly_inserted_agg_names: Vec<String> = Vec::new();
+
         for n in nodes {
             match n {
                 crate::registry_diff::PayloadNode::Event(mut e) => {
@@ -308,6 +311,7 @@ impl Registry {
                         }
                         // Phase 5 Plan 04: install compiled aggregation descriptor.
                         if let Some(agg) = agg_map.remove(&d.name) {
+                            newly_inserted_agg_names.push(d.name.clone());
                             w.compiled_aggregations.insert(d.name.clone(), agg);
                         }
                         w.derivations.insert(d.name.clone(), d);
@@ -316,13 +320,13 @@ impl Registry {
             }
         }
 
-        // Phase 5 Plan 06: rebuild feature_index from all compiled_aggregations.
-        // Additive-only: existing entries are preserved; new ones are inserted only
-        // if the name is not already present (first-registration wins per plan spec).
+        // Phase 5 Plan 06: update feature_index for ONLY the newly inserted aggregation
+        // nodes (WR-03: O(N_new) instead of O(N_total)).
+        // Additive-only: existing entries are preserved via `entry().or_insert()`.
         // Collect new entries first to avoid simultaneous mutable + immutable borrows of `w`.
-        let new_index_entries: Vec<(String, String, usize)> = w
-            .compiled_aggregations
+        let new_index_entries: Vec<(String, String, usize)> = newly_inserted_agg_names
             .iter()
+            .filter_map(|node_name| w.compiled_aggregations.get(node_name).map(|d| (node_name, d)))
             .flat_map(|(node_name, agg_desc)| {
                 agg_desc
                     .features
