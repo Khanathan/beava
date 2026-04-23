@@ -33,6 +33,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 3 | Python SDK skeleton + decorators + expression DSL | `@bv.event`, `@bv.table`, `bv.col`, `bv.App(url)` (HTTP + TCP), register + validate, REGISTER JSON compiler | 20 | 7 |
 | 4 | Stateless ops + expression evaluator (server-side) | 7/7 | Complete   | 2026-04-23 |
 | 5 | Aggregation framework + core operators (8) | 5/8 | In Progress|  |
+| 5.5 | Perf harness + retroactive baselines | `criterion` workspace setup; retroactive microbenches for Phase 2.5 wire codec, Phase 3 SDK compile, Phase 4 expr parse/eval/op-chain, Phase 5 AggOp/Windowed hot paths; baselines committed to `.planning/perf-baselines.md`; regression gate convention (10% warn / 25% block) applied to every subsequent phase | ~8 benches | 4 |
 | 6 | WAL + idempotency | Every push write-through fsynced before ACK; stream-level idempotency keys cached with TTL | 5 | 4 |
 | 7 | Snapshot + recovery | Periodic full-state snapshot; restart replays snapshot + WAL; schema evolution survives restart | 5 | 4 |
 | 8 | Point / ordinal / recency operators | first, last, first_n, last_n, lag, first_seen, last_seen, age, has_seen, time_since, time_since_last_n, streak, max_streak, negative_streak, first_seen_in_window | 15 | 4 |
@@ -43,7 +44,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 12 | Joins + unions + push/get API completion | Event↔event windowed join, event↔table enrichment (incl. event-time PIT against temporal tables), table↔table join, `bv.union`; `push_sync` + `push_many` + `push_table` + `delete_table` + `set` + `mset` + `mget` + `get_multi` wired end-to-end | 13 | 5 |
 | 13 | Observability + performance + docs + packaging + `bv.fork` + playground | `/metrics`, structured logs, perf gates on THREE pipelines (simple fraud, complex fraud, recommendations) ≥3M EPS, <10ms P99 batch get, SDK polish, docs, hosted interactive tutorial at playground.beava.dev, PyPI, GitHub Releases, Docker, `beava fork` subcommand | ~18 | 7 |
 
-**Total:** 15 phases (Phase 2.5 inserted 2026-04-23 for dual HTTP+TCP wire; Phase 11.5 inserted 2026-04-23 for temporal tables + retraction primitive required by PIT stream↔table joins), ~163 requirements mapped (actual count confirmed after plan-time verification), ~79 success criteria.
+**Total:** 16 phases (Phase 2.5 inserted 2026-04-23 for dual HTTP+TCP wire; Phase 5.5 inserted 2026-04-23 for perf harness + retroactive baselines + per-phase regression gates; Phase 11.5 inserted 2026-04-23 for temporal tables + retraction primitive required by PIT stream↔table joins), ~173 requirements mapped (actual count confirmed after plan-time verification), ~84 success criteria.
 
 **Phase 1 status:** ✅ **COMPLETE** on commits `b100e51`..`c21b6b7`. Cargo workspace, axum HTTP server, `/health` + `/ready` stubs, graceful shutdown, integration TestServer harness — all gates green. See `.planning/phases/01-foundation/01-SUMMARY.md`, `.planning/phases/01-foundation/01-VERIFICATION.md`.
 
@@ -210,6 +211,23 @@ Feature authoring as composable Python code that ships to production unchanged. 
 - [ ] 05-06-PLAN.md — Feature query endpoints GET /get/{feature}/{key} + POST /get + cross-agg collision rule (SDK-AGG-02)
 - [ ] 05-07-PLAN.md — Python SDK group_by + 8 bv.<op> helpers + REGISTER JSON serialization (SDK-AGG-01..06)
 - [ ] 05-08-PLAN.md — Phase 5 Rust + Python acceptance smokes (SC1..SC6 coverage)
+
+### Phase 5.5: Perf harness + retroactive baselines
+
+**Goal:** Set up `criterion` bench harness workspace-wide. Write retroactive microbenches for every prior phase's hot path. Establish baseline numbers committed to `.planning/perf-baselines.md`. Establish the regression-gate convention (10% slower = warn; 25% slower = block) that every subsequent phase must honor. This is NOT about optimizing — just measuring, so regressions in later phases (8–13) surface incrementally rather than landing as a surprise in the Phase 13 perf gate.
+
+**Depends on:** Phase 5 (all prior phases must exist to bench).
+
+**Requirements:** PERF-HARNESS-01 (criterion workspace setup), PERF-HARNESS-02 (baselines file + hw-class tagging), PERF-HARNESS-03 (regression thresholds 10%/25%), PERF-BENCH-WIRE-01 (Phase 2.5 frame codec encode/decode throughput), PERF-BENCH-SDK-01 (Phase 3 REGISTER JSON compile throughput), PERF-BENCH-EXPR-01 (Phase 4 parse + eval per op), PERF-BENCH-OPCHAIN-01 (Phase 4 OpChain apply for 4-op chain), PERF-BENCH-AGG-01 (Phase 5 AggOp::update per op), PERF-BENCH-WINDOWED-01 (Phase 5 WindowedOp fold 64-bucket), PERF-BENCH-APPLY-01 (Phase 5 apply_event_to_aggregations per event) — ~10 REQ-IDs to be defined at plan-time.
+
+**Success criteria:**
+1. `cargo bench --workspace` runs all benches and produces baseline numbers per hw class
+2. `.planning/perf-baselines.md` committed with machine-class-tagged results (e.g., `hw: apple-m1-pro; os: darwin; cpu-count: 10`)
+3. Regression gate documented in CLAUDE.md §Conventions and plan-checker contract: every phase from here forward MUST ship at least one microbench
+4. Retroactive baselines prove ≥1 bench per phase 2.5/3/4/5
+5. Phase 13 end-to-end perf gate (≥3M EPS/core, P99 <10ms batch-get) still the final ship gate — Phase 5.5 does NOT replace it, just surfaces regressions early
+
+**Plans:** TBD at plan-phase time (~4-6 plans expected — workspace setup + one bench-module-per-phase).
 
 ### Phase 6: WAL + idempotency
 
