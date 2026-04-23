@@ -32,7 +32,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 2.5 | TCP wire listener + framing + full opcode table | Custom-framed TCP listener alongside HTTP; full v0 opcode table designed; `register` + `ping` handlers wired; rest return `op_not_implemented` placeholder | ~8 | 8 ✅ **COMPLETE** |
 | 3 | Python SDK skeleton + decorators + expression DSL | `@bv.event`, `@bv.table`, `bv.col`, `bv.App(url)` (HTTP + TCP), register + validate, REGISTER JSON compiler | 20 | 7 |
 | 4 | Stateless ops + expression evaluator (server-side) | 7/7 | Complete   | 2026-04-23 |
-| 5 | Aggregation framework + core operators (8) | 5/8 | In Progress|  |
+| 5 | Aggregation framework + core operators (8) | 7/8 | In Progress|  |
 | 5.5 | Perf harness + retroactive baselines | `criterion` workspace setup; retroactive microbenches for Phase 2.5 wire codec, Phase 3 SDK compile, Phase 4 expr parse/eval/op-chain, Phase 5 AggOp/Windowed hot paths; baselines committed to `.planning/perf-baselines.md`; regression gate convention (10% warn / 25% block) applied to every subsequent phase | ~8 benches | 4 |
 | 6 | WAL + idempotency | Every push write-through fsynced before ACK; stream-level idempotency keys cached with TTL | 5 | 4 |
 | 7 | Snapshot + recovery | Periodic full-state snapshot; restart replays snapshot + WAL; schema evolution survives restart | 5 | 4 |
@@ -202,14 +202,14 @@ Feature authoring as composable Python code that ships to production unchanged. 
 5. Lifetime/windowless mode works when `window` omitted on compatible operators (ratio, count)
 6. Validation: unknown field in `op.field` rejected at registration
 
-**Plans:** 5/8 plans executed
+**Plans:** 7/8 plans executed
 - [x] 05-01-PLAN.md — AggOp enum + per-op state structs (Count/Sum/Avg/Min/Max/Variance/StdDev/Ratio) + Windowed<Op> 64-bucket tumbling (AGG-CORE-01..09, SDK-AGG-03)
 - [x] 05-02-PLAN.md — `where=` predicate threading through apply path (SDK-AGG-04)
 - [x] 05-03-PLAN.md — AggregationDescriptor + propagate_aggregation_schema (SDK-AGG-01, SDK-AGG-03)
 - [x] 05-04-PLAN.md — Register-time Rule 11 + compiled_aggregations cache + HTTP/TCP wire errors (SDK-AGG-05, SDK-AGG-06)
 - [x] 05-05-PLAN.md — Apply loop hook + per-entity AggStateTable + /dev/apply_events (SDK-AGG-02, AGG-CORE-09)
-- [ ] 05-06-PLAN.md — Feature query endpoints GET /get/{feature}/{key} + POST /get + cross-agg collision rule (SDK-AGG-02)
-- [ ] 05-07-PLAN.md — Python SDK group_by + 8 bv.<op> helpers + REGISTER JSON serialization (SDK-AGG-01..06)
+- [x] 05-06-PLAN.md — Feature query endpoints GET /get/{feature}/{key} + POST /get + cross-agg collision rule (SDK-AGG-02)
+- [x] 05-07-PLAN.md — Python SDK group_by + 8 bv.<op> helpers + REGISTER JSON serialization (SDK-AGG-01..06)
 - [ ] 05-08-PLAN.md — Phase 5 Rust + Python acceptance smokes (SC1..SC6 coverage)
 
 ### Phase 5.5: Perf harness + retroactive baselines
