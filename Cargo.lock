@@ -191,6 +191,7 @@ dependencies = [
  "anyhow",
  "axum",
  "beava-core",
+ "beava-persistence",
  "bytes",
  "clap",
  "criterion",

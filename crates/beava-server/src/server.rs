@@ -230,6 +230,7 @@ mod tests {
                 enabled: false,
                 ..Default::default()
             },
+            durability: Default::default(),
         }
     }
 
@@ -243,6 +244,7 @@ mod tests {
                 port: 0, // OS-assigned
                 max_frame_bytes: 4 * 1024 * 1024,
             },
+            durability: Default::default(),
         }
     }
 
@@ -264,6 +266,7 @@ mod tests {
                 enabled: false,
                 ..Default::default()
             },
+            durability: Default::default(),
         };
         let err = Server::bind(&cfg, false).await.unwrap_err();
         assert!(matches!(err, ServerError::InvalidAddr(_, _)));
@@ -373,6 +376,7 @@ mod tests {
                 port: busy_port,
                 max_frame_bytes: 1024,
             },
+            durability: Default::default(),
         };
         let err = Server::bind(&cfg, false).await.unwrap_err();
         assert!(matches!(err, ServerError::BindTcp { .. }));
@@ -416,6 +420,7 @@ mod tests {
                 port: 0,
                 max_frame_bytes: 1024,
             },
+            durability: Default::default(),
         };
         let err = Server::bind(&cfg, false).await.unwrap_err();
         assert!(matches!(err, ServerError::BindTcp { .. }));

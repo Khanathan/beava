@@ -67,6 +67,7 @@ impl Default for TestServerBuilder {
                 port: 0,
                 ..Default::default()
             },
+            durability: Default::default(),
         };
         Self {
             cfg,

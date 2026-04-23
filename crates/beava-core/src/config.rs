@@ -30,6 +30,9 @@ pub struct Config {
     /// TCP wire listener config (Phase 2.5 D-06). Enabled by default alongside HTTP.
     #[serde(default)]
     pub tcp: TcpConfig,
+    /// Phase 6 D-06/D-13: WAL + idempotency cache knobs.
+    #[serde(default)]
+    pub durability: DurabilityConfig,
 }
 
 fn default_listen_addr() -> String {
@@ -46,6 +49,55 @@ impl Default for Config {
             listen_addr: default_listen_addr(),
             log_level: default_log_level(),
             tcp: TcpConfig::default(),
+            durability: DurabilityConfig::default(),
+        }
+    }
+}
+
+// ─── DurabilityConfig (Phase 6 D-06 / D-13) ──────────────────────────────────
+
+/// Durability + idempotency-cache tuning. All fields env-override via
+/// `BEAVA_WAL_DIR`, `BEAVA_WAL_FSYNC_INTERVAL_MS`, `BEAVA_WAL_FSYNC_BYTES`,
+/// `BEAVA_WAL_SEGMENT_BYTES`, and `BEAVA_DEDUPE_SWEEP_SECS`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DurabilityConfig {
+    #[serde(default = "default_wal_dir")]
+    pub wal_dir: PathBuf,
+    #[serde(default = "default_wal_fsync_interval_ms")]
+    pub wal_fsync_interval_ms: u64,
+    #[serde(default = "default_wal_fsync_bytes")]
+    pub wal_fsync_bytes: u64,
+    #[serde(default = "default_wal_segment_bytes")]
+    pub wal_segment_bytes: u64,
+    #[serde(default = "default_dedupe_sweep_interval_secs")]
+    pub dedupe_sweep_interval_secs: u64,
+}
+
+fn default_wal_dir() -> PathBuf {
+    PathBuf::from("./beava-wal")
+}
+fn default_wal_fsync_interval_ms() -> u64 {
+    2
+}
+fn default_wal_fsync_bytes() -> u64 {
+    1 << 20 // 1 MiB
+}
+fn default_wal_segment_bytes() -> u64 {
+    128 << 20 // 128 MiB
+}
+fn default_dedupe_sweep_interval_secs() -> u64 {
+    60
+}
+
+impl Default for DurabilityConfig {
+    fn default() -> Self {
+        Self {
+            wal_dir: default_wal_dir(),
+            wal_fsync_interval_ms: default_wal_fsync_interval_ms(),
+            wal_fsync_bytes: default_wal_fsync_bytes(),
+            wal_segment_bytes: default_wal_segment_bytes(),
+            dedupe_sweep_interval_secs: default_dedupe_sweep_interval_secs(),
         }
     }
 }
@@ -161,6 +213,42 @@ fn apply_env_overrides(cfg: &mut Config) -> Result<(), ConfigError> {
                 .map_err(|e: std::num::ParseIntError| ConfigError::Validation {
                     field: "tcp.max_frame_bytes",
                     reason: format!("BEAVA_TCP_MAX_FRAME_BYTES=`{}`: {}", v, e),
+                })?;
+    }
+    // Phase 6 DurabilityConfig env overrides.
+    if let Ok(v) = std::env::var("BEAVA_WAL_DIR") {
+        cfg.durability.wal_dir = PathBuf::from(v);
+    }
+    if let Ok(v) = std::env::var("BEAVA_WAL_FSYNC_INTERVAL_MS") {
+        cfg.durability.wal_fsync_interval_ms =
+            v.parse()
+                .map_err(|e: std::num::ParseIntError| ConfigError::Validation {
+                    field: "durability.wal_fsync_interval_ms",
+                    reason: format!("BEAVA_WAL_FSYNC_INTERVAL_MS=`{}`: {}", v, e),
+                })?;
+    }
+    if let Ok(v) = std::env::var("BEAVA_WAL_FSYNC_BYTES") {
+        cfg.durability.wal_fsync_bytes =
+            v.parse()
+                .map_err(|e: std::num::ParseIntError| ConfigError::Validation {
+                    field: "durability.wal_fsync_bytes",
+                    reason: format!("BEAVA_WAL_FSYNC_BYTES=`{}`: {}", v, e),
+                })?;
+    }
+    if let Ok(v) = std::env::var("BEAVA_WAL_SEGMENT_BYTES") {
+        cfg.durability.wal_segment_bytes =
+            v.parse()
+                .map_err(|e: std::num::ParseIntError| ConfigError::Validation {
+                    field: "durability.wal_segment_bytes",
+                    reason: format!("BEAVA_WAL_SEGMENT_BYTES=`{}`: {}", v, e),
+                })?;
+    }
+    if let Ok(v) = std::env::var("BEAVA_DEDUPE_SWEEP_SECS") {
+        cfg.durability.dedupe_sweep_interval_secs =
+            v.parse()
+                .map_err(|e: std::num::ParseIntError| ConfigError::Validation {
+                    field: "durability.dedupe_sweep_interval_secs",
+                    reason: format!("BEAVA_DEDUPE_SWEEP_SECS=`{}`: {}", v, e),
                 })?;
     }
     Ok(())

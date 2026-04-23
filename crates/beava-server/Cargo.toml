@@ -55,12 +55,32 @@ name = "phase5_5_baselines_smoke"
 path = "tests/phase5_5_baselines_smoke.rs"
 required-features = ["testing"]
 
+[[test]]
+name = "phase6_push"
+path = "tests/phase6_push.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "phase6_crash"
+path = "tests/phase6_crash.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "phase6_smoke"
+path = "tests/phase6_smoke.rs"
+required-features = ["testing"]
+
+[[bin]]
+name = "phase6_crash_probe"
+path = "src/bin/phase6_crash_probe.rs"
+
 [lib]
 name = "beava_server"
 path = "src/lib.rs"
 
 [dependencies]
 beava-core = { path = "../beava-core" }
+beava-persistence = { path = "../beava-persistence" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
