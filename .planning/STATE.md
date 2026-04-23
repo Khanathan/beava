@@ -18,10 +18,10 @@ Feature authoring as composable Python code that ships to production unchanged. 
 ## Current Position
 
 - **Milestone:** v0
-- **Phase:** 2 of 13 (Sources + registry + version bumps)
-- **Plan:** Phase 1 complete — 5/5 plans executed; Phase 2 unplanned
-- **Status:** Phase 1 complete; re-plan to v1 API shape committed; ready for Phase 2 planning
-- **Progress:** █▱▱▱▱▱▱▱▱▱▱▱▱ 1/13 phases
+- **Phase:** 3 of 13 (Python SDK skeleton)
+- **Plan:** Phase 2 complete — 6/6 plans executed; Phase 3 ready
+- **Status:** Phase 2 complete; POST /register + GET /registry live; 165 tests green; acceptance gate passed
+- **Progress:** ██▱▱▱▱▱▱▱▱▱▱▱ 2/13 phases
 
 ## Performance Metrics
 
@@ -92,14 +92,30 @@ Not yet measured. Perf harness introduced in Phase 5; hit-gate in Phase 13.
 - `foundation_smoke` uses `required-features = ["testing"]` in Cargo.toml test stanza (cfg(test) does NOT propagate to integration tests)
 - `libc` dev-dep for `kill(pid, SIGTERM)` in subprocess smoke tests
 
+### Decisions from Phase 2 (Sources + registry + version bumps, complete)
+
+- `parking_lot::RwLock<RegistryInner>` for thread-safe Registry (no Tokio async locks — no lock held across `.await`)
+- `equiv_ignoring_version()` helper pattern (NOT custom PartialEq) for diff comparisons without version-stamp noise
+- `ValidatedPayload` newtype enforcing validate → compute_diff ordering
+- `PayloadNode` enum (Event/Table/Derivation) as unified payload type with `#[serde(tag = "kind")]`
+- `compute_diff` is pure (no mutation, no I/O); `apply_registration` is the single atomic install boundary
+- Fail-soft validation (collect all errors); first-error-wins on HTTP 400 (logs full Vec at WARN)
+- DFS three-color cycle detection for DAG acyclicity
+- Parse errors return `path="<body>"` (v0 best-effort); richer JSON-pointer extraction is Phase 3+
+- `OpNode` derives `PartialEq` only (not `Eq`) because `serde_json::Value` in `AggSpec` is not `Eq`
+- `Server::bind(cfg, dev_endpoints: bool)` takes the flag directly; production reads env var in `main.rs`; tests pass the bool directly (avoids `MutexGuard` held across `.await`)
+- `GET /registry` mounted only when `dev_endpoints_enabled=true`; `_dev_only: true` sentinel in response
+
 ### Active todos
 
 - [x] Roadmap drafted (yolo auto-approved) — superseded by re-plan
 - [x] Plan Phase 1 (5 plans)
 - [x] Execute Phase 1 (36 tests green, foundation_smoke 2/2, acceptance gate passed)
 - [x] Re-plan v2 to adopt v1 Python SDK API shape (2026-04-22)
-- [ ] Plan Phase 2 (Sources + registry + version bumps) — NEXT
-- [ ] Execute Phases 2 through 13
+- [x] Plan Phase 2 (6 plans: schema, OpNode, diff, validation, endpoint, acceptance)
+- [x] Execute Phase 2 (165 tests green, phase2_smoke 7/7, acceptance gate passed)
+- [ ] Plan Phase 3 (Python SDK skeleton) — NEXT
+- [ ] Execute Phases 3 through 13
 
 ### Blockers
 
@@ -112,24 +128,33 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-22 — Re-planned v2 from JSON aggregation DSL to v1 Python SDK API shape after deep research on `main` branch's `python/beava/` surface. Committed new PROJECT.md, REQUIREMENTS.md, ROADMAP.md. Deleted stale Phase 2 CONTEXT.md (was written against the JSON DSL). Phase 1 work intact.
+Last session: 2026-04-23 — Executed all 6 Phase 2 plans. Built full Registry data model, diff engine, validation pass, POST /register endpoint, GET /registry dev endpoint, TestServer HTTP helpers, and phase2_smoke acceptance test. 165 tests green.
 
 Next session should:
 
 1. Read `.planning/PROJECT.md`, `.planning/ROADMAP.md`, this file, and `.planning/REQUIREMENTS.md`
-2. Confirm Phase 2 (Sources + registry + version bumps) is the current focus
-3. Run `/gsd-plan-phase 2` to decompose Phase 2 into plans — or resume `/gsd-autonomous --from 2` for the full pipeline
-4. Note: Phase 3 (Python SDK skeleton) depends on Phase 2, so `register` JSON schema decisions made in Phase 2 are load-bearing for the SDK compiler
+2. Confirm Phase 3 (Python SDK skeleton) is the current focus
+3. Run `/gsd-plan-phase 3` to decompose Phase 3 into plans
 
-### Phase 2 attach points (Rust)
+### Phase 3 attach points
 
-- HTTP: `crates/beava-server/src/http.rs` — add `.merge(register_router())` in `router()`
-- Registry: new `crates/beava-core/src/registry.rs` with `Registry { Arc<RwLock<RegistryInner>> }`, `RegistryInner { version: u64, events: BTreeMap<..>, tables: BTreeMap<..>, derivations: BTreeMap<..> }`
-- Schema types: new `crates/beava-core/src/schema.rs` with `FieldType`, `EventSchema`, `TableSchema`
-- Diff engine: new `crates/beava-core/src/registry_diff.rs` with `compute_diff(current, submitted) -> RegistryDiff { added, removed, changed }`
-- Integration tests: `TestServer::spawn()` from Phase 1; add helper `TestServer::post_json(path, body)`
+- Python SDK entry: `python/beava/` (existing v1 codebase on `main` branch)
+- Server endpoint: `POST /register` wire contract is LOCKED (see 02-05-PLAN.md §Stability notes)
+- GET /registry available when `BEAVA_DEV_ENDPOINTS=1` for SDK test harness debugging
+- TestServer helpers: `ts.post_json("/register", &payload)`, `ts.get_json("/registry")`
+- SDK test pattern: spawn TestServer (Rust binary), call HTTP endpoints from Python tests
+
+### Key locked wire contracts (Phase 2 output)
+
+- `POST /register` request: `{"nodes": [{"kind": "event"|"table"|"derivation", ...}]}`
+- `POST /register` 200 response: `{"status": "ok", "registry_version": N, "registered_descriptors": [...], "added": [...], "already_present": [...]}`
+- `POST /register` 400 response: `{"error": {"code": "invalid_registration", "path": "...", "reason": "..."}, "registry_version": N}`
+- `POST /register` 409 response: `{"error": {"code": "registration_conflict", "message": "...", "diff": {"added": [...], "removed": [], "changed": [...]}}, "registry_version": N}`
+- `POST /register` 415 response: `{"error": {"code": "unsupported_media_type", ...}, "registry_version": N}`
+- `GET /registry` response: `{"version": N, "events": {...}, "tables": {...}, "derivations": {...}, "_dev_only": true}`
 
 ---
 *State initialized: 2026-04-22 after roadmap creation.*
 *Phase 1 complete: 2026-04-22 — workspace, HTTP, config, logging, test harness.*
 *Re-plan committed: 2026-04-22 — v2 adopts v1 Python SDK API shape.*
+*Phase 2 complete: 2026-04-23 — Registry, diff, validation, POST /register, GET /registry, 165 tests.*
