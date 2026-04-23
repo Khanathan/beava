@@ -1,15 +1,17 @@
 //! beava-core: shared library for Beava v2.
 //!
 //! This crate will grow over phases 2–10:
-//! - Phase 2: operator trait, feature registry, where-filter DSL
-//! - Phase 3: core aggregate primitives + apply loop
-//! - Phase 4: WAL record format
-//! - Phase 5: snapshot/recovery
-//! - Phases 6–8: primitive catalogue
-//!
-//! Phase 1 ships a placeholder so the workspace compiles.
+//! - Phase 2: schema + registry (this phase)
+//! - Phase 3: Python SDK integration
+//! - Phase 4: expression evaluation + stateless op execution
+//! - Phase 5: aggregation operators + apply loop
+//! - Phase 6: WAL persistence
+//! - Phase 7: snapshot/recovery
+//! - Phases 8–10: advanced operators + infra
 
 pub mod config;
+pub mod registry;
+pub mod schema;
 
 /// Compile-time crate version exposed for banner / diagnostics.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
