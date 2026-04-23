@@ -68,11 +68,10 @@ pub const BUILTINS: &[BuiltinFn] = &[
 
 /// Returns the `BuiltinFn` entry for `name`, or `None` if unknown.
 ///
-/// Linear scan over the (currently 2-item) `BUILTINS` table.  O(n) is fine
+/// Linear scan over the (currently 2-item) `BUILTINS` table. O(n) is fine
 /// at the current scale; a `HashMap` would be premature.
-#[allow(unused_variables)]
 pub fn lookup_builtin(name: &str) -> Option<&'static BuiltinFn> {
-    todo!()
+    BUILTINS.iter().find(|b| b.name == name)
 }
 
 // ─── cast ─────────────────────────────────────────────────────────────────────
@@ -85,9 +84,94 @@ pub fn lookup_builtin(name: &str) -> Option<&'static BuiltinFn> {
 ///
 /// Returns `Value::Null` on any error: wrong arity, unknown type, null input,
 /// or parse failure.
-#[allow(unused_variables)]
+///
+/// # Cast conversion matrix (CONTEXT.md §D-05)
+///
+/// | Source     | "str"          | "int"             | "float"           | "bool"               |
+/// |------------|----------------|-------------------|-------------------|----------------------|
+/// | Null       | Null           | Null              | Null              | Null                 |
+/// | Str        | unchanged      | parse or Null     | parse or Null     | "true"→T,"false"→F   |
+/// | I64        | fmt            | unchanged         | as f64            | ≠0 → true            |
+/// | F64        | fmt            | as i64 (trunc)    | unchanged         | ≠0.0&&!NaN→true      |
+/// | Bool       | "true"/"false" | 1 / 0             | 1.0 / 0.0         | unchanged            |
+/// | Bytes      | Null           | Null              | Null              | Null                 |
+/// | Datetime   | i64.to_string  | I64(ms)           | F64(ms as f64)    | ms≠0→true            |
 fn cast_eval(args: &[Value]) -> Value {
-    todo!()
+    // Arity guard: must be exactly 2 args.
+    if args.len() != 2 {
+        return Value::Null;
+    }
+
+    // Target type comes as Value::Str (evaluator converts BareIdent → Str).
+    let target = match &args[1] {
+        Value::Str(s) => s.as_str(),
+        _ => return Value::Null,
+    };
+
+    // Null input → always Null regardless of target.
+    if matches!(args[0], Value::Null) {
+        return Value::Null;
+    }
+
+    match target {
+        "str" => cast_to_str(&args[0]),
+        "int" => cast_to_int(&args[0]),
+        "float" => cast_to_float(&args[0]),
+        "bool" => cast_to_bool(&args[0]),
+        _ => Value::Null,
+    }
+}
+
+fn cast_to_str(v: &Value) -> Value {
+    match v {
+        Value::Null => Value::Null,
+        Value::Str(s) => Value::Str(s.clone()),
+        Value::I64(n) => Value::Str(n.to_string()),
+        Value::F64(f) => Value::Str(f.to_string()),
+        Value::Bool(b) => Value::Str(if *b { "true" } else { "false" }.to_string()),
+        Value::Bytes(_) => Value::Null, // no implicit bytes→str without encoding spec
+        Value::Datetime(ms) => Value::Str(ms.to_string()),
+    }
+}
+
+fn cast_to_int(v: &Value) -> Value {
+    match v {
+        Value::Null => Value::Null,
+        Value::I64(n) => Value::I64(*n),
+        Value::F64(f) => Value::I64(*f as i64), // truncate toward zero
+        Value::Bool(b) => Value::I64(if *b { 1 } else { 0 }),
+        Value::Str(s) => s.parse::<i64>().map(Value::I64).unwrap_or(Value::Null),
+        Value::Bytes(_) => Value::Null,
+        Value::Datetime(ms) => Value::I64(*ms),
+    }
+}
+
+fn cast_to_float(v: &Value) -> Value {
+    match v {
+        Value::Null => Value::Null,
+        Value::I64(n) => Value::F64(*n as f64),
+        Value::F64(f) => Value::F64(*f),
+        Value::Bool(b) => Value::F64(if *b { 1.0 } else { 0.0 }),
+        Value::Str(s) => s.parse::<f64>().map(Value::F64).unwrap_or(Value::Null),
+        Value::Bytes(_) => Value::Null,
+        Value::Datetime(ms) => Value::F64(*ms as f64),
+    }
+}
+
+fn cast_to_bool(v: &Value) -> Value {
+    match v {
+        Value::Null => Value::Null,
+        Value::Bool(b) => Value::Bool(*b),
+        Value::I64(n) => Value::Bool(*n != 0),
+        Value::F64(f) => Value::Bool(*f != 0.0 && !f.is_nan()),
+        Value::Str(s) => match s.as_str() {
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            _ => Value::Null,
+        },
+        Value::Bytes(_) => Value::Null,
+        Value::Datetime(ms) => Value::Bool(*ms != 0),
+    }
 }
 
 // ─── isnull ───────────────────────────────────────────────────────────────────
@@ -95,9 +179,12 @@ fn cast_eval(args: &[Value]) -> Value {
 /// Evaluate `isnull(value)`.
 ///
 /// Always returns `Bool(true/false)` — never `Null`.
-#[allow(unused_variables)]
 fn isnull_eval(args: &[Value]) -> Value {
-    todo!()
+    // Arity guard: must be exactly 1 arg (defensive; register-time catches).
+    if args.len() != 1 {
+        return Value::Null;
+    }
+    Value::Bool(matches!(args[0], Value::Null))
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

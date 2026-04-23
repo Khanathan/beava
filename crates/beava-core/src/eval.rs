@@ -36,16 +36,235 @@
 //!   second argument (`cast(x, float)`) arrives at `cast_eval` as
 //!   `Value::Str("float")` — matching the builtin contract.
 
-use crate::expr::Expr;
+use crate::expr::{Expr, Literal};
+use crate::expr_builtins::lookup_builtin;
 use crate::row::{Row, Value};
 
 /// Evaluate `expr` against `row`, returning the resulting `Value`.
 ///
 /// This function is pure and deterministic: the same `(expr, row)` always
 /// produces the same `Value`.
-#[allow(unused_variables)]
 pub fn eval(expr: &Expr, row: &Row) -> Value {
-    todo!()
+    match expr {
+        // ── Field reference ───────────────────────────────────────────────────
+        Expr::Field { name, .. } => row.get(name).cloned().unwrap_or(Value::Null),
+
+        // ── Scalar literals ───────────────────────────────────────────────────
+        Expr::Literal(lit, _) => match lit {
+            Literal::Null => Value::Null,
+            Literal::Bool(b) => Value::Bool(*b),
+            Literal::Int(n) => Value::I64(*n),
+            Literal::Float(f) => Value::F64(*f),
+            Literal::Str(s) => Value::Str(s.clone()),
+            // BareIdent is the type-arg to cast(x, float): evaluator converts to
+            // Str so cast_eval receives Value::Str("float") matching its contract.
+            Literal::BareIdent(s) => Value::Str(s.clone()),
+        },
+
+        // ── Unary NOT ─────────────────────────────────────────────────────────
+        Expr::UnaryOp { operand, .. } => {
+            // Only "not" exists in Phase 4; future ops would branch on `op`.
+            let v = eval(operand, row);
+            v.not_three_valued()
+        }
+
+        // ── Binary ops ────────────────────────────────────────────────────────
+        Expr::BinOp {
+            op, left, right, ..
+        } => eval_binop(op, left, right, row),
+
+        // ── Call (builtins) ───────────────────────────────────────────────────
+        Expr::Call { fn_name, args, .. } => {
+            // Evaluate all args to Values first.
+            let arg_vals: Vec<Value> = args.iter().map(|a| eval(a, row)).collect();
+            match lookup_builtin(fn_name) {
+                Some(builtin) => (builtin.eval)(&arg_vals),
+                // Unknown function → Null (register-time catches; runtime defensive).
+                None => Value::Null,
+            }
+        }
+    }
+}
+
+// ─── Binary operator dispatch ─────────────────────────────────────────────────
+
+fn eval_binop(op: &str, left: &Expr, right: &Expr, row: &Row) -> Value {
+    match op {
+        // Boolean operators: short-circuit evaluation delegated to three-valued helpers.
+        "and" => {
+            let lv = eval(left, row);
+            // Short-circuit: false AND _ = false (skip right).
+            if lv == Value::Bool(false) {
+                return Value::Bool(false);
+            }
+            let rv = eval(right, row);
+            lv.and_three_valued(&rv)
+        }
+        "or" => {
+            let lv = eval(left, row);
+            // Short-circuit: true OR _ = true (skip right).
+            if lv == Value::Bool(true) {
+                return Value::Bool(true);
+            }
+            let rv = eval(right, row);
+            lv.or_three_valued(&rv)
+        }
+
+        // Arithmetic and comparison: evaluate both operands, then dispatch.
+        _ => {
+            let lv = eval(left, row);
+            let rv = eval(right, row);
+            // Null propagates for arithmetic and comparison (D-04).
+            if matches!(lv, Value::Null) || matches!(rv, Value::Null) {
+                return Value::Null;
+            }
+            match op {
+                "+" => arith_add(lv, rv),
+                "-" => arith_sub(lv, rv),
+                "*" => arith_mul(lv, rv),
+                "/" => arith_div(lv, rv),
+                ">" => cmp_op(lv, rv, |o| matches!(o, std::cmp::Ordering::Greater)),
+                ">=" => cmp_op(lv, rv, |o| {
+                    matches!(o, std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+                }),
+                "<" => cmp_op(lv, rv, |o| matches!(o, std::cmp::Ordering::Less)),
+                "<=" => cmp_op(lv, rv, |o| {
+                    matches!(o, std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                }),
+                "==" => cmp_eq(lv, rv),
+                "!=" => cmp_ne(lv, rv),
+                // Unknown operator → Null (defensive).
+                _ => Value::Null,
+            }
+        }
+    }
+}
+
+// ─── Arithmetic helpers ───────────────────────────────────────────────────────
+// Each arithmetic function handles I64+I64, F64+F64, and mixed I64/F64 cases
+// inline via a two-level match. This avoids a shared helper with a confusing
+// return type and keeps each function's logic self-contained.
+
+fn arith_add(a: Value, b: Value) -> Value {
+    match (a, b) {
+        (Value::I64(x), Value::I64(y)) => Value::I64(x.saturating_add(y)),
+        (Value::F64(x), Value::F64(y)) => Value::F64(x + y),
+        (Value::I64(x), Value::F64(y)) => Value::F64(x as f64 + y),
+        (Value::F64(x), Value::I64(y)) => Value::F64(x + y as f64),
+        _ => Value::Null, // non-numeric types
+    }
+}
+
+fn arith_sub(a: Value, b: Value) -> Value {
+    match (a, b) {
+        (Value::I64(x), Value::I64(y)) => Value::I64(x.saturating_sub(y)),
+        (Value::F64(x), Value::F64(y)) => Value::F64(x - y),
+        (Value::I64(x), Value::F64(y)) => Value::F64(x as f64 - y),
+        (Value::F64(x), Value::I64(y)) => Value::F64(x - y as f64),
+        _ => Value::Null,
+    }
+}
+
+fn arith_mul(a: Value, b: Value) -> Value {
+    match (a, b) {
+        (Value::I64(x), Value::I64(y)) => Value::I64(x.saturating_mul(y)),
+        (Value::F64(x), Value::F64(y)) => Value::F64(x * y),
+        (Value::I64(x), Value::F64(y)) => Value::F64(x as f64 * y),
+        (Value::F64(x), Value::I64(y)) => Value::F64(x * y as f64),
+        _ => Value::Null,
+    }
+}
+
+fn arith_div(a: Value, b: Value) -> Value {
+    match (a, b) {
+        // Integer division: divide-by-zero → Null; otherwise truncating.
+        (Value::I64(x), Value::I64(y)) => {
+            if y == 0 {
+                Value::Null
+            } else {
+                Value::I64(x / y)
+            }
+        }
+        // Float division: IEEE-754 (div by 0.0 → ±Inf, NaN propagates).
+        (Value::F64(x), Value::F64(y)) => Value::F64(x / y),
+        (Value::I64(x), Value::F64(y)) => Value::F64(x as f64 / y),
+        (Value::F64(x), Value::I64(y)) => Value::F64(x / y as f64),
+        _ => Value::Null,
+    }
+}
+
+// ─── Comparison helpers ───────────────────────────────────────────────────────
+
+/// Try to compare two same-type values. Returns `None` for cross-type or
+/// NaN-containing comparisons (which must resolve to Null or false depending on
+/// the context — callers handle this).
+fn try_compare(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+    match (a, b) {
+        (Value::I64(x), Value::I64(y)) => x.partial_cmp(y),
+        (Value::F64(x), Value::F64(y)) => x.partial_cmp(y), // returns None for NaN
+        (Value::I64(x), Value::F64(y)) => (*x as f64).partial_cmp(y),
+        (Value::F64(x), Value::I64(y)) => x.partial_cmp(&(*y as f64)),
+        (Value::Str(x), Value::Str(y)) => x.partial_cmp(y),
+        (Value::Bool(x), Value::Bool(y)) => x.partial_cmp(y),
+        (Value::Datetime(x), Value::Datetime(y)) => x.partial_cmp(y),
+        (Value::Bytes(x), Value::Bytes(y)) => x.partial_cmp(y),
+        // Cross-type → None (will become Null)
+        _ => None,
+    }
+}
+
+/// Ordered comparison (`>`, `>=`, `<`, `<=`).
+/// Returns `Null` for cross-type or NaN; returns `Bool` otherwise.
+fn cmp_op(a: Value, b: Value, pred: impl Fn(std::cmp::Ordering) -> bool) -> Value {
+    match try_compare(&a, &b) {
+        Some(ord) => Value::Bool(pred(ord)),
+        // NaN partial_cmp returns None → Bool(false) per IEEE-754.
+        // Cross-type → Null per D-05.
+        None => {
+            // Distinguish NaN (both are F64) from cross-type.
+            match (&a, &b) {
+                (Value::F64(_), Value::F64(_))
+                | (Value::F64(_), Value::I64(_))
+                | (Value::I64(_), Value::F64(_)) => Value::Bool(false), // NaN
+                _ => Value::Null, // cross-type
+            }
+        }
+    }
+}
+
+/// Equality comparison (`==`). Null-strict: either Null → Null.
+/// NaN == NaN → Bool(false) (IEEE-754). Cross-type → Null.
+fn cmp_eq(a: Value, b: Value) -> Value {
+    // Null already filtered out by caller (null propagation check in eval_binop).
+    match try_compare(&a, &b) {
+        Some(ord) => Value::Bool(matches!(ord, std::cmp::Ordering::Equal)),
+        None => {
+            // NaN or cross-type.
+            match (&a, &b) {
+                (Value::F64(_), Value::F64(_))
+                | (Value::F64(_), Value::I64(_))
+                | (Value::I64(_), Value::F64(_)) => Value::Bool(false), // NaN
+                _ => Value::Null,
+            }
+        }
+    }
+}
+
+/// Inequality comparison (`!=`). Null-strict: either Null → Null.
+/// NaN != NaN → Bool(false) (IEEE-754 — not-equal for NaN is also false).
+/// Cross-type → Null.
+fn cmp_ne(a: Value, b: Value) -> Value {
+    match try_compare(&a, &b) {
+        Some(ord) => Value::Bool(!matches!(ord, std::cmp::Ordering::Equal)),
+        None => {
+            match (&a, &b) {
+                (Value::F64(_), Value::F64(_))
+                | (Value::F64(_), Value::I64(_))
+                | (Value::I64(_), Value::F64(_)) => Value::Bool(false), // NaN
+                _ => Value::Null,
+            }
+        }
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
