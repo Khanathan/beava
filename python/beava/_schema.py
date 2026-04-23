@@ -144,8 +144,19 @@ def extract_schema(cls: type) -> dict[str, FieldSpec]:
     except Exception as exc:
         raise TypeError(f"failed to resolve type hints for {cls.__name__!r}: {exc}") from exc
 
-    # Preserve declaration order from __annotations__ (Python 3.7+ guarantee).
-    annotation_order = list(getattr(cls, "__annotations__", {}).keys())
+    # Collect annotation order from the full MRO (base classes first, excluding
+    # object) so that inherited fields are included.  typing.get_type_hints()
+    # already merges the MRO; we must mirror that here so annotation_order and
+    # hints stay in sync.  Python 3.7+ dicts preserve insertion order.
+    annotation_order: list[str] = []
+    seen_ann: set[str] = set()
+    for klass in reversed(cls.__mro__):
+        if klass is object:
+            continue
+        for field_name in getattr(klass, "__annotations__", {}):
+            if field_name not in seen_ann:
+                annotation_order.append(field_name)
+                seen_ann.add(field_name)
 
     result: dict[str, FieldSpec] = {}
     for name in annotation_order:

@@ -153,3 +153,32 @@ def test_duration_to_ms() -> None:
     assert duration_to_ms("100ms") == 100
     with pytest.raises(ValueError):
         duration_to_ms("forever")
+
+
+# ---------------------------------------------------------------------------
+# Inherited annotations (WR-06 regression test)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_schema_includes_inherited_annotations() -> None:
+    """extract_schema must include fields declared on parent classes (WR-06 fix).
+
+    Previously, annotation_order was built from cls.__annotations__ only (direct
+    fields), while typing.get_type_hints() merges the full MRO.  The mismatch
+    caused parent fields to be silently dropped.
+    """
+
+    class Base:
+        user_id: str
+
+    class Derived(Base):
+        amount: float
+
+    schema = extract_schema(Derived)
+    assert "user_id" in schema, "inherited field 'user_id' must appear in schema"
+    assert "amount" in schema, "direct field 'amount' must appear in schema"
+    # Base fields come before derived fields (MRO order: Base before Derived)
+    keys = list(schema.keys())
+    assert keys.index("user_id") < keys.index("amount"), (
+        "base class fields should precede subclass fields in declaration order"
+    )
