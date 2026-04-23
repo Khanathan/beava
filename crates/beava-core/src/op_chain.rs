@@ -17,12 +17,11 @@
 //! - Filter short-circuits: once a Filter drops the row, subsequent ops are
 //!   skipped.
 
-// RED commit: implementation stubs — dead_code/unused_imports expected until green.
-#![allow(dead_code, unused_imports)]
-
 use std::collections::BTreeMap;
 
+use crate::eval;
 use crate::expr::{self, Expr};
+use crate::expr_builtins::lookup_builtin;
 use crate::op_node::OpNode;
 use crate::row::{Row, Value};
 use crate::schema_propagate::{propagate_schema, Schema};
@@ -95,17 +94,157 @@ impl OpChain {
     ///
     /// Returns `(OpChain, output_schema)` or a list of `CompileError`s.
     pub fn compile(
-        _input_schema: &Schema,
-        _ops: &[OpNode],
+        input_schema: &Schema,
+        ops: &[OpNode],
     ) -> Result<(Self, Schema), Vec<CompileError>> {
-        todo!("OpChain::compile not yet implemented")
+        // Phase 1: schema propagation validates all ops.
+        let (final_schema, _per_step) = propagate_schema(input_schema, ops)?;
+
+        // Phase 2: build CompiledOp sequence (expressions already validated).
+        let mut compiled: Vec<CompiledOp> = Vec::with_capacity(ops.len());
+
+        for op in ops {
+            let cop = match op {
+                OpNode::Filter { expr } => {
+                    // parse() should succeed since propagate_schema already validated it.
+                    let ast = expr::parse(expr).map_err(|pe| {
+                        vec![CompileError::InvalidExpr {
+                            op_index: 0,
+                            parse_error: pe,
+                        }]
+                    })?;
+                    CompiledOp::Filter(ast)
+                }
+
+                OpNode::Select { fields } => CompiledOp::Select(fields.clone()),
+
+                OpNode::Drop { fields } => CompiledOp::Drop(fields.clone()),
+
+                OpNode::Rename { mapping } => CompiledOp::Rename(mapping.clone()),
+
+                OpNode::WithColumns { exprs } | OpNode::Map { exprs } => {
+                    let mut compiled_exprs: Vec<(String, Expr)> = Vec::new();
+                    for (name, expr_src) in exprs {
+                        let ast = expr::parse(expr_src).map_err(|pe| {
+                            vec![CompileError::InvalidExpr {
+                                op_index: 0,
+                                parse_error: pe,
+                            }]
+                        })?;
+                        compiled_exprs.push((name.clone(), ast));
+                    }
+                    CompiledOp::WithColumns(compiled_exprs)
+                }
+
+                OpNode::Cast { type_map } => {
+                    let mut entries: Vec<(String, CastTarget)> = Vec::new();
+                    for (field, target_str) in type_map {
+                        if let Some(ct) = cast_target_from_str(target_str) {
+                            entries.push((field.clone(), ct));
+                        }
+                        // Invalid targets are already caught by propagate_schema.
+                    }
+                    CompiledOp::Cast(entries)
+                }
+
+                OpNode::Fillna { defaults } => {
+                    let entries: Vec<(String, Value)> = defaults
+                        .iter()
+                        .map(|(k, v)| (k.clone(), json_to_value(v)))
+                        .collect();
+                    CompiledOp::Fillna(entries)
+                }
+
+                // GroupBy / Join / Union are rejected by propagate_schema above.
+                // If we somehow reach here, skip silently (defensive).
+                OpNode::GroupBy { .. } | OpNode::Join { .. } | OpNode::Union { .. } => continue,
+            };
+            compiled.push(cop);
+        }
+
+        Ok((OpChain { ops: compiled }, final_schema))
     }
 
     /// Execute the compiled chain against `row`.
     ///
     /// Returns `None` if a Filter drops the row; `Some(updated_row)` otherwise.
-    pub fn apply(&self, _row: Row) -> Option<Row> {
-        todo!("OpChain::apply not yet implemented")
+    pub fn apply(&self, mut row: Row) -> Option<Row> {
+        for op in &self.ops {
+            match op {
+                CompiledOp::Filter(ast) => {
+                    let result = eval::eval(ast, &row);
+                    match result {
+                        Value::Bool(true) => {
+                            // Row passes; continue.
+                        }
+                        _ => {
+                            // Bool(false), Null, or any non-bool → drop row.
+                            return None;
+                        }
+                    }
+                }
+
+                CompiledOp::Select(fields) => {
+                    let mut new_map = BTreeMap::new();
+                    for f in fields {
+                        if let Some(v) = row.0.remove(f) {
+                            new_map.insert(f.clone(), v);
+                        }
+                    }
+                    row = Row(new_map);
+                }
+
+                CompiledOp::Drop(fields) => {
+                    for f in fields {
+                        row = row.without_field(f);
+                    }
+                }
+
+                CompiledOp::Rename(mapping) => {
+                    // Apply all renames atomically: collect values, then insert under new names.
+                    let mut renames: Vec<(String, String, Value)> = Vec::new();
+                    for (old, new) in mapping {
+                        if let Some(v) = row.0.remove(old) {
+                            renames.push((old.clone(), new.clone(), v));
+                        }
+                    }
+                    for (_old, new, v) in renames {
+                        row.0.insert(new, v);
+                    }
+                }
+
+                CompiledOp::WithColumns(exprs) => {
+                    for (name, ast) in exprs {
+                        let v = eval::eval(ast, &row);
+                        row = row.with_field(name, v);
+                    }
+                }
+
+                CompiledOp::Cast(entries) => {
+                    for (field, target) in entries {
+                        if let Some(field_val) = row.0.get(field).cloned() {
+                            let args = [field_val, target.as_value_str()];
+                            let cast_result = lookup_builtin("cast")
+                                .map(|b| (b.eval)(&args))
+                                .unwrap_or(Value::Null);
+                            row.0.insert(field.clone(), cast_result);
+                        }
+                    }
+                }
+
+                CompiledOp::Fillna(defaults) => {
+                    for (field, default_val) in defaults {
+                        if let Some(v) = row.0.get(field) {
+                            if matches!(v, Value::Null) {
+                                row.0.insert(field.clone(), default_val.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Some(row)
     }
 }
 

@@ -13,12 +13,10 @@
 //! This module intentionally has no `serde` or I/O dependencies — it is a pure
 //! in-process Rust library.
 
-// RED commit: implementation stubs — dead_code/unused_imports expected until green.
-#![allow(dead_code, unused_imports)]
-
 use std::collections::BTreeMap;
 
-use crate::expr::{self, ParseError};
+use crate::expr::{self, Expr, Literal, ParseError};
+use crate::expr_builtins::lookup_builtin;
 use crate::op_node::OpNode;
 use crate::schema::{DerivedSchema, EventSchema, FieldType, TableSchema};
 
@@ -123,75 +121,306 @@ pub enum PropagationError {
 ///
 /// Returns `Err(errors)` if any errors were found; `Ok(...)` if clean.
 pub fn propagate_schema(
-    _input: &Schema,
-    _ops: &[OpNode],
+    input: &Schema,
+    ops: &[OpNode],
 ) -> Result<(Schema, Vec<Schema>), Vec<PropagationError>> {
-    todo!("propagate_schema not yet implemented")
+    let mut current = input.clone();
+    let mut per_step: Vec<Schema> = Vec::with_capacity(ops.len());
+    let mut errors: Vec<PropagationError> = Vec::new();
+
+    for (op_index, op) in ops.iter().enumerate() {
+        match op {
+            OpNode::Filter { expr } => {
+                apply_filter_schema(op_index, expr, &current, &mut errors);
+                // Filter does not change schema.
+            }
+            OpNode::Select { fields } => {
+                apply_select_schema(op_index, fields, &mut current, &mut errors);
+            }
+            OpNode::Drop { fields } => {
+                apply_drop_schema(op_index, fields, &mut current, &mut errors);
+            }
+            OpNode::Rename { mapping } => {
+                apply_rename_schema(op_index, mapping, &mut current, &mut errors);
+            }
+            OpNode::WithColumns { exprs } | OpNode::Map { exprs } => {
+                apply_with_columns_schema(op_index, exprs, &mut current, &mut errors);
+            }
+            OpNode::Cast { type_map } => {
+                apply_cast_schema(op_index, type_map, &mut current, &mut errors);
+            }
+            OpNode::Fillna { defaults } => {
+                apply_fillna_schema(op_index, defaults, &mut current, &mut errors);
+            }
+            OpNode::GroupBy { .. } => {
+                errors.push(PropagationError::UnsupportedOp {
+                    op_index,
+                    op: "group_by",
+                });
+            }
+            OpNode::Join { .. } => {
+                errors.push(PropagationError::UnsupportedOp {
+                    op_index,
+                    op: "join",
+                });
+            }
+            OpNode::Union { .. } => {
+                errors.push(PropagationError::UnsupportedOp {
+                    op_index,
+                    op: "union",
+                });
+            }
+        }
+        per_step.push(current.clone());
+    }
+
+    if errors.is_empty() {
+        Ok((current, per_step))
+    } else {
+        Err(errors)
+    }
 }
 
 // ─── Per-op schema logic ─────────────────────────────────────────────────────
 
 fn apply_filter_schema(
-    _op_index: usize,
-    _expr_src: &str,
-    _schema: &Schema,
-    _errors: &mut Vec<PropagationError>,
+    op_index: usize,
+    expr_src: &str,
+    schema: &Schema,
+    errors: &mut Vec<PropagationError>,
 ) {
-    todo!("apply_filter_schema not yet implemented")
+    // Parse the expression.
+    let ast = match expr::parse(expr_src) {
+        Ok(ast) => ast,
+        Err(pe) => {
+            errors.push(PropagationError::InvalidExpr {
+                op_index,
+                parse_error: pe,
+            });
+            return;
+        }
+    };
+    // Validate field references.
+    check_referenced_fields(op_index, &ast, schema, errors);
+    // Type-check: must be Bool or NullLiteral.
+    let mut local_errors: Vec<PropagationError> = Vec::new();
+    let ty = infer_expr_type_inner(op_index, &ast, schema, &mut local_errors);
+    errors.extend(local_errors);
+    // Filter result type must be Bool (comparison exprs, bool literals) or NullLiteral.
+    // We don't explicitly reject non-bool here since field reference errors already
+    // surface misuse; type checking is best-effort at register time.
+    let _ = ty;
 }
 
 fn apply_select_schema(
-    _op_index: usize,
-    _fields: &[String],
-    _current: &mut Schema,
-    _errors: &mut Vec<PropagationError>,
+    op_index: usize,
+    fields: &[String],
+    current: &mut Schema,
+    errors: &mut Vec<PropagationError>,
 ) {
-    todo!("apply_select_schema not yet implemented")
+    let mut new_fields: BTreeMap<String, FieldType> = BTreeMap::new();
+    let mut new_optional: Vec<String> = Vec::new();
+
+    for f in fields {
+        if let Some(ft) = current.fields.get(f.as_str()) {
+            new_fields.insert(f.clone(), *ft);
+            if current.optional_fields.contains(f) {
+                new_optional.push(f.clone());
+            }
+        } else {
+            errors.push(PropagationError::FieldMissing {
+                op_index,
+                field: f.clone(),
+            });
+            // Best-effort carry-forward: skip missing fields.
+        }
+    }
+
+    current.fields = new_fields;
+    current.optional_fields = new_optional;
 }
 
 fn apply_drop_schema(
-    _op_index: usize,
-    _fields: &[String],
-    _current: &mut Schema,
-    _errors: &mut Vec<PropagationError>,
+    op_index: usize,
+    fields: &[String],
+    current: &mut Schema,
+    errors: &mut Vec<PropagationError>,
 ) {
-    todo!("apply_drop_schema not yet implemented")
+    for f in fields {
+        if current.fields.contains_key(f.as_str()) {
+            current.fields.remove(f.as_str());
+            current.optional_fields.retain(|x| x != f);
+        } else {
+            errors.push(PropagationError::FieldMissing {
+                op_index,
+                field: f.clone(),
+            });
+        }
+    }
 }
 
 fn apply_rename_schema(
-    _op_index: usize,
-    _mapping: &BTreeMap<String, String>,
-    _current: &mut Schema,
-    _errors: &mut Vec<PropagationError>,
+    op_index: usize,
+    mapping: &BTreeMap<String, String>,
+    current: &mut Schema,
+    errors: &mut Vec<PropagationError>,
 ) {
-    todo!("apply_rename_schema not yet implemented")
+    // Validate all old names exist and no new name collides with fields NOT being renamed away.
+    let old_names: std::collections::BTreeSet<&str> = mapping.keys().map(|s| s.as_str()).collect();
+
+    for (old, new) in mapping {
+        // Check old field exists.
+        if !current.fields.contains_key(old.as_str()) {
+            errors.push(PropagationError::FieldMissing {
+                op_index,
+                field: old.clone(),
+            });
+        }
+        // Check new name doesn't collide with an existing field that isn't being renamed away.
+        if current.fields.contains_key(new.as_str()) && !old_names.contains(new.as_str()) {
+            errors.push(PropagationError::RenameCollision {
+                op_index,
+                new: new.clone(),
+            });
+        }
+    }
+
+    // If no errors, apply the rename atomically.
+    // We still apply even with errors (best-effort carry-forward).
+    let mut new_fields: BTreeMap<String, FieldType> = BTreeMap::new();
+    let mut new_optional: Vec<String> = Vec::new();
+
+    for (k, v) in &current.fields {
+        if let Some(new_name) = mapping.get(k) {
+            new_fields.insert(new_name.clone(), *v);
+            if current.optional_fields.contains(k) {
+                new_optional.push(new_name.clone());
+            }
+        } else {
+            new_fields.insert(k.clone(), *v);
+            if current.optional_fields.contains(k) {
+                new_optional.push(k.clone());
+            }
+        }
+    }
+
+    current.fields = new_fields;
+    current.optional_fields = new_optional;
 }
 
 fn apply_with_columns_schema(
-    _op_index: usize,
-    _exprs: &BTreeMap<String, String>,
-    _current: &mut Schema,
-    _errors: &mut Vec<PropagationError>,
+    op_index: usize,
+    exprs: &BTreeMap<String, String>,
+    current: &mut Schema,
+    errors: &mut Vec<PropagationError>,
 ) {
-    todo!("apply_with_columns_schema not yet implemented")
+    // Process in BTreeMap order (deterministic).
+    for (name, expr_src) in exprs {
+        let ast = match expr::parse(expr_src) {
+            Ok(ast) => ast,
+            Err(pe) => {
+                errors.push(PropagationError::InvalidExpr {
+                    op_index,
+                    parse_error: pe,
+                });
+                continue;
+            }
+        };
+
+        // Validate field references (SDK-COL-07).
+        check_referenced_fields(op_index, &ast, current, errors);
+
+        // Infer result type.
+        let mut local_errors: Vec<PropagationError> = Vec::new();
+        let ty = infer_expr_type_inner(op_index, &ast, current, &mut local_errors);
+        errors.extend(local_errors);
+
+        match ty {
+            Some(InferredType::Known(ft)) => {
+                // Clear optional status if field existed before (expression always produces a value).
+                current.optional_fields.retain(|x| x != name);
+                current.fields.insert(name.clone(), ft);
+            }
+            Some(InferredType::NullLiteral) => {
+                // NullLiteral-only expression (e.g., just `null`) — can't determine a type.
+                // We use Str as a safe fallback and keep optional semantics.
+                current.fields.insert(name.clone(), FieldType::Str);
+            }
+            None => {
+                // Error already recorded; best-effort: don't add the field.
+            }
+        }
+    }
 }
 
 fn apply_cast_schema(
-    _op_index: usize,
-    _type_map: &BTreeMap<String, String>,
-    _current: &mut Schema,
-    _errors: &mut Vec<PropagationError>,
+    op_index: usize,
+    type_map: &BTreeMap<String, String>,
+    current: &mut Schema,
+    errors: &mut Vec<PropagationError>,
 ) {
-    todo!("apply_cast_schema not yet implemented")
+    for (field, target_str) in type_map {
+        // Check field exists.
+        let source_type = match current.fields.get(field.as_str()) {
+            Some(ft) => *ft,
+            None => {
+                errors.push(PropagationError::FieldMissing {
+                    op_index,
+                    field: field.clone(),
+                });
+                continue;
+            }
+        };
+
+        // Check target is a known cast type.
+        let target_type = match parse_cast_target(target_str) {
+            Some(ft) => ft,
+            None => {
+                errors.push(PropagationError::TypeMismatch {
+                    op_index,
+                    reason: format!(
+                        "unknown cast target type {:?}; must be one of: str, int, float, bool",
+                        target_str
+                    ),
+                });
+                continue;
+            }
+        };
+
+        // Check the cast is legal.
+        if !is_cast_legal(source_type, target_type) {
+            errors.push(PropagationError::TypeMismatch {
+                op_index,
+                reason: format!(
+                    "cannot cast field {:?} from {:?} to {:?}: Bytes type cannot be cast",
+                    field, source_type, target_type
+                ),
+            });
+            continue;
+        }
+
+        // Apply the cast: update the field type.
+        current.fields.insert(field.clone(), target_type);
+    }
 }
 
 fn apply_fillna_schema(
-    _op_index: usize,
-    _defaults: &BTreeMap<String, serde_json::Value>,
-    _current: &mut Schema,
-    _errors: &mut Vec<PropagationError>,
+    op_index: usize,
+    defaults: &BTreeMap<String, serde_json::Value>,
+    current: &mut Schema,
+    errors: &mut Vec<PropagationError>,
 ) {
-    todo!("apply_fillna_schema not yet implemented")
+    for field in defaults.keys() {
+        if !current.fields.contains_key(field.as_str()) {
+            errors.push(PropagationError::FieldMissing {
+                op_index,
+                field: field.clone(),
+            });
+            continue;
+        }
+        // Clear optional status: fillna guarantees a value.
+        current.optional_fields.retain(|x| x != field);
+    }
 }
 
 // ─── Type inference helpers ───────────────────────────────────────────────────
@@ -199,58 +428,317 @@ fn apply_fillna_schema(
 /// Public entry point for expression type inference (used in tests).
 ///
 /// Returns `Err(PropagationError)` on the first type error found.
-pub fn infer_expr_type(
-    _expr: &crate::expr::Expr,
-    _schema: &Schema,
-) -> Result<InferredType, PropagationError> {
-    todo!("infer_expr_type not yet implemented")
+pub fn infer_expr_type(expr: &Expr, schema: &Schema) -> Result<InferredType, PropagationError> {
+    let mut errors: Vec<PropagationError> = Vec::new();
+    match infer_expr_type_inner(0, expr, schema, &mut errors) {
+        Some(ty) if errors.is_empty() => Ok(ty),
+        Some(_) => Err(errors.remove(0)),
+        None => {
+            if errors.is_empty() {
+                Err(PropagationError::TypeMismatch {
+                    op_index: 0,
+                    reason: "type inference failed with no error recorded".to_string(),
+                })
+            } else {
+                Err(errors.remove(0))
+            }
+        }
+    }
 }
 
 /// Internal recursive type inference.
 ///
 /// Returns `None` when an error has been pushed (callers treat None as "errored").
 fn infer_expr_type_inner(
-    _op_index: usize,
-    _expr: &crate::expr::Expr,
-    _schema: &Schema,
-    _errors: &mut Vec<PropagationError>,
+    op_index: usize,
+    expr: &Expr,
+    schema: &Schema,
+    errors: &mut Vec<PropagationError>,
 ) -> Option<InferredType> {
-    todo!("infer_expr_type_inner not yet implemented")
+    match expr {
+        Expr::Field { name, .. } => {
+            // Field reference errors are already caught by check_referenced_fields;
+            // returning None here prevents cascading type errors.
+            schema
+                .fields
+                .get(name.as_str())
+                .map(|ft| InferredType::Known(*ft))
+        }
+
+        Expr::Literal(lit, _) => Some(match lit {
+            Literal::Null => InferredType::NullLiteral,
+            Literal::Bool(_) => InferredType::Known(FieldType::Bool),
+            Literal::Int(_) => InferredType::Known(FieldType::I64),
+            Literal::Float(_) => InferredType::Known(FieldType::F64),
+            Literal::Str(_) => InferredType::Known(FieldType::Str),
+            // BareIdent is a cast type-arg literal; treat as Str.
+            Literal::BareIdent(_) => InferredType::Known(FieldType::Str),
+        }),
+
+        Expr::UnaryOp { op, operand, .. } => {
+            let ot = infer_expr_type_inner(op_index, operand, schema, errors)?;
+            if op == "not" {
+                if !is_bool_compatible(&ot) {
+                    errors.push(PropagationError::TypeMismatch {
+                        op_index,
+                        reason: format!("'not' operator requires Bool operand, got {:?}", ot),
+                    });
+                    return None;
+                }
+                Some(InferredType::Known(FieldType::Bool))
+            } else {
+                errors.push(PropagationError::TypeMismatch {
+                    op_index,
+                    reason: format!("unknown unary operator {:?}", op),
+                });
+                None
+            }
+        }
+
+        Expr::BinOp {
+            op, left, right, ..
+        } => infer_binop_type(op_index, op, left, right, schema, errors),
+
+        Expr::Call { fn_name, args, .. } => {
+            infer_call_type(op_index, fn_name, args, schema, errors)
+        }
+    }
 }
 
 fn infer_binop_type(
-    _op_index: usize,
-    _op: &str,
-    _left: &crate::expr::Expr,
-    _right: &crate::expr::Expr,
-    _schema: &Schema,
-    _errors: &mut Vec<PropagationError>,
+    op_index: usize,
+    op: &str,
+    left: &Expr,
+    right: &Expr,
+    schema: &Schema,
+    errors: &mut Vec<PropagationError>,
 ) -> Option<InferredType> {
-    todo!("infer_binop_type not yet implemented")
+    let lt = infer_expr_type_inner(op_index, left, schema, errors)?;
+    let rt = infer_expr_type_inner(op_index, right, schema, errors)?;
+
+    match op {
+        // Comparison ops always return Bool.
+        ">" | ">=" | "<" | "<=" | "==" | "!=" => {
+            if !types_are_comparable(&lt, &rt) {
+                errors.push(PropagationError::TypeMismatch {
+                    op_index,
+                    reason: format!(
+                        "comparison operator {:?} requires comparable operands, got {:?} and {:?}",
+                        op, lt, rt
+                    ),
+                });
+                return None;
+            }
+            Some(InferredType::Known(FieldType::Bool))
+        }
+
+        // Boolean ops require Bool (or NullLiteral) operands.
+        "and" | "or" => {
+            if !is_bool_compatible(&lt) || !is_bool_compatible(&rt) {
+                errors.push(PropagationError::TypeMismatch {
+                    op_index,
+                    reason: format!(
+                        "boolean operator {:?} requires Bool operands, got {:?} and {:?}",
+                        op, lt, rt
+                    ),
+                });
+                return None;
+            }
+            Some(InferredType::Known(FieldType::Bool))
+        }
+
+        // Arithmetic ops.
+        "+" | "-" | "*" | "/" => infer_arithmetic_type(op_index, op, &lt, &rt, errors),
+
+        _ => {
+            errors.push(PropagationError::TypeMismatch {
+                op_index,
+                reason: format!("unknown binary operator {:?}", op),
+            });
+            None
+        }
+    }
 }
 
 fn infer_arithmetic_type(
-    _op_index: usize,
-    _op: &str,
-    _lt: &InferredType,
-    _rt: &InferredType,
-    _errors: &mut Vec<PropagationError>,
+    op_index: usize,
+    op: &str,
+    lt: &InferredType,
+    rt: &InferredType,
+    errors: &mut Vec<PropagationError>,
 ) -> Option<InferredType> {
-    todo!("infer_arithmetic_type not yet implemented")
+    // Division always widens to F64 (from the plan spec).
+    if op == "/" {
+        // Validate both are numeric (or null).
+        match (lt, rt) {
+            (InferredType::NullLiteral, _) | (_, InferredType::NullLiteral) => {
+                return resolve_null_arithmetic(
+                    op,
+                    if matches!(lt, InferredType::NullLiteral) {
+                        rt
+                    } else {
+                        lt
+                    },
+                );
+            }
+            (InferredType::Known(l), InferredType::Known(r)) => {
+                if !is_numeric_ft(*l) || !is_numeric_ft(*r) {
+                    errors.push(PropagationError::TypeMismatch {
+                        op_index,
+                        reason: format!(
+                            "arithmetic operator {:?} requires numeric operands, got {:?} and {:?}",
+                            op, lt, rt
+                        ),
+                    });
+                    return None;
+                }
+                // Division always widens to F64.
+                return Some(InferredType::Known(FieldType::F64));
+            }
+        }
+    }
+
+    // For +, -, *: promote I64+F64 → F64; I64+I64 → I64.
+    match (lt, rt) {
+        (InferredType::NullLiteral, InferredType::NullLiteral) => {
+            // Both null: result is NullLiteral (indeterminate).
+            Some(InferredType::NullLiteral)
+        }
+        (InferredType::NullLiteral, other) | (other, InferredType::NullLiteral) => {
+            resolve_null_arithmetic(op, other)
+        }
+        (InferredType::Known(l), InferredType::Known(r)) => {
+            if !is_numeric_ft(*l) || !is_numeric_ft(*r) {
+                errors.push(PropagationError::TypeMismatch {
+                    op_index,
+                    reason: format!(
+                        "arithmetic operator {:?} requires numeric operands, got {:?} and {:?}",
+                        op, lt, rt
+                    ),
+                });
+                return None;
+            }
+            // I64 + I64 → I64; anything with F64 → F64.
+            if *l == FieldType::F64 || *r == FieldType::F64 {
+                Some(InferredType::Known(FieldType::F64))
+            } else {
+                Some(InferredType::Known(FieldType::I64))
+            }
+        }
+    }
 }
 
-fn resolve_null_arithmetic(_op: &str, _other: &InferredType) -> Option<InferredType> {
-    todo!("resolve_null_arithmetic not yet implemented")
+fn resolve_null_arithmetic(op: &str, other: &InferredType) -> Option<InferredType> {
+    // NullLiteral passes through as the other operand's type.
+    // Division always widens to F64.
+    if op == "/" {
+        match other {
+            InferredType::Known(FieldType::I64) | InferredType::Known(FieldType::F64) => {
+                Some(InferredType::Known(FieldType::F64))
+            }
+            InferredType::NullLiteral => Some(InferredType::Known(FieldType::F64)),
+            InferredType::Known(_) => Some(InferredType::Known(FieldType::F64)),
+        }
+    } else {
+        // Propagate the other operand's type.
+        Some(other.clone())
+    }
 }
 
 fn infer_call_type(
-    _op_index: usize,
-    _fn_name: &str,
-    _args: &[crate::expr::Expr],
-    _schema: &Schema,
-    _errors: &mut Vec<PropagationError>,
+    op_index: usize,
+    fn_name: &str,
+    args: &[Expr],
+    schema: &Schema,
+    errors: &mut Vec<PropagationError>,
 ) -> Option<InferredType> {
-    todo!("infer_call_type not yet implemented")
+    // Look up builtin.
+    let builtin = match lookup_builtin(fn_name) {
+        Some(b) => b,
+        None => {
+            errors.push(PropagationError::TypeMismatch {
+                op_index,
+                reason: format!(
+                    "unknown function {:?}; only 'cast' and 'isnull' are supported in Phase 4",
+                    fn_name
+                ),
+            });
+            return None;
+        }
+    };
+
+    // Arity check.
+    let expected = match builtin.arity {
+        crate::expr_builtins::Arity::Fixed(n) => Some(n),
+        crate::expr_builtins::Arity::Variadic => None,
+    };
+    if let Some(n) = expected {
+        if args.len() != n {
+            errors.push(PropagationError::TypeMismatch {
+                op_index,
+                reason: format!(
+                    "function {:?} expects {} argument(s), got {}",
+                    fn_name,
+                    n,
+                    args.len()
+                ),
+            });
+            return None;
+        }
+    }
+
+    // Builtin-specific type inference.
+    match fn_name {
+        "isnull" => {
+            // isnull(x) → Bool for any input type.
+            // Still need to infer arg type for field-reference side effects.
+            let _ = infer_expr_type_inner(op_index, &args[0], schema, errors);
+            Some(InferredType::Known(FieldType::Bool))
+        }
+        "cast" => {
+            // cast(x, type_str) → target FieldType.
+            // First arg can be any type.
+            let _ = infer_expr_type_inner(op_index, &args[0], schema, errors);
+
+            // Second arg must be a string literal with a valid cast target.
+            let target_str = match &args[1] {
+                Expr::Literal(Literal::BareIdent(s), _) => s.clone(),
+                Expr::Literal(Literal::Str(s), _) => s.clone(),
+                other => {
+                    errors.push(PropagationError::TypeMismatch {
+                        op_index,
+                        reason: format!(
+                            "cast second argument must be a type literal (str/int/float/bool), got {:?}",
+                            other
+                        ),
+                    });
+                    return None;
+                }
+            };
+
+            match parse_cast_target(&target_str) {
+                Some(ft) => Some(InferredType::Known(ft)),
+                None => {
+                    errors.push(PropagationError::TypeMismatch {
+                        op_index,
+                        reason: format!(
+                            "unknown cast target type {:?}; must be one of: str, int, float, bool",
+                            target_str
+                        ),
+                    });
+                    None
+                }
+            }
+        }
+        _ => {
+            // Should not reach here (already looked up in BUILTINS).
+            errors.push(PropagationError::TypeMismatch {
+                op_index,
+                reason: format!("unhandled builtin {:?}", fn_name),
+            });
+            None
+        }
+    }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -289,10 +777,6 @@ pub fn is_cast_legal(source: FieldType, target: FieldType) -> bool {
     )
 }
 
-fn is_numeric(ft: &FieldType) -> bool {
-    matches!(ft, FieldType::I64 | FieldType::F64)
-}
-
 fn is_bool_compatible(it: &InferredType) -> bool {
     matches!(
         it,
@@ -321,7 +805,7 @@ fn is_numeric_ft(ft: FieldType) -> bool {
 
 fn check_referenced_fields(
     op_index: usize,
-    ast: &crate::expr::Expr,
+    ast: &Expr,
     schema: &Schema,
     errors: &mut Vec<PropagationError>,
 ) {
