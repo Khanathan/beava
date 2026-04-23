@@ -137,7 +137,10 @@ def spawn_embedded_server(
             try:
                 rec = json.loads(line)
             except json.JSONDecodeError:
-                # Non-JSON line (e.g. the banner "beava v0.1.0") — skip silently.
+                # Non-JSON line (e.g. the banner "beava v0.1.0") — log at DEBUG
+                # post-startup; skip silently before startup is confirmed.
+                if ready.is_set():
+                    _log.debug("non-json stdout: %s", line)
                 continue
 
             kind = rec.get("kind", "")
@@ -147,18 +150,27 @@ def spawn_embedded_server(
                 tcp_addr.append(rec.get("addr", ""))
 
             if http_addr and tcp_addr:
-                ready.set()
-                # Forward all remaining stdout lines at DEBUG level (don't break —
-                # the process is still running and we want to drain the pipe).
-            elif ready.is_set():
-                _log.debug("%s", line)
+                if not ready.is_set():
+                    ready.set()
+                else:
+                    # Post-startup structured log line — forward at DEBUG.
+                    _log.debug("%s", line)
+        # Stdout pipe closed (process exited) — signal readiness in case teardown
+        # happened before both bind events arrived (prevents full startup_timeout wait).
+        ready.set()
 
     t = threading.Thread(target=_reader, daemon=True)
     t.start()
 
-    if not ready.wait(timeout=startup_timeout):
+    ready.wait(timeout=startup_timeout)
+
+    # Check whether both bind events actually arrived.  ready may have been set
+    # by the EOF sentinel (process exited early) rather than by both bind events.
+    if not (http_addr and tcp_addr):
         proc.kill()
         proc.wait()
+        if proc.stdout:
+            proc.stdout.close()  # unblocks the _reader thread
         raise TimeoutError(
             f"embed-mode server did not bind within {startup_timeout}s "
             f"(http_addr={http_addr}, tcp_addr={tcp_addr}). "
