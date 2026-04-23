@@ -40,7 +40,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 10 | Sketch operators | count_distinct (HLL), percentile (DDSketch), top_k (SpaceSaving), bloom_member, entropy | 5 | 4 |
 | 11 | Bounded-buffer + geo operators | histogram, hour_of_day/dow_hour histograms, seasonal_deviation, event_type_mix, most_recent_n, reservoir_sample, geo_velocity, geo_distance, geo_spread, unique_cells, geo_entropy, distance_from_home | 13 | 4 |
 | 12 | Joins + unions + push/get API completion | Event↔event windowed join, event↔table enrichment, table↔table join, `bv.union`; `push_sync` + `push_many` + `push_table` + `delete_table` + `set` + `mset` + `mget` + `get_multi` wired end-to-end | 13 | 5 |
-| 13 | Observability + performance + docs + packaging + `bv.fork` | `/metrics`, structured logs, perf gates (≥3M EPS, <10ms P99 batch get), SDK polish, docs, PyPI, GitHub Releases, Docker, `beava fork` subcommand | ~16 | 6 |
+| 13 | Observability + performance + docs + packaging + `bv.fork` + playground | `/metrics`, structured logs, perf gates on THREE pipelines (simple fraud, complex fraud, recommendations) ≥3M EPS, <10ms P99 batch get, SDK polish, docs, hosted interactive tutorial at playground.beava.dev, PyPI, GitHub Releases, Docker, `beava fork` subcommand | ~18 | 7 |
 
 **Total:** 14 phases (Phase 2.5 inserted 2026-04-23 when user expanded v0 wire to dual HTTP + TCP), ~153 requirements mapped (actual count confirmed after plan-time verification), ~73 success criteria.
 
@@ -299,11 +299,12 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 **Success criteria:**
 1. `/metrics` exposes per-operator, per-endpoint, WAL, snapshot, registry-version metrics
-2. Perf benchmark harness: ≥3M EPS on 5-aggregation fraud shape; P99 batch-get < 10ms
+2. Perf benchmark harness: ≥3M EPS on THREE pipeline shapes — simple fraud (5 aggregations, 1 entity type), complex fraud (15+ aggregations, 3 entity types + stream-stream join), recommendation (windowed counts + geo-velocity + user baselines + top-k). P99 batch-get < 10ms on each. (Expanded from single-shape 2026-04-23 per user request.)
 3. Docs live: quickstart → operators → concepts → http-api → architecture; `README.md` 3-command smoke works
-4. `pip install beava` works; `docker run beava/beava:v0` works; GitHub Release binaries available for 3 platforms
-5. `bv.fork(...)` spawns a local scoped replica; features queryable against fork; fork cleans up on context exit
-6. All TEST-* requirements pass; CI green; ship-ready tag
+4. `playground.beava.dev` hosts an interactive tutorial — JS in docs calls real HTTP against a shared beava instance (per-session namespace); users see real `registry_version` bumps + validation errors + feature values without installing anything. Single VM/container; ~$10-20/mo infra. Note: v0.1+ roadmap ships a browser-WASM `@beava/browser` npm library for fully-serverless interactivity — deferred because `beava-core` is already WASM-portable by project invariant (syscall-free)
+5. `pip install beava` works; `docker run beava/beava:v0` works; GitHub Release binaries available for 3 platforms
+6. `bv.fork(...)` spawns a local scoped replica; features queryable against fork; fork cleans up on context exit
+7. All TEST-* requirements pass; CI green; ship-ready tag
 
 ---
 
