@@ -12,12 +12,165 @@ from __future__ import annotations
 
 import datetime
 import inspect
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ._schema import FieldSpec, duration_to_ms, extract_schema, validate_duration_string
 from ._types import py_type_to_field_type
 
+if TYPE_CHECKING:
+    from ._col import _ExprAST
+
 __all__ = ["event", "EventSource", "EventDerivation"]
+
+# Valid cast target types (client-side SDK-OPS-07 check).
+_VALID_CAST_TARGETS: frozenset[str] = frozenset({"str", "int", "float", "bool"})
+
+
+# ---------------------------------------------------------------------------
+# Op-method mixin
+# ---------------------------------------------------------------------------
+
+
+class _EventOpsMixin:
+    """8 stateless op methods shared by EventSource and EventDerivation.
+
+    Each method constructs a NEW EventDerivation — never mutating ``self``.
+    The new derivation carries ``upstream=self`` and
+    ``ops = [*existing_ops, new_op_dict]``.
+
+    SDK-OPS-09: object identity of ``self`` is always distinct from the
+    returned derivation; callers that hold a reference to an intermediate
+    derivation will see its ``ops`` list unchanged after further chaining.
+    """
+
+    # Subclasses must expose these attributes:
+    #   _name: str
+    #   _schema: dict[str, FieldSpec]
+    #   _ops: list[Any]              (empty for EventSource; non-empty for EventDerivation)
+    #   _output_kind: str            (always "event" in this mixin)
+
+    @property
+    def ops(self) -> list[Any]:
+        """Public read-only view of the accumulated op list."""
+        return list(self._ops)  # type: ignore[attr-defined]
+
+    @property
+    def upstream(self) -> Any:
+        """The direct parent in the derivation chain (None for sources)."""
+        return getattr(self, "_upstream", None)
+
+    def named(self, name: str) -> "EventDerivation":
+        """Return a copy of this derivation with a different name.
+
+        Allows ``Transaction.filter(...).named("BigTx")`` without re-deriving.
+        Returns ``self`` if already an EventDerivation (copies with new name);
+        for EventSource, wraps in a zero-op EventDerivation with the given name.
+        """
+        upstream_name = _source_name(self)  # type: ignore[arg-type]
+        return EventDerivation(
+            name=name,
+            schema=self._schema,  # type: ignore[attr-defined]
+            upstreams=[upstream_name],
+            ops=list(self._ops),  # type: ignore[attr-defined]
+            output_kind=getattr(self, "_output_kind", "event"),
+            upstream=self,
+        )
+
+    # ------------------------------------------------------------------ #
+    # 8 op methods
+    # ------------------------------------------------------------------ #
+
+    def filter(self, expr: "_ExprAST") -> "EventDerivation":
+        """Append a Filter op — keep only rows where *expr* is True."""
+        op: dict[str, Any] = {"op": "filter", "expr": expr.to_expr_string()}
+        return self._new_derivation(op)
+
+    def select(self, *fields: str) -> "EventDerivation":
+        """Append a Select op — keep only the named fields."""
+        op = {"op": "select", "fields": list(fields)}
+        return self._new_derivation(op)
+
+    def drop(self, *fields: str) -> "EventDerivation":
+        """Append a Drop op — remove the named fields."""
+        op = {"op": "drop", "fields": list(fields)}
+        return self._new_derivation(op)
+
+    def rename(self, **mapping: str) -> "EventDerivation":
+        """Append a Rename op — rename fields according to *mapping*."""
+        op = {"op": "rename", "mapping": dict(mapping)}
+        return self._new_derivation(op)
+
+    def with_columns(self, **exprs: "_ExprAST") -> "EventDerivation":
+        """Append a WithColumns op — add or overwrite derived fields."""
+        op = {
+            "op": "with_columns",
+            "exprs": {name: e.to_expr_string() for name, e in exprs.items()},
+        }
+        return self._new_derivation(op)
+
+    def map(self, **exprs: "_ExprAST") -> "EventDerivation":
+        """Append a Map op (alias for with_columns; retains 'map' on the wire)."""
+        op = {
+            "op": "map",
+            "exprs": {name: e.to_expr_string() for name, e in exprs.items()},
+        }
+        return self._new_derivation(op)
+
+    def cast(self, **type_map: str) -> "EventDerivation":
+        """Append a Cast op — change field types.
+
+        Raises:
+            ValueError: If any target type is not in {'str', 'int', 'float', 'bool'}.
+        """
+        for field, target in type_map.items():
+            if target not in _VALID_CAST_TARGETS:
+                raise ValueError(
+                    f"invalid cast target for field {field!r}: {target!r}; "
+                    f"must be one of {sorted(_VALID_CAST_TARGETS)}"
+                )
+        op = {"op": "cast", "type_map": dict(type_map)}
+        return self._new_derivation(op)
+
+    def fillna(self, **defaults: Any) -> "EventDerivation":
+        """Append a Fillna op — replace null values with given defaults.
+
+        Raises:
+            ValueError: If any default value is None (fillna with null is meaningless).
+        """
+        for field, val in defaults.items():
+            if val is None:
+                raise ValueError(
+                    f"fillna default for field {field!r} cannot be None; "
+                    "use a concrete scalar value"
+                )
+        op = {"op": "fillna", "defaults": dict(defaults)}
+        return self._new_derivation(op)
+
+    # ------------------------------------------------------------------ #
+    # Internal helper
+    # ------------------------------------------------------------------ #
+
+    def _new_derivation(self, op: dict[str, Any]) -> "EventDerivation":
+        """Construct a new EventDerivation with *op* appended to the ops list."""
+        existing_ops: list[Any] = list(self._ops)  # type: ignore[attr-defined]
+        upstream_name = _source_name(self)  # type: ignore[arg-type]
+        return EventDerivation(
+            name=upstream_name,  # placeholder; callers use .named() to assign
+            schema=self._schema,  # type: ignore[attr-defined]
+            upstreams=[upstream_name],
+            ops=[*existing_ops, op],
+            output_kind=getattr(self, "_output_kind", "event"),
+            upstream=self,
+        )
+
+
+def _source_name(obj: Any) -> str:
+    """Return the effective source name for *obj* (EventSource or EventDerivation)."""
+    # For EventDerivation chains, trace back to the root source name.
+    current = obj
+    while hasattr(current, "_upstream") and current._upstream is not None:
+        current = current._upstream
+    return current._name
 
 
 # ---------------------------------------------------------------------------
@@ -25,7 +178,7 @@ __all__ = ["event", "EventSource", "EventDerivation"]
 # ---------------------------------------------------------------------------
 
 
-class EventSource:
+class EventSource(_EventOpsMixin):
     """Descriptor for a class-form @bv.event declaration.
 
     Produced at decoration time; consumed by Plan 03-05 DAG walker and
@@ -85,22 +238,24 @@ class EventSource:
         return f"EventSource({self._name!r})"
 
 
-class EventDerivation:
-    """Descriptor for a function-form @bv.event declaration.
+class EventDerivation(_EventOpsMixin):
+    """Descriptor for a function-form @bv.event declaration OR a fluent-op derivation.
 
     Produced when the decorator is applied to a function whose parameters are
-    annotated with upstream EventSource / TableSource descriptors. The function
-    is invoked ONCE at decoration time with the upstream descriptors as
-    placeholder arguments; its return value is discarded (schema is derived
-    from the function's return annotation or carried from upstream for Phase 4+).
+    annotated with upstream EventSource / TableSource descriptors, or when an
+    op method (`.filter()`, `.select()`, etc.) is called on an EventSource /
+    EventDerivation.
 
     Exposes:
-        _name: str                          — function name
+        _name: str                          — function/derivation name
         _schema: dict[str, FieldSpec]       — inherited from upstream / return (Phase 4+)
         _beava_kind: str = "derivation"
         _upstreams: list[str]               — upstream descriptor names
-        _ops: list                          — op chain (empty in Phase 3)
+        _ops: list                          — op chain
         _output_kind: str = "event"
+        _upstream: EventSource|EventDerivation|None  — direct parent (fluent-API only)
+        upstream: property                  — public alias for _upstream
+        ops: property                       — public read-only list copy
         _to_register_json() -> dict         — wire JSON matching Phase 2 DerivationDescriptor
     """
 
@@ -114,12 +269,14 @@ class EventDerivation:
         upstreams: list[str],
         ops: list[Any],
         output_kind: str = "event",
+        upstream: Any = None,
     ) -> None:
         self._name = name
         self._schema = schema
         self._upstreams = upstreams
         self._ops = ops
         self._output_kind = output_kind
+        self._upstream = upstream  # direct parent in fluent chain (None for @bv.event fn-form)
 
     def _to_register_json(self) -> dict[str, Any]:
         """Return JSON dict matching Phase 2 DerivationDescriptor wire shape."""

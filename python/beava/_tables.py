@@ -11,10 +11,13 @@ Runtime classes (internal, used by Plan 03-05 DAG walker):
 from __future__ import annotations
 
 import inspect
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ._schema import FieldSpec, duration_to_ms, extract_schema, validate_duration_string
 from ._types import py_type_to_field_type
+
+if TYPE_CHECKING:
+    from ._col import _ExprAST
 
 __all__ = ["table", "TableSource", "TableDerivation"]
 
@@ -22,13 +25,161 @@ __all__ = ["table", "TableSource", "TableDerivation"]
 # positional argument is a class.
 _SENTINEL = object()
 
+# Valid cast target types (client-side SDK-OPS-07 check).
+_VALID_CAST_TARGETS: frozenset[str] = frozenset({"str", "int", "float", "bool"})
+
+
+# ---------------------------------------------------------------------------
+# Op-method mixin for table descriptors
+# ---------------------------------------------------------------------------
+
+
+class _TableOpsMixin:
+    """8 stateless op methods shared by TableSource and TableDerivation.
+
+    Same contract as _EventOpsMixin in _events.py, but returns TableDerivation
+    and applies table-specific checks:
+      - .drop() rejects key fields (SDK-OPS-03 table half)
+      - .rename() cascades the key list (SDK-OPS-04 table half)
+
+    SDK-OPS-09: every method returns a new object; self is never mutated.
+    """
+
+    # Subclasses expose:
+    #   _name: str
+    #   _schema: dict[str, FieldSpec]
+    #   _ops: list[Any]
+    #   _primary_key / _table_primary_key: list[str]  (key fields)
+
+    @property
+    def ops(self) -> list[Any]:
+        """Public read-only copy of the accumulated op list."""
+        return list(self._ops)  # type: ignore[attr-defined]
+
+    @property
+    def upstream(self) -> Any:
+        """The direct parent in the derivation chain (None for sources)."""
+        return getattr(self, "_upstream", None)
+
+    @property
+    def key(self) -> list[str]:
+        """Current key field list (may have been cascaded by rename)."""
+        if hasattr(self, "_table_primary_key"):
+            return list(self._table_primary_key)  # type: ignore[attr-defined]
+        return list(self._primary_key)  # type: ignore[attr-defined]
+
+    def named(self, name: str) -> "TableDerivation":
+        """Return a copy of this derivation with a different name."""
+        upstream_name = _table_source_name(self)  # type: ignore[arg-type]
+        return TableDerivation(
+            name=name,
+            schema=self._schema,  # type: ignore[attr-defined]
+            upstreams=[upstream_name],
+            ops=list(self._ops),  # type: ignore[attr-defined]
+            output_kind=getattr(self, "_output_kind", "table"),
+            table_primary_key=self.key,
+            upstream=self,
+        )
+
+    # ------------------------------------------------------------------ #
+    # 8 op methods
+    # ------------------------------------------------------------------ #
+
+    def filter(self, expr: "_ExprAST") -> "TableDerivation":
+        op: dict[str, Any] = {"op": "filter", "expr": expr.to_expr_string()}
+        return self._new_table_derivation(op, key_override=None)
+
+    def select(self, *fields: str) -> "TableDerivation":
+        op = {"op": "select", "fields": list(fields)}
+        return self._new_table_derivation(op, key_override=None)
+
+    def drop(self, *fields: str) -> "TableDerivation":
+        """Append a Drop op. Raises ValueError if any field is a key field."""
+        current_key = self.key
+        for f in fields:
+            if f in current_key:
+                raise ValueError(
+                    f"cannot drop key field {f!r} from table derivation; "
+                    f"key fields are: {current_key}"
+                )
+        op = {"op": "drop", "fields": list(fields)}
+        return self._new_table_derivation(op, key_override=None)
+
+    def rename(self, **mapping: str) -> "TableDerivation":
+        """Append a Rename op. Cascades the key list if any key field is renamed."""
+        current_key = self.key
+        new_key = [mapping.get(k, k) for k in current_key]
+        op = {"op": "rename", "mapping": dict(mapping)}
+        return self._new_table_derivation(op, key_override=new_key)
+
+    def with_columns(self, **exprs: "_ExprAST") -> "TableDerivation":
+        op = {
+            "op": "with_columns",
+            "exprs": {name: e.to_expr_string() for name, e in exprs.items()},
+        }
+        return self._new_table_derivation(op, key_override=None)
+
+    def map(self, **exprs: "_ExprAST") -> "TableDerivation":
+        op = {
+            "op": "map",
+            "exprs": {name: e.to_expr_string() for name, e in exprs.items()},
+        }
+        return self._new_table_derivation(op, key_override=None)
+
+    def cast(self, **type_map: str) -> "TableDerivation":
+        for field, target in type_map.items():
+            if target not in _VALID_CAST_TARGETS:
+                raise ValueError(
+                    f"invalid cast target for field {field!r}: {target!r}; "
+                    f"must be one of {sorted(_VALID_CAST_TARGETS)}"
+                )
+        op = {"op": "cast", "type_map": dict(type_map)}
+        return self._new_table_derivation(op, key_override=None)
+
+    def fillna(self, **defaults: Any) -> "TableDerivation":
+        for field, val in defaults.items():
+            if val is None:
+                raise ValueError(
+                    f"fillna default for field {field!r} cannot be None"
+                )
+        op = {"op": "fillna", "defaults": dict(defaults)}
+        return self._new_table_derivation(op, key_override=None)
+
+    # ------------------------------------------------------------------ #
+    # Internal helper
+    # ------------------------------------------------------------------ #
+
+    def _new_table_derivation(
+        self, op: dict[str, Any], key_override: list[str] | None
+    ) -> "TableDerivation":
+        existing_ops: list[Any] = list(self._ops)  # type: ignore[attr-defined]
+        upstream_name = _table_source_name(self)  # type: ignore[arg-type]
+        effective_key = key_override if key_override is not None else self.key
+        return TableDerivation(
+            name=upstream_name,
+            schema=self._schema,  # type: ignore[attr-defined]
+            upstreams=[upstream_name],
+            ops=[*existing_ops, op],
+            output_kind=getattr(self, "_output_kind", "table"),
+            table_primary_key=effective_key,
+            upstream=self,
+        )
+
+
+def _table_source_name(obj: Any) -> str:
+    """Return the root source name for *obj* (TableSource or TableDerivation)."""
+    current = obj
+    while hasattr(current, "_upstream") and current._upstream is not None:
+        current = current._upstream
+    return current._name
+
 
 # ---------------------------------------------------------------------------
 # Runtime descriptor classes
 # ---------------------------------------------------------------------------
 
 
-class TableSource:
+class TableSource(_TableOpsMixin):
     """Descriptor for a class-form @bv.table declaration.
 
     Exposes:
@@ -82,8 +233,8 @@ class TableSource:
         return f"TableSource({self._name!r}, key={self._primary_key!r})"
 
 
-class TableDerivation:
-    """Descriptor for a function-form @bv.table declaration.
+class TableDerivation(_TableOpsMixin):
+    """Descriptor for a function-form @bv.table declaration OR a fluent-op derivation.
 
     Exposes:
         _name: str
@@ -93,6 +244,10 @@ class TableDerivation:
         _ops: list
         _output_kind: str = "table"
         _table_primary_key: list[str]
+        _upstream: TableSource|TableDerivation|None  — direct parent (fluent-API only)
+        upstream: property                           — public alias for _upstream
+        ops: property                                — public read-only list copy
+        key: property                                — current key field list
         _to_register_json() -> dict
     """
 
@@ -107,6 +262,7 @@ class TableDerivation:
         ops: list[Any],
         output_kind: str = "table",
         table_primary_key: list[str],
+        upstream: Any = None,
     ) -> None:
         self._name = name
         self._schema = schema
@@ -114,6 +270,7 @@ class TableDerivation:
         self._ops = ops
         self._output_kind = output_kind
         self._table_primary_key = table_primary_key
+        self._upstream = upstream  # direct parent in fluent chain (None for @bv.table fn-form)
 
     def _to_register_json(self) -> dict[str, Any]:
         """Return JSON dict matching Phase 2 DerivationDescriptor wire shape."""
