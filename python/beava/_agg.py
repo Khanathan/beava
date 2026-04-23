@@ -40,7 +40,8 @@ __all__ = [
 # Window string validation (SDK-AGG-06)
 # ---------------------------------------------------------------------------
 
-_WINDOW_PATTERN = re.compile(r"^(?:\d+(?:ms|s|m|h|d)|forever)$")
+# CR-01: leading digit must be 1-9 to reject zero-value windows like "0ms".
+_WINDOW_PATTERN = re.compile(r"^(?:[1-9]\d*(?:ms|s|m|h|d)|forever)$")
 
 
 def _validate_window(window: str | None, op: str, requires_window: bool) -> None:

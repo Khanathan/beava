@@ -66,6 +66,11 @@ pub fn parse_duration_to_ms(s: &str) -> Result<Option<u64>, ()> {
     }
 
     let n: u64 = digits.parse().map_err(|_| ())?;
+    // Zero durations are semantically invalid: a zero-ms window causes
+    // div_euclid(0) panic in WindowedOp::bucket_index (CR-01).
+    if n == 0 {
+        return Err(());
+    }
     // Checked multiply to guard against overflow (T-05-04-02)
     n.checked_mul(multiplier).map(Some).ok_or(())
 }
@@ -537,6 +542,39 @@ mod tests {
         assert_eq!(parse_duration_to_ms(""), Err(()));
         assert_eq!(parse_duration_to_ms("5x"), Err(()));
         assert_eq!(parse_duration_to_ms("5seconds"), Err(()));
+    }
+
+    /// CR-01: zero-value durations must be rejected to prevent div_euclid(0) panic.
+    #[test]
+    fn parse_duration_rejects_zero_values() {
+        assert_eq!(parse_duration_to_ms("0ms"), Err(()));
+        assert_eq!(parse_duration_to_ms("0s"), Err(()));
+        assert_eq!(parse_duration_to_ms("0m"), Err(()));
+        assert_eq!(parse_duration_to_ms("0h"), Err(()));
+        assert_eq!(parse_duration_to_ms("0d"), Err(()));
+    }
+
+    /// CR-01: register with window="0ms" must produce AggregationInvalidWindow error.
+    #[test]
+    fn rule11_rejects_zero_window() {
+        let nodes = vec![
+            event_node_with_fields("Txn", &[("user_id", FieldType::Str)]),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "cnt": {"op": "count", "params": {"window": "0ms"}}
+                }),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::AggregationInvalidWindow),
+            "expected AggregationInvalidWindow for zero window '0ms', got: {errors:#?}"
+        );
     }
 
     // ── Rule 11 compile unit tests ────────────────────────────────────────────
