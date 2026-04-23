@@ -177,6 +177,18 @@ impl Registry {
             .cloned()
     }
 
+    /// Phase 5 Plan 05: Return all compiled AggregationDescriptors whose
+    /// `source_node_name` matches `source_name`.
+    ///
+    /// Used by `apply_event_to_aggregations` to route an incoming event to every
+    /// aggregation that watches the event's source.
+    pub fn compiled_aggregations_for_source(
+        &self,
+        source_name: &str,
+    ) -> Vec<Arc<AggregationDescriptor>> {
+        todo!("compiled_aggregations_for_source — stub for red commit")
+    }
+
     /// Install descriptors into the registry under a write lock. Monotonically
     /// bumps the version to `new_version`. Panics in debug if `new_version` is
     /// not strictly greater than the current version.
