@@ -1,16 +1,17 @@
 """Tests for @bv.event decorator — class form and function form.
 
 These tests are written RED-first — they will fail until _events.py exists.
-"""
 
-from __future__ import annotations
+Note: deliberately no ``from __future__ import annotations`` so that parameter
+annotations in function-form tests are evaluated eagerly at def-time and
+capture the decorated EventSource / TableSource objects from local scope.
+"""
 
 import datetime
 
 import pytest
 
 import beava as bv
-
 
 # ---------------------------------------------------------------------------
 # Class form: basic
@@ -102,11 +103,7 @@ def test_event_dedupe_options() -> None:
 
 def test_event_dedupe_key_must_be_in_schema() -> None:
     """dedupe_key not in schema raises TypeError at decoration time."""
-    with pytest.raises(TypeError, match="dedupe_key"):
-        with pytest.raises(TypeError, match="missing_field"):
-            pass
-
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="missing_field"):
 
         @bv.event(dedupe_key="missing_field")
         class X:

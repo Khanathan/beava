@@ -1,14 +1,15 @@
 """Tests for @bv.table decorator — class form and function form.
 
 These tests are written RED-first — they will fail until _tables.py exists.
-"""
 
-from __future__ import annotations
+Note: deliberately no ``from __future__ import annotations`` so that parameter
+annotations in function-form tests are evaluated eagerly at def-time and
+capture the decorated EventSource / TableSource objects from local scope.
+"""
 
 import pytest
 
 import beava as bv
-
 
 # ---------------------------------------------------------------------------
 # Class form: basic

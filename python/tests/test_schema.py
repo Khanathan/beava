@@ -13,7 +13,6 @@ import pytest
 import beava as bv
 from beava._schema import duration_to_ms, extract_schema, validate_duration_string
 
-
 # ---------------------------------------------------------------------------
 # Basic type extraction
 # ---------------------------------------------------------------------------
