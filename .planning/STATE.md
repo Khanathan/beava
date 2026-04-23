@@ -13,15 +13,18 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Current Focus
 
-**Phase 2.5: TCP wire listener + framing + full opcode table** — server adds a second listener on a configurable TCP port using a custom framed protocol `[u32 length][u16 op][u32 request_id][payload bytes]`. Full v0 opcode table (register/ping/push/push_sync/push_many/get/mget/set/mset) designed up front; `register` + `ping` handlers wired; other opcodes reserved and return `op_not_implemented` so Phases 6/12 fill in handlers without touching the codec. Inserted 2026-04-23 after user pivoted v0 from HTTP-only to dual HTTP + TCP wire.
+**Phase 2.5: TCP wire listener + framing + full opcode table** — server adds a second listener on a configurable TCP port using a custom framed protocol `[u32 length][u16 op][u8 content_type][payload bytes]` (no request_id — Redis-style strict-FIFO correlation). Full v0 opcode table designed; `register` + `ping` handlers wired over `ct=JSON (0x01)`; MessagePack (`ct=0x02`) reserved for push/get in Phase 6/12; other opcodes return `op_not_implemented`. Context captured; plan-phase running as background agent under `/gsd-autonomous --interactive`.
+
+**Phase 3: Python SDK skeleton + decorators + expression DSL** — context captured (awaiting Phase 2.5 to land before plan+execute). Ships `@bv.event` / `@bv.table` decorators, `bv.col` DSL, sync `bv.App` with URL-scheme transport dispatch. Clean-room impl referencing v1 only for shape. Key scope additions this session: `bv.App()` with no URL auto-embeds a local Rust subprocess (closes "pip install + also install server" gap); redis-py-style parallel-class plan for `bv.AsyncApp` in Phase 6.
 
 ## Current Position
 
 - **Milestone:** v0
-- **Phase:** 2.5 of 14 (TCP wire listener)
-- **Plan:** Phase 2 complete — 6/6 plans executed; Phase 2.5 pending discuss
-- **Status:** Phase 2 complete; POST /register + GET /registry live; 165 tests green; acceptance gate passed; roadmap amended to insert TCP wire phase
-- **Progress:** ██▱▱▱▱▱▱▱▱▱▱▱▱ 2/14 phases
+- **Phase:** 2.5 of 14 (TCP wire listener — plan-phase running in background)
+- **Next after 2.5:** Phase 3 (context already captured)
+- **Plans:** Phase 2 complete (6/6 executed, 162 tests green); Phase 2.5 plan in flight
+- **Status:** Wire contract retroactively renamed devex-first (26daa41); planning docs caught up (b534c97); Phase 2.5 CONTEXT (bc78e5e); Phase 3 CONTEXT (1804cae); roadmap amended to 14 phases
+- **Progress:** ██▱▱▱▱▱▱▱▱▱▱▱▱ 2/14 phases (plus 2 contexts ready for plan)
 
 ## Performance Metrics
 
@@ -116,9 +119,16 @@ Not yet measured. Perf harness introduced in Phase 5; hit-gate in Phase 13.
 - [x] Plan Phase 2 (6 plans: schema, OpNode, diff, validation, endpoint, acceptance)
 - [x] Execute Phase 2 (165 tests green, phase2_smoke 7/7, acceptance gate passed)
 - [x] Insert Phase 2.5 into roadmap for dual-wire pivot (2026-04-23 — ROADMAP/PROJECT/CLAUDE/STATE updated)
-- [ ] Discuss + plan + execute Phase 2.5 (TCP wire listener + framing + opcode table) — NEXT
-- [ ] Discuss + plan + execute Phase 3 (Python SDK, now HTTP + TCP)
-- [ ] Execute Phases 4 through 13
+- [x] Devex-first wire rename retcon (26daa41 Rust, b534c97 docs): idempotency_*→dedupe_*, history_ttl_ms→keep_events_for_ms, watermark_lateness_ms→tolerate_delay_ms, TableMode::Append→Upsert; event_time_field→Option; defaults.rs module; 162 tests green
+- [x] Discuss Phase 2.5 (interactive, all 4 grey areas captured; CONTEXT.md bc78e5e)
+- [x] Discuss Phase 3 (interactive, all 4 grey areas + embed-mode addition; CONTEXT.md 1804cae)
+- [ ] Plan Phase 2.5 — background agent running (Agent ID a25a45013570e1ac2)
+- [ ] Execute Phase 2.5 (after plan)
+- [ ] Plan Phase 3 (after 2.5 lands — SDK depends on server TCP listener)
+- [ ] Execute Phase 3
+- [ ] Discuss + plan + execute Phases 4 through 13
+
+Note: additional backlog item routed to Phase 13: load tests for simple fraud + complex fraud + recommendation pipelines (expanded from current single-shape fraud benchmark). Will update Phase 13 scope when planning it.
 
 ### Blockers
 
@@ -131,13 +141,22 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-23 — Two things shipped. (1) Executed all 6 Phase 2 plans: full Registry data model, diff engine, validation pass, POST /register endpoint, GET /registry dev endpoint, TestServer HTTP helpers, phase2_smoke acceptance (165 tests green). (2) Roadmap amended under `/gsd-autonomous`: user pivoted v0 from HTTP-only to dual HTTP + TCP wire; inserted Phase 2.5 (TCP wire listener + framing + full opcode table); CLAUDE.md / PROJECT.md / ROADMAP.md / STATE.md updated.
+Last session: 2026-04-23 — Second autonomous pass under `/gsd-autonomous --interactive`. Three product-shaping pivots absorbed:
+
+1. **Dual HTTP + TCP wire** (was HTTP-only). Inserted Phase 2.5 for TCP listener; frame `[u32 len][u16 op][u8 ct][payload]`; Redis-style strict-FIFO; full opcode table designed; `register`+`ping` wired, rest reserved.
+2. **Devex-first naming pivot**: streaming jargon purged from wire and API — retroactively renamed Phase 2's wire contract before Phase 2.5 / 3 lock it further. 162 tests green; defaults module centralizes 5s/7d/24h soft-knob defaults. `event_time_field` is now optional (server stamps wall-clock on push receipt); table `key` still required.
+3. **Python SDK embed mode**: `bv.App()` with no URL auto-spawns a local Rust subprocess on ephemeral ports for notebook/test users. Binary discovery via env/PATH/./target/debug. Shipping-in-wheel decision deferred to Phase 13.
+
+Commits this session: 1cf8148 (roadmap insert), 26daa41 (Rust rename + defaults), b534c97 (planning docs catch-up), bc78e5e (Phase 2.5 CONTEXT), 1804cae (Phase 3 CONTEXT).
+
+Phase 2.5 plan-phase running in background; Phase 3 CONTEXT already captured (depends on 2.5 landing).
 
 Next session should:
 
 1. Read `.planning/PROJECT.md`, `.planning/ROADMAP.md`, this file, and `.planning/REQUIREMENTS.md`
-2. Confirm Phase 2.5 (TCP wire listener) is the current focus — not Phase 3
-3. Resume `/gsd-autonomous --interactive --from 2.5` (or `/gsd-discuss-phase 2.5` to enter discuss manually)
+2. Check on Phase 2.5 plan-phase background agent (Agent ID `a25a45013570e1ac2`) — should have produced plans under `.planning/phases/02.5-tcp-wire-listener/`
+3. If plans landed: `/gsd-execute-phase 2.5` then post-exec verification routing
+4. Resume `/gsd-autonomous --interactive --from 2.5` to pick up where this session left off
 
 ### Phase 2.5 attach points
 
