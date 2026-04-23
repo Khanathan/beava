@@ -87,12 +87,27 @@ impl WindowedOp {
     /// # SDK-AGG-04
     pub fn update_with_row(
         &mut self,
-        _row: &Row,
-        _event_time_ms: i64,
-        _field: Option<&str>,
-        _where_expr: Option<&std::sync::Arc<crate::expr::Expr>>,
+        row: &Row,
+        event_time_ms: i64,
+        field: Option<&str>,
+        where_expr: Option<&std::sync::Arc<crate::expr::Expr>>,
     ) {
-        todo!("05-02 Task 1.b: implement WindowedOp::update_with_row")
+        let idx = self.bucket_index(event_time_ms);
+        let bucket_epoch = event_time_ms.div_euclid(self.bucket_ms as i64) * self.bucket_ms as i64;
+
+        // Reset bucket if stale (different epoch).
+        if self.bucket_epoch_start_ms[idx] != bucket_epoch {
+            self.buckets[idx] = Some(Box::new(fresh_op(self.inner_kind)));
+            self.bucket_epoch_start_ms[idx] = bucket_epoch;
+        }
+        if self.buckets[idx].is_none() {
+            self.buckets[idx] = Some(Box::new(fresh_op(self.inner_kind)));
+        }
+
+        self.buckets[idx]
+            .as_mut()
+            .unwrap()
+            .update_with_row(row, event_time_ms, field, where_expr);
     }
 
     /// Query the windowed aggregation value at `query_time_ms`.
@@ -603,9 +618,8 @@ mod tests {
     fn windowed_count_with_where_predicate_drops_non_matching() {
         let window_ms: u64 = 64_000; // bucket_ms = 1000
         let mut op = WindowedOp::new(AggKind::Count, window_ms);
-        let where_expr = std::sync::Arc::new(
-            crate::expr::parse("(amount > 25)").expect("should parse"),
-        );
+        let where_expr =
+            std::sync::Arc::new(crate::expr::parse("(amount > 25)").expect("should parse"));
         for (i, &amount) in [10.0_f64, 20.0, 30.0, 40.0, 50.0].iter().enumerate() {
             let row = Row::new().with_field("amount", Value::F64(amount));
             // spread across different buckets to exercise bucket routing

@@ -27,7 +27,7 @@ use crate::row::{Row, Value};
 ///
 /// # SDK-AGG-04
 pub fn evaluate_where_predicate(expr: &Expr, row: &Row) -> bool {
-    todo!("05-02 Task 1.b: implement evaluate_where_predicate")
+    matches!(eval(expr, row), Value::Bool(true))
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

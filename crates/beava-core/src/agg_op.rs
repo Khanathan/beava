@@ -168,12 +168,30 @@ impl AggOp {
     /// # SDK-AGG-04
     pub fn update_with_row(
         &mut self,
-        _row: &Row,
-        _event_time_ms: i64,
-        _field: Option<&str>,
-        _where_expr: Option<&std::sync::Arc<crate::expr::Expr>>,
+        row: &Row,
+        event_time_ms: i64,
+        field: Option<&str>,
+        where_expr: Option<&std::sync::Arc<crate::expr::Expr>>,
     ) {
-        todo!("05-02 Task 1.b: implement update_with_row")
+        let where_matched = match where_expr {
+            Some(e) => crate::agg_where::evaluate_where_predicate(e, row),
+            None => true,
+        };
+
+        match self {
+            AggOp::Windowed(w) => {
+                // Windowed delegates bucket routing to WindowedOp::update_with_row,
+                // which threads the predicate into each bucket's inner AggOp.
+                w.update_with_row(row, event_time_ms, field, where_expr);
+            }
+            _ => {
+                // All other ops (including Ratio): pass where_matched directly.
+                // RatioState::update already implements "gate numerator only"
+                // semantics — it increments total unconditionally and matching
+                // only when where_matched is true.
+                self.update(row, event_time_ms, field, where_matched);
+            }
+        }
     }
 
     /// Query current aggregation value. Dispatches to the concrete per-op impl.
@@ -479,10 +497,7 @@ mod tests {
             op.update_with_row(&row, 0, None, Some(&where_expr));
         }
         match op.query(0) {
-            Value::F64(v) => assert!(
-                (v - 0.3).abs() < 1e-10,
-                "ratio should be 3/10=0.3, got {v}"
-            ),
+            Value::F64(v) => assert!((v - 0.3).abs() < 1e-10, "ratio should be 3/10=0.3, got {v}"),
             other => panic!("expected F64, got {:?}", other),
         }
     }
@@ -495,7 +510,11 @@ mod tests {
         for _ in 0..5 {
             op.update_with_row(&r, 0, None, None);
         }
-        assert_eq!(op.query(0), Value::I64(5), "None where_expr → all 5 rows counted");
+        assert_eq!(
+            op.query(0),
+            Value::I64(5),
+            "None where_expr → all 5 rows counted"
+        );
     }
 
     // ── Determinism guard ─────────────────────────────────────────────────
