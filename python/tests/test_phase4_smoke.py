@@ -281,8 +281,11 @@ def _arb_expr(draw: Any, depth: int = 0) -> _ExprAST:
 
     if kind == 0:
         return _arb_leaf(draw)
-    # kind == 1: BinOp arithmetic/comparison (all valid for numeric operands)
-    op = draw(st.sampled_from(["+", "-", "*", "/", ">", ">=", "<", "<=", "==", "!="]))
+    # kind == 1: BinOp arithmetic only. Comparison ops return Bool which would
+    # cause TypeMismatch when nested as operands of arithmetic — the untyped
+    # generator has no way to keep comparison results at the top level.
+    # Comparisons are exercised via SC1/SC2/SC3 filter predicates instead.
+    op = draw(st.sampled_from(["+", "-", "*", "/"]))
     left = _arb_expr(draw, depth + 1)
     right = _arb_expr(draw, depth + 1)
     return _BinOp(op, left, right)
