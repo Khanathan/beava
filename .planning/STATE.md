@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.1
 milestone_name: milestone
 status: planning
-last_updated: "2026-04-23T19:21:14.040Z"
+last_updated: "2026-04-23T19:23:17.603Z"
 progress:
   total_phases: 16
   completed_phases: 3
   total_plans: 43
-  completed_plans: 26
-  percent: 60
+  completed_plans: 28
+  percent: 65
 ---
 
 # State: Beava v2 — v0 OSS Launch
@@ -162,7 +162,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-23T19:21:14.037Z
+Last session: 2026-04-23T19:23:17.594Z
 
 1. **Dual HTTP + TCP wire** (was HTTP-only). Inserted Phase 2.5 for TCP listener; frame `[u32 len][u16 op][u8 ct][payload]`; Redis-style strict-FIFO; full opcode table designed; `register`+`ping` wired, rest reserved.
 2. **Devex-first naming pivot**: streaming jargon purged from wire and API — retroactively renamed Phase 2's wire contract before Phase 2.5 / 3 lock it further. 162 tests green; defaults module centralizes 5s/7d/24h soft-knob defaults. `event_time_field` is now optional (server stamps wall-clock on push receipt); table `key` still required.
