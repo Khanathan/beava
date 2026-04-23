@@ -317,6 +317,7 @@ class GroupBy:
         }
 
         # Construct the TableDerivation — import inside method to avoid circular deps
+        from ._schema import FieldSpec  # noqa: PLC0415
         from ._tables import TableDerivation  # noqa: PLC0415
 
         upstream_name: str = getattr(self._upstream, "_name", None)  # type: ignore[assignment]
@@ -327,10 +328,26 @@ class GroupBy:
             )
 
         existing_ops: list[Any] = list(getattr(self._upstream, "_ops", []))
+        upstream_schema: dict[str, Any] = getattr(self._upstream, "_schema", {})
+
+        # Build output schema: group-by keys (from upstream) + aggregated features.
+        # count/ratio → int; all other ops → float.
+        output_schema: dict[str, FieldSpec] = {}
+        for key in self._keys:
+            if key in upstream_schema:
+                output_schema[key] = upstream_schema[key]
+            else:
+                # Key not found in upstream — fall back to str (server will validate)
+                output_schema[key] = FieldSpec(name=key, py_type=str)
+        for feat_name, desc in named_features.items():
+            if desc.op in ("count",):
+                output_schema[feat_name] = FieldSpec(name=feat_name, py_type=int)
+            else:
+                output_schema[feat_name] = FieldSpec(name=feat_name, py_type=float)
 
         return TableDerivation(
             name=f"{upstream_name}_by_{'_'.join(self._keys)}",
-            schema=self._upstream._schema,
+            schema=output_schema,
             upstreams=[upstream_name],
             ops=[*existing_ops, op_node],
             output_kind="table",
