@@ -28,8 +28,16 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{info, warn};
 
-/// Phase 7 Plan 03: WAL record carrying a registration bump. Encoded with
-/// bincode and persisted before the in-memory registry is mutated.
+/// Phase 7 Plan 03: WAL record carrying a registration bump. Persisted in
+/// the WAL before the in-memory registry is mutated.
+///
+/// Phase 7.5 Plan 01: encoded with `serde_json` rather than `bincode`.
+/// PayloadNode contains `serde_json::Value` fields (`AggSpec.params`,
+/// `OpNode::Fillna.defaults`) which bincode 1.x cannot deserialize
+/// (`DeserializeAnyNotSupported`). RegistryBump records are emitted only on
+/// `/register` (cold-path), so the JSON-vs-bincode size delta is irrelevant
+/// to the hot path. JSON also gives recovery a self-describing payload that
+/// is forward/backward compatible with descriptor-shape evolution.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RegistryBumpPayload {
     /// The new version number (post-bump). For replay diagnostics; not used
@@ -40,11 +48,11 @@ pub struct RegistryBumpPayload {
 }
 
 impl RegistryBumpPayload {
-    pub fn encode(&self) -> Result<Vec<u8>, bincode::Error> {
-        bincode::serialize(self)
+    pub fn encode(&self) -> Result<Vec<u8>, serde_json::Error> {
+        serde_json::to_vec(self)
     }
-    pub fn decode(bytes: &[u8]) -> Result<Self, bincode::Error> {
-        bincode::deserialize(bytes)
+    pub fn decode(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
     }
 }
 

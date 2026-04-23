@@ -179,23 +179,38 @@ pub fn replay_wal_from_lsn(
                         outcome.replay_registry_bumps += 1;
                     }
                     Err(e) => {
-                        tracing::warn!(
+                        // Phase 7.5 Plan 01: a durable RegistryBump that
+                        // cannot apply is a hard recovery failure. Silently
+                        // skipping (the prior behavior) made the
+                        // serde_json::Value bincode bug invisible at the
+                        // integration level for an entire phase. The
+                        // apply-AFTER-fsync invariant says: if it's on
+                        // disk, it MUST replay.
+                        tracing::error!(
                             target: "beava.recovery",
                             kind = "recovery.registry_bump_apply_failed",
                             lsn = rec.lsn,
                             error = %e,
-                            "RegistryBump apply failed; skipping"
+                            "RegistryBump apply failed during replay"
                         );
+                        return Err(PersistError::Io(std::io::Error::other(format!(
+                            "RegistryBump apply failed at LSN {}: {e}",
+                            rec.lsn
+                        ))));
                     }
                 },
                 Err(e) => {
-                    tracing::warn!(
+                    tracing::error!(
                         target: "beava.recovery",
                         kind = "recovery.registry_bump_decode_failed",
                         lsn = rec.lsn,
                         error = %e,
-                        "RegistryBump payload decode failed; skipping"
+                        "RegistryBump payload decode failed during replay"
                     );
+                    return Err(PersistError::Io(std::io::Error::other(format!(
+                        "RegistryBump decode failed at LSN {}: {e}",
+                        rec.lsn
+                    ))));
                 }
             },
         }
