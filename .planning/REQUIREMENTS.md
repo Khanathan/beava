@@ -49,8 +49,8 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 - [ ] **SDK-AGG-02**: `GroupBy.agg(**named_features)` accepts named aggregation operator descriptors; returns a `TableDerivation`
 - [ ] **SDK-AGG-03**: Aggregation output schema: group keys preserve upstream types; feature columns get types inferred by each operator's `output_type_for(schema)` method
 - [ ] **SDK-AGG-04**: `group_by().agg()` validates every operator's field references exist in upstream schema; errors with path
-- [ ] **SDK-AGG-05**: Aggregation on a `Table` is explicitly rejected in v0 (deferred to v0.1 pending retraction propagation)
-- [ ] **SDK-AGG-06**: Window validation at decorator time: `window` is a duration string matching `\d+(ms|s|m|h|d)` or `forever`
+- [x] **SDK-AGG-05**: Aggregation on a `Table` is explicitly rejected in v0 (deferred to v0.1 pending retraction propagation)
+- [x] **SDK-AGG-06**: Window validation at decorator time: `window` is a duration string matching `\d+(ms|s|m|h|d)` or `forever`
 
 ### AGG-CORE — Core aggregation operators
 

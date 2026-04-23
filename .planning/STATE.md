@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v0.1
 milestone_name: milestone
-status: planning
-last_updated: "2026-04-23T15:08:46.861Z"
+status: executing
+last_updated: "2026-04-23T17:21:11.325Z"
 progress:
   total_phases: 15
   completed_phases: 2
-  total_plans: 29
-  completed_plans: 16
-  percent: 55
+  total_plans: 37
+  completed_plans: 20
+  percent: 54
 ---
 
 # State: Beava v2 — v0 OSS Launch
@@ -35,14 +35,14 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Current Position
 
-Phase: 04 (Stateless ops + expression evaluator (server-side)) — EXECUTING
-Plan: Not started
+Phase: 05 (Aggregation framework + core operators) — EXECUTING
+Plan: 2 of 8
 
 - **Milestone:** v0
 - **Phase:** 5 of 14 (aggregation framework + core operators)
 - **Plans:** Phases 1, 2, 2.5 all shipped (Phase 2.5 256 tests green, 8/8 criteria proven)
-- **Status:** Ready to plan
-- **Progress:** [██████░░░░] 55%
+- **Status:** Ready to execute
+- **Progress:** [█████░░░░░] 54%
 
 ## Performance Metrics
 
@@ -162,7 +162,7 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-23T14:30:20.671Z
+Last session: 2026-04-23T17:21:11.322Z
 
 1. **Dual HTTP + TCP wire** (was HTTP-only). Inserted Phase 2.5 for TCP listener; frame `[u32 len][u16 op][u8 ct][payload]`; Redis-style strict-FIFO; full opcode table designed; `register`+`ping` wired, rest reserved.
 2. **Devex-first naming pivot**: streaming jargon purged from wire and API — retroactively renamed Phase 2's wire contract before Phase 2.5 / 3 lock it further. 162 tests green; defaults module centralizes 5s/7d/24h soft-knob defaults. `event_time_field` is now optional (server stamps wall-clock on push receipt); table `key` still required.
