@@ -46,16 +46,27 @@ fn free_port() -> u16 {
     listener.local_addr().expect("local_addr").port()
 }
 
+/// Per-test unique WAL directory so parallel cli_smoke tests don't collide on
+/// the default `./beava-wal` path (Phase 6 Plan 03).
+fn unique_wal_dir() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CTR: AtomicU64 = AtomicU64::new(1);
+    let n = CTR.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("beava-cli-smoke-wal-{}-{n}", std::process::id()))
+}
+
 #[test]
 fn loads_valid_config_starts_and_prints_banner() {
     let port = free_port();
     let mut f = NamedTempFile::new().expect("tempfile");
     writeln!(f, "listen_addr: \"127.0.0.1:{port}\"\nlog_level: info").unwrap();
 
+    let wal_dir = unique_wal_dir();
     let child = Command::new(beava_bin())
         // Disable TCP wire listener for CLI smoke tests — avoids port conflicts
         // when multiple cli_smoke tests run in parallel and default-bind TCP 7380.
         .env("BEAVA_TCP_ENABLED", "0")
+        .env("BEAVA_WAL_DIR", &wal_dir)
         .arg("--config")
         .arg(f.path())
         .stdout(Stdio::piped())
@@ -102,10 +113,12 @@ fn env_var_overrides_listen_addr() {
     let mut f = NamedTempFile::new().expect("tempfile");
     writeln!(f, "listen_addr: \"127.0.0.1:{port}\"\nlog_level: info").unwrap();
 
+    let wal_dir = unique_wal_dir();
     let child = Command::new(beava_bin())
         .env("BEAVA_LISTEN_ADDR", format!("127.0.0.1:{override_port}"))
         // Disable TCP wire listener — avoids port conflicts across parallel tests.
         .env("BEAVA_TCP_ENABLED", "0")
+        .env("BEAVA_WAL_DIR", &wal_dir)
         .arg("--config")
         .arg(f.path())
         .stdout(Stdio::piped())

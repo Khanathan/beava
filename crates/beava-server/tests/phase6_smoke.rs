@@ -165,9 +165,7 @@ async fn phase6_criterion_4_rotation_truncates() {
     let wal_files: Vec<_> = std::fs::read_dir(tmp.path())
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path().extension().and_then(|s| s.to_str()) == Some("log")
-        })
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("log"))
         .collect();
     assert!(
         !wal_files.is_empty(),

@@ -60,6 +60,13 @@ impl Default for TestServerBuilder {
     fn default() -> Self {
         // TCP: enabled by default (matches production); OS-assigned port so
         // tests don't collide on 7380. Plan 04 Task 3 wires in the TCP bind.
+        // WAL: each test overrides `.wal_dir(tempdir)` so the default here is
+        // a unique per-process temp path.
+        let default_wal_dir = std::env::temp_dir().join(format!(
+            "beava-test-wal-{}-{}",
+            std::process::id(),
+            uniq_id()
+        ));
         let cfg = Config {
             listen_addr: "127.0.0.1:0".to_string(), // OS-allocated
             log_level: "info".to_string(),
@@ -67,7 +74,13 @@ impl Default for TestServerBuilder {
                 port: 0,
                 ..Default::default()
             },
-            durability: Default::default(),
+            durability: beava_core::config::DurabilityConfig {
+                wal_dir: default_wal_dir,
+                wal_fsync_interval_ms: 1,
+                // Tests sweep aggressively to exercise expiry paths.
+                dedupe_sweep_interval_secs: 1,
+                ..Default::default()
+            },
         };
         Self {
             cfg,
@@ -76,6 +89,12 @@ impl Default for TestServerBuilder {
             dev_endpoints: false,
         }
     }
+}
+
+fn uniq_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
 impl TestServerBuilder {
@@ -128,6 +147,21 @@ impl TestServerBuilder {
     /// Default: 4 MiB. Use a small value for oversize-frame smoke tests.
     pub fn tcp_max_frame_bytes(mut self, bytes: u32) -> Self {
         self.cfg.tcp.max_frame_bytes = bytes;
+        self
+    }
+
+    /// Phase 6 Plan 03: override the WAL directory. Tests pass a per-test
+    /// `tempfile::tempdir()` path to avoid cross-test pollution.
+    pub fn wal_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.cfg.durability.wal_dir = dir;
+        self
+    }
+
+    /// Phase 6 Plan 03: override the group-commit coalesce interval in ms.
+    /// Default for tests: 1 ms (keeps tests fast without fighting macOS
+    /// `F_FULLSYNC` latency).
+    pub fn fsync_interval_ms(mut self, ms: u64) -> Self {
+        self.cfg.durability.wal_fsync_interval_ms = ms;
         self
     }
 

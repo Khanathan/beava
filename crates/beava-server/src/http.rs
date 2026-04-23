@@ -4,11 +4,13 @@
 //! route wiring only, no business logic.
 
 use crate::feature_query::{feature_query_router, FeatureQueryState};
+use crate::push::push_router;
 use crate::register::{register_router, RegisterAppState};
 use crate::registry_debug::{
     dev_apply_events_router, dev_apply_ops_router, registry_debug_router, DevAggState,
     RegistryDebugState,
 };
+use crate::AppState;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use beava_core::registry::Registry;
 use serde_json::json;
@@ -52,6 +54,25 @@ pub fn router(
     dev_endpoints_enabled: bool,
     dev_agg_state: Option<DevAggState>,
 ) -> Router {
+    router_with_push(
+        readiness,
+        registry,
+        dev_endpoints_enabled,
+        dev_agg_state,
+        None,
+    )
+}
+
+/// Phase 6 Plan 03 extended router: when `app_state` is `Some`, mounts
+/// `POST /push/:event_name`. The Phase 1 callers that pre-date AppState pass
+/// `None` and get the historical behavior unchanged.
+pub fn router_with_push(
+    readiness: ReadinessFlag,
+    registry: Arc<Registry>,
+    dev_endpoints_enabled: bool,
+    dev_agg_state: Option<DevAggState>,
+    app_state: Option<Arc<AppState>>,
+) -> Router {
     let mut r = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -60,8 +81,17 @@ pub fn router(
             registry: registry.clone(),
         }));
 
+    if let Some(app) = app_state.as_ref() {
+        r = r.merge(push_router(Arc::clone(app)));
+    }
+
     if dev_endpoints_enabled {
-        let agg_state = dev_agg_state.unwrap_or_else(|| DevAggState::new(registry.clone()));
+        // Prefer the AppState's DevAggState so /push + /get/… share state.
+        let agg_state = match (dev_agg_state, app_state.as_ref()) {
+            (Some(s), _) => s,
+            (None, Some(app)) => app.dev_agg.clone(),
+            (None, None) => DevAggState::new(registry.clone()),
+        };
         r = r
             .merge(registry_debug_router(RegistryDebugState {
                 registry: registry.clone(),

@@ -4,16 +4,20 @@
 //! and TCP on `(cfg.tcp.host, cfg.tcp.port)`. Both share a single
 //! CancellationToken so `serve()` drains both on shutdown.
 
-use crate::http::{router, ReadinessFlag};
+use crate::http::{router_with_push, ReadinessFlag};
+use crate::idem_cache::IdemCache;
+use crate::registry_debug::DevAggState;
 use crate::tcp::TcpListenerHandle;
-use crate::Config;
+use crate::{AppState, Config};
 use beava_core::registry::Registry;
+use beava_persistence::{WalSink, WalSinkConfig};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::net::TcpListener;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Error)]
@@ -35,6 +39,8 @@ pub enum ServerError {
     InvalidAddr(String, String),
     #[error("server error: {0}")]
     Serve(#[source] std::io::Error),
+    #[error("failed to spawn WAL sink: {0}")]
+    WalSpawn(String),
 }
 
 /// Bound server ready to serve. `http_local_addr` is the actual bound HTTP
@@ -49,6 +55,8 @@ pub struct Server {
     readiness: ReadinessFlag,
     registry: Arc<Registry>,
     dev_endpoints: bool,
+    app_state: Arc<AppState>,
+    wal_worker: Option<JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for Server {
@@ -120,6 +128,37 @@ impl Server {
         let readiness = ReadinessFlag::new();
         let registry = Arc::new(Registry::new());
 
+        // Phase 6: spawn the WAL sink + periodic idem-cache sweeper.
+        let (wal_sink, wal_worker) = WalSink::spawn(WalSinkConfig {
+            dir: cfg.durability.wal_dir.clone(),
+            initial_start_lsn: 1,
+            initial_registry_version: 1,
+            fsync_interval_ms: cfg.durability.wal_fsync_interval_ms,
+            fsync_bytes: cfg.durability.wal_fsync_bytes,
+            segment_bytes: cfg.durability.wal_segment_bytes,
+        })
+        .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
+
+        let idem_cache = Arc::new(IdemCache::new());
+        let dev_agg = DevAggState::new(registry.clone());
+        let app_state = Arc::new(AppState::new(dev_agg, wal_sink.clone(), idem_cache.clone()));
+
+        // Periodic dedupe sweep.
+        let sweep_interval_secs = cfg.durability.dedupe_sweep_interval_secs.max(1);
+        let sweep_cache = idem_cache.clone();
+        tokio::spawn(async move {
+            let mut iv = tokio::time::interval(Duration::from_secs(sweep_interval_secs));
+            iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                iv.tick().await;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let _ = sweep_cache.sweep_expired(now);
+            }
+        });
+
         // Phase 1 placeholder: flip readiness after 100ms. Phase 5 replaces this
         // with "after snapshot loaded + WAL replayed" (RECOV-02).
         let flag_clone = readiness.clone();
@@ -137,7 +176,15 @@ impl Server {
             readiness,
             registry,
             dev_endpoints,
+            app_state,
+            wal_worker: Some(wal_worker),
         })
+    }
+
+    /// Return the shared AppState Arc — used by the Phase 6 crash probe binary
+    /// to register a test event before accepting /push.
+    pub fn app_state(&self) -> Arc<AppState> {
+        Arc::clone(&self.app_state)
     }
 
     /// Backward-compat alias for the HTTP address. Phase 1/2 tests call this.
@@ -183,7 +230,13 @@ impl Server {
         });
 
         // HTTP serve with graceful shutdown tied to the same cancel.
-        let app = router(self.readiness, self.registry, self.dev_endpoints, None);
+        let app = router_with_push(
+            self.readiness,
+            self.registry,
+            self.dev_endpoints,
+            None,
+            Some(Arc::clone(&self.app_state)),
+        );
         let http_cancel = cancel.clone();
         let http_shutdown = async move {
             http_cancel.cancelled().await;
@@ -203,6 +256,12 @@ impl Server {
         // (or when cancel is tripped above — but it already awaited shutdown).
         let _ = signal_task.await;
 
+        // Drain WAL sink pending batches before returning.
+        let _ = self.app_state.wal_sink.clone().shutdown().await;
+        if let Some(worker) = self.wal_worker {
+            let _ = worker.await;
+        }
+
         http_result.map_err(ServerError::Serve)?;
 
         let elapsed_ms = start.elapsed().as_millis() as u64;
@@ -221,6 +280,13 @@ mod tests {
     use crate::Config;
     use beava_core::config::TcpConfig;
 
+    fn unique_wal_dir() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static CTR: AtomicU64 = AtomicU64::new(1);
+        let n = CTR.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("beava-server-test-wal-{}-{n}", std::process::id()))
+    }
+
     fn tmp_cfg() -> Config {
         Config {
             listen_addr: "127.0.0.1:0".to_string(), // OS-allocated port
@@ -230,7 +296,11 @@ mod tests {
                 enabled: false,
                 ..Default::default()
             },
-            durability: Default::default(),
+            durability: beava_core::config::DurabilityConfig {
+                wal_dir: unique_wal_dir(),
+                wal_fsync_interval_ms: 1,
+                ..Default::default()
+            },
         }
     }
 
@@ -244,7 +314,11 @@ mod tests {
                 port: 0, // OS-assigned
                 max_frame_bytes: 4 * 1024 * 1024,
             },
-            durability: Default::default(),
+            durability: beava_core::config::DurabilityConfig {
+                wal_dir: unique_wal_dir(),
+                wal_fsync_interval_ms: 1,
+                ..Default::default()
+            },
         }
     }
 
