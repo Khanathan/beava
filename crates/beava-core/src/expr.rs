@@ -36,8 +36,11 @@
 //! Folding the rewrite here means `eval.rs` never needs to special-case `== null`,
 //! and `.isnull()` always produces a deterministic `Bool`.
 //!
-//! **`!=` with null on either side is NOT rewritten** — only `==`. Users who want
-//! "is not null" should write `(not isnull(x))`.
+//! **`!=` with null on either side IS also rewritten**: `(x != null)` /
+//! `(null != x)` → `UnaryOp("not", Call("isnull", [x]))`. Without this
+//! rewrite, the strict-null guard in `eval_binop` would cause `(x != null)`
+//! to always evaluate to `Value::Null`, silently dropping rows where `x` is
+//! present. The rewrite gives users natural "is not null" semantics.
 
 use std::collections::BTreeSet;
 
@@ -985,9 +988,17 @@ fn normalize_cast(expr: Expr) -> Expr {
     }
 }
 
-/// Pass B: rewrite `BinOp("==", e, Literal::Null)` / `BinOp("==", Literal::Null, e)`
-/// → `Call("isnull", [e])`. Only `==` is rewritten; `!=` is left unchanged.
-/// Applied bottom-up (recurse into children first).
+/// Pass B: rewrite null-equality / null-inequality at parse time.
+///
+/// - `BinOp("==", e, Literal::Null)` / `BinOp("==", Literal::Null, e)`
+///   → `Call("isnull", [e])`
+/// - `BinOp("!=", e, Literal::Null)` / `BinOp("!=", Literal::Null, e)`
+///   → `UnaryOp("not", Call("isnull", [e]))`  (i.e. `not isnull(e)`)
+///
+/// Both rewrites are symmetric (commutative). Applied bottom-up (recurse into
+/// children first). Without the `!=` rewrite, `(x != null)` would always
+/// evaluate to `Value::Null` because the strict-null propagation guard in
+/// `eval_binop` fires before the `!=` branch — silently dropping rows.
 fn rewrite_null_eq(expr: Expr) -> Expr {
     match expr {
         Expr::BinOp {
@@ -1011,6 +1022,36 @@ fn rewrite_null_eq(expr: Expr) -> Expr {
                         return Expr::Call {
                             fn_name: "isnull".to_string(),
                             args: vec![rhs],
+                            span,
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            if op == "!=" {
+                // (x != null) → (not isnull(x)); symmetric for (null != x).
+                match (&lhs, &rhs) {
+                    (_, Expr::Literal(Literal::Null, _)) => {
+                        let isnull = Expr::Call {
+                            fn_name: "isnull".to_string(),
+                            args: vec![lhs],
+                            span: span.clone(),
+                        };
+                        return Expr::UnaryOp {
+                            op: "not".to_string(),
+                            operand: Box::new(isnull),
+                            span,
+                        };
+                    }
+                    (Expr::Literal(Literal::Null, _), _) => {
+                        let isnull = Expr::Call {
+                            fn_name: "isnull".to_string(),
+                            args: vec![rhs],
+                            span: span.clone(),
+                        };
+                        return Expr::UnaryOp {
+                            op: "not".to_string(),
+                            operand: Box::new(isnull),
                             span,
                         };
                     }
@@ -1578,17 +1619,73 @@ mod tests {
         }
     }
 
-    // ── Test 27: != null is NOT rewritten ─────────────────────────────────────
+    // ── Test 27: (x != null) IS rewritten → (not isnull(x)) ─────────────────
+    //
+    // Pass B now rewrites both `==` and `!=` with null. Without this rewrite,
+    // `(x != null)` always evaluates to Null (strict-null propagation in
+    // eval_binop fires before the != branch), silently dropping rows.
+    // The rewrite gives users natural "is not null" semantics.
 
     #[test]
-    fn parse_not_equal_null_not_rewritten() {
-        // (x != null) should remain as BinOp("!=", Field("x"), Literal::Null)
+    fn parse_not_equal_null_rewrites_to_not_isnull() {
+        // (x != null) → UnaryOp("not", Call("isnull", [Field("x")]))
         let expr = parse("(x != null)").expect("should parse (x != null)");
         assert!(
-            matches!(&expr, Expr::BinOp { op, right, .. }
-                if op == "!=" && matches!(right.as_ref(), Expr::Literal(Literal::Null, _))),
-            "expected BinOp('!=', _, Null) — != with null must NOT be rewritten, got {expr:?}"
+            matches!(&expr, Expr::UnaryOp { op, .. } if op == "not"),
+            "expected UnaryOp('not', ...) after != null rewrite, got {expr:?}"
         );
+        match &expr {
+            Expr::UnaryOp { op, operand, .. } => {
+                assert_eq!(op, "not");
+                assert!(
+                    matches!(operand.as_ref(), Expr::Call { fn_name, .. } if fn_name == "isnull"),
+                    "inner node must be isnull call, got {operand:?}"
+                );
+                match operand.as_ref() {
+                    Expr::Call { args, .. } => {
+                        assert_eq!(args.len(), 1);
+                        assert!(
+                            matches!(&args[0], Expr::Field { name, .. } if name == "x"),
+                            "isnull arg must be Field('x'), got {:?}",
+                            &args[0]
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    // ── Test 27b: (null != x) IS rewritten → (not isnull(x)) (commutative) ───
+
+    #[test]
+    fn parse_null_not_equal_rewrites_to_not_isnull_commutative() {
+        // (null != x) → UnaryOp("not", Call("isnull", [Field("x")]))
+        let expr = parse("(null != x)").expect("should parse (null != x)");
+        assert!(
+            matches!(&expr, Expr::UnaryOp { op, .. } if op == "not"),
+            "expected UnaryOp('not', ...) for commutative != null rewrite, got {expr:?}"
+        );
+        match &expr {
+            Expr::UnaryOp { operand, .. } => {
+                assert!(
+                    matches!(operand.as_ref(), Expr::Call { fn_name, .. } if fn_name == "isnull"),
+                    "inner node must be isnull call, got {operand:?}"
+                );
+                match operand.as_ref() {
+                    Expr::Call { args, .. } => {
+                        assert!(
+                            matches!(&args[0], Expr::Field { name, .. } if name == "x"),
+                            "isnull arg must be Field('x'), got {:?}",
+                            &args[0]
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            _ => unreachable!(),
+        }
     }
 
     // ── Test 28: (null == null) → isnull(null) ────────────────────────────────
