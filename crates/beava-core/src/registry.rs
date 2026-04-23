@@ -185,11 +185,7 @@ impl Registry {
     /// feature name, or `None` if the feature name is not registered.
     /// O(1) reverse lookup into `feature_index`.
     pub fn resolve_feature(&self, feature_name: &str) -> Option<(String, usize)> {
-        self.inner
-            .read()
-            .feature_index
-            .get(feature_name)
-            .cloned()
+        self.inner.read().feature_index.get(feature_name).cloned()
     }
 
     /// Phase 5 Plan 05: Return all compiled AggregationDescriptors whose
@@ -332,9 +328,7 @@ impl Registry {
                     .features
                     .iter()
                     .enumerate()
-                    .map(|(idx, named_op)| {
-                        (named_op.feature_name.clone(), node_name.clone(), idx)
-                    })
+                    .map(|(idx, named_op)| (named_op.feature_name.clone(), node_name.clone(), idx))
                     .collect::<Vec<_>>()
             })
             .collect();
@@ -908,12 +902,18 @@ mod tests {
             registered_at_version: 0,
         };
         r.apply_registration(
-            vec![PayloadNode::Event(event_a), PayloadNode::Derivation(deriv_a)],
+            vec![
+                PayloadNode::Event(event_a),
+                PayloadNode::Derivation(deriv_a),
+            ],
             vec![],
             vec![],
             vec![("AggA".to_string(), agg_a)],
         );
-        assert!(r.resolve_feature("cnt").is_some(), "cnt must be in index after first register");
+        assert!(
+            r.resolve_feature("cnt").is_some(),
+            "cnt must be in index after first register"
+        );
 
         // Second registration: event + AggB with feature "revenue"
         let event_b = EventDescriptor {
@@ -958,15 +958,24 @@ mod tests {
             registered_at_version: 0,
         };
         r.apply_registration(
-            vec![PayloadNode::Event(event_b), PayloadNode::Derivation(deriv_b)],
+            vec![
+                PayloadNode::Event(event_b),
+                PayloadNode::Derivation(deriv_b),
+            ],
             vec![],
             vec![],
             vec![("AggB".to_string(), agg_b)],
         );
 
         // Both features must be in the index now
-        assert!(r.resolve_feature("cnt").is_some(), "cnt must still be in index after second register");
-        assert!(r.resolve_feature("revenue").is_some(), "revenue must be in index after second register");
+        assert!(
+            r.resolve_feature("cnt").is_some(),
+            "cnt must still be in index after second register"
+        );
+        assert!(
+            r.resolve_feature("revenue").is_some(),
+            "revenue must be in index after second register"
+        );
         let (node, _) = r.resolve_feature("revenue").unwrap();
         assert_eq!(node, "AggB");
     }

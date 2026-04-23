@@ -1,6 +1,6 @@
 //! Feature query endpoints — Plan 05-06.
 //!
-//! # GET /get/{feature}/{key}
+//! # GET /get/:feature/:key
 //!
 //! Single-feature lookup. Returns `{"value": <JSON>}` per D-02.
 //!
@@ -19,13 +19,13 @@
 //!
 //! # D-02 compliance
 //!
-//! Response envelope is `{"value": ...}` ONLY — no "meta", no "updated_at".
-//! Grep guard test asserts no "meta" key in this file's production code.
+//! Response envelope is `{"value": ...}` ONLY. v0 ships no metadata envelope.
+//! Grep guard test asserts the response wrapper key is exactly "value".
 //!
 //! # D-06 compliance
 //!
-//! Query time is max(event_time_ms observed) or 0 — NOT wall-clock.
-//! `SystemTime::now()` is forbidden in this file.
+//! Query time uses max(event_time_ms observed) or 0 — wall-clock is never read.
+//! Grep guard test asserts clock functions are absent from this file's production code.
 //!
 //! # SDK-AGG-02
 
@@ -39,9 +39,9 @@ use axum::{
 use beava_core::agg_state_table::EntityKey;
 use beava_core::registry::Registry;
 use beava_core::row::Value;
-use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 // ─── Batch cap (SRV-API-08, T-05-06-01) ─────────────────────────────────────
@@ -80,7 +80,7 @@ impl FeatureQueryState {
 /// Caller merges this into the main router conditionally (dev gate).
 pub fn feature_query_router(state: FeatureQueryState) -> Router {
     Router::new()
-        .route("/get/{feature}/{key}", get(get_feature_handler))
+        .route("/get/:feature/:key", get(get_feature_handler))
         .route("/get", post(post_get_batch_handler))
         .with_state(state)
 }
@@ -133,7 +133,7 @@ async fn get_feature_handler(
 
     // Query state under the lock.
     let tables = state.dev_agg_state.state_tables.lock();
-    let query_time_ms = compute_query_time_ms(&state.dev_agg_state.state_tables);
+    let query_time_ms = compute_query_time_ms(&state.dev_agg_state);
     let value_opt = tables
         .get(&agg_node)
         .and_then(|t| t.query_feature(&entity_key, feature_idx, query_time_ms));
@@ -188,7 +188,7 @@ async fn post_get_batch_handler(
 
     // Build result map.
     let tables = state.dev_agg_state.state_tables.lock();
-    let query_time_ms = compute_query_time_ms(&state.dev_agg_state.state_tables);
+    let query_time_ms = compute_query_time_ms(&state.dev_agg_state);
 
     let mut result: BTreeMap<String, BTreeMap<String, serde_json::Value>> = BTreeMap::new();
 
@@ -217,10 +217,7 @@ async fn post_get_batch_handler(
         }
     }
 
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({"result": result})),
-    )
+    (StatusCode::OK, Json(serde_json::json!({"result": result})))
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -247,20 +244,15 @@ pub(crate) fn parse_entity_key(key_str: &str, group_keys: &[String]) -> EntityKe
     EntityKey(pairs)
 }
 
-/// Compute the query time as max(event_time_ms) observed across all state tables.
+/// Compute the query time as max(event_time_ms) observed across all applied events.
 ///
-/// Returns `0` if no events have been applied.
+/// Returns `0` if no events have been applied yet.
 ///
-/// D-06: Uses the tracked max event_time, NOT wall-clock. This keeps queries
-/// deterministic — the same input event stream always produces the same outputs
-/// regardless of when the query runs.
-fn compute_query_time_ms(
-    _state_tables: &Arc<Mutex<BTreeMap<String, beava_core::agg_state_table::AggStateTable>>>,
-) -> i64 {
-    // Phase 5: query time is 0 (no windowed operators need real time yet).
-    // Plan 05-07 will wire max_event_time_ms from DevAggState.
-    // TODO(05-07): replace with DevAggState.max_event_time_ms.load(Ordering::Acquire) as i64
-    0
+/// D-06: Uses the tracked max event_time from DevAggState, never wall-clock.
+/// This keeps queries deterministic — the same input event stream always
+/// produces the same outputs regardless of when the query executes.
+fn compute_query_time_ms(dev_agg_state: &DevAggState) -> i64 {
+    dev_agg_state.max_event_time_ms.load(Ordering::Acquire) as i64
 }
 
 /// Convert a `beava_core::row::Value` to a `serde_json::Value`.
@@ -437,6 +429,7 @@ mod tests {
     }
 
     /// Push N events to the dev state with the given user_id and amount.
+    /// Also bumps `max_event_time_ms` so query handlers see the correct query time.
     fn push_events(
         dev_state: &DevAggState,
         source: &str,
@@ -451,18 +444,23 @@ mod tests {
         let mut tables = dev_state.state_tables.lock();
         for i in 0..count {
             let event_id = dev_state.next_event_id.fetch_add(1, Ordering::SeqCst);
+            let event_time_ms = 1_000_000_i64 + i as i64;
             let row = Row::new()
                 .with_field("user_id", Value::Str(user_id.to_string()))
                 .with_field("amount", Value::F64(amount))
-                .with_field("event_time", Value::I64(1_000_000 + i as i64));
+                .with_field("event_time", Value::I64(event_time_ms));
             apply_event_to_aggregations(
                 source,
                 &row,
-                1_000_000 + i as i64,
+                event_time_ms,
                 event_id,
                 &dev_state.registry,
                 &mut tables,
             );
+            // Bump max_event_time_ms so GET /get query handlers use deterministic time.
+            dev_state
+                .max_event_time_ms
+                .fetch_max(event_time_ms as u64, Ordering::Relaxed);
         }
     }
 
@@ -480,12 +478,7 @@ mod tests {
         let (registry, dev_state) = make_count_agg_registry();
         push_events(&dev_state, "Transaction", "alice", 5.0, 10);
 
-        let r = router(
-            ReadinessFlag::new(),
-            registry,
-            true,
-            Some(dev_state),
-        );
+        let r = router(ReadinessFlag::new(), registry, true, Some(dev_state));
         let (status, body) = call_get(r, "/get/cnt/alice").await;
         assert_eq!(status, StatusCode::OK, "body: {body:#}");
         assert_eq!(body["value"], 10, "expected count=10, body: {body:#}");
@@ -499,10 +492,7 @@ mod tests {
         let r = router(ReadinessFlag::new(), registry, true, Some(dev_state));
         let (status, body) = call_get(r, "/get/nonexistent/alice").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "body: {body:#}");
-        assert_eq!(
-            body["error"]["code"], "feature_not_found",
-            "body: {body:#}"
-        );
+        assert_eq!(body["error"]["code"], "feature_not_found", "body: {body:#}");
     }
 
     /// get_endpoint_404_on_unknown_key:
@@ -515,10 +505,7 @@ mod tests {
         let r = router(ReadinessFlag::new(), registry, true, Some(dev_state));
         let (status, body) = call_get(r, "/get/cnt/bob").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "body: {body:#}");
-        assert_eq!(
-            body["error"]["code"], "key_not_found",
-            "body: {body:#}"
-        );
+        assert_eq!(body["error"]["code"], "key_not_found", "body: {body:#}");
     }
 
     /// get_endpoint_handles_sum_feature_returning_float:
@@ -605,10 +592,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:#}");
-        assert_eq!(
-            body["error"]["code"], "feature_not_found",
-            "body: {body:#}"
-        );
+        assert_eq!(body["error"]["code"], "feature_not_found", "body: {body:#}");
         let missing = body["error"]["missing"]
             .as_array()
             .expect("missing must be an array");
@@ -660,10 +644,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:#}");
-        assert_eq!(
-            body["error"]["code"], "batch_too_large",
-            "body: {body:#}"
-        );
+        assert_eq!(body["error"]["code"], "batch_too_large", "body: {body:#}");
     }
 
     // ── cross-aggregation feature-name collision rule ─────────────────────────
@@ -711,7 +692,11 @@ mod tests {
             .unwrap();
         let r1 = router(ReadinessFlag::new(), registry.clone(), false, None);
         let resp1 = r1.oneshot(req1).await.expect("oneshot");
-        assert_eq!(resp1.status(), StatusCode::OK, "first registration must succeed");
+        assert_eq!(
+            resp1.status(),
+            StatusCode::OK,
+            "first registration must succeed"
+        );
 
         // Second registration: SaleEvent + AggB also with feature "cnt" (collision!)
         let payload2 = serde_json::json!({
@@ -758,8 +743,7 @@ mod tests {
             "cross-agg collision must return 400, body: {body2:#}"
         );
         assert_eq!(
-            body2["error"]["code"],
-            "aggregation_feature_name_collision_across_aggregations",
+            body2["error"]["code"], "aggregation_feature_name_collision_across_aggregations",
             "expected collision error code, body: {body2:#}"
         );
 
@@ -792,7 +776,10 @@ mod tests {
         );
         let (s2, b2) = call_get(r2, "/get/cnt/alice").await;
         assert_eq!(s2, StatusCode::OK);
-        assert_eq!(b1["value"], b2["value"], "D-06: same events → same query result");
+        assert_eq!(
+            b1["value"], b2["value"],
+            "D-06: same events → same query result"
+        );
     }
 
     // ── Grep guard: D-02 envelope purity ─────────────────────────────────────

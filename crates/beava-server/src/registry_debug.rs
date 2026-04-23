@@ -228,6 +228,13 @@ pub struct DevAggState {
     /// `event_id` parameter; value is ignored in Phase 5 but keeps the
     /// signature stable for Phase 6 WAL (D-08).
     pub next_event_id: Arc<AtomicU64>,
+    /// Maximum event_time_ms observed across all applied events.
+    ///
+    /// Used by the `/get` query handlers as the query time (D-06: deterministic
+    /// query time — max observed event_time, NOT wall-clock). Value is 0 until
+    /// the first event is applied. Stored as u64 (cast from i64) so it fits in
+    /// an AtomicU64; negative event times are treated as 0 for query purposes.
+    pub max_event_time_ms: Arc<AtomicU64>,
 }
 
 impl DevAggState {
@@ -236,6 +243,7 @@ impl DevAggState {
             state_tables: Arc::new(Mutex::new(BTreeMap::new())),
             registry,
             next_event_id: Arc::new(AtomicU64::new(0)),
+            max_event_time_ms: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -329,6 +337,14 @@ async fn post_dev_apply_events(
             &dev_state.registry,
             &mut tables,
         );
+    }
+
+    // Step 6: bump max_event_time_ms (D-06 deterministic query time).
+    // Use fetch_max to ensure monotonicity even with out-of-order events.
+    if body.event_time_ms > 0 {
+        dev_state
+            .max_event_time_ms
+            .fetch_max(body.event_time_ms as u64, Ordering::Relaxed);
     }
 
     (

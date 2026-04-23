@@ -385,6 +385,58 @@ pub fn compile_aggregations_from_nodes(
         }
     }
 
+    // Plan 05-06: cross-aggregation feature-name collision check.
+    //
+    // After per-node validation, check that no newly-compiled feature name collides
+    // with an existing feature name in the registry's feature_index (from a different
+    // aggregation node that was already registered).
+    //
+    // Also check that two different aggregations within the SAME payload don't both
+    // define the same feature name.
+    //
+    // Only runs if there were no per-node errors (consistent with fail-soft ordering).
+    if errors.is_empty() && !compiled.is_empty() {
+        // Build a map of feature_name → agg_node_name for newly compiled aggs.
+        let mut new_features: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for (node_name, agg_desc) in &compiled {
+            for named_op in &agg_desc.features {
+                if let Some(existing_node) = new_features.get(&named_op.feature_name) {
+                    // Two new aggregations both define the same feature name.
+                    if existing_node != node_name {
+                        errors.push(ValidationError {
+                            code: ErrorCode::AggregationFeatureNameCollisionAcrossAggregations,
+                            path: format!("nodes.{node_name}.features.{}", named_op.feature_name),
+                            reason: format!(
+                                "feature name '{}' is already defined by aggregation '{}'; \
+                                 feature names must be globally unique across aggregations",
+                                named_op.feature_name, existing_node
+                            ),
+                        });
+                    }
+                } else {
+                    new_features.insert(named_op.feature_name.clone(), node_name.clone());
+                }
+            }
+        }
+
+        // Check new features against already-registered feature_index.
+        for (feature_name, new_node_name) in &new_features {
+            if let Some((existing_node, _)) = registry.feature_index.get(feature_name) {
+                if existing_node != new_node_name {
+                    errors.push(ValidationError {
+                        code: ErrorCode::AggregationFeatureNameCollisionAcrossAggregations,
+                        path: format!("nodes.{new_node_name}.features.{feature_name}"),
+                        reason: format!(
+                            "feature name '{feature_name}' is already registered by aggregation \
+                             '{existing_node}'; feature names must be globally unique across aggregations"
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
     (compiled, errors)
 }
 
