@@ -229,7 +229,11 @@ def _decorate_event_function(
         # EventSource / TableSource) that would not be resolvable by
         # typing.get_type_hints() in the function's defining module namespace.
         upstream_cls = param.annotation
-        if upstream_cls is inspect.Parameter.empty or not hasattr(upstream_cls, "_name"):
+        if (
+            upstream_cls is inspect.Parameter.empty
+            or not hasattr(upstream_cls, "_beava_kind")
+            or not hasattr(upstream_cls, "_name")
+        ):
             raise TypeError(
                 f"@bv.event function form: parameter {param_name!r} must be annotated "
                 f"with a @bv.event- or @bv.table-decorated descriptor "
