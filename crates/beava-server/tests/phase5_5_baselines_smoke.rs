@@ -126,10 +126,7 @@ fn baselines_populated_for_current_hw_class() {
 
     // 2. Count data rows (lines starting with `|` containing a time unit after
     //    the hw-class section heading).
-    let after_section = contents
-        .split(&section_header)
-        .nth(1)
-        .unwrap_or("");
+    let after_section = contents.split(&section_header).nth(1).unwrap_or("");
 
     // Find the next section boundary (another `## `) to scope the count.
     let section_content = if let Some(next_section) = after_section.find("\n## ") {
@@ -142,9 +139,13 @@ fn baselines_populated_for_current_hw_class() {
         .lines()
         .filter(|line| {
             line.starts_with('|')
-                && (line.contains(" ns") || line.contains(" µs") || line.contains(" ms")
-                    || line.contains("ops/s") || line.contains("µs/iter")
-                    || line.contains("ns/iter") || line.contains("ms/iter"))
+                && (line.contains(" ns")
+                    || line.contains(" µs")
+                    || line.contains(" ms")
+                    || line.contains("ops/s")
+                    || line.contains("µs/iter")
+                    || line.contains("ns/iter")
+                    || line.contains("ms/iter"))
         })
         .collect();
 
