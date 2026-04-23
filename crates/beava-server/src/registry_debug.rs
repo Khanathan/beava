@@ -35,8 +35,14 @@
 //! - `Value::Bytes(_)` → JSON Null (binary not representable in JSON v0)
 //! - `Value::Datetime(ms)` → JSON Number (i64 ms since epoch)
 
-use axum::{extract::State, http::StatusCode, routing::get, Json, Router};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    routing::{get, post},
+    Json, Router,
+};
 use beava_core::registry::{DerivationDescriptor, EventDescriptor, Registry, TableDescriptor};
+use beava_core::row::{Row, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -89,17 +95,110 @@ pub struct ApplyOpsRequest {
 
 /// Build a sub-router for POST /dev/apply_ops. Caller merges this into the main
 /// router conditionally (same BEAVA_DEV_ENDPOINTS gate as GET /registry).
-pub fn dev_apply_ops_router(_registry: Arc<Registry>) -> axum::Router {
-    todo!("red stub: 04-06 impl pending — dev_apply_ops_router")
+pub fn dev_apply_ops_router(registry: Arc<Registry>) -> axum::Router {
+    Router::new()
+        .route("/dev/apply_ops", post(post_dev_apply_ops))
+        .with_state(registry)
 }
 
-/// POST /dev/apply_ops handler (stub — fails at todo!() until Task 1.b).
-#[allow(dead_code)]
+/// POST /dev/apply_ops handler.
+///
+/// Looks up the compiled OpChain for `body.derivation`, converts the JSON row
+/// to a `Row<Value>`, applies the chain, and returns the result.
+///
+/// # JSON → Value conversion (per module doc):
+/// - bool             → Value::Bool
+/// - integer-fitting Number → Value::I64
+/// - other Number     → Value::F64
+/// - string           → Value::Str
+/// - null             → Value::Null
+/// - array / object   → Value::Null (no nested support in v0)
+///
+/// # Row → JSON conversion (per module doc):
+/// - Value::Null      → serde_json::Value::Null
+/// - Value::I64(n)    → JSON Number (i64)
+/// - Value::F64(f)    → JSON Number (f64)
+/// - Value::Bool(b)   → JSON Bool
+/// - Value::Str(s)    → JSON String
+/// - Value::Bytes(_)  → JSON Null  (binary not JSON-representable in v0)
+/// - Value::Datetime(ms) → JSON Number (i64 ms since epoch)
 async fn post_dev_apply_ops(
-    State(_registry): State<Arc<Registry>>,
-    Json(_body): Json<ApplyOpsRequest>,
+    State(registry): State<Arc<Registry>>,
+    Json(body): Json<ApplyOpsRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    todo!("red stub: 04-06 impl pending — post_dev_apply_ops")
+    // Step 1: look up the compiled chain.
+    let chain = match registry.compiled_chain(&body.derivation) {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "derivation_not_found"})),
+            );
+        }
+    };
+
+    // Step 2: convert JSON row → Row<Value>.
+    let mut row = Row::new();
+    for (field, jv) in body.row {
+        let v = json_to_value(&jv);
+        row = row.with_field(&field, v);
+    }
+
+    // Step 3: apply the chain.
+    match chain.apply(row) {
+        None => (StatusCode::OK, Json(serde_json::json!({"kept": false}))),
+        Some(updated_row) => {
+            let mut obj = serde_json::Map::new();
+            for (field, v) in updated_row.0 {
+                obj.insert(field, value_to_json(v));
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"kept": true, "row": serde_json::Value::Object(obj)})),
+            )
+        }
+    }
+}
+
+// ─── Conversion helpers ───────────────────────────────────────────────────────
+
+/// Convert a `serde_json::Value` to a `beava_core::row::Value`.
+/// See module-level doc for the conversion table.
+fn json_to_value(jv: &serde_json::Value) -> Value {
+    match jv {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::I64(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::F64(f)
+            } else {
+                Value::Null
+            }
+        }
+        serde_json::Value::String(s) => Value::Str(s.clone()),
+        // Array / Object → Null (no nested support in v0)
+        _ => Value::Null,
+    }
+}
+
+/// Convert a `beava_core::row::Value` to a `serde_json::Value`.
+/// See module-level doc for the conversion table.
+fn value_to_json(v: Value) -> serde_json::Value {
+    match v {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(b),
+        Value::I64(n) => serde_json::Value::Number(n.into()),
+        Value::F64(f) => serde_json::Number::from_f64(f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        Value::Str(s) => serde_json::Value::String(s),
+        // Bytes not JSON-representable in v0 → Null
+        Value::Bytes(_) => serde_json::Value::Null,
+        // Datetime: emit as i64 ms since epoch
+        Value::Datetime(ms) => serde_json::Value::Number(ms.into()),
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
