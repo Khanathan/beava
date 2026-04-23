@@ -15,6 +15,7 @@ pub mod op_node;
 pub mod register_validate;
 pub mod registry;
 pub mod registry_diff;
+pub mod row;
 pub mod schema;
 pub mod wire;
 
