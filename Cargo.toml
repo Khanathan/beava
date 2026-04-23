@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "crates/beava-core",
+  "crates/beava-persistence",
   "crates/beava-server",
 ]
 
