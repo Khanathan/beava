@@ -13,6 +13,7 @@
 //!   `self` and return the updated `Row`. This satisfies SDK-OPS-09: derivation
 //!   op steps construct a new `Row` per step rather than mutating shared state.
 
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 // ─── Value ────────────────────────────────────────────────────────────────────
@@ -21,7 +22,7 @@ use std::collections::BTreeMap;
 ///
 /// Mirrors `FieldType` one-to-one (see `type_of()`). `Null` has no `FieldType`
 /// equivalent and signals absence/unknown per SQL three-valued logic (§D-04).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Value {
     Null,
     Str(String),

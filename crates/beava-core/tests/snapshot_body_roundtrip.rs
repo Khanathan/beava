@@ -197,7 +197,7 @@ fn value_serde_roundtrip_each_variant() {
     let variants = [
         Value::Null,
         Value::I64(42),
-        Value::F64(3.14),
+        Value::F64(2.5),
         Value::Bool(true),
         Value::Str("hello".to_string()),
         Value::Bytes(vec![0x01, 0x02, 0x03]),
@@ -223,7 +223,14 @@ fn snapshot_body_empty_roundtrip() {
     };
     let bytes = body.encode().expect("encode");
     let decoded = SnapshotBody::decode(&bytes).expect("decode");
-    assert_eq!(body, decoded);
+    assert_eq!(decoded.body_format_version, SNAPSHOT_BODY_FORMAT_VERSION);
+    assert_eq!(decoded.registry, RegistryDescriptorsOnly::default());
+    assert!(decoded.state_tables.is_empty());
+    assert_eq!(decoded.next_event_id, 0);
+    assert_eq!(decoded.max_event_time_ms, 0);
+    // Byte-equivalence confirms deterministic encoding.
+    let reencoded = decoded.encode().expect("re-encode");
+    assert_eq!(bytes, reencoded);
 }
 
 #[test]
@@ -269,8 +276,10 @@ fn small_derived_schema() -> DerivedSchema {
 
 #[test]
 fn snapshot_body_registry_descriptors_preserved() {
-    let mut inner = RegistryInner::default();
-    inner.version = 3;
+    let mut inner = RegistryInner {
+        version: 3,
+        ..RegistryInner::default()
+    };
     inner.events.insert(
         "Txn".to_string(),
         EventDescriptor {

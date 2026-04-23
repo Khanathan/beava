@@ -19,6 +19,7 @@
 //!       stable, combinable across tumbling buckets.
 
 use crate::row::Value;
+use serde::{Deserialize, Serialize};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -50,7 +51,7 @@ pub fn value_lt(a: &Value, b: &Value) -> bool {
 
 /// AGG-CORE-01: Counts rows. Increments when `where_matched=true`.
 /// Null field values are irrelevant — Count counts *rows*, not field values.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CountState {
     pub n: u64,
 }
@@ -76,7 +77,7 @@ impl CountState {
 // ─── SumState ────────────────────────────────────────────────────────────────
 
 /// AGG-CORE-02: Sum of a numeric field. SQL null semantics: Null field skipped.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SumState {
     pub total: f64,
     /// n tracks whether any row contributed (for returning Null when empty).
@@ -114,7 +115,7 @@ impl SumState {
 // ─── AvgState ────────────────────────────────────────────────────────────────
 
 /// AGG-CORE-03: Arithmetic mean of a numeric field. Returns Null when n==0.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AvgState {
     pub sum: f64,
     pub n: u64,
@@ -152,7 +153,7 @@ impl AvgState {
 
 /// AGG-CORE-04: Running minimum. Preserves original Value type for min/max type
 /// inference (e.g., I64 field stays I64). First observed value wins on ties.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MinState {
     pub current: Option<Value>,
 }
@@ -191,7 +192,7 @@ impl MinState {
 // ─── MaxState ────────────────────────────────────────────────────────────────
 
 /// AGG-CORE-05: Running maximum. Mirror of MinState.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MaxState {
     pub current: Option<Value>,
 }
@@ -241,7 +242,7 @@ impl MaxState {
 /// ```
 /// Sample variance = m2 / (n-1).  Numerically stable and combinable across
 /// buckets via pairwise merge (see `agg_windowed.rs`).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct VarianceState {
     pub n: u64,
     pub mean: f64,
@@ -300,7 +301,7 @@ impl VarianceState {
 /// Note: In Plan 05-01 (pre-predicate threading), callers pass `where_matched`
 /// directly to encode the numerator condition. Plan 05-02 wires in the Expr
 /// evaluator to compute `where_matched` from a row + predicate expression.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RatioState {
     pub matching: u64,
     pub total: u64,

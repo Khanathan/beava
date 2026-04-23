@@ -21,6 +21,7 @@ use crate::agg_state::{
 use crate::row::{Row, Value};
 use crate::schema::FieldType;
 use crate::schema_propagate::Schema;
+use serde::{Deserialize, Serialize};
 
 // Forward declaration — implementation in agg_windowed.rs (Task 2).
 // We import it here so AggOp::Windowed can hold it.
@@ -30,7 +31,7 @@ use crate::agg_windowed::WindowedOp;
 
 /// Identifies the aggregation operation kind. Copy + Clone for use in
 /// descriptors and WindowedOp inner_kind (no heap allocation).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AggKind {
     Count,
     Sum,
@@ -90,7 +91,7 @@ impl std::fmt::Display for AggTypeError {
 /// Live per-(feature, entity) aggregation state. Enum dispatch; no Box<dyn>.
 ///
 /// AGG-CORE-01..09 per D-01.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AggOp {
     /// AGG-CORE-01
     Count(CountState),

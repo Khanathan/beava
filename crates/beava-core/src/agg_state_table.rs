@@ -31,6 +31,7 @@ use std::collections::BTreeMap;
 use crate::agg_descriptor::AggregationDescriptor;
 use crate::agg_op::AggOp;
 use crate::row::{Row, Value};
+use serde::{Deserialize, Serialize};
 
 // ─── EntityKey ────────────────────────────────────────────────────────────────
 
@@ -39,7 +40,7 @@ use crate::row::{Row, Value};
 /// A vec of `(group_key_name, canonical_value_string)` pairs in declaration
 /// order (the order of `AggregationDescriptor::group_keys`).  Implements `Ord`
 /// so it can be used as a `BTreeMap` key without hashing.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct EntityKey(pub Vec<(String, String)>);
 
 impl EntityKey {

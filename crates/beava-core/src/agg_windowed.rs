@@ -12,6 +12,7 @@
 
 use crate::agg_op::{AggKind, AggOp};
 use crate::row::Row;
+use serde::{Deserialize, Serialize};
 
 /// 64-bucket event-time tumbling ring buffer wrapping any core AggOp.
 ///
@@ -20,13 +21,105 @@ use crate::row::Row;
 /// `bucket_index(event_time_ms)`, resetting stale buckets. On query: fold
 /// active buckets using op-specific combine logic (Welford pairwise for
 /// variance/stddev).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowedOp {
     pub inner_kind: AggKind,
     pub bucket_ms: u64,
     pub window_ms: u64,
+    #[serde(with = "serde_array_64")]
     pub buckets: [Option<Box<AggOp>>; 64],
+    #[serde(with = "serde_array_64_i64")]
     pub bucket_epoch_start_ms: [i64; 64],
+}
+
+/// serde helpers for `[Option<Box<AggOp>>; 64]` — serde's default only supports
+/// arrays up to 32 elements pre-1.0 via specialization. We serialize as a Vec
+/// then validate length on decode.
+mod serde_array_64 {
+    use crate::agg_op::AggOp;
+    use serde::de::{self, SeqAccess, Visitor};
+    use serde::ser::SerializeTuple;
+    use serde::{Deserializer, Serializer};
+    use std::fmt;
+
+    pub fn serialize<S>(
+        buckets: &[Option<Box<AggOp>>; 64],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut tup = serializer.serialize_tuple(64)?;
+        for b in buckets.iter() {
+            tup.serialize_element(b)?;
+        }
+        tup.end()
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[Option<Box<AggOp>>; 64], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = [Option<Box<AggOp>>; 64];
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a 64-tuple of optional AggOp bucket slots")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut out: [Option<Box<AggOp>>; 64] = std::array::from_fn(|_| None);
+                for (i, slot) in out.iter_mut().enumerate() {
+                    *slot = seq
+                        .next_element::<Option<Box<AggOp>>>()?
+                        .ok_or_else(|| de::Error::invalid_length(i, &self))?;
+                }
+                Ok(out)
+            }
+        }
+        deserializer.deserialize_tuple(64, V)
+    }
+}
+
+/// serde helpers for `[i64; 64]` (serde default only supports up to 32).
+mod serde_array_64_i64 {
+    use serde::de::{self, SeqAccess, Visitor};
+    use serde::ser::SerializeTuple;
+    use serde::{Deserializer, Serializer};
+    use std::fmt;
+
+    pub fn serialize<S>(arr: &[i64; 64], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut tup = serializer.serialize_tuple(64)?;
+        for x in arr.iter() {
+            tup.serialize_element(x)?;
+        }
+        tup.end()
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[i64; 64], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = [i64; 64];
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a 64-tuple of i64 bucket epochs")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut out: [i64; 64] = [i64::MIN; 64];
+                for (i, slot) in out.iter_mut().enumerate() {
+                    *slot = seq
+                        .next_element::<i64>()?
+                        .ok_or_else(|| de::Error::invalid_length(i, &self))?;
+                }
+                Ok(out)
+            }
+        }
+        deserializer.deserialize_tuple(64, V)
+    }
 }
 
 impl WindowedOp {
