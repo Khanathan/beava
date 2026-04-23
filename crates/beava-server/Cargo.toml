@@ -50,6 +50,11 @@ name = "phase5_5_harness_smoke"
 path = "tests/phase5_5_harness_smoke.rs"
 required-features = ["testing"]
 
+[[test]]
+name = "phase5_5_baselines_smoke"
+path = "tests/phase5_5_baselines_smoke.rs"
+required-features = ["testing"]
+
 [lib]
 name = "beava_server"
 path = "src/lib.rs"
