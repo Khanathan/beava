@@ -114,6 +114,13 @@ def decode_frame(buf: bytes, max_frame_bytes: int = MAX_FRAME_BYTES) -> Frame:
 
     (length,) = struct.unpack(">I", buf[:4])
 
+    # Guard against malformed frames that claim fewer bytes than op+ct require.
+    # Mirrors Rust server FrameError::LengthUnderflow (wire.rs line ~215).
+    if length < 3:
+        raise IncompleteFrame(
+            f"frame length {length} < 3: cannot cover op(2) + content_type(1)"
+        )
+
     # Check declared length against limit (limit includes op+ct overhead)
     limit = max_frame_bytes + 3  # 3 = op(2) + ct(1)
     if length > limit:
@@ -171,6 +178,13 @@ def read_frame(sock: socket.socket, max_frame_bytes: int = MAX_FRAME_BYTES) -> F
     # Read the 4-byte length prefix
     len_bytes = _recv_exactly(sock, 4)
     (length,) = struct.unpack(">I", len_bytes)
+
+    # Guard against malformed frames that claim fewer bytes than op+ct require.
+    # Mirrors Rust server FrameError::LengthUnderflow (wire.rs line ~215).
+    if length < 3:
+        raise IncompleteFrame(
+            f"frame length {length} < 3: cannot cover op(2) + content_type(1)"
+        )
 
     limit = max_frame_bytes + 3
     if length > limit:
