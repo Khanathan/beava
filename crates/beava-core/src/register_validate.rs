@@ -3,13 +3,14 @@
 //! Validates all 9 rules from 02-CONTEXT.md §Validation pass:
 //! 1. Node uniqueness within payload
 //! 2. Reserved names / pattern / length
-//! 3. Event schema: event_time_field exists + I64 type, schema non-empty
+//! 3. Event schema: non-empty; if event_time_field is Some, it must exist and be I64.
+//!    If event_time_field is None, the server will stamp wall-clock time on push.
 //! 4. Table schema: primary_key ≥ 1 and ≤ 4 fields, all in schema
 //! 5. Derivation upstreams: each name resolves in payload OR current registry
 //! 6. Derivation schema non-empty; output_kind=Table requires table_primary_key
 //! 7. DAG acyclicity (DFS, reports first cycle)
 //! 8. Topological order (upstreams-within-payload appear before dependents)
-//! 9. Idempotency key: if present, must be in schema; ttl must be positive
+//! 9. Dedupe key: if present, must be in schema; dedupe_window_ms must be positive
 
 use crate::registry::{EventDescriptor, RegistryInner, TableDescriptor};
 use crate::registry_diff::PayloadNode;
@@ -39,8 +40,8 @@ pub enum ErrorCode {
     DerivationSchemaEmpty,
     RegistrationCycle,
     TopologicalOrderViolation,
-    IdempotencyKeyUnknownField,
-    IdempotencyTtlNonPositive,
+    DedupeKeyUnknownField,
+    DedupeWindowNonPositive,
     DerivationOutputKindTableMissingPrimaryKey,
 }
 
@@ -181,63 +182,69 @@ fn validate_node_name(i: usize, node: &PayloadNode, errors: &mut Vec<ValidationE
 // ─── Rule 3: event schema validation ─────────────────────────────────────────
 
 fn validate_event(i: usize, e: &EventDescriptor, errors: &mut Vec<ValidationError>) {
-    // event_time_field must exist in schema
-    match e.schema.fields.get(&e.event_time_field) {
-        None => {
+    // If event_time_field is Some, it must exist in schema with I64 type.
+    // If None, server will stamp wall-clock time on push (skip existence+type checks).
+    if let Some(ref etf) = e.event_time_field {
+        match e.schema.fields.get(etf) {
+            None => {
+                errors.push(ValidationError {
+                    code: ErrorCode::EventTimeFieldMissing,
+                    path: path_field(i, &format!("schema.fields.{etf}")),
+                    reason: format!("event_time_field '{etf}' does not exist in schema.fields"),
+                });
+            }
+            Some(ft) if *ft != FieldType::I64 => {
+                errors.push(ValidationError {
+                    code: ErrorCode::EventTimeFieldWrongType,
+                    path: path_field(i, &format!("schema.fields.{etf}")),
+                    reason: format!("event_time_field '{etf}' must be type i64, got {ft:?}"),
+                });
+            }
+            _ => {}
+        }
+
+        // When event_time_field is Some, schema must have ≥1 non-event_time field.
+        let non_ts_count = e
+            .schema
+            .fields
+            .keys()
+            .filter(|k| k.as_str() != etf.as_str())
+            .count();
+        if non_ts_count == 0 {
             errors.push(ValidationError {
-                code: ErrorCode::EventTimeFieldMissing,
-                path: path_field(i, &format!("schema.fields.{}", e.event_time_field)),
-                reason: format!(
-                    "event_time_field '{}' does not exist in schema.fields",
-                    e.event_time_field
-                ),
+                code: ErrorCode::EventSchemaEmpty,
+                path: path_field(i, "schema.fields"),
+                reason: "event schema must have at least one field besides event_time_field"
+                    .to_string(),
             });
         }
-        Some(ft) if *ft != FieldType::I64 => {
+    } else {
+        // No event_time_field → schema must be non-empty (any fields OK).
+        if e.schema.fields.is_empty() {
             errors.push(ValidationError {
-                code: ErrorCode::EventTimeFieldWrongType,
-                path: path_field(i, &format!("schema.fields.{}", e.event_time_field)),
-                reason: format!(
-                    "event_time_field '{}' must be type i64, got {:?}",
-                    e.event_time_field, ft
-                ),
+                code: ErrorCode::EventSchemaEmpty,
+                path: path_field(i, "schema.fields"),
+                reason: "event schema must have at least one field".to_string(),
             });
         }
-        _ => {}
     }
 
-    // Schema must have at least one non-event_time field
-    let non_ts_count = e
-        .schema
-        .fields
-        .keys()
-        .filter(|k| k.as_str() != e.event_time_field.as_str())
-        .count();
-    if non_ts_count == 0 {
-        errors.push(ValidationError {
-            code: ErrorCode::EventSchemaEmpty,
-            path: path_field(i, "schema.fields"),
-            reason: "event schema must have at least one field besides event_time_field"
-                .to_string(),
-        });
-    }
-
-    // Rule 9: idempotency_key
-    if let Some(ref key) = e.idempotency_key {
+    // Rule 9: dedupe_key
+    if let Some(ref key) = e.dedupe_key {
         if !e.schema.fields.contains_key(key) {
             errors.push(ValidationError {
-                code: ErrorCode::IdempotencyKeyUnknownField,
-                path: path_field(i, "idempotency_key"),
-                reason: format!("idempotency_key '{key}' is not a field in schema"),
+                code: ErrorCode::DedupeKeyUnknownField,
+                path: path_field(i, "dedupe_key"),
+                reason: format!("dedupe_key '{key}' is not a field in schema"),
             });
         }
     }
-    if let Some(ttl) = e.idempotency_ttl_ms {
+    if let Some(ttl) = e.dedupe_window_ms {
         if ttl == 0 {
             errors.push(ValidationError {
-                code: ErrorCode::IdempotencyTtlNonPositive,
-                path: path_field(i, "idempotency_ttl_ms"),
-                reason: "idempotency_ttl_ms must be positive (> 0)".to_string(),
+                code: ErrorCode::DedupeWindowNonPositive,
+                path: path_field(i, "dedupe_window_ms"),
+                reason: "dedupe_window_ms must be positive (> 0)".to_string(),
             });
         }
     }
@@ -481,11 +488,11 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         })
     }
@@ -504,7 +511,7 @@ mod tests_structural {
                 optional_fields: vec![],
             },
             ttl_ms: None,
-            mode: TableMode::Append,
+            mode: TableMode::Upsert,
             registered_at_version: 0,
         })
     }
@@ -609,11 +616,11 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         });
         assert_err_contains(vec![node], ErrorCode::NameEmpty, "nodes[0].name");
@@ -630,11 +637,11 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         });
         assert_err_contains(vec![node], ErrorCode::NameBadPattern, "nodes[0].name");
@@ -651,11 +658,11 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         });
         assert_err_contains(vec![node], ErrorCode::NameReservedPrefix, "nodes[0].name");
@@ -673,11 +680,11 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         });
         assert_err_contains(vec![node], ErrorCode::NameTooLong, "nodes[0].name");
@@ -701,11 +708,11 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: "ts".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("ts".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         });
         assert_err_contains(
@@ -726,11 +733,11 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         });
         let errs = validate_payload(&empty_current(), vec![node]).expect_err("expected Err");
@@ -753,17 +760,45 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         });
         assert_err_contains(
             vec![node],
             ErrorCode::EventSchemaEmpty,
             "nodes[0].schema.fields",
+        );
+    }
+
+    #[test]
+    fn rule3_pass_event_time_field_omitted() {
+        // Event with NO event_time_field (server will stamp wall-clock on push)
+        let current = RegistryInner::default();
+        let payload = vec![PayloadNode::Event(EventDescriptor {
+            name: "Heartbeat".to_string(),
+            schema: EventSchema {
+                fields: {
+                    let mut m = BTreeMap::new();
+                    m.insert("user_id".to_string(), FieldType::Str);
+                    m
+                },
+                optional_fields: vec![],
+            },
+            event_time_field: None,
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
+            registered_at_version: 0,
+        })];
+        let result = validate_payload(&current, payload);
+        assert!(
+            result.is_ok(),
+            "event without event_time_field should be valid"
         );
     }
 
@@ -786,7 +821,7 @@ mod tests_structural {
                 optional_fields: vec![],
             },
             ttl_ms: None,
-            mode: TableMode::Append,
+            mode: TableMode::Upsert,
             registered_at_version: 0,
         });
         assert_err_contains(
@@ -808,7 +843,7 @@ mod tests_structural {
                 optional_fields: vec![],
             },
             ttl_ms: None,
-            mode: TableMode::Append,
+            mode: TableMode::Upsert,
             registered_at_version: 0,
         });
         assert_err_contains(
@@ -833,7 +868,7 @@ mod tests_structural {
                 optional_fields: vec![],
             },
             ttl_ms: None,
-            mode: TableMode::Append,
+            mode: TableMode::Upsert,
             registered_at_version: 0,
         });
         assert_err_contains(
@@ -919,7 +954,7 @@ mod tests_structural {
     // ── Rule 9: Idempotency ───────────────────────────────────────────────────
 
     #[test]
-    fn rule9_pass_valid_idempotency() {
+    fn rule9_pass_valid_dedupe() {
         let mut fields = BTreeMap::new();
         fields.insert("event_time".to_string(), FieldType::I64);
         fields.insert("x".to_string(), FieldType::F64);
@@ -930,18 +965,18 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: "event_time".to_string(),
-            idempotency_key: Some("request_id".to_string()),
-            idempotency_ttl_ms: Some(1000),
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: Some("request_id".to_string()),
+            dedupe_window_ms: Some(1000),
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         });
         assert_ok(vec![node]);
     }
 
     #[test]
-    fn rule9_fail_idempotency_key_unknown_field() {
+    fn rule9_fail_dedupe_key_unknown_field() {
         let mut fields = BTreeMap::new();
         fields.insert("event_time".to_string(), FieldType::I64);
         fields.insert("x".to_string(), FieldType::F64);
@@ -951,22 +986,22 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: "event_time".to_string(),
-            idempotency_key: Some("missing".to_string()),
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: Some("missing".to_string()),
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         });
         assert_err_contains(
             vec![node],
-            ErrorCode::IdempotencyKeyUnknownField,
-            "nodes[0].idempotency_key",
+            ErrorCode::DedupeKeyUnknownField,
+            "nodes[0].dedupe_key",
         );
     }
 
     #[test]
-    fn rule9_fail_idempotency_ttl_zero() {
+    fn rule9_fail_dedupe_window_zero() {
         let mut fields = BTreeMap::new();
         fields.insert("event_time".to_string(), FieldType::I64);
         fields.insert("x".to_string(), FieldType::F64);
@@ -976,17 +1011,17 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: Some(0), // zero = non-positive
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: Some(0), // zero = non-positive
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         });
         assert_err_contains(
             vec![node],
-            ErrorCode::IdempotencyTtlNonPositive,
-            "nodes[0].idempotency_ttl_ms",
+            ErrorCode::DedupeWindowNonPositive,
+            "nodes[0].dedupe_window_ms",
         );
     }
 
@@ -1007,11 +1042,11 @@ mod tests_structural {
                 fields: fields.clone(),
                 optional_fields: vec![],
             },
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         });
         let mut fields2 = BTreeMap::new();
@@ -1022,11 +1057,11 @@ mod tests_structural {
                 fields: fields2,
                 optional_fields: vec![],
             },
-            event_time_field: "ts".to_string(), // missing
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("ts".to_string()), // missing
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         });
         let node2 = PayloadNode::Derivation(DerivationDescriptor {
@@ -1074,11 +1109,11 @@ mod tests_structural {
                     fields,
                     optional_fields: vec![],
                 },
-                event_time_field: "event_time".to_string(),
-                idempotency_key: None,
-                idempotency_ttl_ms: None,
-                history_ttl_ms: None,
-                watermark_lateness_ms: None,
+                event_time_field: Some("event_time".to_string()),
+                dedupe_key: None,
+                dedupe_window_ms: None,
+                keep_events_for_ms: None,
+                tolerate_delay_ms: None,
                 registered_at_version: 1,
             },
         );
@@ -1113,11 +1148,11 @@ mod tests_structural {
                     fields: fields.clone(),
                     optional_fields: vec![],
                 },
-                event_time_field: "event_time".to_string(),
-                idempotency_key: None,
-                idempotency_ttl_ms: None,
-                history_ttl_ms: None,
-                watermark_lateness_ms: None,
+                event_time_field: Some("event_time".to_string()),
+                dedupe_key: None,
+                dedupe_window_ms: None,
+                keep_events_for_ms: None,
+                tolerate_delay_ms: None,
                 registered_at_version: 1,
             },
         );
@@ -1129,11 +1164,11 @@ mod tests_structural {
                     fields,
                     optional_fields: vec![],
                 },
-                event_time_field: "event_time".to_string(),
-                idempotency_key: None,
-                idempotency_ttl_ms: None,
-                history_ttl_ms: None,
-                watermark_lateness_ms: None,
+                event_time_field: Some("event_time".to_string()),
+                dedupe_key: None,
+                dedupe_window_ms: None,
+                keep_events_for_ms: None,
+                tolerate_delay_ms: None,
                 registered_at_version: 1,
             },
         );
@@ -1274,11 +1309,11 @@ mod tests_structural {
                     fields: fields.clone(),
                     optional_fields: vec![],
                 },
-                event_time_field: "event_time".to_string(),
-                idempotency_key: None,
-                idempotency_ttl_ms: None,
-                history_ttl_ms: None,
-                watermark_lateness_ms: None,
+                event_time_field: Some("event_time".to_string()),
+                dedupe_key: None,
+                dedupe_window_ms: None,
+                keep_events_for_ms: None,
+                tolerate_delay_ms: None,
                 registered_at_version: 1,
             },
         );
@@ -1290,11 +1325,11 @@ mod tests_structural {
                     fields,
                     optional_fields: vec![],
                 },
-                event_time_field: "event_time".to_string(),
-                idempotency_key: None,
-                idempotency_ttl_ms: None,
-                history_ttl_ms: None,
-                watermark_lateness_ms: None,
+                event_time_field: Some("event_time".to_string()),
+                dedupe_key: None,
+                dedupe_window_ms: None,
+                keep_events_for_ms: None,
+                tolerate_delay_ms: None,
                 registered_at_version: 1,
             },
         );

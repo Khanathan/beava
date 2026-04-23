@@ -66,7 +66,7 @@ pub enum DiffReason {
     EventTimeFieldMismatch,
     PrimaryKeyMismatch,
     TtlMismatch,
-    IdempotencyKeyMismatch,
+    DedupeKeyMismatch,
     OpsMismatch,
     UpstreamsMismatch,
     OutputKindMismatch,
@@ -178,7 +178,7 @@ fn classify_event_diff(
     current: &EventDescriptor,
     submitted: &EventDescriptor,
 ) -> (DiffReason, String) {
-    // Priority order: schema → event_time_field → idempotency_key → ttl fields → fallback
+    // Priority order: schema → event_time_field → dedupe_key → ttl fields → fallback
 
     if let Some(detail) = describe_field_diff_event(&current.schema, &submitted.schema) {
         return (DiffReason::SchemaMismatch, detail);
@@ -188,48 +188,48 @@ fn classify_event_diff(
         return (
             DiffReason::EventTimeFieldMismatch,
             format!(
-                "event_time_field changed from '{}' to '{}'",
+                "event_time_field changed from {:?} to {:?}",
                 current.event_time_field, submitted.event_time_field
             ),
         );
     }
 
-    if current.idempotency_key != submitted.idempotency_key {
+    if current.dedupe_key != submitted.dedupe_key {
         return (
-            DiffReason::IdempotencyKeyMismatch,
+            DiffReason::DedupeKeyMismatch,
             format!(
-                "idempotency_key changed from {:?} to {:?}",
-                current.idempotency_key, submitted.idempotency_key
+                "dedupe_key changed from {:?} to {:?}",
+                current.dedupe_key, submitted.dedupe_key
             ),
         );
     }
 
-    if current.idempotency_ttl_ms != submitted.idempotency_ttl_ms {
+    if current.dedupe_window_ms != submitted.dedupe_window_ms {
         return (
             DiffReason::TtlMismatch,
             format!(
-                "idempotency_ttl_ms changed from {:?} to {:?}",
-                current.idempotency_ttl_ms, submitted.idempotency_ttl_ms
+                "dedupe_window_ms changed from {:?} to {:?}",
+                current.dedupe_window_ms, submitted.dedupe_window_ms
             ),
         );
     }
 
-    if current.history_ttl_ms != submitted.history_ttl_ms {
+    if current.keep_events_for_ms != submitted.keep_events_for_ms {
         return (
             DiffReason::TtlMismatch,
             format!(
-                "history_ttl_ms changed from {:?} to {:?}",
-                current.history_ttl_ms, submitted.history_ttl_ms
+                "keep_events_for_ms changed from {:?} to {:?}",
+                current.keep_events_for_ms, submitted.keep_events_for_ms
             ),
         );
     }
 
-    if current.watermark_lateness_ms != submitted.watermark_lateness_ms {
+    if current.tolerate_delay_ms != submitted.tolerate_delay_ms {
         return (
             DiffReason::TtlMismatch,
             format!(
-                "watermark_lateness_ms changed from {:?} to {:?}",
-                current.watermark_lateness_ms, submitted.watermark_lateness_ms
+                "tolerate_delay_ms changed from {:?} to {:?}",
+                current.tolerate_delay_ms, submitted.tolerate_delay_ms
             ),
         );
     }
@@ -411,11 +411,11 @@ mod tests {
             EventDescriptor {
                 name: name.to_string(),
                 schema,
-                event_time_field: "event_time".to_string(),
-                idempotency_key: None,
-                idempotency_ttl_ms: None,
-                history_ttl_ms: None,
-                watermark_lateness_ms: None,
+                event_time_field: Some("event_time".to_string()),
+                dedupe_key: None,
+                dedupe_window_ms: None,
+                keep_events_for_ms: None,
+                tolerate_delay_ms: None,
                 registered_at_version: 1,
             },
         );
@@ -437,11 +437,11 @@ mod tests {
         PayloadNode::Event(EventDescriptor {
             name: name.to_string(),
             schema,
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         })
     }
@@ -452,7 +452,7 @@ mod tests {
             primary_key,
             schema,
             ttl_ms: None,
-            mode: TableMode::Append,
+            mode: TableMode::Upsert,
             registered_at_version: 0,
         })
     }
@@ -612,11 +612,11 @@ mod tests {
         let payload = vec![PayloadNode::Event(EventDescriptor {
             name: "A".to_string(),
             schema,
-            event_time_field: "ts".to_string(), // changed
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("ts".to_string()), // changed
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         })];
         let diff = compute_diff(&current, &payload);
@@ -625,15 +625,15 @@ mod tests {
 
     // Test 8
     #[test]
-    fn idempotency_key_mismatch() {
+    fn dedupe_key_mismatch() {
         let schema = simple_event_schema();
         let mut current = registry_with_event("A", schema.clone());
-        current.events.get_mut("A").unwrap().idempotency_key = Some("request_id".to_string());
+        current.events.get_mut("A").unwrap().dedupe_key = Some("request_id".to_string());
 
-        // Payload has no idempotency_key
+        // Payload has no dedupe_key
         let payload = vec![event_node("A", schema)];
         let diff = compute_diff(&current, &payload);
-        assert_eq!(diff.changed[0].reason, DiffReason::IdempotencyKeyMismatch);
+        assert_eq!(diff.changed[0].reason, DiffReason::DedupeKeyMismatch);
     }
 
     // Test 9
@@ -641,22 +641,22 @@ mod tests {
     fn ttl_mismatch() {
         let schema = simple_event_schema();
         let mut current = registry_with_event("A", schema.clone());
-        current.events.get_mut("A").unwrap().history_ttl_ms = Some(1000);
+        current.events.get_mut("A").unwrap().keep_events_for_ms = Some(1000);
 
-        // Payload has history_ttl_ms = 1001 (differs by 1ms)
+        // Payload has keep_events_for_ms = 1001 (differs by 1ms)
         let payload = vec![PayloadNode::Event(EventDescriptor {
             name: "A".to_string(),
             schema,
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: Some(1001),
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: Some(1001),
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         })];
         let diff = compute_diff(&current, &payload);
         assert_eq!(diff.changed[0].reason, DiffReason::TtlMismatch);
-        assert!(diff.changed[0].details.contains("history_ttl_ms"));
+        assert!(diff.changed[0].details.contains("keep_events_for_ms"));
     }
 
     // Test 10
@@ -678,7 +678,7 @@ mod tests {
                 primary_key: vec!["id".to_string()],
                 schema: schema.clone(),
                 ttl_ms: None,
-                mode: TableMode::Append,
+                mode: TableMode::Upsert,
                 registered_at_version: 1,
             },
         );
@@ -688,7 +688,7 @@ mod tests {
             primary_key: vec!["user_id".to_string()],
             schema,
             ttl_ms: None,
-            mode: TableMode::Append,
+            mode: TableMode::Upsert,
             registered_at_version: 0,
         })];
         let diff = compute_diff(&current, &payload);
@@ -839,11 +839,11 @@ mod tests {
             EventDescriptor {
                 name: "existingB".to_string(),
                 schema: schema.clone(),
-                event_time_field: "event_time".to_string(),
-                idempotency_key: None,
-                idempotency_ttl_ms: None,
-                history_ttl_ms: None,
-                watermark_lateness_ms: None,
+                event_time_field: Some("event_time".to_string()),
+                dedupe_key: None,
+                dedupe_window_ms: None,
+                keep_events_for_ms: None,
+                tolerate_delay_ms: None,
                 registered_at_version: 1,
             },
         );
@@ -852,11 +852,11 @@ mod tests {
             EventDescriptor {
                 name: "existingD".to_string(),
                 schema: schema.clone(),
-                event_time_field: "event_time".to_string(),
-                idempotency_key: None,
-                idempotency_ttl_ms: None,
-                history_ttl_ms: None,
-                watermark_lateness_ms: None,
+                event_time_field: Some("event_time".to_string()),
+                dedupe_key: None,
+                dedupe_window_ms: None,
+                keep_events_for_ms: None,
+                tolerate_delay_ms: None,
                 registered_at_version: 1,
             },
         );
@@ -889,11 +889,11 @@ mod tests {
             EventDescriptor {
                 name: "X".to_string(),
                 schema: schema.clone(),
-                event_time_field: "event_time".to_string(),
-                idempotency_key: None,
-                idempotency_ttl_ms: None,
-                history_ttl_ms: None,
-                watermark_lateness_ms: None,
+                event_time_field: Some("event_time".to_string()),
+                dedupe_key: None,
+                dedupe_window_ms: None,
+                keep_events_for_ms: None,
+                tolerate_delay_ms: None,
                 registered_at_version: 1,
             },
         );
@@ -902,11 +902,11 @@ mod tests {
             EventDescriptor {
                 name: "Z".to_string(),
                 schema: schema.clone(),
-                event_time_field: "event_time".to_string(),
-                idempotency_key: None,
-                idempotency_ttl_ms: None,
-                history_ttl_ms: None,
-                watermark_lateness_ms: None,
+                event_time_field: Some("event_time".to_string()),
+                dedupe_key: None,
+                dedupe_window_ms: None,
+                keep_events_for_ms: None,
+                tolerate_delay_ms: None,
                 registered_at_version: 1,
             },
         );
@@ -937,11 +937,11 @@ mod tests {
         let payload = vec![PayloadNode::Event(EventDescriptor {
             name: "A".to_string(),
             schema,
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 99, // server-assigned, should be ignored
         })];
         let diff = compute_diff(&current, &payload);
@@ -994,11 +994,11 @@ mod proptests {
                         fields: extra_fields,
                         optional_fields: vec![],
                     },
-                    event_time_field: "event_time".to_string(),
-                    idempotency_key: None,
-                    idempotency_ttl_ms: None,
-                    history_ttl_ms: None,
-                    watermark_lateness_ms: None,
+                    event_time_field: Some("event_time".to_string()),
+                    dedupe_key: None,
+                    dedupe_window_ms: None,
+                    keep_events_for_ms: None,
+                    tolerate_delay_ms: None,
                     registered_at_version: 0,
                 }
             })
@@ -1019,7 +1019,7 @@ mod proptests {
                         optional_fields: vec![],
                     },
                     ttl_ms: None,
-                    mode: TableMode::Append,
+                    mode: TableMode::Upsert,
                     registered_at_version: 0,
                 }
             })

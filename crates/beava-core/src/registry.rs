@@ -19,7 +19,7 @@ pub enum OutputKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TableMode {
-    Append,
+    Upsert,
 }
 
 // ─── Descriptor structs ───────────────────────────────────────────────────────
@@ -28,15 +28,16 @@ pub enum TableMode {
 pub struct EventDescriptor {
     pub name: String,
     pub schema: EventSchema,
-    pub event_time_field: String,
     #[serde(default)]
-    pub idempotency_key: Option<String>,
+    pub event_time_field: Option<String>,
     #[serde(default)]
-    pub idempotency_ttl_ms: Option<u64>,
+    pub dedupe_key: Option<String>,
     #[serde(default)]
-    pub history_ttl_ms: Option<u64>,
+    pub dedupe_window_ms: Option<u64>,
     #[serde(default)]
-    pub watermark_lateness_ms: Option<u64>,
+    pub keep_events_for_ms: Option<u64>,
+    #[serde(default)]
+    pub tolerate_delay_ms: Option<u64>,
     /// Assigned server-side; ignored (defaulted to 0) when deserializing from client JSON.
     #[serde(default)]
     pub registered_at_version: u64,
@@ -50,10 +51,10 @@ impl EventDescriptor {
         self.name == other.name
             && self.schema == other.schema
             && self.event_time_field == other.event_time_field
-            && self.idempotency_key == other.idempotency_key
-            && self.idempotency_ttl_ms == other.idempotency_ttl_ms
-            && self.history_ttl_ms == other.history_ttl_ms
-            && self.watermark_lateness_ms == other.watermark_lateness_ms
+            && self.dedupe_key == other.dedupe_key
+            && self.dedupe_window_ms == other.dedupe_window_ms
+            && self.keep_events_for_ms == other.keep_events_for_ms
+            && self.tolerate_delay_ms == other.tolerate_delay_ms
     }
 }
 
@@ -248,19 +249,19 @@ mod tests {
                 "optional_fields": []
             },
             "event_time_field": "event_time",
-            "idempotency_key": "request_id",
-            "idempotency_ttl_ms": 86400000,
-            "history_ttl_ms": 604800000,
-            "watermark_lateness_ms": 5000
+            "dedupe_key": "request_id",
+            "dedupe_window_ms": 86400000,
+            "keep_events_for_ms": 604800000,
+            "tolerate_delay_ms": 5000
         }"#;
 
         let desc: EventDescriptor = serde_json::from_str(json).unwrap();
         assert_eq!(desc.name, "Transaction");
-        assert_eq!(desc.event_time_field, "event_time");
-        assert_eq!(desc.idempotency_key, Some("request_id".to_string()));
-        assert_eq!(desc.idempotency_ttl_ms, Some(86_400_000));
-        assert_eq!(desc.history_ttl_ms, Some(604_800_000));
-        assert_eq!(desc.watermark_lateness_ms, Some(5000));
+        assert_eq!(desc.event_time_field, Some("event_time".to_string()));
+        assert_eq!(desc.dedupe_key, Some("request_id".to_string()));
+        assert_eq!(desc.dedupe_window_ms, Some(86_400_000));
+        assert_eq!(desc.keep_events_for_ms, Some(604_800_000));
+        assert_eq!(desc.tolerate_delay_ms, Some(5000));
         assert_eq!(desc.registered_at_version, 0); // defaulted
         assert_eq!(desc.schema.fields.get("amount"), Some(&FieldType::F64));
 
@@ -285,14 +286,14 @@ mod tests {
                 "optional_fields": ["category"]
             },
             "ttl_ms": 2592000000,
-            "mode": "append"
+            "mode": "upsert"
         }"#;
 
         let desc: TableDescriptor = serde_json::from_str(json).unwrap();
         assert_eq!(desc.name, "Merchant");
         assert_eq!(desc.primary_key, vec!["merchant_id".to_string()]);
         assert_eq!(desc.ttl_ms, Some(2_592_000_000));
-        assert_eq!(desc.mode, TableMode::Append);
+        assert_eq!(desc.mode, TableMode::Upsert);
         assert_eq!(desc.schema.optional_fields, vec!["category".to_string()]);
         assert_eq!(desc.registered_at_version, 0);
 
@@ -349,11 +350,11 @@ mod tests {
         let a = EventDescriptor {
             name: "A".to_string(),
             schema: schema.clone(),
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 1,
         };
         let mut b = a.clone();
@@ -378,11 +379,11 @@ mod tests {
         let event_a = EventDescriptor {
             name: "Transaction".to_string(),
             schema: schema.clone(),
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         };
 
@@ -527,11 +528,11 @@ mod tests {
         let event_a = EventDescriptor {
             name: "A".to_string(),
             schema,
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         };
         let new_version = r.apply_registration(vec![PayloadNode::Event(event_a)]);
@@ -550,11 +551,11 @@ mod tests {
         let e1 = EventDescriptor {
             name: "E1".to_string(),
             schema: make_event_schema(),
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         };
         let v1 = r.apply_registration(vec![PayloadNode::Event(e1)]);
@@ -563,11 +564,11 @@ mod tests {
         let e2 = EventDescriptor {
             name: "E2".to_string(),
             schema: make_event_schema(),
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         };
         let v2 = r.apply_registration(vec![PayloadNode::Event(e2)]);
@@ -587,11 +588,11 @@ mod tests {
         let event_a = EventDescriptor {
             name: "A".to_string(),
             schema: make_event_schema(),
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         };
         r.apply_registration(vec![PayloadNode::Event(event_a.clone())]);
@@ -601,11 +602,11 @@ mod tests {
         let event_b = EventDescriptor {
             name: "B".to_string(),
             schema: make_event_schema(),
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         };
         let v2 = r.apply_registration(vec![

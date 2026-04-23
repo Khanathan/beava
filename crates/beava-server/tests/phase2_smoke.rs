@@ -108,7 +108,7 @@ async fn success_criterion_3_additive_bumps_version() {
                 "name": "Merchant",
                 "primary_key": ["merchant_id"],
                 "schema": {"fields": {"merchant_id": "str", "name": "str"}, "optional_fields": []},
-                "mode": "append"
+                "mode": "upsert"
             }
         ]
     });
@@ -194,7 +194,7 @@ async fn success_criterion_5_malformed_returns_400_with_path() {
         .await;
     // Actually send the raw malformed body using reqwest directly
     let raw_resp = reqwest::Client::new()
-        .post(&format!("{}/register", ts.base_url()))
+        .post(format!("{}/register", ts.base_url()))
         .header("Content-Type", "application/json")
         .body(r#"{"nodes": ["#)
         .timeout(std::time::Duration::from_secs(5))
@@ -209,7 +209,7 @@ async fn success_criterion_5_malformed_returns_400_with_path() {
 
     // (c) Wrong Content-Type → 415
     let ct_resp = reqwest::Client::new()
-        .post(&format!("{}/register", ts.base_url()))
+        .post(format!("{}/register", ts.base_url()))
         .header("Content-Type", "text/plain")
         .body(serde_json::to_vec(&transaction_payload()).unwrap())
         .timeout(std::time::Duration::from_secs(5))

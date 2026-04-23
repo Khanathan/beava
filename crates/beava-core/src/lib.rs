@@ -10,6 +10,7 @@
 //! - Phases 8–10: advanced operators + infra
 
 pub mod config;
+pub mod defaults;
 pub mod op_node;
 pub mod register_validate;
 pub mod registry;

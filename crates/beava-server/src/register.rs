@@ -300,7 +300,7 @@ mod tests {
     fn test_router() -> (axum::Router, Arc<Registry>) {
         let registry = Arc::new(Registry::new());
         let readiness = ReadinessFlag::new();
-        let r = router(readiness, registry.clone());
+        let r = router(readiness, registry.clone(), false);
         (r, registry)
     }
 
@@ -383,7 +383,7 @@ mod tests {
         let (r, reg) = test_router();
         // First POST
         let (s1, b1) = post(
-            router(ReadinessFlag::new(), reg.clone()),
+            router(ReadinessFlag::new(), reg.clone(), false),
             json_body(transaction_payload()),
             Some("application/json"),
         )
@@ -393,7 +393,7 @@ mod tests {
 
         // Second POST — identical
         let (s2, b2) = post(
-            router(ReadinessFlag::new(), reg.clone()),
+            router(ReadinessFlag::new(), reg.clone(), false),
             json_body(transaction_payload()),
             Some("application/json"),
         )
@@ -411,7 +411,7 @@ mod tests {
 
         // POST EventA → v1
         let (s1, _) = post(
-            router(ReadinessFlag::new(), reg.clone()),
+            router(ReadinessFlag::new(), reg.clone(), false),
             json_body(serde_json::json!({
                 "nodes": [event_node("A", &[("event_time", "i64"), ("x", "f64")], "event_time")]
             })),
@@ -422,7 +422,7 @@ mod tests {
 
         // POST [A, B] → v2
         let (s2, b2) = post(
-            router(ReadinessFlag::new(), reg.clone()),
+            router(ReadinessFlag::new(), reg.clone(), false),
             json_body(serde_json::json!({
                 "nodes": [
                     event_node("A", &[("event_time", "i64"), ("x", "f64")], "event_time"),
@@ -455,7 +455,7 @@ mod tests {
                     "name": "Merchant",
                     "primary_key": ["merchant_id"],
                     "schema": {"fields": {"merchant_id": "str", "name": "str"}, "optional_fields": []},
-                    "mode": "append"
+                    "mode": "upsert"
                 },
                 {
                     "kind": "derivation",
@@ -484,7 +484,7 @@ mod tests {
 
         // Register EventA with amount: f64
         let (s1, _) = post(
-            router(ReadinessFlag::new(), reg.clone()),
+            router(ReadinessFlag::new(), reg.clone(), false),
             json_body(serde_json::json!({
                 "nodes": [event_node("A", &[("event_time", "i64"), ("amount", "f64")], "event_time")]
             })),
@@ -495,7 +495,7 @@ mod tests {
 
         // Re-register EventA with amount: i64 → 409
         let (s2, b2) = post(
-            router(ReadinessFlag::new(), reg.clone()),
+            router(ReadinessFlag::new(), reg.clone(), false),
             json_body(serde_json::json!({
                 "nodes": [event_node("A", &[("event_time", "i64"), ("amount", "i64")], "event_time")]
             })),
@@ -522,7 +522,7 @@ mod tests {
 
         // Confirm registry was NOT mutated — original A still works
         let (s3, b3) = post(
-            router(ReadinessFlag::new(), reg.clone()),
+            router(ReadinessFlag::new(), reg.clone(), false),
             json_body(serde_json::json!({
                 "nodes": [event_node("A", &[("event_time", "i64"), ("amount", "f64")], "event_time")]
             })),

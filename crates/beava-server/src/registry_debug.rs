@@ -93,11 +93,11 @@ mod tests {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: "event_time".to_string(),
-            idempotency_key: None,
-            idempotency_ttl_ms: None,
-            history_ttl_ms: None,
-            watermark_lateness_ms: None,
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
             registered_at_version: 0,
         }
     }
