@@ -80,6 +80,11 @@ name = "phase7_5_test_server_reproducer"
 path = "tests/phase7_5_test_server_reproducer.rs"
 required-features = ["testing"]
 
+[[test]]
+name = "phase7_restart_cycle"
+path = "tests/phase7_restart_cycle.rs"
+required-features = ["testing"]
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
