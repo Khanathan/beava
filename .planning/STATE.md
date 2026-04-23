@@ -2,8 +2,8 @@
 gsd_state_version: 1.0
 milestone: v0.1
 milestone_name: milestone
-status: executing
-last_updated: "2026-04-23T14:30:20.673Z"
+status: planning
+last_updated: "2026-04-23T15:08:46.861Z"
 progress:
   total_phases: 15
   completed_phases: 2
@@ -36,12 +36,12 @@ Feature authoring as composable Python code that ships to production unchanged. 
 ## Current Position
 
 Phase: 04 (Stateless ops + expression evaluator (server-side)) — EXECUTING
-Plan: 3 of 7
+Plan: Not started
 
 - **Milestone:** v0
-- **Phase:** 04 of 14 (stateless ops expression evaluator)
+- **Phase:** 5 of 14 (aggregation framework + core operators)
 - **Plans:** Phases 1, 2, 2.5 all shipped (Phase 2.5 256 tests green, 8/8 criteria proven)
-- **Status:** Ready to execute
+- **Status:** Ready to plan
 - **Progress:** [██████░░░░] 55%
 
 ## Performance Metrics
