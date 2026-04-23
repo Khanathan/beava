@@ -36,6 +36,7 @@ proptest = "1"
 criterion = { version = "0.5", default-features = false, features = ["html_reports"] }
 bytes = "1"
 tokio-util = { version = "0.7", features = ["rt"] }
+bincode = "1.3"
 
 [profile.release]
 opt-level = 3

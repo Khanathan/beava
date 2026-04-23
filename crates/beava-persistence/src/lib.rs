@@ -9,6 +9,8 @@ mod reader;
 mod record;
 mod rotation;
 mod segment;
+mod snapshot;
+mod snapshot_header;
 mod writer;
 
 /// Log Sequence Number — monotonic event identifier assigned by the WAL sink.
@@ -32,7 +34,11 @@ pub struct WalRecord {
     pub payload: Vec<u8>,
 }
 
-pub use error::PersistError;
+pub use error::{PersistError, SnapshotError};
 pub use fsync_worker::{WalSink, WalSinkConfig};
 pub use reader::WalReader;
+pub use snapshot::{list_snapshots, prune_old_snapshots, SnapshotReader, SnapshotWriter};
+pub use snapshot_header::{
+    SnapshotHeader, SNAPSHOT_EXT, SNAPSHOT_FORMAT_VERSION, SNAPSHOT_HEADER_SIZE, SNAPSHOT_MAGIC,
+};
 pub use writer::WalWriter;

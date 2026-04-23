@@ -95,13 +95,19 @@ fn snapshot_body_corruption_detected() {
     let body = vec![0x42u8; 64];
     let path = SnapshotWriter::write(tmp.path(), 7, 1, &body).expect("write");
     // Flip a byte inside the body (offset SNAPSHOT_HEADER_SIZE + 3).
-    let mut f = OpenOptions::new().read(true).write(true).open(&path).unwrap();
-    f.seek(SeekFrom::Start((SNAPSHOT_HEADER_SIZE + 3) as u64)).unwrap();
+    let mut f = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    f.seek(SeekFrom::Start((SNAPSHOT_HEADER_SIZE + 3) as u64))
+        .unwrap();
     let mut b = [0u8; 1];
     use std::io::Read;
     f.read_exact(&mut b).unwrap();
     b[0] ^= 0xFF;
-    f.seek(SeekFrom::Start((SNAPSHOT_HEADER_SIZE + 3) as u64)).unwrap();
+    f.seek(SeekFrom::Start((SNAPSHOT_HEADER_SIZE + 3) as u64))
+        .unwrap();
     f.write_all(&b).unwrap();
     f.sync_all().unwrap();
     drop(f);
@@ -190,5 +196,8 @@ fn snapshot_writer_overwrites_orphan_tmp() {
     let (_, body) = SnapshotReader::open(&path).expect("read");
     assert_eq!(body, b"real");
     // Tmp should not remain after rename.
-    assert!(!orphan.exists(), "orphan tmp should have been overwritten + renamed away");
+    assert!(
+        !orphan.exists(),
+        "orphan tmp should have been overwritten + renamed away"
+    );
 }
