@@ -33,7 +33,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 3 | Python SDK skeleton + decorators + expression DSL | `@bv.event`, `@bv.table`, `bv.col`, `bv.App(url)` (HTTP + TCP), register + validate, REGISTER JSON compiler | 20 | 7 |
 | 4 | Stateless ops + expression evaluator (server-side) | 7/7 | Complete   | 2026-04-23 |
 | 5 | Aggregation framework + core operators (8) | 7/8 | In Progress|  |
-| 5.5 | Perf harness + retroactive baselines | `criterion` workspace setup; retroactive microbenches for Phase 2.5 wire codec, Phase 3 SDK compile, Phase 4 expr parse/eval/op-chain, Phase 5 AggOp/Windowed hot paths; baselines committed to `.planning/perf-baselines.md`; regression gate convention (10% warn / 25% block) applied to every subsequent phase | ~8 benches | 4 |
+| 5.5 | Perf harness + retroactive baselines | 2/6 | In Progress|  |
 | 6 | WAL + idempotency | Every push write-through fsynced before ACK; stream-level idempotency keys cached with TTL | 5 | 4 |
 | 7 | Snapshot + recovery | Periodic full-state snapshot; restart replays snapshot + WAL; schema evolution survives restart | 5 | 4 |
 | 8 | Point / ordinal / recency operators | first, last, first_n, last_n, lag, first_seen, last_seen, age, has_seen, time_since, time_since_last_n, streak, max_streak, negative_streak, first_seen_in_window | 15 | 4 |
@@ -227,7 +227,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 4. Retroactive baselines prove ≥1 bench per phase 2.5/3/4/5
 5. Phase 13 end-to-end perf gate (≥3M EPS/core, P99 <10ms batch-get) still the final ship gate — Phase 5.5 does NOT replace it, just surfaces regressions early
 
-**Plans:** TBD at plan-phase time (~4-6 plans expected — workspace setup + one bench-module-per-phase).
+**Plans:** 2/6 plans executed
 
 ### Phase 6: WAL + idempotency
 
