@@ -215,10 +215,15 @@ impl Registry {
         let mut w = self.inner.write();
         let new_version = w.version + 1;
 
-        // Build a lookup map for propagated schemas so we can apply them as we
-        // insert new derivation descriptors in the same write-lock pass.
+        // Build lookup maps for propagated schemas and compiled chains so we can
+        // apply them alongside their descriptor in the same write-lock pass.
+        // Chains are inserted ONLY when the derivation descriptor is new — this
+        // prevents stale entries from accumulating if apply_registration is ever
+        // called with a derivation that is already present (WR-01).
         let schema_map: std::collections::HashMap<String, crate::schema::DerivedSchema> =
             propagated_schemas.into_iter().collect();
+        let mut chains_map: std::collections::HashMap<String, Arc<OpChain>> =
+            compiled_chains.into_iter().collect();
 
         for n in nodes {
             match n {
@@ -242,15 +247,15 @@ impl Registry {
                         if let Some(propagated) = schema_map.get(&d.name) {
                             d.schema = propagated.clone();
                         }
+                        // Install compiled chain alongside descriptor — only for
+                        // new derivations, so stale chains never accumulate.
+                        if let Some(chain) = chains_map.remove(&d.name) {
+                            w.compiled_chains.insert(d.name.clone(), chain);
+                        }
                         w.derivations.insert(d.name.clone(), d);
                     }
                 }
             }
-        }
-
-        // Install compiled chains (Phase 4).
-        for (name, chain) in compiled_chains {
-            w.compiled_chains.insert(name, chain);
         }
 
         w.version = new_version;
