@@ -213,6 +213,25 @@ def test_float_div_by_zero_is_inf() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Test 9b: WR-05 — 0.0 / 0.0 → NaN (IEEE-754, both Python and Rust agree)
+# ---------------------------------------------------------------------------
+
+
+def test_zero_float_div_by_zero_is_nan() -> None:
+    """0.0 / 0.0 produces NaN in both Python reference and Rust runtime.
+
+    Python: _arith_div special-cases float / 0.0 returning copysign(inf, a)
+    unless a == 0.0, in which case float('nan').
+    Rust: 0.0_f64 / 0.0_f64 evaluates to f64::NAN via IEEE-754.
+    Both agree: NaN.
+    """
+    empty: dict[str, object] = {}
+    result = evaluate(binop("/", lit(0.0), lit(0.0)), empty)
+    assert isinstance(result, float)
+    assert math.isnan(result), f"0.0/0.0 must be NaN, got {result!r}"
+
+
+# ---------------------------------------------------------------------------
 # Test 10: i64 overflow saturates at I64_MAX / I64_MIN
 # ---------------------------------------------------------------------------
 
@@ -297,6 +316,14 @@ def test_cast_to_int() -> None:
     assert cast(False, "int") == 0
     assert cast(None, "int") is None
     assert cast(b"x", "int") is None
+    # WR-05: Inf/NaN → None (documented divergence from Rust UB).
+    # Rust: casting f64::INFINITY to i64 is UB (saturates in practice on x86).
+    # Python: we return None to avoid undefined/platform-dependent behavior.
+    # This is the agreed v1 contract; these cases are excluded from the SC4
+    # proptest (allow_nan=False, allow_infinity=False in the generator).
+    assert cast(float("inf"), "int") is None
+    assert cast(float("-inf"), "int") is None
+    assert cast(float("nan"), "int") is None
 
 
 # ---------------------------------------------------------------------------
