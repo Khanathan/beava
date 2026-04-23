@@ -11,7 +11,9 @@
 
 pub mod config;
 pub mod defaults;
+pub mod eval;
 pub mod expr;
+pub mod expr_builtins;
 pub mod op_node;
 pub mod register_validate;
 pub mod registry;
