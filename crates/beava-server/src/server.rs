@@ -31,6 +31,7 @@ pub struct Server {
     local_addr: SocketAddr,
     readiness: ReadinessFlag,
     registry: Arc<Registry>,
+    dev_endpoints: bool,
 }
 
 impl std::fmt::Debug for Server {
@@ -45,7 +46,11 @@ impl Server {
     /// Resolve config's listen_addr and bind. Also arms the 100ms readiness delay
     /// that flips `/ready` from 503 to 200 — stand-in for Phase 5's real
     /// recovery-complete signal.
-    pub async fn bind(cfg: &Config) -> Result<Self, ServerError> {
+    ///
+    /// `dev_endpoints`: pass `true` to mount `GET /registry`. Production callers
+    /// derive this from `BEAVA_DEV_ENDPOINTS=1` env var (see `main.rs`). Tests pass
+    /// it directly so they don't need to hold a lock across the await.
+    pub async fn bind(cfg: &Config, dev_endpoints: bool) -> Result<Self, ServerError> {
         let addr: SocketAddr = cfg
             .listen_addr
             .parse()
@@ -62,6 +67,13 @@ impl Server {
             addr = %local_addr,
             "HTTP server bound"
         );
+
+        if dev_endpoints {
+            tracing::info!(
+                target: "beava.server",
+                "dev endpoints enabled (BEAVA_DEV_ENDPOINTS=1)"
+            );
+        }
 
         let readiness = ReadinessFlag::new();
         let registry = Arc::new(Registry::new());
@@ -80,6 +92,7 @@ impl Server {
             local_addr,
             readiness,
             registry,
+            dev_endpoints,
         })
     }
 
@@ -94,7 +107,7 @@ impl Server {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        let app = router(self.readiness, self.registry);
+        let app = router(self.readiness, self.registry, self.dev_endpoints);
         let start = Instant::now();
         axum::serve(self.listener, app)
             .with_graceful_shutdown(shutdown)
@@ -126,7 +139,7 @@ mod tests {
     #[tokio::test]
     async fn bind_reports_actual_local_addr() {
         let cfg = tmp_cfg();
-        let s = Server::bind(&cfg).await.expect("bind");
+        let s = Server::bind(&cfg, false).await.expect("bind");
         let addr = s.local_addr();
         assert_eq!(addr.ip().to_string(), "127.0.0.1");
         assert_ne!(addr.port(), 0, "OS should have allocated a real port");
@@ -138,14 +151,14 @@ mod tests {
             listen_addr: "not-an-addr".to_string(),
             log_level: "info".to_string(),
         };
-        let err = Server::bind(&cfg).await.unwrap_err();
+        let err = Server::bind(&cfg, false).await.unwrap_err();
         assert!(matches!(err, ServerError::InvalidAddr(_, _)));
     }
 
     #[tokio::test]
     async fn serve_then_shutdown_exits_within_500ms() {
         let cfg = tmp_cfg();
-        let s = Server::bind(&cfg).await.expect("bind");
+        let s = Server::bind(&cfg, false).await.expect("bind");
         let addr = s.local_addr();
 
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -179,7 +192,7 @@ mod tests {
     #[tokio::test]
     async fn readiness_flips_after_100ms() {
         let cfg = tmp_cfg();
-        let s = Server::bind(&cfg).await.expect("bind");
+        let s = Server::bind(&cfg, false).await.expect("bind");
         let addr = s.local_addr();
 
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();

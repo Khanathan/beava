@@ -10,6 +10,7 @@ pub mod cli;
 pub mod http;
 pub mod logging;
 pub mod register;
+pub mod registry_debug;
 pub mod server;
 pub mod shutdown;
 

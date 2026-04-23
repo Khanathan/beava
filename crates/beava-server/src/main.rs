@@ -40,7 +40,12 @@ fn main() -> Result<()> {
         .context("build tokio runtime")?;
 
     rt.block_on(async move {
-        let server = Server::bind(&cfg).await.context("bind HTTP listener")?;
+        // Read BEAVA_DEV_ENDPOINTS once at startup — passed directly to Server::bind
+        // so tests can set it without env-var races.
+        let dev_endpoints = std::env::var("BEAVA_DEV_ENDPOINTS").as_deref() == Ok("1");
+        let server = Server::bind(&cfg, dev_endpoints)
+            .await
+            .context("bind HTTP listener")?;
         server
             .serve(shutdown_signal())
             .await

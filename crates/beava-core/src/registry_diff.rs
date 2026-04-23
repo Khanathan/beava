@@ -1158,9 +1158,15 @@ mod proptests {
             reg in arb_registry_inner(),
             extra in prop::collection::vec(arb_event_descriptor(), 1..6usize),
         ) {
+            // Deduplicate by name (first-wins) so the payload has no duplicate
+            // names, which would make `position()` return an earlier index and
+            // falsely fail the ordering assertion.
+            let mut seen_names = std::collections::HashSet::new();
             let payload: Vec<PayloadNode> = extra.iter()
+                .filter(|e| seen_names.insert(e.name.clone()))
                 .map(|e| PayloadNode::Event(e.clone()))
                 .collect();
+            prop_assume!(!payload.is_empty());
             let diff = compute_diff(&reg, &payload);
 
             // Build expected order: index of each name in payload

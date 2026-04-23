@@ -26,6 +26,7 @@
 
 use crate::server::{Server, ServerError};
 use crate::Config;
+use serde::Serialize;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::oneshot;
@@ -46,6 +47,7 @@ pub struct TestServerBuilder {
     cfg: Config,
     readiness_timeout: Duration,
     readiness_poll_interval: Duration,
+    dev_endpoints: bool,
 }
 
 impl Default for TestServerBuilder {
@@ -57,6 +59,7 @@ impl Default for TestServerBuilder {
             },
             readiness_timeout: Duration::from_secs(5),
             readiness_poll_interval: Duration::from_millis(20),
+            dev_endpoints: false,
         }
     }
 }
@@ -81,9 +84,17 @@ impl TestServerBuilder {
         self
     }
 
+    /// Enable the GET /registry dev endpoint on the spawned server.
+    /// Passes `dev_endpoints=true` directly to `Server::bind` — no env-var
+    /// mutation needed, so no lock is held across the await.
+    pub fn dev_endpoints(mut self, enabled: bool) -> Self {
+        self.dev_endpoints = enabled;
+        self
+    }
+
     /// Spawn the server, wait for `/ready` to report 200, return the handle.
     pub async fn spawn(self) -> Result<TestServer, TestServerError> {
-        let server = Server::bind(&self.cfg).await?;
+        let server = Server::bind(&self.cfg, self.dev_endpoints).await?;
         let base_url = format!("http://{}", server.local_addr());
 
         let (tx, rx) = oneshot::channel::<()>();
@@ -125,6 +136,53 @@ impl TestServer {
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// POST arbitrary JSON body to `path`. Returns the raw reqwest Response so
+    /// callers can assert on status and parse the body themselves.
+    pub async fn post_json<B: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        let url = format!("{}{}", self.base_url, path);
+        reqwest::Client::new()
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(body)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+    }
+
+    /// GET `path`; parse response body as JSON. Panics if non-2xx OR non-JSON.
+    /// For error-path tests use `get_raw` instead.
+    pub async fn get_json(&self, path: &str) -> serde_json::Value {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = reqwest::Client::new()
+            .get(&url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .expect("GET request");
+        assert!(
+            resp.status().is_success(),
+            "GET {} returned {}",
+            path,
+            resp.status()
+        );
+        resp.json().await.expect("JSON body")
+    }
+
+    /// Raw GET that does NOT assert on status. Use for 404 / 503 / error-path tests.
+    pub async fn get_raw(&self, path: &str) -> reqwest::Response {
+        let url = format!("{}{}", self.base_url, path);
+        reqwest::Client::new()
+            .get(&url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .expect("GET request")
     }
 
     async fn wait_ready(
@@ -241,5 +299,38 @@ mod tests {
         // Give the background task a beat to see the dropped tx and exit.
         tokio::time::sleep(Duration::from_millis(200)).await;
         let _ = base_url; // keep clippy happy
+    }
+
+    #[tokio::test]
+    async fn post_json_returns_response() {
+        let ts = TestServer::spawn().await.expect("spawn");
+        let body = serde_json::json!({"nodes": []});
+        let resp = ts.post_json("/register", &body).await.expect("post_json");
+        assert_eq!(resp.status().as_u16(), 200);
+        let val: serde_json::Value = resp.json().await.expect("json");
+        assert_eq!(val["status"], "ok");
+        assert_eq!(val["registry_version"], 0);
+        ts.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn post_json_404_on_unknown_path() {
+        let ts = TestServer::spawn().await.expect("spawn");
+        let body = serde_json::json!({});
+        let resp = ts.post_json("/nope", &body).await.expect("post_json");
+        assert_eq!(resp.status().as_u16(), 404);
+        ts.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn get_raw_returns_non_success_without_panicking() {
+        let ts = TestServer::spawn().await.expect("spawn");
+        let resp = ts.get_raw("/nope").await;
+        assert_eq!(
+            resp.status().as_u16(),
+            404,
+            "get_raw should not panic on 404"
+        );
+        ts.shutdown().await.expect("shutdown");
     }
 }

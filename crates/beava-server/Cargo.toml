@@ -25,6 +25,11 @@ name = "foundation_smoke"
 path = "tests/foundation_smoke.rs"
 required-features = ["testing"]
 
+[[test]]
+name = "phase2_smoke"
+path = "tests/phase2_smoke.rs"
+required-features = ["testing"]
+
 [lib]
 name = "beava_server"
 path = "src/lib.rs"
@@ -42,6 +47,7 @@ once_cell = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
+parking_lot = { workspace = true }
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
