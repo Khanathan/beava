@@ -9,6 +9,8 @@
 //!
 //! Phase 1 ships a placeholder so the workspace compiles.
 
+pub mod config;
+
 /// Compile-time crate version exposed for banner / diagnostics.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

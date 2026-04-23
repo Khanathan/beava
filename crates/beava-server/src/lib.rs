@@ -1,14 +1,22 @@
 //! beava-server: the server binary's logic crate.
 //!
-//! Why a lib + bin split? Integration tests (Plan 05 onwards) import the public API
-//! from this crate (`TestServer`, future `Server::run` etc.). The `main.rs` is a thin
-//! wrapper that parses args and calls into the library.
-//!
-//! Growth plan:
-//! - Plan 02: `config` module
+//! Growth plan — see 01-CONTEXT.md:
+//! - Plan 02 (this): `cli` module + CLI wiring; re-exports `beava_core::config::Config`
 //! - Plan 03: `logging` module
 //! - Plan 04: `http` module + `Server` type + graceful shutdown
-//! - Plan 05: `testing::TestServer` (feature-gated or cfg(test) as appropriate)
+//! - Plan 05: `testing::TestServer`
+
+pub mod cli;
+pub mod http;
+pub mod logging;
+pub mod server;
+pub mod shutdown;
+
+#[cfg(any(feature = "testing", test))]
+pub mod testing;
+
+pub use beava_core::config::{self, Config, ConfigError};
+pub use server::{Server, ServerError};
 
 /// Semantic version of the server binary.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

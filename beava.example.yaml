@@ -1,0 +1,12 @@
+# Beava v2 — example configuration
+# Copy to ./beava.yaml and edit to taste. See docs (Phase 10) for the full schema.
+
+# Address and port to bind the HTTP server to.
+listen_addr: "127.0.0.1:8080"
+
+# Log level: trace|debug|info|warn|error
+log_level: info
+
+# Environment overrides (higher precedence than this file):
+#   BEAVA_LISTEN_ADDR
+#   BEAVA_LOG_LEVEL

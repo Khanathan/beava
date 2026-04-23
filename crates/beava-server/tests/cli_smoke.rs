@@ -1,0 +1,125 @@
+//! CLI smoke tests — exercise the compiled `beava` binary end-to-end.
+//!
+//! Tests that start the server binary (valid config path) spawn a child process,
+//! wait for the banner line to appear on stdout, then send SIGTERM. Port 0 is not
+//! available via CLI flag (the flag takes a full address), so we use OS-allocated
+//! ports from the ephemeral range and accept a brief startup race.
+
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+use tempfile::NamedTempFile;
+
+fn beava_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_beava")
+}
+
+#[test]
+fn help_exits_zero_and_mentions_config_flag() {
+    let out = Command::new(beava_bin())
+        .arg("--help")
+        .output()
+        .expect("spawn beava --help");
+    assert!(
+        out.status.success(),
+        "--help should exit 0, got {:?}",
+        out.status
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("--config"), "stdout: {stdout}");
+}
+
+#[test]
+fn version_flag_works() {
+    let out = Command::new(beava_bin())
+        .arg("--version")
+        .output()
+        .expect("spawn beava --version");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("0.1.0"), "stdout: {stdout}");
+}
+
+/// Allocate a free TCP port by binding briefly then releasing it.
+fn free_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    listener.local_addr().expect("local_addr").port()
+}
+
+#[test]
+fn loads_valid_config_starts_and_prints_banner() {
+    let port = free_port();
+    let mut f = NamedTempFile::new().expect("tempfile");
+    writeln!(f, "listen_addr: \"127.0.0.1:{port}\"\nlog_level: info").unwrap();
+
+    let child = Command::new(beava_bin())
+        .arg("--config")
+        .arg(f.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    // Give the server a moment to start and print the banner line.
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Send SIGTERM to trigger graceful shutdown.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+    }
+
+    let output = child.wait_with_output().expect("wait");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("beava v"),
+        "expected banner in stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn missing_config_errors_with_path_in_message() {
+    let out = Command::new(beava_bin())
+        .arg("--config")
+        .arg("/nonexistent/beava.yaml")
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success(), "expected non-zero exit");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("/nonexistent/beava.yaml"),
+        "stderr should name the path: {stderr}"
+    );
+}
+
+#[test]
+fn env_var_overrides_listen_addr() {
+    let port = free_port();
+    let override_port = free_port();
+    let mut f = NamedTempFile::new().expect("tempfile");
+    writeln!(f, "listen_addr: \"127.0.0.1:{port}\"\nlog_level: info").unwrap();
+
+    let child = Command::new(beava_bin())
+        .env("BEAVA_LISTEN_ADDR", format!("127.0.0.1:{override_port}"))
+        .arg("--config")
+        .arg(f.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn server");
+
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Verify the override port is actually listening (the server bound to it).
+    let is_bound = std::net::TcpStream::connect(format!("127.0.0.1:{override_port}")).is_ok();
+
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+    }
+    let _ = child.wait_with_output();
+
+    assert!(
+        is_bound,
+        "expected server to bind on override port {override_port}"
+    );
+}

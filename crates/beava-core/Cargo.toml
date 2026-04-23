@@ -12,8 +12,9 @@ name = "beava_core"
 path = "src/lib.rs"
 
 [dependencies]
-# Intentionally empty in Plan 01. Populated starting Plan 02 (config types) and
-# Phase 2 (operator trait, feature registry).
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
-# Empty for now.
+tempfile = { workspace = true }
