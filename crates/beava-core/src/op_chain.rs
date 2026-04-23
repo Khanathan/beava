@@ -103,13 +103,13 @@ impl OpChain {
         // Phase 2: build CompiledOp sequence (expressions already validated).
         let mut compiled: Vec<CompiledOp> = Vec::with_capacity(ops.len());
 
-        for op in ops {
+        for (op_loop_idx, op) in ops.iter().enumerate() {
             let cop = match op {
                 OpNode::Filter { expr } => {
                     // parse() should succeed since propagate_schema already validated it.
                     let ast = expr::parse(expr).map_err(|pe| {
                         vec![CompileError::InvalidExpr {
-                            op_index: 0,
+                            op_index: op_loop_idx,
                             parse_error: pe,
                         }]
                     })?;
@@ -127,7 +127,7 @@ impl OpChain {
                     for (name, expr_src) in exprs {
                         let ast = expr::parse(expr_src).map_err(|pe| {
                             vec![CompileError::InvalidExpr {
-                                op_index: 0,
+                                op_index: op_loop_idx,
                                 parse_error: pe,
                             }]
                         })?;
