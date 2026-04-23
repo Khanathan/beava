@@ -175,6 +175,7 @@ name = "beava-persistence"
 version = "0.1.0"
 dependencies = [
  "crc32c",
+ "criterion",
  "serde",
  "serde_json",
  "tempfile",
