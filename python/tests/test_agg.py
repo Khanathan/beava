@@ -9,8 +9,7 @@ import pytest
 
 import beava as bv
 from beava._agg import AggDescriptor, GroupBy
-from beava._tables import TableDerivation
-
+from beava._tables import TableDerivation  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Fixtures — a simple event source for group_by tests
@@ -101,7 +100,7 @@ def test_count_forever_window_ok() -> None:
 
 
 def test_sum_with_field_and_window() -> None:
-    """bv.sum('amount', window='1h') returns AggDescriptor(op='sum', field='amount', window='1h')."""
+    """bv.sum('amount', window='1h') returns AggDescriptor with op='sum'."""
     d = bv.sum("amount", window="1h")
     assert isinstance(d, AggDescriptor)
     assert d.op == "sum"

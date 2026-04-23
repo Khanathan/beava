@@ -159,7 +159,25 @@ class _EventOpsMixin:
             TypeError: If any key is not a string.
             ValueError: If no keys are given, or any key is not in the upstream schema.
         """
-        raise NotImplementedError
+        from ._agg import GroupBy  # noqa: PLC0415 — avoid circular import at module level
+
+        if not keys:
+            raise ValueError(
+                "group_by() requires at least one key; "
+                "e.g. Event.group_by('user_id')"
+            )
+        for k in keys:
+            if not isinstance(k, str):
+                raise TypeError(
+                    f"group_by keys must be strings; got {type(k).__name__!r} "
+                    f"(value: {k!r})"
+                )
+            if k not in self._schema:  # type: ignore[attr-defined]
+                raise ValueError(
+                    f"group_by key {k!r} is not in schema "
+                    f"(available: {sorted(self._schema.keys())})"  # type: ignore[attr-defined]
+                )
+        return GroupBy(self, list(keys))
 
     # ------------------------------------------------------------------ #
     # Internal helper
