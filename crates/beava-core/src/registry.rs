@@ -326,7 +326,11 @@ impl Registry {
         // Collect new entries first to avoid simultaneous mutable + immutable borrows of `w`.
         let new_index_entries: Vec<(String, String, usize)> = newly_inserted_agg_names
             .iter()
-            .filter_map(|node_name| w.compiled_aggregations.get(node_name).map(|d| (node_name, d)))
+            .filter_map(|node_name| {
+                w.compiled_aggregations
+                    .get(node_name)
+                    .map(|d| (node_name, d))
+            })
             .flat_map(|(node_name, agg_desc)| {
                 agg_desc
                     .features
