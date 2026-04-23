@@ -13,6 +13,7 @@ pub mod register;
 pub mod registry_debug;
 pub mod server;
 pub mod shutdown;
+pub mod tcp;
 
 #[cfg(any(feature = "testing", test))]
 pub mod testing;

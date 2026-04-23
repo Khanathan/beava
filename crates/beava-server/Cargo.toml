@@ -48,6 +48,8 @@ tokio = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
 parking_lot = { workspace = true }
+bytes = { workspace = true }
+tokio-util = { workspace = true }
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]

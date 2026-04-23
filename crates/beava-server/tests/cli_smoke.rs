@@ -53,6 +53,9 @@ fn loads_valid_config_starts_and_prints_banner() {
     writeln!(f, "listen_addr: \"127.0.0.1:{port}\"\nlog_level: info").unwrap();
 
     let child = Command::new(beava_bin())
+        // Disable TCP wire listener for CLI smoke tests — avoids port conflicts
+        // when multiple cli_smoke tests run in parallel and default-bind TCP 7380.
+        .env("BEAVA_TCP_ENABLED", "0")
         .arg("--config")
         .arg(f.path())
         .stdout(Stdio::piped())
@@ -101,6 +104,8 @@ fn env_var_overrides_listen_addr() {
 
     let child = Command::new(beava_bin())
         .env("BEAVA_LISTEN_ADDR", format!("127.0.0.1:{override_port}"))
+        // Disable TCP wire listener — avoids port conflicts across parallel tests.
+        .env("BEAVA_TCP_ENABLED", "0")
         .arg("--config")
         .arg(f.path())
         .stdout(Stdio::piped())
