@@ -30,8 +30,8 @@ fn harness_scaffolding_present() {
 
     // ── 2. beava-core/Cargo.toml has [[bench]] + criterion dev-dep ───────────
     let core_cargo = root.join("crates/beava-core/Cargo.toml");
-    let core_contents = std::fs::read_to_string(&core_cargo)
-        .unwrap_or_else(|e| panic!("read {core_cargo:?}: {e}"));
+    let core_contents =
+        std::fs::read_to_string(&core_cargo).unwrap_or_else(|e| panic!("read {core_cargo:?}: {e}"));
     assert!(
         core_contents.contains("[[bench]]"),
         "expected [[bench]] in {core_cargo:?}"
@@ -56,8 +56,8 @@ fn harness_scaffolding_present() {
 
     // ── 4. .planning/perf-baselines.md exists and has hw-class header ────────
     let baselines = root.join(".planning/perf-baselines.md");
-    let baselines_contents = std::fs::read_to_string(&baselines)
-        .unwrap_or_else(|e| panic!("read {baselines:?}: {e}"));
+    let baselines_contents =
+        std::fs::read_to_string(&baselines).unwrap_or_else(|e| panic!("read {baselines:?}: {e}"));
     assert!(
         baselines_contents.contains("## hw-class:"),
         "expected `## hw-class:` header in {baselines:?}"

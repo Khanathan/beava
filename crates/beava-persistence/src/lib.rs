@@ -3,6 +3,12 @@
 //! Preserves the beava-core WASM-portability invariant: all filesystem/fsync
 //! logic lives here so core stays syscall-free.
 
+mod error;
+mod reader;
+mod record;
+mod segment;
+mod writer;
+
 /// Log Sequence Number — monotonic event identifier assigned by the WAL sink.
 pub type Lsn = u64;
 
@@ -23,3 +29,7 @@ pub struct WalRecord {
     pub record_type: RecordType,
     pub payload: Vec<u8>,
 }
+
+pub use error::PersistError;
+pub use reader::WalReader;
+pub use writer::WalWriter;
