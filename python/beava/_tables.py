@@ -145,6 +145,18 @@ class _TableOpsMixin:
         op = {"op": "fillna", "defaults": dict(defaults)}
         return self._new_table_derivation(op, key_override=None)
 
+    def group_by(self, *keys: str) -> None:
+        """SDK-AGG-05: aggregation on a Table is rejected in v0.
+
+        Raises:
+            TypeError: Always. Retraction propagation through aggregation is a
+                       v0.1 concern (SDK-AGG-05).
+        """
+        raise TypeError(
+            "group_by on a Table is not supported in v0 (SDK-AGG-05: retraction "
+            "propagation through aggregation is a v0.1 concern)."
+        )
+
     # ------------------------------------------------------------------ #
     # Internal helper
     # ------------------------------------------------------------------ #

@@ -18,6 +18,7 @@ from ._schema import FieldSpec, duration_to_ms, extract_schema, validate_duratio
 from ._types import py_type_to_field_type
 
 if TYPE_CHECKING:
+    from ._agg import GroupBy
     from ._col import _ExprAST
 
 __all__ = ["event", "EventSource", "EventDerivation"]
@@ -145,6 +146,20 @@ class _EventOpsMixin:
                 )
         op = {"op": "fillna", "defaults": dict(defaults)}
         return self._new_derivation(op)
+
+    def group_by(self, *keys: str) -> "GroupBy":
+        """Start a group_by.agg() aggregation pipeline (SDK-AGG-01).
+
+        Returns a GroupBy builder; no server call is made until .agg() is invoked.
+
+        Args:
+            *keys: One or more schema field names to group by.
+
+        Raises:
+            TypeError: If any key is not a string.
+            ValueError: If no keys are given, or any key is not in the upstream schema.
+        """
+        raise NotImplementedError
 
     # ------------------------------------------------------------------ #
     # Internal helper

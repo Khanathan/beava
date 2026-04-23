@@ -14,6 +14,18 @@ Public API (Phase 3 Plan 03-05):
   - App: sync client — register, validate, ping (Plan 03-05)
 """
 
+from ._agg import (
+    AggDescriptor,
+    GroupBy,
+    avg,
+    count,
+    max,
+    min,
+    ratio,
+    stddev,
+    sum,
+    variance,
+)
 from ._app import App
 from ._col import Col, col
 from ._errors import (
@@ -38,4 +50,15 @@ __all__ = [
     "RegistrationError",
     "BinaryNotFoundError",
     "parse_url_to_transport",
+    # Aggregation helpers (SDK-AGG-01..06)
+    "AggDescriptor",
+    "GroupBy",
+    "count",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "variance",
+    "stddev",
+    "ratio",
 ]
