@@ -9,6 +9,12 @@
 //! - Phase 7: snapshot/recovery
 //! - Phases 8–10: advanced operators + infra
 
+pub mod agg_descriptor;
+pub mod agg_op;
+pub mod agg_schema;
+pub mod agg_state;
+pub mod agg_where;
+pub mod agg_windowed;
 pub mod config;
 pub mod defaults;
 pub mod eval;
