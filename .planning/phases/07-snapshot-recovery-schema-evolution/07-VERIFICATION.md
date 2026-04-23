@@ -2,8 +2,32 @@
 
 **Verified:** 2026-04-23
 **Branch:** v2/greenfield
-**Status:** passed (with documented deferrals — see `07-SUMMARY.md` Open follow-ups)
-**Commit range:** `cb845ea..HEAD` (5 new commits this session — Plan 02 RED+GREEN, Plan 03 GREEN, Plan 04 GREEN, summary)
+**Status:** **passed** (SC1 + SC4 retroactively closed by Phase 7.5; SC2 still PARTIAL — see Phase 7.5 retroactive update below)
+**Commit range:** `cb845ea..HEAD` (5 commits this session — Plan 02 RED+GREEN, Plan 03 GREEN, Plan 04 GREEN, summary; Phase 7.5 follow-ups landed under separate commits)
+
+## Phase 7.5 retroactive update (2026-04-23)
+
+Phase 7.5 absorbed three Phase 7 deferrals during its execution. See
+`.planning/phases/07.5-end-to-end-throughput-harness-first-baseline/`.
+
+- **SC1 → PASS.** Evidence: `crates/beava-server/tests/phase7_restart_cycle.rs::sc1_snapshot_then_restart_reproduces_state` — push 1000 events → force_snapshot → push 250 more → shutdown → respawn same dirs → assert post-restart cnt = 1250. Snapshot install + WAL-past-LSN replay both contributing.
+- **SC4 → PASS.** Evidence: `phase7_restart_cycle.rs::sc4_schema_evolution_survives_restart` — register Txn → push → register Click (additive bump) → push to both → shutdown → respawn → assert both aggregations + per-feature values intact.
+- **SC2 still PARTIAL.** Disk atomic-rename invariant proven by `snapshot_roundtrip.rs` unit tests; subprocess crash probe deferred to Phase 8+.
+- **Phase 7 perf-discipline gate closed.** Three benches in `crates/beava-persistence/benches/phase7_snapshot_recovery.rs`; baselines appended to `.planning/perf-baselines.md`.
+
+Root cause of the "TestServer router-state propagation glitch" reported in
+the original Phase 7 SUMMARY was actually a silent WAL codec bug:
+`RegistryBumpPayload::decode` used bincode 1.x, but PayloadNode contains
+`serde_json::Value` fields (in `AggSpec.params` / `OpNode::Fillna.defaults`)
+which bincode rejects with `DeserializeAnyNotSupported`. `recovery::
+replay_wal_from_lsn` silently swallowed the decode failure. Phase 7.5
+Plan 01 fixed both layers: codec is now JSON (RegistryBump is per-`/register`
+cold path; size delta irrelevant); recovery hard-errors instead of
+warn-and-skipping a durable record. See commits `3647c7d` (RED) +
+`c847158` (GREEN).
+
+## Original Phase 7 verification (preserved below)
+
 
 ## Gate results
 
