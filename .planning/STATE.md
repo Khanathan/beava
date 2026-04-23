@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.1
 milestone_name: milestone
 status: planning
-last_updated: "2026-04-23T19:24:18.895Z"
+last_updated: "2026-04-23T19:41:33.002Z"
 progress:
   total_phases: 16
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 43
-  completed_plans: 29
-  percent: 67
+  completed_plans: 31
+  percent: 72
 ---
 
 # State: Beava v2 — v0 OSS Launch
@@ -39,7 +39,7 @@ Phase: 05 (Aggregation framework + core operators) — EXECUTING
 Plan: Not started
 
 - **Milestone:** v0
-- **Phase:** 5.5 of 14 (perf harness + retroactive baselines)
+- **Phase:** 6 of 14 (wal + idempotency)
 - **Plans:** Phases 1, 2, 2.5 all shipped (Phase 2.5 256 tests green, 8/8 criteria proven)
 - **Status:** Ready to plan
 - **Progress:** [███████░░░] 67%
