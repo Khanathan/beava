@@ -32,16 +32,16 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 
 ### SDK-OPS — Stateless per-row ops
 
-- [ ] **SDK-OPS-01**: `.filter(expr)` — keeps rows where expression is truthy; schema unchanged; chains left-to-right
-- [ ] **SDK-OPS-02**: `.select(*fields)` — keeps only listed fields in order
-- [ ] **SDK-OPS-03**: `.drop(*fields)` — removes fields; tables reject dropping key fields with error
-- [ ] **SDK-OPS-04**: `.rename(**mapping)` — renames fields; tables cascade the key list rename
-- [ ] **SDK-OPS-05**: `.with_columns(**derivations)` — adds/replaces derived fields from expressions; type-inferred
-- [ ] **SDK-OPS-06**: `.map(**derivations)` — alias for `.with_columns` (DataFrame parity)
-- [ ] **SDK-OPS-07**: `.cast(**type_map)` — coerces field types to `int`/`float`/`str`/`bool`
-- [ ] **SDK-OPS-08**: `.fillna(**defaults)` — fills nulls with scalars; clears optional flag on those fields
-- [ ] **SDK-OPS-09**: Every stateless op returns a new `EventDerivation`/`TableDerivation` wrapping the previous; no in-place mutation
-- [ ] **SDK-OPS-10**: Chained ops compose left-to-right, with output schema propagated through each step
+- [x] **SDK-OPS-01**: `.filter(expr)` — keeps rows where expression is truthy; schema unchanged; chains left-to-right
+- [x] **SDK-OPS-02**: `.select(*fields)` — keeps only listed fields in order
+- [x] **SDK-OPS-03**: `.drop(*fields)` — removes fields; tables reject dropping key fields with error
+- [x] **SDK-OPS-04**: `.rename(**mapping)` — renames fields; tables cascade the key list rename
+- [x] **SDK-OPS-05**: `.with_columns(**derivations)` — adds/replaces derived fields from expressions; type-inferred
+- [x] **SDK-OPS-06**: `.map(**derivations)` — alias for `.with_columns` (DataFrame parity)
+- [x] **SDK-OPS-07**: `.cast(**type_map)` — coerces field types to `int`/`float`/`str`/`bool`
+- [x] **SDK-OPS-08**: `.fillna(**defaults)` — fills nulls with scalars; clears optional flag on those fields
+- [x] **SDK-OPS-09**: Every stateless op returns a new `EventDerivation`/`TableDerivation` wrapping the previous; no in-place mutation
+- [x] **SDK-OPS-10**: Chained ops compose left-to-right, with output schema propagated through each step
 
 ### SDK-AGG — Aggregation framework
 

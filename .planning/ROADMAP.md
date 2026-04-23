@@ -31,7 +31,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 2 | Sources + registry + version bumps | `/register` accepts DAG of event/table/derivation nodes; additive-only; monotonic version; registry persists in-memory | 12 | 5 ✅ **COMPLETE** |
 | 2.5 | TCP wire listener + framing + full opcode table | Custom-framed TCP listener alongside HTTP; full v0 opcode table designed; `register` + `ping` handlers wired; rest return `op_not_implemented` placeholder | ~8 | 8 ✅ **COMPLETE** |
 | 3 | Python SDK skeleton + decorators + expression DSL | `@bv.event`, `@bv.table`, `bv.col`, `bv.App(url)` (HTTP + TCP), register + validate, REGISTER JSON compiler | 20 | 7 |
-| 4 | Stateless ops + expression evaluator (server-side) | Server parses + evaluates `bv.col` expression strings; executes filter/select/drop/rename/with_columns/map/cast/fillna chains per event | 13 | 5 |
+| 4 | Stateless ops + expression evaluator (server-side) | 7/7 | Complete   | 2026-04-23 |
 | 5 | Aggregation framework + core operators (8) | `group_by().agg()` DAG lands server-side; windowed bucket infra; core aggregations: count, sum, avg, min, max, variance, stddev, ratio | 15 | 6 |
 | 6 | WAL + idempotency | Every push write-through fsynced before ACK; stream-level idempotency keys cached with TTL | 5 | 4 |
 | 7 | Snapshot + recovery | Periodic full-state snapshot; restart replays snapshot + WAL; schema evolution survives restart | 5 | 4 |
@@ -176,14 +176,14 @@ Feature authoring as composable Python code that ships to production unchanged. 
 4. Proptest-covered: random predicate + random event → truth-table equivalence between client-side eval and server-side eval
 5. Malformed predicate in registration returns 400 with path pointing to the offending expression
 
-**Plans:** 7 plans (2 tasks each, red-green TDD)
+**Plans:** 7/7 plans complete
 - [x] 04-01-PLAN.md — Row + Value + SQL three-valued null logic (beava-core foundation)
 - [x] 04-02-PLAN.md — Recursive-descent expression parser with Span tracking + column-pointing errors
 - [x] 04-03-PLAN.md — Expression evaluator + cast/isnull builtins + determinism proptest
 - [x] 04-04-PLAN.md — Op-chain executor + register-time schema propagator (8 ops + SDK-OPS-01..10 mechanics)
 - [x] 04-05-PLAN.md — Register integration: HTTP/TCP parity for invalid_expression errors; OpChain caching
-- [ ] 04-06-PLAN.md — Phase 4 Rust acceptance: /dev/apply_ops endpoint (gated) + Rust SC1/SC2/SC3/SC5 smokes over HTTP + TCP
-- [ ] 04-07-PLAN.md — Phase 4 Python acceptance: 8 SDK op methods + Python reference evaluator + SC1/SC2/SC3/SC5 Python smokes + SC4 hypothesis proptest (256 cases, client/server eval equivalence)
+- [x] 04-06-PLAN.md — Phase 4 Rust acceptance: /dev/apply_ops endpoint (gated) + Rust SC1/SC2/SC3/SC5 smokes over HTTP + TCP (completed 2026-04-23)
+- [x] 04-07-PLAN.md — Phase 4 Python acceptance: 8 SDK op methods + Python reference evaluator + SC1/SC2/SC3/SC5 Python smokes + SC4 hypothesis proptest (256 cases, client/server eval equivalence)
 
 ### Phase 5: Aggregation framework + core operators
 
