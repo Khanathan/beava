@@ -1,0 +1,33 @@
+[package]
+name = "beava-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Beava v2 end-to-end throughput harness — drives a live beava server over HTTP+TCP and produces sustained EPS / latency / RSS numbers."
+
+[dependencies]
+beava-core = { path = "../beava-core" }
+beava-server = { path = "../beava-server", features = ["testing"] }
+beava-persistence = { path = "../beava-persistence" }
+anyhow = { workspace = true }
+clap = { workspace = true }
+hdrhistogram = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "process"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[[bin]]
+name = "beava-bench"
+path = "src/main.rs"

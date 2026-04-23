@@ -1,0 +1,58 @@
+{
+  "name": "medium",
+  "description": "1 entity type, 5 features (count, sum, avg, min, max). Phase 5 ops only.",
+  "register": {
+    "nodes": [
+      {
+        "kind": "event",
+        "name": "Txn",
+        "schema": {
+          "fields": {
+            "event_time": "i64",
+            "user_id": "str",
+            "amount": "f64"
+          },
+          "optional_fields": []
+        },
+        "event_time_field": "event_time"
+      },
+      {
+        "kind": "derivation",
+        "name": "TxnAgg",
+        "output_kind": "table",
+        "upstreams": ["Txn"],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": ["user_id"],
+            "agg": {
+              "cnt":     { "op": "count",   "params": {} },
+              "sum_amt": { "op": "sum",     "params": { "field": "amount" } },
+              "avg_amt": { "op": "avg",     "params": { "field": "amount" } },
+              "min_amt": { "op": "min",     "params": { "field": "amount" } },
+              "max_amt": { "op": "max",     "params": { "field": "amount" } }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "user_id": "str",
+            "cnt":     "i64",
+            "sum_amt": "f64",
+            "avg_amt": "f64",
+            "min_amt": "f64",
+            "max_amt": "f64"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": ["user_id"]
+      }
+    ]
+  },
+  "event_name": "Txn",
+  "features": ["cnt", "sum_amt", "avg_amt", "min_amt", "max_amt"],
+  "key_field": "user_id",
+  "extra_fields": {
+    "amount": "f64"
+  }
+}

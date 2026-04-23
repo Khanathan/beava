@@ -4,6 +4,7 @@ members = [
   "crates/beava-core",
   "crates/beava-persistence",
   "crates/beava-server",
+  "crates/beava-bench",
 ]
 
 [workspace.package]
@@ -37,6 +38,10 @@ criterion = { version = "0.5", default-features = false, features = ["html_repor
 bytes = "1"
 tokio-util = { version = "0.7", features = ["rt"] }
 bincode = "1.3"
+hdrhistogram = { version = "7.5", default-features = false }
+rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
+sysinfo = { version = "0.30", default-features = false }
+futures = "0.3"
 
 [profile.release]
 opt-level = 3

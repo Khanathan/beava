@@ -73,6 +73,8 @@ git log --format='%s' <base>..<head> | grep -E '^(test|feat|fix|refactor):'
 **Do NOT bench:** cold-path code (register compile, schema propagation at register-time), I/O paths that will change (WAL pre-Phase 6, snapshot pre-Phase 7), end-to-end network roundtrips (that's Phase 13).
 
 **Retroactive coverage landed in Phase 5.5:** Phase 2.5 frame codec, Phase 3 SDK REGISTER compile (Python), Phase 4 expr parse/eval/op-chain, Phase 5 AggOp::update / WindowedOp fold / apply_event_to_aggregations.
+
+**End-to-end throughput regression contract (added Phase 7.5, enforced Phase 8 onward):** Every phase from Phase 8 onward MUST include a **throughput run** task that re-runs `crates/beava-bench` against the small/medium/large pipelines (plus any phase-specific operator-family variant) and appends a row per `(pipeline-shape, transport)` tuple to `.planning/throughput-baselines.md`. Same 10% warn / 25% block thresholds apply, measured against the **simple-fraud (small) shape** of the most recent prior baseline in the same hw-class. Plan-checker contract: a Phase 8+ plan without a "throughput run" task whose `files_modified` includes `.planning/throughput-baselines.md` is rejected. The harness lives at `crates/beava-bench/`; baselines are NOT a substitute for the per-phase criterion microbench (`perf-baselines.md`) — both gates apply.
 <!-- GSD:conventions-end -->
 
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->

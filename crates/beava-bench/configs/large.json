@@ -1,0 +1,86 @@
+{
+  "name": "large",
+  "description": "1 entity, 15 features. Mix of count/sum/avg/min/max/variance/stddev/ratio over multiple fields. Phase 5 ops only.",
+  "register": {
+    "nodes": [
+      {
+        "kind": "event",
+        "name": "Txn",
+        "schema": {
+          "fields": {
+            "event_time": "i64",
+            "user_id":    "str",
+            "amount":     "f64",
+            "fee":        "f64",
+            "score":      "f64"
+          },
+          "optional_fields": []
+        },
+        "event_time_field": "event_time"
+      },
+      {
+        "kind": "derivation",
+        "name": "TxnAgg",
+        "output_kind": "table",
+        "upstreams": ["Txn"],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": ["user_id"],
+            "agg": {
+              "cnt":         { "op": "count",    "params": {} },
+              "sum_amt":     { "op": "sum",      "params": { "field": "amount" } },
+              "avg_amt":     { "op": "avg",      "params": { "field": "amount" } },
+              "min_amt":     { "op": "min",      "params": { "field": "amount" } },
+              "max_amt":     { "op": "max",      "params": { "field": "amount" } },
+              "var_amt":     { "op": "variance", "params": { "field": "amount" } },
+              "std_amt":     { "op": "stddev",   "params": { "field": "amount" } },
+              "sum_fee":     { "op": "sum",      "params": { "field": "fee" } },
+              "avg_fee":     { "op": "avg",      "params": { "field": "fee" } },
+              "min_fee":     { "op": "min",      "params": { "field": "fee" } },
+              "max_fee":     { "op": "max",      "params": { "field": "fee" } },
+              "sum_score":   { "op": "sum",      "params": { "field": "score" } },
+              "avg_score":   { "op": "avg",      "params": { "field": "score" } },
+              "min_score":   { "op": "min",      "params": { "field": "score" } },
+              "max_score":   { "op": "max",      "params": { "field": "score" } }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "user_id":   "str",
+            "cnt":       "i64",
+            "sum_amt":   "f64",
+            "avg_amt":   "f64",
+            "min_amt":   "f64",
+            "max_amt":   "f64",
+            "var_amt":   "f64",
+            "std_amt":   "f64",
+            "sum_fee":   "f64",
+            "avg_fee":   "f64",
+            "min_fee":   "f64",
+            "max_fee":   "f64",
+            "sum_score": "f64",
+            "avg_score": "f64",
+            "min_score": "f64",
+            "max_score": "f64"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": ["user_id"]
+      }
+    ]
+  },
+  "event_name": "Txn",
+  "features": [
+    "cnt", "sum_amt", "avg_amt", "min_amt", "max_amt", "var_amt", "std_amt",
+    "sum_fee", "avg_fee", "min_fee", "max_fee",
+    "sum_score", "avg_score", "min_score", "max_score"
+  ],
+  "key_field": "user_id",
+  "extra_fields": {
+    "amount": "f64",
+    "fee":    "f64",
+    "score":  "f64"
+  }
+}

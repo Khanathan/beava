@@ -1,0 +1,50 @@
+{
+  "name": "small",
+  "description": "1 entity type, 1 feature (count). Simple-fraud baseline shape.",
+  "register": {
+    "nodes": [
+      {
+        "kind": "event",
+        "name": "Txn",
+        "schema": {
+          "fields": {
+            "event_time": "i64",
+            "user_id": "str",
+            "amount": "f64"
+          },
+          "optional_fields": []
+        },
+        "event_time_field": "event_time"
+      },
+      {
+        "kind": "derivation",
+        "name": "TxnAgg",
+        "output_kind": "table",
+        "upstreams": ["Txn"],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": ["user_id"],
+            "agg": {
+              "cnt": { "op": "count", "params": {} }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "user_id": "str",
+            "cnt": "i64"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": ["user_id"]
+      }
+    ]
+  },
+  "event_name": "Txn",
+  "features": ["cnt"],
+  "key_field": "user_id",
+  "extra_fields": {
+    "amount": "f64"
+  }
+}
