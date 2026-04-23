@@ -33,6 +33,17 @@ from beava._wire import (
 
 pytestmark = pytest.mark.phase4
 
+# ---------------------------------------------------------------------------
+# WR-06: SC4 skip-rate guard
+# Hypothesis runs all 256 SC4 cases sequentially against the same server.
+# We track how many cases are skipped (server rejects the expression at
+# register time) so we can fail if the skip rate is too high. A skip rate
+# > 50% would mean we're only testing schema-valid expressions, which is a
+# weaker coverage claim than advertised.
+# ---------------------------------------------------------------------------
+_sc4_skip_counter: dict[str, int] = {"skips": 0, "total": 0}
+_sc4_skip_lock = threading.Lock()
+
 
 # ---------------------------------------------------------------------------
 # Module-level descriptors used by SC1–SC3
@@ -378,9 +389,15 @@ def test_sc4_proptest_client_server_eval_equivalence(
       c. POST /dev/apply_ops with the row; read back row["out"].
       d. Assert Python result == server result.
 
-    Zero divergence across 256 cases is the Phase 4 load-bearing correctness
-    claim (CONTEXT.md SC4).
+    Zero divergence across 256 EXECUTED cases is the Phase 4 load-bearing
+    correctness claim (CONTEXT.md SC4). Cases where the server rejects the
+    expression at register time (schema-invalid expressions) are counted and
+    the skip rate is asserted to be ≤ 50% — if more than half the generated
+    expressions are schema-invalid, the generator is too permissive and the
+    equivalence claim is weakened. (WR-06 fix.)
     """
+    from hypothesis import note
+
     http_url, _tcp_url = beava_server
     expr, row = pair
 
@@ -409,14 +426,39 @@ def test_sc4_proptest_client_server_eval_equivalence(
         headers={"Content-Type": "application/json"},
         timeout=10.0,
     )
+
+    # WR-06: track skips vs total for skip-rate guard.
+    with _sc4_skip_lock:
+        _sc4_skip_counter["total"] = _sc4_skip_counter.get("total", 0) + 1
+
     if reg_resp.status_code != 200:
-        # If the expression fails server-side validation (parse error), the
-        # reference evaluator should return None (type error at register time
-        # means the expression is malformed; runtime would produce null).
-        # Accept this as a match — both sides produce "null / None / error".
-        # This avoids proptest failures on expressions like bool-arithmetic
-        # that the server rejects at register time but the reference evaluator
-        # handles gracefully.
+        # The expression fails server-side schema validation (e.g. bool-arithmetic,
+        # unknown field). Both sides produce "null / None / error" — the reference
+        # evaluator returns None for the same malformed expression.
+        # Count this as a skip and continue; skip rate is checked below.
+        with _sc4_skip_lock:
+            _sc4_skip_counter["skips"] = _sc4_skip_counter.get("skips", 0) + 1
+
+        current_skips = _sc4_skip_counter["skips"]
+        current_total = _sc4_skip_counter["total"]
+        skip_rate = current_skips / current_total if current_total > 0 else 0.0
+
+        note(
+            f"SC4 skip #{current_skips}/{current_total} "
+            f"(skip_rate={skip_rate:.0%}): "
+            f"server rejected expr={expr.to_expr_string()!r} "
+            f"status={reg_resp.status_code}"
+        )
+
+        # WR-06: fail if skip rate exceeds 50% to catch a generator that is
+        # too permissive. Only enforce once we have enough data (≥10 cases).
+        if current_total >= 10:
+            assert skip_rate <= 0.50, (
+                f"SC4 skip rate {skip_rate:.0%} exceeds 50% threshold "
+                f"({current_skips}/{current_total} cases skipped). "
+                "The expression generator is producing too many schema-invalid "
+                "expressions — the equivalence claim is not adequately tested."
+            )
         return
 
     # Step C: POST /dev/apply_ops with the row.
