@@ -30,8 +30,8 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 1 | Foundation | Rust workspace, axum HTTP scaffolding, config, logging, test harness | 0 (infrastructure) | 4 ✅ **COMPLETE** |
 | 2 | Sources + registry + version bumps | `/register` accepts DAG of event/table/derivation nodes; additive-only; monotonic version; registry persists in-memory | 12 | 5 ✅ **COMPLETE** |
 | 2.5 | TCP wire listener + framing + full opcode table | Custom-framed TCP listener alongside HTTP; full v0 opcode table designed; `register` + `ping` handlers wired; rest return `op_not_implemented` placeholder | ~8 | 8 ✅ **COMPLETE** |
-| 3 | Python SDK skeleton + decorators + expression DSL | `@bv.event`, `@bv.table`, `bv.col`, `bv.App(url)` (HTTP + TCP), register + validate, REGISTER JSON compiler | 21 | 7 |
-| 4 | Stateless ops + expression evaluator (server-side) | Server parses + evaluates `bv.col` expression strings; executes filter/select/drop/rename/with_columns/map/cast/fillna chains per event | 12 | 5 |
+| 3 | Python SDK skeleton + decorators + expression DSL | `@bv.event`, `@bv.table`, `bv.col`, `bv.App(url)` (HTTP + TCP), register + validate, REGISTER JSON compiler | 20 | 7 |
+| 4 | Stateless ops + expression evaluator (server-side) | Server parses + evaluates `bv.col` expression strings; executes filter/select/drop/rename/with_columns/map/cast/fillna chains per event | 13 | 5 |
 | 5 | Aggregation framework + core operators (8) | `group_by().agg()` DAG lands server-side; windowed bucket infra; core aggregations: count, sum, avg, min, max, variance, stddev, ratio | 15 | 6 |
 | 6 | WAL + idempotency | Every push write-through fsynced before ACK; stream-level idempotency keys cached with TTL | 5 | 4 |
 | 7 | Snapshot + recovery | Periodic full-state snapshot; restart replays snapshot + WAL; schema evolution survives restart | 5 | 4 |
@@ -148,7 +148,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 **Depends on:** Phase 2.5.
 
-**Requirements:** SDK-DEC-01 through SDK-DEC-09, SDK-COL-01 through SDK-COL-08, SDK-APP-01, SDK-APP-02, SDK-APP-03, SDK-APP-15, SDK-WIRE-01 (HTTP transport), SDK-WIRE-02 (TCP transport), SDK-WIRE-03 (URL-scheme dispatch) — 21 REQ-IDs.
+**Requirements:** SDK-DEC-01 through SDK-DEC-09, SDK-COL-01 through SDK-COL-06, SDK-COL-08, SDK-APP-01, SDK-APP-02, SDK-APP-03, SDK-APP-15, SDK-WIRE-01 (HTTP transport), SDK-WIRE-02 (TCP transport), SDK-WIRE-03 (URL-scheme dispatch) — 20 REQ-IDs. SDK-COL-07 (schema-reference resolution) moved to Phase 4 because it requires the server-side expression evaluator.
 
 **Success criteria:**
 1. `@bv.event` class form extracts schema and registers event descriptor; function form resolves upstreams
@@ -165,7 +165,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 **Depends on:** Phase 3.
 
-**Requirements:** SDK-OPS-01 through SDK-OPS-10, SRV-APPLY-06, SRV-APPLY-07 — 12 REQ-IDs.
+**Requirements:** SDK-OPS-01 through SDK-OPS-10, SDK-COL-07 (schema-reference resolution, moved from Phase 3 because the expression evaluator lands here), SRV-APPLY-06, SRV-APPLY-07 — 13 REQ-IDs.
 
 **Success criteria:**
 1. `Event.filter(bv.col("amount") > 100)` registered via SDK; server rejects events failing the predicate
