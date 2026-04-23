@@ -73,6 +73,10 @@ pub enum ErrorCode {
     /// aggregation op string is not in the hardcoded whitelist.
     AggregationUnknownOp,
     /// Two features within one GroupBy share the same name.
+    /// NOTE: BTreeMap deserialization deduplicates JSON keys (last-writer-wins),
+    /// so this variant is currently unreachable via normal JSON parsing.
+    /// Reserved for future Vec-based deserialization that preserves duplicates.
+    #[allow(dead_code)]
     AggregationDuplicateFeatureName,
     /// A feature name collides with a group_by key.
     AggregationGroupKeyCollidesWithFeature,

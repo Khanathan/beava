@@ -221,8 +221,10 @@ pub fn compile_aggregations_from_nodes(
 
             let mut deriv_errors = false;
             let mut features: Vec<NamedAggOp> = Vec::new();
-            let mut seen_feature_names: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
+            // Note: JSON duplicate keys are silently dropped by BTreeMap deserialization
+            // (last-writer-wins). A per-iteration HashSet duplicate check is therefore
+            // unreachable — the BTreeMap already deduplicates before we iterate. Cross-agg
+            // collision is caught by the cross-aggregation check below (WR-01 fix).
 
             // Validate group keys.
             for (key_idx, key) in keys.iter().enumerate() {
@@ -258,17 +260,6 @@ pub fn compile_aggregations_from_nodes(
                         continue;
                     }
                 };
-
-                // Duplicate feature name check.
-                if !seen_feature_names.insert(feature_name.clone()) {
-                    errors.push(ValidationError {
-                        code: ErrorCode::AggregationDuplicateFeatureName,
-                        path: format!("nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}"),
-                        reason: format!("duplicate feature name '{feature_name}'"),
-                    });
-                    deriv_errors = true;
-                    continue;
-                }
 
                 // Group-key vs feature-name collision check.
                 if keys.contains(feature_name) {
