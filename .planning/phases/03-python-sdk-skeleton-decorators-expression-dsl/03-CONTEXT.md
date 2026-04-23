@@ -76,7 +76,7 @@ Out of scope (land in later phases):
 
 - Register's pipeline:
   1. Run the same DAG/cycle/schema checks as `app.validate(*descriptors)` in-process
-  2. If local validation fails: raise `beava.ValidationError` (first error) WITH the full list attached as `.errors` — NO wire I/O
+  2. If local validation fails: raise `beava.RegistrationError(code=first.kind, path=first.path, message=first.message, errors=all_errors)` — all ValidationError entries are attached as `.errors` on the RegistrationError (D-11 specifies the list lives on RegistrationError; ValidationError itself stays a frozen dataclass). NO wire I/O.
   3. Otherwise: serialize to wire JSON, send via transport, parse response
   4. If server returns 400 / 409: raise `beava.RegistrationError` with the server's `{code, path, reason, message}` structured payload
   5. On 200: update internal state with `registry_version`, return the response dict
