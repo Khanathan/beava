@@ -12,6 +12,7 @@
 pub mod config;
 pub mod op_node;
 pub mod registry;
+pub mod registry_diff;
 pub mod schema;
 
 /// Compile-time crate version exposed for banner / diagnostics.
