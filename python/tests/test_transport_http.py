@@ -60,7 +60,10 @@ class TestHttpTransportRegister:
     def test_http_transport_register_unsupported_media_type(
         self, beava_server: tuple[str, str]
     ) -> None:
-        """Posting with wrong Content-Type raises RegistrationError(code='unsupported_media_type')."""
+        """Posting with wrong Content-Type raises RegistrationError.
+
+        Expected code: 'unsupported_media_type'.
+        """
         import httpx
 
         http_url, _ = beava_server

@@ -109,7 +109,6 @@ class TestTcpTransportStrictFifo:
         must be OP_PING responses.
         """
         import socket
-        import struct
 
         from beava._wire import CT_JSON, OP_PING, encode_frame, read_frame
 

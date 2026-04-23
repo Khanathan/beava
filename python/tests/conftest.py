@@ -9,7 +9,8 @@ crates/beava-core/src/config.rs):
   - The binary reads a YAML config via --config flag.
   - Env var overrides: BEAVA_LISTEN_ADDR=127.0.0.1:0 for HTTP (port 0 = OS-assigns);
     BEAVA_TCP_PORT=0 for TCP (port 0 = OS-assigns).
-  - Both kinds are exposed in the server startup JSON log lines on stderr:
+  - IMPORTANT: The binary writes JSON structured logs to STDOUT (not stderr).
+    The bind log lines appear on stdout:
       {"kind":"server.http_bound","addr":"127.0.0.1:NNNN",...}
       {"kind":"server.tcp_bound","addr":"127.0.0.1:NNNN",...}
   - BEAVA_DEV_ENDPOINTS=1 mounts GET /registry (used by Plan 03-06 smoke).
@@ -75,21 +76,25 @@ def beava_server(beava_binary: Path) -> Generator[tuple[str, str], None, None]:
         "BEAVA_DEV_ENDPOINTS": "1",  # expose GET /registry for Plan 03-06 smoke
     }
 
+    # Pass --config /dev/null so the binary starts with all-defaults regardless of
+    # the caller's CWD (default config path ./beava.yaml may not exist in python/).
+    # All meaningful settings are overridden via env vars above.
+    # NOTE: The beava binary writes JSON structured logs to STDOUT (not stderr).
+    # We must pipe stdout to parse bind-address lines; stderr is discarded.
     proc = subprocess.Popen(
-        [str(beava_binary)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        [str(beava_binary), "--config", "/dev/null"],
+        stdout=subprocess.PIPE,  # JSON log lines land on stdout
+        stderr=subprocess.DEVNULL,
         env=env,
     )
 
     http_addr: list[str] = []
     tcp_addr: list[str] = []
     ready = threading.Event()
-    error: list[str] = []
 
     def _reader() -> None:
-        assert proc.stderr is not None
-        for raw in proc.stderr:
+        assert proc.stdout is not None
+        for raw in proc.stdout:
             line = raw.decode("utf-8", errors="replace").rstrip()
             try:
                 rec = json.loads(line)

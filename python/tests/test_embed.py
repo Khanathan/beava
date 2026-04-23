@@ -8,10 +8,8 @@ are created in Task 1.b.
 
 from __future__ import annotations
 
-import os
 import stat
 from pathlib import Path
-from typing import Any
 
 import pytest
 

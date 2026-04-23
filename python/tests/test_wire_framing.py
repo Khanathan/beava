@@ -79,7 +79,7 @@ class TestDecodeFrame:
             frame = decode_frame(encoded)
             assert frame.op == op, f"op mismatch for payload {payload!r}"
             assert frame.ct == ct, f"ct mismatch for payload {payload!r}"
-            assert frame.payload == payload, f"payload mismatch"
+            assert frame.payload == payload, "payload mismatch"
 
     def test_decode_too_large_raises_frame_too_large(self) -> None:
         """Declared length of 10 MiB raises FrameTooLarge with 'too_large' in message."""
