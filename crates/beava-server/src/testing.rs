@@ -52,11 +52,18 @@ pub struct TestServerBuilder {
 
 impl Default for TestServerBuilder {
     fn default() -> Self {
-        Self {
-            cfg: Config {
-                listen_addr: "127.0.0.1:0".to_string(), // OS-allocated
-                log_level: "info".to_string(),
+        // TCP: enabled by default (matches production); OS-assigned port so
+        // tests don't collide on 7380. Plan 04 Task 3 wires in the TCP bind.
+        let cfg = Config {
+            listen_addr: "127.0.0.1:0".to_string(), // OS-allocated
+            log_level: "info".to_string(),
+            tcp: beava_core::config::TcpConfig {
+                port: 0,
+                ..Default::default()
             },
+        };
+        Self {
+            cfg,
             readiness_timeout: Duration::from_secs(5),
             readiness_poll_interval: Duration::from_millis(20),
             dev_endpoints: false,

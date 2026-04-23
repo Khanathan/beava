@@ -133,6 +133,12 @@ mod tests {
         Config {
             listen_addr: "127.0.0.1:0".to_string(), // OS-allocated port
             log_level: "info".to_string(),
+            tcp: beava_core::config::TcpConfig {
+                // Disable TCP in Phase 1/2 regression tests — they predate TCP.
+                // Phase 2.5 server::tests add their own TCP-aware tests in Plan 04 Task 3.
+                enabled: false,
+                ..Default::default()
+            },
         }
     }
 
@@ -150,6 +156,10 @@ mod tests {
         let cfg = Config {
             listen_addr: "not-an-addr".to_string(),
             log_level: "info".to_string(),
+            tcp: beava_core::config::TcpConfig {
+                enabled: false,
+                ..Default::default()
+            },
         };
         let err = Server::bind(&cfg, false).await.unwrap_err();
         assert!(matches!(err, ServerError::InvalidAddr(_, _)));

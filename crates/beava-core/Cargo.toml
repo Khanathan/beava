@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 parking_lot = { workspace = true }
+bytes = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

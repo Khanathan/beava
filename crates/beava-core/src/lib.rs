@@ -16,6 +16,7 @@ pub mod register_validate;
 pub mod registry;
 pub mod registry_diff;
 pub mod schema;
+pub mod wire;
 
 /// Compile-time crate version exposed for banner / diagnostics.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
