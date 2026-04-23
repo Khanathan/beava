@@ -1,11 +1,13 @@
 //! Registry data model: descriptor structs, OutputKind, TableMode, RegistryInner,
 //! and the parking_lot::RwLock-guarded Registry wrapper.
 
+use crate::op_chain::OpChain;
 use crate::op_node::OpNode;
 use crate::schema::{DerivedSchema, EventSchema, TableSchema};
 use parking_lot::{RwLock, RwLockReadGuard};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
 
@@ -112,12 +114,18 @@ impl DerivationDescriptor {
 
 // ─── Registry types ───────────────────────────────────────────────────────────
 
+/// Runtime-only compiled op-chain cache. Parallel to `derivations` map.
+/// Arc<OpChain> allows cheap sharing with the future push-path (Phase 6).
+/// Not serialized — rebuilt from ops at register time.
 #[derive(Debug, Default, Clone)]
 pub struct RegistryInner {
     pub version: u64,
     pub events: BTreeMap<String, EventDescriptor>,
     pub tables: BTreeMap<String, TableDescriptor>,
     pub derivations: BTreeMap<String, DerivationDescriptor>,
+    /// Phase 4: compiled op-chains keyed by derivation name.
+    /// Populated by `apply_registration` when a derivation with ops is installed.
+    pub compiled_chains: BTreeMap<String, Arc<OpChain>>,
 }
 
 #[derive(Debug, Default)]
@@ -140,6 +148,16 @@ impl Registry {
 
     pub fn snapshot(&self) -> RegistryInner {
         self.inner.read().clone()
+    }
+
+    /// Phase 4: Return the compiled OpChain for a derivation (if cached).
+    /// Returns `None` if the derivation has no ops or was not yet registered.
+    pub fn compiled_chain(&self, derivation_name: &str) -> Option<Arc<OpChain>> {
+        self.inner
+            .read()
+            .compiled_chains
+            .get(derivation_name)
+            .cloned()
     }
 
     /// Install descriptors into the registry under a write lock. Monotonically

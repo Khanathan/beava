@@ -43,6 +43,21 @@ pub enum ErrorCode {
     DedupeKeyUnknownField,
     DedupeWindowNonPositive,
     DerivationOutputKindTableMissingPrimaryKey,
+    // Phase 4 additions (Rule 10: expression / schema-propagation validation):
+    /// Parse error in a Filter / WithColumns / Map expression.
+    InvalidExpression,
+    /// Expression references a field not in the upstream schema at that op step.
+    UnknownFieldReference,
+    /// Type mismatch / rename collision / propagation failure from schema_propagate.
+    SchemaPropagationFailure,
+    /// Cast target type string is not one of {"str","int","float","bool"} or the
+    /// source→target pair is illegal (e.g., Bytes cannot be cast).
+    InvalidCastTarget,
+    /// GroupBy / Join / Union appearing in an op chain — treated as pass-through
+    /// in Phase 4 (not an error); variant exists for future use but Rule 10
+    /// does NOT emit this for UnsupportedOp errors — it treats them as warnings.
+    #[allow(dead_code)]
+    UnsupportedOpInPhase4,
 }
 
 /// A single structured validation error. `path` uses pseudo-JSON-pointer format
@@ -57,16 +72,49 @@ pub struct ValidationError {
 /// Newtype wrapper: a `Vec<PayloadNode>` that has passed all validation rules.
 /// `compute_diff` (Plan 03) accepts `&[PayloadNode]` via `as_slice()`.
 /// The endpoint (Plan 05) extracts the inner vec via `into_inner()`.
+///
+/// Phase 4 extends this with compiled chains and propagated schemas (Plan 04-05).
 #[derive(Debug)]
-pub struct ValidatedPayload(pub(crate) Vec<PayloadNode>);
+pub struct ValidatedPayload {
+    pub(crate) nodes: Vec<PayloadNode>,
+    /// Compiled OpChain per derivation name (Arc-wrapped for cheap sharing).
+    /// Populated by Rule 10 (validate_expressions). Empty until Phase 4 wiring.
+    pub compiled_chains: Vec<(String, std::sync::Arc<crate::op_chain::OpChain>)>,
+    /// Server-propagated DerivedSchema per derivation name.
+    /// Replaces the client-supplied schema for derivations with ops (CONTEXT D-06).
+    pub propagated_schemas: Vec<(String, crate::schema::DerivedSchema)>,
+}
 
 impl ValidatedPayload {
-    pub fn as_slice(&self) -> &[PayloadNode] {
-        &self.0
+    /// Construct a ValidatedPayload from plain nodes (no compiled chains or schemas).
+    /// Used by Phase 2 construction sites and tests.
+    pub fn from_nodes(nodes: Vec<PayloadNode>) -> Self {
+        Self {
+            nodes,
+            compiled_chains: vec![],
+            propagated_schemas: vec![],
+        }
     }
 
+    pub fn as_slice(&self) -> &[PayloadNode] {
+        &self.nodes
+    }
+
+    /// Phase 2 backward-compat: extract the inner nodes vec.
     pub fn into_inner(self) -> Vec<PayloadNode> {
-        self.0
+        self.nodes
+    }
+
+    /// Phase 4: decompose into (nodes, compiled_chains, propagated_schemas).
+    #[allow(clippy::type_complexity)]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<PayloadNode>,
+        Vec<(String, std::sync::Arc<crate::op_chain::OpChain>)>,
+        Vec<(String, crate::schema::DerivedSchema)>,
+    ) {
+        (self.nodes, self.compiled_chains, self.propagated_schemas)
     }
 }
 
@@ -84,7 +132,7 @@ pub fn validate_payload(
     payload: Vec<PayloadNode>,
 ) -> Result<ValidatedPayload, Vec<ValidationError>> {
     if payload.is_empty() {
-        return Ok(ValidatedPayload(payload));
+        return Ok(ValidatedPayload::from_nodes(payload));
     }
 
     let mut errors: Vec<ValidationError> = Vec::new();
@@ -112,7 +160,7 @@ pub fn validate_payload(
     validate_acyclicity(&payload, current, &mut errors);
 
     if errors.is_empty() {
-        Ok(ValidatedPayload(payload))
+        Ok(ValidatedPayload::from_nodes(payload))
     } else {
         Err(errors)
     }
@@ -1293,6 +1341,308 @@ mod tests_structural {
         assert!(has_cycle, "expected RegistrationCycle");
         assert!(has_topo, "expected TopologicalOrderViolation");
     }
+
+    // ── Rule 10: Expression validation ───────────────────────────────────────
+    // These tests assert on new Phase 4 behavior. They call validate_payload
+    // with derivations that have ops, and expect expression-level errors.
+    // Currently these tests FAIL because Rule 10 is not yet implemented —
+    // that is the intended "red" state for TDD phase 04-05.
+
+    fn event_with_amount(name: &str) -> PayloadNode {
+        let mut fields = BTreeMap::new();
+        fields.insert("event_time".to_string(), FieldType::I64);
+        fields.insert("amount".to_string(), FieldType::F64);
+        PayloadNode::Event(EventDescriptor {
+            name: name.to_string(),
+            schema: EventSchema {
+                fields,
+                optional_fields: vec![],
+            },
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
+            registered_at_version: 0,
+        })
+    }
+
+    fn derivation_with_ops(
+        name: &str,
+        upstreams: Vec<&str>,
+        ops: Vec<crate::op_node::OpNode>,
+        schema_fields: Vec<(&str, FieldType)>,
+    ) -> PayloadNode {
+        let fields: BTreeMap<String, FieldType> = schema_fields
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        PayloadNode::Derivation(DerivationDescriptor {
+            name: name.to_string(),
+            output_kind: OutputKind::Event,
+            upstreams: upstreams.iter().map(|s| s.to_string()).collect(),
+            ops,
+            schema: DerivedSchema {
+                fields,
+                optional_fields: vec![],
+            },
+            table_primary_key: None,
+            registered_at_version: 0,
+        })
+    }
+
+    /// Rule 10 test 1: Filter with parse error → InvalidExpression at nodes[1].ops[0].expr
+    #[test]
+    fn rule10_fail_filter_with_parse_error() {
+        use crate::op_node::OpNode;
+        let payload = vec![
+            event_with_amount("A"),
+            derivation_with_ops(
+                "D",
+                vec!["A"],
+                vec![OpNode::Filter {
+                    expr: "(amount > ".to_string(), // truncated — parse error
+                }],
+                vec![("amount", FieldType::F64)],
+            ),
+        ];
+        let errs = validate_payload(&empty_current(), payload).expect_err("expected Err");
+        let found = errs
+            .iter()
+            .any(|e| e.code == ErrorCode::InvalidExpression && e.path.contains("nodes[1].ops[0]"));
+        assert!(
+            found,
+            "expected InvalidExpression at nodes[1].ops[0], got: {errs:#?}"
+        );
+    }
+
+    /// Rule 10 test 2: Filter with unknown field → UnknownFieldReference
+    #[test]
+    fn rule10_fail_filter_references_unknown_field() {
+        use crate::op_node::OpNode;
+        let payload = vec![
+            event_with_amount("A"),
+            derivation_with_ops(
+                "D",
+                vec!["A"],
+                vec![OpNode::Filter {
+                    expr: "(missing > 0)".to_string(),
+                }],
+                vec![("amount", FieldType::F64)],
+            ),
+        ];
+        let errs = validate_payload(&empty_current(), payload).expect_err("expected Err");
+        let found = errs.iter().any(|e| {
+            e.code == ErrorCode::UnknownFieldReference
+                && e.path.contains("nodes[1].ops[0]")
+                && e.reason.contains("missing")
+        });
+        assert!(
+            found,
+            "expected UnknownFieldReference mentioning 'missing' at nodes[1].ops[0], got: {errs:#?}"
+        );
+    }
+
+    /// Rule 10 test 3: WithColumns type mismatch → SchemaPropagationFailure
+    #[test]
+    fn rule10_fail_with_columns_type_mismatch() {
+        use crate::op_node::OpNode;
+        let mut exprs = std::collections::BTreeMap::new();
+        // "amount and true" — boolean op on F64 amount → TypeMismatch
+        exprs.insert("bad".to_string(), "(amount and true)".to_string());
+        let payload = vec![
+            event_with_amount("A"),
+            derivation_with_ops(
+                "D",
+                vec!["A"],
+                vec![OpNode::WithColumns { exprs }],
+                vec![("amount", FieldType::F64), ("bad", FieldType::Bool)],
+            ),
+        ];
+        let errs = validate_payload(&empty_current(), payload).expect_err("expected Err");
+        let found = errs.iter().any(|e| {
+            e.code == ErrorCode::SchemaPropagationFailure && e.path.contains("nodes[1].ops[0]")
+        });
+        assert!(
+            found,
+            "expected SchemaPropagationFailure at nodes[1].ops[0], got: {errs:#?}"
+        );
+    }
+
+    /// Rule 10 test 4: Cast with invalid target → SchemaPropagationFailure
+    #[test]
+    fn rule10_fail_cast_invalid_target() {
+        use crate::op_node::OpNode;
+        let mut type_map = std::collections::BTreeMap::new();
+        type_map.insert("amount".to_string(), "blob".to_string()); // unknown cast target
+        let payload = vec![
+            event_with_amount("A"),
+            derivation_with_ops(
+                "D",
+                vec!["A"],
+                vec![OpNode::Cast { type_map }],
+                vec![("amount", FieldType::F64)],
+            ),
+        ];
+        let errs = validate_payload(&empty_current(), payload).expect_err("expected Err");
+        let found = errs.iter().any(|e| {
+            (e.code == ErrorCode::SchemaPropagationFailure
+                || e.code == ErrorCode::InvalidCastTarget)
+                && e.path.contains("nodes[1].ops[0]")
+        });
+        assert!(
+            found,
+            "expected SchemaPropagationFailure or InvalidCastTarget at nodes[1].ops[0], got: {errs:#?}"
+        );
+    }
+
+    /// Rule 10 test 5: Select with unknown field → SchemaPropagationFailure or UnknownFieldReference
+    #[test]
+    fn rule10_fail_select_unknown_field() {
+        use crate::op_node::OpNode;
+        let payload = vec![
+            event_with_amount("A"),
+            derivation_with_ops(
+                "D",
+                vec!["A"],
+                vec![OpNode::Select {
+                    fields: vec!["missing".to_string()],
+                }],
+                vec![("amount", FieldType::F64)],
+            ),
+        ];
+        let errs = validate_payload(&empty_current(), payload).expect_err("expected Err");
+        let found = errs.iter().any(|e| {
+            (e.code == ErrorCode::SchemaPropagationFailure
+                || e.code == ErrorCode::UnknownFieldReference)
+                && e.path.contains("nodes[1].ops[0]")
+        });
+        assert!(
+            found,
+            "expected SchemaPropagationFailure or UnknownFieldReference at nodes[1].ops[0], got: {errs:#?}"
+        );
+    }
+
+    /// Rule 10 test 6: Valid filter + with_columns chain → Ok
+    #[test]
+    fn rule10_pass_valid_filter_and_with_columns_chain() {
+        use crate::op_node::OpNode;
+        let mut exprs = std::collections::BTreeMap::new();
+        exprs.insert("is_big".to_string(), "(amount > 500)".to_string());
+        let payload = vec![
+            event_with_amount("A"),
+            derivation_with_ops(
+                "D",
+                vec!["A"],
+                vec![
+                    OpNode::Filter {
+                        expr: "(amount > 100)".to_string(),
+                    },
+                    OpNode::WithColumns { exprs },
+                ],
+                vec![("amount", FieldType::F64), ("is_big", FieldType::Bool)],
+            ),
+        ];
+        let result = validate_payload(&empty_current(), payload);
+        assert!(
+            result.is_ok(),
+            "valid filter+with_columns chain should pass Rule 10: {result:#?}"
+        );
+    }
+
+    /// Rule 10 test 7: Server must propagate schema and replace client-supplied schema
+    /// The derivation declares schema={amount: F64} but propagation infers
+    /// {amount: F64, is_big: Bool} after the WithColumns op.
+    /// After a successful register, GET /registry shows the propagated schema.
+    /// At the validate_payload level: Ok(ValidatedPayload) is returned;
+    /// the propagated_schemas field carries the corrected schema.
+    #[test]
+    fn rule10_client_supplied_derivation_schema_must_match_propagated() {
+        use crate::op_node::OpNode;
+        let mut exprs = std::collections::BTreeMap::new();
+        exprs.insert("is_big".to_string(), "(amount > 500)".to_string());
+        // Client says schema is {amount: F64} — missing is_big
+        let payload = vec![
+            event_with_amount("A"),
+            derivation_with_ops(
+                "D",
+                vec!["A"],
+                vec![OpNode::WithColumns {
+                    exprs: exprs.clone(),
+                }],
+                vec![("amount", FieldType::F64)], // wrong: missing is_big
+            ),
+        ];
+        let result = validate_payload(&empty_current(), payload).expect("should be Ok");
+        // The propagated_schemas should contain {amount: F64, is_big: Bool}
+        let propagated = result
+            .propagated_schemas
+            .iter()
+            .find(|(name, _)| name == "D");
+        assert!(propagated.is_some(), "D must have a propagated schema");
+        let (_, schema) = propagated.unwrap();
+        assert_eq!(
+            schema.fields.get("is_big"),
+            Some(&FieldType::Bool),
+            "propagated schema for D must include is_big: Bool"
+        );
+        assert_eq!(
+            schema.fields.get("amount"),
+            Some(&FieldType::F64),
+            "propagated schema for D must include amount: F64"
+        );
+    }
+
+    /// Rule 10 test 8: Empty ops passes trivially
+    #[test]
+    fn rule10_empty_ops_is_fine() {
+        let payload = vec![
+            event_with_amount("A"),
+            minimal_derivation("D", vec!["A"]), // has no ops
+        ];
+        assert_ok(payload);
+    }
+
+    /// Rule 10 test 9: Two bad ops collect two errors (fail-soft)
+    #[test]
+    fn rule10_fail_soft_collects_expression_errors_per_op() {
+        use crate::op_node::OpNode;
+        let mut type_map = std::collections::BTreeMap::new();
+        type_map.insert("amount".to_string(), "blob".to_string());
+        let payload = vec![
+            event_with_amount("A"),
+            derivation_with_ops(
+                "D",
+                vec!["A"],
+                vec![
+                    OpNode::Filter {
+                        expr: "(missing > 0)".to_string(), // UnknownFieldReference at op[0]
+                    },
+                    OpNode::Cast { type_map }, // SchemaPropagationFailure at op[1]
+                ],
+                vec![("amount", FieldType::F64)],
+            ),
+        ];
+        let errs = validate_payload(&empty_current(), payload).expect_err("expected Err");
+        // Should have at least 2 errors: one for op[0], one for op[1]
+        let op0_err = errs
+            .iter()
+            .any(|e| e.path.contains("nodes[1].ops[0]") && e.path.contains("nodes[1].ops[0]"));
+        let op1_err = errs.iter().any(|e| e.path.contains("nodes[1].ops[1]"));
+        assert!(op0_err, "expected error at nodes[1].ops[0], got: {errs:#?}");
+        assert!(op1_err, "expected error at nodes[1].ops[1], got: {errs:#?}");
+    }
+
+    /// Rule 10 test 10: Events and tables with no ops field are not touched by Rule 10
+    #[test]
+    fn rule10_event_or_table_with_ops_is_ignored() {
+        // Events and tables don't have ops in Phase 2's wire shape.
+        // Verify the validator ignores non-derivation nodes in Rule 10.
+        let payload = vec![event_with_amount("A"), minimal_table("T", vec!["extra"])];
+        assert_ok(payload);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
 
     #[test]
     fn multiple_upstreams_partial_missing() {

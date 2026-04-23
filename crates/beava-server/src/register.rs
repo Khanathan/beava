@@ -882,6 +882,223 @@ mod tests {
         );
     }
 
+    // ─── Plan 04-05: Phase 4 expression validation tests (HTTP + TCP) ────────
+
+    // Helper: payload with event A + derivation D with given ops
+    fn derivation_payload(ops: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "nodes": [
+                event_node("A", &[("event_time", "i64"), ("amount", "f64")], "event_time"),
+                {
+                    "kind": "derivation",
+                    "name": "D",
+                    "output_kind": "event",
+                    "upstreams": ["A"],
+                    "ops": ops,
+                    "schema": {"fields": {"amount": "f64"}, "optional_fields": []}
+                }
+            ]
+        })
+    }
+
+    /// Test 11: POST derivation with bad Filter expression → 400 with code="invalid_expression"
+    #[tokio::test]
+    async fn test_register_invalid_filter_returns_400_with_invalid_expression_code() {
+        let (r, _) = test_router();
+        let payload = derivation_payload(serde_json::json!([
+            {"op": "filter", "expr": "(amount > "}  // truncated — parse error
+        ]));
+        let (status, body) = post(r, json_body(payload), Some("application/json")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:#}");
+        assert_eq!(
+            body["error"]["code"], "invalid_expression",
+            "expected 'invalid_expression' code, body: {body:#}"
+        );
+        let path = body["error"]["path"].as_str().unwrap_or("");
+        assert!(
+            path.contains("nodes[1].ops[0]"),
+            "path should point to nodes[1].ops[0], got: {path:?}"
+        );
+        let reason = body["error"]["reason"].as_str().unwrap_or("");
+        assert!(!reason.is_empty(), "reason must be non-empty");
+    }
+
+    /// Test 12: POST derivation with unknown field in filter → 400 with code="invalid_expression"
+    #[tokio::test]
+    async fn test_register_unknown_field_in_filter_returns_400() {
+        let (r, _) = test_router();
+        let payload = derivation_payload(serde_json::json!([
+            {"op": "filter", "expr": "(nonexistent > 0)"}
+        ]));
+        let (status, body) = post(r, json_body(payload), Some("application/json")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:#}");
+        assert_eq!(body["error"]["code"], "invalid_expression");
+        let path = body["error"]["path"].as_str().unwrap_or("");
+        assert!(
+            path.contains("nodes[1].ops[0]"),
+            "path should point to nodes[1].ops[0], got: {path:?}"
+        );
+        let reason = body["error"]["reason"].as_str().unwrap_or("");
+        assert!(
+            reason.contains("nonexistent"),
+            "reason should mention 'nonexistent', got: {reason:?}"
+        );
+    }
+
+    /// Test 13: POST derivation with invalid cast target → 400 with code="invalid_expression"
+    #[tokio::test]
+    async fn test_register_invalid_cast_target_returns_400() {
+        let (r, _) = test_router();
+        let payload = derivation_payload(serde_json::json!([
+            {"op": "cast", "type_map": {"amount": "blob"}}
+        ]));
+        let (status, body) = post(r, json_body(payload), Some("application/json")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body:#}");
+        assert_eq!(body["error"]["code"], "invalid_expression");
+        let path = body["error"]["path"].as_str().unwrap_or("");
+        assert!(
+            path.contains("nodes[1].ops[0]"),
+            "path should point to nodes[1].ops[0], got: {path:?}"
+        );
+    }
+
+    /// Test 14: Valid chained ops → 200; propagated schema visible via GET /registry
+    #[tokio::test]
+    async fn test_register_with_columns_chain_propagates_schema_and_200s() {
+        let (_, reg) = test_router();
+        // Build router with dev_endpoints=true so GET /registry works
+        let r = router(ReadinessFlag::new(), reg.clone(), true);
+        let payload = serde_json::json!({
+            "nodes": [
+                event_node("A", &[("event_time", "i64"), ("amount", "f64")], "event_time"),
+                {
+                    "kind": "derivation",
+                    "name": "D",
+                    "output_kind": "event",
+                    "upstreams": ["A"],
+                    "ops": [
+                        {"op": "filter", "expr": "(amount > 0)"},
+                        {"op": "with_columns", "exprs": {"is_big": "(amount > 500)"}},
+                        {"op": "cast", "type_map": {"is_big": "int"}}
+                    ],
+                    // client-supplied schema is WRONG (missing is_big, has wrong type for it)
+                    "schema": {"fields": {"amount": "f64"}, "optional_fields": []}
+                }
+            ]
+        });
+        let (status, body) = post(r.clone(), json_body(payload), Some("application/json")).await;
+        assert_eq!(status, StatusCode::OK, "body: {body:#}");
+        assert_eq!(body["registry_version"], 1);
+
+        // GET /registry — derivation D's schema should have propagated {amount: f64, is_big: i64}
+        let get_resp = axum::Router::oneshot(
+            r,
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/registry")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("GET /registry");
+        let get_bytes = get_resp
+            .into_body()
+            .collect()
+            .await
+            .expect("collect")
+            .to_bytes();
+        let reg_dump: serde_json::Value = serde_json::from_slice(&get_bytes).expect("json");
+        let d_schema = &reg_dump["derivations"]["D"]["schema"]["fields"];
+        assert_eq!(
+            d_schema["is_big"], "i64",
+            "propagated schema should have is_big: i64 (after cast); full schema: {d_schema:#}"
+        );
+        assert_eq!(
+            d_schema["amount"], "f64",
+            "propagated schema should retain amount: f64"
+        );
+    }
+
+    /// Test 15: After successful register with ops, compiled_op_chain must be cached
+    #[tokio::test]
+    async fn test_register_chained_ops_compile_is_cached_on_install() {
+        let (_, reg) = test_router();
+        let r = router(ReadinessFlag::new(), reg.clone(), false);
+        let payload = serde_json::json!({
+            "nodes": [
+                event_node("A", &[("event_time", "i64"), ("amount", "f64")], "event_time"),
+                {
+                    "kind": "derivation",
+                    "name": "D",
+                    "output_kind": "event",
+                    "upstreams": ["A"],
+                    "ops": [{"op": "filter", "expr": "(amount > 0)"}],
+                    "schema": {"fields": {"amount": "f64"}, "optional_fields": []}
+                }
+            ]
+        });
+        let (status, _body) = post(r, json_body(payload), Some("application/json")).await;
+        assert_eq!(status, StatusCode::OK);
+
+        // The compiled chain must be cached in the registry
+        let compiled = reg.compiled_chain("D");
+        assert!(
+            compiled.is_some(),
+            "registry.compiled_chain('D') must return Some after registration with ops"
+        );
+    }
+
+    /// Test 16: TCP frame with bad filter → OP_ERROR_RESPONSE with code="invalid_expression"
+    #[tokio::test]
+    async fn test_register_invalid_expression_via_tcp_frame_returns_error_frame() {
+        use crate::testing::TestServerBuilder;
+        use beava_core::wire::OP_ERROR_RESPONSE;
+
+        let ts = TestServerBuilder::new()
+            .dev_endpoints(false)
+            .spawn()
+            .await
+            .expect("spawn test server");
+
+        let payload = serde_json::json!({
+            "nodes": [
+                {
+                    "kind": "event",
+                    "name": "A",
+                    "schema": {"fields": {"event_time": "i64", "amount": "f64"}, "optional_fields": []},
+                    "event_time_field": "event_time"
+                },
+                {
+                    "kind": "derivation",
+                    "name": "D",
+                    "output_kind": "event",
+                    "upstreams": ["A"],
+                    "ops": [{"op": "filter", "expr": "(amount > "}],
+                    "schema": {"fields": {"amount": "f64"}, "optional_fields": []}
+                }
+            ]
+        });
+
+        let mut tcp = ts.tcp_client().await.expect("tcp connect");
+        let (resp_op, body) = tcp.register_json(payload).await.expect("tcp register");
+
+        assert_eq!(
+            resp_op, OP_ERROR_RESPONSE,
+            "expected OP_ERROR_RESPONSE, got op={resp_op:#06x}, body: {body:#}"
+        );
+        assert_eq!(
+            body["error"]["code"], "invalid_expression",
+            "TCP must use 'invalid_expression' code, body: {body:#}"
+        );
+        let path = body["error"]["path"].as_str().unwrap_or("");
+        assert!(
+            path.contains("nodes[1].ops[0]"),
+            "TCP path should point to nodes[1].ops[0], got: {path:?}"
+        );
+
+        ts.shutdown().await.expect("shutdown");
+    }
+
     // ─── Writer capture helper ─────────────────────────────────────────────
 
     #[derive(Clone)]
