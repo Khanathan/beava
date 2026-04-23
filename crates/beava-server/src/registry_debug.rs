@@ -120,7 +120,7 @@ mod tests {
         let registry = Arc::new(Registry::new());
         // Seed via apply_registration
         let desc = minimal_event_descriptor("T");
-        registry.apply_registration(vec![PayloadNode::Event(desc)]);
+        registry.apply_registration(vec![PayloadNode::Event(desc)], vec![], vec![]);
 
         let r = router(ReadinessFlag::new(), registry, true);
         let (status, body) = get(r, "/registry").await;
@@ -144,7 +144,7 @@ mod tests {
     async fn get_registry_descriptor_has_registered_at_version_field() {
         let registry = Arc::new(Registry::new());
         let desc = minimal_event_descriptor("T");
-        registry.apply_registration(vec![PayloadNode::Event(desc)]);
+        registry.apply_registration(vec![PayloadNode::Event(desc)], vec![], vec![]);
 
         let r = router(ReadinessFlag::new(), registry, true);
         let (status, body) = get(r, "/registry").await;

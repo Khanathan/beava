@@ -174,7 +174,7 @@ pub(crate) async fn execute_register(
         }
     };
 
-    let nodes = validated.into_inner();
+    let (nodes, compiled_chains, propagated_schemas) = validated.into_parts();
     let registered_descriptors: Vec<String> = nodes.iter().map(|n| n.name().to_string()).collect();
 
     // 4. Diff
@@ -210,8 +210,8 @@ pub(crate) async fn execute_register(
         };
     }
 
-    // 7. Additive install
-    let new_version = registry.apply_registration(nodes);
+    // 7. Additive install (Phase 4: also installs compiled chains + propagated schemas)
+    let new_version = registry.apply_registration(nodes, compiled_chains, propagated_schemas);
     info!(
         kind = "register.success",
         version = new_version,
@@ -270,13 +270,15 @@ fn map_outcome_to_http(outcome: RegisterOutcome) -> (StatusCode, Json<serde_json
         }
         RegisterOutcome::ValidationFailed {
             version,
+            first_error_code,
             first_error_path,
             first_error_reason,
             ..
         } => {
+            let wire_code = error_code_to_wire_str(first_error_code);
             let body = RegisterErrorBody {
                 error: RegisterError::Validation {
-                    code: "invalid_registration",
+                    code: wire_code,
                     path: first_error_path,
                     reason: first_error_reason,
                 },
@@ -378,6 +380,22 @@ pub async fn post_register(
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Map an `ErrorCode` to its wire string.
+///
+/// Phase 4 (Plan 04-05): `InvalidExpression`, `UnknownFieldReference`,
+/// `SchemaPropagationFailure`, and `InvalidCastTarget` all surface as
+/// `"invalid_expression"` on the wire (distinct from `"invalid_registration"`
+/// for structural rules 1-9).
+pub(crate) fn error_code_to_wire_str(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::InvalidExpression
+        | ErrorCode::UnknownFieldReference
+        | ErrorCode::SchemaPropagationFailure
+        | ErrorCode::InvalidCastTarget => "invalid_expression",
+        _ => "invalid_registration",
+    }
+}
 
 /// Returns true iff the Content-Type media type (before `;`) is `application/json`
 /// (case-insensitive, trimmed). `application/json; charset=utf-8` → true.

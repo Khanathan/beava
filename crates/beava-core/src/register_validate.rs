@@ -12,11 +12,14 @@
 //! 8. Topological order (upstreams-within-payload appear before dependents)
 //! 9. Dedupe key: if present, must be in schema; dedupe_window_ms must be positive
 
+use crate::op_chain::OpChain;
 use crate::registry::{EventDescriptor, RegistryInner, TableDescriptor};
 use crate::registry_diff::PayloadNode;
 use crate::schema::{validate_descriptor_name, DescriptorNameError, FieldType};
+use crate::schema_propagate::{PropagationError, Schema};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -159,8 +162,27 @@ pub fn validate_payload(
     // Rule 7: DAG acyclicity (across payload + current)
     validate_acyclicity(&payload, current, &mut errors);
 
+    // Rule 10: expression parsing + schema propagation (Phase 4)
+    let mut compiled_chains: Vec<(String, Arc<OpChain>)> = Vec::new();
+    let mut propagated_schemas: Vec<(String, crate::schema::DerivedSchema)> = Vec::new();
     if errors.is_empty() {
-        Ok(ValidatedPayload::from_nodes(payload))
+        // Only run Rule 10 if all structural rules passed (avoids noisy cascading errors
+        // when upstreams are missing or the DAG has cycles).
+        validate_expressions(
+            &payload,
+            current,
+            &mut errors,
+            &mut compiled_chains,
+            &mut propagated_schemas,
+        );
+    }
+
+    if errors.is_empty() {
+        Ok(ValidatedPayload {
+            nodes: payload,
+            compiled_chains,
+            propagated_schemas,
+        })
     } else {
         Err(errors)
     }
@@ -507,6 +529,239 @@ fn dfs_cycle(
     stack.pop();
     color.insert(node.to_string(), 2); // black
     None
+}
+
+// ─── Rule 10: Expression validation + schema propagation (Phase 4) ────────────
+
+/// Resolve the combined input `Schema` for a derivation by unioning all upstream schemas.
+///
+/// Lookup order per upstream name:
+/// 1. Payload (events/tables/derivations already seen in this batch — must appear before
+///    dependents due to Rule 8 topological order).
+/// 2. Current registry (already-registered events, tables, derivations).
+///
+/// Uses `Schema::from_event` / `from_table` / `from_derived` adapters.
+fn resolve_upstream_schema(
+    upstream_name: &str,
+    payload: &[PayloadNode],
+    current: &RegistryInner,
+) -> Option<Schema> {
+    // Check payload first (topological order guarantees upstreams come before dependents).
+    for node in payload {
+        match node {
+            PayloadNode::Event(e) if e.name == upstream_name => {
+                return Some(Schema::from_event(&e.schema));
+            }
+            PayloadNode::Table(t) if t.name == upstream_name => {
+                return Some(Schema::from_table(&t.schema));
+            }
+            PayloadNode::Derivation(d) if d.name == upstream_name => {
+                return Some(Schema::from_derived(&d.schema));
+            }
+            _ => {}
+        }
+    }
+    // Check registry.
+    if let Some(e) = current.events.get(upstream_name) {
+        return Some(Schema::from_event(&e.schema));
+    }
+    if let Some(t) = current.tables.get(upstream_name) {
+        return Some(Schema::from_table(&t.schema));
+    }
+    if let Some(d) = current.derivations.get(upstream_name) {
+        return Some(Schema::from_derived(&d.schema));
+    }
+    None
+}
+
+/// Union multiple schemas by merging fields (later schemas' fields take precedence on collision).
+fn union_schemas(schemas: Vec<Schema>) -> Schema {
+    let mut result = Schema::new();
+    for s in schemas {
+        for (k, v) in s.fields {
+            result.fields.insert(k, v);
+        }
+        for opt in s.optional_fields {
+            if !result.optional_fields.contains(&opt) {
+                result.optional_fields.push(opt);
+            }
+        }
+    }
+    result
+}
+
+/// Map a `PropagationError` to a `ValidationError` at the given derivation index `node_idx`
+/// and op index `op_idx`.
+fn propagation_error_to_validation(
+    e: &PropagationError,
+    node_idx: usize,
+    op_idx: usize,
+) -> ValidationError {
+    match e {
+        PropagationError::InvalidExpr {
+            parse_error: pe, ..
+        } => ValidationError {
+            code: ErrorCode::InvalidExpression,
+            path: format!("nodes[{node_idx}].ops[{op_idx}].expr"),
+            reason: format!("col {}: {}", pe.col, pe.reason),
+        },
+        PropagationError::FieldMissing { field, .. } => ValidationError {
+            code: ErrorCode::UnknownFieldReference,
+            path: format!("nodes[{node_idx}].ops[{op_idx}].expr"),
+            reason: format!("field '{field}' not found in upstream schema"),
+        },
+        PropagationError::TypeMismatch { reason, .. } => ValidationError {
+            code: ErrorCode::SchemaPropagationFailure,
+            path: format!("nodes[{node_idx}].ops[{op_idx}]"),
+            reason: reason.clone(),
+        },
+        PropagationError::RenameCollision { new, .. } => ValidationError {
+            code: ErrorCode::SchemaPropagationFailure,
+            path: format!("nodes[{node_idx}].ops[{op_idx}].mapping"),
+            reason: format!("rename collision on field '{new}'"),
+        },
+        PropagationError::UnsupportedOp { .. } => {
+            // Treated as pass-through in Phase 4 — not an error.
+            // This branch should never be called (callers filter UnsupportedOp before
+            // calling this function). Include as unreachable-but-safe fallback.
+            ValidationError {
+                code: ErrorCode::SchemaPropagationFailure,
+                path: format!("nodes[{node_idx}].ops[{op_idx}]"),
+                reason: "unsupported op (pass-through in Phase 4)".to_string(),
+            }
+        }
+    }
+}
+
+/// Rule 10: parse every expression in every derivation's op chain, walk schema propagation,
+/// and compile each chain. Appends to `errors` on failure (fail-soft). On success, appends
+/// to `compiled_chains` and `propagated_schemas`.
+///
+/// This function is only called when rules 1-9 have already passed.
+fn validate_expressions(
+    payload: &[PayloadNode],
+    current: &RegistryInner,
+    errors: &mut Vec<ValidationError>,
+    compiled_chains: &mut Vec<(String, Arc<OpChain>)>,
+    propagated_schemas: &mut Vec<(String, crate::schema::DerivedSchema)>,
+) {
+    // Build a map from derivation name → propagated DerivedSchema so downstream
+    // derivations in the same payload see the server-authoritative schema.
+    // (Because payload is topologically ordered, we process in order.)
+    let mut propagated_in_batch: HashMap<String, crate::schema::DerivedSchema> = HashMap::new();
+
+    for (node_idx, node) in payload.iter().enumerate() {
+        let deriv = match node {
+            PayloadNode::Derivation(d) => d,
+            _ => continue, // Events and tables have no ops — skip.
+        };
+
+        if deriv.ops.is_empty() {
+            // No ops: propagated schema = union of upstream schemas (or client-supplied
+            // if we can't resolve upstreams — defensive fallback).
+            let upstream_schemas: Vec<Schema> = deriv
+                .upstreams
+                .iter()
+                .filter_map(|u| {
+                    // Check already-propagated batch first (server-authoritative for
+                    // upstream derivations in same payload).
+                    if let Some(ds) = propagated_in_batch.get(u) {
+                        return Some(Schema::from_derived(ds));
+                    }
+                    resolve_upstream_schema(u, payload, current)
+                })
+                .collect();
+            let propagated = if upstream_schemas.is_empty() {
+                // Fallback: use client-supplied schema.
+                Schema::from_derived(&deriv.schema)
+            } else {
+                union_schemas(upstream_schemas)
+            };
+            let derived = propagated.into_derived();
+            propagated_in_batch.insert(deriv.name.clone(), derived.clone());
+            propagated_schemas.push((deriv.name.clone(), derived));
+            continue;
+        }
+
+        // Resolve combined input schema from all upstreams.
+        let upstream_schemas: Vec<Schema> = deriv
+            .upstreams
+            .iter()
+            .filter_map(|u| {
+                if let Some(ds) = propagated_in_batch.get(u) {
+                    return Some(Schema::from_derived(ds));
+                }
+                resolve_upstream_schema(u, payload, current)
+            })
+            .collect();
+
+        let combined_input = if upstream_schemas.is_empty() {
+            // No resolvable upstreams (structural rules should have caught unknown
+            // upstreams, but be defensive). Skip Rule 10 for this derivation.
+            propagated_schemas.push((deriv.name.clone(), deriv.schema.clone()));
+            propagated_in_batch.insert(deriv.name.clone(), deriv.schema.clone());
+            continue;
+        } else {
+            union_schemas(upstream_schemas)
+        };
+
+        // Check for UnsupportedOp ops (GroupBy/Join/Union) — treat as pass-through.
+        // Filter them out before calling OpChain::compile so we don't get spurious errors.
+        // Phase 4 treats these as warnings; register succeeds.
+        let has_unsupported = deriv.ops.iter().any(|op| {
+            matches!(
+                op,
+                crate::op_node::OpNode::GroupBy { .. }
+                    | crate::op_node::OpNode::Join { .. }
+                    | crate::op_node::OpNode::Union { .. }
+            )
+        });
+
+        if has_unsupported {
+            // Log a warning (at build time this is a tracing warn; tests won't see it,
+            // but that's fine — the behavior is documented). Accept the registration.
+            tracing::warn!(
+                kind = "register.rule10.unsupported_op",
+                derivation = %deriv.name,
+                "derivation contains GroupBy/Join/Union ops which are not validated in Phase 4 \
+                 (pass-through)"
+            );
+            propagated_schemas.push((deriv.name.clone(), deriv.schema.clone()));
+            propagated_in_batch.insert(deriv.name.clone(), deriv.schema.clone());
+            continue;
+        }
+
+        // Compile the chain: propagate_schema + build CompiledOp sequence.
+        match OpChain::compile(&combined_input, &deriv.ops) {
+            Ok((chain, final_schema)) => {
+                compiled_chains.push((deriv.name.clone(), Arc::new(chain)));
+                let derived = final_schema.into_derived();
+                propagated_in_batch.insert(deriv.name.clone(), derived.clone());
+                propagated_schemas.push((deriv.name.clone(), derived));
+            }
+            Err(compile_errors) => {
+                // Fail-soft: translate each error and collect; continue with other derivations.
+                // For path purposes, we need to re-map op_index from PropagationError
+                // to the actual position in deriv.ops.
+                for ce in &compile_errors {
+                    let op_idx = match ce {
+                        PropagationError::InvalidExpr { op_index, .. }
+                        | PropagationError::FieldMissing { op_index, .. }
+                        | PropagationError::TypeMismatch { op_index, .. }
+                        | PropagationError::RenameCollision { op_index, .. }
+                        | PropagationError::UnsupportedOp { op_index, .. } => *op_index,
+                    };
+                    // Skip UnsupportedOp — treated as pass-through.
+                    if matches!(ce, PropagationError::UnsupportedOp { .. }) {
+                        continue;
+                    }
+                    errors.push(propagation_error_to_validation(ce, node_idx, op_idx));
+                }
+                // Use client-supplied schema as best-effort carry-forward.
+                propagated_in_batch.insert(deriv.name.clone(), deriv.schema.clone());
+            }
+        }
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

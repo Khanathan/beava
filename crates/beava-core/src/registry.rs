@@ -198,13 +198,28 @@ impl Registry {
     /// Bumps version by 1 and stamps each NEW descriptor with `registered_at_version = new_version`.
     /// Existing (already_present) descriptors are left unchanged.
     ///
+    /// Phase 4: Also installs compiled OpChains (`compiled_chains`) and overwrites the
+    /// derivation schema for any derivation that has a server-propagated schema
+    /// (`propagated_schemas`). Both lists come from `ValidatedPayload::into_parts()`.
+    ///
     /// Precondition: `nodes` has passed `validate_payload` and `compute_diff` yielded
     /// `changed = []` AND `added != []`. Caller (Plan 05 endpoint) enforces this.
     ///
     /// Returns the new version number.
-    pub fn apply_registration(&self, nodes: Vec<crate::registry_diff::PayloadNode>) -> u64 {
+    pub fn apply_registration(
+        &self,
+        nodes: Vec<crate::registry_diff::PayloadNode>,
+        compiled_chains: Vec<(String, Arc<OpChain>)>,
+        propagated_schemas: Vec<(String, crate::schema::DerivedSchema)>,
+    ) -> u64 {
         let mut w = self.inner.write();
         let new_version = w.version + 1;
+
+        // Build a lookup map for propagated schemas so we can apply them as we
+        // insert new derivation descriptors in the same write-lock pass.
+        let schema_map: std::collections::HashMap<String, crate::schema::DerivedSchema> =
+            propagated_schemas.into_iter().collect();
+
         for n in nodes {
             match n {
                 crate::registry_diff::PayloadNode::Event(mut e) => {
@@ -222,11 +237,22 @@ impl Registry {
                 crate::registry_diff::PayloadNode::Derivation(mut d) => {
                     if !w.derivations.contains_key(&d.name) {
                         d.registered_at_version = new_version;
+                        // Phase 4 (D-06): overwrite client-supplied schema with
+                        // server-authoritative propagated schema, if available.
+                        if let Some(propagated) = schema_map.get(&d.name) {
+                            d.schema = propagated.clone();
+                        }
                         w.derivations.insert(d.name.clone(), d);
                     }
                 }
             }
         }
+
+        // Install compiled chains (Phase 4).
+        for (name, chain) in compiled_chains {
+            w.compiled_chains.insert(name, chain);
+        }
+
         w.version = new_version;
         new_version
     }
@@ -553,7 +579,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
         };
-        let new_version = r.apply_registration(vec![PayloadNode::Event(event_a)]);
+        let new_version = r.apply_registration(vec![PayloadNode::Event(event_a)], vec![], vec![]);
         assert_eq!(new_version, 1);
         assert_eq!(r.version(), 1);
         let snap = r.snapshot();
@@ -576,7 +602,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
         };
-        let v1 = r.apply_registration(vec![PayloadNode::Event(e1)]);
+        let v1 = r.apply_registration(vec![PayloadNode::Event(e1)], vec![], vec![]);
         assert_eq!(v1, 1);
 
         let e2 = EventDescriptor {
@@ -589,7 +615,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
         };
-        let v2 = r.apply_registration(vec![PayloadNode::Event(e2)]);
+        let v2 = r.apply_registration(vec![PayloadNode::Event(e2)], vec![], vec![]);
         assert_eq!(v2, 2);
 
         let snap = r.snapshot();
@@ -613,7 +639,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
         };
-        r.apply_registration(vec![PayloadNode::Event(event_a.clone())]);
+        r.apply_registration(vec![PayloadNode::Event(event_a.clone())], vec![], vec![]);
         assert_eq!(r.version(), 1);
 
         // Apply [EventA (identical), EventB (new)]
@@ -627,10 +653,11 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
         };
-        let v2 = r.apply_registration(vec![
-            PayloadNode::Event(event_a),
-            PayloadNode::Event(event_b),
-        ]);
+        let v2 = r.apply_registration(
+            vec![PayloadNode::Event(event_a), PayloadNode::Event(event_b)],
+            vec![],
+            vec![],
+        );
         assert_eq!(v2, 2);
         let snap = r.snapshot();
         // A's registered_at_version stays at 1 (not overwritten)

@@ -391,24 +391,28 @@ async fn handle_register(registry: &Arc<Registry>, frame: &Frame) -> Frame {
         ),
         RegisterOutcome::ValidationFailed {
             version,
+            first_error_code,
             first_error_path,
             first_error_reason,
             ..
-        } => Frame {
-            op: OP_ERROR_RESPONSE,
-            content_type: CT_JSON,
-            payload: Bytes::from(
-                serde_json::to_vec(&json!({
-                    "error": {
-                        "code": "invalid_registration",
-                        "path": first_error_path,
-                        "reason": first_error_reason,
-                    },
-                    "registry_version": version,
-                }))
-                .expect("serialize validation error"),
-            ),
-        },
+        } => {
+            let wire_code = crate::register::error_code_to_wire_str(first_error_code);
+            Frame {
+                op: OP_ERROR_RESPONSE,
+                content_type: CT_JSON,
+                payload: Bytes::from(
+                    serde_json::to_vec(&json!({
+                        "error": {
+                            "code": wire_code,
+                            "path": first_error_path,
+                            "reason": first_error_reason,
+                        },
+                        "registry_version": version,
+                    }))
+                    .expect("serialize validation error"),
+                ),
+            }
+        }
         RegisterOutcome::Conflict {
             version,
             added,
