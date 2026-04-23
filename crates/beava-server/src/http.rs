@@ -4,7 +4,10 @@
 //! route wiring only, no business logic.
 
 use crate::register::{register_router, RegisterAppState};
-use crate::registry_debug::{dev_apply_ops_router, registry_debug_router, RegistryDebugState};
+use crate::registry_debug::{
+    dev_apply_events_router, dev_apply_ops_router, registry_debug_router, DevAggState,
+    RegistryDebugState,
+};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use beava_core::registry::Registry;
 use serde_json::json;
@@ -54,7 +57,8 @@ pub fn router(
             .merge(registry_debug_router(RegistryDebugState {
                 registry: registry.clone(),
             }))
-            .merge(dev_apply_ops_router(registry));
+            .merge(dev_apply_ops_router(registry.clone()))
+            .merge(dev_apply_events_router(DevAggState::new(registry)));
     }
     r
 }

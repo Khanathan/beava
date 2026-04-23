@@ -35,13 +35,13 @@ use crate::row::Row;
 /// 1. Look up all aggregations for `source_name` via
 ///    `Registry::compiled_aggregations_for_source`.
 /// 2. For each aggregation:
-///    a. Derive `EntityKey` from `row` + `descriptor.group_keys`.
-///       If any group-key field is null/missing → drop the event for this
-///       aggregation (continue to the next).
-///    b. Look up or initialise the entity row in the aggregation's
-///       `AggStateTable`.
-///    c. For each feature: call `AggOp::update_with_row(row, event_time_ms,
-///       field, where_expr)`.
+///    - Derive `EntityKey` from `row` + `descriptor.group_keys`.
+///      If any group-key field is null/missing → drop the event for this
+///      aggregation (continue to the next).
+///    - Look up or initialise the entity row in the aggregation's
+///      `AggStateTable`.
+///    - For each feature: call `AggOp::update_with_row(row, event_time_ms,
+///      field, where_expr)`.
 ///
 /// # `event_id` parameter
 ///
@@ -53,7 +53,7 @@ use crate::row::Row;
 ///
 /// # No wall-clock reads
 ///
-/// `event_time_ms` is the only time source.  `SystemTime::now()` is forbidden
+/// `event_time_ms` is the only time source.  Wall-clock reads are forbidden
 /// in this function (D-06).
 pub fn apply_event_to_aggregations(
     source_name: &str,
@@ -63,7 +63,30 @@ pub fn apply_event_to_aggregations(
     registry: &Registry,
     state_tables: &mut BTreeMap<String, AggStateTable>,
 ) {
-    todo!("apply_event_to_aggregations — stub for red commit")
+    for desc in registry.compiled_aggregations_for_source(source_name) {
+        // Derive entity key; drop event for this aggregation if any group-key
+        // is null, missing, or Bytes (D-06 null-group-key drop semantics).
+        let entity_key = match EntityKey::from_row(&desc.group_keys, row) {
+            Some(k) => k,
+            None => continue,
+        };
+
+        // Get or initialise the per-aggregation state table.
+        let table = state_tables.entry(desc.node_name.clone()).or_default();
+
+        // Get or initialise the per-entity feature row.
+        let entity_row = table.get_or_init(&entity_key, &desc);
+
+        // Update every feature slot.
+        for (i, feat) in desc.features.iter().enumerate() {
+            entity_row[i].update_with_row(
+                row,
+                event_time_ms,
+                feat.descriptor.field.as_deref(),
+                feat.descriptor.where_expr.as_ref(),
+            );
+        }
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -144,10 +167,7 @@ mod tests {
         }
     }
 
-    fn make_registry_with_agg(
-        event_name: &str,
-        agg: AggregationDescriptor,
-    ) -> Arc<Registry> {
+    fn make_registry_with_agg(event_name: &str, agg: AggregationDescriptor) -> Arc<Registry> {
         let registry = Arc::new(Registry::new());
         let deriv_name = agg.node_name.clone();
 
@@ -186,7 +206,12 @@ mod tests {
         // Register AggA (source=Transaction) and AggB (source=Login).
         let registry = Arc::new(Registry::new());
 
-        let agg_a = make_agg_desc("AggA", "Transaction", &["user_id"], &[("cnt", count_desc())]);
+        let agg_a = make_agg_desc(
+            "AggA",
+            "Transaction",
+            &["user_id"],
+            &[("cnt", count_desc())],
+        );
         let agg_b = make_agg_desc("AggB", "Login", &["user_id"], &[("cnt", count_desc())]);
 
         let deriv_a = DerivationDescriptor {
@@ -194,7 +219,10 @@ mod tests {
             output_kind: OutputKind::Table,
             upstreams: vec!["Transaction".to_string()],
             ops: vec![],
-            schema: DerivedSchema { fields: BTreeMap::new(), optional_fields: vec![] },
+            schema: DerivedSchema {
+                fields: BTreeMap::new(),
+                optional_fields: vec![],
+            },
             table_primary_key: None,
             registered_at_version: 0,
         };
@@ -203,7 +231,10 @@ mod tests {
             output_kind: OutputKind::Table,
             upstreams: vec!["Login".to_string()],
             ops: vec![],
-            schema: DerivedSchema { fields: BTreeMap::new(), optional_fields: vec![] },
+            schema: DerivedSchema {
+                fields: BTreeMap::new(),
+                optional_fields: vec![],
+            },
             table_primary_key: None,
             registered_at_version: 0,
         };
@@ -242,7 +273,12 @@ mod tests {
     /// A02: Count aggregation, 10 events → count == I64(10).
     #[test]
     fn apply_increments_count_feature() {
-        let agg = make_agg_desc("UserCount", "Transaction", &["user_id"], &[("cnt", count_desc())]);
+        let agg = make_agg_desc(
+            "UserCount",
+            "Transaction",
+            &["user_id"],
+            &[("cnt", count_desc())],
+        );
         let registry = make_registry_with_agg("Transaction", agg);
 
         let mut state_tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
@@ -259,18 +295,26 @@ mod tests {
             );
         }
 
-        let table = state_tables.get("UserCount").expect("UserCount table must exist");
-        let key = crate::agg_state_table::EntityKey(vec![
-            ("user_id".to_string(), "alice".to_string()),
-        ]);
-        let val = table.query_feature(&key, 0, 10_000).expect("must have value");
+        let table = state_tables
+            .get("UserCount")
+            .expect("UserCount table must exist");
+        let key =
+            crate::agg_state_table::EntityKey(vec![("user_id".to_string(), "alice".to_string())]);
+        let val = table
+            .query_feature(&key, 0, 10_000)
+            .expect("must have value");
         assert_eq!(val, Value::I64(10), "count must be 10 after 10 events");
     }
 
     /// A03: Event with null group-key is dropped — no state_table entry created.
     #[test]
     fn apply_drops_events_with_null_group_key() {
-        let agg = make_agg_desc("UserCount", "Transaction", &["user_id"], &[("cnt", count_desc())]);
+        let agg = make_agg_desc(
+            "UserCount",
+            "Transaction",
+            &["user_id"],
+            &[("cnt", count_desc())],
+        );
         let registry = make_registry_with_agg("Transaction", agg);
 
         let mut state_tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
@@ -302,9 +346,8 @@ mod tests {
     /// accepts EITHER: entity row absent OR entity row present with count=0.
     #[test]
     fn apply_with_where_false_skips_update() {
-        let where_expr = std::sync::Arc::new(
-            crate::expr::parse("(amount > 100)").expect("parse where expr"),
-        );
+        let where_expr =
+            std::sync::Arc::new(crate::expr::parse("(amount > 100)").expect("parse where expr"));
         let agg = make_agg_desc(
             "UserCount",
             "Transaction",
@@ -330,14 +373,15 @@ mod tests {
 
         // Either: no entry for alice, OR alice's count == 0.
         let count = state_tables.get("UserCount").and_then(|t| {
-            let key = crate::agg_state_table::EntityKey(vec![
-                ("user_id".to_string(), "alice".to_string()),
-            ]);
+            let key = crate::agg_state_table::EntityKey(vec![(
+                "user_id".to_string(),
+                "alice".to_string(),
+            )]);
             t.query_feature(&key, 0, 10_000)
         });
 
         match count {
-            None => {} // Acceptable: no entity row created
+            None => {}                // Acceptable: no entity row created
             Some(Value::I64(0)) => {} // Acceptable: entity row exists but count=0
             Some(other) => panic!("where=false must not increment count; got {:?}", other),
         }
@@ -347,7 +391,12 @@ mod tests {
     /// of state_table must be byte-identical.
     #[test]
     fn apply_replay_determinism() {
-        let agg = make_agg_desc("UserCount", "Transaction", &["user_id"], &[("cnt", count_desc())]);
+        let agg = make_agg_desc(
+            "UserCount",
+            "Transaction",
+            &["user_id"],
+            &[("cnt", count_desc())],
+        );
         let registry = make_registry_with_agg("Transaction", agg);
 
         let events: Vec<(Row, i64)> = (0..5)
@@ -403,19 +452,19 @@ mod tests {
         }
 
         let table = state_tables.get("UserStats").expect("UserStats must exist");
-        let key = crate::agg_state_table::EntityKey(vec![
-            ("user_id".to_string(), "alice".to_string()),
-        ]);
+        let key =
+            crate::agg_state_table::EntityKey(vec![("user_id".to_string(), "alice".to_string())]);
 
-        let cnt = table.query_feature(&key, 0, 10_000).expect("cnt must exist");
+        let cnt = table
+            .query_feature(&key, 0, 10_000)
+            .expect("cnt must exist");
         assert_eq!(cnt, Value::I64(5), "count must be 5");
 
-        let total = table.query_feature(&key, 1, 10_000).expect("total must exist");
+        let total = table
+            .query_feature(&key, 1, 10_000)
+            .expect("total must exist");
         match total {
-            Value::F64(v) => assert!(
-                (v - 150.0).abs() < 1e-10,
-                "total must be 150.0, got {v}"
-            ),
+            Value::F64(v) => assert!((v - 150.0).abs() < 1e-10, "total must be 150.0, got {v}"),
             other => panic!("expected F64 for total, got {:?}", other),
         }
     }
@@ -427,7 +476,12 @@ mod tests {
     /// The resulting state must be identical.
     #[test]
     fn apply_accepts_event_id_and_ignores_it_in_phase_5() {
-        let agg = make_agg_desc("UserCount", "Transaction", &["user_id"], &[("cnt", count_desc())]);
+        let agg = make_agg_desc(
+            "UserCount",
+            "Transaction",
+            &["user_id"],
+            &[("cnt", count_desc())],
+        );
         let registry = make_registry_with_agg("Transaction", agg);
 
         let row = Row::new().with_field("user_id", Value::Str("alice".to_string()));
@@ -449,7 +503,7 @@ mod tests {
         );
     }
 
-    /// A08: No SystemTime::now or rand in agg_apply.rs (D-06 grep guard).
+    /// A08: No wall-clock reads or rand in agg_apply.rs (D-06 grep guard).
     #[test]
     fn no_systemtime_now_in_agg_apply() {
         let src = include_str!("agg_apply.rs");
@@ -483,7 +537,10 @@ mod registry_source_tests {
         fields.insert("user_id".to_string(), FieldType::Str);
         EventDescriptor {
             name: name.to_string(),
-            schema: EventSchema { fields, optional_fields: vec![] },
+            schema: EventSchema {
+                fields,
+                optional_fields: vec![],
+            },
             event_time_field: None,
             dedupe_key: None,
             dedupe_window_ms: None,
@@ -529,7 +586,10 @@ mod registry_source_tests {
                 output_kind: OutputKind::Table,
                 upstreams: vec![event_name.to_string()],
                 ops: vec![],
-                schema: DerivedSchema { fields: BTreeMap::new(), optional_fields: vec![] },
+                schema: DerivedSchema {
+                    fields: BTreeMap::new(),
+                    optional_fields: vec![],
+                },
                 table_primary_key: None,
                 registered_at_version: 0,
             };

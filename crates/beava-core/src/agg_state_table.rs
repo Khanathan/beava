@@ -52,7 +52,21 @@ impl EntityKey {
     /// `Bytes` values also produce `None` (not sane entity keys in v0; see
     /// module doc for the full canonicalization table).
     pub fn from_row(group_keys: &[String], row: &Row) -> Option<EntityKey> {
-        todo!("EntityKey::from_row — stub for red commit")
+        let mut pairs = Vec::with_capacity(group_keys.len());
+        for key in group_keys {
+            let canonical = match row.get(key) {
+                None => return None,                  // missing field → drop
+                Some(Value::Null) => return None,     // null field → drop
+                Some(Value::Bytes(_)) => return None, // bytes not sane as key → drop
+                Some(Value::Str(s)) => s.clone(),
+                Some(Value::I64(n)) => n.to_string(),
+                Some(Value::F64(f)) => format!("{:?}", f),
+                Some(Value::Bool(b)) => b.to_string(),
+                Some(Value::Datetime(ms)) => ms.to_string(),
+            };
+            pairs.push((key.clone(), canonical));
+        }
+        Some(EntityKey(pairs))
     }
 }
 
@@ -69,7 +83,9 @@ pub struct AggStateTable {
 impl AggStateTable {
     /// Create an empty table.
     pub fn new() -> Self {
-        todo!("AggStateTable::new — stub for red commit")
+        AggStateTable {
+            entities: BTreeMap::new(),
+        }
     }
 
     /// Look up the per-entity `Vec<AggOp>` for `key`.  If the key is new,
@@ -82,7 +98,13 @@ impl AggStateTable {
         key: &EntityKey,
         descriptor: &AggregationDescriptor,
     ) -> &mut Vec<AggOp> {
-        todo!("AggStateTable::get_or_init — stub for red commit")
+        self.entities.entry(key.clone()).or_insert_with(|| {
+            descriptor
+                .features
+                .iter()
+                .map(|f| AggOp::new(&f.descriptor))
+                .collect()
+        })
     }
 
     /// Query feature `feature_index` for entity `key` at `query_time_ms`.
@@ -94,12 +116,15 @@ impl AggStateTable {
         feature_index: usize,
         query_time_ms: i64,
     ) -> Option<Value> {
-        todo!("AggStateTable::query_feature — stub for red commit")
+        self.entities
+            .get(key)
+            .and_then(|ops| ops.get(feature_index))
+            .map(|op| op.query(query_time_ms))
     }
 
     /// Return the number of distinct entities in this table.
     pub fn entity_count(&self) -> usize {
-        todo!("AggStateTable::entity_count — stub for red commit")
+        self.entities.len()
     }
 }
 
@@ -330,7 +355,7 @@ mod tests {
     #[test]
     fn agg_state_table_query_feature_returns_none_for_unknown_key() {
         let desc = make_descriptor("A", "S", &["user_id"], &[("cnt", count_op_desc())]);
-        let mut table = AggStateTable::new();
+        let table = AggStateTable::new();
         let key = EntityKey(vec![("user_id".to_string(), "unknown".to_string())]);
 
         // Never inserted key.

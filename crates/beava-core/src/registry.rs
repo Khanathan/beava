@@ -186,7 +186,13 @@ impl Registry {
         &self,
         source_name: &str,
     ) -> Vec<Arc<AggregationDescriptor>> {
-        todo!("compiled_aggregations_for_source — stub for red commit")
+        self.inner
+            .read()
+            .compiled_aggregations
+            .values()
+            .filter(|d| d.source_node_name == source_name)
+            .cloned()
+            .collect()
     }
 
     /// Install descriptors into the registry under a write lock. Monotonically

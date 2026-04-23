@@ -41,10 +41,14 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use beava_core::agg_apply::apply_event_to_aggregations;
+use beava_core::agg_state_table::AggStateTable;
 use beava_core::registry::{DerivationDescriptor, EventDescriptor, Registry, TableDescriptor};
 use beava_core::row::{Row, Value};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Axum state for the debug router.
@@ -199,6 +203,143 @@ fn value_to_json(v: Value) -> serde_json::Value {
         // Datetime: emit as i64 ms since epoch
         Value::Datetime(ms) => serde_json::Value::Number(ms.into()),
     }
+}
+
+// ─── POST /dev/apply_events ───────────────────────────────────────────────────
+
+/// Shared state for the dev apply-events endpoint and (in Plan 05-06) the dev
+/// query endpoint.  Both endpoints share the same `state_tables` so events
+/// pushed via `/dev/apply_events` are immediately visible via `/dev/query`.
+///
+/// Single-writer invariant is preserved at the HTTP layer by the `Mutex` —
+/// only the apply handler takes the lock; query handlers use a read-only
+/// snapshot.
+///
+/// # SDK-AGG-02, AGG-CORE-09
+#[derive(Clone)]
+pub struct DevAggState {
+    /// Per-aggregation, per-entity state.  `Mutex` wraps the outer map only;
+    /// per-entity `AggOp` state is updated under this single lock (single-writer
+    /// invariant per D-06 + project_stateful_architecture.md).
+    pub state_tables: Arc<Mutex<BTreeMap<String, AggStateTable>>>,
+    /// Registry shared with the main router (read-only from this endpoint).
+    pub registry: Arc<Registry>,
+    /// Monotonic event-id counter. Feeds `apply_event_to_aggregations`'s
+    /// `event_id` parameter; value is ignored in Phase 5 but keeps the
+    /// signature stable for Phase 6 WAL (D-08).
+    pub next_event_id: Arc<AtomicU64>,
+}
+
+impl DevAggState {
+    pub fn new(registry: Arc<Registry>) -> Self {
+        DevAggState {
+            state_tables: Arc::new(Mutex::new(BTreeMap::new())),
+            registry,
+            next_event_id: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+/// Request body for `POST /dev/apply_events`.
+///
+/// ```json
+/// {
+///   "source": "Transaction",
+///   "event_time_ms": 1714000000000,
+///   "row": { "user_id": "alice", "amount": 100.0 }
+/// }
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct ApplyEventsRequest {
+    pub source: String,
+    pub event_time_ms: i64,
+    pub row: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response body for `POST /dev/apply_events`.
+///
+/// ```json
+/// { "applied_to": ["AggTable1", "AggTable2"] }
+/// ```
+#[derive(Debug, Serialize)]
+pub struct ApplyEventsResponse {
+    pub applied_to: Vec<String>,
+}
+
+/// Build the sub-router for `POST /dev/apply_events`.
+/// Caller merges this into the main router conditionally (same
+/// `BEAVA_DEV_ENDPOINTS=1` gate).
+pub fn dev_apply_events_router(state: DevAggState) -> axum::Router {
+    Router::new()
+        .route("/dev/apply_events", post(post_dev_apply_events))
+        .with_state(state)
+}
+
+/// `POST /dev/apply_events` handler.
+///
+/// Converts the JSON row to `Row<Value>`, looks up the event source in the
+/// registry (404 if not found), pulls the next monotonic `event_id`, then
+/// calls `apply_event_to_aggregations`. Returns the list of aggregation
+/// node_names whose state was touched.
+///
+/// Gated by `BEAVA_DEV_ENDPOINTS=1` (not mounted in production).
+async fn post_dev_apply_events(
+    State(dev_state): State<DevAggState>,
+    Json(body): Json<ApplyEventsRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    // Step 1: validate that source exists in the registry.
+    {
+        let inner = dev_state.registry.read();
+        if !inner.events.contains_key(&body.source) {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "source_not_found"})),
+            );
+        }
+    }
+
+    // Step 2: convert JSON row → Row<Value>.
+    let mut row = Row::new();
+    for (field, jv) in &body.row {
+        let v = json_to_value(jv);
+        row = row.with_field(field.as_str(), v);
+    }
+
+    // Step 3: pull monotonic event_id (ignored in Phase 5; stable for Phase 6).
+    let event_id = dev_state.next_event_id.fetch_add(1, Ordering::SeqCst);
+
+    // Step 4: snapshot which agg node_names exist BEFORE and AFTER to build
+    // the `applied_to` list.  We report the aggregations that were touched
+    // (their source matches the pushed event's source).
+    let matching_aggs: Vec<String> = dev_state
+        .registry
+        .compiled_aggregations_for_source(&body.source)
+        .into_iter()
+        .map(|d| d.node_name.clone())
+        .collect();
+
+    // Step 5: apply under the single-writer lock.
+    {
+        let mut tables = dev_state.state_tables.lock();
+        apply_event_to_aggregations(
+            &body.source,
+            &row,
+            body.event_time_ms,
+            event_id,
+            &dev_state.registry,
+            &mut tables,
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(
+            serde_json::to_value(ApplyEventsResponse {
+                applied_to: matching_aggs,
+            })
+            .unwrap(),
+        ),
+    )
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
