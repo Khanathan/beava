@@ -193,6 +193,7 @@ dependencies = [
  "axum",
  "beava-core",
  "beava-persistence",
+ "bincode",
  "bytes",
  "clap",
  "criterion",

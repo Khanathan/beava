@@ -55,6 +55,14 @@ fn unique_wal_dir() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("beava-cli-smoke-wal-{}-{n}", std::process::id()))
 }
 
+/// Per-test unique snapshot directory (Phase 7 Plan 03).
+fn unique_snapshot_dir() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CTR: AtomicU64 = AtomicU64::new(1);
+    let n = CTR.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("beava-cli-smoke-snap-{}-{n}", std::process::id()))
+}
+
 #[test]
 fn loads_valid_config_starts_and_prints_banner() {
     let port = free_port();
@@ -62,11 +70,13 @@ fn loads_valid_config_starts_and_prints_banner() {
     writeln!(f, "listen_addr: \"127.0.0.1:{port}\"\nlog_level: info").unwrap();
 
     let wal_dir = unique_wal_dir();
+    let snap_dir = unique_snapshot_dir();
     let child = Command::new(beava_bin())
         // Disable TCP wire listener for CLI smoke tests — avoids port conflicts
         // when multiple cli_smoke tests run in parallel and default-bind TCP 7380.
         .env("BEAVA_TCP_ENABLED", "0")
         .env("BEAVA_WAL_DIR", &wal_dir)
+        .env("BEAVA_SNAPSHOT_DIR", &snap_dir)
         .arg("--config")
         .arg(f.path())
         .stdout(Stdio::piped())
@@ -114,11 +124,13 @@ fn env_var_overrides_listen_addr() {
     writeln!(f, "listen_addr: \"127.0.0.1:{port}\"\nlog_level: info").unwrap();
 
     let wal_dir = unique_wal_dir();
+    let snap_dir = unique_snapshot_dir();
     let child = Command::new(beava_bin())
         .env("BEAVA_LISTEN_ADDR", format!("127.0.0.1:{override_port}"))
         // Disable TCP wire listener — avoids port conflicts across parallel tests.
         .env("BEAVA_TCP_ENABLED", "0")
         .env("BEAVA_WAL_DIR", &wal_dir)
+        .env("BEAVA_SNAPSHOT_DIR", &snap_dir)
         .arg("--config")
         .arg(f.path())
         .stdout(Stdio::piped())

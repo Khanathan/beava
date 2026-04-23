@@ -432,6 +432,20 @@ async fn handle_register(registry: &Arc<Registry>, frame: &Frame) -> Frame {
                 .expect("serialize conflict error"),
             ),
         },
+        RegisterOutcome::WalUnavailable { version } => Frame {
+            op: OP_ERROR_RESPONSE,
+            content_type: CT_JSON,
+            payload: Bytes::from(
+                serde_json::to_vec(&json!({
+                    "error": {
+                        "code": "wal_unavailable",
+                        "reason": "WAL append for registry bump failed; registry not mutated"
+                    },
+                    "registry_version": version,
+                }))
+                .expect("serialize wal_unavailable error"),
+            ),
+        },
     }
 }
 

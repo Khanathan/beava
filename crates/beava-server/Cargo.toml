@@ -95,6 +95,7 @@ tower = { workspace = true }
 parking_lot = { workspace = true }
 bytes = { workspace = true }
 tokio-util = { workspace = true }
+bincode = { workspace = true }
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]

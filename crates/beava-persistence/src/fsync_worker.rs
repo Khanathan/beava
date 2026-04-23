@@ -41,6 +41,7 @@ impl Default for WalSinkConfig {
 }
 
 struct AppendRequest {
+    record_type: RecordType,
     payload: Vec<u8>,
     done: oneshot::Sender<Result<Lsn, PersistError>>,
 }
@@ -92,12 +93,24 @@ impl WalSink {
         ))
     }
 
-    /// Enqueue a payload for durable append. Resolves only after the assigned
-    /// LSN has been fsynced to disk.
-    pub async fn append_event(&self, payload: Vec<u8>) -> Result<Lsn, PersistError> {
+    /// Enqueue a payload for durable append as a typed WAL record. Resolves
+    /// only after the assigned LSN has been fsynced to disk.
+    ///
+    /// Phase 7 Plan 03: callers may now choose `RecordType::RegistryBump` to
+    /// persist a registry version bump alongside event payloads. Internal
+    /// callers continue to use `append_event` for `RecordType::Event`.
+    pub async fn append_record(
+        &self,
+        record_type: RecordType,
+        payload: Vec<u8>,
+    ) -> Result<Lsn, PersistError> {
         let (tx, rx) = oneshot::channel();
         self.append_tx
-            .send(AppendRequest { payload, done: tx })
+            .send(AppendRequest {
+                record_type,
+                payload,
+                done: tx,
+            })
             .await
             .map_err(|_| {
                 PersistError::Io(std::io::Error::new(
@@ -111,6 +124,12 @@ impl WalSink {
                 "WAL sink worker dropped ack channel",
             ))
         })?
+    }
+
+    /// Enqueue an event payload for durable append. Wrapper around
+    /// `append_record(RecordType::Event, …)` for callsite clarity.
+    pub async fn append_event(&self, payload: Vec<u8>) -> Result<Lsn, PersistError> {
+        self.append_record(RecordType::Event, payload).await
     }
 
     /// Current highest-durable LSN (snapshot of the watch channel).
@@ -301,7 +320,7 @@ async fn flush_batch(
         highest = lsn;
         let record = WalRecord {
             lsn,
-            record_type: RecordType::Event,
+            record_type: req.record_type,
             payload: req.payload,
         };
         if let Err(e) = writer_ref.append(&record) {

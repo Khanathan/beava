@@ -13,10 +13,12 @@ pub mod http;
 pub mod idem_cache;
 pub mod logging;
 pub mod push;
+pub mod recovery;
 pub mod register;
 pub mod registry_debug;
 pub mod server;
 pub mod shutdown;
+pub mod snapshot_task;
 pub mod tcp;
 
 #[cfg(any(feature = "testing", test))]

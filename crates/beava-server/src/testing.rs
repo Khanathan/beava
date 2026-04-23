@@ -67,6 +67,11 @@ impl Default for TestServerBuilder {
             std::process::id(),
             uniq_id()
         ));
+        let default_snapshot_dir = std::env::temp_dir().join(format!(
+            "beava-test-snap-{}-{}",
+            std::process::id(),
+            uniq_id()
+        ));
         let cfg = Config {
             listen_addr: "127.0.0.1:0".to_string(), // OS-allocated
             log_level: "info".to_string(),
@@ -79,6 +84,12 @@ impl Default for TestServerBuilder {
                 wal_fsync_interval_ms: 1,
                 // Tests sweep aggressively to exercise expiry paths.
                 dedupe_sweep_interval_secs: 1,
+                snapshot_dir: default_snapshot_dir,
+                // Tests should not auto-snapshot during normal flow; bump
+                // interval to a long value and force-trigger via
+                // TestServer::force_snapshot_now where needed.
+                snapshot_interval_ms: 60_000,
+                snapshot_retain_count: 2,
                 ..Default::default()
             },
         };
@@ -157,6 +168,18 @@ impl TestServerBuilder {
         self
     }
 
+    /// Phase 7 Plan 03: override the snapshot directory.
+    pub fn snapshot_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.cfg.durability.snapshot_dir = dir;
+        self
+    }
+
+    /// Phase 7 Plan 03: override the periodic snapshot cadence.
+    pub fn snapshot_interval_ms(mut self, ms: u64) -> Self {
+        self.cfg.durability.snapshot_interval_ms = ms;
+        self
+    }
+
     /// Phase 6 Plan 03: override the group-commit coalesce interval in ms.
     /// Default for tests: 1 ms (keeps tests fast without fighting macOS
     /// `F_FULLSYNC` latency).
@@ -170,8 +193,10 @@ impl TestServerBuilder {
         let server = Server::bind(&self.cfg, self.dev_endpoints).await?;
         let base_url = format!("http://{}", server.local_addr());
         let tcp_addr = server.tcp_local_addr();
-        // Grab the shared registry Arc before `serve()` consumes the Server.
+        // Grab the shared registry Arc + snapshot trigger before `serve()`
+        // consumes the Server.
         let registry = server.registry();
+        let snapshot_trigger = server.snapshot_trigger_handle();
 
         let (tx, rx) = oneshot::channel::<()>();
         let shutdown = async move {
@@ -187,6 +212,7 @@ impl TestServerBuilder {
             shutdown_tx: Some(tx),
             serve_task: Some(serve_task),
             registry,
+            snapshot_trigger,
         };
 
         harness
@@ -206,6 +232,8 @@ pub struct TestServer {
     /// tests call `.registry().compiled_chain(name)` to assert in-process state
     /// without a round-trip through an HTTP endpoint.
     registry: Arc<beava_core::registry::Registry>,
+    /// Phase 7 Plan 03: handle to the snapshot task's manual-trigger channel.
+    snapshot_trigger: crate::snapshot_task::SnapshotTriggerTx,
 }
 
 impl TestServer {
@@ -232,6 +260,20 @@ impl TestServer {
     /// assertions without an HTTP round-trip.
     pub fn registry(&self) -> &Arc<beava_core::registry::Registry> {
         &self.registry
+    }
+
+    /// Phase 7 Plan 03: force the periodic snapshot task to run NOW.
+    /// Resolves once the snapshot has been written, WAL truncated, and old
+    /// snapshots pruned. Returns an error if the snapshot task has stopped
+    /// or the snapshot itself failed.
+    pub async fn force_snapshot_now(&self) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        self.snapshot_trigger
+            .send(tx)
+            .await
+            .map_err(|_| "snapshot task channel closed".to_string())?;
+        rx.await
+            .map_err(|_| "snapshot task ack channel dropped".to_string())?
     }
 
     /// Phase 2.5: Connect a `TcpClient` to the TCP listener. Returns an error if

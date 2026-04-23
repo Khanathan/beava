@@ -349,6 +349,30 @@ impl Registry {
         w.version = new_version;
         new_version
     }
+
+    /// Phase 7 Plan 03: install descriptors loaded from a snapshot.
+    ///
+    /// Replaces the in-memory registry contents with the descriptor set carried
+    /// by a `RegistryDescriptorsOnly` (the projection produced by
+    /// `SnapshotBody::from_live`). Runtime caches (compiled chains, compiled
+    /// aggregations, feature index) are NOT rebuilt here — recovery replays
+    /// `RegistryBump` WAL records via `apply_registration` which compiles and
+    /// caches them in normal flow. Cold start with snapshot only (no WAL
+    /// records past the snapshot LSN): caches are empty until next register.
+    ///
+    /// Idempotent: calling twice with the same descriptors leaves the same
+    /// state (modulo `version` which is overwritten). Caller MUST hold the
+    /// invariant that this runs BEFORE any concurrent reader (Server::bind
+    /// runs recovery before flipping readiness).
+    pub fn install_from_descriptors(&self, body: &crate::snapshot_body::RegistryDescriptorsOnly) {
+        let mut w = self.inner.write();
+        w.version = body.version;
+        w.events = body.events.clone();
+        w.tables = body.tables.clone();
+        w.derivations = body.derivations.clone();
+        // Caches stay as they are; recovery's WAL replay re-applies any
+        // registration via apply_registration, which populates them.
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

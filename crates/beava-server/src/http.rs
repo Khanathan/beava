@@ -73,12 +73,14 @@ pub fn router_with_push(
     dev_agg_state: Option<DevAggState>,
     app_state: Option<Arc<AppState>>,
 ) -> Router {
+    let wal_sink_for_register = app_state.as_ref().map(|a| a.wal_sink.clone());
     let mut r = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
         .with_state(readiness)
         .merge(register_router(RegisterAppState {
             registry: registry.clone(),
+            wal_sink: wal_sink_for_register,
         }));
 
     if let Some(app) = app_state.as_ref() {

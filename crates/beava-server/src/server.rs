@@ -6,7 +6,9 @@
 
 use crate::http::{router_with_push, ReadinessFlag};
 use crate::idem_cache::IdemCache;
+use crate::recovery::{load_snapshot_if_any, replay_wal_from_lsn};
 use crate::registry_debug::DevAggState;
+use crate::snapshot_task::{spawn_snapshot_task, SnapshotTaskConfig, SnapshotTriggerTx};
 use crate::tcp::TcpListenerHandle;
 use crate::{AppState, Config};
 use beava_core::registry::Registry;
@@ -41,6 +43,8 @@ pub enum ServerError {
     Serve(#[source] std::io::Error),
     #[error("failed to spawn WAL sink: {0}")]
     WalSpawn(String),
+    #[error("recovery failed: {0}")]
+    Recovery(String),
 }
 
 /// Bound server ready to serve. `http_local_addr` is the actual bound HTTP
@@ -57,6 +61,9 @@ pub struct Server {
     dev_endpoints: bool,
     app_state: Arc<AppState>,
     wal_worker: Option<JoinHandle<()>>,
+    snapshot_worker: Option<JoinHandle<()>>,
+    snapshot_cancel: CancellationToken,
+    snapshot_trigger: SnapshotTriggerTx,
 }
 
 impl std::fmt::Debug for Server {
@@ -127,11 +134,26 @@ impl Server {
 
         let readiness = ReadinessFlag::new();
         let registry = Arc::new(Registry::new());
+        let idem_cache = Arc::new(IdemCache::new());
+        let dev_agg = DevAggState::new(registry.clone());
+
+        // Phase 7 Plan 03: recovery BEFORE WAL sink spawns.
+        // 1. Snapshot install (descriptors + state_tables + counters).
+        // 2. WAL replay from snapshot_lsn forward (events + RegistryBumps).
+        // Recovery runs against `dev_agg` directly — it doesn't touch the WAL
+        // sink. After recovery returns, we spawn the real WAL sink with
+        // initial_start_lsn = max(last_lsn, snapshot_lsn) + 1 so new appends
+        // land in a fresh segment past anything already on disk.
+        let snapshot_lsn = load_snapshot_if_any(&cfg.durability.snapshot_dir, &dev_agg)
+            .map_err(|e| ServerError::Recovery(e.to_string()))?;
+        let recovery_outcome = replay_wal_from_lsn(&cfg.durability.wal_dir, snapshot_lsn, &dev_agg)
+            .map_err(|e| ServerError::Recovery(e.to_string()))?;
+        let initial_start_lsn = recovery_outcome.last_lsn.max(snapshot_lsn) + 1;
 
         // Phase 6: spawn the WAL sink + periodic idem-cache sweeper.
         let (wal_sink, wal_worker) = WalSink::spawn(WalSinkConfig {
             dir: cfg.durability.wal_dir.clone(),
-            initial_start_lsn: 1,
+            initial_start_lsn,
             initial_registry_version: 1,
             fsync_interval_ms: cfg.durability.wal_fsync_interval_ms,
             fsync_bytes: cfg.durability.wal_fsync_bytes,
@@ -139,8 +161,6 @@ impl Server {
         })
         .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
 
-        let idem_cache = Arc::new(IdemCache::new());
-        let dev_agg = DevAggState::new(registry.clone());
         let app_state = Arc::new(AppState::new(dev_agg, wal_sink.clone(), idem_cache.clone()));
 
         // Periodic dedupe sweep.
@@ -159,14 +179,30 @@ impl Server {
             }
         });
 
-        // Phase 1 placeholder: flip readiness after 100ms. Phase 5 replaces this
-        // with "after snapshot loaded + WAL replayed" (RECOV-02).
-        let flag_clone = readiness.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            flag_clone.set_ready();
-            tracing::info!(target: "beava.server", "readiness flag set (Phase 1 stub)");
-        });
+        // Phase 7 Plan 03: spawn periodic snapshot task.
+        let snapshot_cancel = CancellationToken::new();
+        let (snapshot_worker, snapshot_trigger) = spawn_snapshot_task(
+            SnapshotTaskConfig {
+                interval: Duration::from_millis(cfg.durability.snapshot_interval_ms.max(1)),
+                snapshot_dir: cfg.durability.snapshot_dir.clone(),
+                retain: cfg.durability.snapshot_retain_count.max(1),
+            },
+            Arc::clone(&app_state),
+            wal_sink.clone(),
+            snapshot_cancel.clone(),
+        );
+
+        // Recovery complete → flip readiness immediately.
+        readiness.set_ready();
+        tracing::info!(
+            target: "beava.server",
+            kind = "server.ready",
+            snapshot_lsn,
+            replay_event_count = recovery_outcome.replay_event_count,
+            replay_registry_bumps = recovery_outcome.replay_registry_bumps,
+            initial_start_lsn,
+            "recovery complete; readiness flag set"
+        );
 
         Ok(Self {
             http_listener,
@@ -178,7 +214,23 @@ impl Server {
             dev_endpoints,
             app_state,
             wal_worker: Some(wal_worker),
+            snapshot_worker: Some(snapshot_worker),
+            snapshot_cancel,
+            snapshot_trigger,
         })
+    }
+
+    /// Phase 7 Plan 03: test hook — force the snapshot task to run NOW.
+    /// Available to integration tests / `TestServer::force_snapshot_now`.
+    #[doc(hidden)]
+    pub async fn force_snapshot_now(&self) -> Result<(), String> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.snapshot_trigger
+            .send(tx)
+            .await
+            .map_err(|_| "snapshot task channel closed".to_string())?;
+        rx.await
+            .map_err(|_| "snapshot task ack channel dropped".to_string())?
     }
 
     /// Return the shared AppState Arc — used by the Phase 6 crash probe binary
@@ -190,6 +242,14 @@ impl Server {
     /// Backward-compat alias for the HTTP address. Phase 1/2 tests call this.
     pub fn local_addr(&self) -> SocketAddr {
         self.http_local_addr
+    }
+
+    /// Phase 7 Plan 03: cloneable handle to the snapshot-trigger channel.
+    /// `TestServer` holds onto this so `force_snapshot_now()` continues to
+    /// work after `serve()` has consumed the `Server`.
+    #[doc(hidden)]
+    pub fn snapshot_trigger_handle(&self) -> SnapshotTriggerTx {
+        self.snapshot_trigger.clone()
     }
 
     pub fn http_local_addr(&self) -> SocketAddr {
@@ -256,6 +316,12 @@ impl Server {
         // (or when cancel is tripped above — but it already awaited shutdown).
         let _ = signal_task.await;
 
+        // Stop snapshot task (cancel + await).
+        self.snapshot_cancel.cancel();
+        if let Some(worker) = self.snapshot_worker {
+            let _ = worker.await;
+        }
+
         // Drain WAL sink pending batches before returning.
         let _ = self.app_state.wal_sink.clone().shutdown().await;
         if let Some(worker) = self.wal_worker {
@@ -287,6 +353,13 @@ mod tests {
         std::env::temp_dir().join(format!("beava-server-test-wal-{}-{n}", std::process::id()))
     }
 
+    fn unique_snapshot_dir() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static CTR: AtomicU64 = AtomicU64::new(1);
+        let n = CTR.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("beava-server-test-snap-{}-{n}", std::process::id()))
+    }
+
     fn tmp_cfg() -> Config {
         Config {
             listen_addr: "127.0.0.1:0".to_string(), // OS-allocated port
@@ -299,6 +372,7 @@ mod tests {
             durability: beava_core::config::DurabilityConfig {
                 wal_dir: unique_wal_dir(),
                 wal_fsync_interval_ms: 1,
+                snapshot_dir: unique_snapshot_dir(),
                 ..Default::default()
             },
         }
@@ -317,6 +391,7 @@ mod tests {
             durability: beava_core::config::DurabilityConfig {
                 wal_dir: unique_wal_dir(),
                 wal_fsync_interval_ms: 1,
+                snapshot_dir: unique_snapshot_dir(),
                 ..Default::default()
             },
         }
@@ -379,8 +454,11 @@ mod tests {
         );
     }
 
+    /// Phase 7 Plan 03: cold start (empty WAL + snapshot dirs) — recovery
+    /// returns immediately, readiness flips before serve(). Verify /ready
+    /// reports 200 within 200ms.
     #[tokio::test]
-    async fn readiness_flips_after_100ms() {
+    async fn readiness_ready_after_cold_start_recovery() {
         let cfg = tmp_cfg();
         let s = Server::bind(&cfg, false).await.expect("bind");
         let addr = s.local_addr();
@@ -394,23 +472,9 @@ mod tests {
         let url = format!("http://{}/ready", addr);
         let client = reqwest::Client::new();
 
-        let mut saw_starting = false;
-        for _ in 0..3 {
-            let r = client.get(&url).send().await.expect("req");
-            if r.status().as_u16() == 503 {
-                saw_starting = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert!(
-            saw_starting,
-            "expected /ready to report 503 during 100ms warm-up"
-        );
-
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        // Cold-start recovery is immediate; /ready should be 200 right away.
         let r = client.get(&url).send().await.expect("req");
-        assert_eq!(r.status().as_u16(), 200, "ready should flip to 200");
+        assert_eq!(r.status().as_u16(), 200, "post-recovery /ready must be 200");
 
         let _ = tx.send(());
         let _ = tokio::time::timeout(Duration::from_secs(1), join).await;

@@ -72,6 +72,15 @@ pub struct DurabilityConfig {
     pub wal_segment_bytes: u64,
     #[serde(default = "default_dedupe_sweep_interval_secs")]
     pub dedupe_sweep_interval_secs: u64,
+    /// Phase 7: directory where snapshot files are written.
+    #[serde(default = "default_snapshot_dir")]
+    pub snapshot_dir: PathBuf,
+    /// Phase 7: periodic snapshot cadence in milliseconds (default 30_000).
+    #[serde(default = "default_snapshot_interval_ms")]
+    pub snapshot_interval_ms: u64,
+    /// Phase 7: number of snapshots to retain after pruning (default 2).
+    #[serde(default = "default_snapshot_retain_count")]
+    pub snapshot_retain_count: usize,
 }
 
 fn default_wal_dir() -> PathBuf {
@@ -89,6 +98,15 @@ fn default_wal_segment_bytes() -> u64 {
 fn default_dedupe_sweep_interval_secs() -> u64 {
     60
 }
+fn default_snapshot_dir() -> PathBuf {
+    PathBuf::from("./beava-snapshots")
+}
+fn default_snapshot_interval_ms() -> u64 {
+    30_000
+}
+fn default_snapshot_retain_count() -> usize {
+    2
+}
 
 impl Default for DurabilityConfig {
     fn default() -> Self {
@@ -98,6 +116,9 @@ impl Default for DurabilityConfig {
             wal_fsync_bytes: default_wal_fsync_bytes(),
             wal_segment_bytes: default_wal_segment_bytes(),
             dedupe_sweep_interval_secs: default_dedupe_sweep_interval_secs(),
+            snapshot_dir: default_snapshot_dir(),
+            snapshot_interval_ms: default_snapshot_interval_ms(),
+            snapshot_retain_count: default_snapshot_retain_count(),
         }
     }
 }
@@ -249,6 +270,25 @@ fn apply_env_overrides(cfg: &mut Config) -> Result<(), ConfigError> {
                 .map_err(|e: std::num::ParseIntError| ConfigError::Validation {
                     field: "durability.dedupe_sweep_interval_secs",
                     reason: format!("BEAVA_DEDUPE_SWEEP_SECS=`{}`: {}", v, e),
+                })?;
+    }
+    if let Ok(v) = std::env::var("BEAVA_SNAPSHOT_DIR") {
+        cfg.durability.snapshot_dir = PathBuf::from(v);
+    }
+    if let Ok(v) = std::env::var("BEAVA_SNAPSHOT_INTERVAL_MS") {
+        cfg.durability.snapshot_interval_ms =
+            v.parse()
+                .map_err(|e: std::num::ParseIntError| ConfigError::Validation {
+                    field: "durability.snapshot_interval_ms",
+                    reason: format!("BEAVA_SNAPSHOT_INTERVAL_MS=`{}`: {}", v, e),
+                })?;
+    }
+    if let Ok(v) = std::env::var("BEAVA_SNAPSHOT_RETAIN_COUNT") {
+        cfg.durability.snapshot_retain_count =
+            v.parse()
+                .map_err(|e: std::num::ParseIntError| ConfigError::Validation {
+                    field: "durability.snapshot_retain_count",
+                    reason: format!("BEAVA_SNAPSHOT_RETAIN_COUNT=`{}`: {}", v, e),
                 })?;
     }
     Ok(())

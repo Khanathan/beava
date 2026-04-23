@@ -18,13 +18,81 @@ use axum::{
     Json, Router,
 };
 use beava_core::{
-    register_validate::{validate_payload, ErrorCode},
+    register_validate::validate_payload,
+    register_validate::ErrorCode,
     registry::Registry,
     registry_diff::{compute_diff, ConflictDetail, PayloadNode},
 };
+use beava_persistence::{PersistError, RecordType, WalSink};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{info, warn};
+
+/// Phase 7 Plan 03: WAL record carrying a registration bump. Encoded with
+/// bincode and persisted before the in-memory registry is mutated.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RegistryBumpPayload {
+    /// The new version number (post-bump). For replay diagnostics; not used
+    /// to override the registry's monotonic version assignment.
+    pub new_version: u64,
+    /// Validated PayloadNodes that produced this bump.
+    pub payload_nodes: Vec<PayloadNode>,
+}
+
+impl RegistryBumpPayload {
+    pub fn encode(&self) -> Result<Vec<u8>, bincode::Error> {
+        bincode::serialize(self)
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, bincode::Error> {
+        bincode::deserialize(bytes)
+    }
+}
+
+/// Re-apply a recovered RegistryBump record to the in-memory registry.
+///
+/// Re-runs validation + compile to rebuild caches, then calls
+/// `apply_registration`. Idempotent on the descriptor set: if a node is
+/// already present, it is left in place.
+pub fn apply_registry_bump(
+    registry: &Arc<Registry>,
+    bump: RegistryBumpPayload,
+) -> Result<(), String> {
+    let snapshot = registry.snapshot();
+    let validated = match validate_payload(&snapshot, bump.payload_nodes) {
+        Ok(v) => v,
+        Err(errs) => {
+            return Err(format!(
+                "validation failed during recovery (first error: {:?})",
+                errs.first().map(|e| &e.reason)
+            ));
+        }
+    };
+    let (nodes, compiled_chains, propagated_schemas, compiled_aggregations) =
+        validated.into_parts();
+    registry.apply_registration(
+        nodes,
+        compiled_chains,
+        propagated_schemas,
+        compiled_aggregations,
+    );
+    Ok(())
+}
+
+/// Errors specific to the WAL-backed register pipeline.
+#[derive(Debug)]
+pub enum RegisterWalError {
+    Encode(String),
+    Persist(PersistError),
+}
+
+impl std::fmt::Display for RegisterWalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RegisterWalError::Encode(s) => write!(f, "encode: {s}"),
+            RegisterWalError::Persist(e) => write!(f, "persist: {e}"),
+        }
+    }
+}
 
 // ─── Wire types ───────────────────────────────────────────────────────────────
 
@@ -38,6 +106,10 @@ pub struct RegisterPayload {
 #[derive(Clone)]
 pub struct RegisterAppState {
     pub registry: Arc<Registry>,
+    /// Phase 7 Plan 03: when Some, /register writes a RegistryBump WAL record
+    /// before mutating the in-memory registry. None for legacy callers
+    /// (Phase 1/2 tests) where WAL plumbing is not yet wired.
+    pub wal_sink: Option<WalSink>,
 }
 
 #[derive(Debug, Serialize)]
@@ -123,6 +195,8 @@ pub(crate) enum RegisterOutcome {
         added: Vec<String>,
         changed: Vec<ConflictDetail>,
     },
+    /// Phase 7 Plan 03: WAL append for the RegistryBump record failed. 503.
+    WalUnavailable { version: u64 },
 }
 
 /// Run the transport-agnostic register pipeline. Caller has already parsed the
@@ -136,6 +210,26 @@ pub(crate) enum RegisterOutcome {
 pub(crate) async fn execute_register(
     registry: &Arc<Registry>,
     payload: RegisterPayload,
+) -> RegisterOutcome {
+    execute_register_inner(registry, payload, None).await
+}
+
+/// Phase 7 Plan 03: WAL-backed entry point. When `wal_sink` is `Some`, a
+/// `RegistryBump` record is written + fsynced BEFORE the in-memory registry
+/// is mutated (apply-AFTER-fsync invariant for registration). On WAL failure,
+/// returns a `WalUnavailable` outcome so the HTTP layer maps to 503.
+pub(crate) async fn execute_register_with_wal(
+    registry: &Arc<Registry>,
+    payload: RegisterPayload,
+    wal_sink: &WalSink,
+) -> RegisterOutcome {
+    execute_register_inner(registry, payload, Some(wal_sink)).await
+}
+
+async fn execute_register_inner(
+    registry: &Arc<Registry>,
+    payload: RegisterPayload,
+    wal_sink: Option<&WalSink>,
 ) -> RegisterOutcome {
     // 1. Empty-payload fast path (matches HTTP handler §pre-validation)
     if payload.nodes.is_empty() {
@@ -211,7 +305,40 @@ pub(crate) async fn execute_register(
         };
     }
 
-    // 7. Additive install (Phase 4: compiled chains + propagated schemas;
+    // 7. Phase 7 Plan 03: WAL-append a RegistryBump record BEFORE applying.
+    //    Apply-AFTER-fsync invariant — recovery sees the descriptors only after
+    //    they are durable on disk.
+    if let Some(sink) = wal_sink {
+        let bump = RegistryBumpPayload {
+            new_version: current_snapshot.version + 1,
+            payload_nodes: nodes.clone(),
+        };
+        let encoded = match bump.encode() {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(
+                    kind = "register.wal_encode_failed",
+                    error = %e,
+                    "RegistryBump encode failed"
+                );
+                return RegisterOutcome::WalUnavailable {
+                    version: current_snapshot.version,
+                };
+            }
+        };
+        if let Err(e) = sink.append_record(RecordType::RegistryBump, encoded).await {
+            warn!(
+                kind = "register.wal_append_failed",
+                error = %e,
+                "RegistryBump WAL append failed"
+            );
+            return RegisterOutcome::WalUnavailable {
+                version: current_snapshot.version,
+            };
+        }
+    }
+
+    // 8. Additive install (Phase 4: compiled chains + propagated schemas;
     //    Phase 5 Plan 04: compiled aggregations)
     let new_version = registry.apply_registration(
         nodes,
@@ -341,6 +468,16 @@ fn map_outcome_to_http(outcome: RegisterOutcome) -> (StatusCode, Json<serde_json
             // infallible: all fields are &str/u64/Vec<String>/ConflictDetail
             (StatusCode::CONFLICT, Json(to_json_value(body)))
         }
+        RegisterOutcome::WalUnavailable { version } => {
+            let body = serde_json::json!({
+                "error": {
+                    "code": "wal_unavailable",
+                    "reason": "WAL append for registry bump failed; registry not mutated"
+                },
+                "registry_version": version,
+            });
+            (StatusCode::SERVICE_UNAVAILABLE, Json(body))
+        }
     }
 }
 
@@ -403,8 +540,12 @@ pub async fn post_register(
         }
     };
 
-    // 3-8. Delegate to shared transport-agnostic core.
-    let outcome = execute_register(&state.registry, payload).await;
+    // 3-8. Delegate to shared transport-agnostic core. When WAL is wired,
+    //      use the WAL-backed variant so the bump record is durable.
+    let outcome = match state.wal_sink.as_ref() {
+        Some(sink) => execute_register_with_wal(&state.registry, payload, sink).await,
+        None => execute_register(&state.registry, payload).await,
+    };
     map_outcome_to_http(outcome)
 }
 
