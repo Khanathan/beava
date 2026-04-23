@@ -177,11 +177,11 @@ Feature authoring as composable Python code that ships to production unchanged. 
 5. Malformed predicate in registration returns 400 with path pointing to the offending expression
 
 **Plans:** 7 plans (2 tasks each, red-green TDD)
-- [ ] 04-01-PLAN.md — Row + Value + SQL three-valued null logic (beava-core foundation)
-- [ ] 04-02-PLAN.md — Recursive-descent expression parser with Span tracking + column-pointing errors
-- [ ] 04-03-PLAN.md — Expression evaluator + cast/isnull builtins + determinism proptest
-- [ ] 04-04-PLAN.md — Op-chain executor + register-time schema propagator (8 ops + SDK-OPS-01..10 mechanics)
-- [ ] 04-05-PLAN.md — Register integration: HTTP/TCP parity for invalid_expression errors; OpChain caching
+- [x] 04-01-PLAN.md — Row + Value + SQL three-valued null logic (beava-core foundation)
+- [x] 04-02-PLAN.md — Recursive-descent expression parser with Span tracking + column-pointing errors
+- [x] 04-03-PLAN.md — Expression evaluator + cast/isnull builtins + determinism proptest
+- [x] 04-04-PLAN.md — Op-chain executor + register-time schema propagator (8 ops + SDK-OPS-01..10 mechanics)
+- [x] 04-05-PLAN.md — Register integration: HTTP/TCP parity for invalid_expression errors; OpChain caching
 - [ ] 04-06-PLAN.md — Phase 4 Rust acceptance: /dev/apply_ops endpoint (gated) + Rust SC1/SC2/SC3/SC5 smokes over HTTP + TCP
 - [ ] 04-07-PLAN.md — Phase 4 Python acceptance: 8 SDK op methods + Python reference evaluator + SC1/SC2/SC3/SC5 Python smokes + SC4 hypothesis proptest (256 cases, client/server eval equivalence)
 
