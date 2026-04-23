@@ -16,7 +16,7 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 - [ ] **SDK-DEC-05**: `@bv.table` function form: returns a `Table`/`TableDerivation`; upstream descriptors passed as typed parameters
 - [ ] **SDK-DEC-06**: Schema extraction supports `str`, `f64`/`float`, `i64`/`int`, `bool`, `bytes`, `datetime` field types; rejects unsupported types at decorator time with a clear error message
 - [ ] **SDK-DEC-07**: `bv.Optional[T]` marks a field nullable; `bv.Field(desc=..., default=...)` attaches per-field metadata
-- [ ] **SDK-DEC-08**: Every `@bv.event` requires an `event_time: int` (milliseconds since epoch) field; decorator rejects events without it
+- [ ] **SDK-DEC-08**: `@bv.event` MAY declare an `event_time: int` (ms since epoch) or `event_time: datetime` field; if declared, decorator validates the type; if omitted, the server stamps wall-clock on receipt (devex-first default). See PROJECT.md §Key Decisions and Phase 3 CONTEXT.md D-07
 - [ ] **SDK-DEC-09**: `@bv.event` accepts optional `dedupe_key` + `dedupe_window` for stream-level deduplication at push time
 
 ### SDK-COL — Expression DSL (`bv.col`)
@@ -162,6 +162,12 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 - [ ] **SDK-APP-13**: `app.flush()` — awaits all outstanding async pushes; called automatically on context-manager exit
 - [ ] **SDK-APP-14**: `FeatureResult` supports `r.feature_name` attribute access and `r["feature_name"]` dict access; `r.to_dict()` for explicit dump
 - [ ] **SDK-APP-15**: `ValidationError` structure: `kind` (cycle/missing_dep/schema_mismatch/bad_return_type), `path` (e.g., `Checkouts.filter[2]`), `message`; str repr formats as `[{kind}] {path}: {message}`
+
+### SDK-WIRE — Wire transports
+
+- [ ] **SDK-WIRE-01**: HTTP/JSON transport: `bv.App("http://host:port")` (and `https://`) sends REGISTER via `POST /register` with JSON body using `httpx>=0.27,<1`; 2xx returns parsed success body; non-2xx raises `RegistrationError` populated from the server's error JSON (`code`, `path`, `reason`/`message`); server error body parsed as JSON when `Content-Type: application/json`
+- [ ] **SDK-WIRE-02**: Framed TCP transport: `bv.App("tcp://host:port")` uses stdlib `socket`; frame format `[u32 length BE][u16 op BE][u8 content_type][payload]` matching Phase 2.5 server; strict-FIFO correlation (no `request_id`) per CLAUDE.md; connection reuse across `register` / `validate` / `ping` on the same App instance; `app.close()` closes the socket
+- [ ] **SDK-WIRE-03**: URL-scheme dispatch: `bv.App(url)` parses the URL and instantiates the correct transport (`http://`/`https://` → HTTP, `tcp://` → TCP); unknown scheme raises `ValueError` at construction time; `bv.App()` with no URL triggers embed mode per Phase 3 CONTEXT.md D-10 (spawn local `beava` subprocess, discover binary via 4-step search order `BEAVA_BINARY` env → `PATH` → `./target/debug/beava` → `BinaryNotFoundError`, bind to ephemeral ports, cleanup on `close()` / context-manager exit)
 
 ### SDK-FORK — Scoped local replica
 
