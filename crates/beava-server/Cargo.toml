@@ -30,6 +30,11 @@ name = "phase2_smoke"
 path = "tests/phase2_smoke.rs"
 required-features = ["testing"]
 
+[[test]]
+name = "phase2_5_smoke"
+path = "tests/phase2_5_smoke.rs"
+required-features = ["testing"]
+
 [lib]
 name = "beava_server"
 path = "src/lib.rs"
