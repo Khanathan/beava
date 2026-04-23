@@ -1,332 +1,294 @@
 # Beava v2 — v0 OSS Launch Roadmap
 
 **Milestone:** v0 (first public OSS cut on `beava.dev`)
-**Granularity:** fine (10 phases; 5-10 plans per phase)
+**Granularity:** fine (13 phases; 3–8 plans per phase)
 **Mode:** yolo (auto-approved; written to hold up unrevised)
 **Parallelization:** enabled where indicated
 **Created:** 2026-04-22
-**Source:** `.planning/PROJECT.md`, `.planning/REQUIREMENTS.md` (100 REQ-IDs), `DESIGN-V2.md`
+**Revised:** 2026-04-22 (re-planned to adopt v1 Python SDK API shape)
+**Source:** `.planning/PROJECT.md`, `.planning/REQUIREMENTS.md`
 
 ## North Star
 
-Declare a feature, push events, query it — in under 10 minutes, with curl alone. v0 is "the smallest thing that delivers that promise for 40 built-in primitives on a single box, durably."
+Feature authoring as composable Python code that ships to production unchanged. v0 ships the v1 Python SDK shape (`@bv.event` / `@bv.table` / `bv.col` / `.filter / .select / ... / .group_by().agg()` / `.join` / `bv.union` / `app.register` / `app.push` / `app.get` / `bv.fork`) on a new single-thread in-memory HTTP runtime with a 40+ operator catalogue.
 
 ## Architecture (locked, do not revisit in phases)
 
-- Single Rust process, single OS thread for the apply loop (plus auxiliary threads for WAL fsync, HTTP accept, snapshot writer)
-- In-memory state only (no RocksDB, no fjall, no tiered storage)
-- WAL file per instance with 1-5ms group-commit fsync; periodic snapshots (default 30s) of in-memory state
-- Recovery = load latest snapshot + replay WAL from snapshot LSN
-- HTTP/1.1 + JSON only; endpoints: `POST /register`, `POST /push/{stream}`, `POST /get`, `GET /get/{feature}/{key}`, `/metrics`, `/health`, `/ready`
-- 40 built-in primitives declared via JSON DSL with where-filter grammar
-- Python SDK = thin HTTP wrapper; sync + fire-and-forget only; no callbacks, no persistent connections
+- **Runtime:** Single Rust process, single OS thread for the apply loop (plus auxiliary threads for WAL fsync, HTTP accept, snapshot writer)
+- **State:** In-memory only (no RocksDB, no fjall, no tiered storage)
+- **Durability:** WAL file per instance with 1–5ms group-commit fsync; periodic snapshots (default 30s) of in-memory state
+- **Recovery:** Load latest snapshot + replay WAL from snapshot LSN
+- **Wire:** HTTP/1.1 + JSON only; endpoints `POST /register`, `POST /push/{event}`, `POST /push-sync/{event}`, `POST /push-batch/{event}`, `POST /push-table/{table}`, `POST /delete-table/{table}`, `POST /get`, `GET /get/{feature}/{key}`, `POST /set`, `POST /mset`, `/metrics`, `/health`, `/ready`
+- **Authoring UX:** Python SDK with v1-shaped decorator DSL, expression DSL, stateless ops, aggregation framework, joins, unions
+- **Registration:** Additive-only with monotonic `registry_version` bumps; removals/changes return 409 with structured diff
+- **Operator catalogue:** 40+ built-in aggregation operators spanning core, sketch, point, decay, velocity, recency, bounded-buffer, and geo families
 
 ## Phase Overview
 
 | # | Phase | Goal | Reqs | Success criteria |
 |---|-------|------|------|------------------|
-| 1 | Foundation | Rust workspace, HTTP scaffolding, config, logging, test harness — one can boot an empty `beava` binary and curl `/health` | 0 scope-shipping + supports all | 4 |
-| 2 | Primitive infra + registration | `POST /register` parses streams, features, where-filter DSL; operator trait + windowed bucket infra + registry exist end-to-end | 15 | 5 |
-| 3 | Core aggregates + push/get | Full HTTP surface works for `count`/`sum`/`avg`/`min`/`max`/`stddev`/`variance`/`z_score`/`ratio`; windowing semantics correct; batch + single get | 18 | 5 |
-| 4 | WAL + idempotency | Push is crash-safe: ACK only after fsync; duplicate idempotency keys replay byte-identical response | 6 | 5 |
-| 5 | Snapshot + recovery | Server restarts from snapshot+WAL; schema evolution lives across restarts | 6 | 5 |
-| 6 | Recency, decay, velocity primitives | 19 temporal/rate/trend primitives land on the existing apply loop | 19 | 4 |
-| 7 | Bounded buffers + geo primitives | 14 histogram/buffer/geo primitives land with their (often structured) return shapes | 14 | 4 |
-| 8 | Sketch primitives | HLL, Bloom, DDSketch, SpaceSaving, entropy land; crash-recovery-tested across sketches | 5 | 4 |
-| 9 | Observability + performance | `/metrics`, `/health`, `/ready`, structured logs; perf harness proves ≥3M EPS/core and <10ms P99 batch-get | 10 | 5 |
-| 10 | Python SDK, docs, packaging (ship) | `pip install beava` works; docs site live; Linux/Mac binaries + Docker image published; `README.md` 3-command smoke | 16 | 5 |
+| 1 | Foundation | Rust workspace, axum HTTP scaffolding, config, logging, test harness | 0 (infrastructure) | 4 ✅ **COMPLETE** |
+| 2 | Sources + registry + version bumps | `/register` accepts DAG of event/table/derivation nodes; additive-only; monotonic version; registry persists in-memory | 12 | 5 |
+| 3 | Python SDK skeleton + decorators + expression DSL | `@bv.event`, `@bv.table`, `bv.col`, `bv.App(url)`, register + validate, REGISTER JSON compiler | 18 | 6 |
+| 4 | Stateless ops + expression evaluator (server-side) | Server parses + evaluates `bv.col` expression strings; executes filter/select/drop/rename/with_columns/map/cast/fillna chains per event | 12 | 5 |
+| 5 | Aggregation framework + core operators (8) | `group_by().agg()` DAG lands server-side; windowed bucket infra; core aggregations: count, sum, avg, min, max, variance, stddev, ratio | 15 | 6 |
+| 6 | WAL + idempotency | Every push write-through fsynced before ACK; stream-level idempotency keys cached with TTL | 5 | 4 |
+| 7 | Snapshot + recovery | Periodic full-state snapshot; restart replays snapshot + WAL; schema evolution survives restart | 5 | 4 |
+| 8 | Point / ordinal / recency operators | first, last, first_n, last_n, lag, first_seen, last_seen, age, has_seen, time_since, time_since_last_n, streak, max_streak, negative_streak, first_seen_in_window | 15 | 4 |
+| 9 | Decay + velocity operators | ewma, ewvar, ew_zscore, decayed_sum, decayed_count, twa, rate_of_change, inter_arrival_stats, burst_count, delta_from_prev, trend, trend_residual, outlier_count, value_change_count, z_score | 16 | 4 |
+| 10 | Sketch operators | count_distinct (HLL), percentile (DDSketch), top_k (SpaceSaving), bloom_member, entropy | 5 | 4 |
+| 11 | Bounded-buffer + geo operators | histogram, hour_of_day/dow_hour histograms, seasonal_deviation, event_type_mix, most_recent_n, reservoir_sample, geo_velocity, geo_distance, geo_spread, unique_cells, geo_entropy, distance_from_home | 13 | 4 |
+| 12 | Joins + unions + push/get API completion | Event↔event windowed join, event↔table enrichment, table↔table join, `bv.union`; `push_sync` + `push_many` + `push_table` + `delete_table` + `set` + `mset` + `mget` + `get_multi` wired end-to-end | 13 | 5 |
+| 13 | Observability + performance + docs + packaging + `bv.fork` | `/metrics`, structured logs, perf gates (≥3M EPS, <10ms P99 batch get), SDK polish, docs, PyPI, GitHub Releases, Docker, `beava fork` subcommand | ~16 | 6 |
 
-**Total:** 10 phases, 100/100 requirements mapped, 46 success criteria.
+**Total:** 13 phases, ~145 requirements mapped (actual count confirmed after plan-time verification), ~62 success criteria.
+
+**Phase 1 status:** ✅ **COMPLETE** on commits `b100e51`..`c21b6b7`. Cargo workspace, axum HTTP server, `/health` + `/ready` stubs, graceful shutdown, integration TestServer harness — all gates green. See `.planning/phases/01-foundation/01-SUMMARY.md`, `.planning/phases/01-foundation/01-VERIFICATION.md`.
 
 ## Parallelization
 
-- **Phases 1 → 2 → 3 → 4 → 5** are strictly sequential (each builds on the previous).
-- **Phase 5 → Phases 6, 7, 8** can run in parallel: each primitive family shares the apply loop and state cache from Phase 3 but touches independent operator modules. A single implementer can batch-sequence them; if Claude runs concurrent worktrees (one per family), conflicts are limited to `operator_registry.rs` and `docs/primitives.md` (append-only). **Recommended:** sequence 6 → 7 → 8 unless explicitly parallelizing.
-- **Phase 9 (observability + perf)** depends on all primitive phases being complete for representative benchmarking.
-- **Phase 10 (SDK + docs + packaging)** has three independent sub-tracks (SDK, docs, packaging) that the `plan-phase` step can parallelize.
+- **Phases 1 → 2 → 3 → 4 → 5 → 6 → 7** are strictly sequential — each depends on the one before. Phase 5 is where the apply loop first runs real aggregations; Phases 6–7 harden durability around it.
+- **Phases 8 / 9 / 10 / 11** can run in parallel after Phase 7 — each operator family attaches to the existing apply loop + registry + window infra, touching independent operator modules. Recommended: sequence 8 → 9 → 10 → 11 unless explicitly running parallel worktrees.
+- **Phase 12** (joins/unions + push/get completion) depends on 7; can overlap with 8–11 since joins live in their own module.
+- **Phase 13** waits on everything for perf benchmarks + docs sign-off.
 
-## Dependency Graph
+## Dependency graph
 
 ```
-  Phase 1 (Foundation)
+  Phase 1 (Foundation) ✅
        │
        ▼
-  Phase 2 (Primitive infra + registration)
+  Phase 2 (Sources + registry + version bumps)
        │
        ▼
-  Phase 3 (Core aggregates + push/get)
+  Phase 3 (Python SDK + decorators + expression DSL)
        │
        ▼
-  Phase 4 (WAL + idempotency)
+  Phase 4 (Stateless ops + expression evaluator server-side)
        │
        ▼
-  Phase 5 (Snapshot + recovery)
+  Phase 5 (Aggregation framework + 8 core operators)
        │
-       ├──────────────┬──────────────┐
-       ▼              ▼              ▼
-  Phase 6         Phase 7        Phase 8
-  (Recency/       (Buffers       (Sketches)
-   decay/         + geo)
-   velocity)
-       └──────────────┴──────────────┘
-                      │
-                      ▼
-              Phase 9 (Obs + perf)
-                      │
-                      ▼
-              Phase 10 (SDK + docs + pkg — ship)
+       ▼
+  Phase 6 (WAL + idempotency)
+       │
+       ▼
+  Phase 7 (Snapshot + recovery + schema evolution)
+       │
+       ├────────────┬────────────┬────────────┬────────────┐
+       ▼            ▼            ▼            ▼            ▼
+  Phase 8       Phase 9      Phase 10     Phase 11     Phase 12
+  (recency/     (decay/      (sketches)   (buffer+geo) (joins +
+  point ops)    velocity)                              unions + API
+                                                        completion)
+       └────────────┴────────────┴────────────┴────────────┘
+                                   │
+                                   ▼
+                     Phase 13 (obs + perf + docs + pkg + fork — ship)
 ```
 
-## Phase Details
+## Phase details
 
-### Phase 1: Foundation
+### Phase 1: Foundation ✅ COMPLETE
 
-**Goal:** A `beava` binary that boots from config, exposes an HTTP server with health and ready stubs, writes structured JSON logs, and runs under an integration test harness. Nothing domain-shaped; the skeleton every later phase attaches to.
+**Goal:** A `beava` binary that boots from config, exposes an HTTP server with `/health` and `/ready` stubs, writes structured JSON logs, and runs under an integration test harness.
 
-**Depends on:** Nothing (first phase).
+**Status:** Shipped. See `.planning/phases/01-foundation/01-SUMMARY.md` + `01-VERIFICATION.md`.
 
-**Requirements:** None directly scope-shipping — this phase is pure enablement. (No REQ-IDs consumed here; every requirement is shipped in phases 2–10.)
+**Depends on:** Nothing.
 
-**Success Criteria** (what must be TRUE):
-  1. `cargo build --release` produces a single stripped binary; `./beava --config ./beava.yaml` starts a server that binds an HTTP port and logs JSON.
-  2. `curl localhost:$PORT/health` returns HTTP 200 with `{"status":"ok"}` within 1s of startup; `/ready` returns 503 until the (stubbed) recovery-complete flag is set.
-  3. The HTTP framework is picked, wired to `axum` (or equivalent), and graceful shutdown on SIGTERM is implemented and tested.
-  4. An integration-test harness exists that can spawn the binary in-process, wait for readiness, issue HTTP calls, and tear down cleanly — used by every subsequent phase.
+**Requirements:** none (infrastructure phase).
 
-**Plans:** 5 plans (4 waves; Plans 02 and 03 run in parallel after Plan 01)
-- [ ] 01-01-PLAN.md — Cargo workspace + binary skeleton + release profile
-- [ ] 01-02-PLAN.md — clap CLI + YAML config loading with BEAVA_* env overrides
-- [ ] 01-03-PLAN.md — structured JSON logging via tracing + tracing-subscriber
-- [ ] 01-04-PLAN.md — axum HTTP server with /health + /ready + graceful shutdown
-- [ ] 01-05-PLAN.md — TestServer integration-test harness + Phase 1 acceptance test
+**Success criteria:** (all ✅)
+1. `cargo build --release` produces stripped binary; `./beava --config ./beava.yaml` starts HTTP listener, logs JSON
+2. `curl localhost:$PORT/health` → 200; `/ready` returns 503 until flag flips
+3. axum wired; graceful shutdown on SIGTERM
+4. Integration-test harness (`TestServer::spawn()`) exists and tested
 
----
+### Phase 2: Sources + registry + version bumps
 
-### Phase 2: Primitive infra + registration
-
-**Goal:** Users can `POST /register` a stream with a typed schema and a list of feature declarations; the server parses the JSON DSL, validates it, persists the registration in memory, and exposes a feature registry that every downstream operator will attach to. The operator trait, windowed bucket infrastructure, and where-filter evaluator exist and are exercised by at least one placeholder operator.
+**Goal:** `POST /register` accepts a JSON DAG of events, tables, and derivations; validates; persists in-memory; assigns monotonic `registry_version`. Additive-only — removals/changes return 409 with structured diff. No aggregations execute yet.
 
 **Depends on:** Phase 1.
 
-**Requirements:**
-- `API-01`, `API-02`, `API-09`
-- `STREAM-01`
-- `REG-01`, `REG-02`, `REG-03`, `REG-04`
-- `WIN-01`, `WIN-02`, `WIN-03`, `WIN-04`
-- `TEST-02` (partial — HTTP integration test infra stood up against `/register`)
-- Also lays the foundation for all `PRIM-*` requirements (shared infra only; individual primitives ship in phases 3, 6, 7, 8)
+**Requirements:** SRV-API-01, SRV-API-02, SRV-API-11, SRV-API-12, SRV-REG-01, SRV-REG-02, SRV-REG-03, SRV-REG-05, SRV-REG-06, SDK-DEC-06, SDK-DEC-08, SDK-DEC-09 — 12 REQ-IDs.
 
-**Note:** we intentionally assign `TEST-02` to the first phase that introduces HTTP endpoints; subsequent phases extend that harness but do not re-own the requirement. `WIN-*` requirements ship here because windowing infra is what the operator trait is built around.
+**Success criteria:**
+1. `POST /register` with a valid JSON DAG (1+ events, 0+ tables) returns 200 with `registry_version: 1` and `registered_descriptors` listing
+2. Re-posting an identical DAG is a no-op; version unchanged
+3. Posting an additive DAG (new event or table) returns 200 and bumps version
+4. Posting a DAG that removes or changes an existing descriptor returns 409 with `{error: {code: "registration_conflict", diff: {added, removed, changed}}}` naming each change
+5. Malformed payload (missing required fields, unknown node type) returns 400 with `{error: {code, path, reason}}` pointing to the offending path
 
-**Success Criteria** (what must be TRUE):
-  1. `POST /register` with a valid payload (stream + feature list) returns 200 and the registration is retrievable; re-posting the same payload is idempotent (no-op); conflicting redeclaration returns 409 with a structured diff (`REG-04`, `API-02`).
-  2. `POST /register` with an unknown feature type, unknown field, or malformed `where` clause returns 400 with a message naming the offending location (`REG-04`).
-  3. The where-filter DSL accepts `{field: {op: value}}` with ops `eq/ne/gt/lt/gte/lte/in`, composed via `{and:[...]}`/`{or:[...]}`; unit tests cover nesting, type coercion, and the error paths (`REG-02`, `REG-03`).
-  4. A `Windowed<Operator>` wrapper with event-time bucketing (default cap 64, `ceil(window_ms/64)` width, lazy rollover on apply) exists, is covered by unit tests for edge-of-window and out-of-order event_time within bucket (`WIN-01`, `WIN-02`, `WIN-04`).
-  5. "Lifetime" windowless mode is supported when `window_ms` is omitted and is the default for operators that declare themselves non-windowed (`WIN-03`).
+### Phase 3: Python SDK skeleton + decorators + expression DSL
 
-**Plans:** TBD
-
----
-
-### Phase 3: Core aggregates + push/get API surface
-
-**Goal:** The full v0 HTTP surface — register, push, batch get, single get — is wired end-to-end for the 9 core numeric aggregates (count, sum, avg, min, max, stddev, variance, z_score, ratio) over a fraud-shape demo stream. A user can run the curl quickstart from start to finish against an in-memory, non-durable server. This phase proves the apply-loop architecture on realistic operators before durability lands.
+**Goal:** Ship the user-facing Python SDK that compiles decorators + expression DSL into the REGISTER JSON the server accepts. Dogfood the DSL from Phase 3 onwards; curl remains the language-agnostic escape hatch.
 
 **Depends on:** Phase 2.
 
-**Requirements:**
-- `API-03`, `API-04`, `API-05`, `API-06`, `API-07`, `API-08`
-- `PRIM-CORE-01`, `PRIM-CORE-02`, `PRIM-CORE-03`, `PRIM-CORE-04`, `PRIM-CORE-05`
-- `TEST-01` (table-driven primitive tests established here; extended in later primitive phases)
-- `TEST-05` (windowing determinism test lives with the first real windowed operators)
+**Requirements:** SDK-DEC-01 through SDK-DEC-09, SDK-COL-01 through SDK-COL-08, SDK-APP-01, SDK-APP-02, SDK-APP-03, SDK-APP-15 — 18 REQ-IDs.
 
-**Note:** `API-03` here asserts the *shape* of the push path (accepts event, validates against schema, returns `{ack_lsn, idempotent_replay}`). The *durability* half of API-03 ("ACK only after WAL fsync") is finalized in Phase 4 when the WAL lands; in Phase 3 the apply loop is in-memory-only and `ack_lsn` is a monotonic in-memory counter.
+**Success criteria:**
+1. `@bv.event` class form extracts schema and registers event descriptor; function form resolves upstreams
+2. `@bv.table(key=..., ttl=...)` class + function forms work; key validation at decoration time
+3. `bv.col("x") > 100` expression produces expected `to_expr_string()` canonical form
+4. `app.register(*descriptors)` topologically sorts the DAG, detects cycles, validates schemas, POSTs JSON, receives `registry_version`
+5. `app.validate(*descriptors)` runs zero-network-IO validation returning `list[ValidationError]`
+6. End-to-end smoke: spawn TestServer, register 2 events + 1 table from Python, verify via `curl /registry`
 
-**Success Criteria** (what must be TRUE):
-  1. `POST /push/{stream}` accepts a JSON event, validates it against the registered schema (400 on mismatch naming the failing field), dispatches to all registered operators atomically on the apply-loop thread, and returns `{ack_lsn, idempotent_replay:false}` (`API-03`, `API-04`).
-  2. `POST /get` with `{keys, features}` returns a `{key:{feature:value}}` map; over-cap requests (`keys × features > 10000`) return 413 with the cap in the body; `GET /get/{feature}/{key}` returns `{value}` or `{value, meta}` for structured features (`API-05`, `API-06`, `API-07`).
-  3. Unknown feature name on either get endpoint returns 400; unknown entity key returns the feature's documented zero/null (e.g. `count` → 0, `min` → null) — documented in the per-primitive test table (`API-08`).
-  4. The 9 core aggregates produce mathematically correct values under a table-driven test matrix (happy path, empty window, single event, all-filtered, numeric-edge cases); `stddev`/`variance` use Welford's running algorithm and match a numpy oracle within 1e-9 relative error (`PRIM-CORE-01..05`, `TEST-01`).
-  5. A replay test pushes the same event stream twice (fresh server each run) and asserts byte-identical feature values across 9 primitives over a 4-window range, establishing windowing determinism (`TEST-05`).
+### Phase 4: Stateless ops + expression evaluator (server-side)
 
-**Plans:** TBD
-
----
-
-### Phase 4: WAL + idempotency
-
-**Goal:** `POST /push` is crash-safe. Every event is appended to an on-disk WAL, fsynced via group-commit, and only then does the client receive an ACK containing the fsynced `ack_lsn`. Stream-level idempotency (`idempotency_key` + TTL) returns the cached, byte-identical response on duplicate request_id within TTL without re-applying state.
+**Goal:** Server-side expression parser + evaluator for the `bv.col(...)` canonical form. Stateless per-event op chain (`filter`/`select`/`drop`/`rename`/`with_columns`/`map`/`cast`/`fillna`) executes before aggregations see events. SDK clients register chained ops in their DAG nodes.
 
 **Depends on:** Phase 3.
 
-**Requirements:**
-- `STREAM-02`, `STREAM-03`
-- `DUR-01`, `DUR-02`, `DUR-03`, `DUR-04`
-- `TEST-04` (idempotency test lives with the idempotency feature)
+**Requirements:** SDK-OPS-01 through SDK-OPS-10, SRV-APPLY-06, SRV-APPLY-07 — 12 REQ-IDs.
 
-**Success Criteria** (what must be TRUE):
-  1. A per-instance append-only WAL file is written; group-commit fsync fires every 1-5ms or 1MB (whichever first); push ACK latency waits for the fsync past the event's LSN (`DUR-01`, `DUR-02`).
-  2. The WAL record format carries `schema_version`, `stream_id`, `event_time`, `entity_key`, and the typed event body; a decoder reads any prior WAL byte-for-byte and reproduces the event (`DUR-03`).
-  3. WAL segment rotation works: after a snapshot covers LSNs up to X, segments entirely below X are deleted on the next rotation cycle (`DUR-04`).
-  4. A stream declared with `idempotency_key: <field>` + `idempotency_ttl_ms` returns the byte-identical PushResponse with `idempotent_replay: true` on duplicate key within TTL; state is not mutated; tests verify both the response equality and that downstream feature values are unchanged (`STREAM-02`, `STREAM-03`, `TEST-04`).
-  5. A WAL-only crash test (restart process without a snapshot, full WAL replay) reproduces pre-crash feature values exactly for the 9 core aggregates — this is the "WAL works" gate before snapshotting (`DUR-01..04`).
+**Success criteria:**
+1. `Event.filter(bv.col("amount") > 100)` registered via SDK; server rejects events failing the predicate
+2. `Event.with_columns(is_big=bv.col("amount") > 500)` adds a derived column visible to downstream nodes
+3. Chained ops (`filter → select → with_columns → cast`) compose correctly; schema propagates through every step
+4. Proptest-covered: random predicate + random event → truth-table equivalence between client-side eval and server-side eval
+5. Malformed predicate in registration returns 400 with path pointing to the offending expression
 
-**Plans:** TBD
+### Phase 5: Aggregation framework + core operators
 
----
-
-### Phase 5: Snapshot + recovery + schema evolution
-
-**Goal:** Server state survives restart within the documented RTO. A periodic snapshot writes the full in-memory state to disk; recovery loads the latest snapshot and replays the WAL from its covered LSN to present. Schema evolution (versioned row headers, last-8 schema retention, on-read migration) is implemented so older WAL records remain replayable after schema bumps.
+**Goal:** `group_by(keys).agg(name=bv.<op>(...), ...)` produces a Table in the DAG; server's apply loop updates per-entity aggregation state for every registered feature touching the event's source. Core 8 operators land (count, sum, avg, min, max, variance, stddev, ratio). `Windowed<Op>` bucket infra.
 
 **Depends on:** Phase 4.
 
-**Requirements:**
-- `STREAM-04`, `STREAM-05`
-- `RECOV-01`, `RECOV-02`, `RECOV-03`, `RECOV-04`
-- `TEST-03` (crash-recovery test)
-- `TEST-06` (throughput bench harness — lives here because snapshot+WAL is now the true server shape; used as a regression harness, full target met in Phase 9)
+**Requirements:** SDK-AGG-01 through SDK-AGG-06, AGG-CORE-01 through AGG-CORE-09 — 15 REQ-IDs.
 
-**Success Criteria** (what must be TRUE):
-  1. A periodic snapshot (default 30s; configurable) serializes the full in-memory state (streams, features, per-entity state, idempotency cache) to disk with a checksum; corrupt snapshots or WAL segments fail cleanly with operator-readable errors and can be rolled back to the previous snapshot (`RECOV-01`, `RECOV-04`).
-  2. Recovery on boot loads the latest snapshot, replays the WAL from the snapshot's covered LSN to the WAL tail, and marks `/ready` 200; a 10GB-state target on NVMe completes recovery in under 30s (benchmarked in a harness; full verification in Phase 9 if hardware constrained) (`RECOV-02`, `RECOV-03`).
-  3. Row headers carry `schema_version: u8`; the server retains the last 8 schemas; a WAL written under schema v1 is replayable by a binary running schema v3 via on-read migration; additive field changes migrate silently, breaking changes require an explicit `schema_version` bump at register time (`STREAM-04`, `STREAM-05`).
-  4. A kill-9-mid-push crash-recovery test (process killed between WAL fsync boundaries and between snapshots) restarts, recovers, and produces feature values byte-identical to a control run where the process was not killed (`TEST-03`).
-  5. A throughput benchmark harness exists that drives synthetic events at the server and reports server-truth EPS (counted at the apply loop, not client submissions); this harness runs in CI as a smoke benchmark and will be driven to target in Phase 9 (`TEST-06`).
+**Success criteria:**
+1. `Event.group_by("user_id").agg(cnt=bv.count(window="5m"))` registered via SDK produces a Table with `cnt` feature
+2. Push to the event updates the aggregation; `/get` returns current value
+3. All 8 core operators pass table-driven correctness tests
+4. Uniform event-time bucketing cap 64 proven replay-deterministic: replaying the same event stream produces byte-identical state
+5. Lifetime/windowless mode works when `window` omitted on compatible operators (ratio, count)
+6. Validation: unknown field in `op.field` rejected at registration
 
-**Plans:** TBD
+### Phase 6: WAL + idempotency
 
----
+**Goal:** `/push` ACK returns only after event's LSN has been fsynced. Stream-level `idempotency_key` + TTL enforced: duplicate requests return the cached response byte-identical.
 
-### Phase 6: Recency, decay, and velocity primitives
+**Depends on:** Phase 5.
 
-**Goal:** 19 temporal-shaped primitives (recency/identity, decay, velocity/trend) land on the existing apply loop, durability stack, and snapshot+recovery path. Each primitive has a table-driven test fixture, a docs entry, and verified replay determinism under WAL-only and snapshot+WAL recovery.
+**Requirements:** SRV-DUR-01, SRV-DUR-02, SRV-DUR-03, SRV-DUR-04, SRV-DUR-05 — 5 REQ-IDs.
 
-**Depends on:** Phase 5. (Can run in parallel with Phases 7 and 8 — see Parallelization section.)
+**Success criteria:**
+1. Push event, kill process before fsync, restart → event NOT present. Push event, wait for ACK, kill → event IS present.
+2. Duplicate push with same idempotency key within TTL returns byte-identical response; state unchanged between first and duplicate
+3. Group-commit fsync adds P50 < 2ms to push-ACK latency at default config
+4. WAL rotation: segments ≤ snapshot-covered LSN truncated; disk usage bounded
 
-**Requirements:**
-- Recency (8): `PRIM-RECENCY-01`, `PRIM-RECENCY-02`, `PRIM-RECENCY-03`, `PRIM-RECENCY-04`, `PRIM-RECENCY-05`, `PRIM-RECENCY-06`, `PRIM-RECENCY-07`, `PRIM-RECENCY-08`
-- Decay (4): `PRIM-DECAY-01`, `PRIM-DECAY-02`, `PRIM-DECAY-03`, `PRIM-DECAY-04`
-- Velocity (7): `PRIM-VEL-01`, `PRIM-VEL-02`, `PRIM-VEL-03`, `PRIM-VEL-04`, `PRIM-VEL-05`, `PRIM-VEL-06`, `PRIM-VEL-07`
+### Phase 7: Snapshot + recovery + schema evolution
 
-**Success Criteria** (what must be TRUE):
-  1. All 19 primitives compute correct values under table-driven test fixtures: for each primitive, at least one happy-path, one empty-input, and one edge-case scenario pass against a hand-computed oracle (or numpy/statsmodels for stats shapes like trend/regression).
-  2. Decay primitives (`ewma`, `ewvar`, `ew_zscore`, `decayed_sum`, `decayed_count`, `twa`) produce values matching the closed-form formulas within 1e-9 relative error at matching `half_life_ms`; replay of the same event stream on a fresh server produces byte-identical values.
-  3. `first_seen_in_window` (`PRIM-RECENCY-08`) — bloom + timestamp combo — is exercised for both true positives and bounded false-positive rate (documented configurable FPR); tests assert FPR under the configured ceiling across a 1M-event fixture.
-  4. Every primitive in this phase survives a snapshot+WAL crash-recovery cycle with byte-identical post-recovery values (piggybacks on the Phase 5 harness; adds 19 primitive-specific scenarios).
+**Goal:** Periodic snapshot serializes in-memory state + registry; restart loads snapshot + replays WAL-past-snapshot-LSN and resumes. Schema evolution preserved across restart.
 
-**Plans:** TBD
+**Depends on:** Phase 6.
 
----
+**Requirements:** SRV-REG-04, SRV-RECOV-01, SRV-RECOV-02, SRV-RECOV-03, SRV-RECOV-04, SRV-RECOV-05 — 6 REQ-IDs.
 
-### Phase 7: Bounded-buffer and geo primitives
+**Success criteria:**
+1. Run 1M events through the server, snapshot fires, restart → all features replayable; values match pre-restart
+2. Add a new feature (additive registration + version bump), snapshot, restart → new feature still present
+3. RTO: 10GB state snapshot + 1GB WAL tail → server online within 30s on NVMe
+4. Corrupt snapshot (flipped byte) detected + logged; operator can fall back to previous
 
-**Goal:** 14 primitives with structured / bounded-state backing (histograms, deques, reservoirs, geo) land. Special attention to: (a) bounded memory under adversarial input, (b) structured return shapes through `GET /get/{feature}/{key}` → `{value, meta}`, (c) geo-math correctness against a reference implementation.
+### Phase 8: Point / ordinal / recency operators
 
-**Depends on:** Phase 5. (Can run in parallel with Phases 6 and 8.)
+**Goal:** The point-shaped operator family lands — values, sequences, streaks, recency markers.
 
-**Requirements:**
-- Bounded buffers (8): `PRIM-BUF-01`, `PRIM-BUF-02`, `PRIM-BUF-03`, `PRIM-BUF-04`, `PRIM-BUF-05`, `PRIM-BUF-06`, `PRIM-BUF-07`, `PRIM-BUF-08`
-- Geo (6): `PRIM-GEO-01`, `PRIM-GEO-02`, `PRIM-GEO-03`, `PRIM-GEO-04`, `PRIM-GEO-05`, `PRIM-GEO-06`
+**Depends on:** Phase 7. **Parallelizable with Phases 9, 10, 11, 12.**
 
-**Success Criteria** (what must be TRUE):
-  1. All 14 primitives compute correct values under table-driven test fixtures including structured-return cases: `most_recent_n` returns a JSON array of length ≤ N; `dow_hour_histogram` returns a 168-bin map; `geo_velocity` returns `{value: km_h, meta: {from, to}}` or similar documented shape.
-  2. Bounded-buffer primitives (`most_recent_n`, `reservoir_sample`, `histogram`, `hour_of_day_histogram`, `dow_hour_histogram`, `time_since_last_n`) stay within their declared memory bounds under a 10M-event adversarial fixture — memory does not grow unbounded (CI assertion).
-  3. Geo primitives match a reference Haversine / geohash implementation within documented tolerance; `geo_velocity`, `geo_distance`, `geo_spread`, `unique_cells`, `geo_entropy`, `distance_from_home` each have their own oracle table fixture.
-  4. All 14 primitives survive the Phase 5 crash-recovery harness with byte-identical post-recovery values (serialization of structured state — deques, reservoirs, geohash sets — is covered).
+**Requirements:** AGG-POINT-01 through AGG-POINT-11, AGG-RECENCY-01 through AGG-RECENCY-04 — 15 REQ-IDs.
 
-**Plans:** TBD
+**Success criteria:**
+1. All 15 operators pass table-driven correctness tests with deterministic replay
+2. Operators round-trip through WAL + snapshot + recovery
+3. Docs entry per operator in `docs/operators.md`
+4. SDK descriptor constructors match v1 API (same parameter names)
 
----
+### Phase 9: Decay + velocity operators
 
-### Phase 8: Sketch primitives
+**Goal:** Exponentially-decayed and velocity-shaped operators land.
 
-**Goal:** The 5 sketch primitives (`distinct` HLL, `bloom_member`, `quantile` DDSketch, `top_k` SpaceSaving, `entropy`) land with configurable accuracy/memory trade-offs, documented error bounds, and crash-recovery correctness. Sketches are the highest-risk serialization target — they go last so the snapshot format is exercised on every prior primitive before sketch bytes join it.
+**Depends on:** Phase 7. **Parallelizable with 8, 10, 11, 12.**
 
-**Depends on:** Phase 5. (Can run in parallel with Phases 6 and 7 but best-sequenced last because of serialization scrutiny.)
+**Requirements:** AGG-DECAY-01 through AGG-DECAY-07, AGG-VEL-01 through AGG-VEL-08, AGG-Z-01 — 16 REQ-IDs.
 
-**Requirements:**
-- Sketches (5): `PRIM-SKETCH-01`, `PRIM-SKETCH-02`, `PRIM-SKETCH-03`, `PRIM-SKETCH-04`, `PRIM-SKETCH-05`
+**Success criteria:**
+1. All 15 operators pass correctness + determinism tests
+2. `bv.ema()` alias resolves to `bv.ewma()` in the SDK
+3. Half-life parameter validation at decoration time (duration string format)
+4. Operators replay byte-identically after restart
 
-**Success Criteria** (what must be TRUE):
-  1. `distinct` (HLL) estimates cardinality within documented error bound (default 2% at p=14) across a 1M-entry test; merge correctness over bucket rollover produces results equivalent to a fresh compute within error bound.
-  2. `quantile` (DDSketch) produces p50/p95/p99 within 1% of ground truth on a 100K-sample fixture; configurable `q` levels are respected; windowed merge works correctly.
-  3. `top_k` (SpaceSaving) — top-K matches ground truth on the stationary portion of a Zipf distribution within documented approximation guarantees; `bloom_member` FPR stays under the configured rate on a 10M-insert fixture; `entropy` matches closed-form Shannon entropy.
-  4. All 5 sketches survive the Phase 5 crash-recovery harness with estimates that are equal (to the bit) to the pre-crash sketch bytes — the serialization format is exercised byte-for-byte.
+### Phase 10: Sketch operators
 
-**Plans:** TBD
+**Goal:** Approximate-algorithm operators land with documented error bounds.
 
----
+**Depends on:** Phase 7. **Parallelizable with 8, 9, 11, 12.**
 
-### Phase 9: Observability + performance hardening
+**Requirements:** AGG-SKETCH-01 through AGG-SKETCH-05 — 5 REQ-IDs.
 
-**Goal:** The server is operationally monitorable (Prometheus metrics, health/ready, structured logs with trace_id) and provably meets the three PERF requirements: ≥3M EPS/core apply loop, P50 <2ms / P99 <10ms batch-get on warm cache, and <2ms P50 WAL group-commit latency overhead on push ACK.
+**Success criteria:**
+1. `count_distinct`, `percentile`, `top_k` pass error-bound checks (within documented tolerances on reference datasets)
+2. Sketch serialization round-trips through snapshot + WAL replay; deterministic under sketched inputs
+3. `bloom_member` and `entropy` pass table-driven tests
+4. Memory bounded per-entity by operator configuration
 
-**Depends on:** Phases 6, 7, 8 (requires the full primitive catalogue in the loop for representative benchmarking).
+### Phase 11: Bounded-buffer + geo operators
 
-**Requirements:**
-- Observability (4): `OBS-01`, `OBS-02`, `OBS-03`, `OBS-04`
-- Performance (3): `PERF-01`, `PERF-02`, `PERF-03`
+**Goal:** Histograms, per-user baselines, and geo-shaped operators land.
 
-**Note:** `API-03`'s durability half (ACK only after WAL fsync) was delivered in Phase 4; here we prove the *latency* overhead meets the documented target.
+**Depends on:** Phase 7. **Parallelizable with 8, 9, 10, 12.**
 
-**Success Criteria** (what must be TRUE):
-  1. `/metrics` exposes Prometheus text format with: per-primitive counters, push throughput, batch-get + single-get QPS, p50/p95/p99 latency histograms per endpoint, WAL group-commit latency histogram, snapshot latency, recovery time; a local Prometheus scrape against a running beava produces all labels (`OBS-01`).
-  2. `/health` returns 200 whenever the process is up; `/ready` returns 200 only after recovery is complete; structured JSON logs emit INFO/WARN/ERROR with `trace_id` propagated from `X-Trace-Id` on every request (`OBS-02`, `OBS-03`, `OBS-04`).
-  3. The perf harness (from Phase 5) sustains ≥3M EPS/core on a 32-byte event × 5-primitive workload for 60s+ measured via `server_processed_events` at the apply loop, on modern server-class NVMe hardware; report includes hardware spec and flamegraph (`PERF-01`).
-  4. Batch get of 100 features × 1 entity against a warm cache returns P50 <2ms, P99 <10ms across a 10-minute soak; single-get P99 <5ms across the same soak (`PERF-02`).
-  5. WAL group-commit adds P50 <2ms, P99 <10ms to push ACK latency at the default 1-5ms commit window under 3M EPS sustained write load (`PERF-03`).
+**Requirements:** AGG-BUFFER-01 through AGG-BUFFER-07, AGG-GEO-01 through AGG-GEO-06 — 13 REQ-IDs.
 
-**Plans:** TBD
+**Success criteria:**
+1. All 13 operators pass correctness tests
+2. Geo math verified against a reference implementation (`haversine` crate)
+3. Structured outputs (histograms, reservoir samples) round-trip through `GET /get/{feature}/{key}` with `{value, meta?}` shape
+4. Replay determinism preserved
 
-**UI hint:** no (observability is backend-only; Prometheus is the consumer; no beava-owned dashboards in v0)
+### Phase 12: Joins + unions + push/get API completion
 
----
+**Goal:** Joins (event↔event windowed, event↔table enrichment, table↔table) and `bv.union` implemented end-to-end. `push_sync`, `push_many`, `push_table`, `delete_table`, `set`, `mset`, `mget`, `get_multi` wired.
 
-### Phase 10: Python SDK, docs, and packaging — ship
+**Depends on:** Phase 7. **Parallelizable with 8, 9, 10, 11.**
 
-**Goal:** The OSS launch: `pip install beava` works on PyPI, docs site has the full quickstart and primitive catalogue, prebuilt binaries for linux/amd64, linux/arm64, darwin/arm64 on GitHub Releases, Docker image on ghcr.io, README drives a 3-command smoke, LAUNCH.md is ready to post.
+**Requirements:** SDK-JOIN-01, SDK-JOIN-02, SDK-JOIN-03, SDK-JOIN-04, SDK-JOIN-05, SDK-APP-04 through SDK-APP-14, SRV-API-03 through SRV-API-10, SRV-APPLY-08 — 13 REQ-IDs (some may overlap with Phase 3).
 
-**Depends on:** Phase 9.
+**Success criteria:**
+1. Event↔event windowed join: every (L, R) pair with same join key within window emitted exactly once; old events drop
+2. Event↔table join: enrichment against current table row; value changes visible after upsert
+3. Table↔table join: key-matched; schema collision handled with `_right` suffix
+4. `bv.union` produces concatenated stream; field-mismatch detected at registration
+5. All push/get API variants pass end-to-end Python SDK tests against a real server
 
-**Requirements:**
-- Python SDK (5): `SDK-01`, `SDK-02`, `SDK-03`, `SDK-04`, `SDK-05`
-- Docs (5): `DOC-01`, `DOC-02`, `DOC-03`, `DOC-04`, `DOC-05`
-- Packaging (4): `PKG-01`, `PKG-02`, `PKG-03`, `PKG-04`
-- `API-01` (re-verified end-to-end through SDK surface), `API-02` (re-verified)
+### Phase 13: Observability + performance + docs + packaging + `bv.fork` — ship
 
-**Note:** `API-01` / `API-02` are shipped in Phase 2 at the server level; they are re-listed here as covered-through-SDK to close the loop but are not double-counted in traceability (primary phase = 2; SDK test coverage is secondary). Traceability table reflects primary mapping only.
+**Goal:** Ship-ready v0. Metrics, perf gates cleared, docs live on `beava.dev`, binaries + PyPI + Docker published, `beava fork` subcommand works.
 
-**Success Criteria** (what must be TRUE):
-  1. `pip install beava` installs the Python SDK; it exposes `push`, `push_batch`, `get`, `get_batch`, `register` sync methods plus a fire-and-forget enqueuer that flushes on timer/buffer threshold with no persistent connection and no callbacks; no required deps beyond stdlib + `requests` (`SDK-01..04`). Integration tests hit a real running beava over HTTP (`SDK-05`).
-  2. `docs/quickstart.md` walks through a fraud-scoring demo in ≤10 curl commands with working copy-paste output in <5 minutes on a clean machine (automated doctest in CI); `docs/primitives.md` lists all 40 primitives with JSON example, example return, and a one-line use case; `docs/http-api.md` documents every endpoint with request/response and error codes; `docs/architecture.md` describes the apply loop, WAL group-commit, snapshot recovery, memory sizing (`DOC-01..04`).
-  3. `README.md` at repo root links to the docs site (`beava.dev`) and contains a 3-command smoke demo (`docker run ... && curl register && curl push && curl get`) that runs cleanly (`DOC-05`).
-  4. GitHub Releases carries prebuilt binaries for linux/amd64, linux/arm64, darwin/arm64; each binary is ≤200MB stripped and has no non-libc runtime dependencies; Docker image `ghcr.io/petrpan26/beava:v0` is published with a zero-config entrypoint that boots on `docker run ghcr.io/petrpan26/beava:v0` alone (`PKG-01`, `PKG-02`, `PKG-04`).
-  5. Configuration works via env vars (`BEAVA_DATA_DIR`, `BEAVA_PORT`, `BEAVA_WAL_COMMIT_MS`, etc.) and an optional single YAML file; no external config store is required; all config knobs are documented in `docs/architecture.md` (`PKG-03`).
+**Depends on:** Phases 8–12 all complete.
 
-**Plans:** TBD
+**Requirements:** OBS-01 through OBS-04, PERF-01 through PERF-04, DOC-01 through DOC-06, PKG-01 through PKG-05, SDK-FORK-01 through SDK-FORK-04, TEST-01 through TEST-07 — ~16 REQ-IDs plus the test suite gate.
 
-**UI hint:** no (docs site is markdown served via GitHub Pages or similar, not a beava-owned UI; the repo does not own a dashboard)
+**Success criteria:**
+1. `/metrics` exposes per-operator, per-endpoint, WAL, snapshot, registry-version metrics
+2. Perf benchmark harness: ≥3M EPS on 5-aggregation fraud shape; P99 batch-get < 10ms
+3. Docs live: quickstart → operators → concepts → http-api → architecture; `README.md` 3-command smoke works
+4. `pip install beava` works; `docker run beava/beava:v0` works; GitHub Release binaries available for 3 platforms
+5. `bv.fork(...)` spawns a local scoped replica; features queryable against fork; fork cleans up on context exit
+6. All TEST-* requirements pass; CI green; ship-ready tag
 
 ---
 
-## Progress
+## Traceability (preview)
 
-| Phase | Plans Complete | Status | Completed |
-|-------|----------------|--------|-----------|
-| 1. Foundation | 0/5 | Planned | - |
-| 2. Primitive infra + registration | 0/? | Not started | - |
-| 3. Core aggregates + push/get | 0/? | Not started | - |
-| 4. WAL + idempotency | 0/? | Not started | - |
-| 5. Snapshot + recovery | 0/? | Not started | - |
-| 6. Recency/decay/velocity primitives | 0/? | Not started | - |
-| 7. Bounded buffers + geo primitives | 0/? | Not started | - |
-| 8. Sketch primitives | 0/? | Not started | - |
-| 9. Observability + performance | 0/? | Not started | - |
-| 10. Python SDK + docs + packaging | 0/? | Not started | - |
+Populated in `REQUIREMENTS.md` traceability section. Summary: every REQ-ID maps to exactly one phase; Phase 1 ships zero scope-shipping REQ-IDs (infrastructure).
 
-Plan counts populated by `/gsd-plan-phase` as each phase is planned.
+## Notes
 
----
-*Roadmap created: 2026-04-22 from `.planning/PROJECT.md` + `.planning/REQUIREMENTS.md` (100 v1 REQ-IDs) + `DESIGN-V2.md`.*
+- ROADMAP.md may be revised as phases complete and new-requirement discoveries force rebalancing. Revisions are committed as explicit changes.
+- The previous 10-phase roadmap (commit `ad5a3ef`) was re-planned on 2026-04-22 when we pivoted from a JSON-only aggregation DSL to the v1 Python SDK API shape. Phase 1 (Foundation) work carries over unchanged.

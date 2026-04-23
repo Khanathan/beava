@@ -1,362 +1,320 @@
 # Requirements: Beava v2
 
-**Defined:** 2026-04-22
-**Core Value:** Declare a feature, push events, query it — in under 10 minutes, with curl alone.
+**Defined:** 2026-04-22 (re-planned to match v1 Python SDK API shape with v2 runtime changes)
+**Core Value:** Feature authoring as composable Python code that ships to production unchanged.
 
 ## v1 Requirements
 
-Requirements for the v0 OSS launch. Each maps to roadmap phases via traceability section below.
+Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceability section. REQ-IDs use `[CATEGORY]-[NUMBER]`; categories align with implementation boundaries so one category maps to one phase (or a tight phase group).
 
-### API (HTTP surface)
+### SDK-DEC — Python SDK decorators (source declarations)
 
-- [ ] **API-01**: Server exposes `POST /register` that accepts a JSON body declaring one stream and a list of feature declarations; returns HTTP 200 with committed registration or 4xx with validation errors
-- [ ] **API-02**: Registration is idempotent: re-posting the same declaration is a no-op; posting a conflicting redeclaration returns 409 with a diff
-- [ ] **API-03**: Server exposes `POST /push/{stream}` that accepts a typed JSON event and returns `{ack_lsn, idempotent_replay}` only after WAL fsync past the event's LSN
-- [ ] **API-04**: Push validates event payload against registered stream schema; returns 400 with the failing field on mismatch
-- [ ] **API-05**: Server exposes `POST /get` that accepts `{keys: [...], features: [...]}` and returns `{key: {feature: value}}` mapping
-- [ ] **API-06**: Batch get enforces per-request cap `keys × features ≤ 10000`; over-limit returns 413 with the configured cap
-- [ ] **API-07**: Server exposes `GET /get/{feature_name}/{entity_key}` returning `{value}` (or `{value, meta}` for structured features like geo_velocity)
-- [ ] **API-08**: Unknown feature name in any get endpoint returns 400 (not silently-null); unknown entity key returns the feature's zero-value or `null` per the feature's documented semantics
-- [ ] **API-09**: All endpoints speak HTTP/1.1 + JSON; no binary protocol in v0
+- [ ] **SDK-DEC-01**: `@bv.event` decorator accepts a class with type-hinted fields; extracts schema (types, optional flags, Field metadata); stores as an `EventSource` descriptor
+- [ ] **SDK-DEC-02**: `@bv.event` class form accepts optional `history_ttl` (duration string) and `watermark_lateness` (duration string) parameters
+- [ ] **SDK-DEC-03**: `@bv.event` function form: function with upstream-class parameters returns an `Event` / `EventDerivation`; decorator invokes the function once at registration with upstream descriptors and captures the result
+- [ ] **SDK-DEC-04**: `@bv.table(key=..., ttl=..., mode="append")` decorator accepts string or list primary key, optional TTL duration; validates key fields exist in schema
+- [ ] **SDK-DEC-05**: `@bv.table` function form: returns a `Table`/`TableDerivation`; upstream descriptors passed as typed parameters
+- [ ] **SDK-DEC-06**: Schema extraction supports `str`, `f64`/`float`, `i64`/`int`, `bool`, `bytes`, `datetime` field types; rejects unsupported types at decorator time with a clear error message
+- [ ] **SDK-DEC-07**: `bv.Optional[T]` marks a field nullable; `bv.Field(desc=..., default=...)` attaches per-field metadata
+- [ ] **SDK-DEC-08**: Every `@bv.event` requires an `event_time: int` (milliseconds since epoch) field; decorator rejects events without it
+- [ ] **SDK-DEC-09**: `@bv.event` accepts optional `idempotency_key` + `idempotency_ttl` for stream-level deduplication at push time
 
-### Stream-level decorations
+### SDK-COL — Expression DSL (`bv.col`)
 
-- [ ] **STREAM-01**: Stream declaration accepts `shard_key` field name, typed schema (fields of type str, f64, i64, bool), and mandatory `event_time: i64` field
-- [ ] **STREAM-02**: Stream can declare `idempotency_key: <field_name>` + `idempotency_ttl_ms: <number>` decoration
-- [ ] **STREAM-03**: Duplicate push within TTL (same idempotency key value) returns the byte-identical PushResponse from the first call with `idempotent_replay: true`; no state mutations applied
-- [ ] **STREAM-04**: Row header carries `schema_version: u8`; server stores last 8 schemas; reads of older rows are migrated to latest layout on retrieval
-- [ ] **STREAM-05**: Schema evolution supports additive field changes (new optional fields); breaking changes (field removal, type change) require explicit schema_version bump
+- [ ] **SDK-COL-01**: `bv.col("field")` returns an expression node; supports arithmetic `+ - * /` producing expressions
+- [ ] **SDK-COL-02**: Comparison operators `< > <= >= == !=` produce boolean expressions
+- [ ] **SDK-COL-03**: Boolean combinators `&` (and), `|` (or), `~` (not) on expressions
+- [ ] **SDK-COL-04**: `.isnull()` produces `(x == null)` expression
+- [ ] **SDK-COL-05**: `.cast("float"/"int"/"str"/"bool")` produces explicit type-coercion expression
+- [ ] **SDK-COL-06**: Expression serialization via `.to_expr_string()` produces parenthesized canonical form the server can parse
+- [ ] **SDK-COL-07**: Expression validation at registration time: field references resolve to known schema fields; type mismatches error with path
+- [ ] **SDK-COL-08**: Arithmetic on a typed field produces an expression with inferred output type (int+int→int, int+float→float, etc.)
 
-### Feature registration DSL
+### SDK-OPS — Stateless per-row ops
 
-- [ ] **REG-01**: Feature declaration accepts `name`, `type`, optional `field`, optional `window_ms`, optional `where`, optional type-specific params (e.g. `lat`/`lon` for geo, `half_life_ms` for decay)
-- [ ] **REG-02**: `where` filter DSL accepts `{field: {op: value}}` with ops `eq`, `ne`, `gt`, `lt`, `gte`, `lte`, `in`
-- [ ] **REG-03**: `where` filter supports composition via `{and: [...]}` and `{or: [...]}` nesting
-- [ ] **REG-04**: Registration rejects unknown feature types, unknown fields, malformed where clauses with specific error messages
+- [ ] **SDK-OPS-01**: `.filter(expr)` — keeps rows where expression is truthy; schema unchanged; chains left-to-right
+- [ ] **SDK-OPS-02**: `.select(*fields)` — keeps only listed fields in order
+- [ ] **SDK-OPS-03**: `.drop(*fields)` — removes fields; tables reject dropping key fields with error
+- [ ] **SDK-OPS-04**: `.rename(**mapping)` — renames fields; tables cascade the key list rename
+- [ ] **SDK-OPS-05**: `.with_columns(**derivations)` — adds/replaces derived fields from expressions; type-inferred
+- [ ] **SDK-OPS-06**: `.map(**derivations)` — alias for `.with_columns` (DataFrame parity)
+- [ ] **SDK-OPS-07**: `.cast(**type_map)` — coerces field types to `int`/`float`/`str`/`bool`
+- [ ] **SDK-OPS-08**: `.fillna(**defaults)` — fills nulls with scalars; clears optional flag on those fields
+- [ ] **SDK-OPS-09**: Every stateless op returns a new `EventDerivation`/`TableDerivation` wrapping the previous; no in-place mutation
+- [ ] **SDK-OPS-10**: Chained ops compose left-to-right, with output schema propagated through each step
 
-### Feature primitives — core aggregates
+### SDK-AGG — Aggregation framework
 
-- [ ] **PRIM-CORE-01**: `count` primitive with optional `window_ms` and `where`
-- [ ] **PRIM-CORE-02**: `sum`, `avg`, `min`, `max` primitives over a numeric field with optional window + where
-- [ ] **PRIM-CORE-03**: `stddev` + `variance` via Welford's running-variance algorithm; windowed
-- [ ] **PRIM-CORE-04**: `z_score` primitive — current event's value vs running mean/stddev of that entity
-- [ ] **PRIM-CORE-05**: `ratio` primitive — count matching / count total over window
+- [ ] **SDK-AGG-01**: `Event.group_by(*keys)` returns a `GroupBy` builder; keys must exist in upstream schema
+- [ ] **SDK-AGG-02**: `GroupBy.agg(**named_features)` accepts named aggregation operator descriptors; returns a `TableDerivation`
+- [ ] **SDK-AGG-03**: Aggregation output schema: group keys preserve upstream types; feature columns get types inferred by each operator's `output_type_for(schema)` method
+- [ ] **SDK-AGG-04**: `group_by().agg()` validates every operator's field references exist in upstream schema; errors with path
+- [ ] **SDK-AGG-05**: Aggregation on a `Table` is explicitly rejected in v0 (deferred to v0.1 pending retraction propagation)
+- [ ] **SDK-AGG-06**: Window validation at decorator time: `window` is a duration string matching `\d+(ms|s|m|h|d)` or `forever`
 
-### Feature primitives — recency & identity
+### AGG-CORE — Core aggregation operators
 
-- [ ] **PRIM-RECENCY-01**: `streak` — consecutive matches of a `where` clause ending at latest event
-- [ ] **PRIM-RECENCY-02**: `max_streak` + `negative_streak` variants
-- [ ] **PRIM-RECENCY-03**: `time_since` — ms since last matching event (returns null if no match)
-- [ ] **PRIM-RECENCY-04**: `first_seen`, `last_seen` — absolute event_time timestamps
-- [ ] **PRIM-RECENCY-05**: `age` — ms since first event ever seen for the entity
-- [ ] **PRIM-RECENCY-06**: `has_seen` — boolean ever-matched-criteria flag
-- [ ] **PRIM-RECENCY-07**: `value_change_count` — number of times a field flipped value for the entity
-- [ ] **PRIM-RECENCY-08**: `first_seen_in_window` — bloom-backed "is this value new to this entity in N days?" returning bool
+- [ ] **AGG-CORE-01**: `bv.count(window=..., where=..., bucket=...)` — event count; int output
+- [ ] **AGG-CORE-02**: `bv.sum(field, window=..., where=...)` — numeric sum; float output
+- [ ] **AGG-CORE-03**: `bv.avg(field, window=..., where=...)` — arithmetic mean; float output
+- [ ] **AGG-CORE-04**: `bv.min(field, window=..., where=...)` — minimum; preserves field type
+- [ ] **AGG-CORE-05**: `bv.max(field, window=..., where=...)` — maximum; preserves field type
+- [ ] **AGG-CORE-06**: `bv.variance(field, window=..., where=...)` — sample variance via Welford; float output
+- [ ] **AGG-CORE-07**: `bv.stddev(field, window=..., where=...)` — sqrt of variance; float output
+- [ ] **AGG-CORE-08**: `bv.ratio(where=..., window=...)` — count matching / count total; float in [0,1]
+- [ ] **AGG-CORE-09**: All core aggregations require `window=` except `ratio`/`count` which accept windowless via implicit `forever`
 
-### Feature primitives — decay family
+### AGG-SKETCH — Sketch aggregations
 
-- [ ] **PRIM-DECAY-01**: `ewma` — exponentially-weighted moving average with configurable `half_life_ms`
-- [ ] **PRIM-DECAY-02**: `ewvar` + `ew_zscore` — exponentially-weighted variance and current-event z-score
-- [ ] **PRIM-DECAY-03**: `decayed_sum`, `decayed_count` — forward-decay sum/count (Cormode style)
-- [ ] **PRIM-DECAY-04**: `twa` — time-weighted average for irregularly-sampled gauge fields
+- [ ] **AGG-SKETCH-01**: `bv.count_distinct(field, window=..., exact_threshold=1024, hybrid_precision=14)` — HLL cardinality estimate; int output
+- [ ] **AGG-SKETCH-02**: `bv.percentile(field, q, window=..., exact_threshold=256, hybrid_alpha=0.01)` — DDSketch quantile; float output
+- [ ] **AGG-SKETCH-03**: `bv.top_k(field, k, window=..., exact_threshold=1024, hybrid_width=2048, hybrid_depth=4)` — SpaceSaving top-K; list output
+- [ ] **AGG-SKETCH-04**: `bv.bloom_member(field, capacity=1024, fpr=0.01)` — Bloom-filter ever-seen membership test; bool output
+- [ ] **AGG-SKETCH-05**: `bv.entropy(field, window=...)` — Shannon entropy over the empirical categorical distribution; float output
 
-### Feature primitives — velocity & trend
+### AGG-POINT — Point / ordinal aggregations
 
-- [ ] **PRIM-VEL-01**: `rate_of_change` — Δrate or acceleration of count/sum across two adjacent windows
-- [ ] **PRIM-VEL-02**: `inter_arrival_stats` — mean, stddev, coefficient of variation of gaps between matching events
-- [ ] **PRIM-VEL-03**: `burst_count` — max event count observed in any sub-window of size K within the outer window
-- [ ] **PRIM-VEL-04**: `delta_from_prev` — current event's field value minus previous event's value
-- [ ] **PRIM-VEL-05**: `trend` — slope of EW linear regression over window
-- [ ] **PRIM-VEL-06**: `trend_residual` — current value minus trend-predicted value
-- [ ] **PRIM-VEL-07**: `outlier_count` — count of events beyond Nσ (configurable) in window
+- [ ] **AGG-POINT-01**: `bv.first(field)` — first observed value; preserves field type
+- [ ] **AGG-POINT-02**: `bv.last(field)` — most recent value by event_time; preserves field type
+- [ ] **AGG-POINT-03**: `bv.first_n(field, n)` — first N values; list output
+- [ ] **AGG-POINT-04**: `bv.last_n(field, n)` — last N values; list output
+- [ ] **AGG-POINT-05**: `bv.lag(field, n)` — value n events ago; preserves field type
+- [ ] **AGG-POINT-06**: `bv.first_seen()` — first-seen event_time timestamp; int output (millis)
+- [ ] **AGG-POINT-07**: `bv.last_seen()` — last-seen event_time timestamp; int output
+- [ ] **AGG-POINT-08**: `bv.age()` — ms since first_seen (computed at read time against current event_time); int output
+- [ ] **AGG-POINT-09**: `bv.has_seen(where=...)` — boolean ever-matched; bool output
+- [ ] **AGG-POINT-10**: `bv.time_since(where=...)` — ms since last matching event; int or null
+- [ ] **AGG-POINT-11**: `bv.time_since_last_n(where=..., n=...)` — ms since kth most recent matching event
 
-### Feature primitives — bounded buffers
+### AGG-DECAY — Decay family
 
-- [ ] **PRIM-BUF-01**: `histogram` — counts per fixed-bucket set over a numeric field
-- [ ] **PRIM-BUF-02**: `hour_of_day_histogram` — 24-bin count histogram per entity
-- [ ] **PRIM-BUF-03**: `dow_hour_histogram` — 168-bin (day × hour) count histogram per entity
-- [ ] **PRIM-BUF-04**: `seasonal_deviation` — z-score of current event vs this entity's hour-of-day baseline
-- [ ] **PRIM-BUF-05**: `event_type_mix` — proportion per fixed category set
-- [ ] **PRIM-BUF-06**: `most_recent_n` — bounded deque of N most-recent matching event values
-- [ ] **PRIM-BUF-07**: `reservoir_sample` — uniform reservoir sample of K values over all history
-- [ ] **PRIM-BUF-08**: `time_since_last_n` — ms since k-th most recent match
+- [ ] **AGG-DECAY-01**: `bv.ewma(field, half_life=...)` — exponentially-weighted moving average; float output. `bv.ema` is an alias.
+- [ ] **AGG-DECAY-02**: `bv.ewvar(field, half_life=...)` — exponentially-weighted variance; float output
+- [ ] **AGG-DECAY-03**: `bv.ew_zscore(field, half_life=...)` — current event's z-score against EWMA/EWVar baseline; float output
+- [ ] **AGG-DECAY-04**: `bv.decayed_sum(field, half_life=...)` — forward-decay sum (Cormode); float output
+- [ ] **AGG-DECAY-05**: `bv.decayed_count(half_life=...)` — forward-decay count; float output
+- [ ] **AGG-DECAY-06**: `bv.twa(field, window=...)` — time-weighted average for irregularly-sampled gauge fields; float output
+- [ ] **AGG-DECAY-07**: Half-life parameter accepts duration strings; rejected at decorator time if malformed
 
-### Feature primitives — geo
+### AGG-VEL — Velocity / trend
 
-- [ ] **PRIM-GEO-01**: `geo_velocity` — max implied km/h between consecutive events in window
-- [ ] **PRIM-GEO-02**: `geo_distance` — total path length in window (sum of consecutive distances)
-- [ ] **PRIM-GEO-03**: `geo_spread` — max distance from mean center in window
-- [ ] **PRIM-GEO-04**: `unique_cells` — distinct geohash cells (configurable precision) visited
-- [ ] **PRIM-GEO-05**: `geo_entropy` — Shannon entropy over geohash cell distribution
-- [ ] **PRIM-GEO-06**: `distance_from_home` — distance from centroid of top-K most frequent locations
+- [ ] **AGG-VEL-01**: `bv.rate_of_change(field|count, window=..., sub_window=...)` — Δrate or acceleration across two adjacent windows; float
+- [ ] **AGG-VEL-02**: `bv.inter_arrival_stats(where=..., window=...)` — mean, stddev, CV of gaps between matching events; struct output `{mean_ms, stddev_ms, cv}`
+- [ ] **AGG-VEL-03**: `bv.burst_count(sub_window=..., window=...)` — max events observed in any sub-window inside the outer window; int output
+- [ ] **AGG-VEL-04**: `bv.delta_from_prev(field)` — current value minus previous event's value; preserves field type
+- [ ] **AGG-VEL-05**: `bv.trend(field, window=...)` — slope of EW linear regression over window; float
+- [ ] **AGG-VEL-06**: `bv.trend_residual(field, window=...)` — current value minus trend-predicted value; float
+- [ ] **AGG-VEL-07**: `bv.outlier_count(field, sigma=3, window=...)` — count of events beyond Nσ in window; int
+- [ ] **AGG-VEL-08**: `bv.value_change_count(field, window=...)` — count of field value flips; int
 
-### Feature primitives — sketches
+### AGG-RECENCY — Recency / streaks
 
-- [ ] **PRIM-SKETCH-01**: `distinct` — HyperLogLog cardinality estimate over a field in window
-- [ ] **PRIM-SKETCH-02**: `bloom_member` — Bloom filter ever-seen membership with configurable capacity + FPR
-- [ ] **PRIM-SKETCH-03**: `quantile` — DDSketch-backed p50/p95/p99 (configurable q) over windowed field values
-- [ ] **PRIM-SKETCH-04**: `top_k` — SpaceSaving top-K frequent values in window with approximate counts
-- [ ] **PRIM-SKETCH-05**: `entropy` — Shannon entropy over categorical field distribution
+- [ ] **AGG-RECENCY-01**: `bv.streak(where=...)` — length of current consecutive matching streak; int
+- [ ] **AGG-RECENCY-02**: `bv.max_streak(where=...)` — longest streak length ever observed; int
+- [ ] **AGG-RECENCY-03**: `bv.negative_streak(where=...)` — length of current consecutive non-matching streak; int
+- [ ] **AGG-RECENCY-04**: `bv.first_seen_in_window(field, window=...)` — Bloom + timestamp; bool output — "is this value new to this entity in window N?"
 
-### Windowing semantics
+### AGG-BUFFER — Bounded buffers
 
-- [ ] **WIN-01**: Uniform event-time bucketing, default cap 64 buckets per windowed primitive, bucket width = `ceil(window_ms / 64)`
-- [ ] **WIN-02**: Per-feature `bucket_count` override accepted at registration time with warning log
-- [ ] **WIN-03**: Windowless "lifetime" mode when `window_ms` omitted (state is all-time, no rollover)
-- [ ] **WIN-04**: Bucket rollover on apply, not on timer — lazy bucket eviction keyed on current event's event_time
+- [ ] **AGG-BUFFER-01**: `bv.histogram(field, buckets=[...], window=...)` — count per fixed bucket; returns dict `{bucket_label: count}`
+- [ ] **AGG-BUFFER-02**: `bv.hour_of_day_histogram()` — 24-bin count histogram per entity; dict output
+- [ ] **AGG-BUFFER-03**: `bv.dow_hour_histogram()` — 168-bin (day × hour) histogram; dict output
+- [ ] **AGG-BUFFER-04**: `bv.seasonal_deviation(field=None)` — z-score of current event vs this entity's hour-of-day baseline; float
+- [ ] **AGG-BUFFER-05**: `bv.event_type_mix(field, categories=[...], window=...)` — proportion per category; dict output
+- [ ] **AGG-BUFFER-06**: `bv.most_recent_n(field, n)` — deque of N most-recent values; list output
+- [ ] **AGG-BUFFER-07**: `bv.reservoir_sample(field, k)` — uniform K-sample over all history; list output
 
-### Durability
+### AGG-GEO — Geo
 
-- [ ] **DUR-01**: Per-instance append-only WAL file with group-commit fsync every 1–5ms or 1MB (whichever first)
-- [ ] **DUR-02**: Push ACK returns only after event's LSN has been fsynced past the caller's position
-- [ ] **DUR-03**: WAL format includes schema_version, stream_id, event_time, entity_key, and event body; sufficient for full state rebuild
-- [ ] **DUR-04**: WAL rotation: old segments truncated past the latest snapshot's covered LSN
+- [ ] **AGG-GEO-01**: `bv.geo_velocity(lat=..., lon=..., window=...)` — max implied km/h between consecutive events in window; float
+- [ ] **AGG-GEO-02**: `bv.geo_distance(lat=..., lon=..., window=...)` — total path length in window; float
+- [ ] **AGG-GEO-03**: `bv.geo_spread(lat=..., lon=..., window=...)` — max distance from mean center; float
+- [ ] **AGG-GEO-04**: `bv.unique_cells(lat=..., lon=..., precision=..., window=...)` — distinct geohash cells visited; int
+- [ ] **AGG-GEO-05**: `bv.geo_entropy(lat=..., lon=..., precision=..., window=...)` — Shannon entropy over geohash cell distribution; float
+- [ ] **AGG-GEO-06**: `bv.distance_from_home(lat=..., lon=..., samples=100)` — distance of current event from running centroid of top-K frequent locations; float
 
-### Recovery
+### AGG-Z — Entity-level z-score
 
-- [ ] **RECOV-01**: Periodic snapshot (default every 30s, configurable) serializes in-memory state to disk
-- [ ] **RECOV-02**: Recovery on boot loads latest snapshot + replays WAL from snapshot's covered LSN to present
-- [ ] **RECOV-03**: RTO target: server online in under 30s at 10GB state on NVMe (snapshot load + WAL replay combined)
-- [ ] **RECOV-04**: Corrupt snapshot or WAL is detected (checksum mismatch) and rejected with a clear error; operator can fall back to earlier snapshot
+- [ ] **AGG-Z-01**: `bv.z_score(field, baseline_window=..., current=...)` — current event's value vs rolling mean/stddev baseline; float
 
-### Observability
+### SDK-JOIN — Joins and unions
 
-- [ ] **OBS-01**: `/metrics` endpoint in Prometheus format; counters for registered primitives, push throughput, get QPS, WAL group-commit latency histogram
-- [ ] **OBS-02**: `/health` liveness endpoint (cheap, returns 200 when server is up)
-- [ ] **OBS-03**: `/ready` readiness endpoint (returns 200 only after recovery complete)
-- [ ] **OBS-04**: Structured JSON logs at INFO/WARN/ERROR levels; trace_id from `X-Trace-Id` header propagated across logs per request
+- [ ] **SDK-JOIN-01**: `event1.join(event2, on=..., within=..., type="inner"|"left")` — windowed event↔event join; returns `EventDerivation`; `within` is a required duration string
+- [ ] **SDK-JOIN-02**: `event.join(table, on=..., type="inner"|"left")` — stream-table enrichment; `within` forbidden; returns `EventDerivation`
+- [ ] **SDK-JOIN-03**: `table.join(other_table, on=..., type="inner"|"left")` — table-table join; v0 enforces `on` keys equal both tables' full key lists; returns `TableDerivation`
+- [ ] **SDK-JOIN-04**: Join output schema: left wins on field-name collision; right's colliding fields get `_right` suffix; join keys retained in output
+- [ ] **SDK-JOIN-05**: `bv.union(*events)` — concatenates events; requires field-by-field schema identity (names + types + nullability); users align via `.cast()` / `.fillna()` upstream if needed
 
-### Performance
+### SDK-APP — Python `App` client
 
-- [ ] **PERF-01**: Single-thread apply loop sustains ≥ 3M events/sec on modern server NVMe hardware for 32-byte events updating 5 primitives
-- [ ] **PERF-02**: Batch get of 100 features × 1 entity returns P50 < 2ms, P99 < 10ms on warm cache
-- [ ] **PERF-03**: WAL group-commit adds P50 < 2ms to push ACK latency at default group-commit window
+- [ ] **SDK-APP-01**: `bv.App(url)` accepts HTTP URL; `.close()` / context manager for lifecycle management
+- [ ] **SDK-APP-02**: `app.register(*descriptors)` — validates DAG, topologically sorts, serializes each to REGISTER JSON, POSTs to `/register`; assigns server version returned in response
+- [ ] **SDK-APP-03**: `app.validate(*descriptors)` — runs the same DAG validation as register but with zero network I/O; returns `list[ValidationError]`
+- [ ] **SDK-APP-04**: `app.push(Event, event_dict)` — async fire-and-forget push; returns immediately; errors surface on next API call
+- [ ] **SDK-APP-05**: `app.push_sync(Event, event_dict)` → `FeatureResult` — sync push that returns computed features for the event's entity in the same round-trip
+- [ ] **SDK-APP-06**: `app.push_many(Event, [dicts])` — batched push, single wire frame; reports errors per `(batch_id, event_index)`
+- [ ] **SDK-APP-07**: `app.push(Table, key, row_dict)` — synchronous table upsert; blocks until server ACK
+- [ ] **SDK-APP-08**: `app.delete(Table, key)` — synchronous tombstone; server retains 7d for late cascade consumers
+- [ ] **SDK-APP-09**: `app.get(key)` → `FeatureResult` — all features for the key; attribute and dict-style access; unknown key → empty result
+- [ ] **SDK-APP-10**: `app.mget([keys])` — batched feature lookup; returns dict of key→FeatureResult
+- [ ] **SDK-APP-11**: `app.get_multi([Table1, Table2, ...], key=...)` — fetch features across multiple tables in one round-trip; returns dict of descriptor→FeatureResult
+- [ ] **SDK-APP-12**: `app.set(key, features_dict)` and `app.mset({key: features_dict, ...})` — direct feature writes
+- [ ] **SDK-APP-13**: `app.flush()` — awaits all outstanding async pushes; called automatically on context-manager exit
+- [ ] **SDK-APP-14**: `FeatureResult` supports `r.feature_name` attribute access and `r["feature_name"]` dict access; `r.to_dict()` for explicit dump
+- [ ] **SDK-APP-15**: `ValidationError` structure: `kind` (cycle/missing_dep/schema_mismatch/bad_return_type), `path` (e.g., `Checkouts.filter[2]`), `message`; str repr formats as `[{kind}] {path}: {message}`
 
-### Python SDK
+### SDK-FORK — Scoped local replica
 
-- [ ] **SDK-01**: Python SDK package installable via `pip install beava`; version matches server version
-- [ ] **SDK-02**: SDK exposes `sync` client (HTTP request-response) with `push`, `push_batch`, `get`, `get_batch`, `register` methods
-- [ ] **SDK-03**: SDK exposes `fire_and_forget` mode that enqueues pushes locally and flushes on a timer / buffer threshold; no persistent connection, no callbacks
-- [ ] **SDK-04**: SDK has zero required dependencies beyond stdlib + `requests` (or equivalent HTTP client)
-- [ ] **SDK-05**: SDK surface covered by tests that hit a real beava instance over HTTP
+- [ ] **SDK-FORK-01**: `bv.fork(remote=..., events=[...], keys=[...], token=..., pipelines=[...])` context manager — spawns local scoped replica, registers the pipelines, replicates the listed keys from the remote
+- [ ] **SDK-FORK-02**: `ForkedReplica.get(descriptor, key=...)` — local read against the fork; same `FeatureResult` shape as `App.get`
+- [ ] **SDK-FORK-03**: Fork CLI `beava fork` is a binary subcommand (wired in Phase 13 packaging)
+- [ ] **SDK-FORK-04**: Fork replica state is ephemeral (destroyed on context exit); no persistence across invocations
 
-### Docs + devex
+### SRV-API — HTTP API surface
 
-- [ ] **DOC-01**: `docs/quickstart.md` walks through a fraud-scoring demo (register → push → get) in ≤ 10 curl commands, under 5 minutes
-- [ ] **DOC-02**: `docs/primitives.md` lists every primitive type with JSON example, example return value, and one-line use case
-- [ ] **DOC-03**: `docs/http-api.md` documents all four endpoints with request/response shapes and error codes
-- [ ] **DOC-04**: `docs/architecture.md` describes the single-thread apply loop, WAL group-commit, snapshot recovery, and memory sizing guidance
-- [ ] **DOC-05**: `README.md` at repo root links to the docs site and has a 3-command smoke demo
+- [ ] **SRV-API-01**: `POST /register` accepts a JSON DAG payload (topologically-ordered list of event/table/derivation nodes); returns `{status: "ok", registry_version: N, registered_descriptors: [...]}`
+- [ ] **SRV-API-02**: Registration is additive-only: submitting a DAG that adds new nodes succeeds with version bump; submitting a DAG that removes or changes an existing node returns 409 with structured `{diff: {added, removed, changed}}`
+- [ ] **SRV-API-03**: `POST /push/{event_name}` accepts JSON event; validates against registered schema; returns `{ack_lsn, idempotent_replay, registry_version}` only after WAL fsync past LSN
+- [ ] **SRV-API-04**: `POST /push-sync/{event_name}` — same as /push but returns `{ack_lsn, features: {...}, ...}` with computed features
+- [ ] **SRV-API-05**: `POST /push-batch/{event_name}` accepts JSON array; returns per-event results
+- [ ] **SRV-API-06**: `POST /push-table/{table_name}` upserts a row by primary key
+- [ ] **SRV-API-07**: `POST /delete-table/{table_name}` tombstones a row by primary key
+- [ ] **SRV-API-08**: `POST /get` accepts `{keys: [...], features: [...]}`; returns `{key: {feature: value}}` map; per-request cap keys × features ≤ 10000
+- [ ] **SRV-API-09**: `GET /get/{feature}/{key}` single-feature lookup; `{value, meta?}` shape
+- [ ] **SRV-API-10**: `POST /set` and `POST /mset` accept direct feature writes
+- [ ] **SRV-API-11**: Content-Type application/json enforced; 415 on mismatch
+- [ ] **SRV-API-12**: Validation errors return 400 with `{error: {code, path, reason}}` naming the offending DAG/field/expression path
+- [ ] **SRV-API-13**: All endpoints support optional `X-Trace-Id` header propagated to logs
 
-### Testing
+### SRV-REG — Registry
 
-- [ ] **TEST-01**: Table-driven unit tests per primitive: given events, assert expected feature value
-- [ ] **TEST-02**: Integration tests for the HTTP API using real server + real HTTP client
-- [ ] **TEST-03**: Crash-recovery test: kill process mid-push; restart; verify state matches pre-crash plus replayed WAL
-- [ ] **TEST-04**: Idempotency test: retried pushes with same request_id produce byte-identical PushResponse; no double-apply
-- [ ] **TEST-05**: Windowing test: verify bucket rollover + event-time bucketing produces deterministic results under event replay
-- [ ] **TEST-06**: Throughput benchmark harness: reports EPS under single-thread apply with WAL fsync enabled
+- [ ] **SRV-REG-01**: Registry stores events, tables, and derivation specs in an `Arc<RwLock>` wrapper keyed by descriptor name
+- [ ] **SRV-REG-02**: Registry assigns monotonic `registry_version` (u64) incremented on every successful additive registration
+- [ ] **SRV-REG-03**: Registry diff engine computes `{added, removed, changed}` between submitted DAG and current state; removals and changes produce 409, added produces 200 + version bump
+- [ ] **SRV-REG-04**: Registration WAL-records every `/register` request so the registry reconstructs deterministically on recovery
+- [ ] **SRV-REG-05**: Registry-version bumps commit atomically with the WAL entry (single fsync covers both)
+- [ ] **SRV-REG-06**: Optional `GET /registry?version=N` returns the full registry state at that version for debugging
 
-### Packaging
+### SRV-APPLY — Apply loop + windowing
 
-- [ ] **PKG-01**: Prebuilt binaries published via GitHub Releases for linux/amd64, linux/arm64, darwin/arm64
-- [ ] **PKG-02**: Docker image published (e.g. `ghcr.io/petrpan26/beava:v0`) with zero-config entrypoint
-- [ ] **PKG-03**: Configuration via env vars (`BEAVA_DATA_DIR`, `BEAVA_PORT`, etc.) + optional single YAML config; no external config store
-- [ ] **PKG-04**: Binary size under 200MB stripped
+- [ ] **SRV-APPLY-01**: Single-thread apply loop: one dedicated OS thread receives pushed events via SPSC from HTTP accept, updates per-entity state, no locks on hot path
+- [ ] **SRV-APPLY-02**: Each event's apply runs every registered derivation affected by that event's source (via registry DAG)
+- [ ] **SRV-APPLY-03**: `Windowed<Op>` wrapper: uniform event-time bucketing, default cap 64 buckets, width = `ceil(window_ms / 64)`
+- [ ] **SRV-APPLY-04**: Lazy bucket rollover: on each apply, evict expired buckets based on current event_time
+- [ ] **SRV-APPLY-05**: "Lifetime" mode when `window` omitted — one bucket, no rollover
+- [ ] **SRV-APPLY-06**: Expression evaluator parses `to_expr_string()` canonical form into AST; evaluates per-event in-place with zero allocations on the hot path
+- [ ] **SRV-APPLY-07**: Stateless ops chain compiled at registration time into a sequence of row transformations; executed per event before aggregations see it
+- [ ] **SRV-APPLY-08**: Join support: stream-stream windowed buffer per (join_key, side) with time-indexed eviction; stream-table current-row lookup
+
+### SRV-DUR — Durability
+
+- [ ] **SRV-DUR-01**: Per-instance append-only WAL file with group-commit fsync every 1–5ms or 1MB (whichever first)
+- [ ] **SRV-DUR-02**: `/push` ACK returns only after event's LSN has been fsynced
+- [ ] **SRV-DUR-03**: WAL format: header with `registry_version`, `stream_id`, `event_time`, entity key(s), event body; sufficient for full state rebuild
+- [ ] **SRV-DUR-04**: WAL rotation: old segments truncated past the latest snapshot's covered LSN
+- [ ] **SRV-DUR-05**: Stream-level idempotency: `idempotency_key` + `idempotency_ttl` stored at registration; duplicate request within TTL replays byte-identical response, no state mutation
+
+### SRV-RECOV — Recovery
+
+- [ ] **SRV-RECOV-01**: Periodic snapshot (default 30s, configurable) serializes in-memory state + registry to disk
+- [ ] **SRV-RECOV-02**: Recovery on boot loads latest snapshot + replays WAL from snapshot's covered LSN to present
+- [ ] **SRV-RECOV-03**: RTO target: server online under 30s at 10GB state on NVMe (combined load + replay)
+- [ ] **SRV-RECOV-04**: Corrupt snapshot or WAL (checksum mismatch) detected with clear operator message; fall back to earlier snapshot
+- [ ] **SRV-RECOV-05**: Schema evolution: schema versions stored in registry so older WAL entries remain replayable after additive-only schema changes
+
+### OBS — Observability
+
+- [ ] **OBS-01**: `/metrics` Prometheus format: per-endpoint QPS/latency histograms, per-operator apply-count, WAL group-commit latency, snapshot-latency, registry-version gauge
+- [ ] **OBS-02**: `/health` liveness (cheap, returns 200 when server is up)
+- [ ] **OBS-03**: `/ready` readiness (returns 200 only after recovery complete)
+- [ ] **OBS-04**: Structured JSON logs at INFO/WARN/ERROR; `trace_id` propagation from `X-Trace-Id` header across logs per request
+
+### PERF — Performance targets
+
+- [ ] **PERF-01**: Single-thread apply sustains ≥ 3M events/sec on modern NVMe server-class hardware for 32-byte events × 5 aggregations
+- [ ] **PERF-02**: Batch `/get` of 100 features × 1 entity: P50 < 2ms, P99 < 10ms warm-cache
+- [ ] **PERF-03**: WAL group-commit adds P50 < 2ms to push ACK latency at default config
+- [ ] **PERF-04**: Benchmark harness exposes a reproducible scenario covering each operator family; checked into `benches/`
+
+### TEST — Testing + quality
+
+- [ ] **TEST-01**: Table-driven unit tests per operator: push known events, assert expected feature values
+- [ ] **TEST-02**: Expression DSL proptest coverage: random predicate + random event → truth-table equivalence
+- [ ] **TEST-03**: Integration tests via real server + real HTTP client using `TestServer` harness from Phase 1
+- [ ] **TEST-04**: DAG validation tests: cycles, missing deps, schema mismatches, additive-conflict diff correctness
+- [ ] **TEST-05**: Crash-recovery test: kill process mid-push; restart; verify state equals pre-crash + replayed WAL
+- [ ] **TEST-06**: Python SDK tests hit real beava instance over HTTP; cover register + push + push_sync + push_many + get + mget + fork
+- [ ] **TEST-07**: Join tests: event↔event, event↔table, table↔table across window boundaries
+
+### DOC — Documentation
+
+- [ ] **DOC-01**: `docs/quickstart.md` — `pip install beava` → first feature in under 5 minutes with ≤ 20 lines of Python
+- [ ] **DOC-02**: `docs/operators.md` — every operator with example, parameters, return shape, use case
+- [ ] **DOC-03**: `docs/concepts.md` — event vs table, stateless ops, aggregations, joins, unions
+- [ ] **DOC-04**: `docs/http-api.md` — wire protocol for non-Python users with `curl` examples
+- [ ] **DOC-05**: `docs/architecture.md` — single-thread apply loop, WAL + snapshot, memory sizing, recovery
+- [ ] **DOC-06**: `README.md` has 3-command smoke demo
+
+### PKG — Packaging
+
+- [ ] **PKG-01**: Prebuilt Rust binaries on GitHub Releases for linux/amd64, linux/arm64, darwin/arm64
+- [ ] **PKG-02**: `pip install beava` publishes the Python SDK (PyPI); version pinned to server release
+- [ ] **PKG-03**: Docker image with zero-config entrypoint (`docker run beava/beava:v0`)
+- [ ] **PKG-04**: `beava fork` subcommand available in the binary
+- [ ] **PKG-05**: Binary size under 200MB stripped
 
 ## v2 Requirements
 
-Deferred to future release. Tracked but not in current roadmap.
+Deferred to future release.
 
-### Emit / event pipeline
+### v0.1: Table aggregation with retraction
 
-- **EMIT-01**: Operators can emit downstream events back to the client's push response
-- **EMIT-02**: Operator-to-operator event routing (A's emit feeds B's apply)
-- **EMIT-03**: Webhook delivery of emitted events to user-registered URLs
-- **EMIT-04**: Subscribe API for emitted events separate from the push path
+- **V0.1-TABLE-01**: `table.group_by(...).agg(...)` with retraction propagation through derived features
 
-### Timers
+### Emit / timers / CEP / attribution
 
-- **TIMER-01**: Event-time timer callbacks firing `on_timer` for debouncer, session-end, auction close, SLA timers
+- **EMIT-01**: Operators emit downstream events via `OpOutcome::Emit`
+- **TIMER-01**: Event-time timer callbacks (`on_timer`) unlocking debouncer, auction close, session-end
+- **CEP-01**: Sequence pattern detection (`bv.sequence([steps], within=...)`)
+- **SM-01**: State machine operator with transition-event emission
+- **ATTR-01**: Multi-touch attribution operators (last_touch / first_touch / linear / time_decay / u_shaped)
 
-### CEP / state machines / attribution
+### Advanced
 
-- **ADV-CEP-01**: Sequence pattern detection with multi-step `within` windows
-- **ADV-SM-01**: State machine operator with transition-event emission
-- **ADV-ATTR-01**: Multi-touch attribution with time-decay / linear / u-shaped models
-
-### Backfill + branching
-
-- **BACKFILL-01**: Replay historical events into a forked state branch
-- **BRANCH-01**: Fork state snapshot → diverge via test events → promote or discard
-
-### Cross-entity features
-
-- **XENT-01**: `co_occurrence_count`, `graph_degree` — require cross-shard coordination
-- **XENT-02**: Stream-stream joins on non-matching shard keys
-
-### HA / commercial tier
-
-- **HA-01**: Read replicas with WAL-shipping replication
-- **HA-02**: Cross-region deployment with manual failover
-- **HA-03**: Multi-primary coordination (raft or equivalent)
-
-### Sketch family additions
-
-- **SKETCH-02-01**: Rolling Pearson correlation over two fields
-- **SKETCH-02-02**: HLL Jaccard similarity over self-snapshots across time windows
-- **SKETCH-02-03**: VarOpt weighted reservoir sample
-
-### Extensibility
-
-- **EXT-01**: User-defined custom operators via Rust plugin ABI
-- **EXT-02**: SQL-shaped query language over registered features
+- **BACKFILL-01**: Branch/replay/promote/discard workflow for validating new feature definitions
+- **XENT-01**: Cross-entity operators (`co_occurrence_count`, `graph_degree`) requiring cross-shard coordination
+- **HA-01**: Read replicas, commercial-tier HA with WAL shipping
+- **JOIN-EXTRA-01**: `right` / `full` / `outer` joins; partial-key table-table joins
+- **UNION-RECONCILE-01**: `bv.union` with implicit schema reconciliation / coercions
+- **PLUGIN-01**: User-defined operators via Rust plugin ABI
+- **SQL-01**: SQL-shaped query DSL on top of the registry
 
 ## Out of Scope
 
-Permanently excluded from Beava OSS. Listed with reasoning to prevent re-adding.
+Permanently excluded from Beava OSS.
 
 | Feature | Reason |
 |---------|--------|
-| Cross-entity / cross-shard features | Blocked by single-thread single-process architecture. Would require fundamentally different design. |
-| State exceeding single-box RAM (SSD tiering) | Adds complexity that undermines the "simple in-memory server" value prop. Users partition at app layer. |
-| Multi-instance coordination in OSS | Built-in routing, replication, cross-instance WAL shipping. HA belongs in commercial tier. |
-| Multi-tenant resource isolation | Tenancy is a higher-layer concern; beava is single-tenant by design. |
-| TCP binary wire protocol | HTTP-first is the value prop. No binary protocol in OSS. |
-| Operator implementation by user Rust code | Custom operators require recompile + plugin ABI. v0 ships 40 built-ins only. |
+| Cross-entity operators in OSS | Blocked by single-thread single-process architecture |
+| SSD-tiered state | Undermines the "in-memory server" value prop; users partition at app layer |
+| Multi-instance coordination in OSS | HA is commercial-tier |
+| Multi-tenancy | Single-tenant by design |
+| TCP binary wire | HTTP-first is the value prop |
+| Operator by user Rust code at runtime | Plugin ABI future; recompile-per-op only |
+| Table aggregation without retraction | Correctness requires retraction; deferred to v0.1 |
 
 ## Traceability
 
-Which phases cover which requirements. Each REQ-ID maps to exactly one primary phase; cross-phase verification (e.g. SDK re-tests API endpoints in Phase 10) is noted in ROADMAP.md but does not double-count here.
+Which phases cover which requirements. Updated during roadmap creation. See `ROADMAP.md`.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| API-01 | Phase 2 | Pending |
-| API-02 | Phase 2 | Pending |
-| API-03 | Phase 3 (shape) → Phase 4 (durability completes it) — primary: Phase 3 | Pending |
-| API-04 | Phase 3 | Pending |
-| API-05 | Phase 3 | Pending |
-| API-06 | Phase 3 | Pending |
-| API-07 | Phase 3 | Pending |
-| API-08 | Phase 3 | Pending |
-| API-09 | Phase 2 | Pending |
-| STREAM-01 | Phase 2 | Pending |
-| STREAM-02 | Phase 4 | Pending |
-| STREAM-03 | Phase 4 | Pending |
-| STREAM-04 | Phase 5 | Pending |
-| STREAM-05 | Phase 5 | Pending |
-| REG-01 | Phase 2 | Pending |
-| REG-02 | Phase 2 | Pending |
-| REG-03 | Phase 2 | Pending |
-| REG-04 | Phase 2 | Pending |
-| PRIM-CORE-01 | Phase 3 | Pending |
-| PRIM-CORE-02 | Phase 3 | Pending |
-| PRIM-CORE-03 | Phase 3 | Pending |
-| PRIM-CORE-04 | Phase 3 | Pending |
-| PRIM-CORE-05 | Phase 3 | Pending |
-| PRIM-RECENCY-01 | Phase 6 | Pending |
-| PRIM-RECENCY-02 | Phase 6 | Pending |
-| PRIM-RECENCY-03 | Phase 6 | Pending |
-| PRIM-RECENCY-04 | Phase 6 | Pending |
-| PRIM-RECENCY-05 | Phase 6 | Pending |
-| PRIM-RECENCY-06 | Phase 6 | Pending |
-| PRIM-RECENCY-07 | Phase 6 | Pending |
-| PRIM-RECENCY-08 | Phase 6 | Pending |
-| PRIM-DECAY-01 | Phase 6 | Pending |
-| PRIM-DECAY-02 | Phase 6 | Pending |
-| PRIM-DECAY-03 | Phase 6 | Pending |
-| PRIM-DECAY-04 | Phase 6 | Pending |
-| PRIM-VEL-01 | Phase 6 | Pending |
-| PRIM-VEL-02 | Phase 6 | Pending |
-| PRIM-VEL-03 | Phase 6 | Pending |
-| PRIM-VEL-04 | Phase 6 | Pending |
-| PRIM-VEL-05 | Phase 6 | Pending |
-| PRIM-VEL-06 | Phase 6 | Pending |
-| PRIM-VEL-07 | Phase 6 | Pending |
-| PRIM-BUF-01 | Phase 7 | Pending |
-| PRIM-BUF-02 | Phase 7 | Pending |
-| PRIM-BUF-03 | Phase 7 | Pending |
-| PRIM-BUF-04 | Phase 7 | Pending |
-| PRIM-BUF-05 | Phase 7 | Pending |
-| PRIM-BUF-06 | Phase 7 | Pending |
-| PRIM-BUF-07 | Phase 7 | Pending |
-| PRIM-BUF-08 | Phase 7 | Pending |
-| PRIM-GEO-01 | Phase 7 | Pending |
-| PRIM-GEO-02 | Phase 7 | Pending |
-| PRIM-GEO-03 | Phase 7 | Pending |
-| PRIM-GEO-04 | Phase 7 | Pending |
-| PRIM-GEO-05 | Phase 7 | Pending |
-| PRIM-GEO-06 | Phase 7 | Pending |
-| PRIM-SKETCH-01 | Phase 8 | Pending |
-| PRIM-SKETCH-02 | Phase 8 | Pending |
-| PRIM-SKETCH-03 | Phase 8 | Pending |
-| PRIM-SKETCH-04 | Phase 8 | Pending |
-| PRIM-SKETCH-05 | Phase 8 | Pending |
-| WIN-01 | Phase 2 | Pending |
-| WIN-02 | Phase 2 | Pending |
-| WIN-03 | Phase 2 | Pending |
-| WIN-04 | Phase 2 | Pending |
-| DUR-01 | Phase 4 | Pending |
-| DUR-02 | Phase 4 | Pending |
-| DUR-03 | Phase 4 | Pending |
-| DUR-04 | Phase 4 | Pending |
-| RECOV-01 | Phase 5 | Pending |
-| RECOV-02 | Phase 5 | Pending |
-| RECOV-03 | Phase 5 | Pending |
-| RECOV-04 | Phase 5 | Pending |
-| OBS-01 | Phase 9 | Pending |
-| OBS-02 | Phase 9 | Pending |
-| OBS-03 | Phase 9 | Pending |
-| OBS-04 | Phase 9 | Pending |
-| PERF-01 | Phase 9 | Pending |
-| PERF-02 | Phase 9 | Pending |
-| PERF-03 | Phase 9 | Pending |
-| SDK-01 | Phase 10 | Pending |
-| SDK-02 | Phase 10 | Pending |
-| SDK-03 | Phase 10 | Pending |
-| SDK-04 | Phase 10 | Pending |
-| SDK-05 | Phase 10 | Pending |
-| DOC-01 | Phase 10 | Pending |
-| DOC-02 | Phase 10 | Pending |
-| DOC-03 | Phase 10 | Pending |
-| DOC-04 | Phase 10 | Pending |
-| DOC-05 | Phase 10 | Pending |
-| TEST-01 | Phase 3 | Pending |
-| TEST-02 | Phase 2 | Pending |
-| TEST-03 | Phase 5 | Pending |
-| TEST-04 | Phase 4 | Pending |
-| TEST-05 | Phase 3 | Pending |
-| TEST-06 | Phase 5 | Pending |
-| PKG-01 | Phase 10 | Pending |
-| PKG-02 | Phase 10 | Pending |
-| PKG-03 | Phase 10 | Pending |
-| PKG-04 | Phase 10 | Pending |
+| (Populated by roadmapper) | | |
 
 **Coverage:**
-- v1 requirements: 100 total
-- Mapped to phases: 100 ✓
-- Unmapped: 0
-
-**Per-phase requirement counts:**
-
-| Phase | Requirements | Count |
-|-------|--------------|-------|
-| Phase 1 (Foundation) | (infrastructure only, no scope-shipping reqs) | 0 |
-| Phase 2 (Primitive infra + registration) | API-01, API-02, API-09, STREAM-01, REG-01..04, WIN-01..04, TEST-02 | 12 |
-| Phase 3 (Core aggregates + push/get) | API-03..08, PRIM-CORE-01..05, TEST-01, TEST-05 | 13 |
-| Phase 4 (WAL + idempotency) | STREAM-02, STREAM-03, DUR-01..04, TEST-04 | 7 |
-| Phase 5 (Snapshot + recovery) | STREAM-04, STREAM-05, RECOV-01..04, TEST-03, TEST-06 | 8 |
-| Phase 6 (Recency/decay/velocity) | PRIM-RECENCY-01..08, PRIM-DECAY-01..04, PRIM-VEL-01..07 | 19 |
-| Phase 7 (Buffers + geo) | PRIM-BUF-01..08, PRIM-GEO-01..06 | 14 |
-| Phase 8 (Sketches) | PRIM-SKETCH-01..05 | 5 |
-| Phase 9 (Observability + perf) | OBS-01..04, PERF-01..03 | 7 |
-| Phase 10 (SDK + docs + packaging) | SDK-01..05, DOC-01..05, PKG-01..04 | 14 |
-| **Total** | | **99** |
-
-*Phase 3 covers `API-03`, which completes its durability half in Phase 4; counted once in Phase 3 (primary). Phase 10 re-verifies `API-01`/`API-02` through the SDK surface but these are primary-mapped to Phase 2; not double-counted. Sum is 99 vs 100 because Phase 1 intentionally carries 0 scope-shipping REQ-IDs (pure infrastructure phase).*
-
-Recount: 0+12+13+7+8+19+14+5+7+14 = 99 primary mappings; `API-03`'s shape-vs-durability split accounts for the 100th REQ-ID being double-noted (primary Phase 3, durability completes in Phase 4). All 100 REQ-IDs are covered; no orphans.
+- v1 requirements: ~110 total (count is approximate until roadmapper confirms final REQ-ID enumeration)
+- Mapped to phases: 0 (pending roadmap)
+- Unmapped: all (pending roadmap)
 
 ---
-*Requirements defined: 2026-04-22*
-*Last updated: 2026-04-22 after roadmap creation (traceability populated, 100/100 coverage).*
+*Requirements defined: 2026-04-22 (re-plan to v1 API shape)*

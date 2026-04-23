@@ -2,11 +2,11 @@
 
 ## What This Is
 
-Beava is a single-binary real-time feature server for fraud, ad-tech, and behavioral analytics. Push events in over HTTP, beava tracks per-entity features (counters, velocities, distances, rates, distributions) updated atomically on every event, and your application queries them via HTTP to power live scoring rules. Think "Redis for stateful streaming features," with 40+ purpose-built aggregation primitives instead of do-it-yourself Lua scripts.
+Beava is a single-binary real-time feature server built around a dataframe-style Python DSL. Users declare `@bv.event` sources, `@bv.table` snapshots, and derived features (aggregations, joins, unions, stateless transforms) using decorators and an expression DSL. The server ingests events over HTTP, maintains per-entity state in memory, and serves features sub-millisecond. The product is the spiritual successor to Beava v1 — same authoring experience, dramatically simpler runtime (single process, single thread, in-memory state, HTTP wire), and a richer operator catalogue.
 
 ## Core Value
 
-**Declare a feature, push events, query it — in under 10 minutes, with curl alone.** Every architectural and product choice serves this: HTTP-first API, JSON-declarative feature registration, zero SDK requirement, single binary, in-memory state, batch lookup for sub-millisecond fraud/feature-serving decisions.
+**Feature authoring as composable Python code that ships to production unchanged.** A data scientist writes `@bv.event`, `.filter(...)`, `group_by("user").agg(...)`, `@bv.table(key=..., ttl=...)`, `.join(...)`, registers with `app.register()`, and their feature definitions run at live fraud-serving latency. Every architectural decision serves this: the Python SDK is the blessed UX, the HTTP wire is the contract, JSON is transport only, all state lives in RAM for correctness-by-construction, and the server binary is a single Rust artifact a single operator can run.
 
 ## Requirements
 
@@ -16,145 +16,170 @@ Beava is a single-binary real-time feature server for fraud, ad-tech, and behavi
 
 ### Active
 
-Grouped by theme. Every entry is a hypothesis until shipped + used in production.
+Grouped by theme. Every entry is a hypothesis until shipped + used in production. Full enumerated REQ-IDs live in `REQUIREMENTS.md`.
 
-**A. Core server + API**
-- [ ] REQ-API-01: HTTP endpoints `POST /register`, `POST /push/{stream}`, `POST /get`, `GET /get/{feature}/{key}` exposed; zero wire-protocol-versioning beyond JSON/HTTP
-- [ ] REQ-API-02: Register payload accepts stream declaration + list of feature declarations in one call, idempotent on re-register
-- [ ] REQ-API-03: Push endpoint accepts typed event, updates all affected features atomically, returns `{ack_lsn, idempotent_replay}`; no emits, no outcomes in v0 beyond ACK
-- [ ] REQ-API-04: Batch get accepts `{keys: [...], features: [...]}`, returns `{key: {feature: value}}` map; per-request cap `keys × features ≤ 10000`
-- [ ] REQ-API-05: Single get returns `{value}` (or `{value, meta}` for structured returns)
-- [ ] REQ-API-06: Server runs as one process, one thread for event processing; auxiliary I/O threads for WAL fsync and HTTP only
-- [ ] REQ-API-07: Single static binary under 200MB; zero external runtime dependencies
+**A. Python SDK — the canonical declaration surface**
+- Decorators: `@bv.event`, `@bv.table(key=..., ttl=...)` in both class and function forms
+- Stateless ops on Event/Table: `.filter .select .drop .rename .with_columns .map .cast .fillna`
+- Expression DSL: `bv.col("x")` with `+ - * /`, `< > <= >= == !=`, `& | ~`, `.isnull()`, `.cast()`
+- Aggregations via `event.group_by(keys).agg(name=bv.<op>(...), ...)` producing a Table
+- Joins: event↔event windowed, event↔table enrichment, table↔table key-matched
+- `bv.union(e1, e2, ...)` for schema-strict event merging
+- Registration: `app.register(*descriptors)` — DAG topological sort, cycle detection, schema propagation, additive-only with version bump
+- Push: `app.push(Event, dict)` async fire-and-forget; `app.push_sync(Event, dict)` returns `FeatureResult`; `app.push_many(Event, [dicts])` batched
+- Table upsert: `app.push(Table, key, dict)`; `app.delete(Table, key)` tombstones
+- Read: `app.get(key)` → `FeatureResult`; `app.mget([keys])`; `app.get_multi([Table1, Table2], key)`
+- Direct write: `app.set(key, features)`, `app.mset({key: features, ...})`
+- `app.validate(*descriptors)` → list of `ValidationError` for unit-test use
 
-**B. Feature primitive catalogue (40+ types, all per-entity)**
-- [ ] REQ-PRIM-CORE: count, sum, avg, min, max, stddev, variance, z_score, ratio, streak (+ max_streak, negative_streak), time_since, first_seen, last_seen, age, has_seen
-- [ ] REQ-PRIM-DECAY: ewma, ewvar, ew_zscore, decayed_sum, decayed_count, twa
-- [ ] REQ-PRIM-VELOCITY: rate_of_change, inter_arrival_stats, burst_count, delta_from_prev, trend, trend_residual, outlier_count, value_change_count
-- [ ] REQ-PRIM-BUFFERS: histogram, hour_of_day_histogram, dow_hour_histogram, seasonal_deviation, event_type_mix, most_recent_n, reservoir_sample, time_since_last_n
-- [ ] REQ-PRIM-GEO: geo_velocity, geo_distance, geo_spread, unique_cells, geo_entropy, distance_from_home
-- [ ] REQ-PRIM-SKETCH: distinct (HLL), bloom_member, first_seen_in_window (bloom + ts), quantile (DDSketch), top_k (SpaceSaving), entropy
-- [ ] REQ-PRIM-FILTER: every primitive accepts optional `where` clause using JSON DSL (`{field: {op: value}}` with and/or composition)
-- [ ] REQ-PRIM-WINDOW: uniform event-time bucketing with cap 64 buckets per window; windowless "lifetime" mode; per-feature opt-in override
+**B. Server — HTTP ingest, in-memory state, single thread**
+- HTTP API: `POST /register`, `POST /push/{stream}`, `POST /push-batch/{stream}`, `POST /get`, `GET /get/{feature}/{key}`, `POST /set`, `POST /delete/{table}`, `GET /health`, `GET /ready`, `GET /metrics`
+- Registration payload: JSON DAG of event/table/derivation nodes in topological order; server validates and assigns a `registry_version` (monotonic)
+- Additive-only: re-posting adds-only DAGs succeeds with version bump; any removal / type-change / mutation returns 409 with a structured diff
+- Single Rust process, single thread for the apply loop (plus auxiliary threads for WAL fsync and HTTP accept), in-memory state only
 
-**C. Stream-level features**
-- [ ] REQ-STREAM-01: Stream declaration with `shard_key`, typed schema (str, f64, i64, bool), mandatory `event_time` field
-- [ ] REQ-STREAM-02: Stream-level `idempotency_key` + `idempotency_ttl_ms` decoration; duplicate request_id in TTL returns cached response byte-identical to original, no state mutation
-- [ ] REQ-STREAM-03: Schema evolution via `schema_version: u8` in row header; server stores last N (default 8) schemas; on-read migration for historical rows
+**C. Operator catalogue**
+- **Core aggregations:** `bv.count`, `bv.sum`, `bv.avg`, `bv.min`, `bv.max`, `bv.variance`, `bv.stddev`, `bv.ratio`
+- **Sketch aggregations:** `bv.count_distinct` (HLL), `bv.percentile` (DDSketch), `bv.top_k` (SpaceSaving), `bv.bloom_member`, `bv.entropy`
+- **Point / ordinal aggregations:** `bv.first`, `bv.last`, `bv.first_n`, `bv.last_n`, `bv.lag`
+- **Decay family:** `bv.ewma` (alias `ema`), `bv.ewvar`, `bv.ew_zscore`, `bv.decayed_sum`, `bv.decayed_count`, `bv.twa`
+- **Velocity / trend:** `bv.rate_of_change`, `bv.inter_arrival_stats`, `bv.burst_count`, `bv.delta_from_prev`, `bv.trend`, `bv.trend_residual`, `bv.outlier_count`, `bv.value_change_count`
+- **Recency / identity:** `bv.streak`, `bv.max_streak`, `bv.negative_streak`, `bv.time_since`, `bv.first_seen`, `bv.last_seen`, `bv.age`, `bv.has_seen`, `bv.first_seen_in_window`, `bv.time_since_last_n`
+- **Bounded buffers:** `bv.histogram`, `bv.hour_of_day_histogram`, `bv.dow_hour_histogram`, `bv.seasonal_deviation`, `bv.event_type_mix`, `bv.most_recent_n`, `bv.reservoir_sample`
+- **Geo:** `bv.geo_velocity`, `bv.geo_distance`, `bv.geo_spread`, `bv.unique_cells`, `bv.geo_entropy`, `bv.distance_from_home`
+- **Z-score at current event:** `bv.z_score` (uses running baseline of that entity)
 
 **D. Durability + recovery**
-- [ ] REQ-DUR-01: WAL file per instance, append-only; group-commit fsync every 1-5ms or 1MB
-- [ ] REQ-DUR-02: Write-through semantics: client push returns ACK only after WAL fsync past event's LSN
-- [ ] REQ-DUR-03: Periodic snapshots (every 30s default) of in-memory state to disk; configurable cadence
-- [ ] REQ-DUR-04: Recovery on restart: load latest snapshot + replay WAL from snapshot LSN; target RTO under 30s for 10GB state on NVMe
-- [ ] REQ-DUR-05: Snapshot + WAL rotation: old snapshots pruned after next successful snapshot; WAL truncated past snapshot LSN
+- WAL file per instance, append-only; group-commit fsync every 1–5ms
+- `push_sync` + async-awaited ACK wait for fsync-past-LSN
+- Periodic snapshots (default 30s) of in-memory state to disk
+- Recovery: load latest snapshot + replay WAL from snapshot LSN to present (RTO ≤ 30s at 10GB state on NVMe)
+- Registry serialized alongside state so registrations survive restart
+- Version bumps on registry changes are WAL'd
 
 **E. Observability + operations**
-- [ ] REQ-OBS-01: Prometheus-compatible `/metrics` endpoint with per-primitive counters, WAL/fsync latency histograms, per-endpoint QPS/latency
-- [ ] REQ-OBS-02: `/health` liveness + `/ready` readiness endpoints; ready reflects recovery-complete state
-- [ ] REQ-OBS-03: Structured JSON logs with levels; trace_id propagated from HTTP header
+- Prometheus-compatible `/metrics` with per-operator counters, per-endpoint QPS/latency histograms, WAL fsync latency
+- `/health` liveness + `/ready` readiness (only flips after recovery completes)
+- Structured JSON logs with optional `X-Trace-Id` propagation
+- `beava fork` CLI to spawn a scoped local replica against a remote primary for experimentation (Python: `bv.fork(...)`)
 
-**F. Performance targets**
-- [ ] REQ-PERF-01: Single-thread apply loop sustains ≥ 3M events/sec on modern NVMe server-class hardware (32-byte events, 5 operators updated per event)
-- [ ] REQ-PERF-02: Batch get of 100 features × 1 key returns P50 < 2ms, P99 < 10ms on warm cache
-- [ ] REQ-PERF-03: WAL group-commit adds P50 < 2ms to push ACK latency at default config
+**F. Performance**
+- ≥ 3M events/sec sustained on modern NVMe server-class hardware (single-thread apply, 32-byte event, 5 aggregations updated per event)
+- Batch `POST /get` of 100 features × 1 entity: P50 < 2ms, P99 < 10ms on warm cache
+- `push_sync` P99 < 10ms including group-commit fsync
 
 **G. Quality + devex**
-- [ ] REQ-QUALITY-01: Full integration test coverage over every primitive via table-driven fixtures: push known events, query expected values
-- [ ] REQ-QUALITY-02: Idempotency + crash-recovery tests: kill-and-restart verifies state restoration from snapshot+WAL
-- [ ] REQ-QUALITY-03: curl-only quickstart demonstrated in `docs/quickstart.md` (≤ 10 commands, under 5 minutes to working feature server)
-- [ ] REQ-QUALITY-04: Python SDK (sync + fire-and-forget only, HTTP-backed, no persistent connections, no callbacks) starter package
+- Integration tests exercise every operator via table-driven fixtures (push known events, query expected values)
+- Registration DAG tests: cycles, missing deps, schema propagation, additive-only conflicts, version-bump monotonicity
+- Python SDK tests hit a real beava instance over HTTP
+- Quickstart: from `pip install beava` to first feature in under 5 minutes with ≤ 20 lines of Python
+- `curl`-only quickstart alternative exists for language-agnostic users (JSON register + push + get)
 
 **H. Packaging + deploy**
-- [ ] REQ-PKG-01: Prebuilt binaries for linux/amd64, linux/arm64, darwin/arm64 via GitHub Releases
-- [ ] REQ-PKG-02: Single docker image published; zero-config start via `docker run beava/beava:v0`
-- [ ] REQ-PKG-03: Configuration via env vars + one optional YAML file; no external config store required
+- Prebuilt Rust binaries for linux/amd64, linux/arm64, darwin/arm64 via GitHub Releases
+- `pip install beava` ships the Python SDK
+- Single Docker image published; zero-config `docker run beava/beava:v0`
+- Configuration via env vars (`BEAVA_*`) + optional YAML file
 
 ### Out of Scope
 
-Explicitly deferred or excluded. Includes reasoning to prevent re-adding.
+Listed with reasoning to prevent re-adding.
 
-- **Cross-entity / cross-shard features** — co-occurrence, graph degree, cross-entity joins — locked out of v0 by the single-process single-thread model. Would require a different architecture. Deferred indefinitely.
-- **State exceeding a single box's RAM** — no SSD overflow, no tiered storage, no cold cache. Users size their box to their workload. If state exceeds RAM, server refuses new entities. Trades graceful degradation for architectural simplicity.
-- **Multi-process / multi-instance coordination** — no built-in router, no replication, no cross-instance WAL shipping. Users run multiple independent beavas + shard at their application layer if horizontal scaling is needed. HA belongs in commercial tier.
-- **Event emission / downstream pipelines** — no `on_emit` subscriptions, no operator-to-operator event routing, no webhook delivery. Every outcome is read from the `/get` endpoint. Simplifies the API to push + query only.
-- **Timers / autonomous firing** — no operator callbacks fired without an incoming event. Debouncers, auction-close emissions, time-based session termination all deferred. Session-like semantics (close on next event after gap) are supported; true quiet-period detection is not.
-- **State machines with transitions / CEP sequences / attribution-emitted events** — considered as flagship use cases, dropped for v0 because they require emit/timer machinery. Defer to v1.
-- **Backfill + replay + branching** — forking state, replaying historical events against new operator definitions, promoting/discarding branches. Valuable but non-trivial; defer to v1.
-- **Sketch-family advanced features** — rolling correlation, HLL Jaccard over self-snapshots, VarOpt weighted sample. Niche; v1 if demand.
-- **Custom user-defined operators** — v0 ships only the built-in 40 primitives. Custom Rust operators require recompile; no runtime plugin system. Defer plugin model to v1+.
-- **Multi-tenant isolation** — one tenant per deployment. No per-tenant quotas, rate limits, or resource isolation. Tenancy is a higher-layer concern.
-- **SQL / declarative query language** — register DSL is JSON only. No ad-hoc SQL over state. v2+ if demand.
+- **Cross-entity / cross-shard features** — `co_occurrence_count`, `graph_degree`, stream-stream joins on non-matching shard keys. Single-thread single-process architecture locks this out. Different architecture problem for v2.x.
+- **State exceeding single-box RAM** — no SSD overflow, no tiered storage, no cold cache. Users size their box; exceed → refuse new entities.
+- **Multi-instance coordination / replication / HA in OSS** — horizontal scale belongs to commercial tier. Multi-instance via user-sharded deploys allowed; server does not coordinate.
+- **Table aggregation with retraction propagation** — v0 forbids `table.group_by(...)`. v1 of beava already made this call; v2 inherits it. Retraction-aware table→table aggregations are v0.1 work.
+- **Table mode: `"changelog"`** — only `"append"` upsert mode in v0 (matches v1).
+- **Timers / autonomous emission** — no `on_timer` callbacks, no debouncer, no session-end-by-timeout. Deferred to post-v0.
+- **CEP / sequence pattern detection / state machines as operators** — not in the aggregation operator framework. Deferred.
+- **Backfill + replay + branching** — the `bv.fork()` replica covers some of this use case; full branch/promote/discard semantics deferred.
+- **Real-time multi-touch attribution as a built-in operator** — users can compose it from `@bv.event` + decorators in v2 but there's no blessed `bv.attribution(...)` op.
+- **TCP binary wire protocol** — HTTP only. No reverting to the v1 protocol.
+- **Operator implementation by user Rust code** — v0 ships only the built-in catalogue. Plugin ABI deferred.
+- **Multi-tenancy / per-tenant quotas** — beava is single-tenant by design.
+- **Partial-key joins (tables), right/full/outer joins** — v0 enforces set-equal keys + `inner`/`left` only, matching v1.
+- **Union with schema reconciliation** — `bv.union` in v0 requires field-by-field schema identity; users call `.cast()`/`.fillna()` to align upstream. Matches v1.
 
 ## Context
 
-**Origin:** Full architectural pivot from the v1 implementation on branch `arch/tpc-full-shard`. v1 used a thread-per-core sharded architecture with fjall/RocksDB state and a TCP binary wire protocol. Measured on fraud-like complex cascade workloads, v1 ceilinged at ~10K events/sec/core due to serialization overhead (`postcard` on a 24KB per-entity state blob), `serde_json::Value` on the hot path, and O(n²) feature lookups. See `arch/tpc-full-shard` branch for the v1 codebase.
+**Origin:** Re-plan of v2 after extended design session + v1 API research. v1 lives on branches `main` and `arch/tpc-full-shard`. v1 shipped:
+- Rich Python decorator DSL (`@bv.stream` + `@bv.table(key=...)`, function and class forms)
+- Expression DSL (`bv.col("x") > 100`) with operator overloading
+- Stateless ops chain (filter/select/drop/rename/with_columns/map/cast/fillna)
+- 15 aggregation operators (count/sum/avg/min/max/variance/stddev/percentile/count_distinct/top_k/first/last/first_n/last_n/ema/lag)
+- Stream-stream / stream-table / table-table joins, `bv.union`
+- Explicit registration with DAG validation
+- TCP binary wire protocol, `App.push`/`push_sync`/`push_many`/`get`/`mget`/`get_multi`/`set`/`mset`/`delete`/`fork`
+- Fjall/RocksDB state, thread-per-core sharding
 
-**Input artifact:** `DESIGN-V2.md` at the repo root captures the complete v2 architecture decisions, 40-primitive catalogue, HTTP API shape, single-thread rationale, and in-memory + WAL + snapshot durability model. It was written and refined through an extended session that:
-- Researched exponential bucketing (DGIM, EWMA, forward decay) and rejected DGIM for replay determinism reasons
-- Researched Redis pain points to pick flagship use cases
-- Walked through each feature primitive and confirmed single-thread implementability
-- Locked the full 40-primitive catalogue as v0 scope
+v1's ceilings (why rebuild): measured ~10K EPS/core on complex workloads due to `postcard` serialization on a 24KB per-entity state blob, `serde_json::Value` on the hot path, and O(n²) feature lookups.
 
-**Market:** Beava (product) is the public name; `tally` is the repo codename. Public site is `beava.dev`. Positioning: feature-serving workloads that push Redis beyond its sweet spot — velocity/geo/streak/distribution features that teams currently hand-build with Lua scripts, Flink jobs, or ad-hoc batch pipelines. Flagship buyer verticals: fraud detection, ad-tech velocity capping, real-time personalization, behavioral biometrics.
+**v2 inherits v1's API shape. v2 changes the runtime:**
+- Single process, single thread (not TPC) for correctness-by-construction on atomic operators
+- In-memory state only (no RocksDB/fjall) for elimination of serialization overhead
+- HTTP wire (not TCP binary) for curl/LB/WAF/multi-language reach
+- Additive-only registration with version bump (v1 allowed neither mutation nor version tracking)
+- Expanded operator catalogue: 40+ primitives vs. v1's 15 (new: ewma/ewvar/decayed_sum/twa, velocity/trend family, recency family, bounded-buffer family, geo family, bloom/seasonal ops)
+- Rename `@bv.stream` → `@bv.event` for clarity (events are immutable append-only; "stream" was ambiguous)
 
-**Prior research assets preserved:**
-- `realtime-pain-points.md` — first-person notes on what Redis + Flink get wrong for feature serving
-- `docs/http-api.md`, `docs/http-api-examples.sh` — HTTP API shape reference from v1 (close to v2 shape; re-verify during implementation)
-- `BLOG-PART*-DRAFT.md`, `BLOG-SERIES-PLAN.md` — launch messaging drafts
-- `LAUNCH.md`, `LAUNCH-COPY-CONVERSATION.md` — launch narrative
-- `SENDO-DEMO*.md`, `SENDO-FARM-DEMO-PLAN.md` — concrete demo scenarios
+**Input artifacts:**
+- `DESIGN-V2.md` — architectural decisions from the v2 design session (locked: single-thread, in-memory, WAL+snapshot, HTTP, additive register). Note: some subsections (§17 open-questions, §19 phase roadmap) are stale against this new API shape — they describe the JSON-DSL framing. Treat §4/§5 architecture, §15 durability, §18 non-goals, §22 decisions table as authoritative; other sections as historical context.
+- `REQUIREMENTS.md` / `ROADMAP.md` — v2 re-planned against the v1 API shape (this document's sibling files)
+- `main` branch `python/beava/` — the v1 Python SDK reference
 
-**Why v2 diverges from v1 architecturally:**
-- Single thread per process (not thread-per-core sharding) — correctness-by-construction for atomic sequential operators (rate limiters, ticketing, idempotency with cached results); no locks, no coordination, no MESI cache-line ping-pong. Horizontal scale = add independent processes.
-- In-memory state (not RocksDB-backed hot cache) — eliminates serialization overhead entirely. Memory is the hard constraint.
-- HTTP-first (not TCP binary protocol) — curl-testable, works through any LB/proxy/WAF, no SDK required for integration.
-- JSON-declarative feature registration (not Python/Rust SDK trait implementation) — users declare what to track in JSON; server implements via built-in primitives. Zero operator code in user space.
+**Repo / branding:** Repo codename `tally`, public product `beava`, site `beava.dev`. v1 Rust impl remains on `arch/tpc-full-shard`. v2 work on `v2/greenfield` branch.
 
 ## Constraints
 
-- **Tech stack**: Rust server (ownership + perf), HTTP API (axum or actix), Python SDK (sync + fire-and-forget only, HTTP-backed). No external storage dependencies (RocksDB, fjall removed).
-- **Architecture**: Single process, single thread for event processing. In-memory state. WAL + periodic snapshot for durability. No cross-process coordination.
-- **Performance**: ≥3M events/sec/core sustained on typical fraud-shape workloads; P99 batch-get < 10ms.
-- **Memory**: No SSD overflow. Users must size their box. Budget: ~7KB per entity for a rich 30-feature pack → ~700GB for 100M entities.
-- **Compatibility**: HTTP/1.1 minimum; JSON request/response only in v0. No Protobuf, no TCP binary in OSS.
-- **Licensing**: Apache 2.0 OSS for v0. Commercial-tier (HA, replicas, cross-region) is explicitly out of v0 scope.
-- **Timeline**: v0 target is weeks, not months — aiming for engineering-complete in ~6-10 weeks from Phase 1 kickoff.
+- **Tech stack:** Rust server (axum + tokio current_thread, single worker thread for apply loop); Python SDK over HTTP using `requests` or equivalent
+- **Architecture:** Single process, single thread for apply. In-memory state. WAL + periodic snapshot. No cross-process coordination.
+- **Wire format:** HTTP/1.1 + JSON. No binary protocol in OSS.
+- **Performance:** ≥ 3M events/sec single-thread apply; P99 batch-get < 10ms
+- **Memory:** Linear in `entities × aggregations × bytes/agg`. Users size the box. No SSD overflow.
+- **API compatibility:** Python SDK conceptually mirrors v1 shapes (class and function decorators, `.agg()`, `.join()`, `bv.col`) — explicit breaking change from v1: `@bv.stream` renamed to `@bv.event`, wire protocol is HTTP (not TCP)
+- **Registration:** Additive-only with monotonic version bumps; no in-place mutation of registered descriptors
+- **Licensing:** Apache 2.0 OSS for v0. HA / replication / cross-region for commercial tier later.
+- **Timeline:** Target v0 engineering-complete in 8–12 weeks from Phase 1 kickoff
 
 ## Key Decisions
 
-Decisions locked during the v2 design session (reference: `DESIGN-V2.md` §17 and surrounding discussion). Each is load-bearing for subsequent phase planning.
+Locked. Each is load-bearing for phase planning.
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Single thread per process (not TPC) | Correctness-by-construction for atomic operators; simplest mental model; horizontal scale via independent processes | — Pending ship |
-| In-memory state only (no RocksDB/fjall) | Eliminates serialization overhead that ceilinged v1 at 10K EPS/core; 10-100× headroom | — Pending ship |
-| WAL + periodic snapshots for durability | Redis RDB+AOF pattern; well-understood; bounded RTO; no tiered storage complexity | — Pending ship |
-| HTTP-first API (not TCP binary) | curl-testable; zero SDK requirement; works through LBs/proxies/WAFs; matches modern serverless patterns | — Pending ship |
-| JSON-declarative feature registration | Users declare primitives from fixed catalogue; zero operator-trait user code | — Pending ship |
-| No emits / no timers / no backfill in v0 | Drops 60% of architectural machinery; enables ship in weeks not months; defers to v1 based on real demand | — Pending ship |
-| No cross-entity / cross-shard features | Locked by single-process model; graph_degree / co_occurrence would require different architecture | — Pending ship |
-| Uniform event-time buckets, cap 64 | Replay-deterministic; DGIM exponential rejected for breaking Min/Max/Percentile/HLL + replay invariance | — Pending ship |
-| 40 primitive feature types in v0 | Covers ~80% of fraud / ad-tech / analytics needs from the research; concrete shippable catalogue | — Pending ship |
-| Python SDK is thin HTTP wrapper | Sync + fire-and-forget only; no callbacks, no persistent connections; no SDK required at all (curl works) | — Pending ship |
-| Commercial tier (HA, replicas) explicitly out of v0 | Keeps OSS focused; creates natural product-tier split for monetization | — Pending ship |
+| Python SDK is the canonical authoring UX | v1 validated this shape; feature engineers live in Python; Feast/Tecton/Chronon converged on it | — Pending ship |
+| Wire format is HTTP/JSON (no TCP binary) | Curl-testable, language-agnostic, LB/WAF/CDN-compatible, serverless-friendly | — Pending ship |
+| Rename `@bv.stream` → `@bv.event` | "Event" is unambiguous for append-only immutable sources; "stream" was overloaded in v1 | — Pending ship |
+| Additive-only registration with monotonic `registry_version` bumps | Prevents silent breaking changes; makes "just re-run your registration" safe | — Pending ship |
+| Tables upsert by primary key; deletes tombstone | Matches v1 semantics; serves enrichment use case | — Pending ship |
+| Aggregations produce Tables (`event.group_by(keys).agg(...)` → Table) | Matches v1 duality; keeps the mental model consistent | — Pending ship |
+| Registration is explicit (`app.register(*descriptors)`), not auto-on-push | Matches v1; preserves schema-validated-before-use invariant | — Pending ship |
+| Single process, single thread (not TPC) | Correctness-by-construction for atomic operators; simplest mental model; horizontal scale via independent processes | — Pending ship |
+| In-memory state only (no RocksDB/fjall) | Eliminates the serialization overhead that ceilinged v1 at 10K EPS/core | — Pending ship |
+| WAL + periodic snapshots for durability | Redis RDB+AOF pattern; well-understood; bounded RTO | — Pending ship |
+| Uniform event-time bucketing, cap 64 buckets | Replay-deterministic; DGIM exponential rejected | — Pending ship |
+| No timers, no emit pipeline, no CEP operators in v0 | Scope discipline; land the aggregation + ops + joins surface first | — Pending ship |
+| 40+ operator catalogue (vs v1's 15) | Coverage of EWMA/velocity/geo/recency/sketches/buffers that v1 users asked for | — Pending ship |
+| Python SDK lands early (Phase 2.5) | Dogfoods the decorator DSL while building primitives in later phases | — Pending ship |
+| `bv.fork()` supported for scoped local experimentation | Matches v1 Phase 39 feature; high devex value | — Pending ship |
+| Commercial tier (HA, replicas, cross-region) explicitly out of OSS | Clean OSS/commercial product-tier split for monetization | — Pending ship |
 
 ## Evolution
 
 This document evolves at phase transitions and milestone boundaries.
 
-**After each phase transition** (via `/gsd-transition`):
+**After each phase transition:**
 1. Requirements invalidated? → Move to Out of Scope with reason
 2. Requirements validated? → Move to Validated with phase reference
 3. New requirements emerged? → Add to Active
 4. Decisions to log? → Add to Key Decisions
 5. "What This Is" still accurate? → Update if drifted
 
-**After each milestone** (via `/gsd-complete-milestone`):
+**After each milestone:**
 1. Full review of all sections
 2. Core Value check — still the right priority?
 3. Audit Out of Scope — reasons still valid?
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-22 after initialization from DESIGN-V2.md*
+*Last updated: 2026-04-22 after re-plan to adopt v1 Python SDK API shape*
