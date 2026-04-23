@@ -64,7 +64,112 @@ pub fn propagate_aggregation_schema(
     upstream: &Schema,
     descriptor: &AggregationDescriptor,
 ) -> Result<DerivedSchema, Vec<AggSchemaError>> {
-    todo!("05-03 green: implement propagate_aggregation_schema")
+    let mut errors: Vec<AggSchemaError> = Vec::new();
+    let mut fields: BTreeMap<String, crate::schema::FieldType> = BTreeMap::new();
+
+    // ── Step 1: Validate group keys + copy their types into output ────────────
+    // SDK-AGG-01: every group_by key must exist in upstream schema.
+    let mut group_key_set: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for key in &descriptor.group_keys {
+        match upstream.fields.get(key.as_str()) {
+            Some(ty) => {
+                fields.insert(key.clone(), *ty);
+                group_key_set.insert(key.as_str());
+            }
+            None => {
+                errors.push(AggSchemaError::GroupKeyMissing { key: key.clone() });
+            }
+        }
+    }
+
+    // ── Step 2: Validate features + infer their output types ──────────────────
+    // SDK-AGG-03: type inferred via output_type_for per operator.
+    // T-05-03-01: feature name collision with a group key is rejected.
+    let mut seen_feature_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for feat in &descriptor.features {
+        // Duplicate feature name?
+        if !seen_feature_names.insert(feat.feature_name.as_str()) {
+            errors.push(AggSchemaError::DuplicateFeatureName {
+                name: feat.feature_name.clone(),
+            });
+            continue;
+        }
+
+        // Feature name collides with group key? (T-05-03-01 mitigation)
+        if group_key_set.contains(feat.feature_name.as_str()) {
+            errors.push(AggSchemaError::GroupKeyCollidesWithFeature {
+                name: feat.feature_name.clone(),
+            });
+            continue;
+        }
+
+        // For ops that consume a named field (Sum, Avg, Variance, StdDev), verify
+        // the field exists in the upstream schema. `output_type_for` only does this
+        // check for Min/Max (since they need the upstream type); we replicate the
+        // field-existence check here for the F64-returning ops so that
+        // `sum(field="nonexistent")` surfaces a FeatureTypeError at register time.
+        let field_check_kinds = [
+            AggKind::Sum,
+            AggKind::Avg,
+            AggKind::Variance,
+            AggKind::StdDev,
+        ];
+        if field_check_kinds.contains(&feat.descriptor.kind) {
+            match &feat.descriptor.field {
+                None => {
+                    // Field is optional for Sum/Avg/Variance/StdDev in the descriptor
+                    // (none = whole-row semantics deferred to v1). No error in v0.
+                }
+                Some(field_name) => {
+                    if !upstream.fields.contains_key(field_name.as_str()) {
+                        errors.push(AggSchemaError::FeatureTypeError {
+                            feature: feat.feature_name.clone(),
+                            kind: feat.descriptor.kind,
+                            field_missing: Some(field_name.clone()),
+                        });
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Type inference via output_type_for (SDK-AGG-03).
+        // At this point field-existence is already validated above for F64 ops;
+        // output_type_for handles Min/Max field resolution independently.
+        match output_type_for(upstream, &feat.descriptor) {
+            Ok(ty) => {
+                fields.insert(feat.feature_name.clone(), ty);
+            }
+            Err(AggTypeError::FieldMissing { field }) => {
+                errors.push(AggSchemaError::FeatureTypeError {
+                    feature: feat.feature_name.clone(),
+                    kind: feat.descriptor.kind,
+                    field_missing: Some(field),
+                });
+            }
+            Err(AggTypeError::FieldRequired { kind }) => {
+                errors.push(AggSchemaError::FeatureTypeError {
+                    feature: feat.feature_name.clone(),
+                    kind,
+                    field_missing: None,
+                });
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    // Optional-fields: aggregation output is non-null for group keys (null-keyed
+    // events are dropped at apply time in Plan 05-05). Feature values MAY be null
+    // for avg/min/max/variance/stddev/ratio when no matching rows, but the SCHEMA
+    // contract in v0 is "field present, non-null" — apply loop returns Null for
+    // empty-state queries at runtime, which is distinct from a schema-level null.
+    Ok(DerivedSchema {
+        fields,
+        optional_fields: Vec::new(),
+    })
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -106,11 +211,7 @@ mod tests {
         }
     }
 
-    fn agg(
-        source: &str,
-        group_keys: &[&str],
-        features: Vec<NamedAggOp>,
-    ) -> AggregationDescriptor {
+    fn agg(source: &str, group_keys: &[&str], features: Vec<NamedAggOp>) -> AggregationDescriptor {
         AggregationDescriptor {
             node_name: "output_table".to_string(),
             source_node_name: source.to_string(),
@@ -139,7 +240,11 @@ mod tests {
     #[test]
     fn schema_includes_group_keys_with_upstream_types() {
         let upstream = schema_with(&[("user_id", FieldType::Str), ("amount", FieldType::F64)]);
-        let desc = agg("txn", &["user_id"], vec![named("cnt", AggKind::Count, None)]);
+        let desc = agg(
+            "txn",
+            &["user_id"],
+            vec![named("cnt", AggKind::Count, None)],
+        );
         let schema = assert_ok(propagate_aggregation_schema(&upstream, &desc));
 
         assert_eq!(
@@ -275,7 +380,11 @@ mod tests {
     #[test]
     fn unknown_group_key_returns_error() {
         let upstream = schema_with(&[("user_id", FieldType::Str)]);
-        let desc = agg("txn", &["nonexistent"], vec![named("cnt", AggKind::Count, None)]);
+        let desc = agg(
+            "txn",
+            &["nonexistent"],
+            vec![named("cnt", AggKind::Count, None)],
+        );
         let errs = assert_err(propagate_aggregation_schema(&upstream, &desc));
         assert!(
             errs.iter().any(|e| matches!(
@@ -368,10 +477,7 @@ mod tests {
         let desc = AggregationDescriptor {
             node_name: "out".to_string(),
             source_node_name: "txn".to_string(),
-            group_keys: vec![
-                "missing_key1".to_string(),
-                "missing_key2".to_string(),
-            ],
+            group_keys: vec!["missing_key1".to_string(), "missing_key2".to_string()],
             features: vec![named("total", AggKind::Sum, Some("no_such_field"))],
         };
         let errs = assert_err(propagate_aggregation_schema(&upstream, &desc));
