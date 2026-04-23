@@ -243,6 +243,12 @@ Feature authoring as composable Python code that ships to production unchanged. 
 3. Group-commit fsync adds P50 < 2ms to push-ACK latency at default config
 4. WAL rotation: segments ≤ snapshot-covered LSN truncated; disk usage bounded
 
+**Plans:** 4 plans
+- [ ] 06-01-PLAN.md — beava-persistence crate + WAL record frame + WalWriter/WalReader (no fsync)
+- [ ] 06-02-PLAN.md — Group-commit fsync worker + segment rotation + truncate_up_to
+- [ ] 06-03-PLAN.md — IdemCache + /push HTTP endpoint wiring (durable ACK + byte-identical dedupe replay)
+- [ ] 06-04-PLAN.md — Crash UAT subprocess tests + criterion perf baselines + phase smoke + PHASE-SUMMARY
+
 ### Phase 7: Snapshot + recovery + schema evolution
 
 **Goal:** Periodic snapshot serializes in-memory state + registry; restart loads snapshot + replays WAL-past-snapshot-LSN and resumes. Schema evolution preserved across restart.
