@@ -1,0 +1,27 @@
+[package]
+name = "beava-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Beava v2 server — single-binary real-time feature server (fraud, ad-tech, analytics)."
+
+[[bin]]
+name = "beava"
+path = "src/main.rs"
+
+[lib]
+name = "beava_server"
+path = "src/lib.rs"
+
+[dependencies]
+beava-core = { path = "../beava-core" }
+# Intentionally minimal in Plan 01. Added by:
+# - Plan 02: clap, serde, serde_yaml
+# - Plan 03: tracing, tracing-subscriber
+# - Plan 04: tokio, axum, hyper
+# - Plan 05: (dev-dep) reqwest
+
+[dev-dependencies]
+# Empty for now. Plan 05 adds reqwest + tokio test helpers.

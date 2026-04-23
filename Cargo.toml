@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/beava-core",
+  "crates/beava-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/petrpan26/tally"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Shared deps pinned here so every crate uses the same version.
+# Added by plans 02 and 03; left empty on purpose in Plan 01.
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+debug = false
+incremental = false
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.bench]
+inherits = "release"
+debug = true  # keep symbols for flamegraphs in later phases

@@ -1,0 +1,19 @@
+[package]
+name = "beava-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Core library for Beava v2 — domain types, operators, state. Shared across server binary and future tools."
+
+[lib]
+name = "beava_core"
+path = "src/lib.rs"
+
+[dependencies]
+# Intentionally empty in Plan 01. Populated starting Plan 02 (config types) and
+# Phase 2 (operator trait, feature registry).
+
+[dev-dependencies]
+# Empty for now.
