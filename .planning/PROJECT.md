@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Beava is a single-binary real-time feature server built around a dataframe-style Python DSL. Users declare `@bv.event` sources, `@bv.table` snapshots, and derived features (aggregations, joins, unions, stateless transforms) using decorators and an expression DSL. The server ingests events over HTTP, maintains per-entity state in memory, and serves features sub-millisecond. The product is the spiritual successor to Beava v1 — same authoring experience, dramatically simpler runtime (single process, single thread, in-memory state, HTTP wire), and a richer operator catalogue.
+Beava is a single-binary real-time feature server built around a dataframe-style Python DSL. Users declare `@bv.event` sources, `@bv.table` snapshots, and derived features (aggregations, joins, unions, stateless transforms) using decorators and an expression DSL. The server ingests events over HTTP/JSON (curl-testable, LB/WAF-compatible) and a custom-framed TCP fast-path (low-latency SDK-to-server), maintains per-entity state in memory, and serves features sub-millisecond. The product is the spiritual successor to Beava v1 — same authoring experience, dramatically simpler runtime (single process, single thread, in-memory state, dual HTTP+TCP wire), and a richer operator catalogue.
 
 ## Core Value
 
@@ -94,7 +94,7 @@ Listed with reasoning to prevent re-adding.
 - **CEP / sequence pattern detection / state machines as operators** — not in the aggregation operator framework. Deferred.
 - **Backfill + replay + branching** — the `bv.fork()` replica covers some of this use case; full branch/promote/discard semantics deferred.
 - **Real-time multi-touch attribution as a built-in operator** — users can compose it from `@bv.event` + decorators in v2 but there's no blessed `bv.attribution(...)` op.
-- **TCP binary wire protocol** — HTTP only. No reverting to the v1 protocol.
+- **Protobuf / schema-registry wire** — custom framed binary is OK (see Wire format) but no Protobuf/FlatBuffers/Avro dependency in OSS.
 - **Operator implementation by user Rust code** — v0 ships only the built-in catalogue. Plugin ABI deferred.
 - **Multi-tenancy / per-tenant quotas** — beava is single-tenant by design.
 - **Partial-key joins (tables), right/full/outer joins** — v0 enforces set-equal keys + `inner`/`left` only, matching v1.
@@ -117,7 +117,7 @@ v1's ceilings (why rebuild): measured ~10K EPS/core on complex workloads due to 
 **v2 inherits v1's API shape. v2 changes the runtime:**
 - Single process, single thread (not TPC) for correctness-by-construction on atomic operators
 - In-memory state only (no RocksDB/fjall) for elimination of serialization overhead
-- HTTP wire (not TCP binary) for curl/LB/WAF/multi-language reach
+- Dual wire: HTTP/JSON for curl/LB/WAF/multi-language reach + custom-framed TCP fast-path for low-latency SDK access
 - Additive-only registration with version bump (v1 allowed neither mutation nor version tracking)
 - Expanded operator catalogue: 40+ primitives vs. v1's 15 (new: ewma/ewvar/decayed_sum/twa, velocity/trend family, recency family, bounded-buffer family, geo family, bloom/seasonal ops)
 - Rename `@bv.stream` → `@bv.event` for clarity (events are immutable append-only; "stream" was ambiguous)
@@ -133,10 +133,10 @@ v1's ceilings (why rebuild): measured ~10K EPS/core on complex workloads due to 
 
 - **Tech stack:** Rust server (axum + tokio current_thread, single worker thread for apply loop); Python SDK over HTTP using `requests` or equivalent
 - **Architecture:** Single process, single thread for apply. In-memory state. WAL + periodic snapshot. No cross-process coordination.
-- **Wire format:** HTTP/1.1 + JSON. No binary protocol in OSS.
+- **Wire format:** Dual transport. (1) HTTP/1.1 + JSON on the default port — curl-compatible, language-agnostic. (2) Custom framed TCP on a second port — `[u32 length][u16 op][u32 request_id][payload bytes]`, same JSON payload body for v0 (MessagePack/custom encoding is v0.x territory). Python SDK chooses via URL scheme (`http://` vs `tcp://`). Full opcode table designed up front (register/ping/push/push_sync/push_many/get/mget/set/mset); handlers wired as their feature phases land. No Protobuf, no FlatBuffers.
 - **Performance:** ≥ 3M events/sec single-thread apply; P99 batch-get < 10ms
 - **Memory:** Linear in `entities × aggregations × bytes/agg`. Users size the box. No SSD overflow.
-- **API compatibility:** Python SDK conceptually mirrors v1 shapes (class and function decorators, `.agg()`, `.join()`, `bv.col`) — explicit breaking change from v1: `@bv.stream` renamed to `@bv.event`, wire protocol is HTTP (not TCP)
+- **API compatibility:** Python SDK conceptually mirrors v1 shapes (class and function decorators, `.agg()`, `.join()`, `bv.col`) — explicit breaking change from v1: `@bv.stream` renamed to `@bv.event`. Wire is dual (HTTP/JSON + custom-framed TCP); v1's TCP framing is NOT reused (v2 uses the simpler `[len][op][req_id][payload]` frame)
 - **Registration:** Additive-only with monotonic version bumps; no in-place mutation of registered descriptors
 - **Licensing:** Apache 2.0 OSS for v0. HA / replication / cross-region for commercial tier later.
 - **Timeline:** Target v0 engineering-complete in 8–12 weeks from Phase 1 kickoff
@@ -148,7 +148,8 @@ Locked. Each is load-bearing for phase planning.
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | Python SDK is the canonical authoring UX | v1 validated this shape; feature engineers live in Python; Feast/Tecton/Chronon converged on it | — Pending ship |
-| Wire format is HTTP/JSON (no TCP binary) | Curl-testable, language-agnostic, LB/WAF/CDN-compatible, serverless-friendly | — Pending ship |
+| Wire format is dual: HTTP/JSON + custom-framed TCP | HTTP: curl-testable, LB/WAF/CDN-compatible, serverless-friendly. TCP: low-latency SDK fast-path without HTTP header overhead. Same JSON payload body; no Protobuf | — Pending ship |
+| TCP frame: `[u32 length][u16 op][u32 request_id][payload]` | Simpler than v1's framing, sufficient for v0 ops; opcode table designed up front in Phase 2.5 so later phases only fill in handlers | — Pending ship |
 | Rename `@bv.stream` → `@bv.event` | "Event" is unambiguous for append-only immutable sources; "stream" was overloaded in v1 | — Pending ship |
 | Additive-only registration with monotonic `registry_version` bumps | Prevents silent breaking changes; makes "just re-run your registration" safe | — Pending ship |
 | Tables upsert by primary key; deletes tombstone | Matches v1 semantics; serves enrichment use case | — Pending ship |

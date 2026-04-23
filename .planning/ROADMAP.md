@@ -29,7 +29,8 @@ Feature authoring as composable Python code that ships to production unchanged. 
 |---|-------|------|------|------------------|
 | 1 | Foundation | Rust workspace, axum HTTP scaffolding, config, logging, test harness | 0 (infrastructure) | 4 ✅ **COMPLETE** |
 | 2 | Sources + registry + version bumps | `/register` accepts DAG of event/table/derivation nodes; additive-only; monotonic version; registry persists in-memory | 12 | 5 |
-| 3 | Python SDK skeleton + decorators + expression DSL | `@bv.event`, `@bv.table`, `bv.col`, `bv.App(url)`, register + validate, REGISTER JSON compiler | 18 | 6 |
+| 2.5 | TCP wire listener + framing + full opcode table | Custom-framed TCP listener alongside HTTP; full v0 opcode table designed; `register` + `ping` handlers wired; rest return `op_not_implemented` placeholder | ~8 | 8 |
+| 3 | Python SDK skeleton + decorators + expression DSL | `@bv.event`, `@bv.table`, `bv.col`, `bv.App(url)` (HTTP + TCP), register + validate, REGISTER JSON compiler | 21 | 7 |
 | 4 | Stateless ops + expression evaluator (server-side) | Server parses + evaluates `bv.col` expression strings; executes filter/select/drop/rename/with_columns/map/cast/fillna chains per event | 12 | 5 |
 | 5 | Aggregation framework + core operators (8) | `group_by().agg()` DAG lands server-side; windowed bucket infra; core aggregations: count, sum, avg, min, max, variance, stddev, ratio | 15 | 6 |
 | 6 | WAL + idempotency | Every push write-through fsynced before ACK; stream-level idempotency keys cached with TTL | 5 | 4 |
@@ -41,7 +42,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 12 | Joins + unions + push/get API completion | Event↔event windowed join, event↔table enrichment, table↔table join, `bv.union`; `push_sync` + `push_many` + `push_table` + `delete_table` + `set` + `mset` + `mget` + `get_multi` wired end-to-end | 13 | 5 |
 | 13 | Observability + performance + docs + packaging + `bv.fork` | `/metrics`, structured logs, perf gates (≥3M EPS, <10ms P99 batch get), SDK polish, docs, PyPI, GitHub Releases, Docker, `beava fork` subcommand | ~16 | 6 |
 
-**Total:** 13 phases, ~145 requirements mapped (actual count confirmed after plan-time verification), ~62 success criteria.
+**Total:** 14 phases (Phase 2.5 inserted 2026-04-23 when user expanded v0 wire to dual HTTP + TCP), ~153 requirements mapped (actual count confirmed after plan-time verification), ~73 success criteria.
 
 **Phase 1 status:** ✅ **COMPLETE** on commits `b100e51`..`c21b6b7`. Cargo workspace, axum HTTP server, `/health` + `/ready` stubs, graceful shutdown, integration TestServer harness — all gates green. See `.planning/phases/01-foundation/01-SUMMARY.md`, `.planning/phases/01-foundation/01-VERIFICATION.md`.
 
@@ -61,7 +62,10 @@ Feature authoring as composable Python code that ships to production unchanged. 
   Phase 2 (Sources + registry + version bumps)
        │
        ▼
-  Phase 3 (Python SDK + decorators + expression DSL)
+  Phase 2.5 (TCP wire listener + framing + full opcode table)
+       │
+       ▼
+  Phase 3 (Python SDK + decorators + expression DSL, HTTP + TCP)
        │
        ▼
   Phase 4 (Stateless ops + expression evaluator server-side)
@@ -120,21 +124,40 @@ Feature authoring as composable Python code that ships to production unchanged. 
 4. Posting a DAG that removes or changes an existing descriptor returns 409 with `{error: {code: "registration_conflict", diff: {added, removed, changed}}}` naming each change
 5. Malformed payload (missing required fields, unknown node type) returns 400 with `{error: {code, path, reason}}` pointing to the offending path
 
-### Phase 3: Python SDK skeleton + decorators + expression DSL
+### Phase 2.5: TCP wire listener + framing + full opcode table
 
-**Goal:** Ship the user-facing Python SDK that compiles decorators + expression DSL into the REGISTER JSON the server accepts. Dogfood the DSL from Phase 3 onwards; curl remains the language-agnostic escape hatch.
+**Goal:** Ship the server-side TCP fast-path alongside the existing HTTP listener. Custom-framed binary wire `[u32 length][u16 op][u32 request_id][payload bytes]` with the full v0 opcode table designed up front; `register` + `ping` handlers wired; every other opcode (push/push_sync/push_many/get/mget/set/mset) reserved and returns a structured `op_not_implemented` error so later phases just fill in handlers without touching the codec.
 
 **Depends on:** Phase 2.
 
-**Requirements:** SDK-DEC-01 through SDK-DEC-09, SDK-COL-01 through SDK-COL-08, SDK-APP-01, SDK-APP-02, SDK-APP-03, SDK-APP-15 — 18 REQ-IDs.
+**Requirements:** SRV-API-NEW (TCP listener), SRV-WIRE-01 through SRV-WIRE-06 (framing), SRV-WIRE-REG-01 (register over TCP). New REQ-IDs added to REQUIREMENTS.md at plan-phase time.
+
+**Success criteria:**
+1. Server binds two listeners when configured: HTTP on `http_port`, TCP on `tcp_port` (both configurable via YAML/env); binary starts with both bound by default
+2. Frame codec round-trips via proptest: arbitrary `(op, request_id, payload)` → bytes → parsed frame byte-identical
+3. `op=ping` returns a pong frame with server's `registry_version` + build-version string
+4. `op=register` over TCP delivers the same JSON DAG semantics as `POST /register` (200/400/409 equivalents returned as response frames with matching error shapes) — shares validation + diff engine with HTTP path (no duplicated logic)
+5. Unknown / unimplemented opcode returns a `op_not_implemented` response frame; server does NOT close the connection (clients can retry other ops)
+6. Connection lifecycle: client opens TCP, issues N requests on one connection (request_id disambiguates responses), closes cleanly; server-side graceful shutdown drains in-flight requests
+7. Max frame size bounded (default 4 MiB, configurable); oversized frames produce `frame_too_large` error and connection reset
+8. Integration smoke: `phase2_5_smoke.rs` — spin server, TCP-client sends ping + register + unknown-op; assert expected responses
+
+### Phase 3: Python SDK skeleton + decorators + expression DSL
+
+**Goal:** Ship the user-facing Python SDK that compiles decorators + expression DSL into the REGISTER JSON the server accepts. SDK supports both transports via URL scheme (`http://` for HTTP/JSON, `tcp://` for framed TCP) — Phase 3 exercises both against the Phase 2.5 server. Dogfood the DSL from Phase 3 onwards; curl remains the language-agnostic escape hatch.
+
+**Depends on:** Phase 2.5.
+
+**Requirements:** SDK-DEC-01 through SDK-DEC-09, SDK-COL-01 through SDK-COL-08, SDK-APP-01, SDK-APP-02, SDK-APP-03, SDK-APP-15, SDK-WIRE-01 (HTTP transport), SDK-WIRE-02 (TCP transport), SDK-WIRE-03 (URL-scheme dispatch) — 21 REQ-IDs.
 
 **Success criteria:**
 1. `@bv.event` class form extracts schema and registers event descriptor; function form resolves upstreams
 2. `@bv.table(key=..., ttl=...)` class + function forms work; key validation at decoration time
 3. `bv.col("x") > 100` expression produces expected `to_expr_string()` canonical form
-4. `app.register(*descriptors)` topologically sorts the DAG, detects cycles, validates schemas, POSTs JSON, receives `registry_version`
+4. `app.register(*descriptors)` topologically sorts the DAG, detects cycles, validates schemas, dispatches to HTTP or TCP based on URL scheme, receives `registry_version`
 5. `app.validate(*descriptors)` runs zero-network-IO validation returning `list[ValidationError]`
-6. End-to-end smoke: spawn TestServer, register 2 events + 1 table from Python, verify via `curl /registry`
+6. End-to-end smoke: spawn TestServer (with both ports), register 2 events + 1 table from Python twice — once via `bv.App('http://...')` and once via `bv.App('tcp://...')` — identical registry state verifiable via `curl /registry`
+7. SDK TCP client round-trips `ping` successfully; connection reuse across multiple `register`/`validate` calls on one App instance
 
 ### Phase 4: Stateless ops + expression evaluator (server-side)
 

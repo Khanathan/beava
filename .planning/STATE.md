@@ -1,11 +1,11 @@
 # State: Beava v2 — v0 OSS Launch
 
-**Project reference:** `.planning/PROJECT.md` (rewritten 2026-04-22 to adopt v1 Python SDK API)
-**Roadmap:** `.planning/ROADMAP.md` (13 phases; Phase 1 complete)
-**Requirements:** `.planning/REQUIREMENTS.md` (~145 REQ-IDs across 20 categories; traceability table pending roadmapper re-run)
+**Project reference:** `.planning/PROJECT.md` (rewritten 2026-04-22; wire pivoted to dual HTTP+TCP 2026-04-23)
+**Roadmap:** `.planning/ROADMAP.md` (14 phases; Phases 1–2 complete; Phase 2.5 inserted for TCP wire)
+**Requirements:** `.planning/REQUIREMENTS.md` (~153 REQ-IDs across 21 categories; SRV-WIRE + SDK-WIRE added at Phase 2.5 plan time)
 **Milestone:** v0 (first public OSS cut on beava.dev)
 **Created:** 2026-04-22
-**Revised:** 2026-04-22 (re-plan to v1 Python SDK API shape)
+**Revised:** 2026-04-23 (inserted Phase 2.5 — custom-framed TCP wire alongside HTTP — after user expanded v0 transport scope)
 
 ## Core Value
 
@@ -13,15 +13,15 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Current Focus
 
-**Phase 2: Sources + registry + version bumps** — `POST /register` accepts a JSON DAG of event/table/derivation nodes; validates; persists in-memory; assigns monotonic `registry_version`. Additive-only — removals/changes return 409 with structured diff. No aggregations execute yet (those land in Phase 5).
+**Phase 2.5: TCP wire listener + framing + full opcode table** — server adds a second listener on a configurable TCP port using a custom framed protocol `[u32 length][u16 op][u32 request_id][payload bytes]`. Full v0 opcode table (register/ping/push/push_sync/push_many/get/mget/set/mset) designed up front; `register` + `ping` handlers wired; other opcodes reserved and return `op_not_implemented` so Phases 6/12 fill in handlers without touching the codec. Inserted 2026-04-23 after user pivoted v0 from HTTP-only to dual HTTP + TCP wire.
 
 ## Current Position
 
 - **Milestone:** v0
-- **Phase:** 3 of 13 (Python SDK skeleton)
-- **Plan:** Phase 2 complete — 6/6 plans executed; Phase 3 ready
-- **Status:** Phase 2 complete; POST /register + GET /registry live; 165 tests green; acceptance gate passed
-- **Progress:** ██▱▱▱▱▱▱▱▱▱▱▱ 2/13 phases
+- **Phase:** 2.5 of 14 (TCP wire listener)
+- **Plan:** Phase 2 complete — 6/6 plans executed; Phase 2.5 pending discuss
+- **Status:** Phase 2 complete; POST /register + GET /registry live; 165 tests green; acceptance gate passed; roadmap amended to insert TCP wire phase
+- **Progress:** ██▱▱▱▱▱▱▱▱▱▱▱▱ 2/14 phases
 
 ## Performance Metrics
 
@@ -41,7 +41,8 @@ Not yet measured. Perf harness introduced in Phase 5; hit-gate in Phase 13.
 
 ### Architectural decisions (locked — from PROJECT.md)
 
-- Python SDK is the canonical authoring UX; HTTP/JSON is the wire (no TCP binary in OSS)
+- Python SDK is the canonical authoring UX
+- Dual wire: HTTP/JSON (curl-testable, LB/WAF-compatible) + custom-framed TCP `[u32 len][u16 op][u32 req_id][payload]` (low-latency SDK fast-path). Same JSON payload body over both. No Protobuf. Full opcode table designed in Phase 2.5; handlers wired incrementally as feature phases land.
 - `@bv.event` (immutable append-only, was v1's `@bv.stream`) and `@bv.table(key=..., ttl=...)` (upsertable, with tombstone delete)
 - Aggregations via `Event.group_by(keys).agg(name=bv.<op>(...), ...)` produce Tables
 - Stateless ops chain: `.filter .select .drop .rename .with_columns .map .cast .fillna`
@@ -79,7 +80,7 @@ Not yet measured. Perf harness introduced in Phase 5; hit-gate in Phase 13.
 - SQL query language
 - Multi-tenant isolation
 - Multi-instance coordination / HA (commercial tier)
-- TCP binary wire protocol in OSS
+- Protobuf / FlatBuffers / schema-registry deps in OSS wire (custom framed TCP is fine — see Architectural decisions)
 - Partial-key joins; right/full/outer joins
 - `bv.union` with implicit schema reconciliation
 
@@ -114,8 +115,10 @@ Not yet measured. Perf harness introduced in Phase 5; hit-gate in Phase 13.
 - [x] Re-plan v2 to adopt v1 Python SDK API shape (2026-04-22)
 - [x] Plan Phase 2 (6 plans: schema, OpNode, diff, validation, endpoint, acceptance)
 - [x] Execute Phase 2 (165 tests green, phase2_smoke 7/7, acceptance gate passed)
-- [ ] Plan Phase 3 (Python SDK skeleton) — NEXT
-- [ ] Execute Phases 3 through 13
+- [x] Insert Phase 2.5 into roadmap for dual-wire pivot (2026-04-23 — ROADMAP/PROJECT/CLAUDE/STATE updated)
+- [ ] Discuss + plan + execute Phase 2.5 (TCP wire listener + framing + opcode table) — NEXT
+- [ ] Discuss + plan + execute Phase 3 (Python SDK, now HTTP + TCP)
+- [ ] Execute Phases 4 through 13
 
 ### Blockers
 
@@ -128,15 +131,23 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-23 — Executed all 6 Phase 2 plans. Built full Registry data model, diff engine, validation pass, POST /register endpoint, GET /registry dev endpoint, TestServer HTTP helpers, and phase2_smoke acceptance test. 165 tests green.
+Last session: 2026-04-23 — Two things shipped. (1) Executed all 6 Phase 2 plans: full Registry data model, diff engine, validation pass, POST /register endpoint, GET /registry dev endpoint, TestServer HTTP helpers, phase2_smoke acceptance (165 tests green). (2) Roadmap amended under `/gsd-autonomous`: user pivoted v0 from HTTP-only to dual HTTP + TCP wire; inserted Phase 2.5 (TCP wire listener + framing + full opcode table); CLAUDE.md / PROJECT.md / ROADMAP.md / STATE.md updated.
 
 Next session should:
 
 1. Read `.planning/PROJECT.md`, `.planning/ROADMAP.md`, this file, and `.planning/REQUIREMENTS.md`
-2. Confirm Phase 3 (Python SDK skeleton) is the current focus
-3. Run `/gsd-plan-phase 3` to decompose Phase 3 into plans
+2. Confirm Phase 2.5 (TCP wire listener) is the current focus — not Phase 3
+3. Resume `/gsd-autonomous --interactive --from 2.5` (or `/gsd-discuss-phase 2.5` to enter discuss manually)
 
-### Phase 3 attach points
+### Phase 2.5 attach points
+
+- HTTP path stays: `POST /register`, `GET /registry` dev endpoint (Phase 2 output)
+- Validation + diff engine is in `crates/beava-core/src/{register_validate.rs,registry_diff.rs}` — TCP handler shares it (no duplication)
+- Server binding: `crates/beava-server/src/server.rs` (`Server::bind`) currently binds one listener; Phase 2.5 extends to two (`http_port`, `tcp_port`) with both configurable via `beava-core/src/config.rs`
+- TestServer harness needs extension: spawn with both ports, expose `ts.tcp_client()` helper
+- Opcode table lives in new `crates/beava-core/src/wire.rs` (or similar) — single source of truth for `u16` opcode constants
+
+### Phase 3 attach points (after Phase 2.5 ships)
 
 - Python SDK entry: `python/beava/` (existing v1 codebase on `main` branch)
 - Server endpoint: `POST /register` wire contract is LOCKED (see 02-05-PLAN.md §Stability notes)

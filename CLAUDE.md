@@ -9,11 +9,11 @@ Beava is a single-binary real-time feature server for fraud, ad-tech, and behavi
 
 ### Constraints
 
-- **Tech stack**: Rust server (ownership + perf), HTTP API (axum or actix), Python SDK (sync + fire-and-forget only, HTTP-backed). No external storage dependencies (RocksDB, fjall removed).
+- **Tech stack**: Rust server (ownership + perf), HTTP API (axum) + custom-framed TCP fast-path, Python SDK (sync + fire-and-forget) over either transport. No external storage dependencies (RocksDB, fjall removed).
 - **Architecture**: Single process, single thread for event processing. In-memory state. WAL + periodic snapshot for durability. No cross-process coordination.
 - **Performance**: ≥3M events/sec/core sustained on typical fraud-shape workloads; P99 batch-get < 10ms.
 - **Memory**: No SSD overflow. Users must size their box. Budget: ~7KB per entity for a rich 30-feature pack → ~700GB for 100M entities.
-- **Compatibility**: HTTP/1.1 minimum; JSON request/response only in v0. No Protobuf, no TCP binary in OSS.
+- **Compatibility**: HTTP/1.1 + JSON for curl/LB/WAF reach. Custom framed TCP (4-byte length + 2-byte op + 4-byte request_id + payload) for low-latency fast-path. No Protobuf.
 - **Licensing**: Apache 2.0 OSS for v0. Commercial-tier (HA, replicas, cross-region) is explicitly out of v0 scope.
 - **Timeline**: v0 target is weeks, not months — aiming for engineering-complete in ~6-10 weeks from Phase 1 kickoff.
 <!-- GSD:project-end -->
