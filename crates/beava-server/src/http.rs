@@ -3,7 +3,9 @@
 //! Phase 2+ will add handlers onto this router. Keep this file narrow:
 //! route wiring only, no business logic.
 
+use crate::register::{register_router, RegisterAppState};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
+use beava_core::registry::Registry;
 use serde_json::json;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -30,12 +32,14 @@ impl ReadinessFlag {
     }
 }
 
-/// Build the Phase 1 router. Phase 2+ will merge additional routers into this.
-pub fn router(readiness: ReadinessFlag) -> Router {
+/// Build the Phase 2 router.
+/// Merges /health + /ready (Phase 1) with /register (Phase 2).
+pub fn router(readiness: ReadinessFlag, registry: Arc<Registry>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
         .with_state(readiness)
+        .merge(register_router(RegisterAppState { registry }))
 }
 
 async fn health() -> impl IntoResponse {
@@ -81,9 +85,14 @@ mod tests {
         (status, json)
     }
 
+    fn test_router() -> Router {
+        let registry = Arc::new(Registry::new());
+        router(ReadinessFlag::new(), registry)
+    }
+
     #[tokio::test]
     async fn health_returns_ok() {
-        let r = router(ReadinessFlag::new());
+        let r = test_router();
         let (status, body) = call(r, "/health").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, serde_json::json!({ "status": "ok" }));
@@ -92,7 +101,8 @@ mod tests {
     #[tokio::test]
     async fn ready_returns_starting_before_flag_flip() {
         let flag = ReadinessFlag::new();
-        let r = router(flag);
+        let registry = Arc::new(Registry::new());
+        let r = router(flag, registry);
         let (status, body) = call(r, "/ready").await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(body, serde_json::json!({ "status": "starting" }));
@@ -102,7 +112,8 @@ mod tests {
     async fn ready_returns_ok_after_flag_flip() {
         let flag = ReadinessFlag::new();
         flag.set_ready();
-        let r = router(flag);
+        let registry = Arc::new(Registry::new());
+        let r = router(flag, registry);
         let (status, body) = call(r, "/ready").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, serde_json::json!({ "status": "ready" }));
@@ -110,9 +121,19 @@ mod tests {
 
     #[tokio::test]
     async fn nonexistent_route_returns_404() {
-        let r = router(ReadinessFlag::new());
+        let r = test_router();
         let (status, _body) = call(r, "/nope").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn router_accepts_registry_state() {
+        // Confirms the new 2-arg router signature doesn't break Phase 1 health check
+        let registry = Arc::new(Registry::new());
+        let r = router(ReadinessFlag::new(), registry);
+        let (status, body) = call(r, "/health").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ok");
     }
 
     #[test]

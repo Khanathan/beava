@@ -2,8 +2,10 @@
 
 use crate::http::{router, ReadinessFlag};
 use crate::Config;
+use beava_core::registry::Registry;
 use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::net::TcpListener;
@@ -28,6 +30,7 @@ pub struct Server {
     listener: TcpListener,
     local_addr: SocketAddr,
     readiness: ReadinessFlag,
+    registry: Arc<Registry>,
 }
 
 impl std::fmt::Debug for Server {
@@ -61,6 +64,7 @@ impl Server {
         );
 
         let readiness = ReadinessFlag::new();
+        let registry = Arc::new(Registry::new());
 
         // Phase 1 placeholder: flip readiness after 100ms. Phase 5 replaces this
         // with "after snapshot loaded + WAL replayed" (RECOV-02).
@@ -75,6 +79,7 @@ impl Server {
             listener,
             local_addr,
             readiness,
+            registry,
         })
     }
 
@@ -89,7 +94,7 @@ impl Server {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        let app = router(self.readiness);
+        let app = router(self.readiness, self.registry);
         let start = Instant::now();
         axum::serve(self.listener, app)
             .with_graceful_shutdown(shutdown)

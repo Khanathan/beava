@@ -174,6 +174,43 @@ impl Registry {
         }
         w.version = new_version;
     }
+
+    /// Atomically install a batch of already-validated, non-conflicting PayloadNodes.
+    /// Bumps version by 1 and stamps each NEW descriptor with `registered_at_version = new_version`.
+    /// Existing (already_present) descriptors are left unchanged.
+    ///
+    /// Precondition: `nodes` has passed `validate_payload` and `compute_diff` yielded
+    /// `changed = []` AND `added != []`. Caller (Plan 05 endpoint) enforces this.
+    ///
+    /// Returns the new version number.
+    pub fn apply_registration(&self, nodes: Vec<crate::registry_diff::PayloadNode>) -> u64 {
+        let mut w = self.inner.write();
+        let new_version = w.version + 1;
+        for n in nodes {
+            match n {
+                crate::registry_diff::PayloadNode::Event(mut e) => {
+                    if !w.events.contains_key(&e.name) {
+                        e.registered_at_version = new_version;
+                        w.events.insert(e.name.clone(), e);
+                    }
+                }
+                crate::registry_diff::PayloadNode::Table(mut t) => {
+                    if !w.tables.contains_key(&t.name) {
+                        t.registered_at_version = new_version;
+                        w.tables.insert(t.name.clone(), t);
+                    }
+                }
+                crate::registry_diff::PayloadNode::Derivation(mut d) => {
+                    if !w.derivations.contains_key(&d.name) {
+                        d.registered_at_version = new_version;
+                        w.derivations.insert(d.name.clone(), d);
+                    }
+                }
+            }
+        }
+        w.version = new_version;
+        new_version
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -478,5 +515,108 @@ mod tests {
             !base.equiv_ignoring_version(&diff_ops),
             "must NOT be equiv when ops differ"
         );
+    }
+
+    // Plan 02-05 tests: apply_registration
+
+    #[test]
+    fn apply_registration_installs_events() {
+        use crate::registry_diff::PayloadNode;
+        let r = Registry::new();
+        let schema = make_event_schema();
+        let event_a = EventDescriptor {
+            name: "A".to_string(),
+            schema,
+            event_time_field: "event_time".to_string(),
+            idempotency_key: None,
+            idempotency_ttl_ms: None,
+            history_ttl_ms: None,
+            watermark_lateness_ms: None,
+            registered_at_version: 0,
+        };
+        let new_version = r.apply_registration(vec![PayloadNode::Event(event_a)]);
+        assert_eq!(new_version, 1);
+        assert_eq!(r.version(), 1);
+        let snap = r.snapshot();
+        assert!(snap.events.contains_key("A"));
+        assert_eq!(snap.events["A"].registered_at_version, 1);
+    }
+
+    #[test]
+    fn apply_registration_bumps_version_linear() {
+        use crate::registry_diff::PayloadNode;
+        let r = Registry::new();
+
+        let e1 = EventDescriptor {
+            name: "E1".to_string(),
+            schema: make_event_schema(),
+            event_time_field: "event_time".to_string(),
+            idempotency_key: None,
+            idempotency_ttl_ms: None,
+            history_ttl_ms: None,
+            watermark_lateness_ms: None,
+            registered_at_version: 0,
+        };
+        let v1 = r.apply_registration(vec![PayloadNode::Event(e1)]);
+        assert_eq!(v1, 1);
+
+        let e2 = EventDescriptor {
+            name: "E2".to_string(),
+            schema: make_event_schema(),
+            event_time_field: "event_time".to_string(),
+            idempotency_key: None,
+            idempotency_ttl_ms: None,
+            history_ttl_ms: None,
+            watermark_lateness_ms: None,
+            registered_at_version: 0,
+        };
+        let v2 = r.apply_registration(vec![PayloadNode::Event(e2)]);
+        assert_eq!(v2, 2);
+
+        let snap = r.snapshot();
+        assert_eq!(snap.events["E1"].registered_at_version, 1);
+        assert_eq!(snap.events["E2"].registered_at_version, 2);
+    }
+
+    #[test]
+    fn apply_registration_skips_already_present() {
+        use crate::registry_diff::PayloadNode;
+        let r = Registry::new();
+
+        // Seed EventA at v1
+        let event_a = EventDescriptor {
+            name: "A".to_string(),
+            schema: make_event_schema(),
+            event_time_field: "event_time".to_string(),
+            idempotency_key: None,
+            idempotency_ttl_ms: None,
+            history_ttl_ms: None,
+            watermark_lateness_ms: None,
+            registered_at_version: 0,
+        };
+        r.apply_registration(vec![PayloadNode::Event(event_a.clone())]);
+        assert_eq!(r.version(), 1);
+
+        // Apply [EventA (identical), EventB (new)]
+        let event_b = EventDescriptor {
+            name: "B".to_string(),
+            schema: make_event_schema(),
+            event_time_field: "event_time".to_string(),
+            idempotency_key: None,
+            idempotency_ttl_ms: None,
+            history_ttl_ms: None,
+            watermark_lateness_ms: None,
+            registered_at_version: 0,
+        };
+        let v2 = r.apply_registration(vec![
+            PayloadNode::Event(event_a),
+            PayloadNode::Event(event_b),
+        ]);
+        assert_eq!(v2, 2);
+        let snap = r.snapshot();
+        // A's registered_at_version stays at 1 (not overwritten)
+        assert_eq!(snap.events["A"].registered_at_version, 1);
+        // B is stamped at v2
+        assert_eq!(snap.events["B"].registered_at_version, 2);
     }
 }
