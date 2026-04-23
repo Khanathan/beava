@@ -227,6 +227,30 @@ pub(crate) async fn execute_register(
     }
 }
 
+/// Serialize a response struct to `serde_json::Value`.
+///
+/// All response types (`RegisterSuccess`, `RegisterErrorBody`) contain only
+/// `&'static str`, `u64`, `Vec<String>`, and `bool` fields — serialization of
+/// these types via `#[derive(Serialize)]` is infallible. This helper documents
+/// that invariant and provides an explicit 500-style fallback rather than an
+/// unwrap panic, so a future change that accidentally adds a non-serializable
+/// field fails gracefully instead of killing the Tokio runtime thread.
+fn to_json_value<T: serde::Serialize>(v: T) -> serde_json::Value {
+    serde_json::to_value(v).unwrap_or_else(|e| {
+        // This branch is unreachable with the current response types.
+        // If it is ever hit, log at error level and return a safe sentinel.
+        tracing::error!(
+            kind = "register.serialization_error",
+            error = %e,
+            "BUG: response struct failed to serialize — returning 500 sentinel"
+        );
+        serde_json::json!({
+            "status": "error",
+            "error": {"code": "internal_error", "reason": "response serialization failed"}
+        })
+    })
+}
+
 fn map_outcome_to_http(outcome: RegisterOutcome) -> (StatusCode, Json<serde_json::Value>) {
     match outcome {
         RegisterOutcome::Success {
@@ -242,7 +266,8 @@ fn map_outcome_to_http(outcome: RegisterOutcome) -> (StatusCode, Json<serde_json
                 added,
                 already_present,
             };
-            (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()))
+            // infallible: all fields are &str/u64/Vec<String>
+            (StatusCode::OK, Json(to_json_value(resp)))
         }
         RegisterOutcome::EmptyPayload { version } => {
             let resp = RegisterSuccess {
@@ -252,7 +277,8 @@ fn map_outcome_to_http(outcome: RegisterOutcome) -> (StatusCode, Json<serde_json
                 added: vec![],
                 already_present: vec![],
             };
-            (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()))
+            // infallible: all fields are &str/u64/Vec<String>
+            (StatusCode::OK, Json(to_json_value(resp)))
         }
         RegisterOutcome::Noop {
             version,
@@ -266,7 +292,8 @@ fn map_outcome_to_http(outcome: RegisterOutcome) -> (StatusCode, Json<serde_json
                 added: vec![],
                 already_present,
             };
-            (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()))
+            // infallible: all fields are &str/u64/Vec<String>
+            (StatusCode::OK, Json(to_json_value(resp)))
         }
         RegisterOutcome::ValidationFailed {
             version,
@@ -284,10 +311,8 @@ fn map_outcome_to_http(outcome: RegisterOutcome) -> (StatusCode, Json<serde_json
                 },
                 registry_version: version,
             };
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::to_value(body).unwrap()),
-            )
+            // infallible: all fields are &str/u64/String
+            (StatusCode::BAD_REQUEST, Json(to_json_value(body)))
         }
         RegisterOutcome::Conflict {
             version,
@@ -306,10 +331,8 @@ fn map_outcome_to_http(outcome: RegisterOutcome) -> (StatusCode, Json<serde_json
                 },
                 registry_version: version,
             };
-            (
-                StatusCode::CONFLICT,
-                Json(serde_json::to_value(body).unwrap()),
-            )
+            // infallible: all fields are &str/u64/Vec<String>/ConflictDetail
+            (StatusCode::CONFLICT, Json(to_json_value(body)))
         }
     }
 }
@@ -341,9 +364,10 @@ pub async fn post_register(
             },
             registry_version: current_version,
         };
+        // infallible: RegisterErrorBody contains only &str/u64/String fields
         return (
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            Json(serde_json::to_value(err_body).unwrap()),
+            Json(to_json_value(err_body)),
         );
     }
 
@@ -367,9 +391,10 @@ pub async fn post_register(
                 },
                 registry_version: current_version,
             };
+            // infallible: RegisterErrorBody contains only &str/u64/String fields
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::to_value(err_body).unwrap()),
+                Json(to_json_value(err_body)),
             );
         }
     };
