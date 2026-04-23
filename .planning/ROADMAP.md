@@ -93,7 +93,12 @@ Declare a feature, push events, query it — in under 10 minutes, with curl alon
   3. The HTTP framework is picked, wired to `axum` (or equivalent), and graceful shutdown on SIGTERM is implemented and tested.
   4. An integration-test harness exists that can spawn the binary in-process, wait for readiness, issue HTTP calls, and tear down cleanly — used by every subsequent phase.
 
-**Plans:** TBD
+**Plans:** 5 plans (4 waves; Plans 02 and 03 run in parallel after Plan 01)
+- [ ] 01-01-PLAN.md — Cargo workspace + binary skeleton + release profile
+- [ ] 01-02-PLAN.md — clap CLI + YAML config loading with BEAVA_* env overrides
+- [ ] 01-03-PLAN.md — structured JSON logging via tracing + tracing-subscriber
+- [ ] 01-04-PLAN.md — axum HTTP server with /health + /ready + graceful shutdown
+- [ ] 01-05-PLAN.md — TestServer integration-test harness + Phase 1 acceptance test
 
 ---
 
@@ -310,7 +315,7 @@ Declare a feature, push events, query it — in under 10 minutes, with curl alon
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/? | Not started | - |
+| 1. Foundation | 0/5 | Planned | - |
 | 2. Primitive infra + registration | 0/? | Not started | - |
 | 3. Core aggregates + push/get | 0/? | Not started | - |
 | 4. WAL + idempotency | 0/? | Not started | - |
