@@ -1,5 +1,245 @@
-//! UDDSketch: Uniform Dyadic Distribution Sketch with retraction (decrement).
-//! Ported from main:src/engine/uddsketch.rs (Apache 2.0).
+//! Ported from main:src/engine/uddsketch.rs (adapted from Timescale's UDDSketch
+//! port, Apache 2.0). Adds `decrement()` for ring-buffer retraction. Alpha drift
+//! on decrement is intentional (one-way).
+//!
+//! # Properties
+//!
+//! - Relative-error quantile sketch: `|q̂ - q_true| / q_true <= α`.
+//! - `α` starts at `alpha0` (default 0.01) and grows monotonically via
+//!   bucket-collapse rounds when bucket count exceeds `max_buckets`.
+//!   Per the UDDSketch paper: γ_new = γ_old², so
+//!   `α_new = 2α / (1 + α²)`.
+//! - Memory: `O(max_buckets)` — default 2048 buckets.
+//!
+//! # `decrement()`
+//!
+//! Mirrors `insert`: compute the same bucket, subtract one, saturate at zero,
+//! drop the bucket entry on count==0. `total_count` saturates at zero.
+//! `current_alpha` is NOT rolled back on decrement (one-way drift).
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// Default max buckets before a collapse round halves α-resolution.
+pub const DEFAULT_MAX_BUCKETS: usize = 2048;
+
+/// Default starting α (planner-locked at 0.01 per Plan 22-03 SUMMARY).
+pub const DEFAULT_ALPHA: f64 = 0.01;
+
+/// UDDSketch: a Uniform Dyadic Distribution Sketch with retraction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UDDSketch {
+    alpha0: f64,
+    current_alpha: f64,
+    /// ln(γ) where γ = (1+α)/(1-α). Bucket-index formula: k = floor(ln(x)/ln(γ)).
+    ln_gamma: f64,
+    num_collapses: u32,
+    max_buckets: usize,
+    pos_buckets: BTreeMap<i32, u64>,
+    neg_buckets: BTreeMap<i32, u64>,
+    /// Count of observations equal to exactly 0.0 (ln(0) is undefined).
+    zero_count: u64,
+    total_count: u64,
+}
+
+impl Default for UDDSketch {
+    fn default() -> Self {
+        Self::new(DEFAULT_ALPHA, DEFAULT_MAX_BUCKETS)
+    }
+}
+
+impl UDDSketch {
+    pub fn new(alpha0: f64, max_buckets: usize) -> Self {
+        assert!(alpha0 > 0.0 && alpha0 < 1.0, "alpha must be in (0, 1)");
+        assert!(max_buckets >= 16, "max_buckets must be >= 16");
+        let gamma = (1.0 + alpha0) / (1.0 - alpha0);
+        Self {
+            alpha0,
+            current_alpha: alpha0,
+            ln_gamma: gamma.ln(),
+            num_collapses: 0,
+            max_buckets,
+            pos_buckets: BTreeMap::new(),
+            neg_buckets: BTreeMap::new(),
+            zero_count: 0,
+            total_count: 0,
+        }
+    }
+
+    #[inline]
+    pub fn current_alpha(&self) -> f64 {
+        self.current_alpha
+    }
+
+    #[inline]
+    pub fn alpha0(&self) -> f64 {
+        self.alpha0
+    }
+
+    #[inline]
+    pub fn num_collapses(&self) -> u32 {
+        self.num_collapses
+    }
+
+    #[inline]
+    pub fn total_count(&self) -> u64 {
+        self.total_count
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.total_count == 0
+    }
+
+    #[inline]
+    fn bucket_key(&self, value: f64) -> i32 {
+        (value.ln() / self.ln_gamma).floor() as i32
+    }
+
+    /// Insert a value. Non-finite values are skipped.
+    pub fn insert(&mut self, value: f64) {
+        if !value.is_finite() {
+            return;
+        }
+        self.total_count = self.total_count.saturating_add(1);
+        if value == 0.0 {
+            self.zero_count = self.zero_count.saturating_add(1);
+            return;
+        }
+        let key = self.bucket_key(value.abs());
+        let target = if value > 0.0 {
+            &mut self.pos_buckets
+        } else {
+            &mut self.neg_buckets
+        };
+        *target.entry(key).or_insert(0) += 1;
+
+        if self.pos_buckets.len() + self.neg_buckets.len() > self.max_buckets {
+            self.collapse();
+        }
+    }
+
+    /// Decrement a single occurrence. Saturates at 0; never produces negatives.
+    pub fn decrement(&mut self, value: f64) {
+        if !value.is_finite() {
+            return;
+        }
+        if value == 0.0 {
+            if self.zero_count > 0 {
+                self.zero_count -= 1;
+                self.total_count = self.total_count.saturating_sub(1);
+            }
+            return;
+        }
+        let key = self.bucket_key(value.abs());
+        let target = if value > 0.0 {
+            &mut self.pos_buckets
+        } else {
+            &mut self.neg_buckets
+        };
+        if let Some(count) = target.get_mut(&key) {
+            if *count > 0 {
+                *count -= 1;
+                self.total_count = self.total_count.saturating_sub(1);
+                if *count == 0 {
+                    target.remove(&key);
+                }
+            }
+        }
+    }
+
+    /// Merge another sketch (collapses to whichever has coarser alpha).
+    pub fn merge(&mut self, other: &UDDSketch) {
+        let mut other = other.clone();
+        while self.num_collapses < other.num_collapses {
+            self.collapse();
+        }
+        while other.num_collapses < self.num_collapses {
+            other.collapse();
+        }
+        for (k, v) in other.pos_buckets {
+            *self.pos_buckets.entry(k).or_insert(0) += v;
+        }
+        for (k, v) in other.neg_buckets {
+            *self.neg_buckets.entry(k).or_insert(0) += v;
+        }
+        self.zero_count = self.zero_count.saturating_add(other.zero_count);
+        self.total_count = self.total_count.saturating_add(other.total_count);
+        if self.pos_buckets.len() + self.neg_buckets.len() > self.max_buckets {
+            self.collapse();
+        }
+    }
+
+    /// Collapse: merge adjacent bucket pairs, doubling γ and raising α.
+    fn collapse(&mut self) {
+        let a = self.current_alpha;
+        self.current_alpha = (2.0 * a) / (1.0 + a * a);
+        self.ln_gamma *= 2.0;
+        self.num_collapses += 1;
+
+        let merge = |buckets: BTreeMap<i32, u64>| -> BTreeMap<i32, u64> {
+            let mut out = BTreeMap::new();
+            for (k, v) in buckets {
+                let new_key = k.div_euclid(2);
+                *out.entry(new_key).or_insert(0) += v;
+            }
+            out
+        };
+
+        self.pos_buckets = merge(std::mem::take(&mut self.pos_buckets));
+        self.neg_buckets = merge(std::mem::take(&mut self.neg_buckets));
+    }
+
+    /// Estimate the q-quantile. Returns `None` if empty. q is clamped to [0, 1].
+    pub fn quantile(&self, q: f64) -> Option<f64> {
+        if self.total_count == 0 {
+            return None;
+        }
+        let q = q.clamp(0.0, 1.0);
+        let target_rank = (q * (self.total_count.saturating_sub(1)) as f64).floor() as u64;
+
+        let mut cumul: u64 = 0;
+        // Most-negative values first: high |key| = large magnitude.
+        for (&key, &count) in self.neg_buckets.iter().rev() {
+            if cumul + count > target_rank {
+                return Some(-self.bucket_center(key));
+            }
+            cumul += count;
+        }
+        if self.zero_count > 0 {
+            if cumul + self.zero_count > target_rank {
+                return Some(0.0);
+            }
+            cumul += self.zero_count;
+        }
+        for (&key, &count) in self.pos_buckets.iter() {
+            if cumul + count > target_rank {
+                return Some(self.bucket_center(key));
+            }
+            cumul += count;
+        }
+
+        if let Some((&k, _)) = self.pos_buckets.iter().next_back() {
+            return Some(self.bucket_center(k));
+        }
+        if let Some((&k, _)) = self.neg_buckets.iter().next() {
+            return Some(-self.bucket_center(k));
+        }
+        Some(0.0)
+    }
+
+    #[inline]
+    fn bucket_center(&self, k: i32) -> f64 {
+        let lower = (k as f64 * self.ln_gamma).exp();
+        let upper = ((k + 1) as f64 * self.ln_gamma).exp();
+        (lower + upper) / 2.0
+    }
+
+    pub fn estimated_bytes(&self) -> usize {
+        let per_entry = std::mem::size_of::<i32>() + std::mem::size_of::<u64>() + 48;
+        std::mem::size_of::<Self>() + per_entry * (self.pos_buckets.len() + self.neg_buckets.len())
+    }
+}
 
 #[cfg(test)]
 mod tests {
