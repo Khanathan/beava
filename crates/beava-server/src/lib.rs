@@ -20,6 +20,7 @@ pub mod server;
 pub mod shutdown;
 pub mod snapshot_task;
 pub mod tcp;
+pub mod temporal_http;
 
 #[cfg(any(feature = "testing", test))]
 pub mod testing;

@@ -85,6 +85,9 @@ pub fn router_with_push(
 
     if let Some(app) = app_state.as_ref() {
         r = r.merge(push_router(Arc::clone(app)));
+        // Phase 11.5 — push-table, retract, and table-get sit alongside
+        // /push (production API, not gated by dev_endpoints).
+        r = r.merge(crate::temporal_http::temporal_router(Arc::clone(app)));
     }
 
     if dev_endpoints_enabled {
