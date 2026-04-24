@@ -88,3 +88,54 @@ Captured: 2026-04-23. Commit: `7d8f6aa..` (Phase 7.5 Plan 03).
 
 
 > Regression thresholds: +10% = WARNING (flag in VERIFICATION.md); +25% = BLOCKER. Compare within same hw-class only.
+
+---
+## Per-phase rows merged from parallel worktrees (2026-04-24)
+
+### Phase 6.1 — async-durability default `/push` (sync_mode=Periodic)
+
+| Phase | Date | Pipeline | Transport | Sustained EPS | Push P50 (µs) | Push P95 (µs) | Push P99 (µs) | Get P99 (µs) | Peak RSS (MB) | Commit | Notes |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| 6.1 | 2026-04-24 | small  | http | 15672 | 3489 | 5751  | 11399 | 5323  | 49  | adbc3d1 | sync_mode=periodic (default); --parallel 64; 15.8× lift over Phase 7.5 (990 EPS) |
+| 6.1 | 2026-04-24 | medium | http | 17453 | 3313 | 4731  | 5899  | 2655  | 60  | adbc3d1 | 5 features per push; 16.9× lift over Phase 7.5 (1031 EPS) |
+| 6.1 | 2026-04-24 | large  | http | 12004 | 3933 | 10727 | 30719 | 18975 | 100 | adbc3d1 | 15 features; 11.9× lift over Phase 7.5 (1007 EPS); P99 inflated by RSS GC pressure on macOS |
+
+### Phase 8 — point/recency/streak ops + TCP OP_PUSH
+
+| Phase | Date | Pipeline | Transport | Sustained EPS | Push P50 (µs) | Push P95 (µs) | Push P99 (µs) | Get P99 (µs) | Peak RSS (MB) | Commit | Notes |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| 8 | 2026-04-24 | small  | http | 517 | 6943 | 10223 | 14247 | 3541 | 10 | 48e09fd | parallel-batch CPU contention; quiescent ~1000 EPS expected |
+| 8 | 2026-04-24 | medium | http | 350 | 8871 | 18991 | 27951 | 11335 | 10 | 48e09fd | 5 features |
+| 8 | 2026-04-24 | large  | http | 384 | 8423 | 14407 | 21119 | 4967  | 12 | 48e09fd | 15 features |
+| 8 | 2026-04-24 | phase8 | http | 514 | 6995 | 9615 | 12447 | 6915 | 15 | 48e09fd | NEW 10-feature shape (Phase 5 core + Phase 8 point/recency); Phase 9+ comparator |
+| 8 | 2026-04-24 | small  | tcp  | 290 | 11671 | 25023 | 33887 | 10335 | 9 | 48e09fd | **NEW:** First TCP push baseline (OP_PUSH wired in Phase 8) |
+| 8 | 2026-04-24 | phase8 | tcp  | 335 | 9599 | 18191 | 28431 | 3809  | 11 | 48e09fd | NEW 10-feature shape over TCP |
+
+### Phase 9 — decay + velocity operators
+
+| Phase | Date | Pipeline | Transport | Sustained EPS | Push P50 (µs) | Push P95 (µs) | Push P99 (µs) | Get P99 (µs) | Peak RSS (MB) | Commit | Notes |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| 9 | 2026-04-23 | medium_phase9 | http | 900 | 8011 | 13871 | 19071 | 6547 | 26 | 26cc375 | NEW pipeline; 5 features (count/sum + ewma/decayed_sum/rate_of_change); fsync-bound |
+| 9 | 2026-04-23 | large_phase9  | http | 831 | 8431 | 16183 | 24303 | 20031 | 47 | 26cc375 | NEW pipeline; 15 features (5 core + 5 decay + 5 velocity); fsync-bound |
+
+### Phase 10 — sketch operators
+
+| Phase | Date | Pipeline | Transport | Sustained EPS | Push P50 (µs) | Push P95 (µs) | Push P99 (µs) | Get P99 (µs) | Peak RSS (MB) | Commit | Notes |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| 10 | 2026-04-24 | medium-with-sketches | http | 982 | 7631 | 8943 | 10135 | 3217 | 95  | 13c60b9 | medium + count_distinct + percentile (5→7 features); fsync-bound on macOS |
+| 10 | 2026-04-24 | large-with-sketches  | http | 976 | 7619 | 9071 | 10375 | 2089 | 182 | 13c60b9 | large + 5 sketches (15→20 features); fsync-bound on macOS |
+
+### Phase 11 — buffer + geo operators
+
+| Phase | Date | Pipeline | Transport | Sustained EPS | Push P50 (µs) | Push P95 (µs) | Push P99 (µs) | Get P99 (µs) | Peak RSS (MB) | Commit | Notes |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| 11 | 2026-04-24 | geo    | http | 701  | 9519 | 19999 | 33215 | 32095 | 61 | 6235ba2 | NEW geo shape (geo_velocity + unique_cells + most_recent_n); first geo baseline |
+| 11 | 2026-04-24 | small  | http | 1097 | 6955 | 9687  | 13535 | 4595  | 32 | 6235ba2 | small/HTTP regression check vs Phase 7.5 (990 EPS) → +10.8% improvement |
+
+### Phase 11.5 — temporal tables + retraction primitive
+
+| Phase | Date | Pipeline | Transport | Op | EPS | Push P50 (µs) | Push P99 (µs) | Notes |
+|---|---|---|---|---|---:|---:|---:|---|
+| 11.5 | 2026-04-23 | temporal-fraud | http | upsert  | 840 | 8040  | 18960 | first table-write baseline; fsync-bound on macOS |
+| 11.5 | 2026-04-23 | temporal-fraud | http | read    | 299 | 160   | 3500  | first temporal-read baseline; pure MVCC lookup |
+| 11.5 | 2026-04-23 | temporal-fraud | http | retract | 59  | 8050  | 17950 | first retract baseline; same fsync ceiling as upsert |
