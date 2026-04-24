@@ -118,6 +118,25 @@ enum ReadResult {
     Eof,
 }
 
+fn read_exact_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<ReadResult, PersistError> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match r.read(&mut buf[filled..]) {
+            Ok(0) => {
+                return Ok(if filled == 0 {
+                    ReadResult::Eof
+                } else {
+                    ReadResult::Partial
+                });
+            }
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(PersistError::Io(e)),
+        }
+    }
+    Ok(ReadResult::Full)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,23 +175,4 @@ mod tests {
             Err(PersistError::UnknownRecordType(0x06))
         ));
     }
-}
-
-fn read_exact_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<ReadResult, PersistError> {
-    let mut filled = 0;
-    while filled < buf.len() {
-        match r.read(&mut buf[filled..]) {
-            Ok(0) => {
-                return Ok(if filled == 0 {
-                    ReadResult::Eof
-                } else {
-                    ReadResult::Partial
-                });
-            }
-            Ok(n) => filled += n,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(PersistError::Io(e)),
-        }
-    }
-    Ok(ReadResult::Full)
 }
