@@ -35,3 +35,7 @@ harness = false
 [[bench]]
 name = "phase5_agg"
 harness = false
+
+[[bench]]
+name = "phase10_topk"
+harness = false
