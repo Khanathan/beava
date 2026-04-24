@@ -115,44 +115,73 @@
     };
 
     // ==================================================================
-    // "What is this really?" — second-person intro.
+    // Pillars — 4 testable claims that define what's different about beava.
+    // 2x2 grid desktop, 1x4 mobile. No icons — text-only reads honest, not
+    // clip-art. Each card links to the /docs page that backs the claim.
+    // Replaces the former WhatIsThis + LayerCard pattern.
     // ==================================================================
-    const WhatIsThis = () => (
-      <section style={{ padding: '96px 28px', background: 'var(--bg-alt)', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}>
-        <div style={{ maxWidth: 900, margin: '0 auto' }}>
-          <Eyebrow style={{ marginBottom: 16 }}>What is this, really?</Eyebrow>
-          <h2 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(32px, 4.4vw, 52px)', lineHeight: 1.1, letterSpacing: '-0.02em', color: 'var(--fg1)', margin: '0 0 24px' }}>
-            Your app sends events. <em style={{ color: 'var(--accent)' }}>The beaver counts them</em> in rolling windows and answers questions about them in microseconds.
-          </h2>
-          <p style={{ fontFamily: 'var(--font-sans)', fontSize: 19, lineHeight: 1.7, color: 'var(--fg2)', maxWidth: 680, margin: '0 0 18px', textWrap: 'pretty' }}>
-            beava is a small, furry animal for your data. You POST events over HTTP, you define features in ~15 lines of Python, and you GET the answer on the hot path. No Kafka. No Zookeeper. No watermarks. No data engineer on retainer.
-          </p>
-          <p style={{ fontFamily: 'var(--font-sans)', fontSize: 19, lineHeight: 1.7, color: 'var(--fg2)', maxWidth: 680, margin: 0, textWrap: 'pretty' }}>
-            It's single-node today. It runs on the laptop you already have. It's the thing you reach for when Redis isn't quite enough and Flink is way too much.
-          </p>
-
-          {/* three-layer spec, tiny */}
-          <div className="two-col" style={{ marginTop: 48, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 18 }}>
-            <LayerCard n="1" title="Pipelines in Python" body="~15 lines with @bv.stream and @bv.table decorators. Read your own pipeline on the homepage."/>
-            <LayerCard n="2" title="Events in HTTP"     body="POST JSON to /events/X. curl works. No SDK required. TCP fast-path if you need it."/>
-            <LayerCard n="3" title="State in memory"    body="In-memory counters with a write-ahead log. ~100ns lookups. Recovers at ~8 seconds per GB."/>
+    const Pillars = () => {
+      const pillars = [
+        {
+          title: 'SINGLE BINARY',
+          body: 'No cluster. No state store. brew install beava. systemctl start. That\'s the runbook.',
+          href: 'docs/install/',
+        },
+        {
+          title: '40+ OPERATORS',
+          body: 'Counters, velocities, distances, rates, distributions. Built in. No Lua scripts.',
+          href: 'docs/api/',
+        },
+        {
+          title: 'WAL-DURABLE',
+          body: 'Crash-safe by default. Snapshot recovery in seconds per GB. No data engineer on call.',
+          href: 'docs/operations/',
+        },
+        {
+          title: 'APACHE 2.0',
+          body: 'No license server. No phone-home. Forkable. Apache 2.0.',
+          href: 'https://github.com/beava-dev/beava/blob/main/LICENSE',
+        },
+      ];
+      return (
+        <section style={{ padding: '96px 28px', background: 'var(--bg-alt)', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}>
+          <div style={{ maxWidth: 1000, margin: '0 auto' }}>
+            <Eyebrow style={{ textAlign: 'center', marginBottom: 40 }}>What&apos;s different</Eyebrow>
+            <div className="pillars-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 24 }}>
+              {pillars.map(p => (
+                <a key={p.title} href={p.href} style={{
+                  display: 'block',
+                  padding: '28px 30px',
+                  background: '#fff',
+                  border: '1px solid var(--border)',
+                  borderRadius: 14,
+                  textDecoration: 'none',
+                  color: 'inherit',
+                  boxShadow: 'var(--shadow-xs)',
+                  transition: 'transform 180ms, box-shadow 180ms',
+                }}>
+                  <div style={{
+                    fontFamily: 'var(--font-sans)',
+                    fontWeight: 800,
+                    fontSize: 13,
+                    letterSpacing: '0.08em',
+                    color: 'var(--accent)',
+                    marginBottom: 10,
+                  }}>{p.title}</div>
+                  <div style={{
+                    fontFamily: 'var(--font-sans)',
+                    fontSize: 15.5,
+                    lineHeight: 1.55,
+                    color: 'var(--fg2)',
+                    textWrap: 'pretty',
+                  }}>{p.body}</div>
+                </a>
+              ))}
+            </div>
           </div>
-        </div>
-      </section>
-    );
-
-    const LayerCard = ({ n, title, body }) => (
-      <div style={{
-        background: '#fff', border: '1px solid var(--border)', borderRadius: 14,
-        padding: '22px 22px 20px', boxShadow: 'var(--shadow-xs)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-          <span style={{ width: 26, height: 26, borderRadius: 999, background: 'var(--beava-orange-wash)', color: 'var(--accent)', display: 'grid', placeItems: 'center', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 13 }}>{n}</span>
-          <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 15, color: 'var(--fg1)' }}>{title}</div>
-        </div>
-        <p style={{ fontFamily: 'var(--font-sans)', fontSize: 14.5, lineHeight: 1.6, color: 'var(--fg2)', margin: 0 }}>{body}</p>
-      </div>
-    );
+        </section>
+      );
+    };
 
     // ==================================================================
     // NoteArrow — Gaegu-accent inline margin note. Used in PipelineShowcase
@@ -289,7 +318,7 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
         <Nav active="home"/>
         <Hero/>
         <PipelineShowcase/>
-        <WhatIsThis/>
+        <Pillars/>
         <GuideTeaser/>
         <Footer/>
       </>
