@@ -467,7 +467,10 @@ fn fresh_op(kind: AggKind) -> AggOp {
         | AggKind::OutlierCount
         | AggKind::ValueChangeCount
         | AggKind::ZScore => {
-            unreachable!("Phase 9 op kind {:?} does not support WindowedOp wrap", kind)
+            unreachable!(
+                "Phase 9 op kind {:?} does not support WindowedOp wrap",
+                kind
+            )
         }
     }
 }

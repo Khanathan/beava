@@ -344,8 +344,7 @@ pub fn compile_aggregations_from_nodes(
                         reason: format!(
                             "{:?} requires positive finite half_life duration string \
                              (e.g., \"5m\"); got {:?}",
-                            kind,
-                            params.half_life_ms
+                            kind, params.half_life_ms
                         ),
                     });
                     deriv_errors = true;
@@ -361,9 +360,8 @@ pub fn compile_aggregations_from_nodes(
                         path: format!(
                             "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.sub_window"
                         ),
-                        reason:
-                            "burst_count requires positive finite sub_window duration string"
-                                .to_string(),
+                        reason: "burst_count requires positive finite sub_window duration string"
+                            .to_string(),
                     });
                     deriv_errors = true;
                     continue;

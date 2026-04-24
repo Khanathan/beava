@@ -251,11 +251,10 @@ impl AggOp {
     /// Otherwise returns the lifetime (windowless) variant.
     pub fn new(desc: &AggOpDescriptor) -> Self {
         // Phase 5 windowed wrap only applies to ops that go through WindowedOp.
-        if desc.window_ms.is_some() && desc.kind.supports_windowed_wrap() {
-            return AggOp::Windowed(Box::new(WindowedOp::new(
-                desc.kind,
-                desc.window_ms.unwrap(),
-            )));
+        if let Some(window_ms) = desc.window_ms {
+            if desc.kind.supports_windowed_wrap() {
+                return AggOp::Windowed(Box::new(WindowedOp::new(desc.kind, window_ms)));
+            }
         }
         match desc.kind {
             AggKind::Count => AggOp::Count(CountState::default()),
@@ -305,9 +304,7 @@ impl AggOp {
                 state: OutlierCountState::default(),
                 sigma: desc.sigma.unwrap_or(3.0),
             }),
-            AggKind::ValueChangeCount => {
-                AggOp::ValueChangeCount(ValueChangeCountState::default())
-            }
+            AggKind::ValueChangeCount => AggOp::ValueChangeCount(ValueChangeCountState::default()),
             AggKind::ZScore => AggOp::ZScore(ZScoreState::default()),
         }
     }
@@ -335,54 +332,41 @@ impl AggOp {
             AggOp::Ratio(s) => s.update(row, event_time_ms, field, where_matched),
             AggOp::Windowed(w) => w.update(row, event_time_ms, field, where_matched),
             // Phase 9 decay
-            AggOp::Ewma(op) => op.state.update(
-                row,
-                event_time_ms,
-                field,
-                where_matched,
-                op.half_life_ms,
-            ),
-            AggOp::EwVar(op) => op.state.update(
-                row,
-                event_time_ms,
-                field,
-                where_matched,
-                op.half_life_ms,
-            ),
-            AggOp::EwZScore(op) => op.state.update(
-                row,
-                event_time_ms,
-                field,
-                where_matched,
-                op.half_life_ms,
-            ),
-            AggOp::DecayedSum(op) => op.state.update(
-                row,
-                event_time_ms,
-                field,
-                where_matched,
-                op.half_life_ms,
-            ),
-            AggOp::DecayedCount(op) => op.state.update(
-                row,
-                event_time_ms,
-                field,
-                where_matched,
-                op.half_life_ms,
-            ),
+            AggOp::Ewma(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::EwVar(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::EwZScore(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::DecayedSum(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::DecayedCount(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
             AggOp::Twa(s) => s.update(row, event_time_ms, field, where_matched),
             // Phase 9 velocity
             AggOp::RateOfChange(s) => s.update(row, event_time_ms, field, where_matched),
             AggOp::InterArrivalStats(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::BurstCount(op) => op
-                .state
-                .update(row, event_time_ms, field, where_matched, op.sub_window_ms),
+            AggOp::BurstCount(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.sub_window_ms)
+            }
             AggOp::DeltaFromPrev(s) => s.update(row, event_time_ms, field, where_matched),
             AggOp::Trend(s) => s.update(row, event_time_ms, field, where_matched),
             AggOp::TrendResidual(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::OutlierCount(op) => op
-                .state
-                .update(row, event_time_ms, field, where_matched, op.sigma),
+            AggOp::OutlierCount(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.sigma)
+            }
             AggOp::ValueChangeCount(s) => s.update(row, event_time_ms, field, where_matched),
             AggOp::ZScore(s) => s.update(row, event_time_ms, field, where_matched),
         }

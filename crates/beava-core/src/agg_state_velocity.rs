@@ -168,7 +168,9 @@ impl BurstCountState {
             self.bucket_epoch = vec![i64::MIN; 64];
         }
         let epoch = event_time_ms.div_euclid(sub_window_ms as i64) * sub_window_ms as i64;
-        let idx = (event_time_ms.div_euclid(sub_window_ms as i64).rem_euclid(64)) as usize;
+        let idx = (event_time_ms
+            .div_euclid(sub_window_ms as i64)
+            .rem_euclid(64)) as usize;
         self.initialized = true;
         if self.bucket_epoch[idx] != epoch {
             self.buckets[idx] = 0;
@@ -327,8 +329,7 @@ impl TrendResidualState {
         let Some(y) = numeric_from_row(row, fname) else {
             return;
         };
-        self.trend
-            .update(row, event_time_ms, field, where_matched);
+        self.trend.update(row, event_time_ms, field, where_matched);
         self.last_value = y;
         self.last_t = event_time_ms;
         self.initialized = true;
@@ -557,9 +558,7 @@ mod tests {
         for t in &[0, 30, 60] {
             s.update(&Row::new(), *t, None, true, 100);
         }
-        for t in &[100] {
-            s.update(&Row::new(), *t, None, true, 100);
-        }
+        s.update(&Row::new(), 100, None, true, 100);
         for t in &[200, 220, 240, 260, 280] {
             s.update(&Row::new(), *t, None, true, 100);
         }
@@ -632,7 +631,13 @@ mod tests {
     fn outlier_count_zero_for_steady_stream() {
         let mut s = OutlierCountState::default();
         for i in 0..20 {
-            s.update(&row_f64("v", 5.0 + (i as f64 % 2.0)), i * 100, Some("v"), true, 3.0);
+            s.update(
+                &row_f64("v", 5.0 + (i as f64 % 2.0)),
+                i * 100,
+                Some("v"),
+                true,
+                3.0,
+            );
         }
         assert_eq!(s.query(), Value::I64(0));
     }
@@ -641,7 +646,13 @@ mod tests {
     fn outlier_count_increments_on_extreme_value() {
         let mut s = OutlierCountState::default();
         for i in 0..20 {
-            s.update(&row_f64("v", 5.0 + (i as f64 % 2.0)), i * 100, Some("v"), true, 3.0);
+            s.update(
+                &row_f64("v", 5.0 + (i as f64 % 2.0)),
+                i * 100,
+                Some("v"),
+                true,
+                3.0,
+            );
         }
         s.update(&row_f64("v", 100.0), 2000, Some("v"), true, 3.0);
         match s.query() {

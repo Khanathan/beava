@@ -571,9 +571,9 @@ mod registry_source_tests {
                     field: None,
                     window_ms: None,
                     where_expr: None,
-            half_life_ms: None,
-            sub_window_ms: None,
-            sigma: None,
+                    half_life_ms: None,
+                    sub_window_ms: None,
+                    sigma: None,
                 },
             }],
         }

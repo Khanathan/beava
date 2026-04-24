@@ -37,11 +37,24 @@ fn desc_with(
 fn bench_agg_op_update(c: &mut Criterion) {
     let row = make_row();
 
-    let variants: &[(AggKind, Option<&str>, Option<u64>, Option<u64>, Option<f64>)] = &[
+    type Variant = (
+        AggKind,
+        Option<&'static str>,
+        Option<u64>,
+        Option<u64>,
+        Option<f64>,
+    );
+    let variants: &[Variant] = &[
         (AggKind::Ewma, Some("amount"), Some(60_000), None, None),
         (AggKind::EwVar, Some("amount"), Some(60_000), None, None),
         (AggKind::EwZScore, Some("amount"), Some(60_000), None, None),
-        (AggKind::DecayedSum, Some("amount"), Some(60_000), None, None),
+        (
+            AggKind::DecayedSum,
+            Some("amount"),
+            Some(60_000),
+            None,
+            None,
+        ),
         (AggKind::DecayedCount, None, Some(60_000), None, None),
         (AggKind::Twa, Some("amount"), None, None, None),
         (AggKind::RateOfChange, Some("amount"), None, None, None),

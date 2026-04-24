@@ -158,8 +158,8 @@ impl EwVarState {
             self.initialized = true;
             return;
         }
-        let alpha = decay_alpha(event_time_ms, self.last_event_time_ms, half_life_ms)
-            .unwrap_or(0.0);
+        let alpha =
+            decay_alpha(event_time_ms, self.last_event_time_ms, half_life_ms).unwrap_or(0.0);
         // EW Welford-style: update mean, then m2 against new mean.
         let delta = x - self.mean;
         let new_mean = self.mean + alpha * delta;
