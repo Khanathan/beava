@@ -105,6 +105,51 @@ const Callout = ({ eyebrow = 'NOTE', mascot = 'work-pose', tint = 'paper', child
   );
 };
 
+// Banner — dismissable top bar for announcements (cloud waitlist, launch, etc).
+// Dismiss state lives in localStorage with a 30-day TTL, then re-shows. Pass
+// an `id` to version dismissals — bump the id when copy changes to re-trigger.
+const Banner = ({ id = 'cloud-waitlist-v1', emoji = '☁️', children, href = 'cloud.html' }) => {
+  const [dismissed, setDismissed] = React.useState(true); // default hidden to avoid flash
+  React.useEffect(() => {
+    try {
+      const raw = localStorage.getItem('banner:' + id);
+      if (!raw) { setDismissed(false); return; }
+      const parsed = JSON.parse(raw);
+      const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+      if (Date.now() - parsed.ts > THIRTY_DAYS) setDismissed(false);
+    } catch (_) { setDismissed(false); }
+  }, [id]);
+
+  const dismiss = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    try { localStorage.setItem('banner:' + id, JSON.stringify({ ts: Date.now() })); } catch (_) {}
+    setDismissed(true);
+  };
+
+  if (dismissed) return null;
+
+  return (
+    <a href={href} style={{
+      display: 'block', textDecoration: 'none', color: 'var(--fg1)',
+      background: 'var(--beava-paper)', borderBottom: '1px solid var(--border)',
+      padding: '10px 52px 10px 28px',
+      fontFamily: 'var(--font-sans)', fontSize: 13.5,
+      textAlign: 'center', position: 'relative', zIndex: 60,
+    }}>
+      <span style={{ marginRight: 8 }}>{emoji}</span>
+      <span style={{ color: 'var(--fg1)' }}>{children}</span>
+      <span style={{ color: 'var(--accent)', fontWeight: 600, marginLeft: 6 }}>→</span>
+      <button onClick={dismiss} aria-label="Dismiss" style={{
+        position: 'absolute', top: '50%', right: 16,
+        transform: 'translateY(-50%)',
+        background: 'transparent', border: 'none', cursor: 'pointer',
+        color: 'var(--fg3)', fontSize: 20, lineHeight: 1,
+        padding: '2px 8px', borderRadius: 6,
+      }}>×</button>
+    </a>
+  );
+};
+
 // Nav — shared across pages. active=current route id.
 const Nav = ({ active = 'home' }) => {
   const [scrolled, setScrolled] = React.useState(false);
@@ -138,17 +183,15 @@ const Nav = ({ active = 'home' }) => {
           beava
         </a>
         <div style={{ display: 'flex', gap: 4, marginLeft: 14, flex: 1 }}>
-          <a style={link('docs')} href="#">Docs</a>
-          <a style={link('guide')} href="field-guide-ch1.html">Field guide</a>
-          <a style={link('blog')} href="#">Blog</a>
-          <a style={link('community')} href="#">Community</a>
+          <a style={link('guide')} href="guide/">Guide</a>
+          <a style={link('docs')} href="docs/">Docs</a>
+          <a style={link('community')} href="community/">Community</a>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <a href="#" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--fg2)', padding: '7px 11px', border: '1px solid var(--border)', borderRadius: 8, background: '#fff', fontWeight: 500, textDecoration: 'none', fontFamily: 'var(--font-sans)' }}>
+          <a href="https://github.com/beava-dev/beava" target="_blank" rel="noopener" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--fg2)', padding: '7px 11px', border: '1px solid var(--border)', borderRadius: 8, background: '#fff', fontWeight: 500, textDecoration: 'none', fontFamily: 'var(--font-sans)' }}>
             <Icon name="github" size={14}/>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>8.2k ★</span>
           </a>
-          <Button variant="primary" size="md" icon={<Icon name="arrow" size={14}/>} href="field-guide-ch1.html">Read chapter 1</Button>
         </div>
       </div>
     </nav>
@@ -236,4 +279,4 @@ const CopyBtn = ({ text }) => {
   );
 };
 
-Object.assign(window, { Icon, Button, Eyebrow, Nav, Footer, CopyBtn });
+Object.assign(window, { Icon, Button, Eyebrow, Callout, Banner, Nav, Footer, CopyBtn });
