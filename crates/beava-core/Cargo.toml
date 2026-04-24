@@ -20,6 +20,7 @@ parking_lot = { workspace = true }
 bytes = { workspace = true }
 tracing = { workspace = true }
 bincode = { workspace = true }
+ahash = "0.8"
 
 [dev-dependencies]
 tempfile = { workspace = true }
