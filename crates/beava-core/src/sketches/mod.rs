@@ -1,6 +1,7 @@
 //! Phase 10 sketches submodule. Plans 10-01..10-04 land child modules.
 
 pub mod bloom;
+pub mod cms;
 pub mod entropy;
 pub mod retracting_ring;
 
