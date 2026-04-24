@@ -182,9 +182,22 @@ body.fb-overflowing { overflow: hidden !important; }
 .callout .callout-title { font-family: var(--font-sans); font-weight: 700; font-size: 15px; color: var(--fg1); margin-bottom: 6px; }
 .callout p { margin: 0; font-size: 16px; line-height: 1.6; }
 
+/* Live pipeline animation — new rows flash with accent wash, then fade */
+.anim-row {
+  animation: anim-row-in 900ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes anim-row-in {
+  0%   { background: var(--beava-orange-wash); transform: translateX(-3px); opacity: 0; }
+  25%  { background: var(--beava-orange-wash); transform: translateX(0);    opacity: 1; }
+  100% { background: transparent;              transform: translateX(0);    opacity: 1; }
+}
+
 /* Responsive */
 @media (max-width: 1100px) {
   .recipe-grid { grid-template-columns: repeat(3, 1fr) !important; }
+}
+@media (max-width: 700px) {
+  .anim-grid { grid-template-columns: 1fr !important; }
 }
 @media (max-width: 880px) {
   .two-col { grid-template-columns: 1fr !important; }

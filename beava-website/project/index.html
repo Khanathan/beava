@@ -205,6 +205,163 @@
     );
 
     // ==================================================================
+    // LivePipelineAnimation — client-side simulation of the pipeline.
+    // Shows random events flowing into three panels (Events / Session /
+    // Global). Each new event highlights briefly. Max 3 rows per panel
+    // with a "... to be continued" truncation indicator. Teaches the
+    // abstraction before the code shows how.
+    // ==================================================================
+    const LivePipelineAnimation = () => {
+      const [events, setEvents] = React.useState([
+        { id: 1, sid: 'sess_9c1f', clickspeed: 1120 },
+        { id: 2, sid: 'sess_4b2a', clickspeed: 420 },
+        { id: 3, sid: 'sess_4b2a', clickspeed: 285 },
+      ]);
+      const [sessions, setSessions] = React.useState({
+        'sess_4b2a': { my_feeds: 2, my_streak: 2, lastSeen: 3 },
+        'sess_9c1f': { my_feeds: 1, my_streak: 1, lastSeen: 1 },
+      });
+      const [stats, setStats] = React.useState({ p99_clickspeed: 847, visitors_1h: 287 });
+      const idRef = React.useRef(4);
+
+      React.useEffect(() => {
+        const pool = ['sess_4b2a', 'sess_9c1f', 'sess_82e7', 'sess_3d50', 'sess_f19a', 'sess_7ab1', 'sess_cd23', 'sess_e06b', 'sess_1a94'];
+        let timeoutId;
+        const tick = () => {
+          const sid = pool[Math.floor(Math.random() * pool.length)];
+          const clickspeed = Math.floor(220 + Math.random() * 1900);
+          const id = idRef.current++;
+          setEvents(prev => [{ id, sid, clickspeed }, ...prev].slice(0, 3));
+          setSessions(prev => {
+            const next = { ...prev };
+            const cur = next[sid] || { my_feeds: 0, my_streak: 0, lastSeen: 0 };
+            next[sid] = {
+              my_feeds: cur.my_feeds + 1,
+              my_streak: Math.min(cur.my_streak + 1, 20),
+              lastSeen: id,
+            };
+            const kept = Object.entries(next).sort((a, b) => b[1].lastSeen - a[1].lastSeen).slice(0, 3);
+            return Object.fromEntries(kept);
+          });
+          setStats(prev => ({
+            p99_clickspeed: Math.round(prev.p99_clickspeed * 0.92 + clickspeed * 0.08),
+            visitors_1h: Math.min(prev.visitors_1h + (Math.random() < 0.18 ? 1 : 0), 340),
+          }));
+        };
+        const schedule = () => {
+          const delay = 900 + Math.random() * 1300;
+          timeoutId = setTimeout(() => { tick(); schedule(); }, delay);
+        };
+        schedule();
+        return () => clearTimeout(timeoutId);
+      }, []);
+
+      const sessionRows = Object.entries(sessions)
+        .sort((a, b) => b[1].lastSeen - a[1].lastSeen)
+        .slice(0, 3);
+
+      const panelStyle = {
+        background: '#fff',
+        border: '1px solid var(--border)',
+        borderRadius: 10,
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 210,
+      };
+      const panelHeaderStyle = {
+        padding: '9px 14px',
+        fontFamily: 'var(--font-mono)',
+        fontSize: 11,
+        color: 'var(--fg3)',
+        borderBottom: '1px solid var(--border)',
+        background: 'var(--bg-alt)',
+        letterSpacing: '0.03em',
+      };
+      const rowBaseStyle = {
+        padding: '7px 10px',
+        fontFamily: 'var(--font-mono)',
+        fontSize: 12,
+        lineHeight: 1.45,
+        borderBottom: '1px solid rgba(0,0,0,0.04)',
+      };
+      const tbcStyle = {
+        padding: '8px 10px',
+        fontFamily: 'var(--font-mono)',
+        fontSize: 11,
+        color: 'var(--fg3)',
+        textAlign: 'center',
+        opacity: 0.55,
+        marginTop: 'auto',
+      };
+
+      return (
+        <div style={{ marginTop: 36 }}>
+          <div style={{ textAlign: 'center', marginBottom: 18, fontFamily: 'var(--font-accent)', fontSize: 22, fontWeight: 700, color: 'var(--accent)', transform: 'rotate(-1deg)', display: 'block' }}>
+            ↓ turtles, rendered ↓
+          </div>
+          <div className="anim-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, maxWidth: 860, margin: '0 auto' }}>
+
+            {/* Events stream */}
+            <div style={panelStyle}>
+              <div style={panelHeaderStyle}>@bv.stream FeedClick</div>
+              <div style={{ padding: '6px 0', display: 'flex', flexDirection: 'column', flex: 1 }}>
+                {events.map(e => (
+                  <div key={e.id} className="anim-row" style={rowBaseStyle}>
+                    <span style={{ color: 'var(--accent)' }}>{e.sid}</span>
+                    <span style={{ color: 'var(--fg3)' }}> · </span>
+                    <span style={{ color: 'var(--fg1)' }}>{e.clickspeed}ms</span>
+                  </div>
+                ))}
+                <div style={tbcStyle}>… to be continued</div>
+              </div>
+            </div>
+
+            {/* Session table */}
+            <div style={panelStyle}>
+              <div style={panelHeaderStyle}>@bv.table Session (key=session_id)</div>
+              <div style={{ padding: '6px 0', display: 'flex', flexDirection: 'column', flex: 1 }}>
+                {sessionRows.map(([sid, s]) => (
+                  <div key={`${sid}-${s.lastSeen}`} className="anim-row" style={rowBaseStyle}>
+                    <div style={{ color: 'var(--accent)', fontSize: 11.5 }}>{sid}</div>
+                    <div style={{ color: 'var(--fg1)', fontSize: 11.5 }}>
+                      <span style={{ color: 'var(--fg3)' }}>my_feeds:</span> {s.my_feeds}{'  '}
+                      <span style={{ color: 'var(--fg3)' }}>my_streak:</span> {s.my_streak}
+                    </div>
+                  </div>
+                ))}
+                <div style={tbcStyle}>… to be continued</div>
+              </div>
+            </div>
+
+            {/* Global table */}
+            <div style={panelStyle}>
+              <div style={panelHeaderStyle}>@bv.table Global (key=__global__)</div>
+              <div style={{ padding: '6px 0', display: 'flex', flexDirection: 'column', flex: 1 }}>
+                <div className="anim-row" style={rowBaseStyle}>
+                  <div style={{ color: 'var(--accent)', fontSize: 11.5 }}>__global__</div>
+                </div>
+                <div key={`p99-${stats.p99_clickspeed}`} className="anim-row" style={rowBaseStyle}>
+                  <span style={{ color: 'var(--fg3)' }}>p99_clickspeed:</span>{' '}
+                  <span style={{ color: 'var(--fg1)' }}>{stats.p99_clickspeed}ms</span>
+                </div>
+                <div key={`v-${stats.visitors_1h}`} className="anim-row" style={rowBaseStyle}>
+                  <span style={{ color: 'var(--fg3)' }}>visitors_1h:</span>{' '}
+                  <span style={{ color: 'var(--fg1)' }}>{stats.visitors_1h}</span>
+                </div>
+                <div style={tbcStyle}>… to be continued</div>
+              </div>
+            </div>
+
+          </div>
+          <div style={{ textAlign: 'center', marginTop: 14, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--fg3)', maxWidth: 640, marginLeft: 'auto', marginRight: 'auto', textWrap: 'pretty' }}>
+            Simulated events in your browser, same shape as the real pipeline above. Nothing polls, nothing batches.
+          </div>
+        </div>
+      );
+    };
+
+    // ==================================================================
     // Pipeline showcase — the single pipeline section. Full 18-line file
     // with inline margin notes calling out the three hero widget stats.
     // Merges the former InlinePipelinePeek + PipelineShowcase duplicates.
@@ -246,6 +403,8 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
                 Every click you make over there pushes a real event to this pipeline. Every stat you see is a real feature query. It's turtles all the way down.
               </p>
             </div>
+            <LivePipelineAnimation/>
+            <div style={{ height: 48 }}/>
             <div style={{ position: 'relative', maxWidth: 820, margin: '0 auto' }}>
               <pre className="code-well" style={{ fontSize: 14, padding: '26px 28px', lineHeight: 1.75 }}>
                 <span className="cmt"># This file literally runs beava.dev. Source:{'\n'}# github.com/beava-dev/beava/tree/main/demo/feed-the-beaver</span>{'\n'}
