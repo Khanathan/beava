@@ -1,6 +1,6 @@
 //! WAL segment rotation + truncate_up_to tests.
 
-use beava_persistence::{WalSink, WalSinkConfig};
+use beava_persistence::{SyncMode, WalSink, WalSinkConfig};
 
 fn count_segments(dir: &std::path::Path) -> usize {
     std::fs::read_dir(dir)
@@ -44,6 +44,7 @@ async fn rotation_creates_new_segment() {
         fsync_interval_ms: 1,
         fsync_bytes: 1 << 20,
         segment_bytes: 2048, // force rotation fast
+        sync_mode: SyncMode::PerEvent,
     };
     let (sink, handle) = WalSink::spawn(cfg).unwrap();
 
@@ -73,6 +74,7 @@ async fn truncate_up_to_deletes_closed_only() {
         fsync_interval_ms: 1,
         fsync_bytes: 1 << 20,
         segment_bytes: 1024, // ~10 records per seg
+        sync_mode: SyncMode::PerEvent,
     };
     let (sink, handle) = WalSink::spawn(cfg).unwrap();
 
@@ -119,6 +121,7 @@ async fn truncate_preserves_segment_covering_lsn() {
         fsync_interval_ms: 1,
         fsync_bytes: 1 << 20,
         segment_bytes: 1024,
+        sync_mode: SyncMode::PerEvent,
     };
     let (sink, handle) = WalSink::spawn(cfg).unwrap();
 

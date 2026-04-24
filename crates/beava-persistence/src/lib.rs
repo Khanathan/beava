@@ -35,7 +35,7 @@ pub struct WalRecord {
 }
 
 pub use error::{PersistError, SnapshotError};
-pub use fsync_worker::{WalSink, WalSinkConfig};
+pub use fsync_worker::{SyncMode, WalSink, WalSinkConfig};
 pub use reader::WalReader;
 pub use snapshot::{list_snapshots, prune_old_snapshots, SnapshotReader, SnapshotWriter};
 pub use snapshot_header::{

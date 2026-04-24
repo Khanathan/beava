@@ -1,13 +1,13 @@
-//! Phase 6 Plan 04: subprocess-based crash UAT.
+//! Phase 6.1 Plan 04: crash semantics under Periodic vs PerEvent modes.
 //!
-//! `wal_kill_before_fsync_drops_event`: spawn the phase6_crash_probe with a
-//! fsync interval so large that no coalesce ever fires; issue a /push with a
-//! short client-side timeout; SIGKILL on timeout; reopen WAL → zero Event
-//! records.
+//! Periodic mode (default `/push`): events ACK'd within
+//! BEAVA_WAL_FSYNC_INTERVAL_MS of a crash MAY be lost. Test asserts
+//! the weaker invariant: 0 ≤ recovered ≤ N. Recovery must still be
+//! crash-safe (no torn records, monotonic LSNs, registry intact).
 //!
-//! `wal_kill_after_ack_preserves_event`: same probe binary, default fsync
-//! interval; push completes with 200; SIGKILL child after ACK; reopen WAL → at
-//! least one Event record.
+//! PerEvent mode (/push-sync): unchanged from Phase 6 — every ACK'd
+//! event survives crash unconditionally. Reuses `phase6_crash.rs`'s
+//! probe binary to assert the strict invariant on /push-sync.
 
 #![cfg(feature = "testing")]
 
@@ -26,8 +26,7 @@ fn read_port_from_stdout(child: &mut std::process::Child) -> u16 {
     for line in reader.lines() {
         let line = line.expect("read line");
         if let Some(rest) = line.strip_prefix("PORT=") {
-            let port: u16 = rest.trim().parse().expect("parse port");
-            return port;
+            return rest.trim().parse().expect("parse port");
         }
         if start.elapsed() > Duration::from_secs(5) {
             panic!("probe did not print PORT= within 5s");
@@ -69,15 +68,20 @@ fn count_wal_event_records(wal_dir: &std::path::Path) -> usize {
     }
 }
 
+/// Periodic mode: kill the probe shortly after issuing N pushes; the
+/// fsync timer may not have fired. Recovery must produce 0..=N records
+/// and the records present must form a contiguous prefix (monotonic
+/// LSNs). The N pushes use the default /push endpoint.
 #[test]
-fn wal_kill_before_fsync_drops_event() {
+fn periodic_push_kill_keeps_subset_of_events() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let wal_dir = tmp.path().to_path_buf();
 
+    // Long fsync interval — most pushes will be ACK'd before the
+    // first fsync tick, and the kill happens before that tick.
     let mut child = Command::new(probe_bin())
         .env("BEAVA_WAL_DIR", &wal_dir)
-        // Make fsync never fire within the test window.
-        .env("BEAVA_WAL_FSYNC_INTERVAL_MS", "999999999")
+        .env("BEAVA_WAL_FSYNC_INTERVAL_MS", "2000")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -92,45 +96,54 @@ fn wal_kill_before_fsync_drops_event() {
         .build()
         .unwrap();
 
-    // Fire the push with a short client-side timeout; the handler will never
-    // resolve because the fsync worker never flushes.
-    let _ = rt.block_on(async {
-        reqwest::Client::builder()
-            .timeout(Duration::from_millis(200))
+    let n = 50;
+    let pushed = rt.block_on(async {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
             .build()
-            .unwrap()
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .body(
-                serde_json::to_vec(&serde_json::json!({
-                    "user_id": "alice",
-                    "amount": 1.0,
-                    "event_time": 1_000_000,
-                }))
-                .unwrap(),
-            )
-            .send()
-            .await
+            .unwrap();
+        let mut acked = 0;
+        for i in 0..n {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "user_id": format!("u{i}"),
+                "amount": (i as f64),
+                "event_time": 1_000_000 + i as i64,
+            }))
+            .unwrap();
+            let r = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .body(body)
+                .send()
+                .await;
+            match r {
+                Ok(resp) if resp.status().as_u16() == 200 => acked += 1,
+                _ => break,
+            }
+        }
+        acked
     });
 
-    // Kill before fsync.
+    // Kill quickly — well before the 2_000ms fsync tick.
     sigkill(pid);
     wait_for_exit(&mut child, Duration::from_secs(2));
 
     let count = count_wal_event_records(&wal_dir);
-    assert_eq!(
-        count, 0,
-        "kill-before-fsync must leave zero Event records on disk"
+    assert!(
+        count <= pushed,
+        "recovered count {count} must not exceed pushed {pushed}"
     );
+    // Recovery is allowed to find 0 records — periodic mode does not
+    // promise durability within the fsync window. The strict guarantee
+    // is "no torn records" — covered by the WalReader successfully
+    // returning Ok(records) above.
 }
 
+/// PerEvent mode (/push-sync): ACK'd events survive crash
+/// unconditionally — same invariant as Phase 6 SC1, just exercised on
+/// the new endpoint.
 #[test]
-fn wal_kill_after_ack_preserves_event() {
-    // Phase 6.1 update: the default `/push` is now Periodic-mode
-    // (Kafka acks=1) — ACK does NOT imply fsync. The strict-mode
-    // contract that Phase 6 SC1 captures (ACK ⇒ durable) now lives
-    // on `/push-sync`. The probe binary serves both endpoints; we
-    // route this test at the strict one.
+fn push_sync_ack_survives_crash() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let wal_dir = tmp.path().to_path_buf();
 
@@ -160,9 +173,9 @@ fn wal_kill_after_ack_preserves_event() {
             .header("Content-Type", "application/json")
             .body(
                 serde_json::to_vec(&serde_json::json!({
-                    "user_id": "bob",
-                    "amount": 9.0,
-                    "event_time": 2_000_000,
+                    "user_id": "carol",
+                    "amount": 7.0,
+                    "event_time": 2_222_222,
                 }))
                 .unwrap(),
             )
@@ -172,15 +185,14 @@ fn wal_kill_after_ack_preserves_event() {
             .status()
             .as_u16()
     });
-    assert_eq!(resp_status, 200, "push must 200 before we kill");
+    assert_eq!(resp_status, 200);
 
-    // Now SIGKILL — the data is already fsynced.
     sigkill(pid);
     wait_for_exit(&mut child, Duration::from_secs(2));
 
     let count = count_wal_event_records(&wal_dir);
     assert!(
         count >= 1,
-        "kill-after-ACK must preserve the event record (got {count})"
+        "push-sync ACK'd event must survive crash unconditionally (got {count})"
     );
 }

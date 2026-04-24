@@ -1,22 +1,30 @@
 //! Phase 6 Plan 03 — POST /push/{event_name} handler.
 //!
-//! Flow (D-11, D-12 refinement — apply-after-fsync; see 06-CONTEXT.md):
-//! 1. Content-type check → 415 if missing.
-//! 2. Parse JSON body → 400 on parse error.
-//! 3. Lookup event descriptor → 404 on miss.
-//! 4. Schema validation (field presence + type compatibility) → 400 on failure.
-//! 5. If descriptor has `dedupe_key`, extract the value and consult the
-//!    IdemCache. On hit, return the cached bytes with the
-//!    `X-Beava-Idempotent-Replay: 1` header set.
-//! 6. Convert body to Row<Value>.
-//! 7. WAL-append the serialized event payload. `append_event(...).await`
-//!    resolves after fsync.
-//! 8. Apply the event to aggregations under the single-writer lock.
-//! 9. Bump max_event_time_ms.
-//! 10. Build response `{ack_lsn, idempotent_replay: false, registry_version}`.
-//! 11. On dedupe-enabled path, insert the cached entry with
-//!     (now_ms + dedupe_window).
-//! 12. Return 200 with `application/json` body.
+//! Phase 6.1: two endpoints with different durability semantics.
+//!
+//! `POST /push/{event_name}` (default — Kafka acks=1):
+//!   - WAL append in `SyncMode::Periodic`: ACK after in-memory append.
+//!   - Aggregation mutations applied AFTER the in-memory append (which
+//!     is what `append_event` resolves upon under Periodic mode).
+//!   - On crash within `BEAVA_WAL_FSYNC_INTERVAL_MS` of ACK, the event
+//!     MAY be lost. Recovery replays whatever made it to fsynced bytes.
+//!
+//! `POST /push-sync/{event_name}` (strict — Kafka acks=all):
+//!   - WAL append in `SyncMode::PerEvent`: ACK only after fsync
+//!     (Phase 6 D-12 / SRV-DUR-02 invariant preserved).
+//!   - Aggregation mutations applied AFTER fsync.
+//!   - ACK'd events survive crash unconditionally.
+//!
+//! Common flow:
+//! 1. Parse JSON body → 400 on parse error.
+//! 2. Lookup event descriptor → 404 on miss.
+//! 3. Schema validation (field presence + type compatibility) → 400 on failure.
+//! 4. Dedupe-key lookup → byte-identical replay on hit, with
+//!    `X-Beava-Idempotent-Replay: 1` header.
+//! 5. Convert body to Row<Value> + serialize WAL payload.
+//! 6. WAL-append (mode-dependent: Periodic for /push, PerEvent for /push-sync).
+//! 7. Apply event to aggregations + bump counters.
+//! 8. Cache + return 200 ack `{ack_lsn, idempotent_replay, registry_version}`.
 
 use crate::AppState;
 use axum::{
@@ -31,6 +39,7 @@ use beava_core::defaults::DEFAULT_DEDUPE_WINDOW_MS;
 use beava_core::registry::EventDescriptor;
 use beava_core::row::{Row, Value};
 use beava_core::schema::FieldType;
+use beava_persistence::SyncMode;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::sync::atomic::Ordering;
@@ -47,6 +56,10 @@ pub struct PushAck {
 pub fn push_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/push/:event_name", axum::routing::post(push_handler))
+        .route(
+            "/push-sync/:event_name",
+            axum::routing::post(push_sync_handler),
+        )
         .with_state(state)
 }
 
@@ -139,10 +152,34 @@ fn extract_dedupe_str(body: &serde_json::Map<String, JsonValue>, key: &str) -> O
     }
 }
 
+/// Phase 6.1: default `/push` — Periodic mode (Kafka acks=1).
+/// Apply happens after the in-memory append (which is what Periodic
+/// `append_event` resolves on); fsync runs on the timer.
 pub async fn push_handler(
     State(app): State<Arc<AppState>>,
     Path(event_name): Path<String>,
     body_bytes: Bytes,
+) -> Response {
+    push_inner(app, event_name, body_bytes, SyncMode::Periodic).await
+}
+
+/// Phase 6.1: strict `/push-sync` — PerEvent mode (Kafka acks=all).
+/// Apply happens after fsync — preserves Phase 6 D-12 / SRV-DUR-02
+/// invariants. Use this endpoint when downstream consumers cannot
+/// tolerate ACK'd-but-lost events on a crash.
+pub async fn push_sync_handler(
+    State(app): State<Arc<AppState>>,
+    Path(event_name): Path<String>,
+    body_bytes: Bytes,
+) -> Response {
+    push_inner(app, event_name, body_bytes, SyncMode::PerEvent).await
+}
+
+async fn push_inner(
+    app: Arc<AppState>,
+    event_name: String,
+    body_bytes: Bytes,
+    sync_mode: SyncMode,
 ) -> Response {
     let registry_version = app.dev_agg.registry.version() as u32;
 
@@ -220,8 +257,14 @@ pub async fn push_handler(
         }
     };
 
-    // 7. Durable WAL append (resolves after fsync).
-    let ack_lsn = match app.wal_sink.append_event(payload_bytes).await {
+    // 7. WAL append. Mode-dependent:
+    //    - Periodic: resolves after in-memory append (Kafka acks=1).
+    //    - PerEvent: resolves after fsync (Kafka acks=all, Phase 6 D-12).
+    let ack_lsn = match app
+        .wal_sink
+        .append_event_with_mode(payload_bytes, sync_mode)
+        .await
+    {
         Ok(lsn) => lsn,
         Err(_) => {
             return error_response(
@@ -233,6 +276,11 @@ pub async fn push_handler(
     };
 
     // 8. Apply to aggregations under the single-writer lock.
+    //    Periodic: apply runs AFTER in-memory append (the WAL is the
+    //    source of truth on crash; un-fsynced bytes lost on crash will
+    //    also lose their state mutations — recovery replays from the
+    //    WAL so this stays consistent).
+    //    PerEvent: apply runs AFTER fsync — strict crash-safety.
     let row = json_object_to_row(&obj);
     {
         let mut tables = app.dev_agg.state_tables.lock();
