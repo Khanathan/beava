@@ -200,6 +200,8 @@ body.fb-overflowing { overflow: hidden !important; }
 }
 @media (max-width: 700px) {
   .anim-grid { grid-template-columns: 1fr !important; }
+  .pandas-compare { grid-template-columns: 1fr !important; }
+  .pandas-compare > div:nth-child(2) { display: none !important; }
 }
 @media (max-width: 880px) {
   .two-col { grid-template-columns: 1fr !important; }

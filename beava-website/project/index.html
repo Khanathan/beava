@@ -355,6 +355,41 @@
 
       return (
         <div style={{ marginTop: 36 }}>
+
+          {/* Pandas ↔ beava logic mapping — makes the "stream = dataframe" claim
+              concrete before the live tables render it. */}
+          <div style={{ maxWidth: 820, margin: '0 auto 28px' }}>
+            <div style={{ textAlign: 'center', marginBottom: 18 }}>
+              <Eyebrow style={{ marginBottom: 10 }}>Same shape as pandas</Eyebrow>
+              <p style={{ fontFamily: 'var(--font-sans)', fontSize: 15, lineHeight: 1.55, color: 'var(--fg2)', maxWidth: 580, margin: '0 auto', textWrap: 'pretty' }}>
+                A beava table is a pandas groupby. A beava stream is a dataframe that never stops appending. If you&apos;ve written <code style={{ fontFamily: 'var(--font-mono)', fontSize: 13, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4, color: 'var(--code-fg)' }}>df.groupby(...).agg(...)</code>, you&apos;ve written beava.
+              </p>
+            </div>
+            <div className="pandas-compare" style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 14, alignItems: 'center' }}>
+              <div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg3)', marginBottom: 6, letterSpacing: '0.03em', textTransform: 'lowercase' }}>pandas</div>
+                <pre className="code-well" style={{ fontSize: 12.5, padding: '14px 16px', lineHeight: 1.7, margin: 0 }}>
+{'events.'}<span className="fn">groupby</span>{'('}<span className="str">"session_id"</span>{').'}<span className="fn">agg</span>{'('}{'\n'}
+{'    my_feeds=('}<span className="str">"session_id"</span>{', '}<span className="str">"count"</span>{'),'}{'\n'}
+{')'}
+                </pre>
+              </div>
+              <div style={{ fontFamily: 'var(--font-accent)', fontSize: 28, color: 'var(--accent)', fontWeight: 700, textAlign: 'center', lineHeight: 1, paddingTop: 18 }}>
+                ≈
+              </div>
+              <div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--accent)', marginBottom: 6, letterSpacing: '0.03em', fontWeight: 700, textTransform: 'lowercase' }}>beava</div>
+                <pre className="code-well" style={{ fontSize: 12.5, padding: '14px 16px', lineHeight: 1.7, margin: 0 }}>
+<span className="fn">@bv.table</span>{'(key='}<span className="str">"session_id"</span>{')'}{'\n'}
+<span className="kw">def</span>{' '}<span className="fn">Session</span>{'(e: '}<span className="ty">FeedClick</span>{'):'}{'\n'}
+{'    '}<span className="kw">return</span>{' e.'}<span className="fn">agg</span>{'('}{'\n'}
+{'        my_feeds=bv.'}<span className="fn">count</span>{'(),'}{'\n'}
+{'    )'}
+                </pre>
+              </div>
+            </div>
+          </div>
+
           <div style={{ textAlign: 'center', marginBottom: 18, fontFamily: 'var(--font-accent)', fontSize: 22, fontWeight: 700, color: 'var(--accent)', transform: 'rotate(-1deg)', display: 'block' }}>
             ↓ turtles, rendered ↓
           </div>
