@@ -22,7 +22,9 @@ pub enum CountDistinctState {
     #[serde(rename = "v0_count_distinct_exact_array")]
     ExactArray { values: Vec<u64> },
     #[serde(rename = "v0_count_distinct_hash_set")]
-    HashSet { hashes: std::collections::HashSet<u64> },
+    HashSet {
+        hashes: std::collections::HashSet<u64>,
+    },
     #[serde(rename = "v0_count_distinct_hll")]
     Hll { sketch: Hll },
 }
@@ -107,7 +109,6 @@ impl CountDistinctState {
 mod tests {
     use super::*;
     fn hash_str(s: &str) -> u64 {
-        use std::hash::{BuildHasher, Hash, Hasher};
         // Deterministic seed — see hll.rs tests for rationale.
         let rs = ahash::RandomState::with_seeds(
             0x243f_6a88_85a3_08d3,
@@ -115,9 +116,7 @@ mod tests {
             0xa409_3822_299f_31d0,
             0x082e_fa98_ec4e_6c89,
         );
-        let mut h = rs.build_hasher();
-        s.hash(&mut h);
-        h.finish()
+        rs.hash_one(s)
     }
     #[test]
     fn starts_in_exact_array_mode() {

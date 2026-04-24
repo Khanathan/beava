@@ -208,16 +208,13 @@ mod tests {
     /// runs. Seeded RandomState gives us reproducible hashes that exercise
     /// the same registers every run.
     fn hash_str(s: &str) -> u64 {
-        use std::hash::{BuildHasher, Hash, Hasher};
         let rs = ahash::RandomState::with_seeds(
             0x243f_6a88_85a3_08d3,
             0x1319_8a2e_0370_7344,
             0xa409_3822_299f_31d0,
             0x082e_fa98_ec4e_6c89,
         );
-        let mut h = rs.build_hasher();
-        s.hash(&mut h);
-        h.finish()
+        rs.hash_one(s)
     }
     #[test]
     fn empty_estimate_is_zero() {
