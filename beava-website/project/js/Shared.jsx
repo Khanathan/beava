@@ -108,7 +108,7 @@ const Callout = ({ eyebrow = 'NOTE', mascot = 'work-pose', tint = 'paper', child
 // Banner — dismissable top bar for announcements (cloud waitlist, launch, etc).
 // Dismiss state lives in localStorage with a 30-day TTL, then re-shows. Pass
 // an `id` to version dismissals — bump the id when copy changes to re-trigger.
-const Banner = ({ id = 'cloud-waitlist-v1', emoji = '☁️', children, href = 'cloud.html' }) => {
+const Banner = ({ id = 'cloud-waitlist-v1', emoji = '☁️', children, href = '/cloud' }) => {
   const [dismissed, setDismissed] = React.useState(true); // default hidden to avoid flash
   React.useEffect(() => {
     try {
