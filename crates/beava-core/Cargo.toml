@@ -20,6 +20,8 @@ parking_lot = { workspace = true }
 bytes = { workspace = true }
 tracing = { workspace = true }
 bincode = { workspace = true }
+# Phase 11 geo operators: great-circle distance.
+haversine = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -32,4 +34,8 @@ harness = false
 
 [[bench]]
 name = "phase5_agg"
+harness = false
+
+[[bench]]
+name = "phase11_buffer_geo"
 harness = false
