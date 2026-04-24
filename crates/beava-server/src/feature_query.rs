@@ -401,7 +401,7 @@ mod tests {
                         field: None,
                         window_ms: Some(300_000),
                         where_expr: None,
-            n: None,
+                        n: None,
                     },
                 },
                 NamedAggOp {
@@ -411,7 +411,7 @@ mod tests {
                         field: Some("amount".to_string()),
                         window_ms: None,
                         where_expr: None,
-            n: None,
+                        n: None,
                     },
                 },
             ],

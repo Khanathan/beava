@@ -282,11 +282,17 @@ impl Server {
             cancel_for_signal.cancel();
         });
 
-        // Spawn TCP accept loop if enabled.
+        // Spawn TCP accept loop if enabled — Phase 8+ uses the AppState-aware
+        // loop so OP_PUSH is routed through the shared WAL + idem-cache +
+        // apply-loop pipeline (same as the HTTP handler).
         let tcp_task = self.tcp_listener_handle.map(|handle| {
-            let reg = Arc::clone(&self.registry);
+            let app_for_tcp = Arc::clone(&self.app_state);
             let cancel_child = cancel.clone();
-            tokio::spawn(crate::tcp::accept_loop(handle, reg, cancel_child))
+            tokio::spawn(crate::tcp::accept_loop_with_app(
+                handle,
+                app_for_tcp,
+                cancel_child,
+            ))
         });
 
         // HTTP serve with graceful shutdown tied to the same cancel.

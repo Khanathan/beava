@@ -19,7 +19,7 @@
 //! |----------|------------------|----------------------|----------|
 //! | 0x0000   | ping             | Implemented          | Phase 2.5 |
 //! | 0x0001   | register         | Implemented          | Phase 2.5 |
-//! | 0x0010   | push             | Reserved             | Phase 6  |
+//! | 0x0010   | push             | Implemented          | Phase 8 (folded) |
 //! | 0x0011   | push_sync        | Reserved             | Phase 12 |
 //! | 0x0012   | push_many        | Reserved             | Phase 12 |
 //! | 0x0013   | push_table       | Reserved             | Phase 12 |
@@ -126,7 +126,7 @@ pub fn opcode_name(op: u16) -> Option<&'static str> {
 /// implemented / unknown opcodes.
 pub fn reserved_phase(op: u16) -> Option<&'static str> {
     match op {
-        OP_PUSH => Some("Phase 6"),
+        // OP_PUSH wired in Phase 8 (folded scope: TCP push handler).
         OP_PUSH_SYNC | OP_PUSH_MANY | OP_PUSH_TABLE | OP_DELETE_TABLE => Some("Phase 12"),
         OP_GET | OP_MGET | OP_GET_MULTI | OP_SET | OP_MSET => Some("Phase 12"),
         _ => None,
@@ -301,7 +301,8 @@ mod tests {
 
     #[test]
     fn reserved_phase_covers_every_reserved() {
-        assert_eq!(reserved_phase(OP_PUSH), Some("Phase 6"));
+        // OP_PUSH wired in Phase 8 (folded scope) — no longer reserved.
+        assert_eq!(reserved_phase(OP_PUSH), None);
         assert_eq!(reserved_phase(OP_PUSH_SYNC), Some("Phase 12"));
         assert_eq!(reserved_phase(OP_PUSH_MANY), Some("Phase 12"));
         assert_eq!(reserved_phase(OP_PUSH_TABLE), Some("Phase 12"));
@@ -317,6 +318,7 @@ mod tests {
     fn reserved_phase_none_for_implemented() {
         assert_eq!(reserved_phase(OP_PING), None);
         assert_eq!(reserved_phase(OP_REGISTER), None);
+        assert_eq!(reserved_phase(OP_PUSH), None); // wired in Phase 8 (folded)
         assert_eq!(reserved_phase(OP_ERROR_RESPONSE), None);
         assert_eq!(reserved_phase(0x4242), None);
     }

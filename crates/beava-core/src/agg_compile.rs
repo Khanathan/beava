@@ -450,9 +450,8 @@ pub fn compile_aggregations_from_nodes(
                         path: format!(
                             "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.window"
                         ),
-                        reason:
-                            "op 'first_seen_in_window' requires a window= duration parameter"
-                                .to_string(),
+                        reason: "op 'first_seen_in_window' requires a window= duration parameter"
+                            .to_string(),
                     });
                     deriv_errors = true;
                     continue;
@@ -1290,7 +1289,10 @@ mod tests {
         ];
         let (compiled, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
         assert!(errors.is_empty(), "expected no errors, got: {errors:#?}");
-        assert_eq!(compiled[0].1.features[0].descriptor.window_ms, Some(300_000));
+        assert_eq!(
+            compiled[0].1.features[0].descriptor.window_ms,
+            Some(300_000)
+        );
     }
 
     #[test]

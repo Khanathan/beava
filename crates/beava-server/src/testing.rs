@@ -505,6 +505,25 @@ impl TcpClient {
         Ok((resp.op, parsed))
     }
 
+    /// High-level: send OP_PUSH with a JSON envelope `{event, body}` (Phase 8
+    /// folded scope: TCP push handler). Returns `(response_op, parsed_body)`.
+    pub async fn push_json(
+        &mut self,
+        event_name: &str,
+        body: serde_json::Value,
+    ) -> anyhow::Result<(u16, serde_json::Value)> {
+        let envelope = serde_json::json!({
+            "event": event_name,
+            "body": body,
+        });
+        let payload = serde_json::to_vec(&envelope)?;
+        let resp = self
+            .send_raw(beava_core::wire::OP_PUSH, CT_JSON, Bytes::from(payload))
+            .await?;
+        let parsed: serde_json::Value = serde_json::from_slice(&resp.payload)?;
+        Ok((resp.op, parsed))
+    }
+
     /// Attempt to read one more frame OR observe EOF within `timeout`.
     /// Returns Ok(Some(frame)) if a frame arrived, Ok(None) if EOF, Err on
     /// timeout. Used to confirm the connection closes after frame_too_large.

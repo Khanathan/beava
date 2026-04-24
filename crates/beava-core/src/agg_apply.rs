@@ -565,7 +565,7 @@ mod registry_source_tests {
                     field: None,
                     window_ms: None,
                     where_expr: None,
-            n: None,
+                    n: None,
                 },
             }],
         }
