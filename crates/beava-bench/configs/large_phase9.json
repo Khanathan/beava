@@ -1,0 +1,86 @@
+{
+  "name": "large_phase9",
+  "description": "1 entity, 15 features mixing Phase 5 core (5) with Phase 9 decay (5) + velocity (5). Used by Phase 9 throughput run.",
+  "register": {
+    "nodes": [
+      {
+        "kind": "event",
+        "name": "Txn",
+        "schema": {
+          "fields": {
+            "event_time": "i64",
+            "user_id":    "str",
+            "amount":     "f64",
+            "fee":        "f64",
+            "score":      "f64"
+          },
+          "optional_fields": []
+        },
+        "event_time_field": "event_time"
+      },
+      {
+        "kind": "derivation",
+        "name": "TxnAgg",
+        "output_kind": "table",
+        "upstreams": ["Txn"],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": ["user_id"],
+            "agg": {
+              "cnt":           { "op": "count",          "params": {} },
+              "sum_amt":       { "op": "sum",            "params": { "field": "amount" } },
+              "avg_amt":       { "op": "avg",            "params": { "field": "amount" } },
+              "min_amt":       { "op": "min",            "params": { "field": "amount" } },
+              "max_amt":       { "op": "max",            "params": { "field": "amount" } },
+              "ewma_amt":      { "op": "ewma",           "params": { "field": "amount", "half_life": "1m" } },
+              "ewvar_amt":     { "op": "ewvar",          "params": { "field": "amount", "half_life": "1m" } },
+              "decayed_sum_a": { "op": "decayed_sum",    "params": { "field": "amount", "half_life": "1m" } },
+              "decayed_cnt":   { "op": "decayed_count",  "params": { "half_life": "1m" } },
+              "twa_fee":       { "op": "twa",            "params": { "field": "fee", "window": "5m" } },
+              "rate_amt":      { "op": "rate_of_change", "params": { "field": "amount", "window": "5m" } },
+              "delta_score":   { "op": "delta_from_prev","params": { "field": "score" } },
+              "trend_amt":     { "op": "trend",          "params": { "field": "amount", "window": "5m" } },
+              "z_amt":         { "op": "z_score",        "params": { "field": "amount", "window": "5m" } },
+              "value_changes": { "op": "value_change_count","params": { "field": "score", "window": "5m" } }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "user_id":       "str",
+            "cnt":           "i64",
+            "sum_amt":       "f64",
+            "avg_amt":       "f64",
+            "min_amt":       "f64",
+            "max_amt":       "f64",
+            "ewma_amt":      "f64",
+            "ewvar_amt":     "f64",
+            "decayed_sum_a": "f64",
+            "decayed_cnt":   "f64",
+            "twa_fee":       "f64",
+            "rate_amt":      "f64",
+            "delta_score":   "f64",
+            "trend_amt":     "f64",
+            "z_amt":         "f64",
+            "value_changes": "i64"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": ["user_id"]
+      }
+    ]
+  },
+  "event_name": "Txn",
+  "features": [
+    "cnt", "sum_amt", "avg_amt", "min_amt", "max_amt",
+    "ewma_amt", "ewvar_amt", "decayed_sum_a", "decayed_cnt", "twa_fee",
+    "rate_amt", "delta_score", "trend_amt", "z_amt", "value_changes"
+  ],
+  "key_field": "user_id",
+  "extra_fields": {
+    "amount": "f64",
+    "fee":    "f64",
+    "score":  "f64"
+  }
+}
