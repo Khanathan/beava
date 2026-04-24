@@ -334,12 +334,15 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
     };
 
     // ==================================================================
-    // Field-guide teaser card
+    // Guide teaser — points at Chapter 1, the pedagogy chapter that
+    // teaches beava as "stream operations look like dataframe operations."
+    // Interactive widgets in the chapter (EventsTable, AggregationTable,
+    // ClickButton, WindowDemo) make the reader operate the abstraction.
     // ==================================================================
     const GuideTeaser = () => (
-      <section style={{ padding: '64px 28px 112px' }}>
+      <section style={{ padding: '64px 28px 96px' }}>
         <div style={{ maxWidth: 1000, margin: '0 auto' }}>
-          <a href="field-guide-ch1.html" style={{
+          <a href="guide/chapter-1/" style={{
             display: 'grid', gridTemplateColumns: '1fr 260px', gap: 40, alignItems: 'center',
             background: 'var(--beava-paper)', border: '1px solid var(--border)', borderRadius: 20,
             padding: 36, textDecoration: 'none', color: 'inherit',
@@ -350,19 +353,86 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
                 Chapter 1 →
               </div>
               <h3 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 32, lineHeight: 1.15, letterSpacing: '-0.02em', color: 'var(--fg1)', margin: '4px 0 12px' }}>
-                How TikTok's For You feed actually works
+                Event = row. Stream = dataframe.
               </h3>
               <p style={{ fontFamily: 'var(--font-sans)', fontSize: 16, lineHeight: 1.6, color: 'var(--fg2)', margin: '0 0 14px', maxWidth: 540 }}>
-                At the heart of every personalization system is one ugly little data structure. In 14 minutes and 3 curl commands, you'll have one.
+                If you know pandas, you already know beava. In about 10 minutes and zero installs, you&apos;ll see why stream operations look like dataframe operations.
               </p>
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--accent)', fontWeight: 600 }}>
-                Read the chapter <Icon name="arrow" size={14}/>
+                Start Chapter 1 <Icon name="arrow" size={14}/>
               </div>
             </div>
             <div style={{ display: 'flex', justifyContent: 'center' }}>
               <img src="assets/mascot-work-pose.svg" width={220} height={220}/>
             </div>
           </a>
+        </div>
+      </section>
+    );
+
+    // ==================================================================
+    // Trust numbers band — compressed proof strip. Three stats, each with
+    // a link into /docs for the full story. Absorbs the dropped FAST
+    // pillar + the standalone Durability + Perf sections from the 18:50
+    // queue.
+    // ==================================================================
+    const TrustBand = () => (
+      <section style={{ padding: '56px 28px', background: 'var(--bg-alt)', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}>
+        <div style={{ maxWidth: 1000, margin: '0 auto' }}>
+          <Eyebrow style={{ textAlign: 'center', marginBottom: 24 }}>By the numbers</Eyebrow>
+          <div className="stats-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 28, textAlign: 'center' }}>
+            <div>
+              <div style={{ fontFamily: 'var(--font-serif)', fontSize: 'clamp(22px, 2.6vw, 28px)', fontWeight: 600, color: 'var(--fg1)', letterSpacing: '-0.01em', marginBottom: 6 }}>
+                ~3M events/sec/core
+              </div>
+              <a href="docs/performance/" style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--accent)', fontWeight: 600, textDecoration: 'none' }}>
+                benchmarks →
+              </a>
+            </div>
+            <div>
+              <div style={{ fontFamily: 'var(--font-serif)', fontSize: 'clamp(22px, 2.6vw, 28px)', fontWeight: 600, color: 'var(--fg1)', letterSpacing: '-0.01em', marginBottom: 6 }}>
+                Recovery ~8s/GB
+              </div>
+              <a href="docs/operations/" style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--accent)', fontWeight: 600, textDecoration: 'none' }}>
+                operations →
+              </a>
+            </div>
+            <div>
+              <div style={{ fontFamily: 'var(--font-serif)', fontSize: 'clamp(22px, 2.6vw, 28px)', fontWeight: 600, color: 'var(--fg1)', letterSpacing: '-0.01em', marginBottom: 6 }}>
+                ~7KB per entity
+              </div>
+              <a href="docs/operations/#memory" style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--accent)', fontWeight: 600, textDecoration: 'none' }}>
+                memory planning →
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+
+    // ==================================================================
+    // Final install CTA — bottom-of-page conversion. Install tabs repeat
+    // + GitHub star badge + GH Discussions pointer. Matches the "every
+    // landing-page-conversion pattern ends at install" discipline.
+    // ==================================================================
+    const FinalCTA = () => (
+      <section style={{ padding: '80px 28px 56px' }}>
+        <div style={{ maxWidth: 720, margin: '0 auto', textAlign: 'center' }}>
+          <Eyebrow style={{ marginBottom: 14 }}>Get started</Eyebrow>
+          <h2 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(28px, 4vw, 40px)', lineHeight: 1.1, letterSpacing: '-0.02em', color: 'var(--fg1)', margin: '0 0 30px' }}>
+            One binary. Zero config. Ten minutes.
+          </h2>
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 22 }}>
+            <InstallTabs/>
+          </div>
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap', marginBottom: 18 }}>
+            <Button variant="secondary" size="md" iconLeft={<Icon name="github" size={14}/>} href="https://github.com/beava-dev/beava" target="_blank" rel="noopener">
+              Star on GitHub&nbsp;<span style={{ color: 'var(--fg3)', fontWeight: 500, marginLeft: 4 }}>· 8.2k</span>
+            </Button>
+          </div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--fg3)' }}>
+            Questions? <a href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener" style={{ color: 'var(--accent)', textDecoration: 'none', fontWeight: 600 }}>github.com/beava/discussions&nbsp;→</a>
+          </div>
         </div>
       </section>
     );
@@ -379,6 +449,8 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
         <Pillars/>
         <RecipeGrid/>
         <GuideTeaser/>
+        <TrustBand/>
+        <FinalCTA/>
         <Footer/>
       </>
     );
