@@ -189,6 +189,8 @@ fn json_to_value(jv: &serde_json::Value) -> Value {
 
 /// Convert a `beava_core::row::Value` to a `serde_json::Value`.
 /// See module-level doc for the conversion table.
+///
+/// Phase 11 (D-01): `Value::List` → JSON array; `Value::Map` → JSON object.
 fn value_to_json(v: Value) -> serde_json::Value {
     match v {
         Value::Null => serde_json::Value::Null,
@@ -202,6 +204,14 @@ fn value_to_json(v: Value) -> serde_json::Value {
         Value::Bytes(_) => serde_json::Value::Null,
         // Datetime: emit as i64 ms since epoch
         Value::Datetime(ms) => serde_json::Value::Number(ms.into()),
+        Value::List(items) => {
+            serde_json::Value::Array(items.into_iter().map(value_to_json).collect())
+        }
+        Value::Map(m) => serde_json::Value::Object(
+            m.into_iter()
+                .map(|(k, v)| (k, value_to_json(v)))
+                .collect(),
+        ),
     }
 }
 

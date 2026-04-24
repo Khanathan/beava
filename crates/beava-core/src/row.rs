@@ -33,6 +33,14 @@ pub enum Value {
     Bytes(Vec<u8>),
     /// Milliseconds since Unix epoch — matches the `event_time` convention.
     Datetime(i64),
+    /// Phase 11 (D-01): ordered list of values used as an aggregation output
+    /// (e.g. `most_recent_n`, `reservoir_sample`). Never appears in event/table
+    /// rows — only as the output of `AggOp::query`. `type_of()` → None.
+    List(Vec<Value>),
+    /// Phase 11 (D-01): keyed map of values used as a structured aggregation
+    /// output (e.g. `histogram`, `event_type_mix`). Never appears in
+    /// event/table rows — only as the output of `AggOp::query`. `type_of()` → None.
+    Map(BTreeMap<String, Value>),
 }
 
 impl PartialEq for Value {
@@ -46,6 +54,10 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::Datetime(a), Value::Datetime(b)) => a == b,
+            // Phase 11: List + Map recurse element-wise (BTreeMap iteration is
+            // ordered + deterministic; PartialEq on Vec is positional).
+            (Value::List(a), Value::List(b)) => a == b,
+            (Value::Map(a), Value::Map(b)) => a == b,
             // Cross-variant comparisons are always false.
             _ => false,
         }
@@ -64,6 +76,11 @@ impl Value {
             Value::Bool(_) => Some(FieldType::Bool),
             Value::Bytes(_) => Some(FieldType::Bytes),
             Value::Datetime(_) => Some(FieldType::Datetime),
+            // Phase 11: structured outputs are not representable as a
+            // FieldType — they only appear as aggregation outputs, never in
+            // event/table rows.
+            Value::List(_) => None,
+            Value::Map(_) => None,
         }
     }
 

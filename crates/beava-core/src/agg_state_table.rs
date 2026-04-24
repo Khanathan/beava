@@ -64,6 +64,10 @@ impl EntityKey {
                 Some(Value::F64(f)) => format!("{:?}", f),
                 Some(Value::Bool(b)) => b.to_string(),
                 Some(Value::Datetime(ms)) => ms.to_string(),
+                // Phase 11 (D-01): structured outputs (List/Map) are never
+                // legal as group-by keys — they only appear as aggregation
+                // outputs. Drop the event for this aggregation if encountered.
+                Some(Value::List(_)) | Some(Value::Map(_)) => return None,
             };
             pairs.push((key.clone(), canonical));
         }
