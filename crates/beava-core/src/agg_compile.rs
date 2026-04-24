@@ -102,10 +102,7 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
         .map(|s| s.to_string());
     // Plan 10-05: parse sketch kwargs (q, k, capacity, fpr / target_fpr / expected_n).
     let percentile_q = params.get("q").and_then(|v| v.as_f64());
-    let top_k_k = params
-        .get("k")
-        .and_then(|v| v.as_u64())
-        .map(|n| n as usize);
+    let top_k_k = params.get("k").and_then(|v| v.as_u64()).map(|n| n as usize);
     let bloom_capacity = params
         .get("expected_n")
         .or_else(|| params.get("capacity"))
@@ -1147,9 +1144,7 @@ mod tests {
         ];
         let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
         assert!(
-            errors
-                .iter()
-                .any(|e| e.code == ErrorCode::InvalidBloomFpr),
+            errors.iter().any(|e| e.code == ErrorCode::InvalidBloomFpr),
             "{:?}",
             errors
         );

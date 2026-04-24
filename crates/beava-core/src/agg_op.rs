@@ -182,9 +182,7 @@ impl AggOp {
             AggKind::Variance => AggOp::Variance(VarianceState::default()),
             AggKind::StdDev => AggOp::StdDev(VarianceState::default()),
             AggKind::Ratio => AggOp::Ratio(RatioState::default()),
-            AggKind::CountDistinct => {
-                AggOp::CountDistinct(Box::new(CountDistinctStateWrap::default()))
-            }
+            AggKind::CountDistinct => AggOp::CountDistinct(Box::default()),
             AggKind::Percentile => {
                 let mut s = PercentileStateWrap::default();
                 if let Some(q) = sp.percentile_q {
@@ -203,7 +201,7 @@ impl AggOp {
                 let fpr = sp.bloom_fpr.unwrap_or(0.01);
                 AggOp::BloomMember(Box::new(BloomMemberStateWrap::with_params(cap, fpr)))
             }
-            AggKind::Entropy => AggOp::Entropy(Box::new(EntropyStateWrap::default())),
+            AggKind::Entropy => AggOp::Entropy(Box::default()),
         }
     }
 
