@@ -412,11 +412,31 @@ impl WindowedOp {
                     Value::F64(matching as f64 / total as f64)
                 }
             }
+            // Phase 9 ops bypass WindowedOp; reaching here is a routing bug.
+            AggKind::Ewma
+            | AggKind::EwVar
+            | AggKind::EwZScore
+            | AggKind::DecayedSum
+            | AggKind::DecayedCount
+            | AggKind::Twa
+            | AggKind::RateOfChange
+            | AggKind::InterArrivalStats
+            | AggKind::BurstCount
+            | AggKind::DeltaFromPrev
+            | AggKind::Trend
+            | AggKind::TrendResidual
+            | AggKind::OutlierCount
+            | AggKind::ValueChangeCount
+            | AggKind::ZScore => Value::Null,
         }
     }
 }
 
 /// Create a fresh lifetime AggOp for a given kind (used to initialise buckets).
+///
+/// Phase 9 ops (decay/velocity/z) never go through `WindowedOp` and panic if
+/// reached here — the dispatch in `AggOp::new` enforces this via
+/// `AggKind::supports_windowed_wrap()`.
 fn fresh_op(kind: AggKind) -> AggOp {
     use crate::agg_state::{
         AvgState, CountState, MaxState, MinState, RatioState, SumState, VarianceState,
@@ -430,6 +450,25 @@ fn fresh_op(kind: AggKind) -> AggOp {
         AggKind::Variance => AggOp::Variance(VarianceState::default()),
         AggKind::StdDev => AggOp::StdDev(VarianceState::default()),
         AggKind::Ratio => AggOp::Ratio(RatioState::default()),
+        // Phase 9: decay/velocity/z ops bypass WindowedOp by design.
+        // Reaching here indicates a routing bug in `AggOp::new`.
+        AggKind::Ewma
+        | AggKind::EwVar
+        | AggKind::EwZScore
+        | AggKind::DecayedSum
+        | AggKind::DecayedCount
+        | AggKind::Twa
+        | AggKind::RateOfChange
+        | AggKind::InterArrivalStats
+        | AggKind::BurstCount
+        | AggKind::DeltaFromPrev
+        | AggKind::Trend
+        | AggKind::TrendResidual
+        | AggKind::OutlierCount
+        | AggKind::ValueChangeCount
+        | AggKind::ZScore => {
+            unreachable!("Phase 9 op kind {:?} does not support WindowedOp wrap", kind)
+        }
     }
 }
 

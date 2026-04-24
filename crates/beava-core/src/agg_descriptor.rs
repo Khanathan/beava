@@ -67,6 +67,9 @@ mod tests {
             field: None,
             window_ms: None,
             where_expr: None,
+            half_life_ms: None,
+            sub_window_ms: None,
+            sigma: None,
         }
     }
 

@@ -38,6 +38,9 @@ fn windowless_desc(kind: AggKind, field: Option<&str>) -> AggOpDescriptor {
         field: field.map(|s| s.to_string()),
         window_ms: None,
         where_expr: None,
+            half_life_ms: None,
+            sub_window_ms: None,
+            sigma: None,
     }
 }
 
@@ -205,6 +208,9 @@ fn build_registry() -> Registry {
                 field: None,
                 window_ms: Some(300_000),
                 where_expr: None,
+            half_life_ms: None,
+            sub_window_ms: None,
+            sigma: None,
             },
         )],
     );
