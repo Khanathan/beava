@@ -59,10 +59,10 @@ const Callout = ({ eyebrow = 'NOTE', mascot = 'work-pose', tint = 'paper', child
   // geometric mark is 1536x1024 (3:2 landscape), so it gets a wider box
   // and is scaled up a bit since user asked for more presence.
   const mascotConf = {
-    'work-pose': { src: 'assets/mascot-work-pose.svg',     w: 104, h: 104 },
-    'geometric': { src: 'assets/mascot-mark-geometric.png', w: 168, h: 112 },
-    'pose-2':    { src: 'assets/mascot-pose-2.svg',         w: 104, h: 104 },
-    'pose-3':    { src: 'assets/mascot-pose-3.svg',         w: 104, h: 104 },
+    'work-pose': { src: '/assets/mascot-work-pose.svg',     w: 104, h: 104 },
+    'geometric': { src: '/assets/mascot-mark-geometric.png', w: 168, h: 112 },
+    'pose-2':    { src: '/assets/mascot-pose-2.svg',         w: 104, h: 104 },
+    'pose-3':    { src: '/assets/mascot-pose-3.svg',         w: 104, h: 104 },
   };
   const conf = mascotConf[mascot] || mascotConf['work-pose'];
   const bg = tint === 'warm' ? 'var(--beava-orange-wash)' : 'var(--beava-paper)';
@@ -179,7 +179,7 @@ const Nav = ({ active = 'home' }) => {
     <nav style={navStyle}>
       <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex', alignItems: 'center', gap: 24, width: '100%' }}>
         <a href="/" style={{ display: 'flex', alignItems: 'center', gap: 12, fontWeight: 700, fontSize: 22, color: 'var(--fg1)', textDecoration: 'none', fontFamily: 'var(--font-sans)', letterSpacing: '-0.01em' }}>
-          <img src="assets/logo-mark.png" alt="" width={44} height={44}/>
+          <img src="/assets/logo-mark.png" alt="" width={44} height={44}/>
           beava
         </a>
         <div style={{ display: 'flex', gap: 4, marginLeft: 14, flex: 1 }}>
@@ -208,7 +208,7 @@ const Footer = () => {
         <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr 1fr', gap: 48, marginBottom: 56 }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-              <img src="assets/logo-mark.png" width={44} height={44}/>
+              <img src="/assets/logo-mark.png" width={44} height={44}/>
               <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 22, color: 'var(--fg1)' }}>beava</span>
             </div>
             <p style={{ fontFamily: 'var(--font-sans)', fontSize: 15, lineHeight: 1.6, color: 'var(--fg2)', margin: '0 0 16px', maxWidth: 320 }}>
