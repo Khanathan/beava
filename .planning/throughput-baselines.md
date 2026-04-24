@@ -139,3 +139,38 @@ Captured: 2026-04-23. Commit: `7d8f6aa..` (Phase 7.5 Plan 03).
 | 11.5 | 2026-04-23 | temporal-fraud | http | upsert  | 840 | 8040  | 18960 | first table-write baseline; fsync-bound on macOS |
 | 11.5 | 2026-04-23 | temporal-fraud | http | read    | 299 | 160   | 3500  | first temporal-read baseline; pure MVCC lookup |
 | 11.5 | 2026-04-23 | temporal-fraud | http | retract | 59  | 8050  | 17950 | first retract baseline; same fsync ceiling as upsert |
+
+### POST-MERGE quiescent rerun (2026-04-24, all 6 branches in tree)
+
+**This is the first apples-to-apples comparison ALL on `1e995b9` (post-merge HEAD), no sibling-agent CPU contention.** Surfaces a **regression vs Phase 6.1's pre-merge numbers**. Documented as a Phase 13 ship-gate investigation item.
+
+| Phase | Date | Pipeline | Transport | Parallel | Sustained EPS | Push P50 (µs) | Push P95 (µs) | Push P99 (µs) | Get P99 (µs) | Peak RSS (MB) | Commit | Notes |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|
+| post-merge | 2026-04-24 | small  | tcp  |  8 | 1944 | 3885 | 6847  | 12751 | 20223 | 56  | 1e995b9 | ⚠ regression: Phase 6.1 reported 15672 EPS small/http (10× higher); investigation needed |
+| post-merge | 2026-04-24 | small  | tcp  |  1 | 286  | 3051 | —     | 4131  | 2319  | 13  | 1e995b9 | single-conn ceiling; per-push cost is 3ms even with no contention → fsync IS in critical path |
+| post-merge | 2026-04-24 | small  | http |  8 | 1659 | 3953 | 10095 | 17023 | 21503 | 42  | 1e995b9 | matches TCP — transport not the bottleneck |
+| post-merge | 2026-04-24 | medium | http |  8 | 2236 | 3099 | 4147  | 5623  | 1560  | 148 | 1e995b9 | same fsync floor across sizes |
+| post-merge | 2026-04-24 | large  | http |  8 | 2215 | 3083 | 4187  | 6467  | 3499  | 350 | 1e995b9 | RSS scales linearly with feature count (~3 MB/feature) — pipelines are wired right |
+| post-merge | 2026-04-24 | medium | tcp  |  8 | 2193 | 3097 | 4171  | 6771  | 7543  | 131 | 1e995b9 | matches HTTP at the same size — transport-uniform regression |
+| post-merge | 2026-04-24 | large  | tcp  |  8 | 2165 | 3121 | 4839  | 7643  | 4427  | 269 | 1e995b9 | matches HTTP at the same size — transport-uniform regression |
+
+#### Investigation summary
+
+- **All 6 cells land in the 1659–2236 EPS band, P50 ≈ 3.1ms.** Transport-uniform (HTTP and TCP within 5% of each other), size-uniform (small/medium/large within 35% of each other).
+- **Bottleneck is fsync on the critical path**, not compute. P50 = 3ms ≈ half of macOS `F_FULLSYNC` (~7.4ms). With `fsync_interval_ms=2`, group commit amortizes ~half the fsync cost — this looks like Phase 6 `PerEvent` mode behavior, NOT Phase 6.1's `Periodic` async-durability path.
+- **`/push` route source code IS using `SyncMode::Periodic`** (`crates/beava-server/src/push.rs:375`). `WalSink::append_event_with_mode` correctly returns immediately after staging in Periodic mode (`crates/beava-persistence/src/fsync_worker.rs:401-405`). So the regression is NOT in the routing or the WalSink mode dispatch.
+- **Most likely culprit:** the tokio `current_thread` runtime is being blocked by inline fsync (Phase 6.1's documented deviation: "Inline fsync instead of `spawn_blocking` in `fsync_worker.rs::flush_batch`. Rationale: tokio current_thread runtime (used in tests) has no blocking pool; inline works in both runtime flavors.") When fsync runs inline on the same thread as the push handler's ACK-completion future, ACKs are serialized behind fsync — defeating the Periodic-mode optimization in practice. Phase 6.1's reported 15.7k EPS may have been measured on a build where this didn't manifest, OR with `--parallel 64` (vs our `--parallel 8`) saturating the staging queue ahead of fsync ticks.
+- **Fix candidates** for Phase 13 perf-gate work:
+  1. `tokio::task::spawn_blocking` for the fsync call (per Phase 6.1's own deferred note)
+  2. Multi-thread runtime for the server (current_thread is the project's "single-thread mental model" but doesn't have to apply to fsync IO specifically)
+  3. Pre-issue an async fdatasync syscall via `tokio::fs::File::sync_data` instead of std blocking call
+- **Compute is NOT the bottleneck.** Memory scales correctly (350 MB for 15-feature pipeline). When fsync is fixed, the apply path's per-event cost should drop the per-push budget to the µs range and unlock 50–200k EPS as Phase 6.1 originally projected.
+
+#### Reproducer
+
+```bash
+cd crates/beava-bench
+../../target/release/beava-bench --pipeline small --transport http --duration-secs 20 --parallel 8 --no-ledger
+# Expected (current): ~1660 EPS, P50 ~4ms
+# Expected (when fix lands): ~15-50k EPS, P50 ~50-200µs
+```
