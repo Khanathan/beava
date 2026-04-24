@@ -279,4 +279,72 @@ const CopyBtn = ({ text }) => {
   );
 };
 
-Object.assign(window, { Icon, Button, Eyebrow, Callout, Banner, Nav, Footer, CopyBtn });
+// DfPanel — renders a beava stream/table as a pandas-style dataframe.
+// Fully bordered cells + row index column + accent-orange header row.
+// Warm palette. Home page defines a local copy that shadows this one;
+// anywhere else (Chapter 1, recipes), import from here.
+const DfPanel = ({ title, columns, rows, ellipsis = false, minHeight }) => {
+  const cellBorder = '1px solid var(--border-strong)';
+  const headerCell = {
+    padding: '8px 10px', textAlign: 'center',
+    fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 11,
+    color: 'var(--beava-cream)', letterSpacing: '0.02em',
+    background: 'var(--accent)', border: '1px solid var(--accent)',
+    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+  };
+  const indexCell = {
+    padding: '7px 10px', textAlign: 'center',
+    fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 12,
+    color: 'var(--fg3)', background: 'var(--beava-cream-deep)',
+    border: cellBorder, width: 36,
+  };
+  const dataCell = (i) => ({
+    padding: '7px 10px', textAlign: i === 0 ? 'left' : 'right',
+    fontFamily: 'var(--font-mono)', fontSize: 12.5,
+    color: i === 0 ? 'var(--accent)' : 'var(--fg1)',
+    fontWeight: i === 0 ? 600 : 400,
+    background: 'var(--bg-card)', border: cellBorder,
+    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+  });
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight }}>
+      <div style={{ padding: '0 2px 8px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg3)', letterSpacing: '0.03em' }}>{title}</div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', border: '2px solid var(--accent)', boxShadow: 'var(--shadow-xs)' }}>
+        <thead>
+          <tr>
+            <th style={{ ...headerCell, width: 36 }}></th>
+            {columns.map((c) => (<th key={c} style={headerCell}>{c}</th>))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 && (
+            <tr>
+              <td style={{ ...indexCell, color: 'var(--fg3)', opacity: 0.45 }}>—</td>
+              {columns.map((_, i) => (
+                <td key={i} style={{ ...dataCell(i), color: 'var(--fg3)', opacity: 0.45, fontStyle: 'italic', fontWeight: 400 }}>
+                  {i === 0 ? 'empty — send an event' : ''}
+                </td>
+              ))}
+            </tr>
+          )}
+          {rows.map((r, rowIdx) => (
+            <tr key={r.key} className="anim-row">
+              <td style={indexCell}>{rowIdx}</td>
+              {r.cells.map((c, i) => (<td key={i} style={dataCell(i)}>{c}</td>))}
+            </tr>
+          ))}
+          {ellipsis && (
+            <tr>
+              <td style={{ ...indexCell, color: 'var(--fg3)', opacity: 0.55 }}>...</td>
+              {columns.map((_, i) => (
+                <td key={i} style={{ ...dataCell(i), color: 'var(--fg3)', opacity: 0.55, fontWeight: 400 }}>...</td>
+              ))}
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+Object.assign(window, { Icon, Button, Eyebrow, Callout, Banner, Nav, Footer, CopyBtn, DfPanel });

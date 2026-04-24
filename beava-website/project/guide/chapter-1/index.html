@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to build a per-customer analytics dashboard — beava Chapter 1</title>
+  <meta name="description" content="10-minute interactive build. Meet beava, write your first pipeline, extend it into a per-customer analytics dashboard with views, distinct categories, and last-seen. Zero installs, runs in your browser.">
+  <link rel="stylesheet" href="/styles/colors_and_type.css">
+  <link rel="stylesheet" href="/styles/site.css">
+  <link rel="icon" href="/assets/mascot-mark-geometric.png">
+  <style>
+    .ch1-two { display: grid; grid-template-columns: 1fr auto 1fr; gap: 14px; align-items: stretch; }
+    .ch1-tables { display: grid; grid-template-columns: 1fr 1fr 1.25fr; gap: 14px; }
+    .ch1-compose { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 10px; align-items: end; }
+    .ch1-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    @media (max-width: 900px) {
+      .ch1-two { grid-template-columns: 1fr !important; }
+      .ch1-two > div:nth-child(2) { display: none !important; }
+      .ch1-tables { grid-template-columns: 1fr !important; }
+      .ch1-compose { grid-template-columns: 1fr !important; }
+    }
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 999px;
+      font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+      border: 1px solid var(--border);
+    }
+    .pill.idle { background: var(--bg-inset); color: var(--fg3); }
+    .pill.reg  { background: var(--beava-orange-wash); color: var(--accent); border-color: #f1d8c2; }
+    .pill.done { background: var(--beava-success-wash); color: var(--beava-success); border-color: #c7d7a8; }
+    .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .pill.reg .dot { animation: pulse 900ms ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
+    .ch1-input {
+      font-family: var(--font-mono); font-size: 13px;
+      padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+      background: #fff; color: var(--fg1); width: 100%;
+    }
+    .ch1-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+    .ch1-label { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em;
+                 color: var(--fg3); text-transform: lowercase; margin-bottom: 4px; display: block; }
+  </style>
+</head>
+<body class="beava">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="/js/Shared.jsx"></script>
+
+  <script type="text/babel">
+    // ==================================================================
+    // /guide/chapter-1/ — the pedagogy chapter. Two halves:
+    //   Part 1: meet beava (one para + pandas↔beava + 3-line toy pipeline)
+    //   Part 2: build the analytics dashboard (register → send → watch)
+    //
+    // All simulated client-side. No backend. Same visual language as home.
+    // ==================================================================
+
+    const USERS = ['u_7f3c', 'u_9a1b', 'u_4e22', 'u_5d0c', 'u_c18b', 'u_a33e', 'u_b7d1', 'u_2f0a'];
+    const PATHS = ['/home', '/product/belt-sander', '/product/router-bit', '/category/tools', '/category/paint', '/search?q=clamp', '/cart', '/checkout'];
+    const CATEGORY_OF = (path) => {
+      const m = path.match(/^\/(product|category|search)\/?([^/?]+)?/);
+      if (!m) return 'home';
+      if (m[1] === 'search') return 'search';
+      return m[2] || m[1];
+    };
+
+    // ---------------- Hero ---------------- //
+
+    const Hero = () => (
+      <section style={{ padding: '64px 28px 24px' }}>
+        <div style={{ maxWidth: 880, margin: '0 auto' }}>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--fg3)', marginBottom: 14 }}>
+            <a href="/guide/" style={{ color: 'var(--fg3)', textDecoration: 'none' }}>Guide</a>
+            <span style={{ margin: '0 6px' }}>/</span>
+            <span style={{ color: 'var(--fg1)' }}>Chapter 1</span>
+          </div>
+          <div className="two-col" style={{ display: 'grid', gridTemplateColumns: '1fr 160px', gap: 32, alignItems: 'center' }}>
+            <div>
+              <Eyebrow style={{ marginBottom: 10 }}>Chapter 1 · Interactive</Eyebrow>
+              <h1 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(36px, 5vw, 56px)', lineHeight: 1.05, letterSpacing: '-0.02em', color: 'var(--fg1)', margin: '0 0 14px', textWrap: 'balance' }}>
+                How to build a per-customer analytics dashboard
+              </h1>
+              <p style={{ fontFamily: 'var(--font-sans)', fontSize: 17, lineHeight: 1.6, color: 'var(--fg2)', margin: 0, textWrap: 'pretty' }}>
+                Ten-minute interactive build. Meet beava, write your first pipeline, extend it into a per-customer dashboard with live views, distinct categories, and last-seen. Zero installs. Everything runs in your browser, same shape as the real server.
+              </p>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'center' }}>
+              <img src="/assets/mascot-work-pose.svg" width={140} height={140}/>
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+
+    // ---------------- Part 1: Meet beava ---------------- //
+
+    const MeetBeava = () => (
+      <section style={{ padding: '48px 28px 16px' }}>
+        <div style={{ maxWidth: 880, margin: '0 auto' }}>
+          <Eyebrow style={{ marginBottom: 12 }}>Part 1 · Meet beava</Eyebrow>
+          <h2 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(26px, 3.4vw, 36px)', lineHeight: 1.15, letterSpacing: '-0.01em', color: 'var(--fg1)', margin: '0 0 16px' }}>
+            Same shape as pandas, live forever.
+          </h2>
+          <p style={{ fontFamily: 'var(--font-sans)', fontSize: 17, lineHeight: 1.65, color: 'var(--fg1)', margin: '0 0 14px', textWrap: 'pretty' }}>
+            beava is one binary that ingests events and keeps per-entity aggregates up to date in memory. You describe the pipeline in Python, it serves features over HTTP. If you know <code style={{ fontFamily: 'var(--font-mono)', fontSize: 14, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>df.groupby(...).agg(...)</code>, you already know how to shape a beava pipeline.
+          </p>
+          <p style={{ fontFamily: 'var(--font-sans)', fontSize: 17, lineHeight: 1.65, color: 'var(--fg2)', margin: '0 0 32px', textWrap: 'pretty' }}>
+            A <strong style={{ color: 'var(--fg1)' }}>stream</strong> is a dataframe that never stops appending. A <strong style={{ color: 'var(--fg1)' }}>table</strong> is a <code style={{ fontFamily: 'var(--font-mono)', fontSize: 14, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>groupby(key).agg(...)</code> over that stream, maintained incrementally on every event.
+          </p>
+
+          <div style={{ marginBottom: 32 }}>
+            <div className="ch1-two">
+              <div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg3)', marginBottom: 6, letterSpacing: '0.03em', textTransform: 'lowercase' }}>pandas (batch)</div>
+                <pre className="code-well" style={{ fontSize: 12.5, padding: '14px 16px', lineHeight: 1.7, margin: 0 }}>
+{'events.'}<span className="fn">groupby</span>{'('}<span className="str">"user_id"</span>{').'}<span className="fn">agg</span>{'('}{'\n'}
+{'    views_total=('}<span className="str">"path"</span>{', '}<span className="str">"count"</span>{'),'}{'\n'}
+{'    last_seen=('}<span className="str">"ts"</span>{', '}<span className="str">"max"</span>{'),'}{'\n'}
+{')'}
+                </pre>
+              </div>
+              <div style={{ fontFamily: 'var(--font-accent)', fontSize: 28, color: 'var(--accent)', fontWeight: 700, textAlign: 'center', lineHeight: 1, alignSelf: 'center' }}>
+                ≈
+              </div>
+              <div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--accent)', marginBottom: 6, letterSpacing: '0.03em', fontWeight: 700, textTransform: 'lowercase' }}>beava (live)</div>
+                <pre className="code-well" style={{ fontSize: 12.5, padding: '14px 16px', lineHeight: 1.7, margin: 0 }}>
+{'events.'}<span className="fn">groupby</span>{'('}<span className="str">"user_id"</span>{').'}<span className="fn">agg</span>{'('}{'\n'}
+{'    views_total=bv.'}<span className="fn">count</span>{'(),'}{'\n'}
+{'    last_seen=bv.'}<span className="fn">latest</span>{'(e.ts),'}{'\n'}
+{')'}
+                </pre>
+              </div>
+            </div>
+            <div style={{ textAlign: 'center', marginTop: 12, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--fg3)', textWrap: 'pretty' }}>
+              Same shape, different time model. pandas runs once over a frame. beava maintains the groupby forever.
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+
+    // ---------------- Part 2: First pipeline (interactive) ---------------- //
+
+    const pipelineBasic = [
+      { t: 'cmt', v: '# your first pipeline — 3 lines of logic' },
+      { t: 'kw',  v: 'import' }, { t: 't', v: ' beava ' }, { t: 'kw', v: 'as' }, { t: 't', v: ' bv\n\n' },
+      { t: 'fn',  v: '@bv.stream' }, { t: 't', v: '\n' },
+      { t: 'kw',  v: 'class' }, { t: 't', v: ' ' }, { t: 'ty', v: 'PageView' }, { t: 't', v: ':\n' },
+      { t: 't',   v: '    user_id: ' }, { t: 'ty', v: 'str' }, { t: 't', v: '\n' },
+      { t: 't',   v: '    path: ' },    { t: 'ty', v: 'str' }, { t: 't', v: '\n\n' },
+      { t: 'fn',  v: '@bv.table' }, { t: 't', v: '(key=' }, { t: 'str', v: '"user_id"' }, { t: 't', v: ')\n' },
+      { t: 'kw',  v: 'def' }, { t: 't', v: ' ' }, { t: 'fn', v: 'UserStats' }, { t: 't', v: '(e: PageView):\n' },
+      { t: 't',   v: '    ' }, { t: 'kw', v: 'return' }, { t: 't', v: ' e.' }, { t: 'fn', v: 'agg' }, { t: 't', v: '(views_total=bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '())' },
+    ];
+
+    const pipelineDashboard = [
+      { t: 'cmt', v: '# a per-customer analytics dashboard' },
+      { t: 'kw',  v: 'import' }, { t: 't', v: ' beava ' }, { t: 'kw', v: 'as' }, { t: 't', v: ' bv\n\n' },
+      { t: 'fn',  v: '@bv.stream' }, { t: 't', v: '\n' },
+      { t: 'kw',  v: 'class' }, { t: 't', v: ' ' }, { t: 'ty', v: 'PageView' }, { t: 't', v: ':\n' },
+      { t: 't',   v: '    user_id: ' }, { t: 'ty', v: 'str' }, { t: 't', v: '\n' },
+      { t: 't',   v: '    path: ' },    { t: 'ty', v: 'str' }, { t: 't', v: '\n' },
+      { t: 't',   v: '    category: ' },{ t: 'ty', v: 'str' }, { t: 't', v: '\n\n' },
+      { t: 'fn',  v: '@bv.table' }, { t: 't', v: '(key=' }, { t: 'str', v: '"user_id"' }, { t: 't', v: ')\n' },
+      { t: 'kw',  v: 'def' }, { t: 't', v: ' ' }, { t: 'fn', v: 'Dashboard' }, { t: 't', v: '(e: PageView):\n' },
+      { t: 't',   v: '    ' }, { t: 'kw', v: 'return' }, { t: 't', v: ' e.' }, { t: 'fn', v: 'agg' }, { t: 't', v: '(\n' },
+      { t: 't',   v: '        views_total          = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(),\n' },
+      { t: 't',   v: '        views_24h            = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(window=' }, { t: 'str', v: '"24h"' }, { t: 't', v: '),\n' },
+      { t: 't',   v: '        distinct_cats_7d     = bv.' }, { t: 'fn', v: 'distinct' }, { t: 't', v: '(e.category, window=' }, { t: 'str', v: '"7d"' }, { t: 't', v: '),\n' },
+      { t: 't',   v: '        last_seen            = bv.' }, { t: 'fn', v: 'latest' }, { t: 't', v: '(e.ts),\n' },
+      { t: 't',   v: '    )' },
+    ];
+
+    const CodeBlock = ({ tokens, fontSize = 13 }) => (
+      <pre className="code-well" style={{ fontSize, padding: '20px 22px', lineHeight: 1.7, margin: 0 }}>
+        {tokens.map((tok, i) => (
+          tok.t === 't' ? <span key={i}>{tok.v}</span> : <span key={i} className={tok.t}>{tok.v}</span>
+        ))}
+      </pre>
+    );
+
+    const RegisterButton = ({ label, status, onRegister }) => {
+      const pill = status === 'idle'
+        ? <span className="pill idle"><span className="dot"/>not registered</span>
+        : status === 'registering'
+        ? <span className="pill reg"><span className="dot"/>registering…</span>
+        : <span className="pill done"><Icon name="check" size={12} stroke={2.5}/>registered</span>;
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          <Button variant="primary" size="md" onClick={onRegister} disabled={status !== 'idle'}
+                  style={{ opacity: status === 'idle' ? 1 : 0.55, cursor: status === 'idle' ? 'pointer' : 'default' }}
+                  icon={status === 'done' ? <Icon name="check" size={14} stroke={2.5}/> : <Icon name="arrow" size={14}/>}>
+            {label}
+          </Button>
+          {pill}
+        </div>
+      );
+    };
+
+    // ---------------- Interactive tutorial (the core state machine) ---------------- //
+
+    const Tutorial = () => {
+      // stage: 'basic' (PageView + UserStats) or 'dashboard' (expanded)
+      const [stage, setStage] = React.useState('basic');
+      const [basicStatus, setBasicStatus] = React.useState('idle');     // idle | registering | done
+      const [dashStatus, setDashStatus]   = React.useState('idle');
+
+      // live tables
+      const [events, setEvents]       = React.useState([]); // {id, user_id, path, category, ts}
+      const [userStats, setUserStats] = React.useState({}); // user_id -> { views_total, lastTs }
+      const [dashboard, setDashboard] = React.useState({}); // user_id -> full row
+
+      // compose form
+      const [formUser, setFormUser] = React.useState(USERS[0]);
+      const [formPath, setFormPath] = React.useState(PATHS[1]);
+
+      const idRef     = React.useRef(1);
+      const firstBurstRef = React.useRef(true);
+
+      const now = () => {
+        const d = new Date();
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      };
+
+      const register = (which) => {
+        if (which === 'basic') {
+          setBasicStatus('registering');
+          setTimeout(() => setBasicStatus('done'), 900);
+        } else {
+          setDashStatus('registering');
+          setTimeout(() => {
+            setDashStatus('done');
+            setStage('dashboard');
+          }, 900);
+        }
+      };
+
+      const applyEvent = (ev) => {
+        setEvents(prev => [ev, ...prev].slice(0, 4));
+        setUserStats(prev => {
+          const cur = prev[ev.user_id] || { views_total: 0, lastTs: '' };
+          return {
+            ...prev,
+            [ev.user_id]: {
+              views_total: cur.views_total + 1,
+              lastTs: ev.ts,
+            },
+          };
+        });
+        if (stage === 'dashboard') {
+          setDashboard(prev => {
+            const cur = prev[ev.user_id] || { views_total: 0, views_24h: 0, cats: new Set(), last_seen: '' };
+            const nextCats = new Set(cur.cats); nextCats.add(ev.category);
+            return {
+              ...prev,
+              [ev.user_id]: {
+                views_total: cur.views_total + 1,
+                views_24h:   cur.views_24h + 1,
+                cats:        nextCats,
+                last_seen:   ev.ts,
+              },
+            };
+          });
+        }
+      };
+
+      const makeEvent = (user, path) => ({
+        id: idRef.current++,
+        user_id: user,
+        path,
+        category: CATEGORY_OF(path),
+        ts: now(),
+      });
+
+      const sendRandom = () => {
+        if (basicStatus !== 'done') return;
+        const burst = firstBurstRef.current ? 3 : 1;
+        firstBurstRef.current = false;
+        let i = 0;
+        const fire = () => {
+          const u = USERS[Math.floor(Math.random() * USERS.length)];
+          const p = PATHS[Math.floor(Math.random() * PATHS.length)];
+          applyEvent(makeEvent(u, p));
+          i++;
+          if (i < burst) setTimeout(fire, 280);
+        };
+        fire();
+      };
+
+      const sendCrafted = () => {
+        if (basicStatus !== 'done') return;
+        if (!formUser.trim() || !formPath.trim()) return;
+        applyEvent(makeEvent(formUser.trim(), formPath.trim()));
+      };
+
+      // ---- Render rows for DfPanels ----
+
+      const eventRows = events.map(e => ({
+        key: e.id,
+        cells: stage === 'dashboard'
+          ? [e.user_id, e.path, e.category, e.ts]
+          : [e.user_id, e.path, e.ts],
+      }));
+
+      const userStatsRows = Object.entries(userStats)
+        .sort((a, b) => (a[1].lastTs < b[1].lastTs ? 1 : -1))
+        .slice(0, 4)
+        .map(([uid, s]) => ({
+          key: `${uid}-${s.views_total}`,
+          cells: [uid, s.views_total, s.lastTs || '—'],
+        }));
+
+      const dashboardRows = Object.entries(dashboard)
+        .sort((a, b) => (a[1].last_seen < b[1].last_seen ? 1 : -1))
+        .map(([uid, s]) => ({
+          key: `${uid}-${s.views_total}`,
+          cells: [uid, s.views_total, s.views_24h, s.cats.size, s.last_seen],
+        }));
+
+      return (
+        <>
+          {/* ----- Part 2: first pipeline ----- */}
+          <section style={{ padding: '48px 28px 16px' }}>
+            <div style={{ maxWidth: 960, margin: '0 auto' }}>
+              <Eyebrow style={{ marginBottom: 12 }}>Part 2 · Your first pipeline</Eyebrow>
+              <h2 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(26px, 3.4vw, 36px)', lineHeight: 1.15, letterSpacing: '-0.01em', color: 'var(--fg1)', margin: '0 0 16px' }}>
+                Three lines. One table. Live.
+              </h2>
+              <p style={{ fontFamily: 'var(--font-sans)', fontSize: 16, lineHeight: 1.65, color: 'var(--fg2)', margin: '0 0 22px', maxWidth: 720, textWrap: 'pretty' }}>
+                Declare a <code style={{ fontFamily: 'var(--font-mono)', fontSize: 13.5, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>PageView</code> event shape, and a <code style={{ fontFamily: 'var(--font-mono)', fontSize: 13.5, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>UserStats</code> table keyed by user. Every event updates exactly one row, atomically. Register the pipeline, then send an event.
+              </p>
+
+              <CodeBlock tokens={pipelineBasic}/>
+
+              <div style={{ marginTop: 20, marginBottom: 26 }}>
+                <RegisterButton label="Register this pipeline" status={basicStatus} onRegister={() => register('basic')}/>
+              </div>
+
+              <div className="ch1-actions" style={{ marginBottom: 22, opacity: basicStatus === 'done' ? 1 : 0.45, transition: 'opacity 300ms' }}>
+                <Button variant="secondary" size="md" onClick={sendRandom} disabled={basicStatus !== 'done'}
+                        style={{ cursor: basicStatus === 'done' ? 'pointer' : 'default' }}
+                        iconLeft={<Icon name="zap" size={14}/>}>
+                  Send a random event
+                </Button>
+                <span style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--fg3)' }}>or craft one:</span>
+              </div>
+
+              <div className="ch1-compose" style={{ marginBottom: 28, opacity: basicStatus === 'done' ? 1 : 0.45, pointerEvents: basicStatus === 'done' ? 'auto' : 'none', transition: 'opacity 300ms' }}>
+                <div>
+                  <span className="ch1-label">user_id</span>
+                  <input className="ch1-input" value={formUser} onChange={e => setFormUser(e.target.value)} placeholder="u_7f3c"/>
+                </div>
+                <div>
+                  <span className="ch1-label">path</span>
+                  <input className="ch1-input" value={formPath} onChange={e => setFormPath(e.target.value)} placeholder="/product/clamp"/>
+                </div>
+                <div>
+                  <span className="ch1-label">category (derived)</span>
+                  <input className="ch1-input" value={CATEGORY_OF(formPath)} readOnly
+                         style={{ background: 'var(--bg-inset)', color: 'var(--fg3)' }}/>
+                </div>
+                <Button variant="primary" size="md" onClick={sendCrafted} icon={<Icon name="arrow" size={14}/>}>
+                  Send event
+                </Button>
+              </div>
+
+              {/* live tables */}
+              <div className="ch1-tables" style={{ marginTop: 18 }}>
+                <DfPanel
+                  title="@bv.stream PageView  (last 4)"
+                  columns={stage === 'dashboard'
+                    ? ['user_id', 'path', 'category', 'ts']
+                    : ['user_id', 'path', 'ts']}
+                  rows={eventRows}
+                  ellipsis={events.length >= 4}
+                />
+                <DfPanel
+                  title="@bv.table UserStats  (key=user_id)"
+                  columns={['user_id', 'views_total', 'last_ts']}
+                  rows={userStatsRows}
+                  ellipsis={Object.keys(userStats).length > 4}
+                />
+                <DfPanel
+                  title={stage === 'dashboard'
+                    ? '@bv.table Dashboard  (key=user_id)'
+                    : '@bv.table Dashboard  (register below to unlock)'}
+                  columns={['user_id', 'views_total', 'views_24h', 'cats_7d', 'last_seen']}
+                  rows={dashboardRows}
+                />
+              </div>
+            </div>
+          </section>
+
+          {/* ----- Part 3: dashboard ----- */}
+          <section style={{ padding: '56px 28px 32px' }}>
+            <div style={{ maxWidth: 960, margin: '0 auto' }}>
+              <Eyebrow style={{ marginBottom: 12 }}>Part 3 · Build the dashboard</Eyebrow>
+              <h2 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(26px, 3.4vw, 36px)', lineHeight: 1.15, letterSpacing: '-0.01em', color: 'var(--fg1)', margin: '0 0 16px' }}>
+                Now the real thing: four metrics, windowed and unwindowed.
+              </h2>
+              <p style={{ fontFamily: 'var(--font-sans)', fontSize: 16, lineHeight: 1.65, color: 'var(--fg2)', margin: '0 0 22px', maxWidth: 720, textWrap: 'pretty' }}>
+                Same stream, richer table. Lifetime total views, rolling 24h views, distinct categories over the past 7 days, and the latest timestamp per user. Every push updates every metric atomically. Register to replace your first pipeline.
+              </p>
+
+              <CodeBlock tokens={pipelineDashboard}/>
+
+              <div style={{ marginTop: 20, marginBottom: 22 }}>
+                <RegisterButton
+                  label={basicStatus !== 'done' ? 'Register the first pipeline above first' : 'Register the dashboard pipeline'}
+                  status={dashStatus}
+                  onRegister={() => { if (basicStatus === 'done') register('dashboard'); }}/>
+              </div>
+
+              {stage === 'dashboard' && dashboardRows.length >= 3 && (
+                <Callout eyebrow="YOU BUILT THIS" mascot="pose-2" tint="warm">
+                  That Dashboard panel above? That's live beava state. Every event you push — random or crafted — updates all four metrics for exactly one user, in a single atomic step. The real server does the same thing at ~3M events/sec/core.
+                </Callout>
+              )}
+            </div>
+          </section>
+
+          {/* ----- Next steps ----- */}
+          <section style={{ padding: '24px 28px 96px' }}>
+            <div style={{ maxWidth: 880, margin: '0 auto' }}>
+              <Eyebrow style={{ marginBottom: 12 }}>Next</Eyebrow>
+              <h2 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(22px, 2.8vw, 28px)', lineHeight: 1.2, color: 'var(--fg1)', margin: '0 0 20px' }}>
+                Pick a recipe and build for real.
+              </h2>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <Button variant="primary" size="md" href="/guide/" icon={<Icon name="arrow" size={14}/>}>
+                  Back to the guidebook
+                </Button>
+                <Button variant="secondary" size="md" href="/guide/recipes/fraud/" iconLeft={<Icon name="book" size={14}/>}>
+                  Read the fraud recipe
+                </Button>
+                <Button variant="ghost" size="md" href="https://github.com/beava-dev/beava" iconLeft={<Icon name="github" size={14}/>}>
+                  Star on GitHub
+                </Button>
+              </div>
+            </div>
+          </section>
+        </>
+      );
+    };
+
+    // ---------------- App ---------------- //
+
+    const App = () => (
+      <>
+        <Banner id="cloud-waitlist-v1">
+          beava cloud · managed from $50/mo · self-host is always free · join the waitlist
+        </Banner>
+        <Nav active="guide"/>
+        <Hero/>
+        <MeetBeava/>
+        <Tutorial/>
+        <Footer/>
+      </>
+    );
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>
