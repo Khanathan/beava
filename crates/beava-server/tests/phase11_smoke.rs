@@ -9,9 +9,9 @@
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
+use beava_core::registry::Registry;
 use beava_server::http::{router, ReadinessFlag};
 use beava_server::registry_debug::DevAggState;
-use beava_core::registry::Registry;
 use http_body_util::BodyExt;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -148,12 +148,30 @@ async fn all_thirteen_ops_round_trip_through_http() {
     // ── 2. Push deterministic events — 6 events at known lat/lon/amount/category ─
     // event_time monotonically increasing 1h apart so geo_velocity has finite dt
     let events: Vec<(i64, serde_json::Value)> = vec![
-        (1_000_000,                serde_json::json!({"user_id":"alice","amount":  5.0, "category":"a","lat":40.7128,"lon":-74.0060})),
-        (1_000_000 +    3_600_000, serde_json::json!({"user_id":"alice","amount": 50.0, "category":"a","lat":40.7128,"lon":-74.0060})),
-        (1_000_000 + 2 *3_600_000, serde_json::json!({"user_id":"alice","amount":150.0, "category":"b","lat":41.7128,"lon":-74.0060})),
-        (1_000_000 + 3 *3_600_000, serde_json::json!({"user_id":"alice","amount": 25.0, "category":"a","lat":41.7128,"lon":-74.0060})),
-        (1_000_000 + 4 *3_600_000, serde_json::json!({"user_id":"alice","amount": 80.0, "category":"c","lat":41.8128,"lon":-74.0060})),
-        (1_000_000 + 5 *3_600_000, serde_json::json!({"user_id":"alice","amount":200.0, "category":"a","lat":41.9128,"lon":-74.0060})),
+        (
+            1_000_000,
+            serde_json::json!({"user_id":"alice","amount":  5.0, "category":"a","lat":40.7128,"lon":-74.0060}),
+        ),
+        (
+            1_000_000 + 3_600_000,
+            serde_json::json!({"user_id":"alice","amount": 50.0, "category":"a","lat":40.7128,"lon":-74.0060}),
+        ),
+        (
+            1_000_000 + 2 * 3_600_000,
+            serde_json::json!({"user_id":"alice","amount":150.0, "category":"b","lat":41.7128,"lon":-74.0060}),
+        ),
+        (
+            1_000_000 + 3 * 3_600_000,
+            serde_json::json!({"user_id":"alice","amount": 25.0, "category":"a","lat":41.7128,"lon":-74.0060}),
+        ),
+        (
+            1_000_000 + 4 * 3_600_000,
+            serde_json::json!({"user_id":"alice","amount": 80.0, "category":"c","lat":41.8128,"lon":-74.0060}),
+        ),
+        (
+            1_000_000 + 5 * 3_600_000,
+            serde_json::json!({"user_id":"alice","amount":200.0, "category":"a","lat":41.9128,"lon":-74.0060}),
+        ),
     ];
 
     for (t, row) in events {
@@ -172,7 +190,10 @@ async fn all_thirteen_ops_round_trip_through_http() {
     let (status, body) = call_get(r.clone(), "/get/amount_hist/alice").await;
     assert_eq!(status, StatusCode::OK, "amount_hist body: {body:#}");
     let v = &body["value"];
-    assert!(v.is_object(), "histogram value must be a JSON object: {v:#}");
+    assert!(
+        v.is_object(),
+        "histogram value must be a JSON object: {v:#}"
+    );
     // Buckets: <10, 10-100, >=100 → 1 (5.0), 3 (50.0, 25.0, 80.0), 2 (150.0, 200.0)
     assert_eq!(v["<10"], 1, "expected 1 in <10 cell");
     assert_eq!(v["10-100"], 3, "expected 3 in 10-100 cell");
@@ -189,7 +210,11 @@ async fn all_thirteen_ops_round_trip_through_http() {
     // dh (dow_hour_histogram → Map of 168 keys)
     let (status, body) = call_get(r.clone(), "/get/dh/alice").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["value"].as_object().unwrap().len(), 168, "dh must have 168 keys");
+    assert_eq!(
+        body["value"].as_object().unwrap().len(),
+        168,
+        "dh must have 168 keys"
+    );
 
     // amt_seasonal (seasonal_deviation → F64 or Null)
     let (status, body) = call_get(r.clone(), "/get/amt_seasonal/alice").await;
@@ -223,10 +248,7 @@ async fn all_thirteen_ops_round_trip_through_http() {
     assert_eq!(status, StatusCode::OK);
     let v = body["value"].as_f64().expect("kmh F64");
     // Between event 2 and 3 we move ~111 km in 1h → ~111 km/h
-    assert!(
-        (v - 111.0).abs() < 5.0,
-        "expected max kmh ~111, got {v}"
-    );
+    assert!((v - 111.0).abs() < 5.0, "expected max kmh ~111, got {v}");
 
     // path_km (geo_distance → F64)
     let (status, body) = call_get(r.clone(), "/get/path_km/alice").await;
@@ -245,13 +267,16 @@ async fn all_thirteen_ops_round_trip_through_http() {
     assert_eq!(status, StatusCode::OK);
     let n = body["value"].as_i64().expect("n_cells i64");
     // precision=10, cells: floor(40.7*10),floor(-74.0*10) etc — 4 distinct cells
-    assert!(n >= 3 && n <= 6, "n_cells expected ~4, got {n}");
+    assert!((3..=6).contains(&n), "n_cells expected ~4, got {n}");
 
     // geo_h (geo_entropy → F64)
     let (status, body) = call_get(r.clone(), "/get/geo_h/alice").await;
     assert_eq!(status, StatusCode::OK);
     let h = body["value"].as_f64().expect("geo_h F64");
-    assert!(h > 0.0, "entropy must be positive across distinct cells, got {h}");
+    assert!(
+        h > 0.0,
+        "entropy must be positive across distinct cells, got {h}"
+    );
 
     // home_dist (distance_from_home → F64)
     let (status, body) = call_get(r.clone(), "/get/home_dist/alice").await;
@@ -302,5 +327,8 @@ async fn replay_determinism_across_two_runs() {
     let (r1_n, r1_s) = run().await;
     let (r2_n, r2_s) = run().await;
     assert_eq!(r1_n, r2_n, "n_cells must replay identically");
-    assert_eq!(r1_s, r2_s, "reservoir sample must replay identically (D-06)");
+    assert_eq!(
+        r1_s, r2_s,
+        "reservoir sample must replay identically (D-06)"
+    );
 }
