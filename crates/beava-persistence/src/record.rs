@@ -24,6 +24,9 @@ impl RecordType {
         match b {
             0x01 => Ok(RecordType::Event),
             0x02 => Ok(RecordType::RegistryBump),
+            0x03 => Ok(RecordType::TableUpsert),
+            0x04 => Ok(RecordType::TableDelete),
+            0x05 => Ok(RecordType::Retract),
             other => Err(PersistError::UnknownRecordType(other)),
         }
     }
