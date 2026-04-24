@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  body { padding: 28px 32px; }
+  .wrap { display: flex; flex-direction: column; gap: 16px; }
+  .row { display: flex; align-items: baseline; gap: 20px; border-bottom: 1px dashed var(--border); padding-bottom: 14px; }
+  .row:last-child { border: 0; }
+  .tag { width: 130px; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg3); flex-shrink: 0; padding-top: 6px; }
+  .display { font-family: var(--font-serif); color: var(--fg1); line-height: 1.05; letter-spacing: -0.015em; font-feature-settings: "liga" on, "calt" on; }
+  .marker { font-family: var(--font-accent); font-weight: 700; color: var(--accent); line-height: 1; }
+  .ital { font-style: italic; color: var(--accent); }
+  .footnote { font-family: var(--font-mono); font-size: 11px; color: var(--fg3); padding-top: 4px; line-height: 1.5; }
+</style>
+</head><body>
+  <div class="wrap">
+    <div class="row">
+      <div class="tag">H1 · Alegreya 700</div>
+      <div class="display" style="font-size:56px;font-weight:700">cozy, <span class="ital" style="font-weight:500">HTTP-first</span> features</div>
+    </div>
+    <div class="row">
+      <div class="tag">H2 · Alegreya 700</div>
+      <div class="display" style="font-size:36px;font-weight:700">rolling counters, <span class="ital" style="font-weight:500">simply</span></div>
+    </div>
+    <div class="row">
+      <div class="tag">H3 · Alegreya 600</div>
+      <div class="display" style="font-size:24px;font-weight:600;line-height:1.2">sliding windows, explained</div>
+    </div>
+    <div class="row">
+      <div class="tag">Accent · Gaegu</div>
+      <div>
+        <div class="display" style="font-size:26px;font-weight:700;line-height:1.2">define a counter
+          <span class="marker" style="font-size:24px;margin-left:10px;transform:rotate(-2deg);display:inline-block">← pick a window</span>
+        </div>
+        <div class="footnote">Alegreya — warm, literary, book-ish. Gaegu accents stay sparing.</div>
+      </div>
+    </div>
+  </div>
+</body></html>

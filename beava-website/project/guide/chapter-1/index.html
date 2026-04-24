@@ -276,6 +276,9 @@
     @media (max-width: 760px) {
       .mini-result { grid-template-columns: 1fr !important; }
     }
+    @media (max-width: 880px) {
+      .query-grid { grid-template-columns: 1fr !important; }
+    }
   </style>
 </head>
 <body class="beava">
@@ -453,6 +456,137 @@
             {label}
           </Button>
           {pill}
+        </div>
+      );
+    };
+
+    // ---------------- Query panel (live curl + JSON response) ---------------- //
+
+    // Renders a curl POST request body and its JSON response based on the
+    // actual rows in state. Teaches: your app calls POST /batch/<Table>
+    // with the user_ids visible on screen, gets back the metrics, renders.
+    const QueryPanel = ({ table, userIds, rowsList, metricKeys, empty }) => {
+      const ids = userIds.slice(0, 3);
+      const curl = `curl -X POST https://your-beava/batch/${table} \\
+  -H 'Content-Type: application/json' \\
+  -d '${JSON.stringify(ids)}'`;
+
+      // User-triggered query: the response only appears after "Run query"
+      // is clicked. Mirrors a real curl: you type it, you run it, you see
+      // the response. Re-run updates the response to the live state.
+      const [state, setState]   = React.useState('idle');   // 'idle' | 'running' | 'done'
+      const [latency, setLat]   = React.useState(null);
+      const [snapshot, setSnap] = React.useState(null);     // frozen response JSON
+
+      // When the underlying ids change (e.g. events get cleared), reset.
+      React.useEffect(() => { setState('idle'); setSnap(null); }, [empty, table]);
+
+      const buildResponse = () => {
+        const rowByUid = new Map(rowsList);
+        const obj = {};
+        for (const uid of ids) {
+          const r = rowByUid.get(uid);
+          if (!r) { obj[uid] = null; continue; }
+          const o = {};
+          for (const k of metricKeys) {
+            if (k === 'views_total')           o.views_total = r.views_total;
+            else if (k === 'views_24h')        o.views_24h   = r.views_24h;
+            else if (k === 'distinct_cats_7d') o.distinct_cats_7d = r.cats.size;
+            else if (k === 'last_seen')        o.last_seen   = new Date(r.lastTsMs).toISOString().replace(/\.\d{3}Z$/, 'Z');
+          }
+          obj[uid] = o;
+        }
+        return JSON.stringify(obj, null, 2);
+      };
+
+      const runQuery = () => {
+        if (empty || state === 'running') return;
+        setState('running');
+        setSnap(null);
+        // Simulate a realistic sub-5ms fetch with a small UI delay so the
+        // user can see the "running" state briefly.
+        const simLatencyMs = +(1.2 + Math.random() * 2.6).toFixed(2);
+        setTimeout(() => {
+          setLat(simLatencyMs);
+          setSnap(buildResponse());
+          setState('done');
+        }, 260);
+      };
+
+      return (
+        <div style={{ marginTop: 22 }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            gap: 12, flexWrap: 'wrap', marginBottom: 10,
+          }}>
+            <div style={{
+              fontFamily: 'var(--font-mono)', fontSize: 11,
+              color: 'var(--fg3)', letterSpacing: '0.04em',
+              textTransform: 'lowercase',
+            }}>
+              ↓ how your app reads it: <span style={{ color: 'var(--accent)', fontWeight: 700 }}>POST /batch/{table}</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              {state === 'done' && latency != null && (
+                <span className="pill done" style={{ fontFamily: 'var(--font-mono)' }}>
+                  <Icon name="check" size={11} stroke={2.5}/>200 OK · {latency}ms
+                </span>
+              )}
+              {state === 'running' && (
+                <span className="pill reg"><span className="dot"/>running…</span>
+              )}
+              <button className="composer-random" onClick={runQuery} disabled={empty || state === 'running'}
+                      style={{ padding: '9px 14px', fontSize: 13 }}>
+                <Icon name="terminal" size={13} stroke={2}/>
+                {state === 'done' ? 'Re-run query' : 'Run query'}
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }} className="query-grid">
+            <div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg3)', letterSpacing: '0.04em', textTransform: 'lowercase', marginBottom: 8 }}>1. request — copy-paste this into your terminal</div>
+              <div style={{ position: 'relative' }}>
+                <pre className="code-well" style={{ fontSize: 12.5, padding: '18px 20px', lineHeight: 1.65, margin: 0, whiteSpace: 'pre', minHeight: 140 }}>
+                  <span className="cmt">$ </span>curl -X POST https://your-beava/batch/<span className="fn">{table}</span> \{'\n'}
+                  {'    '}-H <span className="str">'Content-Type: application/json'</span> \{'\n'}
+                  {'    '}-d <span className="str">'{JSON.stringify(ids)}'</span>
+                </pre>
+                <CopyBtn text={curl}/>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--fg3)', letterSpacing: '0.04em', textTransform: 'lowercase', marginBottom: 8 }}>
+                2. response
+                {empty       && <span style={{ color: 'var(--fg3)' }}> (push events first)</span>}
+                {!empty && state === 'idle'    && <span style={{ color: 'var(--accent)' }}> — click Run query →</span>}
+                {!empty && state === 'running' && <span style={{ color: 'var(--accent)' }}> — fetching…</span>}
+                {!empty && state === 'done'    && <span style={{ color: 'var(--beava-success)' }}> — live, {latency}ms</span>}
+              </div>
+              <div style={{ position: 'relative' }}>
+                <pre className="code-well" style={{ fontSize: 12.5, padding: '18px 20px', lineHeight: 1.65, margin: 0, whiteSpace: 'pre', minHeight: 140 }}>
+                  {empty
+                    ? <span style={{ color: 'var(--fg3)', fontStyle: 'italic' }}># push an event above, then run this query.</span>
+                    : state === 'idle'
+                    ? <span style={{ color: 'var(--fg3)', fontStyle: 'italic' }}># (no response yet — click "Run query" above to fetch from beava)</span>
+                    : state === 'running'
+                    ? <span style={{ color: 'var(--fg3)' }}>...</span>
+                    : snapshot}
+                </pre>
+                {state === 'done' && snapshot && <CopyBtn text={snapshot}/>}
+              </div>
+            </div>
+          </div>
+          <div style={{
+            fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--fg3)',
+            marginTop: 10, textWrap: 'pretty', maxWidth: 760,
+          }}>
+            {empty
+              ? `Your frontend passes the user_ids currently on screen. beava returns every metric for every id, atomically. This is what powers the dashboard above.`
+              : state === 'done'
+              ? `Snapshot taken at ${latency}ms — these are the exact values from the live state at the moment you ran the query. Push more events, click Re-run, and the snapshot updates. Production beava holds P99 <5ms at 1000 user_ids per request on a single core.`
+              : `You run the query — one POST, one JSON blob back. No streaming, no pub/sub, no SSE. Pass the user_ids in view, render the cards, done.`}
+          </div>
         </div>
       );
     };
@@ -798,6 +932,13 @@
                   ))}
                 </div>
               </div>
+
+              <QueryPanel
+                table="UserStats"
+                userIds={rowsList.map(([uid]) => uid)}
+                rowsList={rowsList}
+                metricKeys={['views_total']}
+                empty={rowsList.length === 0}/>
             </div>
           </section>
 
@@ -898,6 +1039,15 @@
                   ))}
                 </div>
               </div>
+
+              {stage === 'dashboard' && (
+                <QueryPanel
+                  table="Dashboard"
+                  userIds={rowsList.map(([uid]) => uid)}
+                  rowsList={rowsList}
+                  metricKeys={['views_total', 'views_24h', 'distinct_cats_7d', 'last_seen']}
+                  empty={rowsList.length === 0}/>
+              )}
 
               {stage === 'dashboard' && rowsList.length >= 3 && (
                 <Callout eyebrow="YOU BUILT THIS" mascot="pose-2" tint="warm" style={{ marginTop: 32 }}>

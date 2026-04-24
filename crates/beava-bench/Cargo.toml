@@ -31,3 +31,7 @@ tempfile = { workspace = true }
 [[bin]]
 name = "beava-bench"
 path = "src/main.rs"
+
+[[bin]]
+name = "temporal_throughput"
+path = "src/bin/temporal_throughput.rs"

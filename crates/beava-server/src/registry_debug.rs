@@ -45,11 +45,31 @@ use beava_core::agg_apply::apply_event_to_aggregations;
 use beava_core::agg_state_table::AggStateTable;
 use beava_core::registry::{DerivationDescriptor, EventDescriptor, Registry, TableDescriptor};
 use beava_core::row::{Row, Value};
+use beava_core::temporal::TemporalStore;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+/// Phase 11.5 D-10/D-12 — runtime side-table that maps an event_id (LSN) to
+/// the kind of WAL record at that LSN. The retract handler uses this to
+/// route stream events to 501, table writes to MVCC retraction, and unknown
+/// IDs to 404 — without re-walking the WAL on the hot path.
+#[derive(Debug, Clone)]
+pub enum EventIdEntry {
+    /// A pushed stream event. Retraction is unimplemented in v0; the
+    /// handler returns 501 with `stream_retraction_unimplemented`.
+    Stream { event_name: String },
+    /// A table write — temporal or non-temporal. The retract handler
+    /// inspects the descriptor at retract-time to decide between 400
+    /// (table_not_temporal) and the actual MVCC retraction path.
+    TableWrite {
+        table_name: String,
+        entity_key: Vec<u8>,
+        retracted: bool,
+    },
+}
 
 /// Axum state for the debug router.
 #[derive(Clone)]
@@ -235,6 +255,15 @@ pub struct DevAggState {
     /// the first event is applied. Stored as u64 (cast from i64) so it fits in
     /// an AtomicU64; negative event times are treated as 0 for query purposes.
     pub max_event_time_ms: Arc<AtomicU64>,
+
+    /// Phase 11.5 D-01 — per-table MVCC stores. Key = table name. Created
+    /// lazily on first push-table for a temporal table.
+    pub temporal_stores: Arc<Mutex<HashMap<String, TemporalStore>>>,
+
+    /// Phase 11.5 D-10 — event_id → entry index (see EventIdEntry).
+    /// Populated at apply-time by /push/{event_name} and
+    /// /push-table/{table_name}; consumed at retract-time.
+    pub event_id_index: Arc<Mutex<HashMap<u64, EventIdEntry>>>,
 }
 
 impl DevAggState {
@@ -244,6 +273,8 @@ impl DevAggState {
             registry,
             next_event_id: Arc::new(AtomicU64::new(0)),
             max_event_time_ms: Arc::new(AtomicU64::new(0)),
+            temporal_stores: Arc::new(Mutex::new(HashMap::new())),
+            event_id_index: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

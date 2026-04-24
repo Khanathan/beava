@@ -24,6 +24,19 @@ pub enum RecordType {
     Event = 0x01,
     /// Reserved for Phase 7 — registry version bump records.
     RegistryBump = 0x02,
+    /// Phase 11.5 — a table upsert (MVCC chain append for temporal tables,
+    /// plain upsert otherwise). Payload shape documented in
+    /// `beava_server::push_table`.
+    TableUpsert = 0x03,
+    /// Phase 11.5 — a table delete (tombstone insertion on MVCC; otherwise
+    /// key removal). Symmetric with TableUpsert.
+    TableDelete = 0x04,
+    /// Phase 11.5 — an `app.retract(event_id)` directive targeting a prior
+    /// TableUpsert/TableDelete record. Stream retraction is NOT valid in v0
+    /// (the retract handler returns 501) but the record type is reserved now
+    /// so stream retraction can land additively in v1 without a WAL format
+    /// break.
+    Retract = 0x05,
 }
 
 /// A single WAL record as stored on disk.

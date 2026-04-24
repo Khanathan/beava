@@ -32,6 +32,7 @@ pub mod row;
 pub mod schema;
 pub mod schema_propagate;
 pub mod snapshot_body;
+pub mod temporal;
 pub mod wire;
 
 /// Compile-time crate version exposed for banner / diagnostics.

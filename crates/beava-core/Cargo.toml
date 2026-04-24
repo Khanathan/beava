@@ -37,3 +37,7 @@ harness = false
 [[bench]]
 name = "phase8_agg"
 harness = false
+
+[[bench]]
+name = "temporal_mvcc"
+harness = false

@@ -72,6 +72,21 @@ pub struct TableDescriptor {
     /// Assigned server-side; ignored (defaulted to 0) when deserializing from client JSON.
     #[serde(default)]
     pub registered_at_version: u64,
+    /// Phase 11.5 (D-01): when `true`, the table is stored as an MVCC chain so
+    /// `as_of=<lsn>` queries and `POST /retract` work. Defaults to `false` so
+    /// pre-Phase-11.5 client payloads continue to deserialize as non-temporal.
+    #[serde(default)]
+    pub temporal: bool,
+    /// Phase 11.5 (D-16): MVCC history-window in wall-clock milliseconds.
+    /// Distinct from `ttl_ms` (per-row TTL): `retention_ms` bounds how far
+    /// back `as_of` queries and retractions can reach. `None` means
+    /// "unbounded retention" (use with care; memory grows with history).
+    ///
+    /// Note: `skip_serializing_if` is intentionally NOT used here — bincode's
+    /// positional layout would then become asymmetric with decode. JSON clients
+    /// can still omit the field (serde `default` handles the missing case).
+    #[serde(default)]
+    pub retention_ms: Option<u64>,
 }
 
 impl TableDescriptor {
@@ -82,6 +97,8 @@ impl TableDescriptor {
             && self.schema == other.schema
             && self.ttl_ms == other.ttl_ms
             && self.mode == other.mode
+            && self.temporal == other.temporal
+            && self.retention_ms == other.retention_ms
     }
 }
 
@@ -461,6 +478,57 @@ mod tests {
         let re_json = serde_json::to_string(&desc).unwrap();
         let desc2: TableDescriptor = serde_json::from_str(&re_json).unwrap();
         assert_eq!(desc, desc2);
+    }
+
+    // Phase 11.5: temporal table flag + retention_ms round-trip.
+    // Verifies D-01 + D-16: TableDescriptor carries `temporal: bool` and
+    // optional `retention_ms: u64` (MVCC history-window). Defaults to
+    // (false, None) when absent so legacy tables continue to deserialize.
+    #[test]
+    fn temporal_table_descriptor_round_trips() {
+        // Sub-assertion 1: explicit construction round-trips.
+        let desc = TableDescriptor {
+            name: "merch".to_string(),
+            primary_key: vec!["mid".to_string()],
+            schema: TableSchema {
+                fields: [("mid".to_string(), FieldType::Str)].into_iter().collect(),
+                optional_fields: vec![],
+            },
+            ttl_ms: None,
+            mode: TableMode::Upsert,
+            registered_at_version: 0,
+            temporal: true,
+            retention_ms: Some(7 * 86_400_000),
+        };
+        let s = serde_json::to_string(&desc).unwrap();
+        let back: TableDescriptor = serde_json::from_str(&s).unwrap();
+        assert!(back.temporal);
+        assert_eq!(back.retention_ms, Some(604_800_000));
+
+        // Sub-assertion 2: client-shape JSON parses with both new fields set.
+        let json = r#"{
+            "name": "merch",
+            "primary_key": ["mid"],
+            "schema": {"fields": {"mid": "str"}, "optional_fields": []},
+            "mode": "upsert",
+            "temporal": true,
+            "retention_ms": 3600000
+        }"#;
+        let desc2: TableDescriptor = serde_json::from_str(json).unwrap();
+        assert!(desc2.temporal);
+        assert_eq!(desc2.retention_ms, Some(3_600_000));
+
+        // Sub-assertion 3: backwards-compat — JSON without the new fields
+        // defaults `temporal` to false and `retention_ms` to None.
+        let legacy_json = r#"{
+            "name": "u",
+            "primary_key": ["k"],
+            "schema": {"fields": {"k": "str"}, "optional_fields": []},
+            "mode": "upsert"
+        }"#;
+        let desc3: TableDescriptor = serde_json::from_str(legacy_json).unwrap();
+        assert!(!desc3.temporal);
+        assert_eq!(desc3.retention_ms, None);
     }
 
     // Test 3: TableMode strict — unknown variant returns Err

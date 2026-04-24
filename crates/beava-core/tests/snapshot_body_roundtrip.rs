@@ -316,6 +316,8 @@ fn snapshot_body_registry_descriptors_preserved() {
             ttl_ms: None,
             mode: TableMode::Upsert,
             registered_at_version: 3,
+            temporal: false,
+            retention_ms: None,
         },
     );
     inner.derivations.insert(

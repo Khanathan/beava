@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Feed the beaver — Beava</title>
+<meta name="description" content="This page is a live Beava client. Every click pushes a real event. Every number updates in real time.">
+<link rel="icon" type="image/png" href="assets/branding.png">
+<style>
+  :root {
+    --bg: #fdfaf4;
+    --bg-soft: #f5efe2;
+    --bg-card: #ffffff;
+    --ink: #1a1714;
+    --ink-soft: #4a423a;
+    --ink-muted: #756c62;
+    --accent: #b85c20;
+    --accent-soft: #d97a3e;
+    --rule: #e6dccb;
+    --code-bg: #1c1a17;
+    --code-ink: #f5efe2;
+    --code-comment: #8a8275;
+    --code-op: #d97a3e;
+    --jaw: #5a2a0c;
+    --jaw-deep: #2a1106;
+    --tooth: #f9f1e0;
+    --warn: #c6442f;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    min-height: 100vh;
+    padding: 2rem 1rem 4rem;
+    overflow-x: hidden;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    transition: background 0.6s ease;
+  }
+
+  .container {
+    max-width: 720px;
+    margin: 0 auto;
+    text-align: center;
+    transition: opacity 0.8s ease-out;
+  }
+
+  h1 {
+    font-size: clamp(2rem, 5vw, 2.75rem);
+    margin-bottom: 0.5rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+
+  .subtitle {
+    color: var(--ink-soft);
+    margin-bottom: 2rem;
+    font-size: 1.05rem;
+    max-width: 520px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .sim-banner {
+    display: none;
+    max-width: 520px;
+    margin: 0 auto 1rem;
+    padding: 0.5rem 1rem;
+    background: var(--bg-soft);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    font-size: 0.85rem;
+    color: var(--ink-muted);
+  }
+  .sim-banner.active { display: block; }
+
+  .stage {
+    margin: 2rem auto;
+    position: relative;
+    width: 100%;
+    max-width: 600px;
+    height: 320px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: visible;
+    transition: height 0.8s ease;
+  }
+
+  .beaver-scale {
+    transition: transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+    transform-origin: center center;
+    display: inline-block;
+    position: relative;
+    z-index: 5;
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .beaver-scale:focus-visible {
+    outline: 3px solid var(--accent-soft);
+    outline-offset: 6px;
+    border-radius: 12px;
+  }
+
+  .beaver {
+    width: 180px;
+    height: auto;
+    user-select: none;
+    pointer-events: none;
+    filter: drop-shadow(0 6px 14px rgba(0,0,0,0.10));
+    display: block;
+  }
+
+  .beaver.chomp { animation: chomp 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94); }
+  @keyframes chomp {
+    0%   { transform: scale(1, 1) translateY(0); }
+    40%  { transform: scale(0.90, 1.10) translateY(-3px); }
+    70%  { transform: scale(1.07, 0.93) translateY(2px); }
+    100% { transform: scale(1, 1) translateY(0); }
+  }
+
+  .beaver.slap { animation: slap 0.55s cubic-bezier(0.25, 0.46, 0.45, 0.94); }
+  @keyframes slap {
+    0%   { transform: rotate(0deg) translateY(0); }
+    20%  { transform: rotate(-6deg) translateY(-12px); }
+    45%  { transform: rotate(4deg) translateY(5px); }
+    70%  { transform: rotate(-2deg) translateY(0); }
+    100% { transform: rotate(0deg) translateY(0); }
+  }
+
+  /* Beaver shakes with anticipation at stage 7 (pre-overflow warning) */
+  .beaver.anticipate { animation: anticipate 0.35s ease-in-out infinite; }
+  @keyframes anticipate {
+    0%, 100% { transform: translate(0, 0) rotate(0); }
+    20%      { transform: translate(-1px, 0) rotate(-0.6deg); }
+    60%      { transform: translate(1px, -1px) rotate(0.6deg); }
+  }
+
+  .chip {
+    position: fixed;
+    pointer-events: none;
+    z-index: 60;
+    font-size: 0.85rem;
+    animation: chip-fly 0.8s ease-out forwards;
+  }
+  @keyframes chip-fly {
+    0%   { opacity: 1; transform: translate(0, 0) rotate(0); }
+    100% { opacity: 0; transform: translate(var(--dx, 30px), var(--dy, -50px)) rotate(var(--rot, 360deg)); }
+  }
+
+  .decor {
+    position: absolute;
+    font-size: 1.6rem;
+    opacity: 0;
+    transform: scale(0.5);
+    transition: opacity 0.7s ease-out, transform 0.7s cubic-bezier(0.34, 1.56, 0.64, 1);
+    pointer-events: none;
+    user-select: none;
+    z-index: 1;
+    filter: drop-shadow(0 2px 3px rgba(0,0,0,0.1));
+  }
+  .decor.visible { opacity: 1; transform: scale(1); }
+  .decor-tree     { bottom: 8%;  right: 8%;  font-size: 2.4rem; }
+  .decor-acorn    { bottom: 15%; left: 12%;  font-size: 1.4rem; }
+  .decor-leaf     { top: 18%;    left: 10%;  font-size: 1.5rem; animation: float 4s ease-in-out infinite; animation-delay: 0.5s; }
+  .decor-flower   { bottom: 8%;  left: 32%;  font-size: 1.4rem; }
+  .decor-squirrel { top: 32%;    right: 3%;  font-size: 1.6rem; }
+  .decor-bird     { top: 8%;     left: 55%;  font-size: 1.4rem; animation: hover 3s ease-in-out infinite; }
+  .decor-mushroom { bottom: 12%; left: 58%;  font-size: 1.4rem; }
+  @keyframes float {
+    0%, 100% { transform: translateY(0) rotate(-5deg); }
+    50%      { transform: translateY(-6px) rotate(5deg); }
+  }
+  @keyframes hover {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-4px); }
+  }
+
+  .hint {
+    position: fixed;
+    right: 1.25rem;
+    bottom: 1.25rem;
+    font-size: 0.95rem;
+    color: var(--ink);
+    font-weight: 600;
+    font-style: italic;
+    background: var(--bg-card);
+    padding: 0.55rem 1.1rem;
+    border-radius: 999px;
+    border: 1px solid var(--rule);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+    animation: hint-pulse 2.4s ease-in-out infinite;
+    transition: opacity 0.6s ease, transform 0.4s ease;
+    z-index: 100;
+    white-space: nowrap;
+    max-width: calc(100vw - 2.5rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .hint.hidden { opacity: 0; pointer-events: none; animation: none; }
+  .hint .arrow {
+    display: inline-block;
+    animation: arrow-wiggle 1.2s ease-in-out infinite;
+    margin-right: 0.35rem;
+    font-size: 1.1rem;
+    transform-origin: center;
+  }
+  @keyframes hint-pulse {
+    0%, 100% { opacity: 0.92; }
+    50%      { opacity: 1; }
+  }
+  /* Diagonal wiggle — the arrow points up-left toward the beaver in the center */
+  @keyframes arrow-wiggle {
+    0%, 100% { transform: translate(0, 0); }
+    50%      { transform: translate(-3px, -3px); }
+  }
+
+  /* ============ WARNING BANNER ============ */
+  /* Appears at stage 7 (clicks 13–14) — the "brace yourself" moment */
+  .warning-banner {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--warn);
+    color: white;
+    padding: 0.55rem 1.5rem;
+    border-radius: 999px;
+    font-weight: 800;
+    font-size: 0.95rem;
+    box-shadow: 0 6px 22px rgba(198, 68, 47, 0.5);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 200;
+    transition: opacity 0.3s ease-out;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+  }
+  .warning-banner.active {
+    opacity: 1;
+    animation: warn-pulse 0.55s ease-in-out infinite alternate;
+  }
+  @keyframes warn-pulse {
+    from { transform: translateX(-50%) scale(1);    box-shadow: 0 6px 22px rgba(198, 68, 47, 0.5); }
+    to   { transform: translateX(-50%) scale(1.08); box-shadow: 0 8px 28px rgba(198, 68, 47, 0.7); }
+  }
+  body.overflowing .warning-banner { opacity: 0; animation: none; }
+
+  .status-line {
+    margin: 1rem 0 1.5rem;
+    font-size: 1.1rem;
+    color: var(--ink-soft);
+    min-height: 1.6em;
+    font-weight: 500;
+  }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 0.75rem;
+    margin: 2rem 0;
+  }
+  .stat {
+    background: var(--bg-card);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    padding: 0.9rem 1rem;
+    text-align: left;
+  }
+  .stat-label {
+    font-size: 0.7rem;
+    color: var(--ink-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+  }
+  .stat-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--ink);
+    margin-top: 0.2rem;
+    font-variant-numeric: tabular-nums;
+    font-family: "SF Mono", "JetBrains Mono", Menlo, monospace;
+    transition: color 0.35s;
+    word-break: break-word;
+  }
+  .stat-value.bump { color: var(--accent); }
+  .stat-value.small { font-size: 1.1rem; line-height: 1.3; }
+  .stat-sub {
+    font-size: 0.72rem;
+    color: var(--ink-muted);
+    margin-top: 0.2rem;
+    font-style: italic;
+  }
+
+  .code-snippet {
+    background: var(--code-bg);
+    color: var(--code-ink);
+    padding: 1.25rem 1.5rem;
+    border-radius: 12px;
+    text-align: left;
+    margin-top: 2.5rem;
+    font-family: "SF Mono", "JetBrains Mono", Menlo, monospace;
+    font-size: 0.82rem;
+    line-height: 1.6;
+    overflow-x: auto;
+    border: 1px solid #2a2722;
+    white-space: pre;
+  }
+  .code-snippet .cmt { color: var(--code-comment); font-style: italic; }
+  .code-snippet .op  { color: var(--code-op); }
+  .code-snippet .str { color: #d4a373; }
+
+  .footer-note {
+    margin-top: 2.5rem;
+    color: var(--ink-muted);
+    font-size: 0.88rem;
+    line-height: 1.7;
+  }
+  .footer-note a { color: var(--accent); text-decoration: none; }
+  .footer-note a:hover { border-bottom: 1px solid var(--accent); }
+
+  /* ============ OVERFLOW ============ */
+  body.overflowing .hint { opacity: 0; animation: none; pointer-events: none; }
+  body.overflowing .stage {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    max-width: none;
+    margin: 0;
+    z-index: 500;
+  }
+  body.overflowing .beaver-scale {
+    transform: scale(5) !important;
+    transition: transform 1.4s cubic-bezier(0.22, 1, 0.36, 1);
+    cursor: pointer;
+  }
+  body.overflowing .decor {
+    opacity: 0;
+    transition: opacity 0.6s ease-out;
+  }
+  body.overflowing { overflow: hidden; }
+
+  /* ============ BITE-MARKS — jagged black chunks. No animation, instant torn-paper look. ============ */
+  .bite-mark {
+    position: fixed;
+    background: radial-gradient(circle at 40% 35%, #0b0604 0%, #000 65%);
+    pointer-events: none;
+    z-index: 560;
+    filter: drop-shadow(0 0 8px rgba(0,0,0,0.55));
+    /* clip-path is set per-instance via JS (random jagged polygon) */
+  }
+
+  /* ============ JAWS — the actual screen chomp effect ============ */
+  .jaws {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 650;
+    overflow: hidden;
+    display: none;
+  }
+  body.overflowing .jaws { display: block; }
+
+  .jaw {
+    position: absolute;
+    left: -15%;
+    right: -15%;
+    height: 55vh;
+    background: linear-gradient(to bottom, var(--jaw) 0%, var(--jaw-deep) 100%);
+    box-shadow: 0 0 40px rgba(0,0,0,0.5);
+    transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .jaw-top {
+    top: 0;
+    transform: translateY(-110%);
+    border-radius: 0 0 55% 55% / 0 0 40% 40%;
+  }
+  .jaw-bottom {
+    bottom: 0;
+    transform: translateY(110%);
+    background: linear-gradient(to top, var(--jaw) 0%, var(--jaw-deep) 100%);
+    border-radius: 55% 55% 0 0 / 40% 40% 0 0;
+  }
+  .jaw-top::after,
+  .jaw-bottom::after {
+    content: '';
+    position: absolute;
+    left: 0; right: 0;
+    height: 22px;
+    background: var(--tooth);
+    clip-path: polygon(
+      0% 100%, 2% 0%, 4% 100%, 6% 0%, 8% 100%, 10% 0%, 12% 100%,
+      14% 0%, 16% 100%, 18% 0%, 20% 100%, 22% 0%, 24% 100%,
+      26% 0%, 28% 100%, 30% 0%, 32% 100%, 34% 0%, 36% 100%,
+      38% 0%, 40% 100%, 42% 0%, 44% 100%, 46% 0%, 48% 100%,
+      50% 0%, 52% 100%, 54% 0%, 56% 100%, 58% 0%, 60% 100%,
+      62% 0%, 64% 100%, 66% 0%, 68% 100%, 70% 0%, 72% 100%,
+      74% 0%, 76% 100%, 78% 0%, 80% 100%, 82% 0%, 84% 100%,
+      86% 0%, 88% 100%, 90% 0%, 92% 100%, 94% 0%, 96% 100%,
+      98% 0%, 100% 100%
+    );
+  }
+  .jaw-top::after    { bottom: -20px; }
+  .jaw-bottom::after { top: -20px; transform: scaleY(-1); }
+
+  .jaw-top.biting    { animation: bite-top 0.45s cubic-bezier(0.22, 1, 0.36, 1); }
+  .jaw-bottom.biting { animation: bite-bottom 0.45s cubic-bezier(0.22, 1, 0.36, 1); }
+  @keyframes bite-top {
+    0%   { transform: translateY(-110%); }
+    45%  { transform: translateY(-25%); }
+    100% { transform: translateY(-110%); }
+  }
+  @keyframes bite-bottom {
+    0%   { transform: translateY(110%); }
+    45%  { transform: translateY(25%); }
+    100% { transform: translateY(110%); }
+  }
+
+  /* ============ EAT MESSAGES — fast reveal + flash on each update ============ */
+  .eat-msg {
+    position: fixed;
+    left: 0; right: 0;
+    bottom: 2.5rem;
+    text-align: center;
+    z-index: 700;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease-out 0.3s;
+    padding: 0 1rem;
+  }
+  body.overflowing .eat-msg {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .eat-msg .line {
+    font-size: clamp(1.1rem, 3vw, 1.5rem);
+    font-weight: 800;
+    color: var(--ink);
+    margin-bottom: 0.3rem;
+    text-shadow:
+      0 2px 8px var(--bg),
+      0 0 20px var(--bg),
+      0 0 40px var(--bg);
+    transition: color 0.4s ease, text-shadow 0.4s ease;
+    display: inline-block;
+  }
+  .eat-msg .sub {
+    font-size: 0.95rem;
+    color: var(--ink-soft);
+    text-shadow: 0 2px 8px var(--bg), 0 0 20px var(--bg);
+    font-weight: 500;
+  }
+  body.eating .eat-msg .line {
+    color: #fff;
+    text-shadow: 0 2px 10px #000, 0 0 30px rgba(0,0,0,0.9), 0 0 60px rgba(0,0,0,0.6);
+  }
+  body.eating .eat-msg .sub {
+    color: #e8dfce;
+    text-shadow: 0 2px 10px #000, 0 0 30px rgba(0,0,0,0.9);
+  }
+  .eat-msg .line.flash {
+    animation: line-flash 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  }
+  @keyframes line-flash {
+    0%   { transform: scale(1); }
+    35%  { transform: scale(1.14); }
+    100% { transform: scale(1); }
+  }
+
+  /* ============ FULLY-EATEN FINAL STATE ============ */
+  body.fully-eaten .container > *:not(.stage) {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 1.2s ease-out;
+  }
+  body.fully-eaten .full-black {
+    opacity: 1;
+  }
+  body.fully-eaten .eat-msg { opacity: 0; pointer-events: none; }
+  body.fully-eaten .beaver-scale {
+    opacity: 0.12;
+    transition: opacity 1.2s ease-out;
+  }
+
+  /* Solid black layer that covers any remaining gaps at fully-eaten */
+  .full-black {
+    position: fixed;
+    inset: 0;
+    background: #000;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 1s ease-out;
+    z-index: 680;
+  }
+
+  .reload-prompt {
+    position: fixed;
+    inset: 0;
+    z-index: 800;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    opacity: 0;
+    transition: opacity 1s ease-in;
+    color: #f5efe2;
+    text-align: center;
+  }
+  body.fully-eaten .reload-prompt {
+    display: flex;
+    opacity: 1;
+  }
+  .reload-prompt h2 {
+    font-size: clamp(1.5rem, 4vw, 2.2rem);
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+  }
+  .reload-prompt p {
+    font-size: 1rem;
+    color: #bfb5a8;
+    margin-bottom: 1.5rem;
+    max-width: 480px;
+  }
+  .reload-btn {
+    padding: 0.85rem 1.8rem;
+    font-size: 1.05rem;
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    border-radius: 999px;
+    cursor: pointer;
+    font-weight: 600;
+    font-family: inherit;
+    box-shadow: 0 4px 14px rgba(184, 92, 32, 0.4);
+  }
+  .reload-btn:hover { background: var(--accent-soft); }
+
+  .particle {
+    position: fixed;
+    width: 8px;
+    height: 8px;
+    background: var(--accent);
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 999;
+    animation: fall 1.6s linear forwards;
+  }
+  .particle.log {
+    width: auto;
+    height: auto;
+    background: transparent;
+    border-radius: 0;
+    font-size: 1.3rem;
+  }
+  @keyframes fall {
+    0%   { transform: translateY(0) rotate(0deg); opacity: 1; }
+    100% { transform: translateY(110vh) rotate(720deg); opacity: 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .beaver-scale { transition: none; }
+    .beaver.chomp, .beaver.slap, .beaver.anticipate { animation: none; }
+    .decor { transition: opacity 0.3s; }
+    .decor-leaf, .decor-bird { animation: none; }
+    .hint { animation: none; opacity: 0.85; }
+    .hint .arrow { animation: none; }
+    .particle, .chip { display: none; }
+    body.overflowing .beaver-scale { transition: transform 0.3s ease; }
+    .jaw-top.biting, .jaw-bottom.biting { animation: none; }
+    .warning-banner.active { animation: none; }
+    .eat-msg .line.flash { animation: none; }
+  }
+
+  @media (max-width: 520px) {
+    .stage { height: 260px; }
+    .beaver { width: 140px; }
+    .decor-tree { font-size: 2rem; }
+    .hint { font-size: 0.95rem; padding: 0.5rem 1rem; }
+    body.overflowing .beaver-scale { transform: scale(4) !important; }
+    .warning-banner { font-size: 0.85rem; padding: 0.5rem 1rem; }
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <h1>🥕 Feed the beaver</h1>
+    <p class="subtitle">
+      This page is a live Beava client. Every click pushes a real event. Every number updates in real time from the Beava HTTP API.
+    </p>
+
+    <div class="sim-banner" id="sim-banner">
+      ⚠️ Demo mode: beava.dev unreachable. Stats are simulated locally for preview.
+    </div>
+
+    <div class="stage" id="stage">
+      <div class="beaver-scale" id="beaver-scale" tabindex="0" role="button" aria-label="Feed the beaver" style="transform: scale(1);">
+        <img class="beaver" id="beaver" src="assets/branding.png" alt="A cozy beaver">
+      </div>
+      <span class="decor decor-tree visible"     aria-hidden="true">🌳</span>
+      <span class="decor decor-acorn"    data-unlock="1" aria-hidden="true">🌰</span>
+      <span class="decor decor-leaf"     data-unlock="2" aria-hidden="true">🍃</span>
+      <span class="decor decor-flower"   data-unlock="3" aria-hidden="true">🌸</span>
+      <span class="decor decor-squirrel" data-unlock="4" aria-hidden="true">🐿️</span>
+      <span class="decor decor-bird"     data-unlock="5" aria-hidden="true">🐦</span>
+      <span class="decor decor-mushroom" data-unlock="6" aria-hidden="true">🍄</span>
+    </div>
+
+    <div class="status-line" id="status">😴 The beaver is sleeping.</div>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-label">You've fed</div>
+        <div class="stat-value" id="my-feeds">0</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Weight</div>
+        <div class="stat-value small" id="my-weight">5 kg</div>
+        <div class="stat-sub" id="my-weight-unit">(baby beaver)</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Your streak</div>
+        <div class="stat-value" id="my-streak">0</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">🪵 Logs chewed</div>
+        <div class="stat-value" id="my-logs">0</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Global (1m)</div>
+        <div class="stat-value" id="global-1m">0</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Rate / sec</div>
+        <div class="stat-value" id="global-rate">0</div>
+      </div>
+    </div>
+
+    <pre class="code-snippet"><span class="cmt"># What your click does. session_id is a random string generated fresh on</span>
+<span class="cmt"># every page refresh. No cookies. No localStorage. No user-agent sent.</span>
+<span class="cmt"># Refresh = brand-new identity, nothing persisted, nothing tracked.</span>
+curl -X POST beava.dev/events/FeedClick <span class="op">\</span>
+  -H <span class="str">'Content-Type: application/json'</span> <span class="op">\</span>
+  -d <span class="str">'{"session_id":"sess-a8f3k2"}'</span>
+
+<span class="cmt"># What the counters read (polled every 500ms):</span>
+curl beava.dev/features/Global/__global__
+curl beava.dev/features/Session/sess-a8f3k2</pre>
+
+    <p class="footer-note">
+      Source: <a href="https://github.com/beava-dev/beava/tree/main/demo/feed-the-beaver">github.com/beava-dev/beava/demo/feed-the-beaver</a><br>
+      Apache 2.0. Single binary. In-memory state. Dam good at streams.<br>
+      (Refresh the page for a fresh beaver and a new session id.)
+    </p>
+  </div>
+
+  <div class="hint" id="hint">
+    <span class="arrow">↖</span><span id="hint-text">feed me (click the beaver)</span>
+  </div>
+
+  <!-- Warning at stage 7, right before overflow -->
+  <div class="warning-banner" id="warning-banner">⚠️ BRACE YOURSELF ⚠️</div>
+
+  <!-- Container where bite-marks (black chunks) accumulate -->
+  <div class="bite-layer" id="bite-layer" aria-hidden="true"></div>
+
+  <!-- Jaws that bite from top and bottom on every eat click -->
+  <div class="jaws" aria-hidden="true">
+    <div class="jaw jaw-top" id="jaw-top"></div>
+    <div class="jaw jaw-bottom" id="jaw-bottom"></div>
+  </div>
+
+  <!-- Final solid black at fully-eaten -->
+  <div class="full-black" id="full-black" aria-hidden="true"></div>
+
+  <div class="eat-msg" id="eat-msg" role="status" aria-live="polite">
+    <div class="line" id="eat-line">You've overfed the beaver.</div>
+    <div class="sub" id="eat-sub">Keep clicking. Watch him chomp.</div>
+  </div>
+
+  <div class="reload-prompt" id="reload-prompt" role="dialog" aria-live="assertive">
+    <h2>🪵 That's the whole page.</h2>
+    <p>The beaver ate the DOM, the CSS, and most of the JavaScript. Refresh to start over with a fresh beaver.</p>
+    <button class="reload-btn" id="reload-btn">Refresh the page</button>
+  </div>
+
+<script>
+(() => {
+  'use strict';
+
+  const BEAVA_HOST = 'https://beava.dev';
+  const POLL_MS = 500;
+  const MAX_CLICKS_PER_SEC = 20;
+  const OVERFLOW_THRESHOLD = 15;
+  const EAT_CLICKS = 9;
+  const WARNING_STAGE_IDX = 7;
+
+  // Session id: random, fresh every refresh. Never stored.
+  const sessionId = 'sess-' + Math.random().toString(36).slice(2, 10);
+
+  let myFeeds     = 0;
+  let myStreak    = 0;
+  let eatenLevel  = 0;
+  let simGlobal1m = 142 + Math.floor(Math.random() * 60);
+  let simRate     = 2 + Math.random() * 3;
+  let useSim      = false;
+  let lastClickAt = Date.now();
+  let clickBucket = 0;
+  let bucketStart = Date.now();
+
+  const el = id => document.getElementById(id);
+  const elBeaverScale = el('beaver-scale');
+  const elBeaver      = el('beaver');
+  const elStatus      = el('status');
+  const elHint        = el('hint');
+  const elHintText    = el('hint-text');
+  const elMyFeeds     = el('my-feeds');
+  const elMyWeight    = el('my-weight');
+  const elMyWeightSub = el('my-weight-unit');
+  const elMyStreak    = el('my-streak');
+  const elMyLogs      = el('my-logs');
+  const elGlobal1m    = el('global-1m');
+  const elGlobalRate  = el('global-rate');
+  const elSimBanner   = el('sim-banner');
+  const elEatLine     = el('eat-line');
+  const elEatSub      = el('eat-sub');
+  const elReloadBtn   = el('reload-btn');
+  const elJawTop      = el('jaw-top');
+  const elJawBottom   = el('jaw-bottom');
+  const elWarning     = el('warning-banner');
+  const elBiteLayer   = el('bite-layer');
+  const decorEls      = document.querySelectorAll('.decor[data-unlock]');
+
+  const STAGES = [
+    { min: 0,  max: 0,  scale: 1.0,  mood: '😴 The beaver is sleeping.',    unit: '(baby beaver)',        hint: 'feed me (click the beaver)' },
+    { min: 1,  max: 1,  scale: 1.3,  mood: '👀 The beaver is curious.',     unit: '(a yearling)',         hint: 'more please!' },
+    { min: 2,  max: 2,  scale: 1.55, mood: '🙂 The beaver is hungry.',      unit: '(normal adult)',       hint: 'oh, yes' },
+    { min: 3,  max: 4,  scale: 1.9,  mood: '🍽️ The beaver is eating.',      unit: '(a corgi)',            hint: "don't stop" },
+    { min: 5,  max: 6,  scale: 2.3,  mood: '💪 The beaver is getting big.', unit: '(a labrador)',         hint: 'feeling POWERFUL' },
+    { min: 7,  max: 9,  scale: 2.7,  mood: '🦾 The beaver is a unit.',      unit: '(a grand piano)',      hint: 'you magnificent bastard' },
+    { min: 10, max: 12, scale: 3.1,  mood: '🏋️ The beaver is a chonker.',   unit: '(a small sedan)',      hint: '👀 is this safe?' },
+    { min: 13, max: 14, scale: 3.6,  mood: '⚠️ OH DEAR.',                   unit: '(a Mini Cooper)',      hint: "don't click again i'm warning you" },
+    { min: 15, max: Infinity, scale: 5.0, mood: '🆘 OVERFLOWING',           unit: '(undefined behavior)', hint: '' },
+  ];
+  const stageFor = n => STAGES.find(s => n >= s.min && n <= s.max) || STAGES[STAGES.length - 1];
+  const stageIndexFor = n => STAGES.findIndex(s => n >= s.min && n <= s.max);
+
+  function weightFor(feeds, stage) {
+    if (feeds >= OVERFLOW_THRESHOLD) return '∞ kg';
+    return Math.round((stage.scale ** 3) * 5) + ' kg';
+  }
+  const logsFor = feeds => Math.floor(feeds / 5);
+
+  // 9 bite-mark positions, in %. Early bites land on corners, later bites fill inward.
+  // The final MEGA bite covers any remaining center gaps.
+  const BITE_POSITIONS = [
+    { x: -10, y: -10, w: 55, h: 48 },   // 1. top-left corner
+    { x: 55,  y: -10, w: 55, h: 48 },   // 2. top-right corner
+    { x: -10, y: 62,  w: 55, h: 55 },   // 3. bottom-left corner
+    { x: 55,  y: 60,  w: 55, h: 55 },   // 4. bottom-right corner
+    { x: 25,  y: -8,  w: 55, h: 42 },   // 5. top-center
+    { x: -8,  y: 30,  w: 48, h: 50 },   // 6. middle-left
+    { x: 62,  y: 30,  w: 48, h: 50 },   // 7. middle-right
+    { x: 20,  y: 58,  w: 60, h: 45 },   // 8. bottom-center
+    { x: 10,  y: 10,  w: 82, h: 82 },   // 9. MEGA final bite
+  ];
+
+  const EAT_MESSAGES = [
+    { line: '*CHOMP* — the page is gone.',        sub: 'Keep clicking. Watch him chew.' },
+    { line: '*CHOMP* — goodbye, footer.',          sub: 'Mmf. *crunch*' },
+    { line: '*CHOMP* — the stats, digested.',      sub: '142 events per minute, now 0.' },
+    { line: '*CHOMP* — load-bearing curls eaten.', sub: 'Those were important.' },
+    { line: '*CHOMP* — eating the DOM now.',       sub: 'Tastes like angle brackets.' },
+    { line: '*CHOMP* — gulping the HTML.',          sub: 'A balanced diet of tags.' },
+    { line: '*CHOMP* — licking up the CSS.',        sub: 'Flavor: calc() and transitions.' },
+    { line: '*CHOMP* — swallowing the JavaScript.', sub: 'Hope nobody needed those closures.' },
+    { line: '*CHOMP* — gnawing the source maps.',   sub: 'No one can debug us now.' },
+    { line: 'Only crumbs remain.',                  sub: '🪵' },
+  ];
+
+  function render() {
+    const s   = stageFor(myFeeds);
+    const idx = stageIndexFor(myFeeds);
+    elBeaverScale.style.transform = `scale(${s.scale})`;
+    elStatus.textContent = s.mood;
+    setNum(elMyFeeds, myFeeds);
+    setNum(elMyStreak, myStreak);
+    setNum(elMyLogs, logsFor(myFeeds));
+    setNum(elGlobal1m, Math.round(simGlobal1m));
+    setNum(elGlobalRate, simRate.toFixed(1));
+    setNum(elMyWeight, weightFor(myFeeds, s));
+    elMyWeightSub.textContent = s.unit;
+    elSimBanner.classList.toggle('active', useSim);
+
+    decorEls.forEach(d => {
+      const unlock = parseInt(d.dataset.unlock, 10);
+      if (idx >= unlock) d.classList.add('visible');
+      else d.classList.remove('visible');
+    });
+
+    if (myFeeds < OVERFLOW_THRESHOLD) {
+      elHintText.textContent = s.hint;
+      elHint.classList.remove('hidden');
+    } else {
+      elHint.classList.add('hidden');
+    }
+
+    // Warning banner + beaver anticipation at stage 7
+    if (idx === WARNING_STAGE_IDX) {
+      elWarning.classList.add('active');
+      elBeaver.classList.add('anticipate');
+    } else {
+      elWarning.classList.remove('active');
+      elBeaver.classList.remove('anticipate');
+    }
+
+    if (myFeeds >= OVERFLOW_THRESHOLD) {
+      document.body.classList.add('overflowing');
+    }
+  }
+
+  function setNum(node, v) {
+    const str = String(v);
+    if (node.textContent !== str) {
+      node.textContent = str;
+      node.classList.add('bump');
+      setTimeout(() => node.classList.remove('bump'), 350);
+    }
+  }
+
+  function playAnim(cls) {
+    elBeaver.classList.remove('chomp', 'slap');
+    void elBeaver.offsetWidth;
+    elBeaver.classList.add(cls);
+  }
+  const chomp = () => playAnim('chomp');
+  const slap  = () => playAnim('slap');
+
+  function jawBite() {
+    elJawTop.classList.remove('biting');
+    elJawBottom.classList.remove('biting');
+    void elJawTop.offsetWidth;
+    elJawTop.classList.add('biting');
+    elJawBottom.classList.add('biting');
+  }
+
+  // Random jagged-polygon clip-path: 14 points per side with irregular
+  // perturbations so each bite has its own torn-paper / teeth-mark outline.
+  function randJaggedClipPath() {
+    const pts = [];
+    const segs = 14;                                // points per side
+    const amp  = 7 + Math.random() * 8;             // 7-15% jaggedness (varies per bite)
+    const jag  = () => Math.random() * amp;         // random inward perturbation 0..amp
+    // Top edge (L→R): y perturbs downward into the shape
+    for (let i = 0; i < segs; i++) {
+      const x = (i / segs) * 100;
+      pts.push(`${x.toFixed(1)}% ${jag().toFixed(1)}%`);
+    }
+    // Right edge (T→B): x perturbs leftward
+    for (let i = 0; i < segs; i++) {
+      const y = (i / segs) * 100;
+      pts.push(`${(100 - jag()).toFixed(1)}% ${y.toFixed(1)}%`);
+    }
+    // Bottom edge (R→L): y perturbs upward
+    for (let i = 0; i < segs; i++) {
+      const x = 100 - (i / segs) * 100;
+      pts.push(`${x.toFixed(1)}% ${(100 - jag()).toFixed(1)}%`);
+    }
+    // Left edge (B→T): x perturbs rightward
+    for (let i = 0; i < segs; i++) {
+      const y = 100 - (i / segs) * 100;
+      pts.push(`${jag().toFixed(1)}% ${y.toFixed(1)}%`);
+    }
+    return `polygon(${pts.join(', ')})`;
+  }
+
+  // Spawn a jagged black chunk at the Nth bite position. No animation — appears instantly.
+  function spawnBiteMark(index) {
+    if (index >= BITE_POSITIONS.length) return;
+    const pos = BITE_POSITIONS[index];
+    const mark = document.createElement('div');
+    mark.className = 'bite-mark';
+    mark.style.left      = pos.x + 'vw';
+    mark.style.top       = pos.y + 'vh';
+    mark.style.width     = pos.w + 'vw';
+    mark.style.height    = pos.h + 'vh';
+    mark.style.clipPath  = randJaggedClipPath();
+    mark.style.webkitClipPath = mark.style.clipPath;  // Safari fallback
+    elBiteLayer.appendChild(mark);
+  }
+
+  function flashLine() {
+    elEatLine.classList.remove('flash');
+    void elEatLine.offsetWidth;
+    elEatLine.classList.add('flash');
+  }
+
+  function spawnChips(n) {
+    const r = elBeaver.getBoundingClientRect();
+    const mouthX = r.left + r.width * 0.72;
+    const mouthY = r.top  + r.height * 0.42;
+    const glyphs = ['🪵', '·', '·', '•', '◦'];
+    for (let i = 0; i < n; i++) {
+      const c = document.createElement('span');
+      c.className = 'chip';
+      c.textContent = glyphs[Math.floor(Math.random() * glyphs.length)];
+      c.style.left = mouthX + 'px';
+      c.style.top  = mouthY + 'px';
+      c.style.color = Math.random() > 0.4 ? 'var(--accent)' : 'var(--accent-soft)';
+      const angle = (Math.random() - 0.5) * 1.4;
+      const dist  = 30 + Math.random() * 40;
+      c.style.setProperty('--dx', (Math.cos(angle) * dist) + 'px');
+      c.style.setProperty('--dy', (-(20 + Math.random() * 40)) + 'px');
+      c.style.setProperty('--rot', (Math.random() * 720 - 360) + 'deg');
+      document.body.appendChild(c);
+      setTimeout(() => c.remove(), 1000);
+    }
+  }
+
+  function celebrate(count) {
+    const n = Math.min(count, 40);
+    for (let i = 0; i < n; i++) {
+      const p = document.createElement('div');
+      if (i % 3 === 0) {
+        p.className = 'particle log';
+        p.textContent = '🪵';
+      } else {
+        p.className = 'particle';
+        p.style.background = Math.random() > 0.5 ? 'var(--accent)' : 'var(--accent-soft)';
+      }
+      p.style.left = Math.random() * 100 + 'vw';
+      p.style.top = '-16px';
+      p.style.animationDelay = (Math.random() * 0.3) + 's';
+      p.style.animationDuration = (1.2 + Math.random() * 0.8) + 's';
+      document.body.appendChild(p);
+      setTimeout(() => p.remove(), 2000);
+    }
+  }
+
+  // Eat phase
+  function advanceEat() {
+    if (eatenLevel >= EAT_CLICKS) return;
+    document.body.classList.add('eating');
+
+    // Each click spawns one jagged black chunk of the screen + the beaver chomps
+    spawnBiteMark(eatenLevel);
+    chomp();
+    spawnChips(5 + Math.floor(Math.random() * 4));
+
+    eatenLevel++;
+
+    const msg = EAT_MESSAGES[Math.min(eatenLevel - 1, EAT_MESSAGES.length - 1)];
+    elEatLine.textContent = msg.line;
+    elEatSub.textContent  = msg.sub;
+    flashLine();
+
+    if (eatenLevel >= EAT_CLICKS) {
+      // Last bite is spawning; fade to fully-eaten after it settles
+      setTimeout(() => {
+        document.body.classList.add('fully-eaten');
+      }, 850);
+    }
+  }
+
+  function feed() {
+    if (document.body.classList.contains('fully-eaten')) return;
+
+    if (document.body.classList.contains('overflowing')) {
+      advanceEat();
+      return;
+    }
+
+    const now = Date.now();
+    if (now - bucketStart > 1000) { clickBucket = 0; bucketStart = now; }
+    clickBucket++;
+    if (clickBucket > MAX_CLICKS_PER_SEC) {
+      elStatus.textContent = '🐿️ Chill. The beaver needs a moment.';
+      return;
+    }
+
+    if (now - lastClickAt < 2000) myStreak++;
+    else myStreak = 1;
+    lastClickAt = now;
+
+    myFeeds++;
+
+    chomp();
+    spawnChips(3 + Math.floor(Math.random() * 3));
+
+    if (myFeeds % 5 === 0) {
+      slap();
+      celebrate(15);
+    }
+
+    render();
+    pushEvent();
+  }
+
+  elBeaverScale.addEventListener('click', feed);
+  elBeaverScale.addEventListener('keydown', e => {
+    if (e.code === 'Space' || e.code === 'Enter') {
+      e.preventDefault();
+      feed();
+    }
+  });
+
+  // Any click during overflow counts (beaver is fullscreen)
+  document.addEventListener('click', e => {
+    if (!document.body.classList.contains('overflowing')) return;
+    if (document.body.classList.contains('fully-eaten')) return;
+    if (e.target.closest('#reload-btn')) return;
+    if (e.target.closest('.eat-msg')) return;
+    if (e.target === elBeaverScale || e.target === elBeaver) return;
+    advanceEat();
+  });
+
+  async function pushEvent() {
+    if (useSim) { simGlobal1m += 1; return; }
+    try {
+      const r = await fetch(BEAVA_HOST + '/events/FeedClick', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId }),
+        mode: 'cors',
+      });
+      if (!r.ok) throw new Error('bad status ' + r.status);
+    } catch (e) {
+      useSim = true;
+      simGlobal1m += 1;
+      elSimBanner.classList.add('active');
+    }
+  }
+
+  async function poll() {
+    if (useSim) {
+      simRate = Math.max(0.5, simRate + (Math.random() - 0.5) * 0.8);
+      simGlobal1m += simRate * (POLL_MS / 1000);
+      render();
+      return;
+    }
+    try {
+      const [g, s] = await Promise.all([
+        fetch(BEAVA_HOST + '/features/Global/__global__').then(r => r.json()),
+        fetch(BEAVA_HOST + '/features/Session/' + sessionId).then(r => r.json()),
+      ]);
+      if (typeof g.rate_1m === 'number') simGlobal1m = g.rate_1m;
+      if (typeof g.rate_1s === 'number') simRate = g.rate_1s;
+      if (typeof s.my_feeds === 'number') myFeeds = s.my_feeds;
+      if (typeof s.my_streak === 'number') myStreak = s.my_streak;
+      render();
+    } catch (e) {
+      useSim = true;
+      render();
+    }
+  }
+
+  elReloadBtn.addEventListener('click', () => location.reload());
+
+  document.addEventListener('keydown', e => {
+    if (document.body.classList.contains('fully-eaten')) return;
+    if (e.code === 'Space' && e.target === document.body) {
+      e.preventDefault();
+      feed();
+    }
+  });
+
+  render();
+  setInterval(poll, POLL_MS);
+  poll();
+})();
+</script>
+</body>
+</html>

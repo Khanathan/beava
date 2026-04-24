@@ -870,6 +870,8 @@ mod tests_structural {
             ttl_ms: None,
             mode: TableMode::Upsert,
             registered_at_version: 0,
+            temporal: false,
+            retention_ms: None,
         })
     }
 
@@ -1180,6 +1182,8 @@ mod tests_structural {
             ttl_ms: None,
             mode: TableMode::Upsert,
             registered_at_version: 0,
+            temporal: false,
+            retention_ms: None,
         });
         assert_err_contains(
             vec![node],
@@ -1202,6 +1206,8 @@ mod tests_structural {
             ttl_ms: None,
             mode: TableMode::Upsert,
             registered_at_version: 0,
+            temporal: false,
+            retention_ms: None,
         });
         assert_err_contains(
             vec![node],
@@ -1227,6 +1233,8 @@ mod tests_structural {
             ttl_ms: None,
             mode: TableMode::Upsert,
             registered_at_version: 0,
+            temporal: false,
+            retention_ms: None,
         });
         assert_err_contains(
             vec![node],

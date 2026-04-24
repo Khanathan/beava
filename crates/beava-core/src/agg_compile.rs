@@ -763,6 +763,8 @@ mod tests {
             ttl_ms: None,
             mode: TableMode::Upsert,
             registered_at_version: 0,
+            temporal: false,
+            retention_ms: None,
         })
     }
 

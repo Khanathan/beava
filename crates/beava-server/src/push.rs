@@ -319,6 +319,19 @@ pub async fn execute_push(
             .fetch_max(event_time_ms as u64, Ordering::Relaxed);
     }
 
+    // Phase 11.5 D-10/D-12 — record this LSN as a stream event so a future
+    // POST /retract can route to 501 (stream retraction is v1).
+    {
+        use crate::registry_debug::EventIdEntry;
+        let mut idx = app.dev_agg.event_id_index.lock();
+        idx.insert(
+            ack_lsn,
+            EventIdEntry::Stream {
+                event_name: event_name.to_string(),
+            },
+        );
+    }
+
     // 10. Build response.
     let ack = PushAck {
         ack_lsn,
