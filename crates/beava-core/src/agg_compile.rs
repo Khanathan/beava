@@ -1074,4 +1074,262 @@ mod tests {
             errors.len()
         );
     }
+
+    // ── Phase 8: point/recency op compile tests ──────────────────────────────
+
+    /// `parse_agg_kind` recognises every Phase 8 op string.
+    #[test]
+    fn parse_agg_kind_recognises_phase8_ops() {
+        for (s, k) in [
+            ("first", AggKind::First),
+            ("last", AggKind::Last),
+            ("first_n", AggKind::FirstN),
+            ("last_n", AggKind::LastN),
+            ("lag", AggKind::Lag),
+            ("first_seen", AggKind::FirstSeen),
+            ("last_seen", AggKind::LastSeen),
+            ("age", AggKind::Age),
+            ("has_seen", AggKind::HasSeen),
+            ("time_since", AggKind::TimeSince),
+            ("time_since_last_n", AggKind::TimeSinceLastN),
+            ("streak", AggKind::Streak),
+            ("max_streak", AggKind::MaxStreak),
+            ("negative_streak", AggKind::NegativeStreak),
+            ("first_seen_in_window", AggKind::FirstSeenInWindow),
+        ] {
+            assert_eq!(parse_agg_kind(s), Some(k), "parse_agg_kind({s}) failed");
+        }
+    }
+
+    fn txn_event_with_amount() -> PayloadNode {
+        event_node_with_fields(
+            "Txn",
+            &[
+                ("user_id", FieldType::Str),
+                ("amount", FieldType::F64),
+                ("status", FieldType::Str),
+            ],
+        )
+    }
+
+    #[test]
+    fn rule11_accepts_first_with_field() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "first_amt": {"op": "first", "params": {"field": "amount"}}
+                }),
+            ),
+        ];
+        let (compiled, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "expected no errors, got: {errors:#?}");
+        assert_eq!(compiled.len(), 1);
+        assert_eq!(compiled[0].1.features[0].descriptor.kind, AggKind::First);
+    }
+
+    #[test]
+    fn rule11_accepts_first_n_with_field_and_n() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "first3": {"op": "first_n", "params": {"field": "amount", "n": 3}}
+                }),
+            ),
+        ];
+        let (compiled, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "expected no errors, got: {errors:#?}");
+        assert_eq!(compiled[0].1.features[0].descriptor.n, Some(3));
+    }
+
+    #[test]
+    fn rule11_rejects_first_n_without_n() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "first3": {"op": "first_n", "params": {"field": "amount"}}
+                }),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors.iter().any(|e| e.path.contains("params.n")),
+            "expected n-missing error, got: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn rule11_rejects_first_n_with_zero_n() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "first0": {"op": "first_n", "params": {"field": "amount", "n": 0}}
+                }),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors.iter().any(|e| e.path.contains("params.n")),
+            "expected n>0 error, got: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn rule11_rejects_first_without_field() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "first_amt": {"op": "first", "params": {}}
+                }),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors.iter().any(|e| e.path.contains("params.field")),
+            "expected field-missing error for first, got: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn rule11_accepts_recency_markers_without_field() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "fs": {"op": "first_seen", "params": {}},
+                    "ls": {"op": "last_seen", "params": {}},
+                    "a":  {"op": "age", "params": {}},
+                    "hs": {"op": "has_seen", "params": {}},
+                    "ts": {"op": "time_since", "params": {}}
+                }),
+            ),
+        ];
+        let (compiled, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "expected no errors, got: {errors:#?}");
+        assert_eq!(compiled[0].1.features.len(), 5);
+    }
+
+    #[test]
+    fn rule11_rejects_recency_marker_with_window() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "ts": {"op": "time_since", "params": {"window": "5m"}}
+                }),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::AggregationInvalidWindow),
+            "expected window-rejected error, got: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn rule11_first_seen_in_window_requires_window() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "fsiw": {"op": "first_seen_in_window", "params": {}}
+                }),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::AggregationInvalidWindow),
+            "expected window-required error, got: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn rule11_first_seen_in_window_accepts_window() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "fsiw": {"op": "first_seen_in_window", "params": {"window": "5m"}}
+                }),
+            ),
+        ];
+        let (compiled, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "expected no errors, got: {errors:#?}");
+        assert_eq!(compiled[0].1.features[0].descriptor.window_ms, Some(300_000));
+    }
+
+    #[test]
+    fn rule11_streak_accepts_with_where_only() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "succ_streak": {"op": "streak", "params": {"where": "(status == 'ok')"}},
+                    "fail_streak": {"op": "negative_streak", "params": {"where": "(status == 'ok')"}},
+                    "max_succ": {"op": "max_streak", "params": {"where": "(status == 'ok')"}}
+                }),
+            ),
+        ];
+        let (compiled, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "expected no errors, got: {errors:#?}");
+        assert_eq!(compiled[0].1.features.len(), 3);
+    }
+
+    #[test]
+    fn rule11_time_since_last_n_requires_n() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "tsn": {"op": "time_since_last_n", "params": {}}
+                }),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors.iter().any(|e| e.path.contains("params.n")),
+            "expected n-required error for time_since_last_n, got: {errors:#?}"
+        );
+    }
 }

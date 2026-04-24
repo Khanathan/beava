@@ -1155,6 +1155,166 @@ mod tests {
         assert_eq!(LagState::new(1).query(), Value::Null);
     }
 
+    // ── SeenState (Phase 8) ──────────────────────────────────────────────────
+
+    #[test]
+    fn seen_state_records_first_and_last() {
+        let mut s = SeenState::default();
+        s.update(&empty_row(), 100, None, true);
+        s.update(&empty_row(), 200, None, true);
+        s.update(&empty_row(), 300, None, true);
+        assert_eq!(s.first_ms, Some(100));
+        assert_eq!(s.last_ms, Some(300));
+    }
+
+    #[test]
+    fn seen_state_first_seen_returns_datetime() {
+        let mut s = SeenState::default();
+        assert_eq!(s.query_first_seen(), Value::Null);
+        s.update(&empty_row(), 100, None, true);
+        assert_eq!(s.query_first_seen(), Value::Datetime(100));
+    }
+
+    #[test]
+    fn seen_state_last_seen_returns_datetime() {
+        let mut s = SeenState::default();
+        assert_eq!(s.query_last_seen(), Value::Null);
+        s.update(&empty_row(), 100, None, true);
+        s.update(&empty_row(), 200, None, true);
+        assert_eq!(s.query_last_seen(), Value::Datetime(200));
+    }
+
+    #[test]
+    fn seen_state_age_computes_query_minus_first() {
+        let mut s = SeenState::default();
+        assert_eq!(s.query_age(500), Value::Null);
+        s.update(&empty_row(), 100, None, true);
+        assert_eq!(s.query_age(500), Value::I64(400));
+    }
+
+    #[test]
+    fn seen_state_has_seen_returns_bool() {
+        let mut s = SeenState::default();
+        assert_eq!(s.query_has_seen(), Value::Bool(false));
+        s.update(&empty_row(), 100, None, true);
+        assert_eq!(s.query_has_seen(), Value::Bool(true));
+    }
+
+    #[test]
+    fn seen_state_time_since_computes_query_minus_last() {
+        let mut s = SeenState::default();
+        assert_eq!(s.query_time_since(500), Value::Null);
+        s.update(&empty_row(), 100, None, true);
+        s.update(&empty_row(), 200, None, true);
+        assert_eq!(s.query_time_since(500), Value::I64(300));
+    }
+
+    #[test]
+    fn seen_state_skips_when_where_false() {
+        let mut s = SeenState::default();
+        s.update(&empty_row(), 100, None, false);
+        assert_eq!(s.query_has_seen(), Value::Bool(false));
+        s.update(&empty_row(), 200, None, true);
+        assert_eq!(s.query_first_seen(), Value::Datetime(200));
+    }
+
+    // ── TimeSinceLastN (Phase 8) ─────────────────────────────────────────────
+
+    #[test]
+    fn time_since_last_n_returns_null_until_ring_full() {
+        let mut s = TimeSinceLastNState::new(3);
+        assert_eq!(s.query(1000), Value::Null);
+        s.update(&empty_row(), 100, None, true);
+        assert_eq!(s.query(1000), Value::Null);
+        s.update(&empty_row(), 200, None, true);
+        assert_eq!(s.query(1000), Value::Null);
+        s.update(&empty_row(), 300, None, true);
+        // Ring is now full with [100, 200, 300]; query at 1000 → 1000-100 = 900
+        assert_eq!(s.query(1000), Value::I64(900));
+    }
+
+    #[test]
+    fn time_since_last_n_evicts_oldest_when_ring_full() {
+        let mut s = TimeSinceLastNState::new(2);
+        s.update(&empty_row(), 100, None, true);
+        s.update(&empty_row(), 200, None, true);
+        // Ring: [100, 200]; query → 1000 - 100 = 900
+        assert_eq!(s.query(1000), Value::I64(900));
+        s.update(&empty_row(), 300, None, true);
+        // Ring: [200, 300]; query → 1000 - 200 = 800
+        assert_eq!(s.query(1000), Value::I64(800));
+    }
+
+    // ── StreakState (Phase 8) ────────────────────────────────────────────────
+
+    #[test]
+    fn streak_increments_on_match() {
+        let mut s = StreakState::default();
+        for _ in 0..5 {
+            s.update(&empty_row(), 0, None, true);
+        }
+        assert_eq!(s.query_current(), Value::I64(5));
+        assert_eq!(s.query_max(), Value::I64(5));
+    }
+
+    #[test]
+    fn streak_resets_on_non_match() {
+        let mut s = StreakState::default();
+        s.update(&empty_row(), 0, None, true);
+        s.update(&empty_row(), 0, None, true);
+        s.update(&empty_row(), 0, None, false); // resets current to 0
+        assert_eq!(s.query_current(), Value::I64(0));
+        assert_eq!(s.query_max(), Value::I64(2)); // max was 2
+        s.update(&empty_row(), 0, None, true);
+        s.update(&empty_row(), 0, None, true);
+        s.update(&empty_row(), 0, None, true);
+        s.update(&empty_row(), 0, None, true);
+        assert_eq!(s.query_current(), Value::I64(4));
+        assert_eq!(s.query_max(), Value::I64(4)); // max bumped to 4
+    }
+
+    #[test]
+    fn streak_empty_returns_zero() {
+        let s = StreakState::default();
+        assert_eq!(s.query_current(), Value::I64(0));
+        assert_eq!(s.query_max(), Value::I64(0));
+    }
+
+    #[test]
+    fn negative_streak_increments_on_non_match() {
+        let mut s = NegativeStreakState::default();
+        s.update(&empty_row(), 0, None, false);
+        s.update(&empty_row(), 0, None, false);
+        s.update(&empty_row(), 0, None, false);
+        assert_eq!(s.query(), Value::I64(3));
+        s.update(&empty_row(), 0, None, true);
+        assert_eq!(s.query(), Value::I64(0));
+    }
+
+    // ── FirstSeenInWindow (Phase 8) ──────────────────────────────────────────
+
+    #[test]
+    fn first_seen_in_window_empty_returns_false() {
+        let s = FirstSeenInWindowState::new(1000);
+        assert_eq!(s.query(500), Value::Bool(false));
+    }
+
+    #[test]
+    fn first_seen_in_window_recent_event_returns_true() {
+        let mut s = FirstSeenInWindowState::new(1000);
+        s.update(&empty_row(), 100, None, true);
+        // age = 500 - 100 = 400 < 1000 → true
+        assert_eq!(s.query(500), Value::Bool(true));
+    }
+
+    #[test]
+    fn first_seen_in_window_old_event_returns_false() {
+        let mut s = FirstSeenInWindowState::new(1000);
+        s.update(&empty_row(), 100, None, true);
+        // age = 2000 - 100 = 1900 >= 1000 → false
+        assert_eq!(s.query(2000), Value::Bool(false));
+    }
+
     // ── Determinism guard ────────────────────────────────────────────────────
 
     #[test]
