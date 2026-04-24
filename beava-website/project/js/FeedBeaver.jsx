@@ -69,14 +69,14 @@ const useBeavaClient = (endpoint) => {
   const [demoMode, setDemoMode] = React.useState(false);
   const [global, setGlobal] = React.useState({
     total: 142857, rate_1m: 312, rate_1s: 7,
-    p99_think_time: 847, visitors_1h: 287,
+    p99_clickspeed: 847, visitors_1h: 287,
   });
   const failsRef = React.useRef(0);
   const simGlobalRef = React.useRef({
     total: 142857, rate_1m: 312, rate_1s: 7, recent: [],
-    p99_think_time: 847, visitors_1h: 287,
+    p99_clickspeed: 847, visitors_1h: 287,
   });
-  // Last click time for this session — used to derive think_time_ms
+  // Last click time for this session — used to derive click_speed_ms
   const lastClickRef = React.useRef(0);
 
   const simTick = () => {
@@ -90,34 +90,34 @@ const useBeavaClient = (endpoint) => {
     s.rate_1m = Math.max(40, Math.round(180 + Math.sin(now / 8000) * 90 + Math.random() * 30));
     s.rate_1s = Math.max(1, Math.round(4 + Math.sin(now / 1200) * 3 + Math.random() * 2));
     // p99 think-time drifts between ~600–1200ms — reflects reader click cadence
-    s.p99_think_time = Math.round(900 + Math.sin(now / 12000) * 250 + Math.random() * 80);
+    s.p99_clickspeed = Math.round(900 + Math.sin(now / 12000) * 250 + Math.random() * 80);
     // visitors in the last hour drifts gently around ~287
     s.visitors_1h = Math.max(240, Math.round(287 + Math.sin(now / 20000) * 40 + Math.random() * 10));
     return {
       total: s.total, rate_1m: s.rate_1m, rate_1s: s.rate_1s,
-      p99_think_time: s.p99_think_time, visitors_1h: s.visitors_1h,
+      p99_clickspeed: s.p99_clickspeed, visitors_1h: s.visitors_1h,
     };
   };
 
   const push = React.useCallback(async () => {
     const now = Date.now();
-    // think_time_ms: ms since this reader's previous click; 0 on the first click
-    const think_time_ms = lastClickRef.current === 0 ? 0 : now - lastClickRef.current;
+    // click_speed_ms: ms since this reader's previous click; 0 on the first click
+    const click_speed_ms = lastClickRef.current === 0 ? 0 : now - lastClickRef.current;
     lastClickRef.current = now;
     if (!endpoint || demoMode) {
       simGlobalRef.current.total += 1;
       simGlobalRef.current.recent.push(now);
       // In sim mode, let the reader's clicks pull p99 slightly toward their cadence
-      if (think_time_ms > 0) {
+      if (click_speed_ms > 0) {
         const s = simGlobalRef.current;
-        s.p99_think_time = Math.round(s.p99_think_time * 0.92 + think_time_ms * 0.08);
+        s.p99_clickspeed = Math.round(s.p99_clickspeed * 0.92 + click_speed_ms * 0.08);
       }
       return;
     }
     try {
       const r = await fetch(`${endpoint}/events/FeedClick`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: SESSION_ID, think_time_ms }),
+        body: JSON.stringify({ session_id: SESSION_ID, click_speed_ms }),
       });
       if (!r.ok) throw new Error('status ' + r.status);
       failsRef.current = 0;
@@ -141,7 +141,7 @@ const useBeavaClient = (endpoint) => {
           total: data.total ?? 0,
           rate_1m: data.rate_1m ?? 0,
           rate_1s: data.rate_1s ?? 0,
-          p99_think_time: data.p99_think_time ?? 847,
+          p99_clickspeed: data.p99_clickspeed ?? 847,
           visitors_1h: data.visitors_1h ?? 287,
         });
         failsRef.current = 0;
@@ -734,7 +734,7 @@ const FeedBeaver = ({ endpoint = null, compact = false, unboxed = false, showDec
           <CompactStatDivider/>
           <CompactStat label="streak"         value={streak}                                           mono/>
           <CompactStatDivider/>
-          <CompactStat label="p99 think (1h)" value={`${global.p99_think_time.toLocaleString()}ms`}    mono live/>
+          <CompactStat label="p99 clickspeed (1h)" value={`${global.p99_clickspeed.toLocaleString()}ms`}    mono live/>
         </div>
       )}
     </div>

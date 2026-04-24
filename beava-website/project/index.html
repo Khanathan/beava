@@ -123,30 +123,35 @@
     const Pillars = () => {
       const pillars = [
         {
-          title: 'SINGLE BINARY',
-          body: 'No cluster. No state store. brew install beava. systemctl start. That\'s the runbook.',
-          href: 'docs/install/',
+          title: 'REPLACES REDIS + LUA',
+          body: 'The exact shape of rules you\'re scripting in Redis today, as a single Python file. Atomic across every feature per event. No race conditions, no Lua repo to maintain.',
+          href: 'docs/compare/vs-redis-lua/',
         },
         {
-          title: '40+ OPERATORS',
-          body: 'Counters, velocities, distances, rates, distributions. Built in. No Lua scripts.',
-          href: 'docs/api/',
-        },
-        {
-          title: 'WAL-DURABLE',
-          body: 'Crash-safe by default. Snapshot recovery in seconds per GB. No data engineer on call.',
+          title: 'NO STREAMING STACK',
+          body: 'No Kafka. No Flink. No Zookeeper. One binary, one box. Scale by RAM and cores, not by adding nodes and coordinators.',
           href: 'docs/operations/',
         },
         {
-          title: 'APACHE 2.0',
-          body: 'No license server. No phone-home. Forkable. Apache 2.0.',
+          title: 'CRASH-SAFE BY DEFAULT',
+          body: 'WAL-backed writes. Your data is on disk before the HTTP 200 returns. Snapshot recovery in seconds per GB. No data engineer on call.',
+          href: 'docs/operations/#durability',
+        },
+        {
+          title: 'APACHE 2.0, FOREVER',
+          body: 'No license server. No phone-home. No feature gates. Fork it, embed it, run it wherever your users are. Actually yours.',
           href: 'https://github.com/beava-dev/beava/blob/main/LICENSE',
         },
       ];
       return (
         <section style={{ padding: '96px 28px', background: 'var(--bg-alt)', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}>
           <div style={{ maxWidth: 1000, margin: '0 auto' }}>
-            <Eyebrow style={{ textAlign: 'center', marginBottom: 40 }}>What&apos;s different</Eyebrow>
+            <div style={{ textAlign: 'center', marginBottom: 40 }}>
+              <Eyebrow style={{ marginBottom: 12 }}>What&apos;s different</Eyebrow>
+              <h2 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(28px, 4vw, 40px)', lineHeight: 1.1, letterSpacing: '-0.02em', color: 'var(--fg1)', margin: 0, textWrap: 'balance' }}>
+                The realtime features you&apos;d build anyway. Without the stack you&apos;d have to run.
+              </h2>
+            </div>
             <div className="pillars-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 24 }}>
               {pillars.map(p => (
                 <a key={p.title} href={p.href} style={{
@@ -185,7 +190,7 @@
 
     // ==================================================================
     // NoteArrow — Gaegu-accent inline margin note. Used in PipelineShowcase
-    // to tie the hero widget's live stats (FED / STREAK / P99 THINK) back
+    // to tie the hero widget's live stats (FED / STREAK / P99 CLICKSPEED) back
     // to the specific lines of Python that produce them.
     // ==================================================================
     const NoteArrow = ({ children }) => (
@@ -212,7 +217,7 @@ import beava as bv
 @bv.stream
 class FeedClick:
     session_id: str
-    think_time_ms: int        # ms since reader's previous click
+    click_speed_ms: int        # ms since reader's previous click
 
 @bv.table(key="session_id")
 def Session(e: FeedClick):
@@ -224,7 +229,7 @@ def Session(e: FeedClick):
 @bv.table(key="__global__")
 def Global(e: FeedClick):
     return e.agg(
-        p99_think_time = bv.p99(e.think_time_ms, window="1h"),
+        p99_clickspeed = bv.p99(e.click_speed_ms, window="1h"),
         visitors_1h    = bv.distinct(e.session_id, window="1h"),
     )
 
@@ -248,7 +253,7 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
                 <span className="fn">@bv.stream</span>{'\n'}
                 <span className="kw">class</span> <span className="ty">FeedClick</span>:{'\n'}
                 {'    '}session_id: <span className="ty">str</span>{'\n'}
-                {'    '}think_time_ms: <span className="ty">int</span>{'        '}<span className="cmt"># ms since reader's previous click</span>{'\n'}
+                {'    '}click_speed_ms: <span className="ty">int</span>{'        '}<span className="cmt"># ms since reader's previous click</span>{'\n'}
                 <span className="cmt">    # session_id regenerated every refresh — no cookies, no tracking.</span>{'\n'}{'\n'}
                 <span className="fn">@bv.table</span>(key=<span className="str">"session_id"</span>){'\n'}
                 <span className="kw">def</span> <span className="fn">Session</span>(e: FeedClick):{'\n'}
@@ -259,7 +264,7 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
                 <span className="fn">@bv.table</span>(key=<span className="str">"__global__"</span>){'\n'}
                 <span className="kw">def</span> <span className="fn">Global</span>(e: FeedClick):{'\n'}
                 {'    '}<span className="kw">return</span> e.<span className="fn">agg</span>({'\n'}
-                {'        '}p99_think_time = bv.<span className="fn">p99</span>(e.think_time_ms, window=<span className="str">"1h"</span>),<NoteArrow>← "P99 THINK (1h)"</NoteArrow>{'\n'}
+                {'        '}p99_clickspeed = bv.<span className="fn">p99</span>(e.click_speed_ms, window=<span className="str">"1h"</span>),<NoteArrow>← "P99 CLICKSPEED (1h)"</NoteArrow>{'\n'}
                 {'        '}visitors_1h{'    '}= bv.<span className="fn">distinct</span>(e.session_id, window=<span className="str">"1h"</span>),{'\n'}
                 {'    '}){'\n'}{'\n'}
                 bv.<span className="fn">App</span>(<span className="str">"0.0.0.0:6400"</span>).<span className="fn">register</span>(FeedClick, Session, Global).<span className="fn">serve</span>()
@@ -284,7 +289,7 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
     const RecipeGrid = () => {
       const recipes = [
         { slug: 'personalization', title: 'Personalization', caption: 'Category + top trending. No ML required.', mascot: 'assets/mascot-work-pose.svg', mw: 88, mh: 88 },
-        { slug: 'fraud',           title: 'Fraud rules',     caption: 'Velocity, buy intent, login streak failure.', mascot: 'assets/mascot-pose-2.svg',  mw: 88, mh: 88 },
+        { slug: 'fraud',           title: 'Fraud detection', caption: 'Velocity, buy intent, login streak failure.', mascot: 'assets/mascot-pose-2.svg',  mw: 88, mh: 88 },
         { slug: 'leaderboard',     title: 'Leaderboard',     caption: 'Ranking, top-K, rolling windows.',            mascot: 'assets/mascot-pose-3.svg',  mw: 88, mh: 88 },
         { slug: 'rate-limiting',   title: 'Rate limiting',   caption: 'Per-IP, per-fingerprint. Threshold + ban.',   mascot: 'assets/mascot-mark-geometric.png', mw: 120, mh: 80 },
         { slug: 'usage-metering',  title: 'Usage metering',  caption: 'Seat counts, quotas, billing meters.',        mascot: 'assets/logo-mark.png',       mw: 88, mh: 88 },
