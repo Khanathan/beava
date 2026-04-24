@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>guide — beava</title>
+  <title>The real-time feature guidebook — beava</title>
+  <meta name="description" content="How to build analytics, fraud detection, personalization, leaderboards, rate limiting, and metering — the real-time feature playbooks every product eventually needs.">
   <link rel="stylesheet" href="/styles/colors_and_type.css">
   <link rel="stylesheet" href="/styles/site.css">
   <link rel="icon" href="/assets/mascot-mark-geometric.png">
@@ -26,12 +27,12 @@
     const GuideHero = () => (
       <section style={{ padding: '64px 28px 40px', textAlign: 'center' }}>
         <div style={{ maxWidth: 720, margin: '0 auto' }}>
-          <Eyebrow style={{ marginBottom: 14 }}>The beava guide</Eyebrow>
+          <Eyebrow style={{ marginBottom: 14 }}>The real-time feature guidebook</Eyebrow>
           <h1 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(40px, 6vw, 64px)', lineHeight: 1.05, letterSpacing: '-0.02em', color: 'var(--fg1)', margin: '0 0 18px', textWrap: 'balance' }}>
-            Learn the shape. Then ship it.
+            How to build the live features your product actually needs.
           </h1>
-          <p style={{ fontFamily: 'var(--font-sans)', fontSize: 18, lineHeight: 1.6, color: 'var(--fg2)', maxWidth: 580, margin: '0 auto', textWrap: 'pretty' }}>
-            Chapter 1 is the 10-minute pedagogy: event = row, stream = dataframe, table = groupby. The recipes below are the 30-minute apply-to-your-problem: fraud, ranking, metering, and the other three.
+          <p style={{ fontFamily: 'var(--font-sans)', fontSize: 18, lineHeight: 1.6, color: 'var(--fg2)', maxWidth: 620, margin: '0 auto', textWrap: 'pretty' }}>
+            Start with Chapter 1 &mdash; a 10-minute interactive build that turns into a per-customer analytics dashboard. Then pick the recipe that matches your day job: fraud, personalization, ranking, rate limits, or metering. beava is the implementation; streaming is the subject.
           </p>
         </div>
       </section>
@@ -51,10 +52,10 @@
                 Chapter 1 →
               </div>
               <h3 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 32, lineHeight: 1.15, letterSpacing: '-0.02em', color: 'var(--fg1)', margin: '4px 0 12px' }}>
-                Event = row. Stream = dataframe.
+                How to build a per-customer analytics dashboard
               </h3>
               <p style={{ fontFamily: 'var(--font-sans)', fontSize: 16, lineHeight: 1.6, color: 'var(--fg2)', margin: '0 0 14px', maxWidth: 540 }}>
-                If you know pandas, you already know beava. Interactive widgets in-page — click through events, watch the aggregates update. About 10 minutes and zero installs.
+                A quick intro to beava (it looks like pandas, honestly), your first pipeline in three lines, then we build a live analytics dashboard per customer together. 10 minutes, zero installs.
               </p>
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--accent)', fontWeight: 600 }}>
                 Start Chapter 1 <Icon name="arrow" size={14}/>
@@ -70,11 +71,11 @@
 
     const RecipeIndex = () => {
       const recipes = [
-        { slug: 'personalization', title: 'Personalization', caption: 'Category + top trending. No ML required.',       mascot: '/assets/mascot-work-pose.svg',       mw: 88, mh: 88, ready: false },
-        { slug: 'fraud',           title: 'Fraud detection', caption: 'Velocity, buy intent, login streak failure.',    mascot: '/assets/mascot-pose-2.svg',          mw: 88, mh: 88, ready: true  },
-        { slug: 'leaderboard',     title: 'Leaderboard',     caption: 'Ranking, top-K, rolling windows.',               mascot: '/assets/mascot-pose-3.svg',          mw: 88, mh: 88, ready: false },
-        { slug: 'rate-limiting',   title: 'Rate limiting',   caption: 'Per-IP, per-fingerprint. Threshold + ban.',      mascot: '/assets/mascot-mark-geometric.png',  mw: 120, mh: 80, ready: false },
-        { slug: 'usage-metering',  title: 'Usage metering',  caption: 'Seat counts, quotas, billing meters.',           mascot: '/assets/logo-mark.png',              mw: 88, mh: 88, ready: false },
+        { slug: 'personalization', title: 'Personalization', caption: 'Live category feeds and top-trending recommendations. No ML.', mascot: '/assets/mascot-work-pose.svg',      mw: 88, mh: 88, ready: false },
+        { slug: 'fraud',           title: 'Fraud detection', caption: 'Block bad actors the moment they click submit.',              mascot: '/assets/mascot-pose-2.svg',         mw: 88, mh: 88, ready: true  },
+        { slug: 'leaderboard',     title: 'Leaderboard',     caption: 'Real-time rankings that update as events land.',              mascot: '/assets/mascot-pose-3.svg',         mw: 88, mh: 88, ready: false },
+        { slug: 'rate-limiting',   title: 'Rate limiting',   caption: 'Fingerprint-aware quotas and auto-ban lists.',                mascot: '/assets/mascot-mark-geometric.png', mw: 120, mh: 80, ready: false },
+        { slug: 'usage-metering',  title: 'Usage metering',  caption: 'Billing meters that drop every event in the right bucket.',   mascot: '/assets/logo-mark.png',             mw: 88, mh: 88, ready: false },
       ];
       return (
         <section style={{ padding: '48px 28px 96px' }}>

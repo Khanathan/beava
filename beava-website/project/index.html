@@ -522,11 +522,11 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
     // ==================================================================
     const RecipeGrid = () => {
       const recipes = [
-        { slug: 'personalization', title: 'Personalization', caption: 'Category + top trending. No ML required.', mascot: 'assets/mascot-work-pose.svg', mw: 88, mh: 88 },
-        { slug: 'fraud',           title: 'Fraud detection', caption: 'Velocity, buy intent, login streak failure.', mascot: 'assets/mascot-pose-2.svg',  mw: 88, mh: 88 },
-        { slug: 'leaderboard',     title: 'Leaderboard',     caption: 'Ranking, top-K, rolling windows.',            mascot: 'assets/mascot-pose-3.svg',  mw: 88, mh: 88 },
-        { slug: 'rate-limiting',   title: 'Rate limiting',   caption: 'Per-IP, per-fingerprint. Threshold + ban.',   mascot: 'assets/mascot-mark-geometric.png', mw: 120, mh: 80 },
-        { slug: 'usage-metering',  title: 'Usage metering',  caption: 'Seat counts, quotas, billing meters.',        mascot: 'assets/logo-mark.png',       mw: 88, mh: 88 },
+        { slug: 'personalization', title: 'Personalization', caption: 'Live category feeds and top-trending recommendations. No ML.', mascot: 'assets/mascot-work-pose.svg', mw: 88, mh: 88 },
+        { slug: 'fraud',           title: 'Fraud detection', caption: 'Block bad actors the moment they click submit.',              mascot: 'assets/mascot-pose-2.svg',    mw: 88, mh: 88 },
+        { slug: 'leaderboard',     title: 'Leaderboard',     caption: 'Real-time rankings that update as events land.',              mascot: 'assets/mascot-pose-3.svg',    mw: 88, mh: 88 },
+        { slug: 'rate-limiting',   title: 'Rate limiting',   caption: 'Fingerprint-aware quotas and auto-ban lists.',                mascot: 'assets/mascot-mark-geometric.png', mw: 120, mh: 80 },
+        { slug: 'usage-metering',  title: 'Usage metering',  caption: 'Billing meters that drop every event in the right bucket.',   mascot: 'assets/logo-mark.png',        mw: 88, mh: 88 },
       ];
       return (
         <section style={{ padding: '96px 28px' }}>
@@ -592,10 +592,10 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
                 Chapter 1 →
               </div>
               <h3 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 32, lineHeight: 1.15, letterSpacing: '-0.02em', color: 'var(--fg1)', margin: '4px 0 12px' }}>
-                Event = row. Stream = dataframe.
+                How to build a per-customer analytics dashboard
               </h3>
               <p style={{ fontFamily: 'var(--font-sans)', fontSize: 16, lineHeight: 1.6, color: 'var(--fg2)', margin: '0 0 14px', maxWidth: 540 }}>
-                If you know pandas, you already know beava. In about 10 minutes and zero installs, you&apos;ll see why stream operations look like dataframe operations.
+                A quick intro to beava (it looks like pandas, honestly), your first pipeline in three lines, then we build a live analytics dashboard per customer together. 10 minutes, zero installs.
               </p>
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--accent)', fontWeight: 600 }}>
                 Start Chapter 1 <Icon name="arrow" size={14}/>
