@@ -187,6 +187,95 @@
       background: var(--bg-alt); color: var(--fg3);
       border: 1px solid var(--border);
     }
+
+    /* Event composer — a distinct "push a row into the stream" module.
+       Accent-bordered card, primary CTA for random, dashed-divider into
+       the craft-your-own form. Used once in Part 2 and once in Part 3. */
+    .composer-card {
+      background: linear-gradient(180deg, var(--beava-paper) 0%, #fff 100%);
+      border: 1px solid var(--border); border-left: 3px solid var(--accent);
+      border-radius: 14px; padding: 20px 22px; margin: 20px 0 22px;
+      box-shadow: var(--shadow-xs);
+    }
+    .composer-hd {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; margin-bottom: 16px; flex-wrap: wrap;
+    }
+    .composer-title {
+      display: flex; align-items: center; gap: 10px;
+      font-family: var(--font-sans); font-size: 12px; font-weight: 700;
+      color: var(--fg1); text-transform: uppercase; letter-spacing: 0.08em;
+    }
+    .composer-title .tag {
+      font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
+      color: var(--accent); background: var(--beava-orange-wash);
+      padding: 3px 9px; border-radius: 999px; letter-spacing: 0.02em;
+      text-transform: lowercase; border: 1px solid #f1d8c2;
+    }
+    .composer-random {
+      background: var(--accent); color: #fff; border: none;
+      padding: 11px 18px; border-radius: 10px;
+      font-family: var(--font-sans); font-weight: 600; font-size: 14px;
+      cursor: pointer; display: inline-flex; align-items: center; gap: 8px;
+      box-shadow: 0 2px 0 rgba(26,23,20,0.12);
+      transition: transform 120ms, box-shadow 120ms, background 120ms;
+      line-height: 1;
+    }
+    .composer-random:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 3px 0 rgba(26,23,20,0.12);
+      background: var(--accent-hover, #d86330);
+    }
+    .composer-random:active:not(:disabled) { transform: translateY(0); box-shadow: 0 1px 0 rgba(26,23,20,0.12); }
+    .composer-random:disabled { opacity: 0.45; cursor: not-allowed; }
+    .composer-divider {
+      font-family: var(--font-mono); font-size: 11px; color: var(--fg3);
+      letter-spacing: 0.06em; text-transform: lowercase;
+      display: flex; align-items: center; gap: 12px;
+      margin: 14px 0 12px;
+    }
+    .composer-divider::before, .composer-divider::after {
+      content: ''; flex: 1; border-top: 1px dashed var(--border);
+    }
+
+    /* Part 2 mini-result — ticker + simple "per-user views" list.
+       Keeps Part 2 visually distinct from Part 3's full dashboard. */
+    .mini-result {
+      display: grid; grid-template-columns: 220px 1fr; gap: 16px;
+      margin-top: 14px; margin-bottom: 8px;
+    }
+    .mini-rows {
+      background: #fff; border: 1px solid var(--border);
+      border-radius: 14px; padding: 12px 14px;
+      box-shadow: var(--shadow-xs);
+    }
+    .mini-row {
+      display: grid; grid-template-columns: 1fr auto;
+      align-items: baseline; padding: 9px 6px;
+      border-bottom: 1px dashed var(--border-inset);
+    }
+    .mini-row:last-child { border-bottom: none; }
+    .mini-row.flash { animation: mini-flash 900ms cubic-bezier(0.22,1,0.36,1); }
+    @keyframes mini-flash {
+      0%   { background: var(--beava-orange-wash); }
+      100% { background: transparent; }
+    }
+    .mini-uid {
+      font-family: var(--font-mono); font-size: 13px; font-weight: 600;
+      color: var(--accent);
+    }
+    .mini-val {
+      font-family: var(--font-serif); font-size: 22px; font-weight: 600;
+      color: var(--fg1); letter-spacing: -0.01em; line-height: 1;
+    }
+    .mini-empty {
+      padding: 28px 6px; text-align: center;
+      font-family: var(--font-sans); font-size: 13px; color: var(--fg3);
+      font-style: italic;
+    }
+    @media (max-width: 760px) {
+      .mini-result { grid-template-columns: 1fr !important; }
+    }
   </style>
 </head>
 <body class="beava">
@@ -367,6 +456,57 @@
         </div>
       );
     };
+
+    // ---------------- Event composer (shared by Part 2 and Part 3) ---------------- //
+
+    const EventComposer = ({
+      scopeTable, scopeHint, disabled, disabledReason,
+      onRandom, user, setUser, path, setPath, onCraft,
+    }) => (
+      <div className="composer-card" style={disabled ? { opacity: 0.55 } : null}>
+        <div className="composer-hd">
+          <div className="composer-title">
+            Push event
+            <span className="tag">→ @bv.table {scopeTable}</span>
+          </div>
+          <button className="composer-random" onClick={onRandom} disabled={disabled}>
+            <Icon name="zap" size={15} stroke={2}/>
+            Send a random event
+          </button>
+        </div>
+        <div className="composer-divider">or craft your own</div>
+        <div className="ch1-compose" style={{ pointerEvents: disabled ? 'none' : 'auto' }}>
+          <div>
+            <span className="ch1-label">user_id</span>
+            <input className="ch1-input" value={user} onChange={e => setUser(e.target.value)} placeholder="u_7f3c" disabled={disabled}/>
+          </div>
+          <div>
+            <span className="ch1-label">path</span>
+            <input className="ch1-input" value={path} onChange={e => setPath(e.target.value)} placeholder="/product/clamp" disabled={disabled}/>
+          </div>
+          <div>
+            <span className="ch1-label">category (derived)</span>
+            <input className="ch1-input" value={CATEGORY_OF(path)} readOnly
+                   style={{ background: 'var(--bg-inset)', color: 'var(--fg3)' }}/>
+          </div>
+          <Button variant="secondary" size="md" onClick={onCraft}
+                  disabled={disabled}
+                  style={{ cursor: disabled ? 'not-allowed' : 'pointer' }}
+                  icon={<Icon name="arrow" size={14}/>}>
+            Push
+          </Button>
+        </div>
+        {disabled && disabledReason && (
+          <div style={{
+            marginTop: 14,
+            fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--fg3)',
+            display: 'flex', alignItems: 'center', gap: 6,
+          }}>
+            <Icon name="arrow" size={12}/> {disabledReason}
+          </div>
+        )}
+      </div>
+    );
 
     // ---------------- UI components for the dashboard ---------------- //
 
@@ -597,36 +737,66 @@
 
               <CodeBlock tokens={pipelineBasic}/>
 
-              <div style={{ marginTop: 20, marginBottom: 26 }}>
+              <div style={{ marginTop: 20, marginBottom: 10 }}>
                 <RegisterButton label="Register this pipeline" status={basicStatus} onRegister={() => register('basic')}/>
               </div>
 
-              <div className="ch1-actions" style={{ marginBottom: 16, opacity: basicStatus === 'done' ? 1 : 0.45, transition: 'opacity 300ms' }}>
-                <Button variant="secondary" size="md" onClick={sendRandom} disabled={basicStatus !== 'done'}
-                        style={{ cursor: basicStatus === 'done' ? 'pointer' : 'default' }}
-                        iconLeft={<Icon name="zap" size={14}/>}>
-                  Send a random event
-                </Button>
-                <span style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--fg3)' }}>or craft one:</span>
+              <EventComposer
+                scopeTable="UserStats"
+                disabled={basicStatus !== 'done'}
+                disabledReason="Register the pipeline above, then push an event."
+                onRandom={sendRandom}
+                user={formUser} setUser={setFormUser}
+                path={formPath} setPath={setFormPath}
+                onCraft={sendCrafted}/>
+
+              {/* Part 2 mini-result: simple per-user views_total, matches
+                  the one-metric pipeline exactly. */}
+              <div style={{
+                fontFamily: 'var(--font-mono)', fontSize: 11,
+                color: 'var(--fg3)', letterSpacing: '0.04em',
+                textTransform: 'lowercase', marginTop: 4,
+              }}>
+                ↓ live from GET /batch/<span style={{ color: 'var(--accent)', fontWeight: 700 }}>UserStats</span>
               </div>
 
-              <div className="ch1-compose" style={{ marginBottom: 28, opacity: basicStatus === 'done' ? 1 : 0.45, pointerEvents: basicStatus === 'done' ? 'auto' : 'none', transition: 'opacity 300ms' }}>
-                <div>
-                  <span className="ch1-label">user_id</span>
-                  <input className="ch1-input" value={formUser} onChange={e => setFormUser(e.target.value)} placeholder="u_7f3c"/>
+              <div className="mini-result">
+                <div className="evt-ticker" style={{ maxHeight: 260 }}>
+                  <div className="evt-ticker-hd">
+                    <span>recent events</span>
+                    <span style={{ color: events.length > 0 ? 'var(--accent)' : 'var(--fg3)' }}>
+                      {events.length > 0 ? 'live' : 'idle'}
+                    </span>
+                  </div>
+                  {events.length === 0 && (
+                    <div className="evt-empty">
+                      {basicStatus === 'done' ? 'push an event ↑' : 'register the pipeline first.'}
+                    </div>
+                  )}
+                  {events.slice(0, 4).map(e => (
+                    <div className="evt-row" key={e.id}>
+                      <div><span className="u">{e.user_id}</span> <span className="p">{e.path}</span></div>
+                      <div className="t">{agoString(e.tsMs)}</div>
+                    </div>
+                  ))}
                 </div>
-                <div>
-                  <span className="ch1-label">path</span>
-                  <input className="ch1-input" value={formPath} onChange={e => setFormPath(e.target.value)} placeholder="/product/clamp"/>
+
+                <div className="mini-rows">
+                  {rowsList.length === 0 && (
+                    <div className="mini-empty">
+                      UserStats is empty. Each event inserts or updates exactly one row, keyed by <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>user_id</code>.
+                    </div>
+                  )}
+                  {rowsList.map(([uid, r]) => (
+                    <div key={uid} className={`mini-row${flashUid === uid ? ' flash' : ''}`}>
+                      <span className="mini-uid">{uid}</span>
+                      <span>
+                        <span className="mini-val">{r.views_total}</span>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg3)', marginLeft: 6, letterSpacing: '0.02em' }}>views_total</span>
+                      </span>
+                    </div>
+                  ))}
                 </div>
-                <div>
-                  <span className="ch1-label">category (derived)</span>
-                  <input className="ch1-input" value={CATEGORY_OF(formPath)} readOnly
-                         style={{ background: 'var(--bg-inset)', color: 'var(--fg3)' }}/>
-                </div>
-                <Button variant="primary" size="md" onClick={sendCrafted} icon={<Icon name="arrow" size={14}/>}>
-                  Send event
-                </Button>
               </div>
             </div>
           </section>
@@ -657,6 +827,15 @@
                   </div>
                 )}
               </div>
+
+              <EventComposer
+                scopeTable="Dashboard"
+                disabled={stage !== 'dashboard'}
+                disabledReason="Register the dashboard pipeline above to unlock the 4-metric push path."
+                onRandom={sendRandom}
+                user={formUser} setUser={setFormUser}
+                path={formPath} setPath={setFormPath}
+                onCraft={sendCrafted}/>
 
               {/* ---------- LIVE DASHBOARD UI ---------- */}
 
@@ -703,12 +882,17 @@
                 </div>
 
                 <div className="ch1-cards">
-                  {rowsList.length === 0 && (
+                  {stage !== 'dashboard' && (
                     <div className="empty-state">
-                      Dashboard is empty. Send an event and watch a card appear for that user, with views, categories, and activity filling in live.
+                      Dashboard table doesn't exist yet. Register the pipeline above to unlock the 4-metric view. Events you pushed in Part 2 are already in the stream, ready to replay.
                     </div>
                   )}
-                  {rowsList.map(([uid, r]) => (
+                  {stage === 'dashboard' && rowsList.length === 0 && (
+                    <div className="empty-state">
+                      Dashboard is empty. Push an event and watch a card appear for that user, with views, categories, and activity filling in live.
+                    </div>
+                  )}
+                  {stage === 'dashboard' && rowsList.map(([uid, r]) => (
                     <UserCard key={uid} uid={uid} row={r} maxViews24h={maxViews24h}
                               nowTick={nowTick} flash={flashUid === uid}/>
                   ))}
