@@ -171,7 +171,11 @@ impl CountMinSketch {
                 min = self.counters[idx];
             }
         }
-        if min == i64::MAX { 0 } else { min }
+        if min == i64::MAX {
+            0
+        } else {
+            min
+        }
     }
 
     pub fn estimated_bytes(&self) -> usize {
@@ -332,11 +336,8 @@ impl TopKHeap {
 
     /// Return the current top-k as `(value, count)` pairs in descending order.
     pub fn top(&self) -> Vec<(TopKValue, u64)> {
-        let mut out: Vec<(TopKValue, u64)> = self
-            .heap
-            .iter()
-            .map(|(c, v)| (v.clone(), *c))
-            .collect();
+        let mut out: Vec<(TopKValue, u64)> =
+            self.heap.iter().map(|(c, v)| (v.clone(), *c)).collect();
         out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         out
     }
