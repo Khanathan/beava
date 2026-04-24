@@ -334,6 +334,9 @@ mod tests {
             let v = (1.006_f64).powi(i - 1000);
             s.insert(v);
         }
-        assert!(s.current_alpha() > 0.01, "alpha should have grown via collapse");
+        assert!(
+            s.current_alpha() > 0.01,
+            "alpha should have grown via collapse"
+        );
     }
 }
