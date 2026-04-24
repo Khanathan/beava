@@ -894,6 +894,7 @@ mod tests {
                         sub_window_ms: None,
                         sigma: None,
                         sketch_params: None,
+                        ext: Default::default(),
                     },
                 },
                 NamedAggOp {
@@ -908,6 +909,7 @@ mod tests {
                         sub_window_ms: None,
                         sigma: None,
                         sketch_params: None,
+                        ext: Default::default(),
                     },
                 },
             ],
@@ -996,6 +998,7 @@ mod tests {
                     sub_window_ms: None,
                     sigma: None,
                     sketch_params: None,
+                    ext: Default::default(),
                 },
             }],
         });
@@ -1057,6 +1060,7 @@ mod tests {
                     sub_window_ms: None,
                     sigma: None,
                     sketch_params: None,
+                    ext: Default::default(),
                 },
             }],
         });
@@ -1137,6 +1141,7 @@ mod tests {
                     sub_window_ms: None,
                     sigma: None,
                     sketch_params: None,
+                    ext: Default::default(),
                 },
             }],
         };

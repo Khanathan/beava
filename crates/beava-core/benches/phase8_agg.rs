@@ -37,6 +37,7 @@ fn desc(
         sub_window_ms: None,
         sigma: None,
         sketch_params: None,
+        ext: Default::default(),
     }
 }
 

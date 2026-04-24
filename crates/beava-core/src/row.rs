@@ -35,6 +35,14 @@ pub enum Value {
     Datetime(i64),
     /// Plan 10-05: Structured JSON output (top_k returns array of {value, count}).
     Json(serde_json::Value),
+    /// Phase 11 (D-01): ordered list of values used as an aggregation output
+    /// (e.g. `most_recent_n`, `reservoir_sample`). Never appears in event/table
+    /// rows — only as the output of `AggOp::query`. `type_of()` → None.
+    List(Vec<Value>),
+    /// Phase 11 (D-01): keyed map of values used as a structured aggregation
+    /// output (e.g. `histogram`, `event_type_mix`). Never appears in
+    /// event/table rows — only as the output of `AggOp::query`. `type_of()` → None.
+    Map(BTreeMap<String, Value>),
 }
 
 impl PartialEq for Value {
@@ -49,6 +57,10 @@ impl PartialEq for Value {
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::Datetime(a), Value::Datetime(b)) => a == b,
             (Value::Json(a), Value::Json(b)) => a == b,
+            // Phase 11: List + Map recurse element-wise (BTreeMap iteration is
+            // ordered + deterministic; PartialEq on Vec is positional).
+            (Value::List(a), Value::List(b)) => a == b,
+            (Value::Map(a), Value::Map(b)) => a == b,
             // Cross-variant comparisons are always false.
             _ => false,
         }
@@ -68,6 +80,11 @@ impl Value {
             Value::Bytes(_) => Some(FieldType::Bytes),
             Value::Datetime(_) => Some(FieldType::Datetime),
             Value::Json(_) => Some(FieldType::Json),
+            // Phase 11: structured outputs are not representable as a
+            // FieldType — they only appear as aggregation outputs, never in
+            // event/table rows.
+            Value::List(_) => None,
+            Value::Map(_) => None,
         }
     }
 
@@ -381,5 +398,66 @@ mod tests {
         let v = Value::Json(serde_json::json!([{"value": "a", "count": 5}]));
         let s = serde_json::to_string(&v).unwrap();
         assert!(s.contains("count"));
+    }
+
+    // ── Phase 11: Value::List + Value::Map for structured outputs (D-01) ──────
+
+    /// Phase 11 — D-01: Value::List variant exists and round-trips through serde.
+    #[test]
+    fn value_list_round_trips_serde() {
+        let v = Value::List(vec![Value::I64(1), Value::I64(2), Value::I64(3)]);
+        let s = serde_json::to_string(&v).expect("serialize List");
+        let v2: Value = serde_json::from_str(&s).expect("deserialize List");
+        assert_eq!(v, v2);
+    }
+
+    /// Phase 11 — D-01: Value::Map variant round-trips deterministically (BTreeMap).
+    #[test]
+    fn value_map_round_trips_serde() {
+        let mut m = BTreeMap::new();
+        m.insert("a".to_string(), Value::I64(10));
+        m.insert("b".to_string(), Value::F64(2.5));
+        let v = Value::Map(m);
+        let s = serde_json::to_string(&v).expect("serialize Map");
+        let v2: Value = serde_json::from_str(&s).expect("deserialize Map");
+        assert_eq!(v, v2);
+    }
+
+    /// PartialEq on Value::List compares element-wise.
+    #[test]
+    fn value_list_partialeq_elementwise() {
+        let a = Value::List(vec![Value::I64(1), Value::Str("x".into())]);
+        let b = Value::List(vec![Value::I64(1), Value::Str("x".into())]);
+        let c = Value::List(vec![Value::I64(1), Value::Str("y".into())]);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    /// PartialEq on Value::Map matches when same keys + same values.
+    #[test]
+    fn value_map_partialeq_keys_and_values() {
+        let mut m1 = BTreeMap::new();
+        m1.insert("k".to_string(), Value::I64(1));
+        let mut m2 = BTreeMap::new();
+        m2.insert("k".to_string(), Value::I64(1));
+        let mut m3 = BTreeMap::new();
+        m3.insert("k".to_string(), Value::I64(2));
+        assert_eq!(Value::Map(m1.clone()), Value::Map(m2));
+        assert_ne!(Value::Map(m1), Value::Map(m3));
+    }
+
+    /// Cross-variant comparison: List vs Map must be false.
+    #[test]
+    fn value_list_vs_map_cross_variant_false() {
+        let l = Value::List(vec![]);
+        let m = Value::Map(BTreeMap::new());
+        assert_ne!(l, m);
+    }
+
+    /// type_of returns None for List/Map (no FieldType representation; outputs only).
+    #[test]
+    fn value_list_map_type_of_is_none() {
+        assert_eq!(Value::List(vec![]).type_of(), None);
+        assert_eq!(Value::Map(BTreeMap::new()).type_of(), None);
     }
 }

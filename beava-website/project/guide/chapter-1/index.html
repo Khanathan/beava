@@ -409,6 +409,43 @@
               <img src="/assets/mascot-work-pose.svg" width={140} height={140}/>
             </div>
           </div>
+
+          {/* Spin-up: how to run beava locally for real, alongside the in-browser sim. */}
+          <div style={{
+            marginTop: 36,
+            background: 'var(--beava-paper)',
+            border: '1px solid var(--border)',
+            borderRadius: 14,
+            padding: '20px 22px',
+          }}>
+            <div style={{
+              fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 700,
+              textTransform: 'uppercase', letterSpacing: '0.08em',
+              color: 'var(--accent)', marginBottom: 10,
+            }}>Skip the browser — run it for real</div>
+            <p style={{ fontFamily: 'var(--font-sans)', fontSize: 14, lineHeight: 1.6, color: 'var(--fg2)', margin: '0 0 12px' }}>
+              The simulator on this page runs in your browser, but the real beava is a single binary you can <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>brew install</code> or <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>docker run</code> in 30 seconds. Same wire protocol; everything you build below works against it unchanged.
+            </p>
+            <pre style={{
+              fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.55,
+              background: '#1a1715', color: '#f3ebde',
+              borderRadius: 8, padding: '12px 14px', margin: 0,
+              overflowX: 'auto',
+            }}>
+{'# docker — pinned tag, no install needed\n'}
+{'$ docker run -p 6400:6400 -v $(pwd)/data:/var/lib/beava beava/beava:v0\n'}
+{'\n'}
+{'# homebrew — native binary on macOS / Linux\n'}
+{'$ brew install beava && beava serve --data-dir ./beava-data\n'}
+{'\n'}
+{'# verify\n'}
+{'$ curl http://localhost:6400/health\n'}
+{'{"status":"ok","version":"0.1.0"}'}
+            </pre>
+            <p style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--fg3)', margin: '10px 0 0' }}>
+              ~14 MB binary · ~62 ms cold start · zero config required · point any of the curl examples below at <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>localhost:6400</code> instead of the in-browser sim.
+            </p>
+          </div>
         </div>
       </section>
     );
@@ -810,7 +847,27 @@
       { name: 'r7i.24xlarge',   ram: 768,  hr: 6.3514 },
       { name: 'r7i.48xlarge',   ram: 1536, hr: 12.7027 },
     ];
-    const PER_ENTITY_BYTES = 1024; // 1 KiB — 4-metric Dashboard
+    // Per-entity memory for this pipeline, distribution-weighted across
+    // the 3-tier count-distinct promotion:
+    //   ExactArray ≤16 distinct cats       128 B   (assume ~95% of users)
+    //   HashSet    ≤1024 distinct          32 KB   (assume ~5%)
+    //   HLL p=12   >1024                   4 KB    (~0% for categories)
+    // Expected distinct_cats_7d: 0.95×128 + 0.05×32768 = ~1760 B
+    //
+    // Full row:
+    //   views_total       i64 counter                  8 B
+    //   views_24h         24 × i64 hourly buckets      192 B
+    //   distinct_cats_7d  weighted 3-tier expected     ~480 B
+    //                     (p95 user stays in ExactArray; use lower
+    //                      weight for HashSet since cats on one site
+    //                      are bounded — 99/1 gives ~455 B, pick 480)
+    //   last_seen         i64 timestamp                8 B
+    //   user_id key       string + hash-table slot     ~100 B
+    //   row overhead      schema ptr + version + pad   ~64 B
+    // → ~852 B/user expected. Round to 900 B for slack.
+    // Hot set is further bounded by window TTL — users inactive past
+    // the widest window (7d here) age out of memory automatically.
+    const PER_ENTITY_BYTES = 900;
 
     const fmtGB = (bytes) => {
       const gib = bytes / (1024 ** 3);
@@ -830,12 +887,15 @@
     };
 
     const MemoryScale = () => {
-      const [idx, setIdx] = React.useState(2); // default 1M
+      const [idx, setIdx] = React.useState(2);       // default 1M
+      const [ha, setHA]   = React.useState(false);   // replica + HA = x3 nodes
       const tier  = MEMSCALE_TIERS[idx];
       const bytes = tier.users * PER_ENTITY_BYTES;
       // Pick the smallest instance whose RAM >= needed + 50% headroom.
       const needGib = (bytes * 1.5) / (1024 ** 3);
       const inst = AWS_INSTANCES.find(x => x.ram >= needGib) || AWS_INSTANCES[AWS_INSTANCES.length - 1];
+      const nodes = ha ? 3 : 1;
+      const hourly = inst.hr * nodes;
 
       return (
         <div className="memscale">
@@ -859,17 +919,67 @@
             <div className="memscale-card">
               <div className="lbl">memory footprint</div>
               <div className="val" style={{ color: 'var(--accent)' }}>{fmtGB(bytes)}</div>
-              <div className="sub">≈ 1 KB × entities (this 4-metric pipeline)</div>
+              <div className="sub">≈ 900 B × hot entities (weighted average, window TTL)</div>
             </div>
             <div className="memscale-card">
               <div className="lbl">aws fit (+50% headroom)</div>
-              <div className="val">{fmtMonthly(inst.hr)}</div>
-              <div className="sub">{inst.name} · {inst.ram} GiB RAM</div>
+              <div className="val">{fmtMonthly(hourly)}</div>
+              <div className="sub">
+                {inst.name} · {inst.ram} GiB RAM
+                {ha && <> · ×3 nodes</>}
+              </div>
             </div>
           </div>
 
+          <div style={{
+            marginTop: 16, padding: '14px 18px',
+            background: '#fff', border: '1px solid var(--border)',
+            borderRadius: 10,
+          }}>
+            <div style={{
+              fontFamily: 'var(--font-mono)', fontSize: 10.5,
+              color: 'var(--fg3)', letterSpacing: '0.04em',
+              textTransform: 'lowercase', marginBottom: 10,
+            }}>
+              per-user breakdown (~852 B expected, round to 900 B for slack)
+            </div>
+            <div style={{ display: 'grid', gap: 6 }}>
+              {[
+                { k: 'views_total',      desc: 'i64 counter',                                bytes: 8 },
+                { k: 'views_24h',        desc: '24 hourly buckets (i64 each)',               bytes: 192 },
+                { k: 'distinct_cats_7d', desc: '3-tier weighted: 95% ExactArray (128 B) + 5% HashSet (32 KB)', bytes: 480 },
+                { k: 'last_seen',        desc: 'i64 timestamp',                              bytes: 8 },
+                { k: 'user_id key',      desc: 'string + hash-table slot',                   bytes: 100 },
+                { k: 'row overhead',     desc: 'schema ptr + version + tombstone + padding', bytes: 64 },
+              ].map(row => (
+                <div key={row.k} style={{
+                  display: 'grid', gridTemplateColumns: '160px 1fr auto',
+                  alignItems: 'baseline', gap: 10,
+                  fontFamily: 'var(--font-mono)', fontSize: 12.5,
+                }}>
+                  <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{row.k}</span>
+                  <span style={{ color: 'var(--fg3)' }}>{row.desc}</span>
+                  <span style={{ color: 'var(--fg1)', fontWeight: 600 }}>{row.bytes >= 1024 ? `${(row.bytes / 1024).toFixed(1)} KB` : `${row.bytes} B`}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <label style={{
+            display: 'inline-flex', alignItems: 'center', gap: 10,
+            marginTop: 14, padding: '10px 14px',
+            background: '#fff', border: '1px solid var(--border)',
+            borderRadius: 10, cursor: 'pointer',
+            fontFamily: 'var(--font-sans)', fontSize: 13,
+            color: 'var(--fg1)', userSelect: 'none',
+          }}>
+            <input type="checkbox" checked={ha} onChange={e => setHA(e.target.checked)}
+                   style={{ width: 16, height: 16, accentColor: 'var(--accent)', cursor: 'pointer' }}/>
+            <span><strong>Replica + HA</strong> (1 primary + 2 replicas across AZs) &mdash; <span style={{ color: 'var(--fg3)' }}>×3 compute cost, no downtime on node loss</span></span>
+          </label>
+
           <div className="memscale-fine">
-            <strong style={{ color: 'var(--fg1)' }}>Events don't add memory.</strong> One billion events on 1M users is still ~1 GB &mdash; the events stream in, update the per-user row, and are forgotten (durably; the WAL persists them, but hot state is just the key table). Memory only grows when you add a new distinct user or a new metric column. Swap to a richer 30-metric feature pack and it's closer to 7 KB/user &mdash; multiply accordingly.
+            <strong style={{ color: 'var(--fg1)' }}>Events don't add memory.</strong> The sketch tiers and window TTL do the work: distinct-count promotes through ExactArray (≤16, ~128 B) → HashSet (≤1024, ~32 KB) → HLL p=12 (~4 KB, constant) per-user as cardinality grows, and any user inactive past the widest window (7d here) ages out of the hot set entirely. One billion events on 1M hot users is still well under a gigabyte. Only a new distinct user or a new metric column grows the footprint.
           </div>
         </div>
       );
@@ -1331,16 +1441,11 @@
                     </div>
                   </div>
 
-                  {rowsList.length >= 3 && (
-                    <Callout eyebrow="YOU BUILT THIS" mascot="pose-2" tint="warm" style={{ marginTop: 32, marginBottom: 8 }}>
-                      That grid above? That's live beava state rendered as a real dashboard. Every event you push updates a single user's card, atomically, and the query below re-fetches every 1.5 seconds so the UI stays fresh. The real server does the same thing at ~3M events/sec/core.
-                    </Callout>
-                  )}
                 </>
               )}
 
-              {/* Query panel always sits at the bottom. Clicking Run query
-                  materializes the dashboard above. */}
+              {/* Query panel sits below the dashboard cards.
+                  Clicking Run query materializes the dashboard above. */}
               {stage === 'dashboard' && (
                 <QueryPanel
                   table="Dashboard"
@@ -1352,7 +1457,26 @@
                   autoRefreshMs={1500}/>
               )}
 
+              {/* "You built this" callout sits AFTER the send-event composer +
+                  cards + query panel — so the reader has actually built the
+                  thing before being told they did. Always shown on the
+                  dashboard stage; doesn't wait for N pushes. */}
+              {stage === 'dashboard' && (
+                <Callout eyebrow="YOU BUILT THIS" mascot="pose-2" tint="warm" style={{ marginTop: 32, marginBottom: 8 }}>
+                  That grid above? That's live beava state rendered as a real dashboard. Every event you push updates a single user's card, atomically, and the query above re-fetches every 1.5 seconds so the UI stays fresh. The real server does the same thing at ~3M events/sec/core.
+                </Callout>
+              )}
+
+              {/* RAM + AWS pricing always shown on the dashboard stage so the
+                  cost story is visible whether or not the user has pushed
+                  events yet. */}
               {stage === 'dashboard' && <MemoryScale/>}
+
+              {stage === 'dashboard' && (
+                <AskClaude
+                  command="/beava estimate ram for this pipeline at my scale"
+                  blurb={<>Don't want to do the arithmetic? The <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12, background: '#fff', padding: '1px 5px', borderRadius: 4 }}>/beava</code> skill reads your pipeline file, asks how many distinct entities you expect (users, IPs, devices, accounts, whatever your key axis is), and prints the per-user byte breakdown, total RAM, suggested AWS instance, and monthly bill. It also flags any metric that scales with event count instead of entity count so nothing sneaks up on you.</>}/>
+              )}
             </div>
           </section>
 

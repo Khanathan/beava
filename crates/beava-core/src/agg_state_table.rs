@@ -65,6 +65,10 @@ impl EntityKey {
                 Some(Value::Bool(b)) => b.to_string(),
                 Some(Value::Datetime(ms)) => ms.to_string(),
                 Some(Value::Json(_)) => return None, // Json not sane as group key
+                // Phase 11 (D-01): structured outputs (List/Map) are never
+                // legal as group-by keys — they only appear as aggregation
+                // outputs. Drop the event for this aggregation if encountered.
+                Some(Value::List(_)) | Some(Value::Map(_)) => return None,
             };
             pairs.push((key.clone(), canonical));
         }
@@ -158,6 +162,7 @@ mod tests {
             sub_window_ms: None,
             sigma: None,
             sketch_params: None,
+            ext: Default::default(),
         }
     }
 
@@ -172,6 +177,7 @@ mod tests {
             sub_window_ms: None,
             sigma: None,
             sketch_params: None,
+            ext: Default::default(),
         }
     }
 

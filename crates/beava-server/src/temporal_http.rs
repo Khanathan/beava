@@ -164,6 +164,8 @@ fn row_to_json(row: &Row) -> serde_json::Value {
             Value::Bytes(_) => JsonValue::Null,
             Value::Datetime(ms) => JsonValue::Number((*ms).into()),
             Value::Json(j) => j.clone(),
+            // Phase 11: structured outputs not expected in row payloads.
+            Value::List(_) | Value::Map(_) => JsonValue::Null,
         };
         obj.insert(k.clone(), jv);
     }

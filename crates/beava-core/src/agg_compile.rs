@@ -97,6 +97,16 @@ struct AggParams {
     sub_window_invalid: bool,
     /// Plan 10-05: sketch construction params parsed from JSON kwargs.
     sketch_params: Option<SketchParams>,
+    // Phase 11 extended params (use ext_ prefix to avoid collision with `n` above).
+    ext_buckets: Option<Vec<f64>>,
+    ext_n: Option<usize>,
+    ext_k: Option<usize>,
+    ext_precision: Option<u32>,
+    ext_lat_field: Option<String>,
+    ext_lon_field: Option<String>,
+    ext_samples: Option<usize>,
+    ext_categories: Option<Vec<String>>,
+    ext_max_categories: Option<usize>,
 }
 
 fn extract_agg_params(params: &serde_json::Value) -> AggParams {
@@ -120,7 +130,6 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
     // Phase 9 — half_life parsing.
     let (half_life_ms, half_life_invalid) = match params.get("half_life").and_then(|v| v.as_str()) {
         Some(s) => match parse_duration_to_ms(s) {
-            // half_life requires a finite positive value; reject "forever" (None).
             Ok(Some(ms)) if ms > 0 => (Some(ms), false),
             _ => (None, true),
         },
@@ -137,7 +146,6 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
             None => (None, false),
         };
 
-    // Phase 9 — sigma parsing (numeric).
     let sigma = params.get("sigma").and_then(|v| v.as_f64());
 
     // Plan 10-05: parse sketch kwargs (q, k, capacity, fpr / target_fpr / expected_n).
@@ -167,6 +175,43 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
         None
     };
 
+    // Phase 11 extended params (buffer + geo).
+    let ext_buckets = params.get("buckets").and_then(|v| v.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|x| x.as_f64().or_else(|| x.as_i64().map(|n| n as f64)))
+            .collect::<Vec<f64>>()
+    });
+    let ext_n = params.get("n").and_then(|v| v.as_u64()).map(|n| n as usize);
+    let ext_k = params.get("k").and_then(|v| v.as_u64()).map(|n| n as usize);
+    let ext_precision = params
+        .get("precision")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32);
+    let ext_lat_field = params
+        .get("lat")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let ext_lon_field = params
+        .get("lon")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let ext_samples = params
+        .get("samples")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+    let ext_categories = params
+        .get("categories")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect::<Vec<String>>()
+        });
+    let ext_max_categories = params
+        .get("max_categories")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+
     AggParams {
         field,
         window,
@@ -178,6 +223,15 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
         half_life_invalid,
         sub_window_invalid,
         sketch_params,
+        ext_buckets,
+        ext_n,
+        ext_k,
+        ext_precision,
+        ext_lat_field,
+        ext_lon_field,
+        ext_samples,
+        ext_categories,
+        ext_max_categories,
     }
 }
 
@@ -237,6 +291,21 @@ fn parse_agg_kind(op: &str) -> Option<AggKind> {
         "top_k" => Some(AggKind::TopK),
         "bloom_member" => Some(AggKind::BloomMember),
         "entropy" => Some(AggKind::Entropy),
+        // Phase 11 bounded-buffer operators (AGG-BUFFER-01..07)
+        "histogram" => Some(AggKind::Histogram),
+        "hour_of_day_histogram" => Some(AggKind::HourOfDayHistogram),
+        "dow_hour_histogram" => Some(AggKind::DowHourHistogram),
+        "seasonal_deviation" => Some(AggKind::SeasonalDeviation),
+        "event_type_mix" => Some(AggKind::EventTypeMix),
+        "most_recent_n" => Some(AggKind::MostRecentN),
+        "reservoir_sample" => Some(AggKind::ReservoirSample),
+        // Phase 11 geo operators (AGG-GEO-01..06)
+        "geo_velocity" => Some(AggKind::GeoVelocity),
+        "geo_distance" => Some(AggKind::GeoDistance),
+        "geo_spread" => Some(AggKind::GeoSpread),
+        "unique_cells" => Some(AggKind::UniqueCells),
+        "geo_entropy" => Some(AggKind::GeoEntropy),
+        "distance_from_home" => Some(AggKind::DistanceFromHome),
         _ => None,
     }
 }
@@ -277,6 +346,20 @@ fn agg_kind_rejects_window(kind: AggKind) -> bool {
             | AggKind::Streak
             | AggKind::MaxStreak
             | AggKind::NegativeStreak
+            // Phase 11: all buffer + geo ops are windowless (D-08).
+            | AggKind::Histogram
+            | AggKind::HourOfDayHistogram
+            | AggKind::DowHourHistogram
+            | AggKind::SeasonalDeviation
+            | AggKind::EventTypeMix
+            | AggKind::MostRecentN
+            | AggKind::ReservoirSample
+            | AggKind::GeoVelocity
+            | AggKind::GeoDistance
+            | AggKind::GeoSpread
+            | AggKind::UniqueCells
+            | AggKind::GeoEntropy
+            | AggKind::DistanceFromHome
     )
 }
 
@@ -699,6 +782,24 @@ pub fn compile_aggregations_from_nodes(
                     },
                 };
 
+                // Phase 11 (D-08): buffer/geo ops are lifetime-only in v0.
+                // Reject `window=...` with a clear error. (`agg_kind_rejects_window`
+                // covers both Phase 8 lifetime ops and Phase 11 buffer/geo ops.)
+                if agg_kind_rejects_window(kind) && window_ms.is_some() {
+                    errors.push(ValidationError {
+                        code: ErrorCode::AggregationInvalidWindow,
+                        path: format!(
+                            "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.window"
+                        ),
+                        reason: format!(
+                            "op '{}' does not support 'window=' in v0 (Phase 11 D-08)",
+                            agg_spec.op
+                        ),
+                    });
+                    deriv_errors = true;
+                    continue;
+                }
+
                 // Where predicate parsing + field reference check.
                 let where_expr = match &params.where_str {
                     None => None,
@@ -743,6 +844,17 @@ pub fn compile_aggregations_from_nodes(
                     },
                 };
 
+                let ext = crate::agg_op::AggExtParams {
+                    buckets: params.ext_buckets,
+                    n: params.ext_n,
+                    k: params.ext_k,
+                    precision: params.ext_precision,
+                    lat_field: params.ext_lat_field,
+                    lon_field: params.ext_lon_field,
+                    samples: params.ext_samples,
+                    categories: params.ext_categories,
+                    max_categories: params.ext_max_categories,
+                };
                 features.push(NamedAggOp {
                     feature_name: feature_name.clone(),
                     descriptor: AggOpDescriptor {
@@ -756,6 +868,7 @@ pub fn compile_aggregations_from_nodes(
                         sub_window_ms: params.sub_window_ms,
                         sigma: params.sigma,
                         sketch_params: params.sketch_params.clone(),
+                        ext,
                     },
                 });
             }

@@ -33,6 +33,7 @@ fn desc_with(
         sub_window_ms: sub_window,
         sigma,
         sketch_params: None,
+        ext: Default::default(),
     }
 }
 

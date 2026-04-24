@@ -533,7 +533,7 @@ impl WindowedOp {
                     Value::F64(matching as f64 / total as f64)
                 }
             }
-            // Phase 8 + Phase 9 ops are never wrapped in WindowedOp (compile-time
+            // Phase 8 + 9 + 11 ops are never wrapped in WindowedOp (compile-time
             // invariant). Catch-all returns Null defensively.
             _ => Value::Null,
         }
@@ -543,11 +543,10 @@ impl WindowedOp {
 /// Create a fresh lifetime AggOp for a given kind (used to initialise buckets).
 ///
 /// `WindowedOp` supports Phase 5 core ops + Phase 10 sketch ops (except
-/// `BloomMember` which is windowless-only). Phase 8 + Phase 9 ops are
+/// `BloomMember` which is windowless-only). Phase 8 + 9 + 11 ops are
 /// lifetime-only and `agg_compile` validation rejects `window=` for them.
-/// `new_lifetime` handles sketches via `sketch_params`; for Phase 8/9 kinds
-/// (which shouldn't reach here) it delegates to `new_lifetime_full` with a
-/// default descriptor for safety.
+/// `new_lifetime` handles sketches via `sketch_params`; for non-windowable
+/// kinds it delegates to `new_lifetime_full` with a default descriptor.
 fn fresh_op(kind: AggKind, sketch_params: &SketchParams) -> AggOp {
     AggOp::new_lifetime(kind, Some(sketch_params))
 }

@@ -43,6 +43,7 @@ fn windowless_desc(kind: AggKind, field: Option<&str>) -> AggOpDescriptor {
         sub_window_ms: None,
         sigma: None,
         sketch_params: None,
+        ext: Default::default(),
     }
 }
 
@@ -215,6 +216,7 @@ fn build_registry() -> Registry {
                 sub_window_ms: None,
                 sigma: None,
                 sketch_params: None,
+                ext: Default::default(),
             },
         )],
     );

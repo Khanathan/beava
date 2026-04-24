@@ -15,6 +15,14 @@
 //! D-01: enum + match arm dispatch; no Box<dyn AggOp>.
 //! D-06: no wall-clock reads in apply paths (forbidden: SystemTime now, rand).
 
+use crate::agg_buffer::{
+    DowHourHistogramState, EventTypeMixState, HistogramState, HourOfDayHistogramState,
+    MostRecentNState, ReservoirSampleState, SeasonalDeviationState,
+};
+use crate::agg_geo::{
+    DistanceFromHomeState, GeoDistanceState, GeoEntropyState, GeoSpreadState, GeoVelocityState,
+    UniqueCellsState,
+};
 use crate::agg_state::{
     AvgState, BloomMemberStateWrap, CountDistinctStateWrap, CountState, EntropyStateWrap,
     FirstNState, FirstSeenInWindowState, FirstState, LagState, LastNState, LastState, MaxState,
@@ -100,29 +108,54 @@ pub enum AggKind {
     BloomMember,
     /// AGG-SKETCH-05 (Plan 10-05)
     Entropy,
+    // ── Phase 11: bounded-buffer + geo ───────────────────────────────────────
+    Histogram,
+    HourOfDayHistogram,
+    DowHourHistogram,
+    SeasonalDeviation,
+    EventTypeMix,
+    MostRecentN,
+    ReservoirSample,
+    GeoVelocity,
+    GeoDistance,
+    GeoSpread,
+    UniqueCells,
+    GeoEntropy,
+    DistanceFromHome,
 }
 
 /// Plan 10-05: optional sketch construction params attached to AggOpDescriptor.
-/// Threaded through to AggOp::new + WindowedOp bucket initialisation so per-bucket
-/// sketches honor user-supplied k / q / fpr / capacity.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SketchParams {
-    /// percentile: target quantile in (0.0, 1.0). Default 0.5.
     pub percentile_q: Option<f64>,
-    /// top_k: top-k size. Default 10.
     pub top_k_k: Option<usize>,
-    /// bloom_member: expected capacity (n). Default 1024.
     pub bloom_capacity: Option<usize>,
-    /// bloom_member: target false positive rate. Default 0.01.
     pub bloom_fpr: Option<f64>,
 }
 
+/// Phase 11: extended params for buffer + geo operators (Plan 11-02).
+/// Default = empty (None-valued); core/sketch ops never consult this struct.
+#[derive(Debug, Clone, Default)]
+pub struct AggExtParams {
+    pub buckets: Option<Vec<f64>>,
+    pub n: Option<usize>,
+    pub k: Option<usize>,
+    pub precision: Option<u32>,
+    pub lat_field: Option<String>,
+    pub lon_field: Option<String>,
+    pub samples: Option<usize>,
+    pub categories: Option<Vec<String>>,
+    pub max_categories: Option<usize>,
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for AggKind {
+    fn default() -> Self {
+        AggKind::Count
+    }
+}
+
 impl AggKind {
-    /// True for ops that participate in the existing `WindowedOp` 64-bucket
-    /// fold infrastructure (Phase 5 core ops + Phase 10 sketches except
-    /// BloomMember which is windowless-only). Phase 8 + 9 ops manage their
-    /// own time semantics and are always windowless from `WindowedOp`'s
-    /// perspective.
     pub fn supports_windowed_wrap(self) -> bool {
         matches!(
             self,
@@ -141,7 +174,6 @@ impl AggKind {
         )
     }
 
-    /// True for decay ops that require `half_life` parameter at register time.
     pub fn requires_half_life(self) -> bool {
         matches!(
             self,
@@ -160,6 +192,10 @@ impl AggKind {
 ///
 /// `where_expr` gates the apply-path update via `agg_where::evaluate_where_predicate`.
 /// Added in Plan 05-02 (predicate threading, SDK-AGG-04).
+///
+/// `ext` carries Phase 11-family optional params (buckets, n, k, precision,
+/// lat_field, lon_field, samples, categories). Default = empty / no extended
+/// config so existing core ops stay source-compatible.
 #[derive(Debug, Clone)]
 pub struct AggOpDescriptor {
     pub kind: AggKind,
@@ -183,6 +219,8 @@ pub struct AggOpDescriptor {
     /// Plan 10-05: per-op sketch construction params (k, q, fpr, capacity).
     /// None for non-sketch ops.
     pub sketch_params: Option<SketchParams>,
+    /// Phase 11 extended params (optional; None-valued for non-Phase-11 ops).
+    pub ext: AggExtParams,
 }
 
 impl Default for AggOpDescriptor {
@@ -198,6 +236,7 @@ impl Default for AggOpDescriptor {
             sub_window_ms: None,
             sigma: None,
             sketch_params: None,
+            ext: AggExtParams::default(),
         }
     }
 }
@@ -274,6 +313,13 @@ pub struct OutlierCountOp {
 /// Live per-(feature, entity) aggregation state. Enum dispatch; no Box<dyn>.
 ///
 /// AGG-CORE-01..09 per Phase 5 D-01; AGG-DECAY/VEL/Z added Phase 9.
+///
+/// Phase 11 (D-08): buffer/geo variants enlarge the discriminant to ~600 B
+/// (driven by `SeasonalDeviationState`'s 24-hour bucket array). We accept the
+/// size delta intentionally — every aggregation entity allocates exactly one
+/// `Vec<AggOp>` for its slots, and per-feature box indirection would dominate
+/// the small per-event update path that Phase 13 needs to keep <300 ns.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AggOp {
     // ── Phase 5 ──────────────────────────────────────────────────────────
@@ -299,38 +345,23 @@ pub enum AggOp {
     /// AGG-CORE-09: any op wrapped in 64-bucket event-time tumbling
     Windowed(Box<WindowedOp>),
     // ── Phase 8: point/ordinal ────────────────────────────────────────────────
-    /// AGG-POINT-01
     First(FirstState),
-    /// AGG-POINT-02
     Last(LastState),
-    /// AGG-POINT-03
     FirstN(FirstNState),
-    /// AGG-POINT-04
     LastN(LastNState),
-    /// AGG-POINT-05
     Lag(LagState),
     // ── Phase 8: recency markers ──────────────────────────────────────────────
-    /// AGG-RECENCY-first_seen
     FirstSeen(SeenState),
-    /// AGG-RECENCY-last_seen
     LastSeen(SeenState),
-    /// AGG-RECENCY-age
     Age(SeenState),
-    /// AGG-RECENCY-has_seen
     HasSeen(SeenState),
-    /// AGG-RECENCY-time_since
     TimeSince(SeenState),
-    /// AGG-RECENCY-time_since_last_n
     TimeSinceLastN(TimeSinceLastNState),
     // ── Phase 8: streak ───────────────────────────────────────────────────────
-    /// AGG-RECENCY-streak (current consecutive count)
     Streak(StreakState),
-    /// AGG-RECENCY-max_streak (high-watermark of streak)
     MaxStreak(StreakState),
-    /// AGG-RECENCY-negative_streak
     NegativeStreak(NegativeStreakState),
     // ── Phase 8: windowed recency (lifetime-state) ────────────────────────────
-    /// AGG-RECENCY-first_seen_in_window
     FirstSeenInWindow(FirstSeenInWindowState),
     // ── Phase 9: decay ────────────────────────────────────────────────────
     Ewma(EwmaOp),
@@ -350,6 +381,20 @@ pub enum AggOp {
     ValueChangeCount(ValueChangeCountState),
     // ── Phase 9: entity z-score ───────────────────────────────────────────
     ZScore(ZScoreState),
+    // ── Phase 11 (D-08 all windowless in v0) ─────────────────────────────────
+    Histogram(HistogramState),
+    HourOfDayHistogram(HourOfDayHistogramState),
+    DowHourHistogram(DowHourHistogramState),
+    SeasonalDeviation(SeasonalDeviationState),
+    EventTypeMix(EventTypeMixState),
+    MostRecentN(MostRecentNState),
+    ReservoirSample(ReservoirSampleState),
+    GeoVelocity(GeoVelocityState),
+    GeoDistance(GeoDistanceState),
+    GeoSpread(GeoSpreadState),
+    UniqueCells(UniqueCellsState),
+    GeoEntropy(GeoEntropyState),
+    DistanceFromHome(DistanceFromHomeState),
 }
 
 impl AggOp {
@@ -357,14 +402,14 @@ impl AggOp {
     ///
     /// If `desc.window_ms.is_some()`, wraps the inner op in `WindowedOp`.
     /// Otherwise returns the lifetime (windowless) variant.
+    ///
+    /// Phase 11 (D-08): buffer/geo operators are always windowless in v0; the
+    /// register-time compiler rejects `window=...` for those op names.
     pub fn new(desc: &AggOpDescriptor) -> Self {
-        // Phase 5 windowed wrap only applies to core ops (Count/Sum/Avg/Min/Max/
-        // Variance/StdDev/Ratio). Phase 8 + 9 ops use lifetime state.
-        // `FirstSeenInWindow` (Phase 8) carries `window_ms` as a lifetime
-        // parameter, NOT a tumbling-bucket window — handle it before fallthrough.
+        // Phase 5 + Phase 10 sketches support Windowed wrap. Phase 8/9/11 ops
+        // are lifetime-only. `FirstSeenInWindow` carries window_ms as a
+        // lifetime parameter (NOT a tumbling-bucket window).
         if let Some(window_ms) = desc.window_ms {
-            // Phase 8 — `FirstSeenInWindow` carries `window_ms` as a lifetime
-            // parameter (NOT a tumbling-bucket window).
             if matches!(desc.kind, AggKind::FirstSeenInWindow) {
                 return AggOp::FirstSeenInWindow(FirstSeenInWindowState::new(window_ms));
             }
@@ -375,7 +420,7 @@ impl AggOp {
                     desc.sketch_params.clone().unwrap_or_default(),
                 )));
             }
-            // Phase 8/9 ops with a window= silently fall through to lifetime
+            // Phase 8/9/11 ops with a window= silently fall through to lifetime
             // construction (compile-time validation should have rejected this).
         }
         // Lifetime construction: inline because Phase 8/9 ops need extra
@@ -483,6 +528,56 @@ impl AggOp {
                 AggOp::BloomMember(Box::new(BloomMemberStateWrap::with_params(cap, fpr)))
             }
             AggKind::Entropy => AggOp::Entropy(Box::default()),
+            // Phase 11 — buffer + geo
+            AggKind::Histogram => AggOp::Histogram(HistogramState::new(
+                desc.ext.buckets.clone().unwrap_or_default(),
+            )),
+            AggKind::HourOfDayHistogram => {
+                AggOp::HourOfDayHistogram(HourOfDayHistogramState::default())
+            }
+            AggKind::DowHourHistogram => AggOp::DowHourHistogram(DowHourHistogramState::default()),
+            AggKind::SeasonalDeviation => {
+                AggOp::SeasonalDeviation(SeasonalDeviationState::default())
+            }
+            AggKind::EventTypeMix => AggOp::EventTypeMix(EventTypeMixState::new(
+                desc.ext.max_categories.unwrap_or(256),
+                desc.ext.categories.clone(),
+            )),
+            AggKind::MostRecentN => {
+                AggOp::MostRecentN(MostRecentNState::new(desc.ext.n.unwrap_or(10)))
+            }
+            AggKind::ReservoirSample => {
+                AggOp::ReservoirSample(ReservoirSampleState::new(desc.ext.k.unwrap_or(10)))
+            }
+            AggKind::GeoVelocity => AggOp::GeoVelocity(GeoVelocityState::with_fields(
+                desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
+                desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
+            )),
+            AggKind::GeoDistance => AggOp::GeoDistance(GeoDistanceState::with_fields(
+                desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
+                desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
+            )),
+            AggKind::GeoSpread => AggOp::GeoSpread(GeoSpreadState::with_fields(
+                desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
+                desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
+            )),
+            AggKind::UniqueCells => AggOp::UniqueCells(UniqueCellsState::with_fields(
+                desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
+                desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
+                desc.ext.precision.unwrap_or(10),
+            )),
+            AggKind::GeoEntropy => AggOp::GeoEntropy(GeoEntropyState::with_fields(
+                desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
+                desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
+                desc.ext.precision.unwrap_or(10),
+            )),
+            AggKind::DistanceFromHome => {
+                AggOp::DistanceFromHome(DistanceFromHomeState::with_fields(
+                    desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
+                    desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
+                    desc.ext.samples.unwrap_or(100),
+                ))
+            }
         }
     }
 
@@ -521,7 +616,7 @@ impl AggOp {
                 AggOp::BloomMember(Box::new(BloomMemberStateWrap::with_params(cap, fpr)))
             }
             AggKind::Entropy => AggOp::Entropy(Box::default()),
-            // Phase 8 + Phase 9 ops never reach this path — they aren't
+            // Phase 8 + Phase 9 + Phase 11 ops never reach this path — they aren't
             // wrapped in WindowedOp (the only caller of `new_lifetime`).
             // For safety, delegate to `new_lifetime_full` with a default
             // descriptor so this stays correct if a future caller appears.
@@ -532,9 +627,27 @@ impl AggOp {
         }
     }
 
+    /// Returns true iff the op is a Phase 5 core op that supports the 64-bucket
+    /// Windowed wrap. Used by serialization/debugging helpers; keep crate-public.
+    #[allow(dead_code)]
+    pub(crate) fn is_core(&self) -> bool {
+        matches!(
+            self,
+            AggOp::Count(_)
+                | AggOp::Sum(_)
+                | AggOp::Avg(_)
+                | AggOp::Min(_)
+                | AggOp::Max(_)
+                | AggOp::Variance(_)
+                | AggOp::StdDev(_)
+                | AggOp::Ratio(_)
+        )
+    }
+
     /// Update state with one event row. Dispatches to the concrete per-op impl.
     ///
-    /// - `field`: the field to aggregate over (None for Count/Ratio)
+    /// - `field`: the field to aggregate over (None for Count/Ratio and for
+    ///   buffer/geo ops which carry their own field refs in state)
     /// - `where_matched`: pre-evaluated predicate result (Plan 05-02 wires this
     ///   from an Expr evaluator; here callers set it directly)
     pub fn update(
@@ -617,6 +730,20 @@ impl AggOp {
             }
             AggOp::ValueChangeCount(s) => s.update(row, event_time_ms, field, where_matched),
             AggOp::ZScore(s) => s.update(row, event_time_ms, field, where_matched),
+            // ── Phase 11 ────────────────────────────────────────────────
+            AggOp::Histogram(s) => s.update(row, field, where_matched),
+            AggOp::HourOfDayHistogram(s) => s.update(event_time_ms, where_matched),
+            AggOp::DowHourHistogram(s) => s.update(event_time_ms, where_matched),
+            AggOp::SeasonalDeviation(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::EventTypeMix(s) => s.update(row, field, where_matched),
+            AggOp::MostRecentN(s) => s.update(row, field, where_matched),
+            AggOp::ReservoirSample(s) => s.update(row, field, where_matched),
+            AggOp::GeoVelocity(s) => s.update(row, event_time_ms, where_matched),
+            AggOp::GeoDistance(s) => s.update(row, where_matched),
+            AggOp::GeoSpread(s) => s.update(row, where_matched),
+            AggOp::UniqueCells(s) => s.update(row, where_matched),
+            AggOp::GeoEntropy(s) => s.update(row, where_matched),
+            AggOp::DistanceFromHome(s) => s.update(row, where_matched),
         }
     }
 
@@ -712,13 +839,27 @@ impl AggOp {
             AggOp::OutlierCount(op) => op.state.query(),
             AggOp::ValueChangeCount(s) => s.query(),
             AggOp::ZScore(s) => s.query(),
+            // Phase 11
+            AggOp::Histogram(s) => s.query(),
+            AggOp::HourOfDayHistogram(s) => s.query(),
+            AggOp::DowHourHistogram(s) => s.query(),
+            AggOp::SeasonalDeviation(s) => s.query(),
+            AggOp::EventTypeMix(s) => s.query(),
+            AggOp::MostRecentN(s) => s.query(),
+            AggOp::ReservoirSample(s) => s.query(),
+            AggOp::GeoVelocity(s) => s.query(),
+            AggOp::GeoDistance(s) => s.query(),
+            AggOp::GeoSpread(s) => s.query(),
+            AggOp::UniqueCells(s) => s.query(),
+            AggOp::GeoEntropy(s) => s.query(),
+            AggOp::DistanceFromHome(s) => s.query(),
         }
     }
 }
 
-// (Removed during merge: `is_phase5_core_kind` was a Phase 8 helper that
-// duplicated `AggKind::supports_windowed_wrap()` introduced in Phase 9. The
-// method is now the canonical predicate.)
+// (Phase 11's `is_windowable_core` removed during merge — `AggKind::
+// supports_windowed_wrap()` is the canonical predicate, also covers Phase 10
+// sketches.)
 
 // ─── output_type_for ─────────────────────────────────────────────────────────
 
@@ -808,6 +949,24 @@ pub fn output_type_for(
                     field: field.to_string(),
                 })
         }
+        // Phase 11: structured outputs have no FieldType representation — they
+        // appear only as aggregation feature outputs (Value::List / Value::Map).
+        // The schema propagator treats these as FieldType::Str for placeholder
+        // naming (no downstream derivation can consume them as scalars in v0).
+        AggKind::Histogram
+        | AggKind::HourOfDayHistogram
+        | AggKind::DowHourHistogram
+        | AggKind::EventTypeMix
+        | AggKind::MostRecentN
+        | AggKind::ReservoirSample => Ok(FieldType::Str),
+        // Scalar Phase 11 outputs
+        AggKind::SeasonalDeviation
+        | AggKind::GeoVelocity
+        | AggKind::GeoDistance
+        | AggKind::GeoSpread
+        | AggKind::GeoEntropy
+        | AggKind::DistanceFromHome => Ok(FieldType::F64),
+        AggKind::UniqueCells => Ok(FieldType::I64),
     }
 }
 

@@ -780,6 +780,15 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::Bytes(b) => serde_json::Value::String(format!("0x{}", hex::encode_lower(b))),
         Value::Datetime(t) => serde_json::Value::Number((*t).into()),
         Value::Json(j) => j.clone(),
+        // Phase 11 structured outputs: List/Map are agg-only outputs and
+        // shouldn't normally appear in JSON-projected scalars; render
+        // recursively in case they leak in.
+        Value::List(items) => {
+            serde_json::Value::Array(items.iter().map(value_to_json).collect())
+        }
+        Value::Map(m) => serde_json::Value::Object(
+            m.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect(),
+        ),
     }
 }
 
@@ -811,6 +820,8 @@ fn hash_value(v: &Value) -> u64 {
         Value::Bytes(b) => b.hash(&mut h),
         Value::Null => 0u64.hash(&mut h),
         Value::Json(j) => j.to_string().hash(&mut h),
+        // Phase 11: structured outputs hashed by their JSON projection.
+        Value::List(_) | Value::Map(_) => value_to_json(v).to_string().hash(&mut h),
     }
     h.finish()
 }
@@ -826,6 +837,8 @@ fn value_to_key_string(v: &Value) -> Option<String> {
         Value::Null => None,
         Value::Bytes(_) => None,
         Value::Json(_) => None,
+        // Phase 11: structured outputs aren't sane keys; drop.
+        Value::List(_) | Value::Map(_) => None,
     }
 }
 
@@ -944,6 +957,8 @@ impl TopKStateWrap {
             Value::Bool(b) => TopKValue::Bool(*b),
             Value::Datetime(ms) => TopKValue::Int(*ms),
             Value::Bytes(_) | Value::Null | Value::Json(_) => return,
+            // Phase 11 structured outputs aren't legal TopK keys; drop.
+            Value::List(_) | Value::Map(_) => return,
         };
         self.inner.insert(tkv);
     }

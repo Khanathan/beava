@@ -132,6 +132,7 @@ fn cast_to_str(v: &Value) -> Value {
         Value::Bytes(_) => Value::Null, // no implicit bytes→str without encoding spec
         Value::Datetime(ms) => Value::Str(ms.to_string()),
         Value::Json(_) => Value::Null,
+        Value::List(_) | Value::Map(_) => Value::Null,
     }
 }
 
@@ -145,6 +146,7 @@ fn cast_to_int(v: &Value) -> Value {
         Value::Bytes(_) => Value::Null,
         Value::Datetime(ms) => Value::I64(*ms),
         Value::Json(_) => Value::Null,
+        Value::List(_) | Value::Map(_) => Value::Null,
     }
 }
 
@@ -158,6 +160,7 @@ fn cast_to_float(v: &Value) -> Value {
         Value::Bytes(_) => Value::Null,
         Value::Datetime(ms) => Value::F64(*ms as f64),
         Value::Json(_) => Value::Null,
+        Value::List(_) | Value::Map(_) => Value::Null,
     }
 }
 
@@ -175,6 +178,7 @@ fn cast_to_bool(v: &Value) -> Value {
         Value::Bytes(_) => Value::Null,
         Value::Datetime(ms) => Value::Bool(*ms != 0),
         Value::Json(_) => Value::Null,
+        Value::List(_) | Value::Map(_) => Value::Null,
     }
 }
 

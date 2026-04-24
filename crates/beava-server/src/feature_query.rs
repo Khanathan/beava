@@ -277,6 +277,9 @@ fn compute_query_time_ms(dev_agg_state: &DevAggState) -> i64 {
 ///
 /// Mirror of the helper in `registry_debug.rs` — duplicated here to keep
 /// `feature_query.rs` self-contained (no dep on the debug module).
+///
+/// Phase 11 (D-01): `Value::List` → JSON array; `Value::Map` → JSON object.
+/// Recursive on element values. NaN floats serialise as JSON null.
 pub(crate) fn value_to_json(v: Value) -> serde_json::Value {
     match v {
         Value::Null => serde_json::Value::Null,
@@ -289,6 +292,12 @@ pub(crate) fn value_to_json(v: Value) -> serde_json::Value {
         Value::Bytes(_) => serde_json::Value::Null,
         Value::Datetime(ms) => serde_json::Value::Number(ms.into()),
         Value::Json(j) => j,
+        Value::List(items) => {
+            serde_json::Value::Array(items.into_iter().map(value_to_json).collect())
+        }
+        Value::Map(m) => {
+            serde_json::Value::Object(m.into_iter().map(|(k, v)| (k, value_to_json(v))).collect())
+        }
     }
 }
 
@@ -407,6 +416,7 @@ mod tests {
                         sub_window_ms: None,
                         sigma: None,
                         sketch_params: None,
+                        ext: Default::default(),
                     },
                 },
                 NamedAggOp {
@@ -421,6 +431,7 @@ mod tests {
                         sub_window_ms: None,
                         sigma: None,
                         sketch_params: None,
+                        ext: Default::default(),
                     },
                 },
             ],
