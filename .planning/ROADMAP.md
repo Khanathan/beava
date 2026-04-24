@@ -444,6 +444,21 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 **Downstream gating:** Unblocks the Phase 13 ship-gate perf numbers (≥3M EPS/core on the three pipeline shapes) because the apply loop is today the bottleneck — the Mutex caps us at ~17k EPS regardless of fsync cost.
 
+### Phase 15: Event-time PIT temporal store — 📋 PLANNED
+
+**Status:** Plans landed 2026-04-24. Blocks Phase 12 Plan 04.
+
+**Goal:** Swap the Phase-11.5 LSN-keyed MVCC chain to a `(event_time_ms, lsn)` composite key so stream↔table joins resolve point-in-time against event-time, out-of-order upserts self-heal without replay, retention derives from the DAG watermark, and `GET /table?as_of=...` moves behind the dev gate.
+
+**Depends on:** Phase 11.5 (MVCC + retraction primitive), Phase 14 (watermark state must exist before sweep can use it).
+
+**Plans:** 3 plans
+- [ ] 15-01-PLAN.md — Core chain refactor: `(event_time, lsn)` composite + `lookup_at_event_time` + retraction preserved
+- [ ] 15-02-PLAN.md — Registry DAG walk for `derived_retention_ms` + event-time sweep + `BV-I-RETENTION-GROWTH` diagnostic
+- [ ] 15-03-PLAN.md — HTTP dev-gating + `event_time_field` enforcement + snapshot v2 + criterion bench + SUMMARY + VERIFICATION
+
+**Success criteria:** see `.planning/phases/15-event-time-pit/15-CONTEXT.md` (SC1–SC7).
+
 ---
 
 ## Traceability (preview)
