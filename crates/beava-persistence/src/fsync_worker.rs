@@ -294,8 +294,9 @@ async fn worker_loop(
                             &mut next_lsn,
                             &mut current_start_lsn,
                             &durable_tx,
-                        );
-                        let close = writer.sync_data();
+                        ).await;
+                        // Final close fsync also off-runtime.
+                        let close = blocking_sync_data(&mut writer).await;
                         let combined = res.and_then(|_| close.map_err(PersistError::Io));
                         let _ = ack.send(combined);
                         return;
@@ -309,8 +310,8 @@ async fn worker_loop(
                             &mut next_lsn,
                             &mut current_start_lsn,
                             &durable_tx,
-                        );
-                        let _ = writer.sync_data();
+                        ).await;
+                        let _ = blocking_sync_data(&mut writer).await;
                         return;
                     }
                 }
@@ -341,8 +342,8 @@ async fn worker_loop(
                             &mut next_lsn,
                             &mut current_start_lsn,
                             &durable_tx,
-                        );
-                        let _ = writer.sync_data();
+                        ).await;
+                        let _ = blocking_sync_data(&mut writer).await;
                         return;
                     }
                 }
@@ -364,9 +365,33 @@ async fn worker_loop(
                 &mut next_lsn,
                 &mut current_start_lsn,
                 &durable_tx,
-            );
+            )
+            .await;
         }
     }
+}
+
+/// Phase 13.1: helper that flushes the in-memory buffer on the runtime
+/// thread (cheap memcpy + write syscall to kernel page cache) then issues
+/// the blocking `sync_data()` syscall on a `spawn_blocking` thread via a
+/// cloned file descriptor. The cloned fd shares the same kernel file
+/// description so the fsync durably persists previously-flushed bytes.
+///
+/// Falls back to inline fsync if the file handle can't be cloned (rare —
+/// would only happen on FD exhaustion). Falling back is correct, just
+/// returns to the pre-fix blocking behavior for that one call.
+async fn blocking_sync_data(writer: &mut crate::writer::WalWriter) -> std::io::Result<()> {
+    writer.flush_buffer()?;
+    let cloned = match writer.try_clone_file() {
+        Ok(f) => f,
+        Err(_) => {
+            // Best-effort fallback — keep correctness even if cloning fails.
+            return writer.sync_data();
+        }
+    };
+    tokio::task::spawn_blocking(move || cloned.sync_data())
+        .await
+        .map_err(|e| std::io::Error::other(format!("spawn_blocking join error: {e}")))?
 }
 
 /// A PerEvent request that's been written to the BufWriter but is awaiting
@@ -415,7 +440,7 @@ fn stage_request(
 /// waiters, and rotate if the segment has filled. Phase 6.1: this is now
 /// the "second phase" of the staged-then-fsynced pipeline; staging
 /// happens in `stage_request` on the recv path.
-fn fsync_batch(
+async fn fsync_batch(
     cfg: &WalSinkConfig,
     writer_ref: &mut WalWriter,
     pending: &mut Vec<PendingFsync>,
@@ -433,10 +458,17 @@ fn fsync_batch(
     // the watermark to `next_lsn - 1`.
     let highest = next_lsn.saturating_sub(1);
 
-    // fsync inline. (See historical note in Phase 6: spawn_blocking
-    // conflicts with the current_thread runtime used in tests; the worker
-    // IS its own task in production.)
-    let sync_result = writer_ref.sync_data().map_err(PersistError::Io);
+    // Phase 13.1: fsync off the runtime thread via spawn_blocking. The
+    // BufWriter flush still happens on-thread (cheap memcpy + kernel
+    // write), but the macOS F_FULLSYNC syscall (~7ms) runs on the blocking
+    // pool so other tokio tasks on the current_thread runtime — including
+    // the HTTP push handler racing to ACK the next request — can keep
+    // making progress. Replaces the inline writer_ref.sync_data() call
+    // that was the documented Phase 6.1 deviation and the root cause of
+    // the Phase 13.1 throughput regression.
+    let sync_result = blocking_sync_data(writer_ref)
+        .await
+        .map_err(PersistError::Io);
 
     if sync_result.is_ok() {
         let _ = durable_tx.send(highest);

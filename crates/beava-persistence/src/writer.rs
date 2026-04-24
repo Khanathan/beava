@@ -67,6 +67,23 @@ impl WalWriter {
         self.file.flush()?;
         self.file.get_mut().sync_data()
     }
+
+    /// Phase 13.1: flush the in-memory buffer to the OS without invoking the
+    /// blocking `sync_data()` syscall. Used by the async fsync worker which
+    /// performs the durability syscall on a `spawn_blocking` thread via
+    /// `try_clone_file()` so the runtime stays free.
+    pub fn flush_buffer(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+
+    /// Phase 13.1: produce an OS-level clone of the underlying file handle
+    /// suitable for being moved into `tokio::task::spawn_blocking` to call
+    /// `sync_data()` off the runtime thread. The clone shares the same
+    /// kernel file description, so a fsync on the clone durably persists
+    /// any bytes previously flushed via `flush_buffer()`.
+    pub fn try_clone_file(&self) -> std::io::Result<File> {
+        self.file.get_ref().try_clone()
+    }
 }
 
 impl Drop for WalWriter {

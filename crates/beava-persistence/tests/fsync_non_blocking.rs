@@ -57,10 +57,7 @@ async fn fsync_does_not_block_runtime_tasks() {
         tokio::spawn(async move {
             for i in 0..200u64 {
                 let _ = sink
-                    .append_event_with_mode(
-                        format!("payload-{i}").into_bytes(),
-                        SyncMode::PerEvent,
-                    )
+                    .append_event_with_mode(format!("payload-{i}").into_bytes(), SyncMode::PerEvent)
                     .await
                     .unwrap();
             }
