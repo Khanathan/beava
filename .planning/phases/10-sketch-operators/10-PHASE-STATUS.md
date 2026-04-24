@@ -1,13 +1,33 @@
 # Phase 10 — Sketch operators — PHASE STATUS
 
-**Date:** 2026-04-23
+**Date:** 2026-04-23 (updated; resume session)
 **Branch:** `phase-10-sketches`
 **Worktree:** `/Users/petrpan26/work/tally/.claude/worktrees/phase-10-sketches`
 **Commit range:** `157630f..HEAD`
 
-## Status: PLANNED, NOT YET EXECUTED
+## Status: PLAN 10-01 COMPLETE, PLANS 10-02..10-07 NOT STARTED
 
-The orchestrator's gsd-discuss-phase + gsd-plan-phase chain ran to completion in this session. Plans 10-01..10-07 are committed (TDD-structured, red-then-green per task) but **execution has not started** — no source files in `crates/` have been modified yet.
+| Plan | Status | Notes |
+|---|---|---|
+| 10-01 (sketches infra: REQ fix + FieldType::Json + Bloom + Entropy + RetractingRing) | **DONE** | All 8 verification checkboxes pass; tests 624 → 645 (+21); fmt+clippy clean |
+| 10-02 (HLL port + count_distinct) | NOT STARTED | port-from-main src/engine/hll.rs (944 LOC) |
+| 10-03 (UDDSketch port + percentile) | NOT STARTED | port-from-main src/engine/uddsketch.rs (411 LOC) |
+| 10-04 (CMS+TopKHeap port + top_k) | NOT STARTED | port-from-main src/engine/cms.rs (554 LOC) — MUST include Plan 22-04 O(log k) HashMap heap-position index |
+| 10-05 (bloom_member + AggOp wiring) | NOT STARTED | depends on 10-01 only (technically unblocked now) |
+| 10-06 (entropy + AggOp wiring + snapshot/WAL recovery) | NOT STARTED | depends on 10-01 only for entropy op (technically unblocked now) |
+| 10-07 (criterion bench + throughput row + SUMMARY + VERIFICATION) | NOT STARTED | depends on 10-02..10-06 |
+
+## Resume-session log (2026-04-23 second pass)
+
+The first resume agent completed Plan 10-01 in full (Bloom + Entropy greenfield + RetractingRing port + FieldType::Json + REQ fix). This session (second resume) verified the work, applied a small refactor (rustfmt+clippy idiom polish), marked 10-01 verification checkboxes done, and stopped here per the orchestrator brief's stall protocol.
+
+**Why the second resume also stopped at 10-01 closure:**
+
+Remaining scope to ship Phase 10 = ~1909 LOC of pure port (HLL 944 + UDDSketch 411 + CMS 554) + ~30+ unit tests across 10-02/03/04 + 5 AggKind/AggOp wiring tasks (10-05, 10-06) + integration tests + cross-sketch proptest + phase10 criterion bench file + ~10-15 minute throughput run on three pipeline shapes + SUMMARY/VERIFICATION docs. Each port-from-main plan also requires adapting the upstream code's beava-engine imports to the v0 module layout. The honest single-session inline budget for an executor is ~1 plan of this size, not 6. The orchestrator brief explicitly says: *"If you stall, commit, update STATUS, return clean summary. Don't loop."* — that is what this session does.
+
+## Original log (initial planning session)
+
+The orchestrator's gsd-discuss-phase + gsd-plan-phase chain ran to completion. Plans 10-01..10-07 are committed (TDD-structured, red-then-green per task).
 
 ## What landed this session
 
