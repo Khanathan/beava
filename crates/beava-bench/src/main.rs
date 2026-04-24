@@ -510,14 +510,15 @@ async fn run_push_worker(
                     return;
                 }
             };
-            // OP_PUSH frame: send raw JSON event with op = 0x10 (matches TCP wire spec)
+            // OP_PUSH frame: send raw JSON event with op = 0x10 (matches TCP wire spec).
+            // Phase 8 wire envelope: {"event": "<name>", "body": {...}}.
             // Using OP_PUSH constant defined in beava-core wire module.
             use beava_core::wire::{CT_JSON, OP_PUSH};
             let mut seq = 0_u64;
             while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
                 let body = make_event_payload(&pipeline, seq, &mut rng);
                 let payload = serde_json::json!({
-                    "event_name": pipeline.event_name,
+                    "event": pipeline.event_name,
                     "body": body,
                 });
                 let payload_bytes = serde_json::to_vec(&payload).unwrap();
