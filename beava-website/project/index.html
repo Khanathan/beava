@@ -205,11 +205,93 @@
     );
 
     // ==================================================================
+    // DfPanel — renders a beava stream/table as a pandas-style dataframe.
+    // Column headers + aligned cells + truncation row. Consumed by
+    // LivePipelineAnimation to show the pipeline running live.
+    // ==================================================================
+    const DfPanel = ({ title, columns, rows, ellipsis = false }) => (
+      <div style={{
+        background: '#fff',
+        border: '1px solid var(--border)',
+        borderRadius: 10,
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 210,
+      }}>
+        <div style={{
+          padding: '9px 14px',
+          fontFamily: 'var(--font-mono)',
+          fontSize: 11,
+          color: 'var(--fg3)',
+          borderBottom: '1px solid var(--border)',
+          background: 'var(--bg-alt)',
+          letterSpacing: '0.03em',
+        }}>{title}</div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+          <thead>
+            <tr>
+              {columns.map((c, i) => (
+                <th key={c} style={{
+                  padding: '7px 10px',
+                  textAlign: i === 0 ? 'left' : 'right',
+                  borderBottom: '1px solid var(--border)',
+                  fontFamily: 'var(--font-mono)',
+                  fontWeight: 600,
+                  fontSize: 10.5,
+                  color: 'var(--fg3)',
+                  letterSpacing: '0.02em',
+                  background: 'rgba(0,0,0,0.02)',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}>{c}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.key} className="anim-row">
+                {r.cells.map((c, i) => (
+                  <td key={i} style={{
+                    padding: '7px 10px',
+                    textAlign: i === 0 ? 'left' : 'right',
+                    borderBottom: '1px solid rgba(0,0,0,0.04)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 12,
+                    color: i === 0 ? 'var(--accent)' : 'var(--fg1)',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}>{c}</td>
+                ))}
+              </tr>
+            ))}
+            {ellipsis && (
+              <tr>
+                {columns.map((_, i) => (
+                  <td key={i} style={{
+                    padding: '8px 10px',
+                    textAlign: i === 0 ? 'left' : 'right',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 13,
+                    color: 'var(--fg3)',
+                    opacity: 0.55,
+                  }}>...</td>
+                ))}
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    );
+
+    // ==================================================================
     // LivePipelineAnimation — client-side simulation of the pipeline.
-    // Shows random events flowing into three panels (Events / Session /
-    // Global). Each new event highlights briefly. Max 3 rows per panel
-    // with a "... to be continued" truncation indicator. Teaches the
-    // abstraction before the code shows how.
+    // Three dataframe panels (stream: FeedClick / table: Session / table:
+    // Global). Random events tick every 0.9-2.2s. Each row flashes on
+    // insert/update. Max 3 rows per panel + "..." truncation row. Teaches
+    // the abstraction visually before the code shows how.
     // ==================================================================
     const LivePipelineAnimation = () => {
       const [events, setEvents] = React.useState([
@@ -260,98 +342,41 @@
         .sort((a, b) => b[1].lastSeen - a[1].lastSeen)
         .slice(0, 3);
 
-      const panelStyle = {
-        background: '#fff',
-        border: '1px solid var(--border)',
-        borderRadius: 10,
-        overflow: 'hidden',
-        display: 'flex',
-        flexDirection: 'column',
-        minHeight: 210,
-      };
-      const panelHeaderStyle = {
-        padding: '9px 14px',
-        fontFamily: 'var(--font-mono)',
-        fontSize: 11,
-        color: 'var(--fg3)',
-        borderBottom: '1px solid var(--border)',
-        background: 'var(--bg-alt)',
-        letterSpacing: '0.03em',
-      };
-      const rowBaseStyle = {
-        padding: '7px 10px',
-        fontFamily: 'var(--font-mono)',
-        fontSize: 12,
-        lineHeight: 1.45,
-        borderBottom: '1px solid rgba(0,0,0,0.04)',
-      };
-      const tbcStyle = {
-        padding: '8px 10px',
-        fontFamily: 'var(--font-mono)',
-        fontSize: 11,
-        color: 'var(--fg3)',
-        textAlign: 'center',
-        opacity: 0.55,
-        marginTop: 'auto',
-      };
-
       return (
         <div style={{ marginTop: 36 }}>
           <div style={{ textAlign: 'center', marginBottom: 18, fontFamily: 'var(--font-accent)', fontSize: 22, fontWeight: 700, color: 'var(--accent)', transform: 'rotate(-1deg)', display: 'block' }}>
             ↓ turtles, rendered ↓
           </div>
-          <div className="anim-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, maxWidth: 860, margin: '0 auto' }}>
+          <div className="anim-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, maxWidth: 960, margin: '0 auto' }}>
 
-            {/* Events stream */}
-            <div style={panelStyle}>
-              <div style={panelHeaderStyle}>@bv.stream FeedClick</div>
-              <div style={{ padding: '6px 0', display: 'flex', flexDirection: 'column', flex: 1 }}>
-                {events.map(e => (
-                  <div key={e.id} className="anim-row" style={rowBaseStyle}>
-                    <span style={{ color: 'var(--accent)' }}>{e.sid}</span>
-                    <span style={{ color: 'var(--fg3)' }}> · </span>
-                    <span style={{ color: 'var(--fg1)' }}>{e.clickspeed}ms</span>
-                  </div>
-                ))}
-                <div style={tbcStyle}>… to be continued</div>
-              </div>
-            </div>
+            <DfPanel
+              title="@bv.stream FeedClick"
+              columns={['session_id', 'click_speed_ms']}
+              rows={events.map(e => ({
+                key: e.id,
+                cells: [e.sid, e.clickspeed],
+              }))}
+              ellipsis
+            />
 
-            {/* Session table */}
-            <div style={panelStyle}>
-              <div style={panelHeaderStyle}>@bv.table Session (key=session_id)</div>
-              <div style={{ padding: '6px 0', display: 'flex', flexDirection: 'column', flex: 1 }}>
-                {sessionRows.map(([sid, s]) => (
-                  <div key={`${sid}-${s.lastSeen}`} className="anim-row" style={rowBaseStyle}>
-                    <div style={{ color: 'var(--accent)', fontSize: 11.5 }}>{sid}</div>
-                    <div style={{ color: 'var(--fg1)', fontSize: 11.5 }}>
-                      <span style={{ color: 'var(--fg3)' }}>my_feeds:</span> {s.my_feeds}{'  '}
-                      <span style={{ color: 'var(--fg3)' }}>my_streak:</span> {s.my_streak}
-                    </div>
-                  </div>
-                ))}
-                <div style={tbcStyle}>… to be continued</div>
-              </div>
-            </div>
+            <DfPanel
+              title="@bv.table Session  (key=session_id)"
+              columns={['session_id', 'my_feeds', 'my_streak']}
+              rows={sessionRows.map(([sid, s]) => ({
+                key: `${sid}-${s.lastSeen}`,
+                cells: [sid, s.my_feeds, s.my_streak],
+              }))}
+              ellipsis
+            />
 
-            {/* Global table */}
-            <div style={panelStyle}>
-              <div style={panelHeaderStyle}>@bv.table Global (key=__global__)</div>
-              <div style={{ padding: '6px 0', display: 'flex', flexDirection: 'column', flex: 1 }}>
-                <div className="anim-row" style={rowBaseStyle}>
-                  <div style={{ color: 'var(--accent)', fontSize: 11.5 }}>__global__</div>
-                </div>
-                <div key={`p99-${stats.p99_clickspeed}`} className="anim-row" style={rowBaseStyle}>
-                  <span style={{ color: 'var(--fg3)' }}>p99_clickspeed:</span>{' '}
-                  <span style={{ color: 'var(--fg1)' }}>{stats.p99_clickspeed}ms</span>
-                </div>
-                <div key={`v-${stats.visitors_1h}`} className="anim-row" style={rowBaseStyle}>
-                  <span style={{ color: 'var(--fg3)' }}>visitors_1h:</span>{' '}
-                  <span style={{ color: 'var(--fg1)' }}>{stats.visitors_1h}</span>
-                </div>
-                <div style={tbcStyle}>… to be continued</div>
-              </div>
-            </div>
+            <DfPanel
+              title="@bv.table Global  (key=__global__)"
+              columns={['key', 'p99_clickspeed', 'visitors_1h']}
+              rows={[{
+                key: `g-${stats.p99_clickspeed}-${stats.visitors_1h}`,
+                cells: ['__global__', `${stats.p99_clickspeed}ms`, stats.visitors_1h],
+              }]}
+            />
 
           </div>
           <div style={{ textAlign: 'center', marginTop: 14, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--fg3)', maxWidth: 640, marginLeft: 'auto', marginRight: 'auto', textWrap: 'pretty' }}>
