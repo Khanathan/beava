@@ -155,56 +155,25 @@
     );
 
     // ==================================================================
-    // Inline pipeline peek — sits directly below the hero widget, connects
-    // the three live stats (FED / STREAK / P99 THINK 1h) to the code that
-    // produces them. Gaegu-accent arrows call out each stat inline.
+    // NoteArrow — Gaegu-accent inline margin note. Used in PipelineShowcase
+    // to tie the hero widget's live stats (FED / STREAK / P99 THINK) back
+    // to the specific lines of Python that produce them.
     // ==================================================================
     const NoteArrow = ({ children }) => (
       <span style={{
         fontFamily: 'var(--font-accent)',
         color: 'var(--accent)',
-        fontSize: '1.15em',
+        fontSize: '1.05em',
         fontWeight: 700,
         marginLeft: 10,
         letterSpacing: '0.005em',
       }}>{children}</span>
     );
 
-    const InlinePipelinePeek = () => (
-      <section style={{ padding: '8px 28px 72px' }}>
-        <div style={{ maxWidth: 860, margin: '0 auto', textAlign: 'center' }}>
-          <div style={{
-            fontFamily: 'var(--font-accent)', fontSize: 22, fontWeight: 700,
-            color: 'var(--accent)', transform: 'rotate(-1.5deg)',
-            display: 'inline-block', marginBottom: 16, lineHeight: 1.1,
-          }}>
-            ↑ those three numbers ↑ &nbsp;=&nbsp; the live output of this ↓
-          </div>
-          <div style={{ position: 'relative', maxWidth: 820, margin: '0 auto' }}>
-            <pre className="code-well" style={{ fontSize: 15, padding: '26px 30px', lineHeight: 1.9, textAlign: 'left', margin: 0 }}>
-              <span className="fn">@bv.table</span>(key=<span className="str">"session_id"</span>)<NoteArrow>← one row per session</NoteArrow>{'\n'}
-              <span className="kw">def</span> <span className="fn">Session</span>(e: <span className="ty">FeedClick</span>):{'\n'}
-              {'    '}<span className="kw">return</span> e.<span className="fn">agg</span>({'\n'}
-              {'      '}my_feeds  = bv.<span className="fn">count</span>(),<NoteArrow>← "FED"</NoteArrow>{'\n'}
-              {'      '}my_streak = bv.<span className="fn">consecutive</span>(),<NoteArrow>← "STREAK"</NoteArrow>{'\n'}
-              {'    '}){'\n'}{'\n'}
-              <span className="fn">@bv.table</span>(key=<span className="str">"__global__"</span>)<NoteArrow>← one row for everyone</NoteArrow>{'\n'}
-              <span className="kw">def</span> <span className="fn">Global</span>(e: <span className="ty">FeedClick</span>):{'\n'}
-              {'    '}<span className="kw">return</span> e.<span className="fn">agg</span>({'\n'}
-              {'      '}p99_think_time = bv.<span className="fn">p99</span>(<NoteArrow>← "P99 THINK (1h)"</NoteArrow>{'\n'}
-              {'        '}e.think_time_ms, window=<span className="str">"1h"</span>),{'\n'}
-              {'    '}){'\n'}
-            </pre>
-          </div>
-          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 15, lineHeight: 1.65, color: 'var(--fg2)', marginTop: 22, maxWidth: 620, marginLeft: 'auto', marginRight: 'auto' }}>
-            Click the beaver → one row lands in the stream. Both tables update automatically. Nothing polls, nothing batches, nothing re-runs.
-          </div>
-        </div>
-      </section>
-    );
-
     // ==================================================================
-    // The pipeline that runs beava.dev — full file, real code.
+    // Pipeline showcase — the single pipeline section. Full 18-line file
+    // with inline margin notes calling out the three hero widget stats.
+    // Merges the former InlinePipelinePeek + PipelineShowcase duplicates.
     // ==================================================================
     const PipelineShowcase = () => {
       const code = `# This file literally runs beava.dev. Source:
@@ -255,13 +224,13 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
                 <span className="fn">@bv.table</span>(key=<span className="str">"session_id"</span>){'\n'}
                 <span className="kw">def</span> <span className="fn">Session</span>(e: FeedClick):{'\n'}
                 {'    '}<span className="kw">return</span> e.<span className="fn">agg</span>({'\n'}
-                {'        '}my_feeds  = bv.<span className="fn">count</span>(),{'\n'}
-                {'        '}my_streak = bv.<span className="fn">consecutive</span>(),{'\n'}
+                {'        '}my_feeds  = bv.<span className="fn">count</span>(),<NoteArrow>← "FED"</NoteArrow>{'\n'}
+                {'        '}my_streak = bv.<span className="fn">consecutive</span>(),<NoteArrow>← "STREAK"</NoteArrow>{'\n'}
                 {'    '}){'\n'}{'\n'}
                 <span className="fn">@bv.table</span>(key=<span className="str">"__global__"</span>){'\n'}
                 <span className="kw">def</span> <span className="fn">Global</span>(e: FeedClick):{'\n'}
                 {'    '}<span className="kw">return</span> e.<span className="fn">agg</span>({'\n'}
-                {'        '}p99_think_time = bv.<span className="fn">p99</span>(e.think_time_ms, window=<span className="str">"1h"</span>),{'\n'}
+                {'        '}p99_think_time = bv.<span className="fn">p99</span>(e.think_time_ms, window=<span className="str">"1h"</span>),<NoteArrow>← "P99 THINK (1h)"</NoteArrow>{'\n'}
                 {'        '}visitors_1h{'    '}= bv.<span className="fn">distinct</span>(e.session_id, window=<span className="str">"1h"</span>),{'\n'}
                 {'    '}){'\n'}{'\n'}
                 bv.<span className="fn">App</span>(<span className="str">"0.0.0.0:6400"</span>).<span className="fn">register</span>(FeedClick, Session, Global).<span className="fn">serve</span>()
@@ -319,9 +288,8 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
         </Banner>
         <Nav active="home"/>
         <Hero/>
-        <InlinePipelinePeek/>
-        <WhatIsThis/>
         <PipelineShowcase/>
+        <WhatIsThis/>
         <GuideTeaser/>
         <Footer/>
       </>
