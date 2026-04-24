@@ -75,7 +75,7 @@
 
           {/* Live hero widget — beaver IS the illustration, with compact stats tucked below. */}
           <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 420, zIndex: 2 }}>
-            <FeedBeaver endpoint="https://beava.dev" compact={true} unboxed={true} persistent={true} showDeco={true} compactStats={true}/>
+            <FeedBeaver endpoint="https://beava.dev" compact={true} unboxed={true} persistent={true} showDeco={true} compactStats={true} noOverflow={true}/>
           </div>
         </div>
       </section>
@@ -108,7 +108,7 @@
             <CopyBtn text={snippets[tab]}/>
           </div>
           <div style={{ marginTop: 10, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--fg3)' }}>
-            ~14 MB · macOS, Linux, Windows · sized for your box
+            ~14 MB · macOS, Linux, Windows · runs on 1 GB RAM · scales to one big box
           </div>
         </div>
       );
@@ -124,7 +124,7 @@
       const pillars = [
         {
           title: 'REPLACES REDIS + LUA',
-          body: 'The exact shape of rules you\'re scripting in Redis today, as a single Python file. Atomic across every feature per event. No race conditions, no Lua repo to maintain.',
+          body: 'Redis+Lua scripts today, a bespoke Flink job tomorrow, or your first feature ever — all become the same Python file. Atomic per event. No race conditions, no Lua repo to maintain.',
           href: 'docs/compare/vs-redis-lua/',
         },
         {
@@ -134,7 +134,7 @@
         },
         {
           title: 'CRASH-SAFE BY DEFAULT',
-          body: 'WAL-backed writes. Your data is on disk before the HTTP 200 returns. Snapshot recovery in seconds per GB. No data engineer on call.',
+          body: 'WAL-backed, group-fsynced. Worst-case loss on crash: seconds, not events. Single-box today — replicas and HA are v1.0 scope. Recovery ~8s/GB, methodology in /docs.',
           href: 'docs/operations/#durability',
         },
         {
@@ -605,7 +605,7 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
     const App = () => (
       <>
         <Banner id="cloud-waitlist-v1">
-          beava cloud · managed from $50/mo · join the waitlist
+          beava cloud · managed from $50/mo · self-host is always free · join the waitlist
         </Banner>
         <Nav active="home"/>
         <Hero/>

@@ -329,7 +329,7 @@ const FBEatenModal = () => {
 //   default  — full boxed widget (standalone demo page)
 //   floating — fixed, right-edge, always visible; follows user down the page.
 //              Shows decorations, no stats grid (stats live in GlobalTicker).
-const FeedBeaver = ({ endpoint = null, compact = false, unboxed = false, showDeco = true, mode = 'default', compactStats = false }) => {
+const FeedBeaver = ({ endpoint = null, compact = false, unboxed = false, showDeco = true, mode = 'default', compactStats = false, noOverflow = false }) => {
   const floating = mode === 'floating';
   const [clicks, setClicks] = React.useState(0);
   const [streak, setStreak] = React.useState(0);
@@ -372,6 +372,10 @@ const FeedBeaver = ({ endpoint = null, compact = false, unboxed = false, showDec
       setTimeout(() => setRateLimit(false), 1400);
       return;
     }
+    // When noOverflow: cap at stage 7 (click 14). Further clicks are silently
+    // ignored so the eat-the-DOM finale never fires in eval contexts (per
+    // Priya panel review — whimsy is fine, destroying the page mid-eval is not).
+    if (noOverflow && clicks >= OVERFLOW_CLICK - 1) return;
     clickWindowRef.current.push(now);
 
     // streak: consecutive clicks <2s apart
@@ -402,7 +406,7 @@ const FeedBeaver = ({ endpoint = null, compact = false, unboxed = false, showDec
       }
       return next;
     });
-  }, [push]);
+  }, [push, noOverflow, clicks]);
 
   // Auto-feed nudge — if a new visitor doesn't feed the beaver, show them.
   // Up to 3 auto-feeds total, then they're on their own.
