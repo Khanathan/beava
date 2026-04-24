@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>beava — dam good at streams</title>
+  <link rel="stylesheet" href="styles/colors_and_type.css">
+  <link rel="stylesheet" href="styles/site.css">
+  <link rel="icon" href="assets/mascot-mark-geometric.png">
+</head>
+<body class="beava">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="js/Shared.jsx"></script>
+  <script type="text/babel" src="js/FeedBeaver.jsx"></script>
+
+  <script type="text/babel">
+    // ==================================================================
+    // Hero — the beaver IS the hero. Clickable from second one.
+    // Left: headline + subhead + install tabs + CTAs.
+    // Right: the live feed-the-beaver widget (FeedBeaver with compact=false).
+    // ==================================================================
+    const Hero = () => (
+      <section style={{ padding: '56px 28px 64px', position: 'relative', overflow: 'hidden' }}>
+        <div className="hero-grid" style={{ maxWidth: 1200, margin: '0 auto', display: 'grid', gridTemplateColumns: '1.15fr 1fr', gap: 32, alignItems: 'center' }}>
+          <div style={{ position: 'relative', zIndex: 1, minWidth: 0 }}>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, padding: '6px 12px', borderRadius: 999, background: 'var(--beava-orange-wash)', border: '1px solid #f1d8c2', color: 'var(--accent)', fontSize: 13, fontWeight: 600, marginBottom: 22, fontFamily: 'var(--font-sans)' }}>
+              <span style={{ width: 7, height: 7, background: 'var(--accent)', borderRadius: 999, boxShadow: '0 0 0 3px rgba(184,92,32,0.18)' }}></span>
+              v0.9.4 · Apache 2.0 · single binary
+            </div>
+            {/* Zero-width wrapper so the headline can bleed right over the beaver without pushing layout */}
+            <div style={{ position: 'relative', height: 'clamp(64px, 10vw, 132px)', marginBottom: 18 }}>
+              <h1 style={{
+                fontFamily: 'var(--font-accent)', fontWeight: 700,
+                fontSize: 'clamp(64px, 10vw, 132px)', lineHeight: 0.95, letterSpacing: '-0.02em',
+                color: 'var(--accent)',
+                position: 'absolute', left: 0, top: 0,
+                margin: 0,
+                zIndex: 1,
+                whiteSpace: 'nowrap',
+                pointerEvents: 'none',
+                width: 'max-content',
+                transform: 'rotate(-3.5deg)',
+                transformOrigin: 'left bottom',
+              }}>
+                Dam good at streams.
+              </h1>
+            </div>
+            <p style={{ fontFamily: 'var(--font-serif)', fontWeight: 500, fontStyle: 'italic', fontSize: 'clamp(20px, 2.2vw, 28px)', lineHeight: 1.2, color: 'var(--fg1)', margin: '18px 0 22px', textWrap: 'balance', whiteSpace: 'nowrap' }}>
+              Real-time features. No streaming priesthood.
+            </p>
+            <p style={{ fontFamily: 'var(--font-sans)', fontSize: 18, lineHeight: 1.6, color: 'var(--fg2)', margin: '0 0 32px', maxWidth: 520, textWrap: 'pretty' }}>
+              Pipelines in Python. Events in HTTP. State in memory. One binary.
+            </p>
+
+            <InstallTabs/>
+
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 26, flexWrap: 'wrap' }}>
+              <Button variant="primary" size="lg" icon={<Icon name="arrow" size={16}/>} href="field-guide-ch1.html">
+                Read the field guide
+              </Button>
+              <Button variant="secondary" size="lg" iconLeft={<Icon name="github" size={16}/>} href="#">
+                Star on GitHub <span style={{ color: 'var(--fg3)', fontWeight: 500, marginLeft: 4 }}>· 8.2k</span>
+              </Button>
+            </div>
+
+            <div style={{ marginTop: 18, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--fg3)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontFamily: 'var(--font-accent)', fontWeight: 700, fontSize: 17, color: 'var(--accent)', lineHeight: 1, transform: 'rotate(-2deg)', display: 'inline-block' }}>
+                psst →
+              </span>
+              <span>the beaver over there is clickable. go feed him.</span>
+            </div>
+          </div>
+
+          {/* Live hero widget — beaver IS the illustration, with compact stats tucked below. */}
+          <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 420, zIndex: 2 }}>
+            <FeedBeaver endpoint="https://beava.dev" compact={true} unboxed={true} persistent={true} showDeco={true} compactStats={true}/>
+          </div>
+        </div>
+      </section>
+    );
+
+    // ------------------------------------------------------------------
+    // Install tabs — brew (default) / curl / docker
+    // ------------------------------------------------------------------
+    const InstallTabs = () => {
+      const [tab, setTab] = React.useState('brew');
+      const snippets = {
+        brew:   'brew install beava',
+        curl:   'curl -fsSL beava.dev/install.sh | sh',
+        docker: 'docker run -p 6400:6400 beava/beava:latest',
+      };
+      return (
+        <div>
+          <div className="code-tabs">
+            {['brew','curl','docker'].map(t => (
+              <button key={t} onClick={() => setTab(t)} className={tab === t ? 'active' : ''}>
+                {t}
+              </button>
+            ))}
+          </div>
+          <div style={{ position: 'relative', maxWidth: 520 }}>
+            <pre className="code-well" style={{ margin: 0 }}>
+              <span className="cmt">$ </span>
+              <span style={{ color: 'var(--fg1)' }}>{snippets[tab]}</span>
+            </pre>
+            <CopyBtn text={snippets[tab]}/>
+          </div>
+          <div style={{ marginTop: 10, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--fg3)' }}>
+            ~14 MB · macOS, Linux, Windows · sized for your box
+          </div>
+        </div>
+      );
+    };
+
+    // ==================================================================
+    // "What is this really?" — second-person intro.
+    // ==================================================================
+    const WhatIsThis = () => (
+      <section style={{ padding: '96px 28px', background: 'var(--bg-alt)', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}>
+        <div style={{ maxWidth: 900, margin: '0 auto' }}>
+          <Eyebrow style={{ marginBottom: 16 }}>What is this, really?</Eyebrow>
+          <h2 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(32px, 4.4vw, 52px)', lineHeight: 1.1, letterSpacing: '-0.02em', color: 'var(--fg1)', margin: '0 0 24px' }}>
+            Your app sends events. <em style={{ color: 'var(--accent)' }}>The beaver counts them</em> in rolling windows and answers questions about them in microseconds.
+          </h2>
+          <p style={{ fontFamily: 'var(--font-sans)', fontSize: 19, lineHeight: 1.7, color: 'var(--fg2)', maxWidth: 680, margin: '0 0 18px', textWrap: 'pretty' }}>
+            beava is a small, furry animal for your data. You POST events over HTTP, you define features in ~15 lines of Python, and you GET the answer on the hot path. No Kafka. No Zookeeper. No watermarks. No data engineer on retainer.
+          </p>
+          <p style={{ fontFamily: 'var(--font-sans)', fontSize: 19, lineHeight: 1.7, color: 'var(--fg2)', maxWidth: 680, margin: 0, textWrap: 'pretty' }}>
+            It's single-node today. It runs on the laptop you already have. It's the thing you reach for when Redis isn't quite enough and Flink is way too much.
+          </p>
+
+          {/* three-layer spec, tiny */}
+          <div className="two-col" style={{ marginTop: 48, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 18 }}>
+            <LayerCard n="1" title="Pipelines in Python" body="~15 lines with @bv.stream and @bv.table decorators. Read your own pipeline on the homepage."/>
+            <LayerCard n="2" title="Events in HTTP"     body="POST JSON to /events/X. curl works. No SDK required. TCP fast-path if you need it."/>
+            <LayerCard n="3" title="State in memory"    body="In-memory counters with a write-ahead log. ~100ns lookups. Recovers at ~8 seconds per GB."/>
+          </div>
+        </div>
+      </section>
+    );
+
+    const LayerCard = ({ n, title, body }) => (
+      <div style={{
+        background: '#fff', border: '1px solid var(--border)', borderRadius: 14,
+        padding: '22px 22px 20px', boxShadow: 'var(--shadow-xs)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+          <span style={{ width: 26, height: 26, borderRadius: 999, background: 'var(--beava-orange-wash)', color: 'var(--accent)', display: 'grid', placeItems: 'center', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 13 }}>{n}</span>
+          <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 15, color: 'var(--fg1)' }}>{title}</div>
+        </div>
+        <p style={{ fontFamily: 'var(--font-sans)', fontSize: 14.5, lineHeight: 1.6, color: 'var(--fg2)', margin: 0 }}>{body}</p>
+      </div>
+    );
+
+    // ==================================================================
+    // Inline pipeline peek — sits directly below the hero widget, connects
+    // the three live stats (FED / STREAK / P99 THINK 1h) to the code that
+    // produces them. Gaegu-accent arrows call out each stat inline.
+    // ==================================================================
+    const NoteArrow = ({ children }) => (
+      <span style={{
+        fontFamily: 'var(--font-accent)',
+        color: 'var(--accent)',
+        fontSize: '1.15em',
+        fontWeight: 700,
+        marginLeft: 10,
+        letterSpacing: '0.005em',
+      }}>{children}</span>
+    );
+
+    const InlinePipelinePeek = () => (
+      <section style={{ padding: '8px 28px 72px' }}>
+        <div style={{ maxWidth: 860, margin: '0 auto', textAlign: 'center' }}>
+          <div style={{
+            fontFamily: 'var(--font-accent)', fontSize: 22, fontWeight: 700,
+            color: 'var(--accent)', transform: 'rotate(-1.5deg)',
+            display: 'inline-block', marginBottom: 16, lineHeight: 1.1,
+          }}>
+            ↑ those three numbers ↑ &nbsp;=&nbsp; the live output of this ↓
+          </div>
+          <div style={{ position: 'relative', maxWidth: 820, margin: '0 auto' }}>
+            <pre className="code-well" style={{ fontSize: 15, padding: '26px 30px', lineHeight: 1.9, textAlign: 'left', margin: 0 }}>
+              <span className="fn">@bv.table</span>(key=<span className="str">"session_id"</span>)<NoteArrow>← one row per session</NoteArrow>{'\n'}
+              <span className="kw">def</span> <span className="fn">Session</span>(e: <span className="ty">FeedClick</span>):{'\n'}
+              {'    '}<span className="kw">return</span> e.<span className="fn">agg</span>({'\n'}
+              {'      '}my_feeds  = bv.<span className="fn">count</span>(),<NoteArrow>← "FED"</NoteArrow>{'\n'}
+              {'      '}my_streak = bv.<span className="fn">consecutive</span>(),<NoteArrow>← "STREAK"</NoteArrow>{'\n'}
+              {'    '}){'\n'}{'\n'}
+              <span className="fn">@bv.table</span>(key=<span className="str">"__global__"</span>)<NoteArrow>← one row for everyone</NoteArrow>{'\n'}
+              <span className="kw">def</span> <span className="fn">Global</span>(e: <span className="ty">FeedClick</span>):{'\n'}
+              {'    '}<span className="kw">return</span> e.<span className="fn">agg</span>({'\n'}
+              {'      '}p99_think_time = bv.<span className="fn">p99</span>(<NoteArrow>← "P99 THINK (1h)"</NoteArrow>{'\n'}
+              {'        '}e.think_time_ms, window=<span className="str">"1h"</span>),{'\n'}
+              {'    '}){'\n'}
+            </pre>
+          </div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 15, lineHeight: 1.65, color: 'var(--fg2)', marginTop: 22, maxWidth: 620, marginLeft: 'auto', marginRight: 'auto' }}>
+            Click the beaver → one row lands in the stream. Both tables update automatically. Nothing polls, nothing batches, nothing re-runs.
+          </div>
+        </div>
+      </section>
+    );
+
+    // ==================================================================
+    // The pipeline that runs beava.dev — full file, real code.
+    // ==================================================================
+    const PipelineShowcase = () => {
+      const code = `# This file literally runs beava.dev. Source:
+# github.com/beava-dev/beava/tree/main/demo/feed-the-beaver
+import beava as bv
+
+@bv.stream
+class FeedClick:
+    session_id: str
+    think_time_ms: int        # ms since reader's previous click
+
+@bv.table(key="session_id")
+def Session(e: FeedClick):
+    return e.agg(
+        my_feeds  = bv.count(),
+        my_streak = bv.consecutive(),
+    )
+
+@bv.table(key="__global__")
+def Global(e: FeedClick):
+    return e.agg(
+        p99_think_time = bv.p99(e.think_time_ms, window="1h"),
+        visitors_1h    = bv.distinct(e.session_id, window="1h"),
+    )
+
+bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
+      return (
+        <section style={{ padding: '96px 28px' }}>
+          <div style={{ maxWidth: 1000, margin: '0 auto' }}>
+            <div style={{ textAlign: 'center', marginBottom: 40 }}>
+              <Eyebrow style={{ marginBottom: 14 }}>The homepage runs beava</Eyebrow>
+              <h2 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(28px, 4vw, 44px)', lineHeight: 1.1, letterSpacing: '-0.02em', color: 'var(--fg1)', margin: '6px 0 14px' }}>
+                18 lines. That's the whole pipeline.
+              </h2>
+              <p style={{ fontFamily: 'var(--font-sans)', fontSize: 17, lineHeight: 1.6, color: 'var(--fg2)', maxWidth: 640, margin: '0 auto' }}>
+                Every click you make over there pushes a real event to this pipeline. Every stat you see is a real feature query. It's turtles all the way down.
+              </p>
+            </div>
+            <div style={{ position: 'relative', maxWidth: 820, margin: '0 auto' }}>
+              <pre className="code-well" style={{ fontSize: 14, padding: '26px 28px', lineHeight: 1.75 }}>
+                <span className="cmt"># This file literally runs beava.dev. Source:{'\n'}# github.com/beava-dev/beava/tree/main/demo/feed-the-beaver</span>{'\n'}
+                <span className="kw">import</span> beava <span className="kw">as</span> bv{'\n'}{'\n'}
+                <span className="fn">@bv.stream</span>{'\n'}
+                <span className="kw">class</span> <span className="ty">FeedClick</span>:{'\n'}
+                {'    '}session_id: <span className="ty">str</span>{'\n'}
+                {'    '}think_time_ms: <span className="ty">int</span>{'        '}<span className="cmt"># ms since reader's previous click</span>{'\n'}
+                <span className="cmt">    # session_id regenerated every refresh — no cookies, no tracking.</span>{'\n'}{'\n'}
+                <span className="fn">@bv.table</span>(key=<span className="str">"session_id"</span>){'\n'}
+                <span className="kw">def</span> <span className="fn">Session</span>(e: FeedClick):{'\n'}
+                {'    '}<span className="kw">return</span> e.<span className="fn">agg</span>({'\n'}
+                {'        '}my_feeds  = bv.<span className="fn">count</span>(),{'\n'}
+                {'        '}my_streak = bv.<span className="fn">consecutive</span>(),{'\n'}
+                {'    '}){'\n'}{'\n'}
+                <span className="fn">@bv.table</span>(key=<span className="str">"__global__"</span>){'\n'}
+                <span className="kw">def</span> <span className="fn">Global</span>(e: FeedClick):{'\n'}
+                {'    '}<span className="kw">return</span> e.<span className="fn">agg</span>({'\n'}
+                {'        '}p99_think_time = bv.<span className="fn">p99</span>(e.think_time_ms, window=<span className="str">"1h"</span>),{'\n'}
+                {'        '}visitors_1h{'    '}= bv.<span className="fn">distinct</span>(e.session_id, window=<span className="str">"1h"</span>),{'\n'}
+                {'    '}){'\n'}{'\n'}
+                bv.<span className="fn">App</span>(<span className="str">"0.0.0.0:6400"</span>).<span className="fn">register</span>(FeedClick, Session, Global).<span className="fn">serve</span>()
+              </pre>
+              <CopyBtn text={code}/>
+            </div>
+
+            <div style={{ textAlign: 'center', marginTop: 28, fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--fg3)' }}>
+              No cookies, no localStorage, no user-agent logging. Refresh for a fresh beaver.
+            </div>
+          </div>
+        </section>
+      );
+    };
+
+    // ==================================================================
+    // Field-guide teaser card
+    // ==================================================================
+    const GuideTeaser = () => (
+      <section style={{ padding: '64px 28px 112px' }}>
+        <div style={{ maxWidth: 1000, margin: '0 auto' }}>
+          <a href="field-guide-ch1.html" style={{
+            display: 'grid', gridTemplateColumns: '1fr 260px', gap: 40, alignItems: 'center',
+            background: 'var(--beava-paper)', border: '1px solid var(--border)', borderRadius: 20,
+            padding: 36, textDecoration: 'none', color: 'inherit',
+            boxShadow: 'var(--shadow-pop)',
+          }} className="two-col">
+            <div>
+              <div style={{ fontFamily: 'var(--font-accent)', fontSize: 26, fontWeight: 700, color: 'var(--accent)', lineHeight: 1, transform: 'rotate(-2deg)', display: 'inline-block', marginBottom: 8 }}>
+                Chapter 1 →
+              </div>
+              <h3 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 32, lineHeight: 1.15, letterSpacing: '-0.02em', color: 'var(--fg1)', margin: '4px 0 12px' }}>
+                How TikTok's For You feed actually works
+              </h3>
+              <p style={{ fontFamily: 'var(--font-sans)', fontSize: 16, lineHeight: 1.6, color: 'var(--fg2)', margin: '0 0 14px', maxWidth: 540 }}>
+                At the heart of every personalization system is one ugly little data structure. In 14 minutes and 3 curl commands, you'll have one.
+              </p>
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--accent)', fontWeight: 600 }}>
+                Read the chapter <Icon name="arrow" size={14}/>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'center' }}>
+              <img src="assets/mascot-work-pose.svg" width={220} height={220}/>
+            </div>
+          </a>
+        </div>
+      </section>
+    );
+
+    // ==================================================================
+    const App = () => (
+      <>
+        <Nav active="home"/>
+        <Hero/>
+        <InlinePipelinePeek/>
+        <WhatIsThis/>
+        <PipelineShowcase/>
+        <GuideTeaser/>
+        <Footer/>
+      </>
+    );
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>

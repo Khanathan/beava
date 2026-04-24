@@ -1,0 +1,759 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>beava — design system</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="../assets/logo-mark-geometric.png">
+<link rel="stylesheet" href="colors_and_type.css">
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg1);
+    font-family: var(--font-sans);
+    font-size: var(--fs-base);
+    line-height: var(--lh-normal);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- layout ---------- */
+  .ds-top {
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    position: sticky; top: 0; z-index: 10;
+    backdrop-filter: blur(10px);
+    background: rgba(253,250,244,0.88);
+  }
+  .ds-top-inner {
+    max-width: 1200px; margin: 0 auto;
+    padding: 16px 32px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .ds-top img { width: 32px; height: 32px; }
+  .ds-top .title {
+    font-family: var(--font-serif); font-weight: 600; font-size: 22px;
+    letter-spacing: -0.01em; color: var(--fg1);
+  }
+  .ds-top .title em { font-style: italic; color: var(--accent); }
+  .ds-top .meta { margin-left: auto; font-family: var(--font-mono); font-size: 13px; color: var(--fg3); }
+
+  .ds-main { max-width: 1200px; margin: 0 auto; padding: 48px 32px 128px; }
+  .ds-hero { margin-bottom: 64px; }
+  .ds-hero .eyebrow { margin-bottom: 12px; display: inline-block; }
+  .ds-hero h1 {
+    font-family: var(--font-serif); font-weight: 600;
+    font-size: clamp(2.5rem, 5vw, 4rem);
+    line-height: 1.0; letter-spacing: -0.02em;
+    margin: 0 0 16px; color: var(--fg1);
+    max-width: 16ch;
+  }
+  .ds-hero h1 em { font-style: italic; color: var(--accent); }
+  .ds-hero .lead {
+    font-family: var(--font-sans);
+    font-size: 20px; line-height: 1.55; color: var(--fg2);
+    max-width: 58ch;
+  }
+
+  .ds-toc {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 8px; margin: 32px 0 0; padding: 0; list-style: none;
+    font-family: var(--font-mono); font-size: 13px;
+  }
+  .ds-toc a {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 14px; border-radius: 8px;
+    color: var(--fg2); text-decoration: none;
+    border: 1px solid transparent;
+    transition: all 160ms var(--ease-out);
+  }
+  .ds-toc a:hover { background: var(--bg-inset); border-color: var(--border); color: var(--accent); }
+  .ds-toc a .num { color: var(--fg3); font-variant-numeric: tabular-nums; }
+
+  /* ---------- sections ---------- */
+  .section { margin-top: 96px; scroll-margin-top: 100px; }
+  .section-head {
+    display: flex; align-items: baseline; gap: 16px;
+    padding-bottom: 16px; margin-bottom: 28px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-head .num {
+    font-family: var(--font-mono); font-size: 13px; color: var(--fg3);
+    font-variant-numeric: tabular-nums; flex-shrink: 0;
+  }
+  .section-head h2 {
+    font-family: var(--font-serif); font-weight: 600;
+    font-size: 36px; line-height: 1.1; letter-spacing: -0.02em;
+    margin: 0; color: var(--fg1);
+  }
+  .section-head .note {
+    margin-left: auto; font-family: var(--font-accent);
+    color: var(--accent); font-size: 20px;
+    transform: rotate(-2deg);
+  }
+  .section .intro {
+    max-width: 68ch; font-size: 16px; line-height: 1.65; color: var(--fg2);
+    margin: 0 0 32px;
+  }
+
+  /* ---------- grids ---------- */
+  .grid { display: grid; gap: 16px; }
+  .grid-2 { grid-template-columns: repeat(2, 1fr); }
+  .grid-3 { grid-template-columns: repeat(3, 1fr); }
+  .grid-4 { grid-template-columns: repeat(4, 1fr); }
+  .grid-6 { grid-template-columns: repeat(6, 1fr); }
+  @media (max-width: 900px) {
+    .grid-3, .grid-4, .grid-6 { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  /* ---------- swatches ---------- */
+  .swatch {
+    border-radius: 14px; overflow: hidden;
+    border: 1px solid var(--border);
+    background: #fff;
+  }
+  .swatch .chip { height: 120px; }
+  .swatch .meta {
+    padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .swatch .meta .name { font-family: var(--font-sans); font-weight: 600; font-size: 14px; color: var(--fg1); }
+  .swatch .meta .hex { font-family: var(--font-mono); font-size: 12px; color: var(--fg3); }
+  .swatch .meta .role { font-family: var(--font-sans); font-size: 12px; color: var(--fg3); margin-top: 4px; }
+
+  /* ---------- type specimens ---------- */
+  .type-row {
+    display: grid; grid-template-columns: 120px 1fr auto;
+    gap: 24px; align-items: baseline;
+    padding: 24px 0; border-bottom: 1px dashed var(--border);
+  }
+  .type-row:last-child { border-bottom: 0; }
+  .type-row .label { font-family: var(--font-mono); font-size: 12px; color: var(--fg3); }
+  .type-row .spec { font-family: var(--font-mono); font-size: 11px; color: var(--fg3); text-align: right; }
+  .type-row .sample { color: var(--fg1); }
+
+  .specimen-serif { font-family: var(--font-serif); font-weight: 600; font-size: 56px; line-height: 1; letter-spacing: -0.02em; }
+  .specimen-serif em { font-style: italic; color: var(--accent); }
+  .specimen-sans { font-family: var(--font-sans); font-size: 18px; line-height: 1.6; color: var(--fg1); }
+  .specimen-mono { font-family: var(--font-mono); font-size: 14px; color: var(--code-fg); background: var(--code-bg); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); display: inline-block; }
+  .specimen-accent { font-family: var(--font-accent); font-weight: 700; font-size: 32px; color: var(--accent); transform: rotate(-2deg); display: inline-block; }
+
+  /* ---------- token rows ---------- */
+  .token-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 13px; }
+  .token-table th, .token-table td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .token-table th { font-family: var(--font-sans); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg3); }
+  .token-table td.demo { width: 140px; }
+  .token-table .demo-radius { background: var(--accent-wash); border: 1px solid var(--accent); height: 40px; }
+  .token-table .demo-shadow { background: #fff; border: 1px solid var(--border); height: 40px; border-radius: 8px; }
+  .token-table .demo-space { background: var(--accent); height: 20px; border-radius: 2px; }
+
+  /* ---------- components ---------- */
+  .comp-row {
+    padding: 24px; background: #fff; border: 1px solid var(--border);
+    border-radius: 14px; display: flex; flex-wrap: wrap; gap: 16px; align-items: center;
+    margin-bottom: 16px;
+  }
+  .comp-row .label { font-family: var(--font-mono); font-size: 11px; color: var(--fg3); text-transform: uppercase; letter-spacing: 0.08em; width: 100%; margin-bottom: -4px; }
+
+  .btn {
+    font-family: var(--font-sans); font-weight: 600; font-size: 15px;
+    border: 0; border-radius: 10px; padding: 12px 22px;
+    cursor: pointer; transition: all 160ms var(--ease-out);
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
+  .btn-ghost { background: transparent; color: var(--fg1); border: 1px solid var(--border); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-text { background: transparent; color: var(--accent); padding: 8px 4px; }
+  .btn-text:hover { text-decoration: underline; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: 999px;
+    font-family: var(--font-sans); font-size: 12px; font-weight: 600;
+    border: 1px solid var(--border);
+  }
+  .badge-accent { background: var(--accent-wash); color: var(--accent); border-color: color-mix(in oklab, var(--accent) 30%, transparent); }
+  .badge-success { background: var(--beava-success-wash); color: var(--beava-success); border-color: color-mix(in oklab, var(--beava-success) 30%, transparent); }
+  .badge-info { background: var(--beava-info-wash); color: var(--beava-info); border-color: color-mix(in oklab, var(--beava-info) 30%, transparent); }
+  .badge-live { background: #fff; color: var(--beava-success); }
+  .badge-live::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--beava-success); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } }
+
+  .input {
+    font-family: var(--font-sans); font-size: 15px;
+    padding: 10px 14px; border-radius: 10px;
+    border: 1px solid var(--border); background: #fff; color: var(--fg1);
+    transition: all 160ms var(--ease-out);
+    width: 240px;
+  }
+  .input:focus { outline: 3px solid var(--focus-ring); outline-offset: 2px; border-color: var(--accent); }
+
+  .card {
+    background: #fff; border: 1px solid var(--border);
+    border-radius: 14px; padding: 24px;
+    box-shadow: var(--shadow-sm);
+    transition: all 200ms var(--ease-out);
+  }
+  .card:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
+  .card h4 { margin: 0 0 6px; font-family: var(--font-serif); font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+  .card p { margin: 0; font-size: 14px; color: var(--fg3); line-height: 1.55; }
+
+  .callout {
+    border: 1px solid; border-radius: 14px;
+    padding: 16px 20px; display: flex; gap: 12px;
+    font-size: 14px; line-height: 1.55;
+  }
+  .callout-note { background: var(--beava-info-wash); border-color: color-mix(in oklab, var(--beava-info) 25%, transparent); color: var(--beava-info); }
+  .callout-warn { background: var(--beava-warn-wash); border-color: color-mix(in oklab, var(--beava-warn) 25%, transparent); color: var(--beava-warn); }
+  .callout strong { font-weight: 700; }
+
+  /* ---------- mascot grid ---------- */
+  .mascot-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  @media (max-width: 900px) { .mascot-grid { grid-template-columns: repeat(2, 1fr); } }
+  .mascot-card {
+    background: var(--bg-inset); border: 1px solid var(--border);
+    border-radius: 14px; padding: 20px; text-align: center;
+  }
+  .mascot-card img { width: 100%; height: 160px; object-fit: contain; }
+  .mascot-card .name { font-family: var(--font-mono); font-size: 12px; color: var(--fg2); margin-top: 12px; }
+  .mascot-card .use { font-family: var(--font-sans); font-size: 12px; color: var(--fg3); margin-top: 4px; }
+
+  /* ---------- motion ---------- */
+  .motion-row {
+    display: grid; grid-template-columns: 140px 1fr 180px;
+    gap: 20px; align-items: center;
+    padding: 14px 0; border-bottom: 1px dashed var(--border);
+  }
+  .motion-row .label { font-family: var(--font-mono); font-size: 13px; color: var(--fg2); }
+  .motion-row .track { height: 4px; background: var(--bg-inset); border-radius: 999px; position: relative; overflow: hidden; }
+  .motion-row .dot { position: absolute; top: -6px; width: 16px; height: 16px; background: var(--accent); border-radius: 50%; left: 0; }
+  .motion-row .spec { font-family: var(--font-mono); font-size: 12px; color: var(--fg3); text-align: right; }
+
+  @keyframes m-out    { 0% { left: 0; } 100% { left: calc(100% - 16px); } }
+  @keyframes m-inout  { 0% { left: 0; } 100% { left: calc(100% - 16px); } }
+  @keyframes m-spring { 0% { left: 0; } 100% { left: calc(100% - 16px); } }
+
+  .dot-out    { animation: m-out    2s cubic-bezier(0.22, 1, 0.36, 1) infinite alternate; }
+  .dot-inout  { animation: m-inout  2s cubic-bezier(0.65, 0, 0.35, 1) infinite alternate; }
+  .dot-spring { animation: m-spring 2s cubic-bezier(0.34, 1.56, 0.64, 1) infinite alternate; }
+
+  /* ---------- footer ---------- */
+  .ds-foot {
+    margin-top: 128px; padding: 32px 0 0;
+    border-top: 1px solid var(--border);
+    font-family: var(--font-mono); font-size: 13px; color: var(--fg3);
+    display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  }
+  .ds-foot a { color: var(--accent); text-decoration: none; }
+  .ds-foot a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<header class="ds-top">
+  <div class="ds-top-inner">
+    <img src="../assets/logo-mark.png" alt="beava">
+    <div class="title">beava <em>design system</em></div>
+    <div class="meta">v1.0 · apr 2026</div>
+  </div>
+</header>
+
+<main class="ds-main">
+
+  <section class="ds-hero">
+    <span class="eyebrow">The brand, in one page</span>
+    <h1>Warm, earthy, <em>HTTP-first.</em></h1>
+    <p class="lead">
+      beava is Redis with opinions for real-time features &mdash; cozy, single-binary,
+      deliberately apart from the streaming priesthood. This page is the canonical
+      reference for the brand: tokens, type, components, mascot, voice. Everything on
+      beava.dev pulls from here.
+    </p>
+
+    <ul class="ds-toc">
+      <li><a href="#foundations"><span class="num">01</span> foundations</a></li>
+      <li><a href="#color"><span class="num">02</span> color</a></li>
+      <li><a href="#type"><span class="num">03</span> typography</a></li>
+      <li><a href="#spacing"><span class="num">04</span> spacing &amp; radii</a></li>
+      <li><a href="#shadows"><span class="num">05</span> shadows</a></li>
+      <li><a href="#motion"><span class="num">06</span> motion</a></li>
+      <li><a href="#components"><span class="num">07</span> components</a></li>
+      <li><a href="#mascot"><span class="num">08</span> mascot &amp; logo</a></li>
+      <li><a href="#voice"><span class="num">09</span> voice &amp; tone</a></li>
+      <li><a href="#donts"><span class="num">10</span> don'ts</a></li>
+    </ul>
+  </section>
+
+  <!-- 01 FOUNDATIONS ============================================ -->
+  <section class="section" id="foundations">
+    <div class="section-head">
+      <span class="num">01</span>
+      <h2>Foundations</h2>
+      <span class="note">the vibe</span>
+    </div>
+    <p class="intro">
+      Three warm hues on a cream page. Serif for headlines, sans for everything else.
+      Generous whitespace. Borders do the work; shadows are subtle. One hit of orange
+      per viewport. No emoji in product UI. Cream beats white every time.
+    </p>
+
+    <div class="grid grid-3">
+      <div class="card">
+        <h4>Cream, not white</h4>
+        <p>Page background is always <code>#fdfaf4</code>. Pure white feels clinical and breaks the warmth.</p>
+      </div>
+      <div class="card">
+        <h4>Orange, sparingly</h4>
+        <p>Burnt orange is for one or two things per viewport &mdash; the primary CTA, the active nav, a live dot.</p>
+      </div>
+      <div class="card">
+        <h4>Borders over shadows</h4>
+        <p>We lean on a 1px warm rule (<code>#e6dccb</code>) for card edges. Shadows are brown-tinted and low.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 COLOR =================================================== -->
+  <section class="section" id="color">
+    <div class="section-head">
+      <span class="num">02</span>
+      <h2>Color</h2>
+      <span class="note">warm &amp; earthy</span>
+    </div>
+    <p class="intro">
+      The palette is built from the beaver mascot: burnt orange fur, deep brown ink,
+      cream paper. Semantic colors are muted neighbors of these &mdash; forest green, ochre,
+      rust, dusty blue. No saturated RGB anywhere.
+    </p>
+
+    <h3 style="font-family: var(--font-sans); font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg3); margin: 32px 0 16px;">Brand orange</h3>
+    <div class="grid grid-4">
+      <div class="swatch">
+        <div class="chip" style="background: #b85c20;"></div>
+        <div class="meta"><span class="name">orange</span><span class="hex">#b85c20</span><span class="role">primary accent, CTAs, links</span></div>
+      </div>
+      <div class="swatch">
+        <div class="chip" style="background: #d97a3e;"></div>
+        <div class="meta"><span class="name">orange-soft</span><span class="hex">#d97a3e</span><span class="role">hovers, highlights</span></div>
+      </div>
+      <div class="swatch">
+        <div class="chip" style="background: #e89a65;"></div>
+        <div class="meta"><span class="name">orange-glow</span><span class="hex">#e89a65</span><span class="role">pill badges, subtle fills</span></div>
+      </div>
+      <div class="swatch">
+        <div class="chip" style="background: #fbecde;"></div>
+        <div class="meta"><span class="name">orange-wash</span><span class="hex">#fbecde</span><span class="role">call-outs, hero washes</span></div>
+      </div>
+    </div>
+
+    <h3 style="font-family: var(--font-sans); font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg3); margin: 40px 0 16px;">Brand brown</h3>
+    <div class="grid grid-4">
+      <div class="swatch">
+        <div class="chip" style="background: #1a1714;"></div>
+        <div class="meta"><span class="name">brown-ink</span><span class="hex">#1a1714</span><span class="role">body copy, outlines</span></div>
+      </div>
+      <div class="swatch">
+        <div class="chip" style="background: #3a2a1f;"></div>
+        <div class="meta"><span class="name">brown-dark</span><span class="hex">#3a2a1f</span><span class="role">secondary headings</span></div>
+      </div>
+      <div class="swatch">
+        <div class="chip" style="background: #6b4a35;"></div>
+        <div class="meta"><span class="name">brown</span><span class="hex">#6b4a35</span><span class="role">warm mid-tone</span></div>
+      </div>
+      <div class="swatch">
+        <div class="chip" style="background: #8a6a54;"></div>
+        <div class="meta"><span class="name">brown-mid</span><span class="hex">#8a6a54</span><span class="role">muted body text, meta</span></div>
+      </div>
+    </div>
+
+    <h3 style="font-family: var(--font-sans); font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg3); margin: 40px 0 16px;">Cream &amp; neutrals</h3>
+    <div class="grid grid-4">
+      <div class="swatch">
+        <div class="chip" style="background: #fdfaf4; border-bottom: 1px solid var(--border);"></div>
+        <div class="meta"><span class="name">cream</span><span class="hex">#fdfaf4</span><span class="role">page bg — default</span></div>
+      </div>
+      <div class="swatch">
+        <div class="chip" style="background: #f6eed9;"></div>
+        <div class="meta"><span class="name">cream-deep</span><span class="hex">#f6eed9</span><span class="role">secondary surface</span></div>
+      </div>
+      <div class="swatch">
+        <div class="chip" style="background: #fbf5e8;"></div>
+        <div class="meta"><span class="name">paper</span><span class="hex">#fbf5e8</span><span class="role">code wells, card insets</span></div>
+      </div>
+      <div class="swatch">
+        <div class="chip" style="background: #e6dccb;"></div>
+        <div class="meta"><span class="name">rule</span><span class="hex">#e6dccb</span><span class="role">1px dividers, borders</span></div>
+      </div>
+    </div>
+
+    <h3 style="font-family: var(--font-sans); font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg3); margin: 40px 0 16px;">Semantic</h3>
+    <div class="grid grid-4">
+      <div class="swatch">
+        <div class="chip" style="background: #4a7a3a;"></div>
+        <div class="meta"><span class="name">success</span><span class="hex">#4a7a3a</span><span class="role">forest green — checks, live</span></div>
+      </div>
+      <div class="swatch">
+        <div class="chip" style="background: #c98a1e;"></div>
+        <div class="meta"><span class="name">warn</span><span class="hex">#c98a1e</span><span class="role">amber warnings</span></div>
+      </div>
+      <div class="swatch">
+        <div class="chip" style="background: #a6351f;"></div>
+        <div class="meta"><span class="name">danger</span><span class="hex">#a6351f</span><span class="role">rust red, never bright</span></div>
+      </div>
+      <div class="swatch">
+        <div class="chip" style="background: #3a6a8a;"></div>
+        <div class="meta"><span class="name">info</span><span class="hex">#3a6a8a</span><span class="role">dusty blue — note callouts</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 TYPE ==================================================== -->
+  <section class="section" id="type">
+    <div class="section-head">
+      <span class="num">03</span>
+      <h2>Typography</h2>
+      <span class="note">serif + sans + hand</span>
+    </div>
+    <p class="intro">
+      <strong>Alegreya</strong> for display headlines and blog titles &mdash; italics do real
+      work, colored in accent. <strong>Inter Tight</strong> for UI, body, buttons, forms.
+      <strong>JetBrains Mono</strong> for code. <strong>Gaegu</strong> for hand-drawn accents,
+      <em>used sparingly</em> &mdash; marginal notes, chapter numerals, never body or nav.
+    </p>
+
+    <div class="type-row">
+      <div class="label">Serif / display</div>
+      <div class="sample"><span class="specimen-serif">Real-time features without the <em>streaming priesthood</em>.</span></div>
+      <div class="spec">Alegreya 600<br>64px / 1.0 / -0.02em</div>
+    </div>
+
+    <div class="type-row">
+      <div class="label">Serif / h2</div>
+      <div class="sample" style="font-family: var(--font-serif); font-weight: 600; font-size: 38px; line-height: 1.1; letter-spacing: -0.02em;">Rolling counters, without Kafka.</div>
+      <div class="spec">Alegreya 600<br>38px / 1.1 / -0.02em</div>
+    </div>
+
+    <div class="type-row">
+      <div class="label">Sans / body</div>
+      <div class="sample"><p class="specimen-sans" style="margin: 0; max-width: 56ch;">beava is a single-binary feature server for rolling counters, velocities, last-N-seen, leaderboards, and rate limits. HTTP in, HTTP out. No Kafka to babysit.</p></div>
+      <div class="spec">Inter Tight 400<br>16px / 1.7</div>
+    </div>
+
+    <div class="type-row">
+      <div class="label">Sans / eyebrow</div>
+      <div class="sample"><span class="eyebrow">Real-time primitives</span></div>
+      <div class="spec">Inter Tight 600<br>12px / 0.08em / accent</div>
+    </div>
+
+    <div class="type-row">
+      <div class="label">Mono / code</div>
+      <div class="sample"><code class="specimen-mono">curl beava.dev/counters/order_attempts.increment</code></div>
+      <div class="spec">JetBrains Mono 400<br>14px</div>
+    </div>
+
+    <div class="type-row">
+      <div class="label">Hand / accent</div>
+      <div class="sample"><span class="specimen-accent">&larr; ask me about counters</span></div>
+      <div class="spec">Gaegu 700<br>sparingly, rotated</div>
+    </div>
+
+    <div class="callout callout-note" style="margin-top: 32px;">
+      <strong>Gaegu rules:</strong> never body, never nav, never form labels. Always in
+      <code>var(--accent)</code>, ideally with a micro-rotate of <code>-2deg</code>, and
+      sitting next to a serif or mono element &mdash; not floating alone.
+    </div>
+  </section>
+
+  <!-- 04 SPACING ================================================= -->
+  <section class="section" id="spacing">
+    <div class="section-head">
+      <span class="num">04</span>
+      <h2>Spacing &amp; radii</h2>
+      <span class="note">4px baseline</span>
+    </div>
+    <p class="intro">
+      All spacing is a multiple of 4. Radii lean soft-medium &mdash; never sharp 0, never cartoony
+      2xl+ on small elements. Sections breathe with 80&ndash;128px vertical padding on desktop.
+    </p>
+
+    <div class="grid grid-2">
+      <div>
+        <h3 style="font-family: var(--font-sans); font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg3); margin: 0 0 16px;">Spacing scale</h3>
+        <table class="token-table">
+          <thead><tr><th>Token</th><th>Value</th><th>Visual</th></tr></thead>
+          <tbody>
+            <tr><td>--sp-1</td><td>4px</td><td class="demo"><div class="demo-space" style="width: 4px;"></div></td></tr>
+            <tr><td>--sp-2</td><td>8px</td><td class="demo"><div class="demo-space" style="width: 8px;"></div></td></tr>
+            <tr><td>--sp-3</td><td>12px</td><td class="demo"><div class="demo-space" style="width: 12px;"></div></td></tr>
+            <tr><td>--sp-4</td><td>16px</td><td class="demo"><div class="demo-space" style="width: 16px;"></div></td></tr>
+            <tr><td>--sp-6</td><td>24px</td><td class="demo"><div class="demo-space" style="width: 24px;"></div></td></tr>
+            <tr><td>--sp-8</td><td>32px</td><td class="demo"><div class="demo-space" style="width: 32px;"></div></td></tr>
+            <tr><td>--sp-12</td><td>48px</td><td class="demo"><div class="demo-space" style="width: 48px;"></div></td></tr>
+            <tr><td>--sp-16</td><td>64px</td><td class="demo"><div class="demo-space" style="width: 64px;"></div></td></tr>
+            <tr><td>--sp-24</td><td>96px</td><td class="demo"><div class="demo-space" style="width: 96px;"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div>
+        <h3 style="font-family: var(--font-sans); font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg3); margin: 0 0 16px;">Radii</h3>
+        <table class="token-table">
+          <thead><tr><th>Token</th><th>Value</th><th>Used on</th><th>Visual</th></tr></thead>
+          <tbody>
+            <tr><td>--r-xs</td><td>4px</td><td>inline code</td><td class="demo"><div class="demo-radius" style="border-radius: 4px;"></div></td></tr>
+            <tr><td>--r-sm</td><td>6px</td><td>chips</td><td class="demo"><div class="demo-radius" style="border-radius: 6px;"></div></td></tr>
+            <tr><td>--r-md</td><td>10px</td><td>buttons, inputs</td><td class="demo"><div class="demo-radius" style="border-radius: 10px;"></div></td></tr>
+            <tr><td>--r-lg</td><td>14px</td><td>cards (default)</td><td class="demo"><div class="demo-radius" style="border-radius: 14px;"></div></td></tr>
+            <tr><td>--r-xl</td><td>20px</td><td>hero cards, modals</td><td class="demo"><div class="demo-radius" style="border-radius: 20px;"></div></td></tr>
+            <tr><td>--r-pill</td><td>999px</td><td>badges, "live"</td><td class="demo"><div class="demo-radius" style="border-radius: 999px;"></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 05 SHADOWS ================================================= -->
+  <section class="section" id="shadows">
+    <div class="section-head">
+      <span class="num">05</span>
+      <h2>Shadows</h2>
+      <span class="note">warm &amp; low</span>
+    </div>
+    <p class="intro">
+      Four elevation tiers, all brown-tinted. Never blue or cool gray. Never colored glows
+      (no orange halos). The <code>--shadow-pop</code> chunky sticker shadow is reserved
+      for playful moments (capability tiles, blog chapter cards).
+    </p>
+
+    <div class="grid grid-4" style="gap: 24px;">
+      <div style="background: #fff; border-radius: 14px; padding: 28px 20px; text-align: center; box-shadow: 0 1px 2px rgba(26,23,20,0.06);">
+        <div style="font-family: var(--font-mono); font-size: 12px; color: var(--fg3); margin-bottom: 6px;">--shadow-xs</div>
+        <div style="font-family: var(--font-sans); font-size: 13px; color: var(--fg2);">subtle baseline</div>
+      </div>
+      <div style="background: #fff; border-radius: 14px; padding: 28px 20px; text-align: center; box-shadow: 0 1px 2px rgba(26,23,20,0.04), 0 2px 6px rgba(26,23,20,0.06);">
+        <div style="font-family: var(--font-mono); font-size: 12px; color: var(--fg3); margin-bottom: 6px;">--shadow-sm</div>
+        <div style="font-family: var(--font-sans); font-size: 13px; color: var(--fg2);">resting card</div>
+      </div>
+      <div style="background: #fff; border-radius: 14px; padding: 28px 20px; text-align: center; box-shadow: 0 2px 4px rgba(26,23,20,0.04), 0 8px 20px rgba(26,23,20,0.08);">
+        <div style="font-family: var(--font-mono); font-size: 12px; color: var(--fg3); margin-bottom: 6px;">--shadow-md</div>
+        <div style="font-family: var(--font-sans); font-size: 13px; color: var(--fg2);">hover, popover</div>
+      </div>
+      <div style="background: #fff; border-radius: 14px; padding: 28px 20px; text-align: center; box-shadow: 0 4px 8px rgba(26,23,20,0.06), 0 18px 40px rgba(26,23,20,0.10);">
+        <div style="font-family: var(--font-mono); font-size: 12px; color: var(--fg3); margin-bottom: 6px;">--shadow-lg</div>
+        <div style="font-family: var(--font-sans); font-size: 13px; color: var(--fg2);">modal</div>
+      </div>
+    </div>
+
+    <div style="margin-top: 24px;">
+      <div style="background: #fff; border-radius: 14px; padding: 28px 20px; text-align: center; box-shadow: 0 2px 0 rgba(26,23,20,0.08), 0 4px 0 #e6dccb; max-width: 260px; border: 1px solid var(--border);">
+        <div style="font-family: var(--font-mono); font-size: 12px; color: var(--fg3); margin-bottom: 6px;">--shadow-pop</div>
+        <div style="font-family: var(--font-sans); font-size: 13px; color: var(--fg2);">chunky "sticker" — playful moments only</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 06 MOTION ================================================== -->
+  <section class="section" id="motion">
+    <div class="section-head">
+      <span class="num">06</span>
+      <h2>Motion</h2>
+      <span class="note">ease-out by default</span>
+    </div>
+    <p class="intro">
+      Default entrance: fade + <code>translateY(8px)</code>, 200ms ease-out. No parallax,
+      no scroll-linked zooms. Spring easing is reserved for <em>mascot moments</em> only
+      &mdash; never on generic UI. Reduce-motion is honored globally.
+    </p>
+
+    <div class="motion-row">
+      <div class="label">ease-out <span style="color: var(--fg3)">(default)</span></div>
+      <div class="track"><div class="dot dot-out"></div></div>
+      <div class="spec">cubic-bezier(0.22, 1, 0.36, 1)</div>
+    </div>
+    <div class="motion-row">
+      <div class="label">ease-in-out</div>
+      <div class="track"><div class="dot dot-inout"></div></div>
+      <div class="spec">cubic-bezier(0.65, 0, 0.35, 1)</div>
+    </div>
+    <div class="motion-row">
+      <div class="label">spring <span style="color: var(--accent)">(mascot only)</span></div>
+      <div class="track"><div class="dot dot-spring"></div></div>
+      <div class="spec">cubic-bezier(0.34, 1.56, 0.64, 1)</div>
+    </div>
+
+    <div style="display: flex; gap: 12px; margin-top: 24px; flex-wrap: wrap;">
+      <span class="badge" style="font-family: var(--font-mono); font-size: 12px;">--dur-fast · 120ms</span>
+      <span class="badge" style="font-family: var(--font-mono); font-size: 12px;">--dur · 200ms</span>
+      <span class="badge" style="font-family: var(--font-mono); font-size: 12px;">--dur-slow · 360ms</span>
+    </div>
+  </section>
+
+  <!-- 07 COMPONENTS ============================================== -->
+  <section class="section" id="components">
+    <div class="section-head">
+      <span class="num">07</span>
+      <h2>Components</h2>
+      <span class="note">small kit, big reuse</span>
+    </div>
+    <p class="intro">
+      A restrained set, designed to compose. Buttons, badges, inputs, cards, callouts.
+      Every component inherits the tokens above &mdash; no component should invent a new
+      color, radius, or shadow.
+    </p>
+
+    <div class="comp-row">
+      <span class="label">Buttons</span>
+      <button class="btn btn-primary">Get started <span>&rarr;</span></button>
+      <button class="btn btn-ghost">Read the docs</button>
+      <button class="btn btn-text">Star on GitHub &rarr;</button>
+    </div>
+
+    <div class="comp-row">
+      <span class="label">Badges</span>
+      <span class="badge badge-accent">new</span>
+      <span class="badge badge-success">v1.2.0</span>
+      <span class="badge badge-info">note</span>
+      <span class="badge badge-live">live · 42 counters</span>
+      <span class="badge">neutral</span>
+    </div>
+
+    <div class="comp-row">
+      <span class="label">Inputs</span>
+      <input class="input" placeholder="your@email.com">
+      <input class="input" value="beava.dev/counters/x" style="font-family: var(--font-mono); font-size: 13px;">
+    </div>
+
+    <div class="comp-row" style="flex-direction: column; align-items: stretch;">
+      <span class="label">Cards</span>
+      <div class="grid grid-3" style="width: 100%;">
+        <div class="card">
+          <h4>Rolling counters</h4>
+          <p>How many of X have happened in the last N seconds? The default beava primitive.</p>
+        </div>
+        <div class="card">
+          <h4>Velocities</h4>
+          <p>Rate of change per window &mdash; useful for trending items and rate limits.</p>
+        </div>
+        <div class="card">
+          <h4>Leaderboards</h4>
+          <p>Sorted rolling aggregations. Query the top-N in a single HTTP call.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="comp-row" style="flex-direction: column; align-items: stretch;">
+      <span class="label">Callouts</span>
+      <div class="callout callout-note"><strong>Note &rarr;</strong> Counters are append-only; write throughput scales linearly with partitions.</div>
+      <div class="callout callout-warn"><strong>Heads up &rarr;</strong> If you need exactly-once semantics, you're in the wrong store. beava is best-effort eventual.</div>
+    </div>
+  </section>
+
+  <!-- 08 MASCOT ================================================== -->
+  <section class="section" id="mascot">
+    <div class="section-head">
+      <span class="num">08</span>
+      <h2>Mascot &amp; logo</h2>
+      <span class="note">hand-drawn, no stock</span>
+    </div>
+    <p class="intro">
+      The beaver is our mascot, not a brand personality we roleplay. Studio-Ghibli-adjacent,
+      rounded, thick outlines, flat fills with minimal shading. <strong>Never</strong> stock
+      photography, 3D renders, gradient orbs, or glassmorphism.
+    </p>
+
+    <div class="mascot-grid">
+      <div class="mascot-card">
+        <img src="../assets/logo-mark.png" alt="default">
+        <div class="name">logo-mark.png</div>
+        <div class="use">default — marketing, 404, empty states</div>
+      </div>
+      <div class="mascot-card">
+        <img src="../assets/mascot-pose-2.svg" alt="greeting">
+        <div class="name">mascot-pose-2.svg</div>
+        <div class="use">greeting — alt hero, docs sidebars</div>
+      </div>
+      <div class="mascot-card">
+        <img src="../assets/mascot-pose-3.svg" alt="action">
+        <div class="name">mascot-pose-3.svg</div>
+        <div class="use">action — CTA moments, widgets</div>
+      </div>
+      <div class="mascot-card">
+        <img src="../assets/mascot-work-pose.svg" alt="working">
+        <div class="name">mascot-work-pose.svg</div>
+        <div class="use">working — docs, tutorials, field guides</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 09 VOICE =================================================== -->
+  <section class="section" id="voice">
+    <div class="section-head">
+      <span class="num">09</span>
+      <h2>Voice &amp; tone</h2>
+      <span class="note">warm, not cute</span>
+    </div>
+    <p class="intro">
+      We sit in the triangle between <em>Julia Evans</em> (warm, pedagogical),
+      <em>Patrick McKenzie</em> (precise, numerate), and <em>DuckDB</em> (indie-OSS, mascot-forward,
+      a bit cheeky). Everything should feel like it was written by a specific human who ships.
+      <strong>Sentence case everywhere. Oxford commas. Em-dashes are house style.</strong>
+    </p>
+
+    <div class="grid grid-2">
+      <div class="card" style="background: var(--beava-success-wash); border-color: color-mix(in oklab, var(--beava-success) 25%, transparent);">
+        <h4 style="color: var(--beava-success);">&check; Yes</h4>
+        <p style="color: var(--fg1); font-family: var(--font-serif); font-size: 17px; line-height: 1.5; font-style: italic; margin-top: 10px;">"Real-time features without the streaming priesthood. beava is a single-binary feature server. HTTP in, HTTP out. No Kafka to babysit."</p>
+      </div>
+      <div class="card" style="background: var(--beava-danger-wash); border-color: color-mix(in oklab, var(--beava-danger) 25%, transparent);">
+        <h4 style="color: var(--beava-danger);">&times; No</h4>
+        <p style="color: var(--fg1); font-family: var(--font-serif); font-size: 17px; line-height: 1.5; font-style: italic; margin-top: 10px;">"🚀 Excited to announce the GA of our enterprise-ready AI-powered stream processing platform! 🎉"</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10 DON'TS ================================================== -->
+  <section class="section" id="donts">
+    <div class="section-head">
+      <span class="num">10</span>
+      <h2>Don'ts</h2>
+      <span class="note">keep the vibe</span>
+    </div>
+
+    <div class="grid grid-3">
+      <div class="card" style="background: var(--beava-danger-wash); border-color: color-mix(in oklab, var(--beava-danger) 25%, transparent);">
+        <h4>No pure white</h4>
+        <p>Page bg is always cream. White at page level breaks the warmth.</p>
+      </div>
+      <div class="card" style="background: var(--beava-danger-wash); border-color: color-mix(in oklab, var(--beava-danger) 25%, transparent);">
+        <h4>No emoji in product UI</h4>
+        <p>Reserve 🦫 for blog/Discord. UI uses the real mascot art or typographic arrows (→).</p>
+      </div>
+      <div class="card" style="background: var(--beava-danger-wash); border-color: color-mix(in oklab, var(--beava-danger) 25%, transparent);">
+        <h4>No stock photos</h4>
+        <p>Ever. Illustrations only, hand-drawn, matching the mascot style.</p>
+      </div>
+      <div class="card" style="background: var(--beava-danger-wash); border-color: color-mix(in oklab, var(--beava-danger) 25%, transparent);">
+        <h4>No Title Case</h4>
+        <p>Sentence case for headings, buttons, nav. Always.</p>
+      </div>
+      <div class="card" style="background: var(--beava-danger-wash); border-color: color-mix(in oklab, var(--beava-danger) 25%, transparent);">
+        <h4>No cold shadows</h4>
+        <p>All shadows are brown-tinted <code>rgba(26,23,20,x)</code>. Never gray-blue.</p>
+      </div>
+      <div class="card" style="background: var(--beava-danger-wash); border-color: color-mix(in oklab, var(--beava-danger) 25%, transparent);">
+        <h4>No gradient orbs</h4>
+        <p>Backgrounds are flat cream. 2% paper grain is the only allowed texture.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer class="ds-foot">
+    <div>design system · beava · apr 2026</div>
+    <div>tokens: <a href="colors_and_type.css">colors_and_type.css</a> &middot; readme: <a href="README.md">README.md</a></div>
+  </footer>
+</main>
+
+</body>
+</html>
