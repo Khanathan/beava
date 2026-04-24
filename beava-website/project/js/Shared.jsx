@@ -178,14 +178,14 @@ const Nav = ({ active = 'home' }) => {
   return (
     <nav style={navStyle}>
       <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex', alignItems: 'center', gap: 24, width: '100%' }}>
-        <a href="index.html" style={{ display: 'flex', alignItems: 'center', gap: 12, fontWeight: 700, fontSize: 22, color: 'var(--fg1)', textDecoration: 'none', fontFamily: 'var(--font-sans)', letterSpacing: '-0.01em' }}>
+        <a href="/" style={{ display: 'flex', alignItems: 'center', gap: 12, fontWeight: 700, fontSize: 22, color: 'var(--fg1)', textDecoration: 'none', fontFamily: 'var(--font-sans)', letterSpacing: '-0.01em' }}>
           <img src="assets/logo-mark.png" alt="" width={44} height={44}/>
           beava
         </a>
         <div style={{ display: 'flex', gap: 4, marginLeft: 14, flex: 1 }}>
-          <a style={link('guide')} href="guide/">Guide</a>
-          <a style={link('docs')} href="docs/">Docs</a>
-          <a style={link('community')} href="community/">Community</a>
+          <a style={link('guide')} href="/guide/">Guide</a>
+          <a style={link('docs')} href="/docs/">Docs</a>
+          <a style={link('community')} href="/community/">Community</a>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <a href="https://github.com/beava-dev/beava" target="_blank" rel="noopener" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--fg2)', padding: '7px 11px', border: '1px solid var(--border)', borderRadius: 8, background: '#fff', fontWeight: 500, textDecoration: 'none', fontFamily: 'var(--font-sans)' }}>

@@ -57,7 +57,7 @@
             <InstallTabs/>
 
             <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 26, flexWrap: 'wrap' }}>
-              <Button variant="primary" size="lg" icon={<Icon name="arrow" size={16}/>} href="guide/">
+              <Button variant="primary" size="lg" icon={<Icon name="arrow" size={16}/>} href="/guide/">
                 Read the guide
               </Button>
               <Button variant="secondary" size="lg" iconLeft={<Icon name="github" size={16}/>} href="https://github.com/beava-dev/beava" target="_blank" rel="noopener">
@@ -125,17 +125,17 @@
         {
           title: 'REPLACES REDIS + LUA',
           body: 'Redis+Lua scripts today, a bespoke Flink job tomorrow, or your first feature ever — all become the same Python file. Atomic per event. No race conditions, no Lua repo to maintain.',
-          href: 'docs/compare/vs-redis-lua/',
+          href: '/docs/compare/vs-redis-lua/',
         },
         {
           title: 'NO STREAMING STACK',
           body: 'No Kafka. No Flink. No Zookeeper. One binary, one box. Scale by RAM and cores, not by adding nodes and coordinators.',
-          href: 'docs/operations/',
+          href: '/docs/operations/',
         },
         {
           title: 'CRASH-SAFE BY DEFAULT',
           body: 'WAL-backed, group-fsynced. Worst-case loss on crash: seconds, not events. Single-box today — replicas and HA are v1.0 scope. Recovery ~8s/GB, methodology in /docs.',
-          href: 'docs/operations/#durability',
+          href: '/docs/operations/#durability',
         },
         {
           title: 'APACHE 2.0, FOREVER',
@@ -539,7 +539,7 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
             </div>
             <div className="recipe-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16 }}>
               {recipes.map(r => (
-                <a key={r.slug} href={`guide/recipes/${r.slug}/`} style={{
+                <a key={r.slug} href={`/guide/recipes/${r.slug}/`} style={{
                   display: 'flex',
                   flexDirection: 'column',
                   padding: '24px 20px 22px',
@@ -581,7 +581,7 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
     const GuideTeaser = () => (
       <section style={{ padding: '64px 28px 96px' }}>
         <div style={{ maxWidth: 1000, margin: '0 auto' }}>
-          <a href="guide/chapter-1/" style={{
+          <a href="/guide/chapter-1/" style={{
             display: 'grid', gridTemplateColumns: '1fr 260px', gap: 40, alignItems: 'center',
             background: 'var(--beava-paper)', border: '1px solid var(--border)', borderRadius: 20,
             padding: 36, textDecoration: 'none', color: 'inherit',
@@ -624,7 +624,7 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
               <div style={{ fontFamily: 'var(--font-serif)', fontSize: 'clamp(22px, 2.6vw, 28px)', fontWeight: 600, color: 'var(--fg1)', letterSpacing: '-0.01em', marginBottom: 6 }}>
                 ~3M events/sec/core
               </div>
-              <a href="docs/performance/" style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--accent)', fontWeight: 600, textDecoration: 'none' }}>
+              <a href="/docs/performance/" style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--accent)', fontWeight: 600, textDecoration: 'none' }}>
                 benchmarks →
               </a>
             </div>
@@ -632,7 +632,7 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
               <div style={{ fontFamily: 'var(--font-serif)', fontSize: 'clamp(22px, 2.6vw, 28px)', fontWeight: 600, color: 'var(--fg1)', letterSpacing: '-0.01em', marginBottom: 6 }}>
                 Recovery ~8s/GB
               </div>
-              <a href="docs/operations/" style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--accent)', fontWeight: 600, textDecoration: 'none' }}>
+              <a href="/docs/operations/" style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--accent)', fontWeight: 600, textDecoration: 'none' }}>
                 operations →
               </a>
             </div>
@@ -640,7 +640,7 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
               <div style={{ fontFamily: 'var(--font-serif)', fontSize: 'clamp(22px, 2.6vw, 28px)', fontWeight: 600, color: 'var(--fg1)', letterSpacing: '-0.01em', marginBottom: 6 }}>
                 ~7KB per entity
               </div>
-              <a href="docs/operations/#memory" style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--accent)', fontWeight: 600, textDecoration: 'none' }}>
+              <a href="/docs/operations/#memory" style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--accent)', fontWeight: 600, textDecoration: 'none' }}>
                 memory planning →
               </a>
             </div>
