@@ -3,7 +3,9 @@
 pub mod bloom;
 pub mod cms;
 pub mod entropy;
+pub mod hll;
 pub mod retracting_ring;
+pub mod uddsketch;
 
 #[cfg(test)]
 mod tests {
