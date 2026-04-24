@@ -370,7 +370,8 @@
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg3)', marginBottom: 6, letterSpacing: '0.03em', textTransform: 'lowercase' }}>pandas</div>
                 <pre className="code-well" style={{ fontSize: 12.5, padding: '14px 16px', lineHeight: 1.7, margin: 0 }}>
 {'events.'}<span className="fn">groupby</span>{'('}<span className="str">"session_id"</span>{').'}<span className="fn">agg</span>{'('}{'\n'}
-{'    my_feeds=('}<span className="str">"session_id"</span>{', '}<span className="str">"count"</span>{'),'}{'\n'}
+{'    my_feeds=('}<span className="str">"_"</span>{', '}<span className="str">"count"</span>{'),'}{'\n'}
+{'    my_streak=('}<span className="str">"streak"</span>{', '}<span className="str">"max"</span>{'),'}{'\n'}
 {')'}
                 </pre>
               </div>
@@ -380,13 +381,16 @@
               <div>
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--accent)', marginBottom: 6, letterSpacing: '0.03em', fontWeight: 700, textTransform: 'lowercase' }}>beava</div>
                 <pre className="code-well" style={{ fontSize: 12.5, padding: '14px 16px', lineHeight: 1.7, margin: 0 }}>
-<span className="fn">@bv.table</span>{'(key='}<span className="str">"session_id"</span>{')'}{'\n'}
-<span className="kw">def</span>{' '}<span className="fn">Session</span>{'(e: '}<span className="ty">FeedClick</span>{'):'}{'\n'}
-{'    '}<span className="kw">return</span>{' e.'}<span className="fn">agg</span>{'('}{'\n'}
-{'        my_feeds=bv.'}<span className="fn">count</span>{'(),'}{'\n'}
-{'    )'}
+{'events.'}<span className="fn">agg</span>{'('}{'\n'}
+{'    key='}<span className="str">"session_id"</span>{','}{'\n'}
+{'    my_feeds=bv.'}<span className="fn">count</span>{'(),'}{'\n'}
+{'    my_streak=bv.'}<span className="fn">consecutive</span>{'(),'}{'\n'}
+{')'}
                 </pre>
               </div>
+            </div>
+            <div style={{ textAlign: 'center', marginTop: 12, fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--fg3)', textWrap: 'pretty' }}>
+              Production beava wraps this in a <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>@bv.table</code> decorator for type safety — see the full pipeline below.
             </div>
           </div>
 
