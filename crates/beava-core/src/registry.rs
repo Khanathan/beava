@@ -463,6 +463,57 @@ mod tests {
         assert_eq!(desc, desc2);
     }
 
+    // Phase 11.5: temporal table flag + retention_ms round-trip.
+    // Verifies D-01 + D-16: TableDescriptor carries `temporal: bool` and
+    // optional `retention_ms: u64` (MVCC history-window). Defaults to
+    // (false, None) when absent so legacy tables continue to deserialize.
+    #[test]
+    fn temporal_table_descriptor_round_trips() {
+        // Sub-assertion 1: explicit construction round-trips.
+        let desc = TableDescriptor {
+            name: "merch".to_string(),
+            primary_key: vec!["mid".to_string()],
+            schema: TableSchema {
+                fields: [("mid".to_string(), FieldType::Str)].into_iter().collect(),
+                optional_fields: vec![],
+            },
+            ttl_ms: None,
+            mode: TableMode::Upsert,
+            registered_at_version: 0,
+            temporal: true,
+            retention_ms: Some(7 * 86_400_000),
+        };
+        let s = serde_json::to_string(&desc).unwrap();
+        let back: TableDescriptor = serde_json::from_str(&s).unwrap();
+        assert!(back.temporal);
+        assert_eq!(back.retention_ms, Some(604_800_000));
+
+        // Sub-assertion 2: client-shape JSON parses with both new fields set.
+        let json = r#"{
+            "name": "merch",
+            "primary_key": ["mid"],
+            "schema": {"fields": {"mid": "str"}, "optional_fields": []},
+            "mode": "upsert",
+            "temporal": true,
+            "retention_ms": 3600000
+        }"#;
+        let desc2: TableDescriptor = serde_json::from_str(json).unwrap();
+        assert!(desc2.temporal);
+        assert_eq!(desc2.retention_ms, Some(3_600_000));
+
+        // Sub-assertion 3: backwards-compat — JSON without the new fields
+        // defaults `temporal` to false and `retention_ms` to None.
+        let legacy_json = r#"{
+            "name": "u",
+            "primary_key": ["k"],
+            "schema": {"fields": {"k": "str"}, "optional_fields": []},
+            "mode": "upsert"
+        }"#;
+        let desc3: TableDescriptor = serde_json::from_str(legacy_json).unwrap();
+        assert!(!desc3.temporal);
+        assert_eq!(desc3.retention_ms, None);
+    }
+
     // Test 3: TableMode strict — unknown variant returns Err
     #[test]
     fn table_mode_unknown_variant_rejected() {
