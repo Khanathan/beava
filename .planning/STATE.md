@@ -3,209 +3,128 @@ gsd_state_version: 1.0
 milestone: v0.1
 milestone_name: milestone
 status: executing
-last_updated: "2026-04-23T20:35:06.281Z"
+last_updated: "2026-04-24T13:00:00.000Z"
 progress:
-  total_phases: 16
-  completed_phases: 16  # 1, 2, 2.5, 3, 4, 5, 5.5, 6, 6.1, 7, 7.5, 8, 9, 10, 11, 11.5 (post parallel-merge 2026-04-24)
-  total_plans: 61
-  completed_plans: 61
-  percent: 100
+  total_phases: 19
+  completed_phases: 17  # 1, 2, 2.5, 3, 4, 5, 5.5, 6, 6.1, 7, 7.5, 8, 9, 10, 11, 11.5, 13.1
+  total_plans: 70
+  completed_plans: 66
+  percent: 89
 ---
 
 # State: Beava v2 — v0 OSS Launch
 
-**Project reference:** `.planning/PROJECT.md` (rewritten 2026-04-22; wire pivoted to dual HTTP+TCP 2026-04-23)
-**Roadmap:** `.planning/ROADMAP.md` (14 phases; Phases 1–2 complete; Phase 2.5 inserted for TCP wire)
-**Requirements:** `.planning/REQUIREMENTS.md` (~153 REQ-IDs across 21 categories; SRV-WIRE + SDK-WIRE added at Phase 2.5 plan time)
+**Project reference:** `.planning/PROJECT.md`
+**Roadmap:** `.planning/ROADMAP.md` (19 phases: original 13 + 2.5/5.5/6.1/7.5/11.5/13.1/13.3 inserts)
+**Requirements:** `.planning/REQUIREMENTS.md`
 **Milestone:** v0 (first public OSS cut on beava.dev)
 **Created:** 2026-04-22
-**Revised:** 2026-04-23 (inserted Phase 2.5 — custom-framed TCP wire alongside HTTP — after user expanded v0 transport scope)
+**Last revised:** 2026-04-24 (post quota-wall reconciliation — rewrote to reflect actual shipped state)
 
 ## Core Value
 
-Feature authoring as composable Python code that ships to production unchanged. Users write `@bv.event` / `@bv.table(key=...)` / `bv.col(...)` / `.filter().group_by().agg()` / `.join()` / `bv.union(...)` / `app.register(...)` / `app.push(...)` / `app.get(...)`, deploy unchanged. The product inherits the v1 SDK shape (`main` branch `python/beava/`) on a new runtime (single-thread, in-memory, HTTP wire, 40+ operator catalogue).
+Feature authoring as composable Python code that ships to production unchanged. Users write `@bv.event` / `@bv.table(key=...)` / `bv.col(...)` / `.filter().group_by().agg()` / `.join()` / `bv.union(...)` / `app.register(...)` / `app.push(...)` / `app.get(...)`, deploy unchanged.
 
 ## Current Focus
 
-**Phase 3: Python SDK skeleton + decorators + expression DSL** — CONTEXT captured (1804cae). Ships `@bv.event` / `@bv.table` decorators, `bv.col` DSL, sync `bv.App` with URL-scheme transport dispatch; `bv.App()` with no URL auto-embeds a local Rust subprocess. Clean-room impl referencing v1 only for shape. Plan-phase to be dispatched under new TDD discipline (red commits before green commits, per CLAUDE.md §Conventions).
+**Phase 13.3 — Lockless apply via RefCell + LocalSet (Option 0).** Primary next step. Plan lives in `.planning/ideas/phase-13.3-lockless-apply.md`. Target: ~60ns/event, ~500 LoC refactor, Redis-shaped single-thread event loop replacing the current Mutex-per-state design. **Phase 13.2 (batch coalescing) is abandoned** — superseded by 13.3's simpler/faster approach.
 
-**Just shipped — Phase 2.5: TCP wire listener** (5 commits 4f390ed..2c47354): 256 tests green (+94), clippy + fmt clean, 8/8 ROADMAP criteria proven by `phase2_5_smoke.rs`. Frame codec `[u32 len][u16 op][u8 ct][payload]`, Redis-style strict-FIFO correlation, JSON (ct=0x01) body for register+ping, MessagePack (0x02) reserved for push/get, dedicated `op=0xFFFF` error response, single tokio current_thread runtime, shared `execute_register` between HTTP and TCP paths.
+## Shipped & Merged to `v2/greenfield`
 
-**Phase 4: Stateless ops + expression evaluator** — CONTEXT captured (603dea9). Hand-rolled recursive-descent parser for v1 grammar with column-pointing errors; `Row(BTreeMap<String, Value>)` data model; SQL-style three-valued null logic; server-side schema propagation through op chains at register time; `cast` + `isnull` builtins extensible via function-call grammar hook.
+| Phase | Scope | Status |
+|-------|-------|--------|
+| 1 | Foundation (workspace, axum, /health, /ready, logging, test harness) | ✅ merged |
+| 2 | Sources + registry + version bumps + additive-only enforcement | ✅ merged |
+| 2.5 | TCP wire listener + framing + full opcode table | ✅ merged |
+| 3 | Python SDK skeleton + decorators + expression DSL | ✅ merged |
+| 4 | Stateless ops + expression evaluator (server-side) | ✅ merged |
+| 5 | Aggregation framework + 8 core operators | ✅ merged |
+| 5.5 | Perf harness + retroactive baselines + 10%/25% regression gate | ✅ merged |
+| 6 | WAL + idempotency | ✅ merged |
+| 6.1 | Async durability — `SyncMode::{Periodic,PerEvent}` + `/push-sync` (Kafka-style acks=1 default, ~15× EPS lift; acks=all via push-sync) | ✅ merged |
+| 7 | Snapshot + recovery + schema evolution | ✅ merged |
+| 7.5 | End-to-end throughput harness + first baseline + per-phase throughput-run convention | ✅ merged |
+| 8 | Point / ordinal / recency operators (15 ops) + TCP `OP_PUSH` | ✅ merged |
+| 9 | Decay + velocity operators (16 ops + Python helpers) | ✅ merged |
+| 10 | Sketch operators — HLL / CMS / TopK / UDDSketch / Bloom (5 ops) | ✅ merged |
+| 11 | Bounded-buffer + geo operators (13 ops + `Value::{List,Map}`) | ✅ merged |
+| 11.5 | Temporal MVCC tables + retraction primitive | ✅ merged |
+| 13.1 | Perf regression fix — `spawn_blocking` for fsync (17k EPS restored at parallel=64) | ✅ merged |
 
-## Current Position
+**v2/greenfield HEAD:** `1495054` (docs session abandon 13.2). Test count: **850 tests green**.
 
-Phase: 6 (wal-idempotency) — EXECUTING
-Plan: 1 of 4
+## Shipped Partial — Awaiting Merge + Follow-up
 
-- **Milestone:** v0
-- **Phase:** 6 of 14 (wal + idempotency)
-- **Plans:** Phases 1, 2, 2.5 all shipped (Phase 2.5 256 tests green, 8/8 criteria proven)
-- **Status:** Executing Phase 6
-- **Progress:** [███████░░░] 67%
+| Branch / worktree | HEAD | What landed | What's left |
+|---|---|---|---|
+| `phase-12-joins` | `d541971` | Plan 12-02 (WAL replay for `TableUpsert/Delete/Retract`) + path-rewrites for 01/03/04/05/06 | Plans 12-01, 12-03, 12-04, 12-05, 12-06 on `phase-12-followup` worktree |
+| `phase-13-ship` | `2ef5afc` | Plan 13-01 (`/metrics` Prometheus + middleware), Plan 13-03 (`env_var_overrides` hermetic fix) | Plans 13-02, 13-04, metric-counter wiring on `phase-13-followup` worktree |
 
-## Performance Metrics
+## Remaining Work (priority order)
 
-Measured at v0 ship (Phase 13 is the final gate; Phase 5 establishes baseline):
+| # | Task | Where | Status |
+|---|------|-------|--------|
+| 1 | **Phase 13.3** — lockless apply (RefCell + LocalSet, Option 0) | New branch off `v2/greenfield`; plan: `.planning/ideas/phase-13.3-lockless-apply.md` | ⏳ NEXT |
+| 2 | Phase 12 follow-up — Plans 12-01/03/04/05/06 (joins + `push_sync`/`push_many`/`push_table`/`delete_table`/`set`/`mset`/`mget`/`get_multi`) | `.claude/worktrees/phase-12-followup` (off `phase-12-joins`) | ⏳ pending |
+| 3 | Phase 13 follow-up — Plans 13-02 (cold-entity GC sweep), 13-04 (perf gate), metric-counter wiring | `.claude/worktrees/phase-13-followup` (off `phase-13-ship`) | ⏳ pending |
+| 4 | Merge sequence into `v2/greenfield`: 12-joins + 12-followup → 13-ship + 13-followup | Mainline | ⏳ after 2 & 3 |
+| 5 | Final bench + ledger update (`beava-bench` at parallel=64 × small/medium/large × HTTP/TCP × BATCH_MS=0/1/5/20) | `.planning/throughput-baselines.md` | ⏳ after merges |
+| 6 | Milestone audit → complete → cleanup (`gsd-audit-milestone` → `gsd-complete-milestone v0.1` → `gsd-cleanup`) | Lifecycle | ⏳ final |
 
-- **Apply loop throughput target:** ≥ 3M EPS single-thread (32-byte events × 5 aggregations, server-truth)
-- **Batch-get latency target:** P50 < 2ms, P99 < 10ms (100 features × 1 key, warm cache)
-- **`push_sync` latency target:** P99 < 10ms including group-commit fsync
-- **WAL group-commit overhead:** P50 < 2ms added to push ACK
-- **Recovery RTO:** < 30s for 10GB state on NVMe
-- **Binary size:** ≤ 200MB stripped
-- **Operator catalogue size:** 40+ in v0
+**Deferred to v0.0.x point releases** (per Phase 13 CONTEXT D-16):
+- Plan 13-05 docs site (quickstart/operators/concepts/http-api/architecture)
+- Plan 13-06 `bv.fork()` local scoped replica subcommand
+- Plan 13-07 `pip install beava` + Docker Hub + GitHub Releases packaging
+- Plan 13-08 `playground.beava.dev` hosted tutorial
 
-Not yet measured. Perf harness introduced in Phase 5; hit-gate in Phase 13.
+## Performance Snapshot
+
+- **Post-fsync-fix ceiling** (macOS Apple-M4, `v2/greenfield` HEAD): ~17k EPS parallel=64 — apply-lock-bound. Phase 13.3 targets removing the Mutex to unlock the apply loop.
+- **Phase 13 ship-gate target:** ≥3M EPS single-thread on three pipeline shapes (simple fraud, complex fraud, recommendation); P99 batch-get < 10ms; P99 `push_sync` < 10ms including fsync.
+- **Baselines:** `.planning/perf-baselines.md` (70+ criterion rows, phases 2.5..11.5); `.planning/throughput-baselines.md` (end-to-end EPS + latency ledger).
 
 ## Accumulated Context
 
-### Architectural decisions (locked — from PROJECT.md)
+### Architectural decisions (locked)
 
-- Python SDK is the canonical authoring UX
-- Dual wire: HTTP/JSON (curl-testable, LB/WAF-compatible) + custom-framed TCP `[u32 len][u16 op][u8 content_type][payload]` — Redis-style strict-FIFO correlation (no request_id); `content_type` 0x01 JSON in v0, 0x02 MessagePack reserved for Phase 6/12 hot-path; `op=0xFFFF` error_response. Full opcode table designed in Phase 2.5; handlers wired incrementally as feature phases land.
-- **beava-core WASM-portability invariant** (codified 2026-04-23): `beava-core` crate (expression, registry, ops, aggregations, sketches) stays syscall-free. Only `beava-server` + WAL/snapshot crates touch fs/net. Unlocks v0.1+ browser-WASM + edge deployment without refactor.
-- **Phase 13 adds `playground.beava.dev`** (hosted interactive tutorial) — not browser-WASM. Browser-WASM `@beava/browser` npm library is v0.1+.
-- **Phase 13 perf gate expanded** from single fraud shape to three pipelines: simple fraud, complex fraud, recommendations.
-- `@bv.event` (immutable append-only, was v1's `@bv.stream`) and `@bv.table(key=..., ttl=...)` (upsertable, with tombstone delete)
+- Python SDK is the canonical authoring UX; curl is the language-agnostic escape hatch
+- Dual wire: HTTP/JSON + custom-framed TCP `[u32 len][u16 op][u8 content_type][payload]`; Redis-style strict-FIFO correlation (no request_id); `content_type` 0x01 JSON, 0x02 MessagePack reserved; `op=0xFFFF` error_response
+- **beava-core WASM-portability invariant:** `beava-core` (expression, registry, ops, aggregations, sketches) stays syscall-free; only `beava-server` + WAL/snapshot crates touch fs/net. Unlocks v0.1+ browser-WASM + edge deployment without refactor
+- `@bv.event` (immutable append-only) and `@bv.table(key=..., ttl=...)` (upsertable, with tombstone delete); temporal tables use MVCC (Phase 11.5)
 - Aggregations via `Event.group_by(keys).agg(name=bv.<op>(...), ...)` produce Tables
-- Stateless ops chain: `.filter .select .drop .rename .with_columns .map .cast .fillna`
+- Stateless ops chain: `filter / select / drop / rename / with_columns / map / cast / fillna`
 - Expression DSL: `bv.col("x")` with arithmetic, comparison, `& | ~`, `.isnull()`, `.cast()`
-- Joins: event↔event windowed, event↔table enrichment, table↔table key-matched
-- `bv.union(*events)` with schema-identity enforcement
-- `app.register(*descriptors)` — DAG topological sort, cycle detection, schema propagation, additive-only with `registry_version` bump
-- Single Rust process, single apply-loop thread (auxiliary threads only for WAL fsync, HTTP accept, snapshot writer)
-- In-memory state only; no RocksDB, no fjall, no SSD tiering
-- WAL file with 1–5ms group-commit fsync; periodic snapshot (default 30s)
+- Joins: event↔event windowed, event↔table enrichment (uses `as_of=` for temporal), table↔table key-matched; `bv.union(*events)` with schema-identity enforcement
+- Single Rust process, single apply-loop thread (auxiliary threads for WAL fsync via `spawn_blocking`, HTTP accept, snapshot writer)
+- In-memory state only; no RocksDB / fjall / SSD tiering
 - Uniform event-time bucketing, cap 64 buckets per windowed operator
 - Schema evolution: additive-only registry changes with monotonic version bumps
-- `bv.fork(...)` scoped local replica supported (v1 Phase 39 inheritance)
 - Commercial tier (HA, replicas, cross-region) explicitly out of v0 OSS
 
-### Operator catalogue (v0 scope — 40+ ops)
+### Operator catalogue shipped (55 ops)
 
-- Core (8): count, sum, avg, min, max, variance, stddev, ratio
-- Sketch (5): count_distinct (HLL), percentile (DDSketch), top_k (SpaceSaving), bloom_member, entropy
-- Point/ordinal (11): first, last, first_n, last_n, lag, first_seen, last_seen, age, has_seen, time_since, time_since_last_n
-- Recency (4): streak, max_streak, negative_streak, first_seen_in_window
-- Decay (7): ewma (alias ema), ewvar, ew_zscore, decayed_sum, decayed_count, twa
-- Velocity/trend (8): rate_of_change, inter_arrival_stats, burst_count, delta_from_prev, trend, trend_residual, outlier_count, value_change_count
-- Bounded-buffer (7): histogram, hour_of_day_histogram, dow_hour_histogram, seasonal_deviation, event_type_mix, most_recent_n, reservoir_sample
-- Geo (6): geo_velocity, geo_distance, geo_spread, unique_cells, geo_entropy, distance_from_home
-- Entity z-score (1): z_score
+- Core (8): count, sum, avg, min, max, variance, stddev, ratio — Phase 5
+- Sketch (5): count_distinct (HLL), percentile (UDDSketch), top_k (SpaceSaving), bloom_member, entropy — Phase 10
+- Point/ordinal (11) + recency (4): first, last, first_n, last_n, lag, first_seen, last_seen, age, has_seen, time_since, time_since_last_n, streak, max_streak, negative_streak, first_seen_in_window — Phase 8
+- Decay (7) + velocity (8) + z_score (1): ewma (alias ema), ewvar, ew_zscore, decayed_sum, decayed_count, twa, rate_of_change, inter_arrival_stats, burst_count, delta_from_prev, trend, trend_residual, outlier_count, value_change_count, z_score — Phase 9
+- Bounded-buffer (7) + geo (6): histogram, hour_of_day_histogram, dow_hour_histogram, seasonal_deviation, event_type_mix, most_recent_n, reservoir_sample, geo_velocity, geo_distance, geo_spread, unique_cells, geo_entropy, distance_from_home — Phase 11
 
-### Deferred / out of scope (v1+)
+### Pre-created worktrees (resume points)
 
-- Cross-entity / cross-shard operators
-- Event emission / timers / CEP / state machines as operators
-- Backfill + replay + branching (beyond what `bv.fork` covers)
-- Table aggregation with retraction propagation (v0.1)
-- Custom user-defined operators at runtime (plugin ABI future)
-- SQL query language
-- Multi-tenant isolation
-- Multi-instance coordination / HA (commercial tier)
-- Protobuf / FlatBuffers / schema-registry deps in OSS wire (custom framed TCP is fine — see Architectural decisions)
-- Partial-key joins; right/full/outer joins
-- `bv.union` with implicit schema reconciliation
+```
+.claude/worktrees/phase-12-followup     (base: phase-12-joins   @ d541971)
+.claude/worktrees/phase-13-followup     (base: phase-13-ship    @ 2ef5afc)
+.claude/worktrees/phase-13.2-followup   (base: phase-13.2-coalesce — ABANDONED; do not merge)
+```
 
-### Decisions from Phase 1 (Foundation, complete)
+## Blockers
 
-- `axum` as HTTP framework; `tokio::current_thread` runtime
-- Mutex-based `EnvGuard` to serialize env-var-touching tests (process-global env isn't thread-safe)
-- Manual `Debug` impl for `Server` (`TcpListener` lacks `Debug`)
-- `cli_smoke` tests use spawn+SIGTERM because binary starts a real HTTP server
-- `foundation_smoke` uses `required-features = ["testing"]` in Cargo.toml test stanza (cfg(test) does NOT propagate to integration tests)
-- `libc` dev-dep for `kill(pid, SIGTERM)` in subprocess smoke tests
+None active. Quota-wall blockers from the 2026-04-24 06:12 session have reset.
 
-### Decisions from Phase 2 (Sources + registry + version bumps, complete)
+## Historical session notes
 
-- `parking_lot::RwLock<RegistryInner>` for thread-safe Registry (no Tokio async locks — no lock held across `.await`)
-- `equiv_ignoring_version()` helper pattern (NOT custom PartialEq) for diff comparisons without version-stamp noise
-- `ValidatedPayload` newtype enforcing validate → compute_diff ordering
-- `PayloadNode` enum (Event/Table/Derivation) as unified payload type with `#[serde(tag = "kind")]`
-- `compute_diff` is pure (no mutation, no I/O); `apply_registration` is the single atomic install boundary
-- Fail-soft validation (collect all errors); first-error-wins on HTTP 400 (logs full Vec at WARN)
-- DFS three-color cycle detection for DAG acyclicity
-- Parse errors return `path="<body>"` (v0 best-effort); richer JSON-pointer extraction is Phase 3+
-- `OpNode` derives `PartialEq` only (not `Eq`) because `serde_json::Value` in `AggSpec` is not `Eq`
-- `Server::bind(cfg, dev_endpoints: bool)` takes the flag directly; production reads env var in `main.rs`; tests pass the bool directly (avoids `MutexGuard` held across `.await`)
-- `GET /registry` mounted only when `dev_endpoints_enabled=true`; `_dev_only: true` sentinel in response
-
-### Active todos
-
-- [x] Roadmap drafted (yolo auto-approved) — superseded by re-plan
-- [x] Plan Phase 1 (5 plans)
-- [x] Execute Phase 1 (36 tests green, foundation_smoke 2/2, acceptance gate passed)
-- [x] Re-plan v2 to adopt v1 Python SDK API shape (2026-04-22)
-- [x] Plan Phase 2 (6 plans: schema, OpNode, diff, validation, endpoint, acceptance)
-- [x] Execute Phase 2 (165 tests green, phase2_smoke 7/7, acceptance gate passed)
-- [x] Insert Phase 2.5 into roadmap for dual-wire pivot (2026-04-23 — ROADMAP/PROJECT/CLAUDE/STATE updated)
-- [x] Devex-first wire rename retcon (26daa41 Rust, b534c97 docs): idempotency_*→dedupe_*, history_ttl_ms→keep_events_for_ms, watermark_lateness_ms→tolerate_delay_ms, TableMode::Append→Upsert; event_time_field→Option; defaults.rs module; 162 tests green
-- [x] Discuss Phase 2.5 (interactive, all 4 grey areas captured; CONTEXT.md bc78e5e)
-- [x] Discuss Phase 3 (interactive, all 4 grey areas + embed-mode addition; CONTEXT.md 1804cae)
-- [ ] Plan Phase 2.5 — background agent running (Agent ID a25a45013570e1ac2)
-- [ ] Execute Phase 2.5 (after plan)
-- [ ] Plan Phase 3 (after 2.5 lands — SDK depends on server TCP listener)
-- [ ] Execute Phase 3
-- [ ] Discuss + plan + execute Phases 4 through 13
-
-Note: additional backlog item routed to Phase 13: load tests for simple fraud + complex fraud + recommendation pipelines (expanded from current single-shape fraud benchmark). Will update Phase 13 scope when planning it.
-
-### Blockers
-
-None.
-
-### Open questions / follow-ups
-
-- DESIGN-V2.md contains older content that predates the v1-API-shape pivot (§11 JSON aggregation DSL, §17 open-questions, §19 phase roadmap all stale). PROJECT.md + this STATE.md + ROADMAP.md are authoritative. DESIGN-V2.md can be refreshed in a later pass or left as historical context; not a blocker.
-- PERF gates rely on fraud-shape bench harness (Phase 5) and full-target verification (Phase 13). If developer hardware can't sustain 3M EPS/core, Phase 13 verification may need a dedicated benchmark machine.
-
-## Session Continuity
-
-Last session: 2026-04-23T20:25:02.357Z
-
-1. **Dual HTTP + TCP wire** (was HTTP-only). Inserted Phase 2.5 for TCP listener; frame `[u32 len][u16 op][u8 ct][payload]`; Redis-style strict-FIFO; full opcode table designed; `register`+`ping` wired, rest reserved.
-2. **Devex-first naming pivot**: streaming jargon purged from wire and API — retroactively renamed Phase 2's wire contract before Phase 2.5 / 3 lock it further. 162 tests green; defaults module centralizes 5s/7d/24h soft-knob defaults. `event_time_field` is now optional (server stamps wall-clock on push receipt); table `key` still required.
-3. **Python SDK embed mode**: `bv.App()` with no URL auto-spawns a local Rust subprocess on ephemeral ports for notebook/test users. Binary discovery via env/PATH/./target/debug. Shipping-in-wheel decision deferred to Phase 13.
-
-Commits this session: 1cf8148 (roadmap insert), 26daa41 (Rust rename + defaults), b534c97 (planning docs catch-up), bc78e5e (Phase 2.5 CONTEXT), 1804cae (Phase 3 CONTEXT).
-
-Phase 2.5 plan-phase running in background; Phase 3 CONTEXT already captured (depends on 2.5 landing).
-
-Next session should:
-
-1. Read `.planning/PROJECT.md`, `.planning/ROADMAP.md`, this file, and `.planning/REQUIREMENTS.md`
-2. Check on Phase 2.5 plan-phase background agent (Agent ID `a25a45013570e1ac2`) — should have produced plans under `.planning/phases/02.5-tcp-wire-listener/`
-3. If plans landed: `/gsd-execute-phase 2.5` then post-exec verification routing
-4. Resume `/gsd-autonomous --interactive --from 2.5` to pick up where this session left off
-
-### Phase 2.5 attach points
-
-- HTTP path stays: `POST /register`, `GET /registry` dev endpoint (Phase 2 output)
-- Validation + diff engine is in `crates/beava-core/src/{register_validate.rs,registry_diff.rs}` — TCP handler shares it (no duplication)
-- Server binding: `crates/beava-server/src/server.rs` (`Server::bind`) currently binds one listener; Phase 2.5 extends to two (`http_port`, `tcp_port`) with both configurable via `beava-core/src/config.rs`
-- TestServer harness needs extension: spawn with both ports, expose `ts.tcp_client()` helper
-- Opcode table lives in new `crates/beava-core/src/wire.rs` (or similar) — single source of truth for `u16` opcode constants
-
-### Phase 3 attach points (after Phase 2.5 ships)
-
-- Python SDK entry: `python/beava/` (existing v1 codebase on `main` branch)
-- Server endpoint: `POST /register` wire contract is LOCKED (see 02-05-PLAN.md §Stability notes)
-- GET /registry available when `BEAVA_DEV_ENDPOINTS=1` for SDK test harness debugging
-- TestServer helpers: `ts.post_json("/register", &payload)`, `ts.get_json("/registry")`
-- SDK test pattern: spawn TestServer (Rust binary), call HTTP endpoints from Python tests
-
-### Key locked wire contracts (Phase 2 output)
-
-- `POST /register` request: `{"nodes": [{"kind": "event"|"table"|"derivation", ...}]}`
-- `POST /register` 200 response: `{"status": "ok", "registry_version": N, "registered_descriptors": [...], "added": [...], "already_present": [...]}`
-- `POST /register` 400 response: `{"error": {"code": "invalid_registration", "path": "...", "reason": "..."}, "registry_version": N}`
-- `POST /register` 409 response: `{"error": {"code": "registration_conflict", "message": "...", "diff": {"added": [...], "removed": [], "changed": [...]}}, "registry_version": N}`
-- `POST /register` 415 response: `{"error": {"code": "unsupported_media_type", ...}, "registry_version": N}`
-- `GET /registry` response: `{"version": N, "events": {...}, "tables": {...}, "derivations": {...}, "_dev_only": true}`
+- `.planning/SESSION-STATE-2026-04-23.md` — Phase 2.5 → operator-family dispatch
+- `.planning/SESSION-STATE-2026-04-24-0612.md` — post-quota-wall handoff with full branch-level detail
 
 ---
-*State initialized: 2026-04-22 after roadmap creation.*
-*Phase 1 complete: 2026-04-22 — workspace, HTTP, config, logging, test harness.*
-*Re-plan committed: 2026-04-22 — v2 adopts v1 Python SDK API shape.*
-*Phase 2 complete: 2026-04-23 — Registry, diff, validation, POST /register, GET /registry, 165 tests.*
+*State last rewritten: 2026-04-24 — reconciled with actual shipped state after parallel merges (6.1..11.5), Phase 12/13 partial landings, and Phase 13.1 fsync fix merge.*

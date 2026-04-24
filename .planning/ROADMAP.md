@@ -1,11 +1,11 @@
 # Beava v2 — v0 OSS Launch Roadmap
 
 **Milestone:** v0 (first public OSS cut on `beava.dev`)
-**Granularity:** fine (13 phases; 3–8 plans per phase)
+**Granularity:** fine (19 phases; 3–8 plans per phase)
 **Mode:** yolo (auto-approved; written to hold up unrevised)
 **Parallelization:** enabled where indicated
 **Created:** 2026-04-22
-**Revised:** 2026-04-22 (re-planned to adopt v1 Python SDK API shape)
+**Revised:** 2026-04-24 (added sub-phases 6.1 async-durability, 13.1 perf-regression-fix, 13.3 lockless-apply; abandoned 13.2 coalesce; marked all shipped phases ✅ COMPLETE)
 **Source:** `.planning/PROJECT.md`, `.planning/REQUIREMENTS.md`
 
 ## North Star
@@ -30,23 +30,26 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 1 | Foundation | Rust workspace, axum HTTP scaffolding, config, logging, test harness | 0 (infrastructure) | 4 ✅ **COMPLETE** |
 | 2 | Sources + registry + version bumps | `/register` accepts DAG of event/table/derivation nodes; additive-only; monotonic version; registry persists in-memory | 12 | 5 ✅ **COMPLETE** |
 | 2.5 | TCP wire listener + framing + full opcode table | Custom-framed TCP listener alongside HTTP; full v0 opcode table designed; `register` + `ping` handlers wired; rest return `op_not_implemented` placeholder | ~8 | 8 ✅ **COMPLETE** |
-| 3 | Python SDK skeleton + decorators + expression DSL | `@bv.event`, `@bv.table`, `bv.col`, `bv.App(url)` (HTTP + TCP), register + validate, REGISTER JSON compiler | 20 | 7 |
-| 4 | Stateless ops + expression evaluator (server-side) | 7/7 | Complete   | 2026-04-23 |
-| 5 | Aggregation framework + core operators (8) | 7/8 | ✅ **COMPLETE** |
-| 5.5 | Perf harness + retroactive baselines | 5/6 | ✅ **COMPLETE** |
-| 6 | WAL + idempotency | 2/4 | ✅ **COMPLETE** |
-| 6.1 | Async durability (SyncMode::Periodic + /push-sync) | adds Kafka-style acks=1 default to /push (15× EPS lift) while preserving acks=all path via /push-sync | ~6 | ✅ **COMPLETE** |
-| 7 | Snapshot + recovery | Periodic full-state snapshot; restart replays snapshot + WAL; schema evolution survives restart | 5 | ✅ **COMPLETE** |
-| 7.5 | End-to-end throughput harness + first baseline | Reusable harness measuring sustained EPS + push/get latency through the live HTTP+TCP server. Tiered pipelines (small=1 / medium=5 / large=15 features). 60s wall-time time-bounded runs. Baselines committed to `.planning/throughput-baselines.md` keyed by hw-class. Establishes the per-phase throughput-run convention every operator phase (8–12) must honor. | ~6 | ✅ **COMPLETE** |
-| 8 | Point / ordinal / recency operators | first, last, first_n, last_n, lag, first_seen, last_seen, age, has_seen, time_since, time_since_last_n, streak, max_streak, negative_streak, first_seen_in_window | 15 | ✅ **COMPLETE** |
+| 3 | Python SDK skeleton + decorators + expression DSL | `@bv.event`, `@bv.table`, `bv.col`, `bv.App(url)` (HTTP + TCP), register + validate, REGISTER JSON compiler | 20 | ✅ **COMPLETE** |
+| 4 | Stateless ops + expression evaluator (server-side) | `filter`/`select`/`drop`/`rename`/`with_columns`/`map`/`cast`/`fillna` + `bv.col` evaluator | 13 | ✅ **COMPLETE** |
+| 5 | Aggregation framework + core operators (8) | `group_by().agg()` + 8 core ops + `Windowed<Op>` 64-bucket infra | 15 | ✅ **COMPLETE** |
+| 5.5 | Perf harness + retroactive baselines | `criterion` workspace + `.planning/perf-baselines.md` + 10%/25% regression gate | ~10 | ✅ **COMPLETE** |
+| 6 | WAL + idempotency | Group-commit fsync ACK + dedupe-key replay | 5 | ✅ **COMPLETE** |
+| 6.1 | Async durability (SyncMode + /push-sync) | Adds Kafka-style acks=1 default to `/push` (~15× EPS lift) while preserving acks=all path via `/push-sync` | ~6 | ✅ **COMPLETE** |
+| 7 | Snapshot + recovery | Periodic full-state snapshot; restart replays snapshot + WAL; schema evolution survives restart | 6 | ✅ **COMPLETE** |
+| 7.5 | End-to-end throughput harness + first baseline | Reusable harness measuring sustained EPS + push/get latency through the live HTTP+TCP server. Tiered pipelines (small=1 / medium=5 / large=15 features). 60s wall-time time-bounded runs. Baselines committed to `.planning/throughput-baselines.md` keyed by hw-class. Establishes the per-phase throughput-run convention every operator phase (8–12) must honor. | 6 | ✅ **COMPLETE** |
+| 8 | Point / ordinal / recency operators | first, last, first_n, last_n, lag, first_seen, last_seen, age, has_seen, time_since, time_since_last_n, streak, max_streak, negative_streak, first_seen_in_window + TCP `OP_PUSH` | 15 | ✅ **COMPLETE** |
 | 9 | Decay + velocity operators | ewma, ewvar, ew_zscore, decayed_sum, decayed_count, twa, rate_of_change, inter_arrival_stats, burst_count, delta_from_prev, trend, trend_residual, outlier_count, value_change_count, z_score | 16 | ✅ **COMPLETE** |
-| 10 | Sketch operators | count_distinct (HLL), percentile (DDSketch), top_k (SpaceSaving), bloom_member, entropy | 5 | ✅ **COMPLETE** |
+| 10 | Sketch operators | count_distinct (HLL), percentile (UDDSketch), top_k (SpaceSaving), bloom_member, entropy | 5 | ✅ **COMPLETE** |
 | 11 | Bounded-buffer + geo operators | histogram, hour_of_day/dow_hour histograms, seasonal_deviation, event_type_mix, most_recent_n, reservoir_sample, geo_velocity, geo_distance, geo_spread, unique_cells, geo_entropy, distance_from_home | 13 | ✅ **COMPLETE** |
 | 11.5 | Temporal tables + retraction primitive | MVCC storage for `@bv.table(temporal=True, retention=...)`; `app.retract(event_id)` scoped to table upserts/deletes; wires `as_of=...` kwarg that Phase 12 joins consume; stream retraction deferred to v1 but event-IDs land now | ~10 | ✅ **COMPLETE** |
-| 12 | Joins + unions + push/get API completion | Event↔event windowed join, event↔table enrichment (incl. event-time PIT against temporal tables), table↔table join, `bv.union`; `push_sync` + `push_many` + `push_table` + `delete_table` + `set` + `mset` + `mget` + `get_multi` wired end-to-end | 13 | 5 |
-| 13 | Observability + performance + docs + packaging + `bv.fork` + playground | `/metrics`, structured logs, perf gates on THREE pipelines (simple fraud, complex fraud, recommendations) ≥3M EPS, <10ms P99 batch get, SDK polish, docs, hosted interactive tutorial at playground.beava.dev, PyPI, GitHub Releases, Docker, `beava fork` subcommand | ~18 | 7 |
+| 12 | Joins + unions + push/get API completion | Event↔event windowed join, event↔table enrichment (incl. event-time PIT against temporal tables), table↔table join, `bv.union`; `push_sync` + `push_many` + `push_table` + `delete_table` + `set` + `mset` + `mget` + `get_multi` wired end-to-end | 13 | 🟡 **PARTIAL** (1/6 plans on `phase-12-joins`; 5 plans pending on `phase-12-followup` worktree) |
+| 13 | Observability + performance + docs + packaging + `bv.fork` + playground | `/metrics`, structured logs, perf gates on THREE pipelines (simple fraud, complex fraud, recommendations) ≥3M EPS, <10ms P99 batch get, SDK polish, docs, hosted interactive tutorial at playground.beava.dev, PyPI, GitHub Releases, Docker, `beava fork` subcommand | ~18 | 🟡 **PARTIAL** (2/8 plans on `phase-13-ship`; cold-entity GC + perf gate + metric wiring pending on `phase-13-followup` worktree; docs/fork/packaging/playground deferred to v0.0.x point releases per Phase 13 CONTEXT D-16) |
+| 13.1 | Perf regression fix — fsync off the runtime thread | `spawn_blocking` for WAL fsync; restored 17k EPS at parallel=64 on macOS | 1 | ✅ **COMPLETE** |
+| ~~13.2~~ | ~~Batch coalescing~~ | ~~ApplyConfig 6-knob + ApplyBuffer skeleton~~ | — | ❌ **ABANDONED** — superseded by Phase 13.3 (RefCell + LocalSet, simpler/faster Redis-shaped approach). Branch `phase-13.2-coalesce` is not to be merged; ApplyBuffer primitive is not reused. |
+| 13.3 | Lockless apply via RefCell + LocalSet (Option 0) | Replace apply-state Mutex with single-thread `RefCell` + `LocalSet`; Redis-shaped event loop; target ~60ns/event; ~500 LoC refactor | ~4 | ⏳ **NEXT** — plan in `.planning/ideas/phase-13.3-lockless-apply.md` |
 
-**Total:** 17 phases (Phase 2.5 inserted 2026-04-23 for dual HTTP+TCP wire; Phase 5.5 inserted 2026-04-23 for perf harness + retroactive baselines + per-phase regression gates; Phase 11.5 inserted 2026-04-23 for temporal tables + retraction primitive required by PIT stream↔table joins; Phase 7.5 inserted 2026-04-23 for end-to-end throughput harness + per-phase throughput-run convention so EPS numbers track incrementally instead of landing as a Phase 13 surprise), ~179 requirements mapped (actual count confirmed after plan-time verification), ~88 success criteria.
+**Total:** 19 phases (Phase 2.5 inserted 2026-04-23 for dual HTTP+TCP wire; Phase 5.5 inserted 2026-04-23 for perf harness + retroactive baselines + per-phase regression gates; Phase 11.5 inserted 2026-04-23 for temporal tables + retraction primitive required by PIT stream↔table joins; Phase 7.5 inserted 2026-04-23 for end-to-end throughput harness + per-phase throughput-run convention; Phase 6.1 inserted 2026-04-24 to split async-durability out of the Phase 6 acks=all path; Phase 13.1 inserted 2026-04-24 for the fsync-off-runtime regression fix; Phase 13.3 inserted 2026-04-24 as the canonical apply-lock removal, replacing the abandoned 13.2 coalesce spike). ~179 requirements mapped, ~88 success criteria.
 
 **Phase 1 status:** ✅ **COMPLETE** on commits `b100e51`..`c21b6b7`. Cargo workspace, axum HTTP server, `/health` + `/ready` stubs, graceful shutdown, integration TestServer harness — all gates green. See `.planning/phases/01-foundation/01-SUMMARY.md`, `.planning/phases/01-foundation/01-VERIFICATION.md`.
 
@@ -362,7 +365,9 @@ Feature authoring as composable Python code that ships to production unchanged. 
 6. Memory budget: temporal storage ≤ N× non-temporal equivalent for retention window R; measured in Phase 13 perf gate
 7. Throughput run: harness re-run with a temporal-table workload variant (upsert-heavy + occasional retract) appended; row added to `.planning/throughput-baselines.md`; baseline table-write throughput captured for the first time
 
-### Phase 12: Joins + unions + push/get API completion
+### Phase 12: Joins + unions + push/get API completion — 🟡 PARTIAL
+
+**Status:** Plan 12-02 shipped on branch `phase-12-joins` @ `d541971` (WAL replay for `TableUpsert/Delete/Retract`). Plans 12-01, 12-03, 12-04, 12-05, 12-06 pending on worktree `.claude/worktrees/phase-12-followup`.
 
 **Goal:** Joins (event↔event windowed, event↔table enrichment, table↔table) and `bv.union` implemented end-to-end. `push_sync`, `push_many`, `push_table`, `delete_table`, `set`, `mset`, `mget`, `get_multi` wired. Joins against temporal tables use the `as_of=...` kwarg from Phase 11.5 to resolve event-time PIT lookups.
 
@@ -378,7 +383,9 @@ Feature authoring as composable Python code that ships to production unchanged. 
 5. All push/get API variants pass end-to-end Python SDK tests against a real server
 6. Throughput run: harness re-run with a join-shape pipeline (event↔table enrichment) appended to medium/large; row added to `.planning/throughput-baselines.md`; this is the last incremental data point before Phase 13's three-shape ship gate
 
-### Phase 13: Observability + performance + docs + packaging + `bv.fork` — ship
+### Phase 13: Observability + performance + docs + packaging + `bv.fork` — ship — 🟡 PARTIAL
+
+**Status:** Plans 13-01 (`/metrics` Prometheus + middleware) and 13-03 (`env_var_overrides` hermetic fix) shipped on branch `phase-13-ship` @ `2ef5afc`. Plan 13-02 (cold-entity GC sweep), Plan 13-04 (perf gate), and metric-counter wiring pending on worktree `.claude/worktrees/phase-13-followup`. Plans 13-05..13-08 (docs site, `bv.fork`, PyPI/Docker/Releases, playground) deferred to v0.0.x point releases per Phase 13 CONTEXT D-16.
 
 **Goal:** Ship-ready v0. Metrics, perf gates cleared, docs live on `beava.dev`, binaries + PyPI + Docker published, `beava fork` subcommand works.
 
@@ -394,6 +401,43 @@ Feature authoring as composable Python code that ships to production unchanged. 
 5. `pip install beava` works; `docker run beava/beava:v0` works; GitHub Release binaries available for 3 platforms
 6. `bv.fork(...)` spawns a local scoped replica; features queryable against fork; fork cleans up on context exit
 7. All TEST-* requirements pass; CI green; ship-ready tag
+
+### Phase 13.1: Perf regression fix — fsync off the runtime thread — ✅ COMPLETE
+
+**Status:** Merged to `v2/greenfield` as `5b60bdc` (merge) / `2f3a092` (impl) / `a03730e` (regression test). Restored ~17k EPS at parallel=64 on macOS Apple-M4.
+
+**Goal:** Move the WAL fsync syscall off the Tokio `current_thread` runtime via `spawn_blocking` so long fsyncs don't starve the apply loop.
+
+**Depends on:** Phase 6.1 (WAL async dispatch path).
+
+**Success criteria:**
+1. WAL fsync never runs on the runtime thread (verified by regression test `test_fsync_does_not_stall_runtime`)
+2. 10× throughput regression observed pre-fix is closed (measured in `.planning/throughput-baselines.md`)
+3. No new flakes; 850 tests green on `v2/greenfield`
+
+### ~~Phase 13.2: Batch coalescing~~ — ❌ ABANDONED
+
+**Status:** Spike shipped on branch `phase-13.2-coalesce` @ `2122a16` (Plan 01 — ApplyConfig 6-knob + ApplyBuffer skeleton + 20 tests; RYW default preserved). **Do not merge.** Follow-up plans 02–05 are cancelled.
+
+**Why abandoned:** Phase 13.3 (RefCell + LocalSet) is simpler, faster, and Redis-shaped. The ApplyBuffer primitive from 13.2 is not reused — 13.3 removes the Mutex outright rather than amortizing contention across it.
+
+### Phase 13.3: Lockless apply via RefCell + LocalSet (Option 0) — ⏳ NEXT
+
+**Status:** Plan captured in `.planning/ideas/phase-13.3-lockless-apply.md`. No code yet.
+
+**Goal:** Replace the per-state Mutex in the apply loop with a single-thread `RefCell`-owning actor driven by Tokio's `LocalSet`. Apply becomes a Redis-shaped non-blocking loop; lock contention disappears; fsync stays off-thread (Phase 13.1). Target: ~60ns/event inside the apply loop; ~500 LoC refactor concentrated in `beava-server/src/apply/` and the runtime wiring.
+
+**Depends on:** Phase 13.1 (fsync spawn_blocking) — must stay in place because the apply loop is still single-threaded and must not block on I/O.
+
+**Success criteria:**
+1. Apply loop owns state via `RefCell` inside a `LocalSet` task; no `Mutex` / `RwLock` on the hot apply path
+2. Per-event apply cost measured ≤ 80ns on Apple-M4 (target 60ns) in the criterion microbench
+3. End-to-end throughput on `beava-bench` small/medium/large × HTTP/TCP improves measurably vs. Phase 13.1 baseline at BATCH_MS=0 (single-event, sync mode)
+4. Read-your-writes semantics preserved — existing acceptance smokes and crash UAT unchanged
+5. No new flakes; full workspace test suite green; clippy + fmt clean
+6. Regression gate row appended to `.planning/perf-baselines.md` and `.planning/throughput-baselines.md`
+
+**Downstream gating:** Unblocks the Phase 13 ship-gate perf numbers (≥3M EPS/core on the three pipeline shapes) because the apply loop is today the bottleneck — the Mutex caps us at ~17k EPS regardless of fsync cost.
 
 ---
 
