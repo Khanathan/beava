@@ -83,6 +83,12 @@ pub enum ErrorCode {
     /// Plan 05-06: two different aggregation nodes expose the same feature name.
     /// e.g., AggA exposes "cnt" AND AggB exposes "cnt" → reject at register time.
     AggregationFeatureNameCollisionAcrossAggregations,
+    // Phase 9 (decay/velocity ops):
+    /// Decay op (`ewma`, `ewvar`, `ew_zscore`, `decayed_sum`, `decayed_count`)
+    /// missing `params.half_life` or value unparseable / non-positive / `"forever"`.
+    AggregationInvalidHalfLife,
+    /// `burst_count` missing `params.sub_window` or value unparseable / non-positive.
+    AggregationInvalidSubWindow,
 }
 
 /// A single structured validation error. `path` uses pseudo-JSON-pointer format

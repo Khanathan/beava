@@ -85,6 +85,16 @@ struct AggParams {
     where_str: Option<String>,
     /// Phase 8 — bounded-buffer size for first_n/last_n/lag/time_since_last_n.
     n: Option<u32>,
+    /// Phase 9 — parsed from `params.half_life` (duration string).
+    half_life_ms: Option<u64>,
+    /// Phase 9 — parsed from `params.sub_window` (duration string).
+    sub_window_ms: Option<u64>,
+    /// Phase 9 — parsed from `params.sigma` (number, defaults to 3.0 for outlier_count).
+    sigma: Option<f64>,
+    /// Phase 9 — true when `half_life` was present but unparseable.
+    half_life_invalid: bool,
+    /// Phase 9 — true when `sub_window` was present but unparseable.
+    sub_window_invalid: bool,
 }
 
 fn extract_agg_params(params: &serde_json::Value) -> AggParams {
@@ -104,11 +114,40 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
         .get("n")
         .and_then(|v| v.as_u64())
         .and_then(|n| u32::try_from(n).ok());
+
+    // Phase 9 — half_life parsing.
+    let (half_life_ms, half_life_invalid) = match params.get("half_life").and_then(|v| v.as_str()) {
+        Some(s) => match parse_duration_to_ms(s) {
+            // half_life requires a finite positive value; reject "forever" (None).
+            Ok(Some(ms)) if ms > 0 => (Some(ms), false),
+            _ => (None, true),
+        },
+        None => (None, false),
+    };
+
+    // Phase 9 — sub_window parsing.
+    let (sub_window_ms, sub_window_invalid) =
+        match params.get("sub_window").and_then(|v| v.as_str()) {
+            Some(s) => match parse_duration_to_ms(s) {
+                Ok(Some(ms)) if ms > 0 => (Some(ms), false),
+                _ => (None, true),
+            },
+            None => (None, false),
+        };
+
+    // Phase 9 — sigma parsing (numeric).
+    let sigma = params.get("sigma").and_then(|v| v.as_f64());
+
     AggParams {
         field,
         window,
         where_str,
         n,
+        half_life_ms,
+        sub_window_ms,
+        sigma,
+        half_life_invalid,
+        sub_window_invalid,
     }
 }
 
@@ -116,6 +155,7 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
 
 fn parse_agg_kind(op: &str) -> Option<AggKind> {
     match op {
+        // Phase 5 core
         "count" => Some(AggKind::Count),
         "sum" => Some(AggKind::Sum),
         "avg" => Some(AggKind::Avg),
@@ -143,6 +183,24 @@ fn parse_agg_kind(op: &str) -> Option<AggKind> {
         "negative_streak" => Some(AggKind::NegativeStreak),
         // Phase 8 — windowed recency
         "first_seen_in_window" => Some(AggKind::FirstSeenInWindow),
+        // Phase 9 decay (AGG-DECAY-01..06); "ema" is an SDK alias also accepted server-side.
+        "ewma" | "ema" => Some(AggKind::Ewma),
+        "ewvar" => Some(AggKind::EwVar),
+        "ew_zscore" => Some(AggKind::EwZScore),
+        "decayed_sum" => Some(AggKind::DecayedSum),
+        "decayed_count" => Some(AggKind::DecayedCount),
+        "twa" => Some(AggKind::Twa),
+        // Phase 9 velocity
+        "rate_of_change" => Some(AggKind::RateOfChange),
+        "inter_arrival_stats" => Some(AggKind::InterArrivalStats),
+        "burst_count" => Some(AggKind::BurstCount),
+        "delta_from_prev" => Some(AggKind::DeltaFromPrev),
+        "trend" => Some(AggKind::Trend),
+        "trend_residual" => Some(AggKind::TrendResidual),
+        "outlier_count" => Some(AggKind::OutlierCount),
+        "value_change_count" => Some(AggKind::ValueChangeCount),
+        // Phase 9 z-score
+        "z_score" => Some(AggKind::ZScore),
         _ => None,
     }
 }
@@ -343,6 +401,41 @@ pub fn compile_aggregations_from_nodes(
                     continue;
                 }
 
+                // Phase 9 — half_life validation for decay ops.
+                if kind.requires_half_life()
+                    && (params.half_life_ms.is_none() || params.half_life_invalid)
+                {
+                    errors.push(ValidationError {
+                        code: ErrorCode::AggregationInvalidHalfLife,
+                        path: format!(
+                            "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.half_life"
+                        ),
+                        reason: format!(
+                            "{:?} requires positive finite half_life duration string \
+                             (e.g., \"5m\"); got {:?}",
+                            kind, params.half_life_ms
+                        ),
+                    });
+                    deriv_errors = true;
+                    continue;
+                }
+
+                // Phase 9 — sub_window validation for burst_count.
+                if matches!(kind, AggKind::BurstCount)
+                    && (params.sub_window_ms.is_none() || params.sub_window_invalid)
+                {
+                    errors.push(ValidationError {
+                        code: ErrorCode::AggregationInvalidSubWindow,
+                        path: format!(
+                            "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.sub_window"
+                        ),
+                        reason: "burst_count requires positive finite sub_window duration string"
+                            .to_string(),
+                    });
+                    deriv_errors = true;
+                    continue;
+                }
+
                 // Field validation for ops that require a field.
                 let needs_field = matches!(
                     kind,
@@ -352,6 +445,18 @@ pub fn compile_aggregations_from_nodes(
                         | AggKind::Max
                         | AggKind::Variance
                         | AggKind::StdDev
+                        | AggKind::Ewma
+                        | AggKind::EwVar
+                        | AggKind::EwZScore
+                        | AggKind::DecayedSum
+                        | AggKind::Twa
+                        | AggKind::RateOfChange
+                        | AggKind::DeltaFromPrev
+                        | AggKind::Trend
+                        | AggKind::TrendResidual
+                        | AggKind::OutlierCount
+                        | AggKind::ValueChangeCount
+                        | AggKind::ZScore
                 ) || agg_kind_requires_field(kind);
                 if needs_field {
                     match &params.field {
@@ -531,6 +636,10 @@ pub fn compile_aggregations_from_nodes(
                         window_ms,
                         where_expr,
                         n: params.n,
+                        // Phase 9 fields — populated by extract_agg_params extension.
+                        half_life_ms: params.half_life_ms,
+                        sub_window_ms: params.sub_window_ms,
+                        sigma: params.sigma,
                     },
                 });
             }

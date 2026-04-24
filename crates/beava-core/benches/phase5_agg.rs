@@ -39,6 +39,9 @@ fn windowless_desc(kind: AggKind, field: Option<&str>) -> AggOpDescriptor {
         window_ms: None,
         where_expr: None,
         n: None,
+        half_life_ms: None,
+        sub_window_ms: None,
+        sigma: None,
     }
 }
 
@@ -207,6 +210,9 @@ fn build_registry() -> Registry {
                 window_ms: Some(300_000),
                 where_expr: None,
                 n: None,
+                half_life_ms: None,
+                sub_window_ms: None,
+                sigma: None,
             },
         )],
     );

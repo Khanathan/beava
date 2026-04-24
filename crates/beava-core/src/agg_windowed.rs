@@ -412,7 +412,8 @@ impl WindowedOp {
                     Value::F64(matching as f64 / total as f64)
                 }
             }
-            // Phase 8 ops are never wrapped in WindowedOp (compile-time invariant).
+            // Phase 8 + Phase 9 ops are never wrapped in WindowedOp (compile-time
+            // invariant). Catch-all returns Null defensively.
             _ => Value::Null,
         }
     }
@@ -420,11 +421,12 @@ impl WindowedOp {
 
 /// Create a fresh lifetime AggOp for a given kind (used to initialise buckets).
 ///
-/// `WindowedOp` only supports the Phase 5 core ops. Phase 8 ops are
-/// lifetime-only (D-02 in 08-CONTEXT) and must not be wrapped in a
-/// tumbling-bucket window — `agg_compile::parse_agg_kind` validation rejects
-/// `window=` for them. If we ever reach this with a Phase 8 kind it's a bug;
-/// fall back to Count to avoid panicking the apply loop.
+/// `WindowedOp` only supports the Phase 5 core ops. Phase 8 + Phase 9 ops are
+/// lifetime-only (D-02 in 08-CONTEXT; AGG-DECAY/VEL spec) and must not be
+/// wrapped in a tumbling-bucket window — `agg_compile::parse_agg_kind`
+/// validation rejects `window=` for them. If we ever reach this with a non-
+/// Phase 5 kind it's a bug; fall back to Count to avoid panicking the apply
+/// loop.
 fn fresh_op(kind: AggKind) -> AggOp {
     use crate::agg_state::{
         AvgState, CountState, MaxState, MinState, RatioState, SumState, VarianceState,
@@ -438,7 +440,9 @@ fn fresh_op(kind: AggKind) -> AggOp {
         AggKind::Variance => AggOp::Variance(VarianceState::default()),
         AggKind::StdDev => AggOp::StdDev(VarianceState::default()),
         AggKind::Ratio => AggOp::Ratio(RatioState::default()),
-        // Phase 8 ops never wrapped in WindowedOp (compile-time invariant).
+        // Phase 8 + Phase 9 ops are never wrapped in WindowedOp (compile-time
+        // invariant). Fall back to Count defensively if we ever land here —
+        // this preserves Phase 8's robust-rather-than-panic stance.
         _ => AggOp::Count(CountState::default()),
     }
 }

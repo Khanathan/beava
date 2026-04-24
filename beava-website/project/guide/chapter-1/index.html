@@ -405,6 +405,7 @@
 
     const pipelineBasic = [
       { t: 'cmt', v: '# your first pipeline — 3 lines of logic' },
+      { t: 't', v: '\n' },
       { t: 'kw',  v: 'import' }, { t: 't', v: ' beava ' }, { t: 'kw', v: 'as' }, { t: 't', v: ' bv\n\n' },
       { t: 'fn',  v: '@bv.stream' }, { t: 't', v: '\n' },
       { t: 'kw',  v: 'class' }, { t: 't', v: ' ' }, { t: 'ty', v: 'PageView' }, { t: 't', v: ':\n' },
@@ -413,10 +414,12 @@
       { t: 'fn',  v: '@bv.table' }, { t: 't', v: '(key=' }, { t: 'str', v: '"user_id"' }, { t: 't', v: ')\n' },
       { t: 'kw',  v: 'def' }, { t: 't', v: ' ' }, { t: 'fn', v: 'UserStats' }, { t: 't', v: '(e: PageView):\n' },
       { t: 't',   v: '    ' }, { t: 'kw', v: 'return' }, { t: 't', v: ' e.' }, { t: 'fn', v: 'agg' }, { t: 't', v: '(views_total=bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '())' },
+      { t: 'note', v: '← "LIFETIME VIEWS PER USER"' },
     ];
 
     const pipelineDashboard = [
       { t: 'cmt', v: '# a per-customer analytics dashboard' },
+      { t: 't', v: '\n' },
       { t: 'kw',  v: 'import' }, { t: 't', v: ' beava ' }, { t: 'kw', v: 'as' }, { t: 't', v: ' bv\n\n' },
       { t: 'fn',  v: '@bv.stream' }, { t: 't', v: '\n' },
       { t: 'kw',  v: 'class' }, { t: 't', v: ' ' }, { t: 'ty', v: 'PageView' }, { t: 't', v: ':\n' },
@@ -426,18 +429,60 @@
       { t: 'fn',  v: '@bv.table' }, { t: 't', v: '(key=' }, { t: 'str', v: '"user_id"' }, { t: 't', v: ')\n' },
       { t: 'kw',  v: 'def' }, { t: 't', v: ' ' }, { t: 'fn', v: 'Dashboard' }, { t: 't', v: '(e: PageView):\n' },
       { t: 't',   v: '    ' }, { t: 'kw', v: 'return' }, { t: 't', v: ' e.' }, { t: 'fn', v: 'agg' }, { t: 't', v: '(\n' },
-      { t: 't',   v: '        views_total        = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(),\n' },
-      { t: 't',   v: '        views_24h          = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(window=' }, { t: 'str', v: '"24h"' }, { t: 't', v: '),\n' },
-      { t: 't',   v: '        distinct_cats_7d   = bv.' }, { t: 'fn', v: 'distinct' }, { t: 't', v: '(e.category, window=' }, { t: 'str', v: '"7d"' }, { t: 't', v: '),\n' },
-      { t: 't',   v: '        last_seen          = bv.' }, { t: 'fn', v: 'latest' }, { t: 't', v: '(e.ts),\n' },
+      { t: 't',   v: '        views_total        = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(),' }, { t: 'note', v: '← "LIFETIME"' }, { t: 't', v: '\n' },
+      { t: 't',   v: '        views_24h          = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(window=' }, { t: 'str', v: '"24h"' }, { t: 't', v: '),' }, { t: 'note', v: '← "TODAY BAR"' }, { t: 't', v: '\n' },
+      { t: 't',   v: '        distinct_cats_7d   = bv.' }, { t: 'fn', v: 'distinct' }, { t: 't', v: '(e.category, window=' }, { t: 'str', v: '"7d"' }, { t: 't', v: '),' }, { t: 'note', v: '← "WEEK CATEGORIES"' }, { t: 't', v: '\n' },
+      { t: 't',   v: '        last_seen          = bv.' }, { t: 'fn', v: 'latest' }, { t: 't', v: '(e.ts),' }, { t: 'note', v: '← "FRESHNESS"' }, { t: 't', v: '\n' },
       { t: 't',   v: '    )' },
     ];
 
+    // AskClaude tip — reuses the pattern from the fraud recipe. Sits below
+    // a pipeline block, says "you can skip writing this and just ask Claude."
+    const AskClaude = ({ command, blurb }) => (
+      <div style={{
+        marginTop: 18,
+        padding: '20px 24px',
+        background: 'var(--beava-orange-wash)',
+        border: '1px solid #f1d8c2',
+        borderRadius: 14,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+          <span style={{
+            fontFamily: 'var(--font-accent)',
+            fontSize: 22, fontWeight: 700,
+            color: 'var(--accent)',
+            transform: 'rotate(-2deg)',
+            display: 'inline-block',
+          }}>
+            Or just ask Claude →
+          </span>
+        </div>
+        <pre className="code-well" style={{ fontSize: 13, padding: '14px 16px', lineHeight: 1.5, margin: 0 }}>
+          <span className="cmt"># in Claude Code, Cursor, or Codex</span>{'\n'}
+          {command}
+        </pre>
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--fg2)', marginTop: 10, textWrap: 'pretty' }}>
+          {blurb} <a href="#" style={{ color: 'var(--accent)', fontWeight: 600, textDecoration: 'none' }}>Install the skill →</a>
+        </div>
+      </div>
+    );
+
     const CodeBlock = ({ tokens, fontSize = 13 }) => (
       <pre className="code-well" style={{ fontSize, padding: '20px 22px', lineHeight: 1.7, margin: 0 }}>
-        {tokens.map((tok, i) => (
-          tok.t === 't' ? <span key={i}>{tok.v}</span> : <span key={i} className={tok.t}>{tok.v}</span>
-        ))}
+        {tokens.map((tok, i) => {
+          if (tok.t === 't') return <span key={i}>{tok.v}</span>;
+          if (tok.t === 'note') return (
+            <span key={i} style={{
+              fontFamily: 'var(--font-accent)',
+              fontSize: '1.05em',
+              fontWeight: 700,
+              color: 'var(--accent)',
+              marginLeft: 10,
+              letterSpacing: '0.005em',
+            }}>{tok.v}</span>
+          );
+          return <span key={i} className={tok.t}>{tok.v}</span>;
+        })}
       </pre>
     );
 
@@ -465,26 +510,36 @@
     // Renders a curl POST request body and its JSON response based on the
     // actual rows in state. Teaches: your app calls POST /batch/<Table>
     // with the user_ids visible on screen, gets back the metrics, renders.
-    const QueryPanel = ({ table, userIds, rowsList, metricKeys, empty }) => {
-      const ids = userIds.slice(0, 3);
+    const QueryPanel = ({ table, userIds, rowsList, metricKeys, empty, onFirstRun, autoRefreshMs }) => {
+      // Show all visible users (up to 6 to keep the payload readable).
+      const ids = userIds.slice(0, 6);
       const curl = `curl -X POST https://your-beava/batch/${table} \\
   -H 'Content-Type: application/json' \\
   -d '${JSON.stringify(ids)}'`;
 
       // User-triggered query: the response only appears after "Run query"
-      // is clicked. Mirrors a real curl: you type it, you run it, you see
-      // the response. Re-run updates the response to the live state.
+      // is clicked. Once clicked, auto-refresh kicks in so the snapshot
+      // stays current as events keep landing.
       const [state, setState]   = React.useState('idle');   // 'idle' | 'running' | 'done'
       const [latency, setLat]   = React.useState(null);
-      const [snapshot, setSnap] = React.useState(null);     // frozen response JSON
+      const [snapshot, setSnap] = React.useState(null);
+      const [autoCount, setAC]  = React.useState(0);
+      const startedRef = React.useRef(false);
 
-      // When the underlying ids change (e.g. events get cleared), reset.
-      React.useEffect(() => { setState('idle'); setSnap(null); }, [empty, table]);
+      const idsRef      = React.useRef(ids);
+      const rowsRef     = React.useRef(rowsList);
+      idsRef.current    = ids;
+      rowsRef.current   = rowsList;
 
-      const buildResponse = () => {
-        const rowByUid = new Map(rowsList);
+      // Reset when table changes (Part 2 vs Part 3) or everything is cleared.
+      React.useEffect(() => {
+        if (empty && !startedRef.current) { setState('idle'); setSnap(null); }
+      }, [empty, table]);
+
+      const buildResponse = React.useCallback(() => {
+        const rowByUid = new Map(rowsRef.current);
         const obj = {};
-        for (const uid of ids) {
+        for (const uid of idsRef.current) {
           const r = rowByUid.get(uid);
           if (!r) { obj[uid] = null; continue; }
           const o = {};
@@ -497,21 +552,37 @@
           obj[uid] = o;
         }
         return JSON.stringify(obj, null, 2);
-      };
+      }, [metricKeys]);
 
-      const runQuery = () => {
-        if (empty || state === 'running') return;
-        setState('running');
-        setSnap(null);
-        // Simulate a realistic sub-5ms fetch with a small UI delay so the
-        // user can see the "running" state briefly.
+      const doFetch = React.useCallback((opts = {}) => {
+        const showSpinner = opts.showSpinner !== false;
+        if (showSpinner) { setState('running'); setSnap(null); }
         const simLatencyMs = +(1.2 + Math.random() * 2.6).toFixed(2);
         setTimeout(() => {
           setLat(simLatencyMs);
           setSnap(buildResponse());
           setState('done');
-        }, 260);
+          if (!showSpinner) setAC(c => c + 1);
+        }, showSpinner ? 260 : 0);
+      }, [buildResponse]);
+
+      const runQuery = () => {
+        if (empty || state === 'running') return;
+        const firstTime = !startedRef.current;
+        startedRef.current = true;
+        doFetch({ showSpinner: true });
+        if (firstTime && onFirstRun) onFirstRun();
       };
+
+      // Auto-refresh loop — silent re-fetch every autoRefreshMs once the
+      // user has started the query at least once.
+      React.useEffect(() => {
+        if (!autoRefreshMs) return;
+        const id = setInterval(() => {
+          if (startedRef.current) doFetch({ showSpinner: false });
+        }, autoRefreshMs);
+        return () => clearInterval(id);
+      }, [autoRefreshMs, doFetch]);
 
       return (
         <div style={{ marginTop: 22 }}>
@@ -535,10 +606,15 @@
               {state === 'running' && (
                 <span className="pill reg"><span className="dot"/>running…</span>
               )}
+              {startedRef.current && autoRefreshMs && state !== 'running' && (
+                <span className="pill reg" style={{ fontFamily: 'var(--font-mono)' }}>
+                  <span className="dot"/>auto-refresh · {autoRefreshMs / 1000}s
+                </span>
+              )}
               <button className="composer-random" onClick={runQuery} disabled={empty || state === 'running'}
                       style={{ padding: '9px 14px', fontSize: 13 }}>
                 <Icon name="terminal" size={13} stroke={2}/>
-                {state === 'done' ? 'Re-run query' : 'Run query'}
+                {startedRef.current ? 'Re-run now' : 'Run query'}
               </button>
             </div>
           </div>
@@ -745,6 +821,10 @@
       const [formUser, setFormUser]   = React.useState(USERS[0]);
       const [formPath, setFormPath]   = React.useState(PATHS[1]);
 
+      // Dashboard only renders AFTER the user runs the /batch/Dashboard
+      // query at least once — mirrors the real flow: no query, no UI.
+      const [dashQueryStarted, setDashQueryStarted] = React.useState(false);
+
       const idRef         = React.useRef(1);
       const firstBurstRef = React.useRef(true);
 
@@ -871,6 +951,10 @@
 
               <CodeBlock tokens={pipelineBasic}/>
 
+              <AskClaude
+                command="/beava add views_total counter keyed on user_id"
+                blurb={<>The <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12, background: '#fff', padding: '1px 5px', borderRadius: 4 }}>/beava</code> skill writes the pipeline file, registers it, and pushes a test event.</>}/>
+
               <div style={{ marginTop: 20, marginBottom: 10 }}>
                 <RegisterButton label="Register this pipeline" status={basicStatus} onRegister={() => register('basic')}/>
               </div>
@@ -955,6 +1039,10 @@
 
               <CodeBlock tokens={pipelineDashboard}/>
 
+              <AskClaude
+                command="/beava extend UserStats: add views_24h, distinct_cats_7d, last_seen"
+                blurb={<>Claude edits the existing pipeline file, adds the three new metrics, re-registers the table, and verifies with a batch-get. You never type <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12, background: '#fff', padding: '1px 5px', borderRadius: 4 }}>@bv.table</code> yourself.</>}/>
+
               <div style={{ marginTop: 20, marginBottom: 28, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <RegisterButton
                   label="Register the dashboard pipeline"
@@ -978,67 +1066,7 @@
                 path={formPath} setPath={setFormPath}
                 onCraft={sendCrafted}/>
 
-              {/* ---------- LIVE DASHBOARD UI ---------- */}
-
-              <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg3)', letterSpacing: '0.04em', textTransform: 'lowercase' }}>
-                  ↓ live from GET /batch/<span style={{ color: 'var(--accent)', fontWeight: 700 }}>
-                    {stage === 'dashboard' ? 'Dashboard' : 'UserStats'}
-                  </span>
-                </div>
-                <div className="pipeline-state-badge">
-                  <span>pipeline:</span>
-                  <span style={{ color: stage === 'dashboard' ? 'var(--beava-success)' : 'var(--fg1)', fontWeight: 700 }}>
-                    {stage === 'dashboard' ? 'Dashboard (4 metrics)' : 'UserStats (views_total only)'}
-                  </span>
-                </div>
-              </div>
-
-              <div className="ch1-stats">
-                <StatTile label="users seen" value={rowsList.length}/>
-                <StatTile label="events ingested" value={totalEvents}/>
-                <StatTile label="distinct categories"
-                          value={stage === 'dashboard' ? allCats.size : '—'}/>
-                <StatTile label="active pipeline"
-                          value={stage === 'dashboard' ? '4 metrics' : '1 metric'}/>
-              </div>
-
-              <div className="ch1-dash">
-                <div className="evt-ticker">
-                  <div className="evt-ticker-hd">
-                    <span>recent events</span>
-                    <span style={{ color: 'var(--accent)' }}>{events.length > 0 ? 'live' : 'idle'}</span>
-                  </div>
-                  {events.length === 0 && (
-                    <div className="evt-empty">
-                      {basicStatus === 'done' ? 'click "Send a random event" →' : 'register the pipeline, then send an event.'}
-                    </div>
-                  )}
-                  {events.map(e => (
-                    <div className="evt-row" key={e.id}>
-                      <div><span className="u">{e.user_id}</span> <span className="p">{e.path}</span></div>
-                      <div className="t">{agoString(e.tsMs)} · category={e.category}</div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="ch1-cards">
-                  {stage !== 'dashboard' && (
-                    <div className="empty-state">
-                      Dashboard table doesn't exist yet. Register the pipeline above to unlock the 4-metric view. Events you pushed in Part 2 are already in the stream, ready to replay.
-                    </div>
-                  )}
-                  {stage === 'dashboard' && rowsList.length === 0 && (
-                    <div className="empty-state">
-                      Dashboard is empty. Push an event and watch a card appear for that user, with views, categories, and activity filling in live.
-                    </div>
-                  )}
-                  {stage === 'dashboard' && rowsList.map(([uid, r]) => (
-                    <UserCard key={uid} uid={uid} row={r} maxViews24h={maxViews24h}
-                              nowTick={nowTick} flash={flashUid === uid}/>
-                  ))}
-                </div>
-              </div>
+              {/* ---------- STEP 1: QUERY (runs above the dashboard) ---------- */}
 
               {stage === 'dashboard' && (
                 <QueryPanel
@@ -1046,13 +1074,76 @@
                   userIds={rowsList.map(([uid]) => uid)}
                   rowsList={rowsList}
                   metricKeys={['views_total', 'views_24h', 'distinct_cats_7d', 'last_seen']}
-                  empty={rowsList.length === 0}/>
+                  empty={rowsList.length === 0}
+                  onFirstRun={() => setDashQueryStarted(true)}
+                  autoRefreshMs={1500}/>
               )}
 
-              {stage === 'dashboard' && rowsList.length >= 3 && (
-                <Callout eyebrow="YOU BUILT THIS" mascot="pose-2" tint="warm" style={{ marginTop: 32 }}>
-                  That grid above? That's live beava state rendered as a real dashboard. Every event you push updates a single user's card, atomically. The real server does the same thing at ~3M events/sec/core, and your UI would call <code style={{ fontFamily: 'var(--font-mono)', fontSize: 14 }}>POST /batch/Dashboard</code> with the user_ids on its screen.
-                </Callout>
+              {/* ---------- STEP 2: LIVE DASHBOARD UI (gated on query) ---------- */}
+
+              {stage === 'dashboard' && !dashQueryStarted && (
+                <div className="empty-state" style={{ marginTop: 28, gridColumn: 'auto' }}>
+                  Run the query above to render the dashboard. The UI only has data to show once your frontend fetches it — same contract as production.
+                </div>
+              )}
+
+              {stage === 'dashboard' && dashQueryStarted && (
+                <>
+                  <div style={{ marginTop: 28, marginBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg3)', letterSpacing: '0.04em', textTransform: 'lowercase' }}>
+                      ↓ dashboard rendered from the query response (auto-refresh every 1.5s)
+                    </div>
+                    <div className="pipeline-state-badge">
+                      <span>pipeline:</span>
+                      <span style={{ color: 'var(--beava-success)', fontWeight: 700 }}>
+                        Dashboard (4 metrics)
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="ch1-stats">
+                    <StatTile label="users seen" value={rowsList.length}/>
+                    <StatTile label="events ingested" value={totalEvents}/>
+                    <StatTile label="distinct categories" value={allCats.size}/>
+                    <StatTile label="active pipeline" value="4 metrics"/>
+                  </div>
+
+                  <div className="ch1-dash">
+                    <div className="evt-ticker">
+                      <div className="evt-ticker-hd">
+                        <span>recent events</span>
+                        <span style={{ color: 'var(--accent)' }}>{events.length > 0 ? 'live' : 'idle'}</span>
+                      </div>
+                      {events.length === 0 && (
+                        <div className="evt-empty">push an event above ↑</div>
+                      )}
+                      {events.map(e => (
+                        <div className="evt-row" key={e.id}>
+                          <div><span className="u">{e.user_id}</span> <span className="p">{e.path}</span></div>
+                          <div className="t">{agoString(e.tsMs)} · category={e.category}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="ch1-cards">
+                      {rowsList.length === 0 && (
+                        <div className="empty-state">
+                          Dashboard is empty. Push an event and watch a card appear for that user, with views, categories, and activity filling in live.
+                        </div>
+                      )}
+                      {rowsList.map(([uid, r]) => (
+                        <UserCard key={uid} uid={uid} row={r} maxViews24h={maxViews24h}
+                                  nowTick={nowTick} flash={flashUid === uid}/>
+                      ))}
+                    </div>
+                  </div>
+
+                  {rowsList.length >= 3 && (
+                    <Callout eyebrow="YOU BUILT THIS" mascot="pose-2" tint="warm" style={{ marginTop: 32 }}>
+                      That grid above? That's live beava state rendered as a real dashboard. Every event you push updates a single user's card, atomically, and the query above re-fetches every 1.5 seconds so the UI stays fresh. The real server does the same thing at ~3M events/sec/core.
+                    </Callout>
+                  )}
+                </>
               )}
             </div>
           </section>

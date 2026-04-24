@@ -30,6 +30,9 @@ fn mk_count_op() -> AggOp {
         window_ms: None,
         where_expr: None,
         n: None,
+        half_life_ms: None,
+        sub_window_ms: None,
+        sigma: None,
     })
 }
 

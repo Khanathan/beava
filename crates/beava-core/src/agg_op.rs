@@ -20,6 +20,13 @@ use crate::agg_state::{
     LastState, MaxState, MinState, NegativeStreakState, RatioState, SeenState, StreakState,
     SumState, TimeSinceLastNState, VarianceState,
 };
+use crate::agg_state_decay::{
+    DecayedCountState, DecayedSumState, EwVarState, EwZScoreState, EwmaState, TwaState,
+};
+use crate::agg_state_velocity::{
+    BurstCountState, DeltaFromPrevState, InterArrivalStatsState, OutlierCountState,
+    RateOfChangeState, TrendResidualState, TrendState, ValueChangeCountState, ZScoreState,
+};
 use crate::row::{Row, Value};
 use crate::schema::FieldType;
 use crate::schema_propagate::Schema;
@@ -35,6 +42,7 @@ use crate::agg_windowed::WindowedOp;
 /// descriptors and WindowedOp inner_kind (no heap allocation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AggKind {
+    // ── Phase 5: core ────────────────────────────────────────────────────
     Count,
     Sum,
     Avg,
@@ -62,6 +70,55 @@ pub enum AggKind {
     NegativeStreak,
     // ── Phase 8: windowed recency ─────────────────────────────────────────────
     FirstSeenInWindow,
+    // ── Phase 9: decay (AGG-DECAY-01..06) ─────────────────────────────────
+    Ewma,
+    EwVar,
+    EwZScore,
+    DecayedSum,
+    DecayedCount,
+    Twa,
+    // ── Phase 9: velocity (AGG-VEL-01..08) ────────────────────────────────
+    RateOfChange,
+    InterArrivalStats,
+    BurstCount,
+    DeltaFromPrev,
+    Trend,
+    TrendResidual,
+    OutlierCount,
+    ValueChangeCount,
+    // ── Phase 9: entity z-score (AGG-Z-01) ────────────────────────────────
+    ZScore,
+}
+
+impl AggKind {
+    /// True for ops that participate in the existing `WindowedOp` 64-bucket
+    /// fold infrastructure (Phase 5 core ops). Phase 9 ops manage their own
+    /// time semantics and are always windowless from `WindowedOp`'s perspective.
+    pub fn supports_windowed_wrap(self) -> bool {
+        matches!(
+            self,
+            AggKind::Count
+                | AggKind::Sum
+                | AggKind::Avg
+                | AggKind::Min
+                | AggKind::Max
+                | AggKind::Variance
+                | AggKind::StdDev
+                | AggKind::Ratio
+        )
+    }
+
+    /// True for decay ops that require `half_life` parameter at register time.
+    pub fn requires_half_life(self) -> bool {
+        matches!(
+            self,
+            AggKind::Ewma
+                | AggKind::EwVar
+                | AggKind::EwZScore
+                | AggKind::DecayedSum
+                | AggKind::DecayedCount
+        )
+    }
 }
 
 // ─── AggOpDescriptor ─────────────────────────────────────────────────────────
@@ -84,6 +141,28 @@ pub struct AggOpDescriptor {
     /// Phase 8 — bounded-buffer size parameter for `first_n`, `last_n`, `lag`,
     /// `time_since_last_n`. `None` for ops that don't take an `n` param.
     pub n: Option<u32>,
+    /// Phase 9 — required for decay ops (`AggKind::requires_half_life()`); ignored otherwise.
+    pub half_life_ms: Option<u64>,
+    /// Phase 9 — required for `BurstCount`; ignored otherwise.
+    pub sub_window_ms: Option<u64>,
+    /// Phase 9 — defaults to 3.0 for `OutlierCount`; ignored otherwise.
+    pub sigma: Option<f64>,
+}
+
+impl Default for AggOpDescriptor {
+    /// Default = lifetime Count with no field/window/where (parses as `bv.count()`).
+    fn default() -> Self {
+        AggOpDescriptor {
+            kind: AggKind::Count,
+            field: None,
+            window_ms: None,
+            where_expr: None,
+            n: None,
+            half_life_ms: None,
+            sub_window_ms: None,
+            sigma: None,
+        }
+    }
 }
 
 // ─── AggTypeError ────────────────────────────────────────────────────────────
@@ -112,28 +191,63 @@ impl std::fmt::Display for AggTypeError {
 
 // ─── AggOp ───────────────────────────────────────────────────────────────────
 
+/// Wrapper bundling a decay op state with its constant `half_life_ms` parameter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EwmaOp {
+    pub state: EwmaState,
+    pub half_life_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EwVarOp {
+    pub state: EwVarState,
+    pub half_life_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EwZScoreOp {
+    pub state: EwZScoreState,
+    pub half_life_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecayedSumOp {
+    pub state: DecayedSumState,
+    pub half_life_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecayedCountOp {
+    pub state: DecayedCountState,
+    pub half_life_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BurstCountOp {
+    pub state: BurstCountState,
+    pub sub_window_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutlierCountOp {
+    pub state: OutlierCountState,
+    pub sigma: f64,
+}
+
 /// Live per-(feature, entity) aggregation state. Enum dispatch; no Box<dyn>.
 ///
-/// AGG-CORE-01..09 per D-01.
+/// AGG-CORE-01..09 per Phase 5 D-01; AGG-DECAY/VEL/Z added Phase 9.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AggOp {
-    /// AGG-CORE-01
+    // ── Phase 5 ──────────────────────────────────────────────────────────
     Count(CountState),
-    /// AGG-CORE-02
     Sum(SumState),
-    /// AGG-CORE-03
     Avg(AvgState),
-    /// AGG-CORE-04
     Min(MinState),
-    /// AGG-CORE-05
     Max(MaxState),
-    /// AGG-CORE-06 (query returns sample variance)
     Variance(VarianceState),
-    /// AGG-CORE-06 (shares VarianceState; query takes sqrt)
     StdDev(VarianceState),
-    /// AGG-CORE-07
     Ratio(RatioState),
-    /// AGG-CORE-09: any op wrapped in 64-bucket event-time tumbling
     Windowed(Box<WindowedOp>),
     // ── Phase 8: point/ordinal ────────────────────────────────────────────────
     /// AGG-POINT-01
@@ -169,6 +283,24 @@ pub enum AggOp {
     // ── Phase 8: windowed recency (lifetime-state) ────────────────────────────
     /// AGG-RECENCY-first_seen_in_window
     FirstSeenInWindow(FirstSeenInWindowState),
+    // ── Phase 9: decay ────────────────────────────────────────────────────
+    Ewma(EwmaOp),
+    EwVar(EwVarOp),
+    EwZScore(EwZScoreOp),
+    DecayedSum(DecayedSumOp),
+    DecayedCount(DecayedCountOp),
+    Twa(TwaState),
+    // ── Phase 9: velocity ─────────────────────────────────────────────────
+    RateOfChange(RateOfChangeState),
+    InterArrivalStats(InterArrivalStatsState),
+    BurstCount(BurstCountOp),
+    DeltaFromPrev(DeltaFromPrevState),
+    Trend(TrendState),
+    TrendResidual(TrendResidualState),
+    OutlierCount(OutlierCountOp),
+    ValueChangeCount(ValueChangeCountState),
+    // ── Phase 9: entity z-score ───────────────────────────────────────────
+    ZScore(ZScoreState),
 }
 
 impl AggOp {
@@ -177,22 +309,19 @@ impl AggOp {
     /// If `desc.window_ms.is_some()`, wraps the inner op in `WindowedOp`.
     /// Otherwise returns the lifetime (windowless) variant.
     pub fn new(desc: &AggOpDescriptor) -> Self {
-        // Phase 8 ops do NOT support generic `WindowedOp` ring-buffer wrapping
-        // in v0 — they all use lifetime state. `FirstSeenInWindow` carries its
-        // own window_ms parameter directly. Compile-time validation in
-        // `agg_compile` rejects `window=` for the rest.
+        // Phase 5 windowed wrap only applies to core ops (Count/Sum/Avg/Min/Max/
+        // Variance/StdDev/Ratio). Phase 8 + 9 ops use lifetime state.
+        // `FirstSeenInWindow` (Phase 8) carries `window_ms` as a lifetime
+        // parameter, NOT a tumbling-bucket window — handle it before fallthrough.
         if let Some(window_ms) = desc.window_ms {
-            // FirstSeenInWindow uses window_ms as a lifetime parameter, NOT a
-            // tumbling-bucket window — handle it before falling into Windowed.
             if matches!(desc.kind, AggKind::FirstSeenInWindow) {
                 return AggOp::FirstSeenInWindow(FirstSeenInWindowState::new(window_ms));
             }
-            // For Phase 5 core ops, wrap in WindowedOp.
-            if is_phase5_core_kind(desc.kind) {
+            if desc.kind.supports_windowed_wrap() {
                 return AggOp::Windowed(Box::new(WindowedOp::new(desc.kind, window_ms)));
             }
-            // Phase 8 ops with a window= silently fall through to lifetime
-            // construction (compile-time validation should have rejected this).
+            // Phase 8/9 ops with a window= silently fall through (compile-time
+            // validation should have rejected this).
         }
         match desc.kind {
             AggKind::Count => AggOp::Count(CountState::default()),
@@ -226,6 +355,47 @@ impl AggOp {
             AggKind::FirstSeenInWindow => {
                 AggOp::FirstSeenInWindow(FirstSeenInWindowState::new(desc.window_ms.unwrap_or(0)))
             }
+            // Phase 9 decay: half_life is required by Rule 11; defensively
+            // default to 1 ms if missing so we don't divide by zero.
+            AggKind::Ewma => AggOp::Ewma(EwmaOp {
+                state: EwmaState::default(),
+                half_life_ms: desc.half_life_ms.unwrap_or(1),
+            }),
+            AggKind::EwVar => AggOp::EwVar(EwVarOp {
+                state: EwVarState::default(),
+                half_life_ms: desc.half_life_ms.unwrap_or(1),
+            }),
+            AggKind::EwZScore => AggOp::EwZScore(EwZScoreOp {
+                state: EwZScoreState::default(),
+                half_life_ms: desc.half_life_ms.unwrap_or(1),
+            }),
+            AggKind::DecayedSum => AggOp::DecayedSum(DecayedSumOp {
+                state: DecayedSumState::default(),
+                half_life_ms: desc.half_life_ms.unwrap_or(1),
+            }),
+            AggKind::DecayedCount => AggOp::DecayedCount(DecayedCountOp {
+                state: DecayedCountState::default(),
+                half_life_ms: desc.half_life_ms.unwrap_or(1),
+            }),
+            AggKind::Twa => AggOp::Twa(TwaState::default()),
+            // Phase 9 velocity
+            AggKind::RateOfChange => AggOp::RateOfChange(RateOfChangeState::default()),
+            AggKind::InterArrivalStats => {
+                AggOp::InterArrivalStats(InterArrivalStatsState::default())
+            }
+            AggKind::BurstCount => AggOp::BurstCount(BurstCountOp {
+                state: BurstCountState::default(),
+                sub_window_ms: desc.sub_window_ms.unwrap_or(1),
+            }),
+            AggKind::DeltaFromPrev => AggOp::DeltaFromPrev(DeltaFromPrevState::default()),
+            AggKind::Trend => AggOp::Trend(TrendState::default()),
+            AggKind::TrendResidual => AggOp::TrendResidual(TrendResidualState::default()),
+            AggKind::OutlierCount => AggOp::OutlierCount(OutlierCountOp {
+                state: OutlierCountState::default(),
+                sigma: desc.sigma.unwrap_or(3.0),
+            }),
+            AggKind::ValueChangeCount => AggOp::ValueChangeCount(ValueChangeCountState::default()),
+            AggKind::ZScore => AggOp::ZScore(ZScoreState::default()),
         }
     }
 
@@ -271,6 +441,44 @@ impl AggOp {
             AggOp::NegativeStreak(s) => s.update(row, event_time_ms, field, where_matched),
             // Phase 8 — windowed recency
             AggOp::FirstSeenInWindow(s) => s.update(row, event_time_ms, field, where_matched),
+            // Phase 9 decay
+            AggOp::Ewma(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::EwVar(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::EwZScore(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::DecayedSum(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::DecayedCount(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::Twa(s) => s.update(row, event_time_ms, field, where_matched),
+            // Phase 9 velocity
+            AggOp::RateOfChange(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::InterArrivalStats(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::BurstCount(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.sub_window_ms)
+            }
+            AggOp::DeltaFromPrev(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::Trend(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::TrendResidual(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::OutlierCount(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.sigma)
+            }
+            AggOp::ValueChangeCount(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::ZScore(s) => s.update(row, event_time_ms, field, where_matched),
         }
     }
 
@@ -344,26 +552,30 @@ impl AggOp {
             AggOp::NegativeStreak(s) => s.query(),
             // Phase 8 — windowed recency
             AggOp::FirstSeenInWindow(s) => s.query(query_time_ms),
+            // Phase 9 decay
+            AggOp::Ewma(op) => op.state.query(),
+            AggOp::EwVar(op) => op.state.query_variance(),
+            AggOp::EwZScore(op) => op.state.query(),
+            AggOp::DecayedSum(op) => op.state.query(),
+            AggOp::DecayedCount(op) => op.state.query(),
+            AggOp::Twa(s) => s.query(),
+            // Phase 9 velocity
+            AggOp::RateOfChange(s) => s.query(),
+            AggOp::InterArrivalStats(s) => s.query(),
+            AggOp::BurstCount(op) => op.state.query(),
+            AggOp::DeltaFromPrev(s) => s.query(),
+            AggOp::Trend(s) => s.query(),
+            AggOp::TrendResidual(s) => s.query(),
+            AggOp::OutlierCount(op) => op.state.query(),
+            AggOp::ValueChangeCount(s) => s.query(),
+            AggOp::ZScore(s) => s.query(),
         }
     }
 }
 
-/// True iff `kind` is one of the Phase 5 core ops that `WindowedOp` can wrap.
-/// Phase 8 ops are lifetime-only (D-02 in 08-CONTEXT) and rejected by the
-/// register-time validator if `window=` is supplied.
-pub(crate) fn is_phase5_core_kind(kind: AggKind) -> bool {
-    matches!(
-        kind,
-        AggKind::Count
-            | AggKind::Sum
-            | AggKind::Avg
-            | AggKind::Min
-            | AggKind::Max
-            | AggKind::Variance
-            | AggKind::StdDev
-            | AggKind::Ratio
-    )
-}
+// (Removed during merge: `is_phase5_core_kind` was a Phase 8 helper that
+// duplicated `AggKind::supports_windowed_wrap()` introduced in Phase 9. The
+// method is now the canonical predicate.)
 
 // ─── output_type_for ─────────────────────────────────────────────────────────
 
@@ -418,6 +630,35 @@ pub fn output_type_for(
         AggKind::HasSeen | AggKind::FirstSeenInWindow => Ok(FieldType::Bool),
         // Phase 8 — streak family
         AggKind::Streak | AggKind::MaxStreak | AggKind::NegativeStreak => Ok(FieldType::I64),
+        // Phase 9 — all decay/velocity/z ops emit F64 except integer counters.
+        AggKind::Ewma
+        | AggKind::EwVar
+        | AggKind::EwZScore
+        | AggKind::DecayedSum
+        | AggKind::DecayedCount
+        | AggKind::Twa
+        | AggKind::RateOfChange
+        | AggKind::InterArrivalStats
+        | AggKind::Trend
+        | AggKind::TrendResidual
+        | AggKind::ZScore => Ok(FieldType::F64),
+        AggKind::BurstCount | AggKind::OutlierCount | AggKind::ValueChangeCount => {
+            Ok(FieldType::I64)
+        }
+        AggKind::DeltaFromPrev => {
+            // Inherit the upstream field's type per AGG-VEL-04.
+            let field = desc
+                .field
+                .as_deref()
+                .ok_or(AggTypeError::FieldRequired { kind: desc.kind })?;
+            upstream
+                .fields
+                .get(field)
+                .copied()
+                .ok_or_else(|| AggTypeError::FieldMissing {
+                    field: field.to_string(),
+                })
+        }
     }
 }
 
@@ -432,10 +673,7 @@ mod tests {
     fn desc(kind: AggKind) -> AggOpDescriptor {
         AggOpDescriptor {
             kind,
-            field: None,
-            window_ms: None,
-            where_expr: None,
-            n: None,
+            ..Default::default()
         }
     }
 
@@ -443,19 +681,15 @@ mod tests {
         AggOpDescriptor {
             kind,
             field: Some(field.to_string()),
-            window_ms: None,
-            where_expr: None,
-            n: None,
+            ..Default::default()
         }
     }
 
     fn desc_windowed(kind: AggKind, window_ms: u64) -> AggOpDescriptor {
         AggOpDescriptor {
             kind,
-            field: None,
             window_ms: Some(window_ms),
-            where_expr: None,
-            n: None,
+            ..Default::default()
         }
     }
 

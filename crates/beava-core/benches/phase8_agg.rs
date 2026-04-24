@@ -33,6 +33,9 @@ fn desc(
         window_ms,
         where_expr: None,
         n,
+        half_life_ms: None,
+        sub_window_ms: None,
+        sigma: None,
     }
 }
 

@@ -1,0 +1,58 @@
+{
+  "name": "medium_phase9",
+  "description": "1 entity type, 5 features blending Phase 5 (count/sum) + Phase 9 (ewma, decayed_sum, rate_of_change). Used by Phase 9 throughput run.",
+  "register": {
+    "nodes": [
+      {
+        "kind": "event",
+        "name": "Txn",
+        "schema": {
+          "fields": {
+            "event_time": "i64",
+            "user_id": "str",
+            "amount": "f64"
+          },
+          "optional_fields": []
+        },
+        "event_time_field": "event_time"
+      },
+      {
+        "kind": "derivation",
+        "name": "TxnAgg",
+        "output_kind": "table",
+        "upstreams": ["Txn"],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": ["user_id"],
+            "agg": {
+              "cnt":             { "op": "count",          "params": {} },
+              "sum_amt":         { "op": "sum",            "params": { "field": "amount" } },
+              "ewma_amt":        { "op": "ewma",           "params": { "field": "amount", "half_life": "1m" } },
+              "decayed_sum_amt": { "op": "decayed_sum",    "params": { "field": "amount", "half_life": "1m" } },
+              "rate_amt":        { "op": "rate_of_change", "params": { "field": "amount", "window": "5m" } }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "user_id":         "str",
+            "cnt":             "i64",
+            "sum_amt":         "f64",
+            "ewma_amt":        "f64",
+            "decayed_sum_amt": "f64",
+            "rate_amt":        "f64"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": ["user_id"]
+      }
+    ]
+  },
+  "event_name": "Txn",
+  "features": ["cnt", "sum_amt", "ewma_amt", "decayed_sum_amt", "rate_amt"],
+  "key_field": "user_id",
+  "extra_fields": {
+    "amount": "f64"
+  }
+}
