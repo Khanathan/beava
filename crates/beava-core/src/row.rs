@@ -33,6 +33,8 @@ pub enum Value {
     Bytes(Vec<u8>),
     /// Milliseconds since Unix epoch — matches the `event_time` convention.
     Datetime(i64),
+    /// Plan 10-05: Structured JSON output (top_k returns array of {value, count}).
+    Json(serde_json::Value),
 }
 
 impl PartialEq for Value {
@@ -46,6 +48,7 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::Datetime(a), Value::Datetime(b)) => a == b,
+            (Value::Json(a), Value::Json(b)) => a == b,
             // Cross-variant comparisons are always false.
             _ => false,
         }
@@ -64,6 +67,7 @@ impl Value {
             Value::Bool(_) => Some(FieldType::Bool),
             Value::Bytes(_) => Some(FieldType::Bytes),
             Value::Datetime(_) => Some(FieldType::Datetime),
+            Value::Json(_) => Some(FieldType::Json),
         }
     }
 

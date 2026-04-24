@@ -16,7 +16,7 @@
 //! - SDK-AGG-06: window duration string validated server-side
 
 use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
-use crate::agg_op::{AggKind, AggOpDescriptor};
+use crate::agg_op::{AggKind, AggOpDescriptor, SketchParams};
 use crate::register_validate::{ErrorCode, ValidationError};
 use crate::registry::RegistryInner;
 use crate::registry_diff::PayloadNode;
@@ -83,6 +83,8 @@ struct AggParams {
     field: Option<String>,
     window: Option<String>,
     where_str: Option<String>,
+    /// Plan 10-05: sketch construction params parsed from JSON kwargs.
+    sketch_params: Option<SketchParams>,
 }
 
 fn extract_agg_params(params: &serde_json::Value) -> AggParams {
@@ -98,10 +100,40 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
         .get("where")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    // Plan 10-05: parse sketch kwargs (q, k, capacity, fpr / target_fpr / expected_n).
+    let percentile_q = params.get("q").and_then(|v| v.as_f64());
+    let top_k_k = params
+        .get("k")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+    let bloom_capacity = params
+        .get("expected_n")
+        .or_else(|| params.get("capacity"))
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+    let bloom_fpr = params
+        .get("target_fpr")
+        .or_else(|| params.get("fpr"))
+        .and_then(|v| v.as_f64());
+    let sketch_params = if percentile_q.is_some()
+        || top_k_k.is_some()
+        || bloom_capacity.is_some()
+        || bloom_fpr.is_some()
+    {
+        Some(SketchParams {
+            percentile_q,
+            top_k_k,
+            bloom_capacity,
+            bloom_fpr,
+        })
+    } else {
+        None
+    };
     AggParams {
         field,
         window,
         where_str,
+        sketch_params,
     }
 }
 
@@ -117,6 +149,12 @@ fn parse_agg_kind(op: &str) -> Option<AggKind> {
         "variance" => Some(AggKind::Variance),
         "stddev" => Some(AggKind::StdDev),
         "ratio" => Some(AggKind::Ratio),
+        // Plan 10-05: 5 sketch ops.
+        "count_distinct" => Some(AggKind::CountDistinct),
+        "percentile" => Some(AggKind::Percentile),
+        "top_k" => Some(AggKind::TopK),
+        "bloom_member" => Some(AggKind::BloomMember),
+        "entropy" => Some(AggKind::Entropy),
         _ => None,
     }
 }
@@ -283,6 +321,11 @@ pub fn compile_aggregations_from_nodes(
                         | AggKind::Max
                         | AggKind::Variance
                         | AggKind::StdDev
+                        | AggKind::CountDistinct
+                        | AggKind::Percentile
+                        | AggKind::TopK
+                        | AggKind::BloomMember
+                        | AggKind::Entropy
                 );
                 if needs_field {
                     match &params.field {
@@ -306,6 +349,80 @@ pub fn compile_aggregations_from_nodes(
                             }
                         }
                     }
+                }
+
+                // Plan 10-05: sketch-op-specific param validation.
+                let mut sketch_validation_failed = false;
+                match kind {
+                    AggKind::BloomMember => {
+                        if params.window.is_some() {
+                            errors.push(ValidationError {
+                                code: ErrorCode::WindowNotSupported,
+                                path: format!(
+                                    "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.window"
+                                ),
+                                reason: "bloom_member is windowless-only — `window` kwarg not supported".to_string(),
+                            });
+                            sketch_validation_failed = true;
+                        }
+                        if let Some(sp) = &params.sketch_params {
+                            if let Some(fpr) = sp.bloom_fpr {
+                                if !(fpr > 0.0 && fpr < 1.0) {
+                                    errors.push(ValidationError {
+                                        code: ErrorCode::InvalidBloomFpr,
+                                        path: format!(
+                                            "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.target_fpr"
+                                        ),
+                                        reason: format!(
+                                            "bloom_member fpr must be in (0.0, 1.0); got {fpr}"
+                                        ),
+                                    });
+                                    sketch_validation_failed = true;
+                                }
+                            }
+                        }
+                    }
+                    AggKind::Percentile => {
+                        if let Some(sp) = &params.sketch_params {
+                            if let Some(q) = sp.percentile_q {
+                                if !(q > 0.0 && q < 1.0) {
+                                    errors.push(ValidationError {
+                                        code: ErrorCode::InvalidPercentileQ,
+                                        path: format!(
+                                            "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.q"
+                                        ),
+                                        reason: format!(
+                                            "percentile q must be in (0.0, 1.0); got {q}"
+                                        ),
+                                    });
+                                    sketch_validation_failed = true;
+                                }
+                            }
+                        }
+                    }
+                    AggKind::TopK => {
+                        if let Some(sp) = &params.sketch_params {
+                            if let Some(k) = sp.top_k_k {
+                                if !(0 < k && k <= 1024) {
+                                    errors.push(ValidationError {
+                                        code: ErrorCode::InvalidTopKK,
+                                        path: format!(
+                                            "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.k"
+                                        ),
+                                        reason: format!(
+                                            "top_k k must be in (0, 1024]; got {k}"
+                                        ),
+                                    });
+                                    sketch_validation_failed = true;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                if sketch_validation_failed {
+                    deriv_errors = true;
+                    continue;
                 }
 
                 // Window parsing.
@@ -381,6 +498,7 @@ pub fn compile_aggregations_from_nodes(
                         field: params.field,
                         window_ms,
                         where_expr,
+                        sketch_params: params.sketch_params.clone(),
                     },
                 });
             }

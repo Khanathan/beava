@@ -16,7 +16,8 @@
 //! D-06: no wall-clock reads in apply paths (forbidden: SystemTime now, rand).
 
 use crate::agg_state::{
-    AvgState, CountState, MaxState, MinState, RatioState, SumState, VarianceState,
+    AvgState, BloomMemberStateWrap, CountDistinctStateWrap, CountState, EntropyStateWrap, MaxState,
+    MinState, PercentileStateWrap, RatioState, SumState, TopKStateWrap, VarianceState,
 };
 use crate::row::{Row, Value};
 use crate::schema::FieldType;
@@ -41,6 +42,31 @@ pub enum AggKind {
     Variance,
     StdDev,
     Ratio,
+    /// AGG-SKETCH-01 (Plan 10-05)
+    CountDistinct,
+    /// AGG-SKETCH-02 (Plan 10-05)
+    Percentile,
+    /// AGG-SKETCH-03 (Plan 10-05)
+    TopK,
+    /// AGG-SKETCH-04 (Plan 10-05) — windowless-only
+    BloomMember,
+    /// AGG-SKETCH-05 (Plan 10-05)
+    Entropy,
+}
+
+/// Plan 10-05: optional sketch construction params attached to AggOpDescriptor.
+/// Threaded through to AggOp::new + WindowedOp bucket initialisation so per-bucket
+/// sketches honor user-supplied k / q / fpr / capacity.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SketchParams {
+    /// percentile: target quantile in (0.0, 1.0). Default 0.5.
+    pub percentile_q: Option<f64>,
+    /// top_k: top-k size. Default 10.
+    pub top_k_k: Option<usize>,
+    /// bloom_member: expected capacity (n). Default 1024.
+    pub bloom_capacity: Option<usize>,
+    /// bloom_member: target false positive rate. Default 0.01.
+    pub bloom_fpr: Option<f64>,
 }
 
 // ─── AggOpDescriptor ─────────────────────────────────────────────────────────
@@ -60,6 +86,9 @@ pub struct AggOpDescriptor {
     /// `agg_where::evaluate_where_predicate` at apply time.
     /// None = unconditional update (backwards-compatible with Plan 05-01).
     pub where_expr: Option<std::sync::Arc<crate::expr::Expr>>,
+    /// Plan 10-05: per-op sketch construction params (k, q, fpr, capacity).
+    /// None for non-sketch ops.
+    pub sketch_params: Option<SketchParams>,
 }
 
 // ─── AggTypeError ────────────────────────────────────────────────────────────
@@ -109,6 +138,16 @@ pub enum AggOp {
     StdDev(VarianceState),
     /// AGG-CORE-07
     Ratio(RatioState),
+    /// AGG-SKETCH-01 (Plan 10-05)
+    CountDistinct(Box<CountDistinctStateWrap>),
+    /// AGG-SKETCH-02 (Plan 10-05)
+    Percentile(Box<PercentileStateWrap>),
+    /// AGG-SKETCH-03 (Plan 10-05)
+    TopK(Box<TopKStateWrap>),
+    /// AGG-SKETCH-04 (Plan 10-05)
+    BloomMember(Box<BloomMemberStateWrap>),
+    /// AGG-SKETCH-05 (Plan 10-05)
+    Entropy(Box<EntropyStateWrap>),
     /// AGG-CORE-09: any op wrapped in 64-bucket event-time tumbling
     Windowed(Box<WindowedOp>),
 }
@@ -120,9 +159,21 @@ impl AggOp {
     /// Otherwise returns the lifetime (windowless) variant.
     pub fn new(desc: &AggOpDescriptor) -> Self {
         if let Some(window_ms) = desc.window_ms {
-            return AggOp::Windowed(Box::new(WindowedOp::new(desc.kind, window_ms)));
+            return AggOp::Windowed(Box::new(WindowedOp::new_with_params(
+                desc.kind,
+                window_ms,
+                desc.sketch_params.clone().unwrap_or_default(),
+            )));
         }
-        match desc.kind {
+        AggOp::new_lifetime(desc.kind, desc.sketch_params.as_ref())
+    }
+
+    /// Construct a fresh lifetime (windowless) AggOp for `kind` with optional sketch params.
+    /// Used by both `AggOp::new` and `WindowedOp` bucket initialisation.
+    pub fn new_lifetime(kind: AggKind, sketch_params: Option<&SketchParams>) -> Self {
+        let sp_default = SketchParams::default();
+        let sp = sketch_params.unwrap_or(&sp_default);
+        match kind {
             AggKind::Count => AggOp::Count(CountState::default()),
             AggKind::Sum => AggOp::Sum(SumState::default()),
             AggKind::Avg => AggOp::Avg(AvgState::default()),
@@ -131,6 +182,28 @@ impl AggOp {
             AggKind::Variance => AggOp::Variance(VarianceState::default()),
             AggKind::StdDev => AggOp::StdDev(VarianceState::default()),
             AggKind::Ratio => AggOp::Ratio(RatioState::default()),
+            AggKind::CountDistinct => {
+                AggOp::CountDistinct(Box::new(CountDistinctStateWrap::default()))
+            }
+            AggKind::Percentile => {
+                let mut s = PercentileStateWrap::default();
+                if let Some(q) = sp.percentile_q {
+                    s.q = q;
+                }
+                AggOp::Percentile(Box::new(s))
+            }
+            AggKind::TopK => {
+                let k = sp.top_k_k.unwrap_or(10).max(1);
+                AggOp::TopK(Box::new(TopKStateWrap {
+                    inner: crate::sketches::top_k::TopKState::new(k, 1024, 2048, 4),
+                }))
+            }
+            AggKind::BloomMember => {
+                let cap = sp.bloom_capacity.unwrap_or(1024);
+                let fpr = sp.bloom_fpr.unwrap_or(0.01);
+                AggOp::BloomMember(Box::new(BloomMemberStateWrap::with_params(cap, fpr)))
+            }
+            AggKind::Entropy => AggOp::Entropy(Box::new(EntropyStateWrap::default())),
         }
     }
 
@@ -155,6 +228,11 @@ impl AggOp {
             AggOp::Variance(s) => s.update(row, event_time_ms, field, where_matched),
             AggOp::StdDev(s) => s.update(row, event_time_ms, field, where_matched),
             AggOp::Ratio(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::CountDistinct(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::Percentile(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::TopK(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::BloomMember(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::Entropy(s) => s.update(row, event_time_ms, field, where_matched),
             AggOp::Windowed(w) => w.update(row, event_time_ms, field, where_matched),
         }
     }
@@ -209,6 +287,11 @@ impl AggOp {
             AggOp::Variance(s) => s.query_variance(),
             AggOp::StdDev(s) => s.query_stddev(),
             AggOp::Ratio(s) => s.query(),
+            AggOp::CountDistinct(s) => s.query(),
+            AggOp::Percentile(s) => s.query(),
+            AggOp::TopK(s) => s.query(),
+            AggOp::BloomMember(s) => s.query(),
+            AggOp::Entropy(s) => s.query(),
             AggOp::Windowed(w) => w.query(query_time_ms),
         }
     }
@@ -230,10 +313,16 @@ pub fn output_type_for(
     desc: &AggOpDescriptor,
 ) -> Result<FieldType, AggTypeError> {
     match desc.kind {
-        AggKind::Count => Ok(FieldType::I64),
-        AggKind::Sum | AggKind::Avg | AggKind::Variance | AggKind::StdDev | AggKind::Ratio => {
-            Ok(FieldType::F64)
-        }
+        AggKind::Count | AggKind::CountDistinct => Ok(FieldType::I64),
+        AggKind::Sum
+        | AggKind::Avg
+        | AggKind::Variance
+        | AggKind::StdDev
+        | AggKind::Ratio
+        | AggKind::Percentile
+        | AggKind::Entropy => Ok(FieldType::F64),
+        AggKind::TopK => Ok(FieldType::Json),
+        AggKind::BloomMember => Ok(FieldType::Bool),
         AggKind::Min | AggKind::Max => {
             let field = desc
                 .field
@@ -264,6 +353,7 @@ mod tests {
             field: None,
             window_ms: None,
             where_expr: None,
+            sketch_params: None,
         }
     }
 
@@ -273,6 +363,7 @@ mod tests {
             field: Some(field.to_string()),
             window_ms: None,
             where_expr: None,
+            sketch_params: None,
         }
     }
 
@@ -282,6 +373,7 @@ mod tests {
             field: None,
             window_ms: Some(window_ms),
             where_expr: None,
+            sketch_params: None,
         }
     }
 

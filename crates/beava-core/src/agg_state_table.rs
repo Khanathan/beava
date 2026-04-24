@@ -64,6 +64,7 @@ impl EntityKey {
                 Some(Value::F64(f)) => format!("{:?}", f),
                 Some(Value::Bool(b)) => b.to_string(),
                 Some(Value::Datetime(ms)) => ms.to_string(),
+                Some(Value::Json(_)) => return None, // Json not sane as group key
             };
             pairs.push((key.clone(), canonical));
         }
@@ -152,6 +153,7 @@ mod tests {
             field: None,
             window_ms: None,
             where_expr: None,
+            sketch_params: None,
         }
     }
 
@@ -161,6 +163,7 @@ mod tests {
             field: Some(field.to_string()),
             window_ms: None,
             where_expr: None,
+            sketch_params: None,
         }
     }
 

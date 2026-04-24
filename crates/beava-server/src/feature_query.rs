@@ -288,6 +288,7 @@ pub(crate) fn value_to_json(v: Value) -> serde_json::Value {
         Value::Str(s) => serde_json::Value::String(s),
         Value::Bytes(_) => serde_json::Value::Null,
         Value::Datetime(ms) => serde_json::Value::Number(ms.into()),
+        Value::Json(j) => j,
     }
 }
 
@@ -401,6 +402,7 @@ mod tests {
                         field: None,
                         window_ms: Some(300_000),
                         where_expr: None,
+                        sketch_params: None,
                     },
                 },
                 NamedAggOp {
@@ -410,6 +412,7 @@ mod tests {
                         field: Some("amount".to_string()),
                         window_ms: None,
                         where_expr: None,
+                        sketch_params: None,
                     },
                 },
             ],

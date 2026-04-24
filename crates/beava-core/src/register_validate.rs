@@ -83,6 +83,15 @@ pub enum ErrorCode {
     /// Plan 05-06: two different aggregation nodes expose the same feature name.
     /// e.g., AggA exposes "cnt" AND AggB exposes "cnt" → reject at register time.
     AggregationFeatureNameCollisionAcrossAggregations,
+    // Plan 10-05 — sketch op validation:
+    /// bloom_member used with `window=` kwarg → rejected (windowless-only).
+    WindowNotSupported,
+    /// percentile.q out of (0.0, 1.0).
+    InvalidPercentileQ,
+    /// top_k.k out of (0, 1024].
+    InvalidTopKK,
+    /// bloom_member.fpr out of (0.0, 1.0).
+    InvalidBloomFpr,
 }
 
 /// A single structured validation error. `path` uses pseudo-JSON-pointer format

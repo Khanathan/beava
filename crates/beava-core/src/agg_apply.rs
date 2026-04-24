@@ -155,6 +155,7 @@ mod tests {
             field: None,
             window_ms: None,
             where_expr: None,
+            sketch_params: None,
         }
     }
 
@@ -164,6 +165,7 @@ mod tests {
             field: Some(field.to_string()),
             window_ms: None,
             where_expr: None,
+            sketch_params: None,
         }
     }
 
@@ -359,6 +361,7 @@ mod tests {
                     field: None,
                     window_ms: None,
                     where_expr: Some(where_expr),
+                    sketch_params: None,
                 },
             )],
         );
@@ -562,6 +565,7 @@ mod registry_source_tests {
                     field: None,
                     window_ms: None,
                     where_expr: None,
+                    sketch_params: None,
                 },
             }],
         }

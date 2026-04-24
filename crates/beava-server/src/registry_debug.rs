@@ -202,6 +202,7 @@ fn value_to_json(v: Value) -> serde_json::Value {
         Value::Bytes(_) => serde_json::Value::Null,
         // Datetime: emit as i64 ms since epoch
         Value::Datetime(ms) => serde_json::Value::Number(ms.into()),
+        Value::Json(j) => j,
     }
 }
 

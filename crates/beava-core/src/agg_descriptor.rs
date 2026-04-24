@@ -67,6 +67,7 @@ mod tests {
             field: None,
             window_ms: None,
             where_expr: None,
+            sketch_params: None,
         }
     }
 
