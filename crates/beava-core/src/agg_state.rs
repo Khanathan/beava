@@ -783,11 +783,11 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         // Phase 11 structured outputs: List/Map are agg-only outputs and
         // shouldn't normally appear in JSON-projected scalars; render
         // recursively in case they leak in.
-        Value::List(items) => {
-            serde_json::Value::Array(items.iter().map(value_to_json).collect())
-        }
+        Value::List(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
         Value::Map(m) => serde_json::Value::Object(
-            m.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect(),
+            m.iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect(),
         ),
     }
 }
