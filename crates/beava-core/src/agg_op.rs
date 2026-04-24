@@ -520,6 +520,28 @@ mod tests {
 
     // ── Determinism guard ─────────────────────────────────────────────────
 
+    // Plan 10-05: AggKind has 13 variants (8 core + 5 sketch).
+    #[test]
+    fn agg_kind_has_sketch_variants() {
+        use AggKind::*;
+        let _all = [
+            Count,
+            Sum,
+            Avg,
+            Min,
+            Max,
+            Variance,
+            StdDev,
+            Ratio,
+            CountDistinct,
+            Percentile,
+            TopK,
+            BloomMember,
+            Entropy,
+        ];
+        assert_eq!(_all.len(), 13);
+    }
+
     #[test]
     fn no_systemtime_now_in_apply() {
         // Split forbidden patterns so this file does not itself trigger the check.

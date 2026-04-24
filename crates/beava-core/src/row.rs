@@ -370,4 +370,12 @@ mod tests {
         let keys: Vec<&str> = r.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, vec!["a", "b", "c"]);
     }
+
+    // Test 13 (Plan 10-05): Value::Json variant exists for sketch top_k output.
+    #[test]
+    fn value_json_variant_exists() {
+        let v = Value::Json(serde_json::json!([{"value": "a", "count": 5}]));
+        let s = serde_json::to_string(&v).unwrap();
+        assert!(s.contains("count"));
+    }
 }
