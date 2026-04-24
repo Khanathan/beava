@@ -56,17 +56,12 @@ impl Default for WalSinkConfig {
 /// `PerEvent` — `append_event_with_mode` resolves only after the assigned
 /// LSN has been fsynced to disk (Phase 6 D-12 / SRV-DUR-02 invariant).
 /// Used by the strict-callers `/push-sync` endpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SyncMode {
+    #[default]
     Periodic,
     PerEvent,
-}
-
-impl Default for SyncMode {
-    fn default() -> Self {
-        Self::Periodic
-    }
 }
 
 struct AppendRequest {
@@ -183,7 +178,8 @@ impl WalSink {
     /// semantics). Strict callers should use `append_event_with_mode(…,
     /// SyncMode::PerEvent)` or the `/push-sync` endpoint.
     pub async fn append_event(&self, payload: Vec<u8>) -> Result<Lsn, PersistError> {
-        self.append_event_with_mode(payload, self.default_mode).await
+        self.append_event_with_mode(payload, self.default_mode)
+            .await
     }
 
     /// Phase 6.1: explicit-mode variant of `append_event`.
@@ -408,7 +404,10 @@ fn stage_request(
             let _ = req.done.send(Ok(lsn));
             None
         }
-        SyncMode::PerEvent => Some(PendingFsync { lsn, done: req.done }),
+        SyncMode::PerEvent => Some(PendingFsync {
+            lsn,
+            done: req.done,
+        }),
     }
 }
 

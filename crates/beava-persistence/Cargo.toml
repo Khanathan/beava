@@ -30,3 +30,7 @@ harness = false
 [[bench]]
 name = "phase7_snapshot_recovery"
 harness = false
+
+[[bench]]
+name = "phase6_1_periodic"
+harness = false

@@ -126,6 +126,11 @@ fn wal_kill_before_fsync_drops_event() {
 
 #[test]
 fn wal_kill_after_ack_preserves_event() {
+    // Phase 6.1 update: the default `/push` is now Periodic-mode
+    // (Kafka acks=1) — ACK does NOT imply fsync. The strict-mode
+    // contract that Phase 6 SC1 captures (ACK ⇒ durable) now lives
+    // on `/push-sync`. The probe binary serves both endpoints; we
+    // route this test at the strict one.
     let tmp = tempfile::tempdir().expect("tempdir");
     let wal_dir = tmp.path().to_path_buf();
 
@@ -139,7 +144,7 @@ fn wal_kill_after_ack_preserves_event() {
 
     let port = read_port_from_stdout(&mut child);
     let pid = child.id();
-    let url = format!("http://127.0.0.1:{port}/push/Test");
+    let url = format!("http://127.0.0.1:{port}/push-sync/Test");
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -94,17 +94,12 @@ pub struct DurabilityConfig {
 /// duplicate the enum here so beava-core (WASM-portable) doesn't need to
 /// depend on beava-persistence (syscall-bearing). The conversion lives in
 /// the server crate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WalSyncMode {
+    #[default]
     Periodic,
     PerEvent,
-}
-
-impl Default for WalSyncMode {
-    fn default() -> Self {
-        Self::Periodic
-    }
 }
 
 fn default_wal_sync_mode() -> WalSyncMode {
