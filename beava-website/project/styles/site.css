@@ -183,12 +183,20 @@ body.fb-overflowing { overflow: hidden !important; }
 .callout p { margin: 0; font-size: 16px; line-height: 1.6; }
 
 /* Responsive */
+@media (max-width: 1100px) {
+  .recipe-grid { grid-template-columns: repeat(3, 1fr) !important; }
+}
 @media (max-width: 880px) {
   .two-col { grid-template-columns: 1fr !important; }
   .hero-grid { grid-template-columns: 1fr !important; }
   .stats-grid { grid-template-columns: 1fr 1fr !important; }
+  .pillars-grid { grid-template-columns: 1fr !important; }
+  .recipe-grid { grid-template-columns: repeat(2, 1fr) !important; }
   .prose h2 { font-size: 28px; }
   .footer-grid { grid-template-columns: 1fr !important; gap: 32px !important; }
+}
+@media (max-width: 480px) {
+  .recipe-grid { grid-template-columns: 1fr !important; }
 }
 
 @media (prefers-reduced-motion: reduce) {
