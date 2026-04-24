@@ -369,7 +369,7 @@
               <div>
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg3)', marginBottom: 6, letterSpacing: '0.03em', textTransform: 'lowercase' }}>pandas</div>
                 <pre className="code-well" style={{ fontSize: 12.5, padding: '14px 16px', lineHeight: 1.7, margin: 0 }}>
-{'events.'}<span className="fn">groupby</span>{'('}<span className="str">"session_id"</span>{').'}<span className="fn">agg</span>{'('}{'\n'}
+{'events.'}<span className="fn">groupby</span>{'('}<span className="str">"session_id"</span>{').'}<span className="fn">rolling</span>{'('}<span className="str">"1h"</span>{').'}<span className="fn">agg</span>{'('}{'\n'}
 {'    my_feeds=('}<span className="str">"_"</span>{', '}<span className="str">"count"</span>{'),'}{'\n'}
 {'    my_streak=('}<span className="str">"streak"</span>{', '}<span className="str">"max"</span>{'),'}{'\n'}
 {')'}
@@ -382,7 +382,7 @@
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--accent)', marginBottom: 6, letterSpacing: '0.03em', fontWeight: 700, textTransform: 'lowercase' }}>beava</div>
                 <pre className="code-well" style={{ fontSize: 12.5, padding: '14px 16px', lineHeight: 1.7, margin: 0 }}>
 {'events.'}<span className="fn">agg</span>{'('}{'\n'}
-{'    key='}<span className="str">"session_id"</span>{','}{'\n'}
+{'    key='}<span className="str">"session_id"</span>{', window='}<span className="str">"1h"</span>{','}{'\n'}
 {'    my_feeds=bv.'}<span className="fn">count</span>{'(),'}{'\n'}
 {'    my_streak=bv.'}<span className="fn">consecutive</span>{'(),'}{'\n'}
 {')'}
