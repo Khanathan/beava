@@ -848,7 +848,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reserved_opcode_returns_op_not_implemented() {
+    async fn op_push_without_app_state_returns_op_not_implemented() {
+        // Legacy `accept_loop` path (no AppState) cannot route OP_PUSH to the
+        // apply loop. Production wires use `accept_loop_with_app` (see commit
+        // 48e09fd, Phase 8 folded scope) which dispatches OP_PUSH through
+        // `execute_push`. End-to-end success path lives in
+        // `tests/phase8_tcp_push.rs`.
         let reg = Arc::new(Registry::new());
         let req = Frame::new(OP_PUSH, CT_JSON, Bytes::new());
         let resp = run_one_frame(req, reg, 1024 * 1024).await;
@@ -857,7 +862,7 @@ mod tests {
         assert_eq!(body["error"]["code"], "op_not_implemented");
         let msg = body["error"]["message"].as_str().unwrap();
         assert!(msg.contains("push"));
-        assert!(msg.contains("Phase 6"));
+        assert!(msg.contains("AppState"));
     }
 
     #[tokio::test]
