@@ -1,0 +1,73 @@
+{
+  "name": "phase8",
+  "description": "1 entity, 10 features exercising Phase 8 point/recency operators mixed with Phase 5 core ops. Tests the new state-struct dispatch cost under end-to-end throughput.",
+  "register": {
+    "nodes": [
+      {
+        "kind": "event",
+        "name": "Txn",
+        "schema": {
+          "fields": {
+            "event_time": "i64",
+            "user_id":    "str",
+            "amount":     "f64"
+          },
+          "optional_fields": []
+        },
+        "event_time_field": "event_time"
+      },
+      {
+        "kind": "derivation",
+        "name": "TxnAgg",
+        "output_kind": "table",
+        "upstreams": ["Txn"],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": ["user_id"],
+            "agg": {
+              "cnt":       { "op": "count",             "params": {} },
+              "sum_amt":   { "op": "sum",               "params": { "field": "amount" } },
+              "first_amt": { "op": "first",             "params": { "field": "amount" } },
+              "last_amt":  { "op": "last",              "params": { "field": "amount" } },
+              "lag1_amt":  { "op": "lag",               "params": { "field": "amount", "n": 1 } },
+              "last3_amt": { "op": "last_n",            "params": { "field": "amount", "n": 3 } },
+              "first_ts":  { "op": "first_seen",        "params": {} },
+              "last_ts":   { "op": "last_seen",         "params": {} },
+              "age_ms":    { "op": "age",               "params": {} },
+              "streak":    { "op": "streak",            "params": {} }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "user_id":   "str",
+            "cnt":       "i64",
+            "sum_amt":   "f64",
+            "first_amt": "f64",
+            "last_amt":  "f64",
+            "lag1_amt":  "f64",
+            "last3_amt": "str",
+            "first_ts":  "datetime",
+            "last_ts":   "datetime",
+            "age_ms":    "i64",
+            "streak":    "i64"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": ["user_id"]
+      }
+    ]
+  },
+  "event_name": "Txn",
+  "features": [
+    "cnt", "sum_amt",
+    "first_amt", "last_amt", "lag1_amt", "last3_amt",
+    "first_ts", "last_ts", "age_ms",
+    "streak"
+  ],
+  "key_field": "user_id",
+  "extra_fields": {
+    "amount": "f64"
+  }
+}

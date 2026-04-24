@@ -29,6 +29,7 @@ fn mk_count_op() -> AggOp {
         field: None,
         window_ms: None,
         where_expr: None,
+        n: None,
     })
 }
 

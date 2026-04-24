@@ -16,7 +16,7 @@ use anyhow::Context;
 use beava_core::registry::Registry;
 use beava_core::wire::{
     decode_frame, encode_frame, opcode_name, reserved_phase, Frame, FrameError, CT_JSON,
-    CT_MSGPACK, OP_ERROR_RESPONSE, OP_PING, OP_REGISTER,
+    CT_MSGPACK, OP_ERROR_RESPONSE, OP_PING, OP_PUSH, OP_REGISTER,
 };
 use bytes::{Bytes, BytesMut};
 use serde_json::{json, Value};
@@ -27,7 +27,9 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+use crate::push::{execute_push, PushOutcome};
 use crate::register::{execute_register, RegisterOutcome, RegisterPayload};
+use crate::AppState;
 
 /// Handle to a bound TCP listener plus its max_frame_bytes for the accept loop.
 pub struct TcpListenerHandle {
@@ -73,11 +75,34 @@ impl TcpListenerHandle {
     }
 }
 
-/// Accept-loop task body. Runs until `cancel` is tripped, then drains in-flight
-/// per-connection tasks.
+/// Accept-loop task body — registry-only entry point (used by ping/register
+/// unit tests that don't need the full WAL/apply pipeline). Production
+/// servers use `accept_loop_with_app` so OP_PUSH works.
+#[allow(dead_code)]
 pub(crate) async fn accept_loop(
     handle: TcpListenerHandle,
     registry: Arc<Registry>,
+    cancel: CancellationToken,
+) {
+    accept_loop_inner(handle, registry, None, cancel).await
+}
+
+/// Accept-loop task body — full AppState entry point (Phase 8+). Routes
+/// `OP_PUSH` frames through the shared `execute_push` function so both
+/// transports honor the same WAL fsync + idem-cache + apply-loop semantics.
+pub async fn accept_loop_with_app(
+    handle: TcpListenerHandle,
+    app: Arc<AppState>,
+    cancel: CancellationToken,
+) {
+    let registry = Arc::clone(&app.dev_agg.registry);
+    accept_loop_inner(handle, registry, Some(app), cancel).await
+}
+
+async fn accept_loop_inner(
+    handle: TcpListenerHandle,
+    registry: Arc<Registry>,
+    app: Option<Arc<AppState>>,
     cancel: CancellationToken,
 ) {
     let TcpListenerHandle {
@@ -105,10 +130,11 @@ pub(crate) async fn accept_loop(
                             "TCP connection accepted"
                         );
                         let reg = Arc::clone(&registry);
+                        let app_clone = app.clone();
                         let cancel_child = cancel.clone();
                         let mfb = max_frame_bytes;
                         connections_tracker.spawn(async move {
-                            if let Err(e) = handle_connection(stream, reg, cancel_child, mfb).await {
+                            if let Err(e) = handle_connection_inner(stream, reg, app_clone, cancel_child, mfb).await {
                                 tracing::warn!(
                                     target: "beava.tcp",
                                     kind = "tcp.handler_error",
@@ -137,10 +163,25 @@ pub(crate) async fn accept_loop(
     tracing::info!(target: "beava.tcp", "TCP accept loop drained");
 }
 
-/// Per-connection read→dispatch→write loop. Strict FIFO.
+/// Per-connection read→dispatch→write loop. Strict FIFO. Registry-only entry
+/// (test-only — production goes through `accept_loop_with_app`).
+#[allow(dead_code)]
 pub(crate) async fn handle_connection<S>(
+    stream: S,
+    registry: Arc<Registry>,
+    cancel: CancellationToken,
+    max_frame_bytes: u32,
+) -> anyhow::Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    handle_connection_inner(stream, registry, None, cancel, max_frame_bytes).await
+}
+
+async fn handle_connection_inner<S>(
     mut stream: S,
     registry: Arc<Registry>,
+    app: Option<Arc<AppState>>,
     cancel: CancellationToken,
     max_frame_bytes: u32,
 ) -> anyhow::Result<()>
@@ -162,7 +203,7 @@ where
                     payload_len = frame.payload.len(),
                     "frame received"
                 );
-                let response = dispatch(&registry, frame).await;
+                let response = dispatch(&registry, app.as_ref(), frame).await;
                 write_buf.clear();
                 encode_frame(&response, &mut write_buf);
                 stream
@@ -273,12 +314,22 @@ where
 }
 
 /// Map an inbound frame to an outbound frame.
-async fn dispatch(registry: &Arc<Registry>, frame: Frame) -> Frame {
+async fn dispatch(registry: &Arc<Registry>, app: Option<&Arc<AppState>>, frame: Frame) -> Frame {
     match frame.op {
         OP_PING => handle_ping(registry, &frame).await,
         OP_REGISTER => handle_register(registry, &frame).await,
+        OP_PUSH => match app {
+            Some(a) => handle_push(a, &frame).await,
+            None => build_error_frame(
+                registry,
+                "op_not_implemented",
+                json!({
+                    "message": "opcode 0x0010 (push) requires AppState (use accept_loop_with_app)"
+                }),
+            ),
+        },
         op if reserved_phase(op).is_some() => {
-            // Known but reserved (push / push_sync / … / mset).
+            // Known but reserved (push_sync / push_many / … / mset).
             let name = opcode_name(op).unwrap_or("<unnamed>");
             let phase = reserved_phase(op).unwrap_or("<unknown>");
             build_error_frame(
@@ -298,6 +349,110 @@ async fn dispatch(registry: &Arc<Registry>, frame: Frame) -> Frame {
             )
         }
     }
+}
+
+/// Handle an OP_PUSH frame.
+///
+/// Wire format (CT_JSON in v0; MessagePack reserved): the payload is a JSON
+/// object `{"event": "<name>", "body": {...event fields...}}`. Routes through
+/// the shared `execute_push` for parity with the HTTP `POST /push/{event}`
+/// path. On success returns an OP_PUSH frame with `PushAck` body; on dedupe
+/// replay sets `idempotent_replay: true` and returns the cached body. Errors
+/// emit OP_ERROR_RESPONSE with the same code strings the HTTP path uses.
+async fn handle_push(app: &Arc<AppState>, frame: &Frame) -> Frame {
+    let registry = &app.dev_agg.registry;
+
+    // Content-type policy: JSON only in v0 (mirrors HTTP).
+    if frame.content_type == CT_MSGPACK {
+        return build_error_frame(
+            registry,
+            "unsupported_content_type",
+            json!({"reason": "MessagePack payload encoding ships in Phase 12"}),
+        );
+    }
+    if frame.content_type != CT_JSON {
+        return build_error_frame(
+            registry,
+            "unsupported_content_type",
+            json!({"reason": format!("unknown content_type {:#04x}", frame.content_type)}),
+        );
+    }
+
+    // Parse the envelope: {"event": "...", "body": {...}}
+    #[derive(serde::Deserialize)]
+    struct PushEnvelope {
+        event: String,
+        body: serde_json::Value,
+    }
+
+    let envelope: PushEnvelope = match serde_json::from_slice(&frame.payload) {
+        Ok(e) => e,
+        Err(e) => {
+            return build_error_frame(
+                registry,
+                "invalid_event",
+                json!({"path": "<envelope>", "reason": e.to_string()}),
+            );
+        }
+    };
+
+    let body_bytes = match serde_json::to_vec(&envelope.body) {
+        Ok(b) => b,
+        Err(e) => {
+            return build_error_frame(
+                registry,
+                "invalid_event",
+                json!({"path": "<body>", "reason": e.to_string()}),
+            );
+        }
+    };
+
+    match execute_push(
+        app,
+        &envelope.event,
+        &body_bytes,
+        beava_persistence::SyncMode::Periodic,
+    )
+    .await
+    {
+        PushOutcome::Ok { response_bytes, .. } => Frame {
+            op: OP_PUSH,
+            content_type: CT_JSON,
+            payload: response_bytes,
+        },
+        PushOutcome::IdempotentReplay {
+            cached_response_bytes,
+        } => {
+            // Re-encode with idempotent_replay=true flag flipped. The cached
+            // bytes come from the original ACK (which had
+            // idempotent_replay=false), so we patch the JSON.
+            let patched = match patch_idempotent_replay_flag(&cached_response_bytes) {
+                Some(b) => b,
+                None => cached_response_bytes,
+            };
+            Frame {
+                op: OP_PUSH,
+                content_type: CT_JSON,
+                payload: patched,
+            }
+        }
+        PushOutcome::Error {
+            http_status: _,
+            code,
+            registry_version: _,
+        } => build_error_frame(registry, code, json!({})),
+    }
+}
+
+/// Re-serialize a `PushAck` JSON blob with `idempotent_replay: true`. Returns
+/// `None` if the blob can't be parsed (defensive — caller falls back to the
+/// raw cached bytes).
+fn patch_idempotent_replay_flag(cached: &Bytes) -> Option<Bytes> {
+    let mut v: Value = serde_json::from_slice(cached).ok()?;
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("idempotent_replay".to_string(), Value::Bool(true));
+    }
+    Some(Bytes::from(serde_json::to_vec(&v).ok()?))
 }
 
 async fn handle_ping(registry: &Arc<Registry>, _frame: &Frame) -> Frame {
@@ -700,7 +855,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reserved_opcode_returns_op_not_implemented() {
+    async fn op_push_without_app_state_returns_op_not_implemented() {
+        // Legacy `accept_loop` path (no AppState) cannot route OP_PUSH to the
+        // apply loop. Production wires use `accept_loop_with_app` (see commit
+        // 48e09fd, Phase 8 folded scope) which dispatches OP_PUSH through
+        // `execute_push`. End-to-end success path lives in
+        // `tests/phase8_tcp_push.rs`.
         let reg = Arc::new(Registry::new());
         let req = Frame::new(OP_PUSH, CT_JSON, Bytes::new());
         let resp = run_one_frame(req, reg, 1024 * 1024).await;
@@ -709,7 +869,7 @@ mod tests {
         assert_eq!(body["error"]["code"], "op_not_implemented");
         let msg = body["error"]["message"].as_str().unwrap();
         assert!(msg.contains("push"));
-        assert!(msg.contains("Phase 6"));
+        assert!(msg.contains("AppState"));
     }
 
     #[tokio::test]

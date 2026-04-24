@@ -2,7 +2,8 @@
 //! criteria end-to-end over real HTTP + TCP sockets via TestServer.
 
 use beava_core::wire::{
-    decode_frame, encode_frame, Frame, CT_JSON, CT_MSGPACK, OP_ERROR_RESPONSE, OP_PUSH, OP_REGISTER,
+    decode_frame, encode_frame, Frame, CT_JSON, CT_MSGPACK, OP_ERROR_RESPONSE, OP_PUSH_SYNC,
+    OP_REGISTER,
 };
 use beava_server::testing::{TcpClient, TestServer, TestServerBuilder};
 use bytes::{Bytes, BytesMut};
@@ -140,17 +141,18 @@ async fn criterion_5_unimplemented_opcode_returns_error_connection_stays_open() 
     let ts = TestServer::spawn().await.expect("spawn");
     let mut c = ts.tcp_client().await.expect("tcp client");
 
-    // Reserved opcode (OP_PUSH is reserved for Phase 6)
+    // Reserved opcode (OP_PUSH_SYNC is reserved for Phase 12; OP_PUSH was
+    // wired in Phase 8 folded scope and is no longer reserved).
     let resp = c
-        .send_raw(OP_PUSH, CT_JSON, Bytes::new())
+        .send_raw(OP_PUSH_SYNC, CT_JSON, Bytes::new())
         .await
-        .expect("send push");
+        .expect("send push_sync");
     assert_eq!(resp.op, OP_ERROR_RESPONSE);
     let body: Value = serde_json::from_slice(&resp.payload).unwrap();
     assert_eq!(body["error"]["code"], "op_not_implemented");
     let msg = body["error"]["message"].as_str().unwrap();
-    assert!(msg.contains("push"), "msg: {msg}");
-    assert!(msg.contains("Phase 6"), "msg: {msg}");
+    assert!(msg.contains("push_sync"), "msg: {msg}");
+    assert!(msg.contains("Phase 12"), "msg: {msg}");
 
     // Connection still works — send a ping
     let pong = c.ping().await.expect("ping after error");

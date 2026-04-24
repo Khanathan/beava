@@ -330,6 +330,464 @@ impl RatioState {
     }
 }
 
+// ─── FirstState (Phase 8) ─────────────────────────────────────────────────────
+
+/// AGG-POINT-01: First non-null field value seen by the entity. Once set,
+/// subsequent updates are ignored. Returns `Value::Null` until first event.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FirstState {
+    pub current: Option<Value>,
+}
+
+impl FirstState {
+    pub fn update(
+        &mut self,
+        row: &crate::row::Row,
+        _event_time_ms: i64,
+        field: Option<&str>,
+        where_matched: bool,
+    ) {
+        if !where_matched || self.current.is_some() {
+            return;
+        }
+        let Some(fname) = field else { return };
+        let val = match row.get(fname) {
+            None | Some(Value::Null) => return,
+            Some(v) => v.clone(),
+        };
+        self.current = Some(val);
+    }
+
+    pub fn query(&self) -> Value {
+        self.current.clone().unwrap_or(Value::Null)
+    }
+}
+
+// ─── LastState (Phase 8) ──────────────────────────────────────────────────────
+
+/// AGG-POINT-02: Most recent non-null field value seen.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LastState {
+    pub current: Option<Value>,
+}
+
+impl LastState {
+    pub fn update(
+        &mut self,
+        row: &crate::row::Row,
+        _event_time_ms: i64,
+        field: Option<&str>,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        let Some(fname) = field else { return };
+        let val = match row.get(fname) {
+            None | Some(Value::Null) => return,
+            Some(v) => v.clone(),
+        };
+        self.current = Some(val);
+    }
+
+    pub fn query(&self) -> Value {
+        self.current.clone().unwrap_or(Value::Null)
+    }
+}
+
+// ─── FirstNState / LastNState (Phase 8) ───────────────────────────────────────
+
+/// AGG-POINT-03: First n field values seen, in arrival order.
+///
+/// Wire encoding: a JSON-array string `Value::Str(serde_json::to_string(&list))`
+/// since the v0 `Value` enum has no `List` variant (D-07 in 08-CONTEXT).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FirstNState {
+    pub n: u32,
+    pub values: Vec<Value>,
+}
+
+impl FirstNState {
+    pub fn new(n: u32) -> Self {
+        Self {
+            n,
+            values: Vec::new(),
+        }
+    }
+
+    pub fn update(
+        &mut self,
+        row: &crate::row::Row,
+        _event_time_ms: i64,
+        field: Option<&str>,
+        where_matched: bool,
+    ) {
+        if !where_matched || self.values.len() >= self.n as usize {
+            return;
+        }
+        let Some(fname) = field else { return };
+        let val = match row.get(fname) {
+            None | Some(Value::Null) => return,
+            Some(v) => v.clone(),
+        };
+        self.values.push(val);
+    }
+
+    pub fn query(&self) -> Value {
+        Value::Str(values_to_json_array(&self.values))
+    }
+}
+
+/// AGG-POINT-04: Last n field values seen, in arrival order (oldest first).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LastNState {
+    pub n: u32,
+    pub values: std::collections::VecDeque<Value>,
+}
+
+impl LastNState {
+    pub fn new(n: u32) -> Self {
+        Self {
+            n,
+            values: std::collections::VecDeque::with_capacity(n as usize),
+        }
+    }
+
+    pub fn update(
+        &mut self,
+        row: &crate::row::Row,
+        _event_time_ms: i64,
+        field: Option<&str>,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        let Some(fname) = field else { return };
+        let val = match row.get(fname) {
+            None | Some(Value::Null) => return,
+            Some(v) => v.clone(),
+        };
+        if self.values.len() == self.n as usize {
+            self.values.pop_front();
+        }
+        self.values.push_back(val);
+    }
+
+    pub fn query(&self) -> Value {
+        let v: Vec<&Value> = self.values.iter().collect();
+        let mut owned = Vec::with_capacity(v.len());
+        for x in v {
+            owned.push(x.clone());
+        }
+        Value::Str(values_to_json_array(&owned))
+    }
+}
+
+// ─── LagState (Phase 8) ───────────────────────────────────────────────────────
+
+/// AGG-POINT-05: Returns the field value `n` events ago. `lag(field, 1)` is
+/// the previous event's value; `lag(field, 2)` is the one before that, etc.
+///
+/// Stores an internal ring of capacity n+1: the most recent n+1 values.
+/// Query returns ring[0] when len == n+1, else Null.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LagState {
+    pub n: u32,
+    pub values: std::collections::VecDeque<Value>,
+}
+
+impl LagState {
+    pub fn new(n: u32) -> Self {
+        Self {
+            n,
+            values: std::collections::VecDeque::with_capacity(n as usize + 1),
+        }
+    }
+
+    pub fn update(
+        &mut self,
+        row: &crate::row::Row,
+        _event_time_ms: i64,
+        field: Option<&str>,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        let Some(fname) = field else { return };
+        let val = match row.get(fname) {
+            None | Some(Value::Null) => return,
+            Some(v) => v.clone(),
+        };
+        if self.values.len() == self.n as usize + 1 {
+            self.values.pop_front();
+        }
+        self.values.push_back(val);
+    }
+
+    pub fn query(&self) -> Value {
+        if self.values.len() == self.n as usize + 1 {
+            self.values.front().cloned().unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        }
+    }
+}
+
+// ─── Recency markers (Phase 8) ────────────────────────────────────────────────
+
+/// AGG-RECENCY shared-shape state — used by `FirstSeen`, `LastSeen`, `Age`,
+/// `HasSeen`, `TimeSince`. Records the timestamps of the first and most-recent
+/// matching events. Returns Datetime/I64/Bool depending on which AggOp variant
+/// wraps the state.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SeenState {
+    /// event_time_ms of the first matching event, or None.
+    pub first_ms: Option<i64>,
+    /// event_time_ms of the most recent matching event, or None.
+    pub last_ms: Option<i64>,
+}
+
+impl SeenState {
+    pub fn update(
+        &mut self,
+        _row: &crate::row::Row,
+        event_time_ms: i64,
+        _field: Option<&str>,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        if self.first_ms.is_none() {
+            self.first_ms = Some(event_time_ms);
+        }
+        self.last_ms = Some(event_time_ms);
+    }
+
+    pub fn query_first_seen(&self) -> Value {
+        match self.first_ms {
+            Some(t) => Value::Datetime(t),
+            None => Value::Null,
+        }
+    }
+    pub fn query_last_seen(&self) -> Value {
+        match self.last_ms {
+            Some(t) => Value::Datetime(t),
+            None => Value::Null,
+        }
+    }
+    /// Age = query_time_ms - first_ms (lifetime since first observed). Null
+    /// when never seen.
+    pub fn query_age(&self, query_time_ms: i64) -> Value {
+        match self.first_ms {
+            Some(t) => Value::I64((query_time_ms - t).max(0)),
+            None => Value::Null,
+        }
+    }
+    pub fn query_has_seen(&self) -> Value {
+        Value::Bool(self.first_ms.is_some())
+    }
+    /// time_since = query_time_ms - last_ms (ms since most recent matching event).
+    /// Null when never seen.
+    pub fn query_time_since(&self, query_time_ms: i64) -> Value {
+        match self.last_ms {
+            Some(t) => Value::I64((query_time_ms - t).max(0)),
+            None => Value::Null,
+        }
+    }
+}
+
+/// AGG-RECENCY-time_since_last_n — keeps a bounded ring of the last n
+/// matching event_time_ms values; query returns ms-since the n-th most recent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeSinceLastNState {
+    pub n: u32,
+    pub times_ms: std::collections::VecDeque<i64>,
+}
+
+impl TimeSinceLastNState {
+    pub fn new(n: u32) -> Self {
+        Self {
+            n,
+            times_ms: std::collections::VecDeque::with_capacity(n as usize),
+        }
+    }
+
+    pub fn update(
+        &mut self,
+        _row: &crate::row::Row,
+        event_time_ms: i64,
+        _field: Option<&str>,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        if self.times_ms.len() == self.n as usize {
+            self.times_ms.pop_front();
+        }
+        self.times_ms.push_back(event_time_ms);
+    }
+
+    /// Returns ms since the n-th most recent matching event (i.e. the oldest
+    /// timestamp in the ring once full). Null until the ring holds n entries.
+    pub fn query(&self, query_time_ms: i64) -> Value {
+        if self.times_ms.len() < self.n as usize {
+            return Value::Null;
+        }
+        let oldest = self.times_ms.front().copied().unwrap_or(query_time_ms);
+        Value::I64((query_time_ms - oldest).max(0))
+    }
+}
+
+// ─── Streak ops (Phase 8) ─────────────────────────────────────────────────────
+
+/// AGG-RECENCY-streak: count of consecutive matching events. Resets to 0 on
+/// any non-matching event. Maintains a `max_seen` for `MaxStreak`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StreakState {
+    pub current: u64,
+    pub max_seen: u64,
+}
+
+impl StreakState {
+    pub fn update(
+        &mut self,
+        _row: &crate::row::Row,
+        _event_time_ms: i64,
+        _field: Option<&str>,
+        where_matched: bool,
+    ) {
+        if where_matched {
+            self.current += 1;
+            if self.current > self.max_seen {
+                self.max_seen = self.current;
+            }
+        } else {
+            self.current = 0;
+        }
+    }
+    pub fn query_current(&self) -> Value {
+        Value::I64(self.current as i64)
+    }
+    pub fn query_max(&self) -> Value {
+        Value::I64(self.max_seen as i64)
+    }
+}
+
+/// AGG-RECENCY-negative_streak: count of consecutive NON-matching events.
+/// Resets to 0 on any matching event.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NegativeStreakState {
+    pub current: u64,
+}
+
+impl NegativeStreakState {
+    pub fn update(
+        &mut self,
+        _row: &crate::row::Row,
+        _event_time_ms: i64,
+        _field: Option<&str>,
+        where_matched: bool,
+    ) {
+        if where_matched {
+            self.current = 0;
+        } else {
+            self.current += 1;
+        }
+    }
+    pub fn query(&self) -> Value {
+        Value::I64(self.current as i64)
+    }
+}
+
+// ─── FirstSeenInWindow (Phase 8) ──────────────────────────────────────────────
+
+/// AGG-RECENCY-first_seen_in_window: returns Bool(true) iff the most-recent
+/// matching event is within `window_ms` of the query time. Lifetime state:
+/// just `last_ms` plus a parameter window.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FirstSeenInWindowState {
+    /// Window duration in milliseconds (parameter, not state).
+    pub window_ms: u64,
+    pub last_ms: Option<i64>,
+}
+
+impl FirstSeenInWindowState {
+    pub fn new(window_ms: u64) -> Self {
+        Self {
+            window_ms,
+            last_ms: None,
+        }
+    }
+    pub fn update(
+        &mut self,
+        _row: &crate::row::Row,
+        event_time_ms: i64,
+        _field: Option<&str>,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        self.last_ms = Some(event_time_ms);
+    }
+    pub fn query(&self, query_time_ms: i64) -> Value {
+        match self.last_ms {
+            Some(t) => {
+                let age = query_time_ms - t;
+                Value::Bool(age >= 0 && (age as u64) < self.window_ms)
+            }
+            None => Value::Bool(false),
+        }
+    }
+}
+
+// ─── Helpers (Phase 8) ────────────────────────────────────────────────────────
+
+/// Encode a list of `Value`s as a JSON array string for first_n/last_n wire output.
+///
+/// We project each `Value` to a plain JSON scalar so the produced string is
+/// `"[10.0,20.0,30.0]"` rather than the tagged enum form
+/// `"[{\"F64\":10.0},...]"` that serde's default `Value::Serialize` impl
+/// produces. This matches the user-facing wire shape documented for
+/// `first_n` / `last_n` in `docs/operators.md`.
+pub(crate) fn values_to_json_array(values: &[Value]) -> String {
+    let projected: Vec<serde_json::Value> = values.iter().map(value_to_json).collect();
+    serde_json::to_string(&projected).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Project a `Value` to its untagged JSON form (plain scalar). `Bytes` and
+/// `Datetime` round-trip as integer / string respectively. `Null` → JSON null.
+fn value_to_json(v: &Value) -> serde_json::Value {
+    match v {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::I64(i) => serde_json::Value::Number((*i).into()),
+        Value::F64(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        Value::Str(s) => serde_json::Value::String(s.clone()),
+        Value::Bytes(b) => serde_json::Value::String(format!("0x{}", hex::encode_lower(b))),
+        Value::Datetime(t) => serde_json::Value::Number((*t).into()),
+    }
+}
+
+/// Tiny in-module hex helper to avoid an extra dep just for `Value::Bytes`
+/// → JSON projection.
+mod hex {
+    pub fn encode_lower(bytes: &[u8]) -> String {
+        let mut s = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            s.push(char::from_digit((*b >> 4) as u32, 16).unwrap());
+            s.push(char::from_digit((*b & 0xF) as u32, 16).unwrap());
+        }
+        s
+    }
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -556,6 +1014,305 @@ mod tests {
     fn ratio_empty_returns_null() {
         let state = RatioState::default();
         assert_eq!(state.query(), Value::Null);
+    }
+
+    // ── First / Last (Phase 8) ───────────────────────────────────────────────
+
+    #[test]
+    fn first_records_first_event_value() {
+        let mut s = FirstState::default();
+        s.update(&row_f64("amount", 10.0), 0, Some("amount"), true);
+        s.update(&row_f64("amount", 20.0), 1, Some("amount"), true);
+        s.update(&row_f64("amount", 30.0), 2, Some("amount"), true);
+        assert_eq!(s.query(), Value::F64(10.0));
+    }
+
+    #[test]
+    fn first_empty_returns_null() {
+        assert_eq!(FirstState::default().query(), Value::Null);
+    }
+
+    #[test]
+    fn first_skips_when_where_false() {
+        let mut s = FirstState::default();
+        s.update(&row_f64("amount", 10.0), 0, Some("amount"), false);
+        s.update(&row_f64("amount", 20.0), 1, Some("amount"), true);
+        assert_eq!(s.query(), Value::F64(20.0), "first matching event wins");
+    }
+
+    #[test]
+    fn first_skips_when_field_null_or_missing() {
+        let mut s = FirstState::default();
+        s.update(&row_null("amount"), 0, Some("amount"), true);
+        s.update(&empty_row(), 1, Some("amount"), true);
+        s.update(&row_i64("amount", 7), 2, Some("amount"), true);
+        assert_eq!(s.query(), Value::I64(7));
+    }
+
+    #[test]
+    fn last_records_most_recent_value() {
+        let mut s = LastState::default();
+        s.update(&row_f64("amount", 10.0), 0, Some("amount"), true);
+        s.update(&row_f64("amount", 20.0), 1, Some("amount"), true);
+        s.update(&row_f64("amount", 30.0), 2, Some("amount"), true);
+        assert_eq!(s.query(), Value::F64(30.0));
+    }
+
+    #[test]
+    fn last_empty_returns_null() {
+        assert_eq!(LastState::default().query(), Value::Null);
+    }
+
+    #[test]
+    fn last_skips_when_where_false() {
+        let mut s = LastState::default();
+        s.update(&row_f64("amount", 10.0), 0, Some("amount"), true);
+        s.update(&row_f64("amount", 20.0), 1, Some("amount"), false);
+        assert_eq!(s.query(), Value::F64(10.0));
+    }
+
+    // ── FirstN / LastN (Phase 8) ─────────────────────────────────────────────
+
+    #[test]
+    fn first_n_collects_first_n_then_stops() {
+        let mut s = FirstNState::new(3);
+        for v in [10.0, 20.0, 30.0, 40.0, 50.0] {
+            s.update(&row_f64("amount", v), 0, Some("amount"), true);
+        }
+        let q = s.query();
+        match q {
+            Value::Str(s) => assert_eq!(s, "[10.0,20.0,30.0]"),
+            other => panic!("expected Str, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn first_n_empty_returns_empty_array() {
+        let s = FirstNState::new(3);
+        assert_eq!(s.query(), Value::Str("[]".to_string()));
+    }
+
+    #[test]
+    fn first_n_skips_when_where_false() {
+        let mut s = FirstNState::new(2);
+        s.update(&row_f64("amount", 10.0), 0, Some("amount"), false);
+        s.update(&row_f64("amount", 20.0), 1, Some("amount"), true);
+        s.update(&row_f64("amount", 30.0), 2, Some("amount"), true);
+        match s.query() {
+            Value::Str(s) => assert_eq!(s, "[20.0,30.0]"),
+            other => panic!("expected Str, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn last_n_keeps_most_recent_n() {
+        let mut s = LastNState::new(3);
+        for v in [10.0, 20.0, 30.0, 40.0, 50.0] {
+            s.update(&row_f64("amount", v), 0, Some("amount"), true);
+        }
+        match s.query() {
+            Value::Str(s) => assert_eq!(s, "[30.0,40.0,50.0]"),
+            other => panic!("expected Str, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn last_n_empty_returns_empty_array() {
+        assert_eq!(LastNState::new(3).query(), Value::Str("[]".to_string()));
+    }
+
+    // ── Lag (Phase 8) ────────────────────────────────────────────────────────
+
+    #[test]
+    fn lag_returns_value_n_events_ago() {
+        // lag(field, 1) = previous event's value (the one before the most recent)
+        let mut s = LagState::new(1);
+        s.update(&row_f64("amount", 10.0), 0, Some("amount"), true);
+        // After 1 event, only the current event is in the ring; lag(1) needs 2 → Null.
+        assert_eq!(s.query(), Value::Null);
+        s.update(&row_f64("amount", 20.0), 1, Some("amount"), true);
+        // After 2 events, lag(1) = oldest = 10.0
+        assert_eq!(s.query(), Value::F64(10.0));
+        s.update(&row_f64("amount", 30.0), 2, Some("amount"), true);
+        // After 3 events, lag(1) = previous (which was 20.0)
+        assert_eq!(s.query(), Value::F64(20.0));
+    }
+
+    #[test]
+    fn lag_2_needs_three_events_to_return_value() {
+        let mut s = LagState::new(2);
+        s.update(&row_f64("amount", 10.0), 0, Some("amount"), true);
+        s.update(&row_f64("amount", 20.0), 1, Some("amount"), true);
+        assert_eq!(s.query(), Value::Null);
+        s.update(&row_f64("amount", 30.0), 2, Some("amount"), true);
+        assert_eq!(s.query(), Value::F64(10.0));
+        s.update(&row_f64("amount", 40.0), 3, Some("amount"), true);
+        assert_eq!(s.query(), Value::F64(20.0));
+    }
+
+    #[test]
+    fn lag_empty_returns_null() {
+        assert_eq!(LagState::new(1).query(), Value::Null);
+    }
+
+    // ── SeenState (Phase 8) ──────────────────────────────────────────────────
+
+    #[test]
+    fn seen_state_records_first_and_last() {
+        let mut s = SeenState::default();
+        s.update(&empty_row(), 100, None, true);
+        s.update(&empty_row(), 200, None, true);
+        s.update(&empty_row(), 300, None, true);
+        assert_eq!(s.first_ms, Some(100));
+        assert_eq!(s.last_ms, Some(300));
+    }
+
+    #[test]
+    fn seen_state_first_seen_returns_datetime() {
+        let mut s = SeenState::default();
+        assert_eq!(s.query_first_seen(), Value::Null);
+        s.update(&empty_row(), 100, None, true);
+        assert_eq!(s.query_first_seen(), Value::Datetime(100));
+    }
+
+    #[test]
+    fn seen_state_last_seen_returns_datetime() {
+        let mut s = SeenState::default();
+        assert_eq!(s.query_last_seen(), Value::Null);
+        s.update(&empty_row(), 100, None, true);
+        s.update(&empty_row(), 200, None, true);
+        assert_eq!(s.query_last_seen(), Value::Datetime(200));
+    }
+
+    #[test]
+    fn seen_state_age_computes_query_minus_first() {
+        let mut s = SeenState::default();
+        assert_eq!(s.query_age(500), Value::Null);
+        s.update(&empty_row(), 100, None, true);
+        assert_eq!(s.query_age(500), Value::I64(400));
+    }
+
+    #[test]
+    fn seen_state_has_seen_returns_bool() {
+        let mut s = SeenState::default();
+        assert_eq!(s.query_has_seen(), Value::Bool(false));
+        s.update(&empty_row(), 100, None, true);
+        assert_eq!(s.query_has_seen(), Value::Bool(true));
+    }
+
+    #[test]
+    fn seen_state_time_since_computes_query_minus_last() {
+        let mut s = SeenState::default();
+        assert_eq!(s.query_time_since(500), Value::Null);
+        s.update(&empty_row(), 100, None, true);
+        s.update(&empty_row(), 200, None, true);
+        assert_eq!(s.query_time_since(500), Value::I64(300));
+    }
+
+    #[test]
+    fn seen_state_skips_when_where_false() {
+        let mut s = SeenState::default();
+        s.update(&empty_row(), 100, None, false);
+        assert_eq!(s.query_has_seen(), Value::Bool(false));
+        s.update(&empty_row(), 200, None, true);
+        assert_eq!(s.query_first_seen(), Value::Datetime(200));
+    }
+
+    // ── TimeSinceLastN (Phase 8) ─────────────────────────────────────────────
+
+    #[test]
+    fn time_since_last_n_returns_null_until_ring_full() {
+        let mut s = TimeSinceLastNState::new(3);
+        assert_eq!(s.query(1000), Value::Null);
+        s.update(&empty_row(), 100, None, true);
+        assert_eq!(s.query(1000), Value::Null);
+        s.update(&empty_row(), 200, None, true);
+        assert_eq!(s.query(1000), Value::Null);
+        s.update(&empty_row(), 300, None, true);
+        // Ring is now full with [100, 200, 300]; query at 1000 → 1000-100 = 900
+        assert_eq!(s.query(1000), Value::I64(900));
+    }
+
+    #[test]
+    fn time_since_last_n_evicts_oldest_when_ring_full() {
+        let mut s = TimeSinceLastNState::new(2);
+        s.update(&empty_row(), 100, None, true);
+        s.update(&empty_row(), 200, None, true);
+        // Ring: [100, 200]; query → 1000 - 100 = 900
+        assert_eq!(s.query(1000), Value::I64(900));
+        s.update(&empty_row(), 300, None, true);
+        // Ring: [200, 300]; query → 1000 - 200 = 800
+        assert_eq!(s.query(1000), Value::I64(800));
+    }
+
+    // ── StreakState (Phase 8) ────────────────────────────────────────────────
+
+    #[test]
+    fn streak_increments_on_match() {
+        let mut s = StreakState::default();
+        for _ in 0..5 {
+            s.update(&empty_row(), 0, None, true);
+        }
+        assert_eq!(s.query_current(), Value::I64(5));
+        assert_eq!(s.query_max(), Value::I64(5));
+    }
+
+    #[test]
+    fn streak_resets_on_non_match() {
+        let mut s = StreakState::default();
+        s.update(&empty_row(), 0, None, true);
+        s.update(&empty_row(), 0, None, true);
+        s.update(&empty_row(), 0, None, false); // resets current to 0
+        assert_eq!(s.query_current(), Value::I64(0));
+        assert_eq!(s.query_max(), Value::I64(2)); // max was 2
+        s.update(&empty_row(), 0, None, true);
+        s.update(&empty_row(), 0, None, true);
+        s.update(&empty_row(), 0, None, true);
+        s.update(&empty_row(), 0, None, true);
+        assert_eq!(s.query_current(), Value::I64(4));
+        assert_eq!(s.query_max(), Value::I64(4)); // max bumped to 4
+    }
+
+    #[test]
+    fn streak_empty_returns_zero() {
+        let s = StreakState::default();
+        assert_eq!(s.query_current(), Value::I64(0));
+        assert_eq!(s.query_max(), Value::I64(0));
+    }
+
+    #[test]
+    fn negative_streak_increments_on_non_match() {
+        let mut s = NegativeStreakState::default();
+        s.update(&empty_row(), 0, None, false);
+        s.update(&empty_row(), 0, None, false);
+        s.update(&empty_row(), 0, None, false);
+        assert_eq!(s.query(), Value::I64(3));
+        s.update(&empty_row(), 0, None, true);
+        assert_eq!(s.query(), Value::I64(0));
+    }
+
+    // ── FirstSeenInWindow (Phase 8) ──────────────────────────────────────────
+
+    #[test]
+    fn first_seen_in_window_empty_returns_false() {
+        let s = FirstSeenInWindowState::new(1000);
+        assert_eq!(s.query(500), Value::Bool(false));
+    }
+
+    #[test]
+    fn first_seen_in_window_recent_event_returns_true() {
+        let mut s = FirstSeenInWindowState::new(1000);
+        s.update(&empty_row(), 100, None, true);
+        // age = 500 - 100 = 400 < 1000 → true
+        assert_eq!(s.query(500), Value::Bool(true));
+    }
+
+    #[test]
+    fn first_seen_in_window_old_event_returns_false() {
+        let mut s = FirstSeenInWindowState::new(1000);
+        s.update(&empty_row(), 100, None, true);
+        // age = 2000 - 100 = 1900 >= 1000 → false
+        assert_eq!(s.query(2000), Value::Bool(false));
     }
 
     // ── Determinism guard ────────────────────────────────────────────────────

@@ -83,6 +83,8 @@ struct AggParams {
     field: Option<String>,
     window: Option<String>,
     where_str: Option<String>,
+    /// Phase 8 — bounded-buffer size for first_n/last_n/lag/time_since_last_n.
+    n: Option<u32>,
 }
 
 fn extract_agg_params(params: &serde_json::Value) -> AggParams {
@@ -98,10 +100,15 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
         .get("where")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let n = params
+        .get("n")
+        .and_then(|v| v.as_u64())
+        .and_then(|n| u32::try_from(n).ok());
     AggParams {
         field,
         window,
         where_str,
+        n,
     }
 }
 
@@ -117,8 +124,66 @@ fn parse_agg_kind(op: &str) -> Option<AggKind> {
         "variance" => Some(AggKind::Variance),
         "stddev" => Some(AggKind::StdDev),
         "ratio" => Some(AggKind::Ratio),
+        // Phase 8 — point/ordinal
+        "first" => Some(AggKind::First),
+        "last" => Some(AggKind::Last),
+        "first_n" => Some(AggKind::FirstN),
+        "last_n" => Some(AggKind::LastN),
+        "lag" => Some(AggKind::Lag),
+        // Phase 8 — recency markers
+        "first_seen" => Some(AggKind::FirstSeen),
+        "last_seen" => Some(AggKind::LastSeen),
+        "age" => Some(AggKind::Age),
+        "has_seen" => Some(AggKind::HasSeen),
+        "time_since" => Some(AggKind::TimeSince),
+        "time_since_last_n" => Some(AggKind::TimeSinceLastN),
+        // Phase 8 — streak family
+        "streak" => Some(AggKind::Streak),
+        "max_streak" => Some(AggKind::MaxStreak),
+        "negative_streak" => Some(AggKind::NegativeStreak),
+        // Phase 8 — windowed recency
+        "first_seen_in_window" => Some(AggKind::FirstSeenInWindow),
         _ => None,
     }
+}
+
+/// Phase 8 — true iff `kind` requires a `params.n` integer in the JSON wire.
+fn agg_kind_requires_n(kind: AggKind) -> bool {
+    matches!(
+        kind,
+        AggKind::FirstN | AggKind::LastN | AggKind::Lag | AggKind::TimeSinceLastN
+    )
+}
+
+/// Phase 8 — true iff `kind` requires a field name in `params.field`.
+fn agg_kind_requires_field(kind: AggKind) -> bool {
+    matches!(
+        kind,
+        AggKind::First | AggKind::Last | AggKind::FirstN | AggKind::LastN | AggKind::Lag
+    )
+}
+
+/// Phase 8 — true iff `kind` is a Phase 8 lifetime-only op that MUST NOT
+/// accept a `window=` (D-02). `first_seen_in_window` is the exception — it
+/// requires a window= as a lifetime parameter.
+fn agg_kind_rejects_window(kind: AggKind) -> bool {
+    matches!(
+        kind,
+        AggKind::First
+            | AggKind::Last
+            | AggKind::FirstN
+            | AggKind::LastN
+            | AggKind::Lag
+            | AggKind::FirstSeen
+            | AggKind::LastSeen
+            | AggKind::Age
+            | AggKind::HasSeen
+            | AggKind::TimeSince
+            | AggKind::TimeSinceLastN
+            | AggKind::Streak
+            | AggKind::MaxStreak
+            | AggKind::NegativeStreak
+    )
 }
 
 // ─── compile_aggregations_from_nodes ─────────────────────────────────────────
@@ -252,7 +317,11 @@ pub fn compile_aggregations_from_nodes(
                             path: format!("nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.op"),
                             reason: format!(
                                 "unknown aggregation op '{}'; valid ops are: \
-                                 count, sum, avg, min, max, variance, stddev, ratio",
+                                 count, sum, avg, min, max, variance, stddev, ratio, \
+                                 first, last, first_n, last_n, lag, \
+                                 first_seen, last_seen, age, has_seen, time_since, \
+                                 time_since_last_n, streak, max_streak, negative_streak, \
+                                 first_seen_in_window",
                                 agg_spec.op
                             ),
                         });
@@ -283,12 +352,27 @@ pub fn compile_aggregations_from_nodes(
                         | AggKind::Max
                         | AggKind::Variance
                         | AggKind::StdDev
-                );
+                ) || agg_kind_requires_field(kind);
                 if needs_field {
                     match &params.field {
                         None => {
-                            // Field not required to be present for sum/avg/variance/stddev
-                            // (whole-row semantics deferred to v1); only validate if provided.
+                            // Phase 8 ops (first/last/first_n/last_n/lag) require a field.
+                            // Phase 5 sum/avg/variance/stddev do NOT require a field at
+                            // register time (whole-row semantics deferred to v1).
+                            if agg_kind_requires_field(kind) {
+                                errors.push(ValidationError {
+                                    code: ErrorCode::AggregationUnknownField,
+                                    path: format!(
+                                        "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.field"
+                                    ),
+                                    reason: format!(
+                                        "op '{}' requires a field= parameter",
+                                        agg_spec.op
+                                    ),
+                                });
+                                deriv_errors = true;
+                                continue;
+                            }
                         }
                         Some(field_name) => {
                             if !upstream_schema.fields.contains_key(field_name.as_str()) {
@@ -306,6 +390,71 @@ pub fn compile_aggregations_from_nodes(
                             }
                         }
                     }
+                }
+
+                // Phase 8 — `n` parameter validation for first_n/last_n/lag/time_since_last_n.
+                if agg_kind_requires_n(kind) {
+                    match params.n {
+                        None => {
+                            errors.push(ValidationError {
+                                code: ErrorCode::AggregationUnknownField,
+                                path: format!(
+                                    "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.n"
+                                ),
+                                reason: format!(
+                                    "op '{}' requires a positive integer 'n' parameter",
+                                    agg_spec.op
+                                ),
+                            });
+                            deriv_errors = true;
+                            continue;
+                        }
+                        Some(n) if n == 0 || n > 1024 => {
+                            errors.push(ValidationError {
+                                code: ErrorCode::AggregationUnknownField,
+                                path: format!(
+                                    "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.n"
+                                ),
+                                reason: format!(
+                                    "op '{}' parameter 'n' must be in [1, 1024]; got {n}",
+                                    agg_spec.op
+                                ),
+                            });
+                            deriv_errors = true;
+                            continue;
+                        }
+                        Some(_) => {}
+                    }
+                }
+
+                // Phase 8 — reject window= for lifetime-only ops.
+                if agg_kind_rejects_window(kind) && params.window.is_some() {
+                    errors.push(ValidationError {
+                        code: ErrorCode::AggregationInvalidWindow,
+                        path: format!(
+                            "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.window"
+                        ),
+                        reason: format!(
+                            "op '{}' is a lifetime operator and does not accept window=",
+                            agg_spec.op
+                        ),
+                    });
+                    deriv_errors = true;
+                    continue;
+                }
+
+                // Phase 8 — first_seen_in_window REQUIRES a window=.
+                if matches!(kind, AggKind::FirstSeenInWindow) && params.window.is_none() {
+                    errors.push(ValidationError {
+                        code: ErrorCode::AggregationInvalidWindow,
+                        path: format!(
+                            "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.window"
+                        ),
+                        reason: "op 'first_seen_in_window' requires a window= duration parameter"
+                            .to_string(),
+                    });
+                    deriv_errors = true;
+                    continue;
                 }
 
                 // Window parsing.
@@ -381,6 +530,7 @@ pub fn compile_aggregations_from_nodes(
                         field: params.field,
                         window_ms,
                         where_expr,
+                        n: params.n,
                     },
                 });
             }
@@ -921,6 +1071,267 @@ mod tests {
             errors.len() >= 3,
             "expected at least 3 errors, got {}: {errors:#?}",
             errors.len()
+        );
+    }
+
+    // ── Phase 8: point/recency op compile tests ──────────────────────────────
+
+    /// `parse_agg_kind` recognises every Phase 8 op string.
+    #[test]
+    fn parse_agg_kind_recognises_phase8_ops() {
+        for (s, k) in [
+            ("first", AggKind::First),
+            ("last", AggKind::Last),
+            ("first_n", AggKind::FirstN),
+            ("last_n", AggKind::LastN),
+            ("lag", AggKind::Lag),
+            ("first_seen", AggKind::FirstSeen),
+            ("last_seen", AggKind::LastSeen),
+            ("age", AggKind::Age),
+            ("has_seen", AggKind::HasSeen),
+            ("time_since", AggKind::TimeSince),
+            ("time_since_last_n", AggKind::TimeSinceLastN),
+            ("streak", AggKind::Streak),
+            ("max_streak", AggKind::MaxStreak),
+            ("negative_streak", AggKind::NegativeStreak),
+            ("first_seen_in_window", AggKind::FirstSeenInWindow),
+        ] {
+            assert_eq!(parse_agg_kind(s), Some(k), "parse_agg_kind({s}) failed");
+        }
+    }
+
+    fn txn_event_with_amount() -> PayloadNode {
+        event_node_with_fields(
+            "Txn",
+            &[
+                ("user_id", FieldType::Str),
+                ("amount", FieldType::F64),
+                ("status", FieldType::Str),
+            ],
+        )
+    }
+
+    #[test]
+    fn rule11_accepts_first_with_field() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "first_amt": {"op": "first", "params": {"field": "amount"}}
+                }),
+            ),
+        ];
+        let (compiled, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "expected no errors, got: {errors:#?}");
+        assert_eq!(compiled.len(), 1);
+        assert_eq!(compiled[0].1.features[0].descriptor.kind, AggKind::First);
+    }
+
+    #[test]
+    fn rule11_accepts_first_n_with_field_and_n() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "first3": {"op": "first_n", "params": {"field": "amount", "n": 3}}
+                }),
+            ),
+        ];
+        let (compiled, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "expected no errors, got: {errors:#?}");
+        assert_eq!(compiled[0].1.features[0].descriptor.n, Some(3));
+    }
+
+    #[test]
+    fn rule11_rejects_first_n_without_n() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "first3": {"op": "first_n", "params": {"field": "amount"}}
+                }),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors.iter().any(|e| e.path.contains("params.n")),
+            "expected n-missing error, got: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn rule11_rejects_first_n_with_zero_n() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "first0": {"op": "first_n", "params": {"field": "amount", "n": 0}}
+                }),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors.iter().any(|e| e.path.contains("params.n")),
+            "expected n>0 error, got: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn rule11_rejects_first_without_field() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "first_amt": {"op": "first", "params": {}}
+                }),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors.iter().any(|e| e.path.contains("params.field")),
+            "expected field-missing error for first, got: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn rule11_accepts_recency_markers_without_field() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "fs": {"op": "first_seen", "params": {}},
+                    "ls": {"op": "last_seen", "params": {}},
+                    "a":  {"op": "age", "params": {}},
+                    "hs": {"op": "has_seen", "params": {}},
+                    "ts": {"op": "time_since", "params": {}}
+                }),
+            ),
+        ];
+        let (compiled, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "expected no errors, got: {errors:#?}");
+        assert_eq!(compiled[0].1.features.len(), 5);
+    }
+
+    #[test]
+    fn rule11_rejects_recency_marker_with_window() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "ts": {"op": "time_since", "params": {"window": "5m"}}
+                }),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::AggregationInvalidWindow),
+            "expected window-rejected error, got: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn rule11_first_seen_in_window_requires_window() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "fsiw": {"op": "first_seen_in_window", "params": {}}
+                }),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::AggregationInvalidWindow),
+            "expected window-required error, got: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn rule11_first_seen_in_window_accepts_window() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "fsiw": {"op": "first_seen_in_window", "params": {"window": "5m"}}
+                }),
+            ),
+        ];
+        let (compiled, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "expected no errors, got: {errors:#?}");
+        assert_eq!(
+            compiled[0].1.features[0].descriptor.window_ms,
+            Some(300_000)
+        );
+    }
+
+    #[test]
+    fn rule11_streak_accepts_with_where_only() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "succ_streak": {"op": "streak", "params": {"where": "(status == 'ok')"}},
+                    "fail_streak": {"op": "negative_streak", "params": {"where": "(status == 'ok')"}},
+                    "max_succ": {"op": "max_streak", "params": {"where": "(status == 'ok')"}}
+                }),
+            ),
+        ];
+        let (compiled, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "expected no errors, got: {errors:#?}");
+        assert_eq!(compiled[0].1.features.len(), 3);
+    }
+
+    #[test]
+    fn rule11_time_since_last_n_requires_n() {
+        let nodes = vec![
+            txn_event_with_amount(),
+            group_by_derivation(
+                "UserStats",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({
+                    "tsn": {"op": "time_since_last_n", "params": {}}
+                }),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors.iter().any(|e| e.path.contains("params.n")),
+            "expected n-required error for time_since_last_n, got: {errors:#?}"
         );
     }
 }

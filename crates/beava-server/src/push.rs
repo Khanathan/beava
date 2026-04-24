@@ -152,63 +152,81 @@ fn extract_dedupe_str(body: &serde_json::Map<String, JsonValue>, key: &str) -> O
     }
 }
 
-/// Phase 6.1: default `/push` — Periodic mode (Kafka acks=1).
-/// Apply happens after the in-memory append (which is what Periodic
-/// `append_event` resolves on); fsync runs on the timer.
-pub async fn push_handler(
-    State(app): State<Arc<AppState>>,
-    Path(event_name): Path<String>,
-    body_bytes: Bytes,
-) -> Response {
-    push_inner(app, event_name, body_bytes, SyncMode::Periodic).await
+/// Outcome from `execute_push`. Wire-agnostic — the HTTP and TCP handlers
+/// each translate this into their own response shape.
+#[derive(Debug)]
+pub enum PushOutcome {
+    /// Push committed; `response_bytes` is the JSON-encoded `PushAck`.
+    Ok { response_bytes: Bytes, ack: PushAck },
+    /// Idempotent replay hit; `cached_response_bytes` is the byte-identical
+    /// JSON from the original push.
+    IdempotentReplay { cached_response_bytes: Bytes },
+    /// Validation failure (parse / schema / unknown event).
+    Error {
+        http_status: StatusCode,
+        code: &'static str,
+        registry_version: u32,
+    },
 }
 
-/// Phase 6.1: strict `/push-sync` — PerEvent mode (Kafka acks=all).
-/// Apply happens after fsync — preserves Phase 6 D-12 / SRV-DUR-02
-/// invariants. Use this endpoint when downstream consumers cannot
-/// tolerate ACK'd-but-lost events on a crash.
-pub async fn push_sync_handler(
-    State(app): State<Arc<AppState>>,
-    Path(event_name): Path<String>,
-    body_bytes: Bytes,
-) -> Response {
-    push_inner(app, event_name, body_bytes, SyncMode::PerEvent).await
-}
-
-async fn push_inner(
-    app: Arc<AppState>,
-    event_name: String,
-    body_bytes: Bytes,
+/// Wire-agnostic push execution. Used by both the HTTP handler (Phase 6) and
+/// the TCP `OP_PUSH` handler (Phase 8 folded scope) so logic is shared and
+/// the idempotency cache + WAL + apply path stays single-source-of-truth.
+///
+/// `sync_mode` (Phase 6.1) selects between Periodic (Kafka acks=1, default
+/// `/push` + TCP `OP_PUSH`) and PerEvent (Kafka acks=all, `/push-sync`).
+pub async fn execute_push(
+    app: &AppState,
+    event_name: &str,
+    body_bytes: &[u8],
     sync_mode: SyncMode,
-) -> Response {
+) -> PushOutcome {
     let registry_version = app.dev_agg.registry.version() as u32;
 
     // 1. Parse JSON body.
-    let parsed: JsonValue = match serde_json::from_slice(&body_bytes) {
+    let parsed: JsonValue = match serde_json::from_slice(body_bytes) {
         Ok(v) => v,
         Err(_) => {
-            return error_response(StatusCode::BAD_REQUEST, "invalid_event", registry_version)
+            return PushOutcome::Error {
+                http_status: StatusCode::BAD_REQUEST,
+                code: "invalid_event",
+                registry_version,
+            }
         }
     };
     let obj = match parsed.as_object() {
         Some(o) => o.clone(),
-        None => return error_response(StatusCode::BAD_REQUEST, "invalid_event", registry_version),
+        None => {
+            return PushOutcome::Error {
+                http_status: StatusCode::BAD_REQUEST,
+                code: "invalid_event",
+                registry_version,
+            }
+        }
     };
 
     // 2. Lookup event descriptor.
     let descriptor = {
         let inner = app.dev_agg.registry.read();
-        match inner.events.get(&event_name).cloned() {
+        match inner.events.get(event_name).cloned() {
             Some(d) => d,
             None => {
-                return error_response(StatusCode::NOT_FOUND, "event_not_found", registry_version);
+                return PushOutcome::Error {
+                    http_status: StatusCode::NOT_FOUND,
+                    code: "event_not_found",
+                    registry_version,
+                }
             }
         }
     };
 
     // 3. Schema validate.
     if !validate_body(&descriptor, &obj) {
-        return error_response(StatusCode::BAD_REQUEST, "invalid_event", registry_version);
+        return PushOutcome::Error {
+            http_status: StatusCode::BAD_REQUEST,
+            code: "invalid_event",
+            registry_version,
+        };
     }
 
     let now = now_ms();
@@ -220,13 +238,10 @@ async fn push_inner(
         .and_then(|k| extract_dedupe_str(&obj, k));
 
     if let (Some(_), Some(key_str)) = (descriptor.dedupe_key.as_ref(), dedupe_str.as_ref()) {
-        if let Some(cached) = app.idem_cache.get(&event_name, key_str, now) {
-            return Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/json")
-                .header("x-beava-idempotent-replay", "1")
-                .body(axum::body::Body::from(cached))
-                .unwrap();
+        if let Some(cached) = app.idem_cache.get(event_name, key_str, now) {
+            return PushOutcome::IdempotentReplay {
+                cached_response_bytes: cached,
+            };
         }
     }
 
@@ -249,11 +264,11 @@ async fn push_inner(
     let payload_bytes = match serde_json::to_vec(&payload) {
         Ok(b) => b,
         Err(_) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "serialize_failed",
+            return PushOutcome::Error {
+                http_status: StatusCode::INTERNAL_SERVER_ERROR,
+                code: "serialize_failed",
                 registry_version,
-            );
+            };
         }
     };
 
@@ -267,11 +282,11 @@ async fn push_inner(
     {
         Ok(lsn) => lsn,
         Err(_) => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "wal_unavailable",
+            return PushOutcome::Error {
+                http_status: StatusCode::SERVICE_UNAVAILABLE,
+                code: "wal_unavailable",
                 registry_version,
-            );
+            };
         }
     };
 
@@ -285,7 +300,7 @@ async fn push_inner(
     {
         let mut tables = app.dev_agg.state_tables.lock();
         apply_event_to_aggregations(
-            &event_name,
+            event_name,
             &row,
             event_time_ms,
             ack_lsn,
@@ -311,7 +326,7 @@ async fn push_inner(
         registry_version,
     };
     let body_vec = serde_json::to_vec(&ack).unwrap_or_default();
-    let body_bytes_out = Bytes::from(body_vec);
+    let response_bytes = Bytes::from(body_vec);
 
     // 11. Cache on dedupe path.
     if let Some(key_str) = dedupe_str {
@@ -319,10 +334,10 @@ async fn push_inner(
             .dedupe_window_ms
             .unwrap_or(DEFAULT_DEDUPE_WINDOW_MS);
         app.idem_cache.put(
-            event_name.clone(),
+            event_name.to_string(),
             key_str,
             crate::idem_cache::CachedEntry {
-                response_bytes: body_bytes_out.clone(),
+                response_bytes: response_bytes.clone(),
                 ack_lsn,
                 inserted_at_ms: now,
                 expires_at_ms: now.saturating_add(window_ms),
@@ -330,11 +345,53 @@ async fn push_inner(
         );
     }
 
-    // 12. Return 200.
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        body_bytes_out,
-    )
-        .into_response()
+    PushOutcome::Ok {
+        response_bytes,
+        ack,
+    }
+}
+
+/// Phase 6.1: default `/push` — Periodic mode (Kafka acks=1).
+pub async fn push_handler(
+    State(app): State<Arc<AppState>>,
+    Path(event_name): Path<String>,
+    body_bytes: Bytes,
+) -> Response {
+    push_response(execute_push(&app, &event_name, &body_bytes, SyncMode::Periodic).await)
+}
+
+/// Phase 6.1: strict `/push-sync` — PerEvent mode (Kafka acks=all).
+/// Apply happens after fsync — preserves Phase 6 D-12 / SRV-DUR-02
+/// invariants. Use this endpoint when downstream consumers cannot
+/// tolerate ACK'd-but-lost events on a crash.
+pub async fn push_sync_handler(
+    State(app): State<Arc<AppState>>,
+    Path(event_name): Path<String>,
+    body_bytes: Bytes,
+) -> Response {
+    push_response(execute_push(&app, &event_name, &body_bytes, SyncMode::PerEvent).await)
+}
+
+fn push_response(outcome: PushOutcome) -> Response {
+    match outcome {
+        PushOutcome::Ok { response_bytes, .. } => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            response_bytes,
+        )
+            .into_response(),
+        PushOutcome::IdempotentReplay {
+            cached_response_bytes,
+        } => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-beava-idempotent-replay", "1")
+            .body(axum::body::Body::from(cached_response_bytes))
+            .unwrap(),
+        PushOutcome::Error {
+            http_status,
+            code,
+            registry_version,
+        } => error_response(http_status, code, registry_version),
+    }
 }
