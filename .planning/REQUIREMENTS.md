@@ -68,7 +68,7 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 
 - [ ] **AGG-SKETCH-01**: `bv.count_distinct(field, window=..., exact_threshold=1024, hybrid_precision=14)` — HLL cardinality estimate; int output
 - [ ] **AGG-SKETCH-02**: `bv.percentile(field, q, window=..., exact_threshold=256, hybrid_alpha=0.01)` — DDSketch quantile; float output
-- [ ] **AGG-SKETCH-03**: `bv.top_k(field, k, window=..., exact_threshold=1024, hybrid_width=2048, hybrid_depth=4)` — SpaceSaving top-K; list output
+- [ ] **AGG-SKETCH-03**: `bv.top_k(field, k, window=..., exact_threshold=1024, hybrid_width=2048, hybrid_depth=4)` — CountMinSketch + bounded min-heap (hybrid exact/sketch mode); list output
 - [ ] **AGG-SKETCH-04**: `bv.bloom_member(field, capacity=1024, fpr=0.01)` — Bloom-filter ever-seen membership test; bool output
 - [ ] **AGG-SKETCH-05**: `bv.entropy(field, window=...)` — Shannon entropy over the empirical categorical distribution; float output
 
