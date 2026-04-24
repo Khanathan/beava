@@ -32,16 +32,17 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 2.5 | TCP wire listener + framing + full opcode table | Custom-framed TCP listener alongside HTTP; full v0 opcode table designed; `register` + `ping` handlers wired; rest return `op_not_implemented` placeholder | ~8 | 8 ✅ **COMPLETE** |
 | 3 | Python SDK skeleton + decorators + expression DSL | `@bv.event`, `@bv.table`, `bv.col`, `bv.App(url)` (HTTP + TCP), register + validate, REGISTER JSON compiler | 20 | 7 |
 | 4 | Stateless ops + expression evaluator (server-side) | 7/7 | Complete   | 2026-04-23 |
-| 5 | Aggregation framework + core operators (8) | 7/8 | In Progress|  |
-| 5.5 | Perf harness + retroactive baselines | 5/6 | In Progress|  |
-| 6 | WAL + idempotency | 2/4 | In Progress|  |
-| 7 | Snapshot + recovery | Periodic full-state snapshot; restart replays snapshot + WAL; schema evolution survives restart | 5 | 4 |
-| 7.5 | End-to-end throughput harness + first baseline | Reusable harness measuring sustained EPS + push/get latency through the live HTTP+TCP server. Tiered pipelines (small=1 / medium=5 / large=15 features). 60s wall-time time-bounded runs. Baselines committed to `.planning/throughput-baselines.md` keyed by hw-class. Establishes the per-phase throughput-run convention every operator phase (8–12) must honor. | ~6 | 4 |
-| 8 | Point / ordinal / recency operators | first, last, first_n, last_n, lag, first_seen, last_seen, age, has_seen, time_since, time_since_last_n, streak, max_streak, negative_streak, first_seen_in_window | 15 | 4 |
-| 9 | Decay + velocity operators | ewma, ewvar, ew_zscore, decayed_sum, decayed_count, twa, rate_of_change, inter_arrival_stats, burst_count, delta_from_prev, trend, trend_residual, outlier_count, value_change_count, z_score | 16 | 4 |
-| 10 | Sketch operators | count_distinct (HLL), percentile (DDSketch), top_k (SpaceSaving), bloom_member, entropy | 5 | 4 |
-| 11 | Bounded-buffer + geo operators | histogram, hour_of_day/dow_hour histograms, seasonal_deviation, event_type_mix, most_recent_n, reservoir_sample, geo_velocity, geo_distance, geo_spread, unique_cells, geo_entropy, distance_from_home | 13 | 4 |
-| 11.5 | Temporal tables + retraction primitive | MVCC storage for `@bv.table(temporal=True, retention=...)`; `app.retract(event_id)` scoped to table upserts/deletes; wires `as_of=...` kwarg that Phase 12 joins consume; stream retraction deferred to v1 but event-IDs land now | ~10 | 6 |
+| 5 | Aggregation framework + core operators (8) | 7/8 | ✅ **COMPLETE** |
+| 5.5 | Perf harness + retroactive baselines | 5/6 | ✅ **COMPLETE** |
+| 6 | WAL + idempotency | 2/4 | ✅ **COMPLETE** |
+| 6.1 | Async durability (SyncMode::Periodic + /push-sync) | adds Kafka-style acks=1 default to /push (15× EPS lift) while preserving acks=all path via /push-sync | ~6 | ✅ **COMPLETE** |
+| 7 | Snapshot + recovery | Periodic full-state snapshot; restart replays snapshot + WAL; schema evolution survives restart | 5 | ✅ **COMPLETE** |
+| 7.5 | End-to-end throughput harness + first baseline | Reusable harness measuring sustained EPS + push/get latency through the live HTTP+TCP server. Tiered pipelines (small=1 / medium=5 / large=15 features). 60s wall-time time-bounded runs. Baselines committed to `.planning/throughput-baselines.md` keyed by hw-class. Establishes the per-phase throughput-run convention every operator phase (8–12) must honor. | ~6 | ✅ **COMPLETE** |
+| 8 | Point / ordinal / recency operators | first, last, first_n, last_n, lag, first_seen, last_seen, age, has_seen, time_since, time_since_last_n, streak, max_streak, negative_streak, first_seen_in_window | 15 | ✅ **COMPLETE** |
+| 9 | Decay + velocity operators | ewma, ewvar, ew_zscore, decayed_sum, decayed_count, twa, rate_of_change, inter_arrival_stats, burst_count, delta_from_prev, trend, trend_residual, outlier_count, value_change_count, z_score | 16 | ✅ **COMPLETE** |
+| 10 | Sketch operators | count_distinct (HLL), percentile (DDSketch), top_k (SpaceSaving), bloom_member, entropy | 5 | ✅ **COMPLETE** |
+| 11 | Bounded-buffer + geo operators | histogram, hour_of_day/dow_hour histograms, seasonal_deviation, event_type_mix, most_recent_n, reservoir_sample, geo_velocity, geo_distance, geo_spread, unique_cells, geo_entropy, distance_from_home | 13 | ✅ **COMPLETE** |
+| 11.5 | Temporal tables + retraction primitive | MVCC storage for `@bv.table(temporal=True, retention=...)`; `app.retract(event_id)` scoped to table upserts/deletes; wires `as_of=...` kwarg that Phase 12 joins consume; stream retraction deferred to v1 but event-IDs land now | ~10 | ✅ **COMPLETE** |
 | 12 | Joins + unions + push/get API completion | Event↔event windowed join, event↔table enrichment (incl. event-time PIT against temporal tables), table↔table join, `bv.union`; `push_sync` + `push_many` + `push_table` + `delete_table` + `set` + `mset` + `mget` + `get_multi` wired end-to-end | 13 | 5 |
 | 13 | Observability + performance + docs + packaging + `bv.fork` + playground | `/metrics`, structured logs, perf gates on THREE pipelines (simple fraud, complex fraud, recommendations) ≥3M EPS, <10ms P99 batch get, SDK polish, docs, hosted interactive tutorial at playground.beava.dev, PyPI, GitHub Releases, Docker, `beava fork` subcommand | ~18 | 7 |
 
