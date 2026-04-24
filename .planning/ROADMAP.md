@@ -444,6 +444,24 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 **Downstream gating:** Unblocks the Phase 13 ship-gate perf numbers (≥3M EPS/core on the three pipeline shapes) because the apply loop is today the bottleneck — the Mutex caps us at ~17k EPS regardless of fsync cost.
 
+### Phase 14.1: Streaming semantics — Chunk B (opt-in modifiability) — 📋 PLANNED
+
+**Status:** Plans landed 2026-04-24. Depends on Phase 14 (watermark + drop + bucket widening).
+
+**Goal:** Ship opt-in `@bv.event(modifiable=True, modification_log_depth=16)` + per-(entity,feature) K-event log lazy-allocated for Tier 3 operators + register-time retraction-impact analyzer (BV-W-AGG-APPROX-MODIFIABLE / REJECT-MODIFIABLE / SUBTRACTIVE-OK) + Tier 3 operator state redesign (replay_from_log helpers) + WAL-replay-via-replay recovery (Option B, no new WAL record variant) + snapshot format v3.
+
+**Depends on:** Phase 14 (watermark + tolerance window), Phase 13.3 (lockless apply borrow_mut scope).
+
+**Plans:** 6 plans
+- [ ] 14.1-01-PLAN.md — Schema: `modifiable` + `modification_log_depth` on EventDescriptor + Python SDK kwargs + register-time bounds validator
+- [ ] 14.1-02-PLAN.md — `ModificationLog` ring buffer + `AggKind::tier()` classifier + `EntityRow` max_event_time_ms + lazy mod_logs slots
+- [ ] 14.1-03-PLAN.md — `retraction_analyzer.rs` + register response warnings/errors arrays + Python `BeavaRetractionWarning` + docs stubs at beava.dev/w/
+- [ ] 14.1-04-PLAN.md — Tier 3 `replay_from_log` helpers across decay/velocity/state/geo + proptest sorted-vs-shuffled equivalence (SC4)
+- [ ] 14.1-05-PLAN.md — `apply_with_modifiability` fast/slow-path + push.rs wire-up + snapshot format v3 + WAL replay preserves mod state + end-to-end smoke
+- [ ] 14.1-06-PLAN.md — Criterion microbench (mod=false ≤ 5 ns; mod=true slow-path ≤ 5 µs) + promotion/eviction metrics + beava-bench throughput rows + SUMMARY + VERIFICATION
+
+**Success criteria:** see `.planning/phases/14.1-streaming-modifiability/14.1-CONTEXT.md` (SC1–SC8).
+
 ### Phase 15: Event-time PIT temporal store — 📋 PLANNED
 
 **Status:** Plans landed 2026-04-24. Blocks Phase 12 Plan 04.
