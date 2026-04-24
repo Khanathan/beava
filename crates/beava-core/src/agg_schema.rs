@@ -201,6 +201,7 @@ mod tests {
             field: field.map(|s| s.to_string()),
             window_ms: None,
             where_expr: None,
+            n: None,
         }
     }
 

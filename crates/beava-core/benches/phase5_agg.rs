@@ -205,6 +205,7 @@ fn build_registry() -> Registry {
                 field: None,
                 window_ms: Some(300_000),
                 where_expr: None,
+            n: None,
             },
         )],
     );

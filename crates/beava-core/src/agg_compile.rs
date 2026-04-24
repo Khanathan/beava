@@ -83,6 +83,8 @@ struct AggParams {
     field: Option<String>,
     window: Option<String>,
     where_str: Option<String>,
+    /// Phase 8 — bounded-buffer size for first_n/last_n/lag/time_since_last_n.
+    n: Option<u32>,
 }
 
 fn extract_agg_params(params: &serde_json::Value) -> AggParams {
@@ -98,10 +100,15 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
         .get("where")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let n = params
+        .get("n")
+        .and_then(|v| v.as_u64())
+        .and_then(|n| u32::try_from(n).ok());
     AggParams {
         field,
         window,
         where_str,
+        n,
     }
 }
 
@@ -117,8 +124,66 @@ fn parse_agg_kind(op: &str) -> Option<AggKind> {
         "variance" => Some(AggKind::Variance),
         "stddev" => Some(AggKind::StdDev),
         "ratio" => Some(AggKind::Ratio),
+        // Phase 8 — point/ordinal
+        "first" => Some(AggKind::First),
+        "last" => Some(AggKind::Last),
+        "first_n" => Some(AggKind::FirstN),
+        "last_n" => Some(AggKind::LastN),
+        "lag" => Some(AggKind::Lag),
+        // Phase 8 — recency markers
+        "first_seen" => Some(AggKind::FirstSeen),
+        "last_seen" => Some(AggKind::LastSeen),
+        "age" => Some(AggKind::Age),
+        "has_seen" => Some(AggKind::HasSeen),
+        "time_since" => Some(AggKind::TimeSince),
+        "time_since_last_n" => Some(AggKind::TimeSinceLastN),
+        // Phase 8 — streak family
+        "streak" => Some(AggKind::Streak),
+        "max_streak" => Some(AggKind::MaxStreak),
+        "negative_streak" => Some(AggKind::NegativeStreak),
+        // Phase 8 — windowed recency
+        "first_seen_in_window" => Some(AggKind::FirstSeenInWindow),
         _ => None,
     }
+}
+
+/// Phase 8 — true iff `kind` requires a `params.n` integer in the JSON wire.
+fn agg_kind_requires_n(kind: AggKind) -> bool {
+    matches!(
+        kind,
+        AggKind::FirstN | AggKind::LastN | AggKind::Lag | AggKind::TimeSinceLastN
+    )
+}
+
+/// Phase 8 — true iff `kind` requires a field name in `params.field`.
+fn agg_kind_requires_field(kind: AggKind) -> bool {
+    matches!(
+        kind,
+        AggKind::First | AggKind::Last | AggKind::FirstN | AggKind::LastN | AggKind::Lag
+    )
+}
+
+/// Phase 8 — true iff `kind` is a Phase 8 lifetime-only op that MUST NOT
+/// accept a `window=` (D-02). `first_seen_in_window` is the exception — it
+/// requires a window= as a lifetime parameter.
+fn agg_kind_rejects_window(kind: AggKind) -> bool {
+    matches!(
+        kind,
+        AggKind::First
+            | AggKind::Last
+            | AggKind::FirstN
+            | AggKind::LastN
+            | AggKind::Lag
+            | AggKind::FirstSeen
+            | AggKind::LastSeen
+            | AggKind::Age
+            | AggKind::HasSeen
+            | AggKind::TimeSince
+            | AggKind::TimeSinceLastN
+            | AggKind::Streak
+            | AggKind::MaxStreak
+            | AggKind::NegativeStreak
+    )
 }
 
 // ─── compile_aggregations_from_nodes ─────────────────────────────────────────
@@ -252,7 +317,11 @@ pub fn compile_aggregations_from_nodes(
                             path: format!("nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.op"),
                             reason: format!(
                                 "unknown aggregation op '{}'; valid ops are: \
-                                 count, sum, avg, min, max, variance, stddev, ratio",
+                                 count, sum, avg, min, max, variance, stddev, ratio, \
+                                 first, last, first_n, last_n, lag, \
+                                 first_seen, last_seen, age, has_seen, time_since, \
+                                 time_since_last_n, streak, max_streak, negative_streak, \
+                                 first_seen_in_window",
                                 agg_spec.op
                             ),
                         });
@@ -283,12 +352,27 @@ pub fn compile_aggregations_from_nodes(
                         | AggKind::Max
                         | AggKind::Variance
                         | AggKind::StdDev
-                );
+                ) || agg_kind_requires_field(kind);
                 if needs_field {
                     match &params.field {
                         None => {
-                            // Field not required to be present for sum/avg/variance/stddev
-                            // (whole-row semantics deferred to v1); only validate if provided.
+                            // Phase 8 ops (first/last/first_n/last_n/lag) require a field.
+                            // Phase 5 sum/avg/variance/stddev do NOT require a field at
+                            // register time (whole-row semantics deferred to v1).
+                            if agg_kind_requires_field(kind) {
+                                errors.push(ValidationError {
+                                    code: ErrorCode::AggregationUnknownField,
+                                    path: format!(
+                                        "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.field"
+                                    ),
+                                    reason: format!(
+                                        "op '{}' requires a field= parameter",
+                                        agg_spec.op
+                                    ),
+                                });
+                                deriv_errors = true;
+                                continue;
+                            }
                         }
                         Some(field_name) => {
                             if !upstream_schema.fields.contains_key(field_name.as_str()) {
@@ -306,6 +390,72 @@ pub fn compile_aggregations_from_nodes(
                             }
                         }
                     }
+                }
+
+                // Phase 8 — `n` parameter validation for first_n/last_n/lag/time_since_last_n.
+                if agg_kind_requires_n(kind) {
+                    match params.n {
+                        None => {
+                            errors.push(ValidationError {
+                                code: ErrorCode::AggregationUnknownField,
+                                path: format!(
+                                    "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.n"
+                                ),
+                                reason: format!(
+                                    "op '{}' requires a positive integer 'n' parameter",
+                                    agg_spec.op
+                                ),
+                            });
+                            deriv_errors = true;
+                            continue;
+                        }
+                        Some(n) if n == 0 || n > 1024 => {
+                            errors.push(ValidationError {
+                                code: ErrorCode::AggregationUnknownField,
+                                path: format!(
+                                    "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.n"
+                                ),
+                                reason: format!(
+                                    "op '{}' parameter 'n' must be in [1, 1024]; got {n}",
+                                    agg_spec.op
+                                ),
+                            });
+                            deriv_errors = true;
+                            continue;
+                        }
+                        Some(_) => {}
+                    }
+                }
+
+                // Phase 8 — reject window= for lifetime-only ops.
+                if agg_kind_rejects_window(kind) && params.window.is_some() {
+                    errors.push(ValidationError {
+                        code: ErrorCode::AggregationInvalidWindow,
+                        path: format!(
+                            "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.window"
+                        ),
+                        reason: format!(
+                            "op '{}' is a lifetime operator and does not accept window=",
+                            agg_spec.op
+                        ),
+                    });
+                    deriv_errors = true;
+                    continue;
+                }
+
+                // Phase 8 — first_seen_in_window REQUIRES a window=.
+                if matches!(kind, AggKind::FirstSeenInWindow) && params.window.is_none() {
+                    errors.push(ValidationError {
+                        code: ErrorCode::AggregationInvalidWindow,
+                        path: format!(
+                            "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.window"
+                        ),
+                        reason:
+                            "op 'first_seen_in_window' requires a window= duration parameter"
+                                .to_string(),
+                    });
+                    deriv_errors = true;
+                    continue;
                 }
 
                 // Window parsing.
@@ -381,6 +531,7 @@ pub fn compile_aggregations_from_nodes(
                         field: params.field,
                         window_ms,
                         where_expr,
+                        n: params.n,
                     },
                 });
             }

@@ -16,7 +16,9 @@
 //! D-06: no wall-clock reads in apply paths (forbidden: SystemTime now, rand).
 
 use crate::agg_state::{
-    AvgState, CountState, MaxState, MinState, RatioState, SumState, VarianceState,
+    AvgState, CountState, FirstNState, FirstSeenInWindowState, FirstState, LagState, LastNState,
+    LastState, MaxState, MinState, NegativeStreakState, RatioState, SeenState, StreakState,
+    SumState, TimeSinceLastNState, VarianceState,
 };
 use crate::row::{Row, Value};
 use crate::schema::FieldType;
@@ -41,6 +43,25 @@ pub enum AggKind {
     Variance,
     StdDev,
     Ratio,
+    // ── Phase 8: point/ordinal ────────────────────────────────────────────────
+    First,
+    Last,
+    FirstN,
+    LastN,
+    Lag,
+    // ── Phase 8: recency markers ──────────────────────────────────────────────
+    FirstSeen,
+    LastSeen,
+    Age,
+    HasSeen,
+    TimeSince,
+    TimeSinceLastN,
+    // ── Phase 8: streaks ──────────────────────────────────────────────────────
+    Streak,
+    MaxStreak,
+    NegativeStreak,
+    // ── Phase 8: windowed recency ─────────────────────────────────────────────
+    FirstSeenInWindow,
 }
 
 // ─── AggOpDescriptor ─────────────────────────────────────────────────────────
@@ -60,6 +81,9 @@ pub struct AggOpDescriptor {
     /// `agg_where::evaluate_where_predicate` at apply time.
     /// None = unconditional update (backwards-compatible with Plan 05-01).
     pub where_expr: Option<std::sync::Arc<crate::expr::Expr>>,
+    /// Phase 8 — bounded-buffer size parameter for `first_n`, `last_n`, `lag`,
+    /// `time_since_last_n`. `None` for ops that don't take an `n` param.
+    pub n: Option<u32>,
 }
 
 // ─── AggTypeError ────────────────────────────────────────────────────────────
@@ -111,6 +135,40 @@ pub enum AggOp {
     Ratio(RatioState),
     /// AGG-CORE-09: any op wrapped in 64-bucket event-time tumbling
     Windowed(Box<WindowedOp>),
+    // ── Phase 8: point/ordinal ────────────────────────────────────────────────
+    /// AGG-POINT-01
+    First(FirstState),
+    /// AGG-POINT-02
+    Last(LastState),
+    /// AGG-POINT-03
+    FirstN(FirstNState),
+    /// AGG-POINT-04
+    LastN(LastNState),
+    /// AGG-POINT-05
+    Lag(LagState),
+    // ── Phase 8: recency markers ──────────────────────────────────────────────
+    /// AGG-RECENCY-first_seen
+    FirstSeen(SeenState),
+    /// AGG-RECENCY-last_seen
+    LastSeen(SeenState),
+    /// AGG-RECENCY-age
+    Age(SeenState),
+    /// AGG-RECENCY-has_seen
+    HasSeen(SeenState),
+    /// AGG-RECENCY-time_since
+    TimeSince(SeenState),
+    /// AGG-RECENCY-time_since_last_n
+    TimeSinceLastN(TimeSinceLastNState),
+    // ── Phase 8: streak ───────────────────────────────────────────────────────
+    /// AGG-RECENCY-streak (current consecutive count)
+    Streak(StreakState),
+    /// AGG-RECENCY-max_streak (high-watermark of streak)
+    MaxStreak(StreakState),
+    /// AGG-RECENCY-negative_streak
+    NegativeStreak(NegativeStreakState),
+    // ── Phase 8: windowed recency (lifetime-state) ────────────────────────────
+    /// AGG-RECENCY-first_seen_in_window
+    FirstSeenInWindow(FirstSeenInWindowState),
 }
 
 impl AggOp {
@@ -119,8 +177,22 @@ impl AggOp {
     /// If `desc.window_ms.is_some()`, wraps the inner op in `WindowedOp`.
     /// Otherwise returns the lifetime (windowless) variant.
     pub fn new(desc: &AggOpDescriptor) -> Self {
+        // Phase 8 ops do NOT support generic `WindowedOp` ring-buffer wrapping
+        // in v0 — they all use lifetime state. `FirstSeenInWindow` carries its
+        // own window_ms parameter directly. Compile-time validation in
+        // `agg_compile` rejects `window=` for the rest.
         if let Some(window_ms) = desc.window_ms {
-            return AggOp::Windowed(Box::new(WindowedOp::new(desc.kind, window_ms)));
+            // FirstSeenInWindow uses window_ms as a lifetime parameter, NOT a
+            // tumbling-bucket window — handle it before falling into Windowed.
+            if matches!(desc.kind, AggKind::FirstSeenInWindow) {
+                return AggOp::FirstSeenInWindow(FirstSeenInWindowState::new(window_ms));
+            }
+            // For Phase 5 core ops, wrap in WindowedOp.
+            if is_phase5_core_kind(desc.kind) {
+                return AggOp::Windowed(Box::new(WindowedOp::new(desc.kind, window_ms)));
+            }
+            // Phase 8 ops with a window= silently fall through to lifetime
+            // construction (compile-time validation should have rejected this).
         }
         match desc.kind {
             AggKind::Count => AggOp::Count(CountState::default()),
@@ -131,6 +203,29 @@ impl AggOp {
             AggKind::Variance => AggOp::Variance(VarianceState::default()),
             AggKind::StdDev => AggOp::StdDev(VarianceState::default()),
             AggKind::Ratio => AggOp::Ratio(RatioState::default()),
+            // Phase 8 — point/ordinal
+            AggKind::First => AggOp::First(FirstState::default()),
+            AggKind::Last => AggOp::Last(LastState::default()),
+            AggKind::FirstN => AggOp::FirstN(FirstNState::new(desc.n.unwrap_or(1))),
+            AggKind::LastN => AggOp::LastN(LastNState::new(desc.n.unwrap_or(1))),
+            AggKind::Lag => AggOp::Lag(LagState::new(desc.n.unwrap_or(1))),
+            // Phase 8 — recency markers
+            AggKind::FirstSeen => AggOp::FirstSeen(SeenState::default()),
+            AggKind::LastSeen => AggOp::LastSeen(SeenState::default()),
+            AggKind::Age => AggOp::Age(SeenState::default()),
+            AggKind::HasSeen => AggOp::HasSeen(SeenState::default()),
+            AggKind::TimeSince => AggOp::TimeSince(SeenState::default()),
+            AggKind::TimeSinceLastN => {
+                AggOp::TimeSinceLastN(TimeSinceLastNState::new(desc.n.unwrap_or(1)))
+            }
+            // Phase 8 — streak
+            AggKind::Streak => AggOp::Streak(StreakState::default()),
+            AggKind::MaxStreak => AggOp::MaxStreak(StreakState::default()),
+            AggKind::NegativeStreak => AggOp::NegativeStreak(NegativeStreakState::default()),
+            // Phase 8 — windowed recency
+            AggKind::FirstSeenInWindow => {
+                AggOp::FirstSeenInWindow(FirstSeenInWindowState::new(desc.window_ms.unwrap_or(0)))
+            }
         }
     }
 
@@ -156,6 +251,26 @@ impl AggOp {
             AggOp::StdDev(s) => s.update(row, event_time_ms, field, where_matched),
             AggOp::Ratio(s) => s.update(row, event_time_ms, field, where_matched),
             AggOp::Windowed(w) => w.update(row, event_time_ms, field, where_matched),
+            // Phase 8 — point/ordinal
+            AggOp::First(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::Last(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::FirstN(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::LastN(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::Lag(s) => s.update(row, event_time_ms, field, where_matched),
+            // Phase 8 — recency markers
+            AggOp::FirstSeen(s)
+            | AggOp::LastSeen(s)
+            | AggOp::Age(s)
+            | AggOp::HasSeen(s)
+            | AggOp::TimeSince(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::TimeSinceLastN(s) => s.update(row, event_time_ms, field, where_matched),
+            // Phase 8 — streak
+            AggOp::Streak(s) | AggOp::MaxStreak(s) => {
+                s.update(row, event_time_ms, field, where_matched)
+            }
+            AggOp::NegativeStreak(s) => s.update(row, event_time_ms, field, where_matched),
+            // Phase 8 — windowed recency
+            AggOp::FirstSeenInWindow(s) => s.update(row, event_time_ms, field, where_matched),
         }
     }
 
@@ -210,8 +325,44 @@ impl AggOp {
             AggOp::StdDev(s) => s.query_stddev(),
             AggOp::Ratio(s) => s.query(),
             AggOp::Windowed(w) => w.query(query_time_ms),
+            // Phase 8 — point/ordinal
+            AggOp::First(s) => s.query(),
+            AggOp::Last(s) => s.query(),
+            AggOp::FirstN(s) => s.query(),
+            AggOp::LastN(s) => s.query(),
+            AggOp::Lag(s) => s.query(),
+            // Phase 8 — recency markers (each variant projects a different aspect of SeenState)
+            AggOp::FirstSeen(s) => s.query_first_seen(),
+            AggOp::LastSeen(s) => s.query_last_seen(),
+            AggOp::Age(s) => s.query_age(query_time_ms),
+            AggOp::HasSeen(s) => s.query_has_seen(),
+            AggOp::TimeSince(s) => s.query_time_since(query_time_ms),
+            AggOp::TimeSinceLastN(s) => s.query(query_time_ms),
+            // Phase 8 — streak (Streak returns current; MaxStreak returns max-seen)
+            AggOp::Streak(s) => s.query_current(),
+            AggOp::MaxStreak(s) => s.query_max(),
+            AggOp::NegativeStreak(s) => s.query(),
+            // Phase 8 — windowed recency
+            AggOp::FirstSeenInWindow(s) => s.query(query_time_ms),
         }
     }
+}
+
+/// True iff `kind` is one of the Phase 5 core ops that `WindowedOp` can wrap.
+/// Phase 8 ops are lifetime-only (D-02 in 08-CONTEXT) and rejected by the
+/// register-time validator if `window=` is supplied.
+pub(crate) fn is_phase5_core_kind(kind: AggKind) -> bool {
+    matches!(
+        kind,
+        AggKind::Count
+            | AggKind::Sum
+            | AggKind::Avg
+            | AggKind::Min
+            | AggKind::Max
+            | AggKind::Variance
+            | AggKind::StdDev
+            | AggKind::Ratio
+    )
 }
 
 // ─── output_type_for ─────────────────────────────────────────────────────────
@@ -234,7 +385,7 @@ pub fn output_type_for(
         AggKind::Sum | AggKind::Avg | AggKind::Variance | AggKind::StdDev | AggKind::Ratio => {
             Ok(FieldType::F64)
         }
-        AggKind::Min | AggKind::Max => {
+        AggKind::Min | AggKind::Max | AggKind::First | AggKind::Last | AggKind::Lag => {
             let field = desc
                 .field
                 .as_deref()
@@ -247,6 +398,26 @@ pub fn output_type_for(
                     field: field.to_string(),
                 })
         }
+        // Phase 8 — point ops returning JSON-array string (D-07)
+        AggKind::FirstN | AggKind::LastN => {
+            // Validate the field exists for register-time error parity
+            let field = desc
+                .field
+                .as_deref()
+                .ok_or(AggTypeError::FieldRequired { kind: desc.kind })?;
+            if !upstream.fields.contains_key(field) {
+                return Err(AggTypeError::FieldMissing {
+                    field: field.to_string(),
+                });
+            }
+            Ok(FieldType::Str)
+        }
+        // Phase 8 — recency markers
+        AggKind::FirstSeen | AggKind::LastSeen => Ok(FieldType::Datetime),
+        AggKind::Age | AggKind::TimeSince | AggKind::TimeSinceLastN => Ok(FieldType::I64),
+        AggKind::HasSeen | AggKind::FirstSeenInWindow => Ok(FieldType::Bool),
+        // Phase 8 — streak family
+        AggKind::Streak | AggKind::MaxStreak | AggKind::NegativeStreak => Ok(FieldType::I64),
     }
 }
 
@@ -264,6 +435,7 @@ mod tests {
             field: None,
             window_ms: None,
             where_expr: None,
+            n: None,
         }
     }
 
@@ -273,6 +445,7 @@ mod tests {
             field: Some(field.to_string()),
             window_ms: None,
             where_expr: None,
+            n: None,
         }
     }
 
@@ -282,6 +455,7 @@ mod tests {
             field: None,
             window_ms: Some(window_ms),
             where_expr: None,
+            n: None,
         }
     }
 
