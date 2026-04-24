@@ -10,14 +10,17 @@
   <link rel="icon" href="/assets/mascot-mark-geometric.png">
   <style>
     .ch1-two { display: grid; grid-template-columns: 1fr auto 1fr; gap: 14px; align-items: stretch; }
-    .ch1-tables { display: grid; grid-template-columns: 1fr 1fr 1.25fr; gap: 14px; }
     .ch1-compose { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 10px; align-items: end; }
     .ch1-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .ch1-dash { display: grid; grid-template-columns: 260px 1fr; gap: 18px; align-items: start; }
+    .ch1-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
+    .ch1-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
     @media (max-width: 900px) {
       .ch1-two { grid-template-columns: 1fr !important; }
       .ch1-two > div:nth-child(2) { display: none !important; }
-      .ch1-tables { grid-template-columns: 1fr !important; }
       .ch1-compose { grid-template-columns: 1fr !important; }
+      .ch1-dash { grid-template-columns: 1fr !important; }
+      .ch1-stats { grid-template-columns: 1fr 1fr !important; }
     }
     .pill {
       display: inline-flex; align-items: center; gap: 6px;
@@ -39,6 +42,151 @@
     .ch1-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
     .ch1-label { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em;
                  color: var(--fg3); text-transform: lowercase; margin-bottom: 4px; display: block; }
+
+    /* Event ticker — thin scrolling log of last events. */
+    .evt-ticker {
+      background: var(--beava-paper);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px 14px 6px;
+      max-height: 420px; overflow: hidden;
+      box-shadow: var(--shadow-xs);
+    }
+    .evt-ticker-hd {
+      font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em;
+      color: var(--fg3); text-transform: lowercase; margin-bottom: 10px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .evt-row {
+      font-family: var(--font-mono); font-size: 12px;
+      padding: 8px 10px; margin-bottom: 6px;
+      background: #fff; border: 1px solid var(--border-inset);
+      border-radius: 8px; line-height: 1.35;
+      animation: evt-in 500ms cubic-bezier(0.22,1,0.36,1);
+    }
+    .evt-row .t   { color: var(--fg3); font-size: 10px; }
+    .evt-row .u   { color: var(--accent); font-weight: 600; }
+    .evt-row .p   { color: var(--fg1); word-break: break-all; }
+    .evt-empty    { font-family: var(--font-sans); font-size: 12px; color: var(--fg3);
+                    font-style: italic; padding: 20px 4px; text-align: center; }
+    @keyframes evt-in {
+      0%   { transform: translateY(-6px); opacity: 0; background: var(--beava-orange-wash); }
+      100% { transform: translateY(0);    opacity: 1; background: #fff; }
+    }
+
+    /* Stat tile — wide strip above user cards. */
+    .stat-tile {
+      background: #fff; border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 16px;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .stat-tile .lbl {
+      font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em;
+      color: var(--fg3); text-transform: lowercase;
+    }
+    .stat-tile .val {
+      font-family: var(--font-serif); font-weight: 600; font-size: 28px;
+      color: var(--fg1); letter-spacing: -0.01em; line-height: 1;
+    }
+
+    /* User card — the analytics "row", as a card. */
+    .user-card {
+      background: #fff; border: 1px solid var(--border);
+      border-radius: 14px; padding: 16px 16px 14px;
+      display: flex; flex-direction: column; gap: 10px;
+      transition: box-shadow 200ms, transform 200ms;
+      position: relative; overflow: hidden;
+    }
+    .user-card.flash::before {
+      content: ''; position: absolute; inset: 0;
+      background: var(--beava-orange-wash); opacity: 0.65;
+      animation: card-flash 900ms cubic-bezier(0.22,1,0.36,1) forwards;
+      pointer-events: none;
+    }
+    @keyframes card-flash { 0% { opacity: 0.65; } 100% { opacity: 0; } }
+    .user-card-hd { display: flex; align-items: center; gap: 10px; }
+    .user-avatar {
+      width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-family: var(--font-mono); font-weight: 700; font-size: 11px;
+      color: #fff; letter-spacing: 0.02em;
+    }
+    .user-id {
+      font-family: var(--font-mono); font-size: 13px; font-weight: 600;
+      color: var(--fg1); letter-spacing: 0.01em;
+    }
+    .user-meta {
+      font-family: var(--font-mono); font-size: 10.5px;
+      color: var(--fg3); letter-spacing: 0.02em;
+    }
+    .user-big {
+      display: flex; align-items: baseline; gap: 8px;
+    }
+    .user-big .num {
+      font-family: var(--font-serif); font-weight: 600; font-size: 36px;
+      color: var(--fg1); letter-spacing: -0.02em; line-height: 1;
+    }
+    .user-big .sub {
+      font-family: var(--font-mono); font-size: 10.5px; color: var(--fg3);
+      letter-spacing: 0.03em; text-transform: lowercase;
+    }
+    .bar {
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .bar-hd {
+      display: flex; justify-content: space-between; align-items: baseline;
+      font-family: var(--font-mono); font-size: 10.5px; color: var(--fg3);
+      letter-spacing: 0.03em; text-transform: lowercase;
+    }
+    .bar-hd .bar-val {
+      font-family: var(--font-mono); font-size: 12px; color: var(--fg1);
+      font-weight: 700; text-transform: none; letter-spacing: 0;
+    }
+    .bar-track {
+      height: 6px; background: var(--bg-inset); border-radius: 999px; overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%; background: var(--accent); border-radius: 999px;
+      transition: width 500ms cubic-bezier(0.22,1,0.36,1);
+    }
+    .cat-pills { display: flex; flex-wrap: wrap; gap: 5px; }
+    .cat-pill {
+      font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
+      padding: 3px 8px; border-radius: 999px;
+      background: var(--beava-orange-wash); color: var(--accent);
+      border: 1px solid #f1d8c2; letter-spacing: 0.01em;
+    }
+    .cat-count {
+      font-family: var(--font-mono); font-size: 11px; color: var(--fg3);
+      margin-left: 2px;
+    }
+    .spark {
+      display: flex; align-items: flex-end; gap: 2px;
+      height: 28px; margin-top: 2px;
+    }
+    .spark-bar {
+      flex: 1; background: var(--accent); opacity: 0.28;
+      border-radius: 2px 2px 0 0; min-height: 2px;
+      transition: height 400ms cubic-bezier(0.22,1,0.36,1), opacity 300ms;
+    }
+    .spark-bar.hot { opacity: 0.9; }
+
+    .empty-state {
+      grid-column: 1 / -1;
+      padding: 48px 24px; text-align: center;
+      font-family: var(--font-sans); font-size: 14px; color: var(--fg3);
+      background: var(--beava-paper); border: 1px dashed var(--border);
+      border-radius: 14px; font-style: italic;
+    }
+
+    /* Dashboard-card code well */
+    .pipeline-state-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-family: var(--font-mono); font-size: 11px;
+      padding: 6px 12px; border-radius: 999px;
+      background: var(--bg-alt); color: var(--fg3);
+      border: 1px solid var(--border);
+    }
   </style>
 </head>
 <body class="beava">
@@ -53,14 +201,20 @@
   <script type="text/babel">
     // ==================================================================
     // /guide/chapter-1/ — the pedagogy chapter. Two halves:
-    //   Part 1: meet beava (one para + pandas↔beava + 3-line toy pipeline)
-    //   Part 2: build the analytics dashboard (register → send → watch)
+    //   Part 1: meet beava (one para + pandas↔beava)
+    //   Part 2: build an analytics dashboard, rendered as a real UI —
+    //           event ticker on the left, user cards on the right with
+    //           big numbers, 24h progress bars, category pills, sparklines.
     //
-    // All simulated client-side. No backend. Same visual language as home.
+    // All simulated client-side. The pipeline code is displayed as-is;
+    // the event-producing UI and the dashboard UI are what a real beava
+    // operator would build on top of the /batch/ query endpoint.
     // ==================================================================
 
-    const USERS = ['u_7f3c', 'u_9a1b', 'u_4e22', 'u_5d0c', 'u_c18b', 'u_a33e', 'u_b7d1', 'u_2f0a'];
-    const PATHS = ['/home', '/product/belt-sander', '/product/router-bit', '/category/tools', '/category/paint', '/search?q=clamp', '/cart', '/checkout'];
+    const USERS   = ['u_7f3c', 'u_9a1b', 'u_4e22', 'u_5d0c', 'u_c18b', 'u_a33e', 'u_b7d1', 'u_2f0a'];
+    const PATHS   = ['/home', '/product/belt-sander', '/product/router-bit', '/category/tools', '/category/paint', '/search?q=clamp', '/cart', '/checkout'];
+    const SPARK_BUCKETS = 12;
+
     const CATEGORY_OF = (path) => {
       const m = path.match(/^\/(product|category|search)\/?([^/?]+)?/);
       if (!m) return 'home';
@@ -68,11 +222,22 @@
       return m[2] || m[1];
     };
 
+    // 8 soft, distinguishable hues for user avatars — seeded by user_id.
+    const AVATAR_HUES = [14, 35, 140, 200, 255, 300, 340, 85];
+    const hueFor = (uid) => {
+      let h = 0; for (const c of uid) h = (h * 31 + c.charCodeAt(0)) | 0;
+      return AVATAR_HUES[Math.abs(h) % AVATAR_HUES.length];
+    };
+    const initialsFor = (uid) => {
+      const s = uid.replace(/^u_/, '');
+      return s.slice(0, 2).toUpperCase();
+    };
+
     // ---------------- Hero ---------------- //
 
     const Hero = () => (
       <section style={{ padding: '64px 28px 24px' }}>
-        <div style={{ maxWidth: 880, margin: '0 auto' }}>
+        <div style={{ maxWidth: 1040, margin: '0 auto' }}>
           <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--fg3)', marginBottom: 14 }}>
             <a href="/guide/" style={{ color: 'var(--fg3)', textDecoration: 'none' }}>Guide</a>
             <span style={{ margin: '0 6px' }}>/</span>
@@ -85,7 +250,7 @@
                 How to build a per-customer analytics dashboard
               </h1>
               <p style={{ fontFamily: 'var(--font-sans)', fontSize: 17, lineHeight: 1.6, color: 'var(--fg2)', margin: 0, textWrap: 'pretty' }}>
-                Ten-minute interactive build. Meet beava, write your first pipeline, extend it into a per-customer dashboard with live views, distinct categories, and last-seen. Zero installs. Everything runs in your browser, same shape as the real server.
+                Ten-minute interactive build. Meet beava, write your first pipeline, then watch a real analytics dashboard update live as you push events. Zero installs. Everything runs in your browser, same shape as the real server.
               </p>
             </div>
             <div style={{ display: 'flex', justifyContent: 'center' }}>
@@ -100,19 +265,19 @@
 
     const MeetBeava = () => (
       <section style={{ padding: '48px 28px 16px' }}>
-        <div style={{ maxWidth: 880, margin: '0 auto' }}>
+        <div style={{ maxWidth: 1040, margin: '0 auto' }}>
           <Eyebrow style={{ marginBottom: 12 }}>Part 1 · Meet beava</Eyebrow>
           <h2 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(26px, 3.4vw, 36px)', lineHeight: 1.15, letterSpacing: '-0.01em', color: 'var(--fg1)', margin: '0 0 16px' }}>
             Same shape as pandas, live forever.
           </h2>
           <p style={{ fontFamily: 'var(--font-sans)', fontSize: 17, lineHeight: 1.65, color: 'var(--fg1)', margin: '0 0 14px', textWrap: 'pretty' }}>
-            beava is one binary that ingests events and keeps per-entity aggregates up to date in memory. You describe the pipeline in Python, it serves features over HTTP. If you know <code style={{ fontFamily: 'var(--font-mono)', fontSize: 14, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>df.groupby(...).agg(...)</code>, you already know how to shape a beava pipeline.
+            beava is one binary that ingests events and keeps per-entity aggregates up to date in memory. You describe the pipeline in Python, it serves features over HTTP. If you know <code style={{ fontFamily: 'var(--font-mono)', fontSize: 14, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>df.groupby(...).agg(...)</code>, you already know the shape.
           </p>
           <p style={{ fontFamily: 'var(--font-sans)', fontSize: 17, lineHeight: 1.65, color: 'var(--fg2)', margin: '0 0 32px', textWrap: 'pretty' }}>
             A <strong style={{ color: 'var(--fg1)' }}>stream</strong> is a dataframe that never stops appending. A <strong style={{ color: 'var(--fg1)' }}>table</strong> is a <code style={{ fontFamily: 'var(--font-mono)', fontSize: 14, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>groupby(key).agg(...)</code> over that stream, maintained incrementally on every event.
           </p>
 
-          <div style={{ marginBottom: 32 }}>
+          <div style={{ marginBottom: 32, maxWidth: 880, margin: '0 auto 32px' }}>
             <div className="ch1-two">
               <div>
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg3)', marginBottom: 6, letterSpacing: '0.03em', textTransform: 'lowercase' }}>pandas (batch)</div>
@@ -144,7 +309,7 @@
       </section>
     );
 
-    // ---------------- Part 2: First pipeline (interactive) ---------------- //
+    // ---------------- Tokenized code blocks ---------------- //
 
     const pipelineBasic = [
       { t: 'cmt', v: '# your first pipeline — 3 lines of logic' },
@@ -169,10 +334,10 @@
       { t: 'fn',  v: '@bv.table' }, { t: 't', v: '(key=' }, { t: 'str', v: '"user_id"' }, { t: 't', v: ')\n' },
       { t: 'kw',  v: 'def' }, { t: 't', v: ' ' }, { t: 'fn', v: 'Dashboard' }, { t: 't', v: '(e: PageView):\n' },
       { t: 't',   v: '    ' }, { t: 'kw', v: 'return' }, { t: 't', v: ' e.' }, { t: 'fn', v: 'agg' }, { t: 't', v: '(\n' },
-      { t: 't',   v: '        views_total          = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(),\n' },
-      { t: 't',   v: '        views_24h            = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(window=' }, { t: 'str', v: '"24h"' }, { t: 't', v: '),\n' },
-      { t: 't',   v: '        distinct_cats_7d     = bv.' }, { t: 'fn', v: 'distinct' }, { t: 't', v: '(e.category, window=' }, { t: 'str', v: '"7d"' }, { t: 't', v: '),\n' },
-      { t: 't',   v: '        last_seen            = bv.' }, { t: 'fn', v: 'latest' }, { t: 't', v: '(e.ts),\n' },
+      { t: 't',   v: '        views_total        = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(),\n' },
+      { t: 't',   v: '        views_24h          = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(window=' }, { t: 'str', v: '"24h"' }, { t: 't', v: '),\n' },
+      { t: 't',   v: '        distinct_cats_7d   = bv.' }, { t: 'fn', v: 'distinct' }, { t: 't', v: '(e.category, window=' }, { t: 'str', v: '"7d"' }, { t: 't', v: '),\n' },
+      { t: 't',   v: '        last_seen          = bv.' }, { t: 'fn', v: 'latest' }, { t: 't', v: '(e.ts),\n' },
       { t: 't',   v: '    )' },
     ];
 
@@ -184,16 +349,17 @@
       </pre>
     );
 
-    const RegisterButton = ({ label, status, onRegister }) => {
+    const RegisterButton = ({ label, status, onRegister, disabled }) => {
       const pill = status === 'idle'
         ? <span className="pill idle"><span className="dot"/>not registered</span>
         : status === 'registering'
         ? <span className="pill reg"><span className="dot"/>registering…</span>
         : <span className="pill done"><Icon name="check" size={12} stroke={2.5}/>registered</span>;
+      const canClick = status === 'idle' && !disabled;
       return (
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-          <Button variant="primary" size="md" onClick={onRegister} disabled={status !== 'idle'}
-                  style={{ opacity: status === 'idle' ? 1 : 0.55, cursor: status === 'idle' ? 'pointer' : 'default' }}
+          <Button variant="primary" size="md" onClick={onRegister} disabled={!canClick}
+                  style={{ opacity: canClick ? 1 : 0.55, cursor: canClick ? 'pointer' : 'default' }}
                   icon={status === 'done' ? <Icon name="check" size={14} stroke={2.5}/> : <Icon name="arrow" size={14}/>}>
             {label}
           </Button>
@@ -202,84 +368,188 @@
       );
     };
 
+    // ---------------- UI components for the dashboard ---------------- //
+
+    const StatTile = ({ label, value }) => (
+      <div className="stat-tile">
+        <div className="lbl">{label}</div>
+        <div className="val">{value}</div>
+      </div>
+    );
+
+    const Avatar = ({ uid }) => {
+      const hue = hueFor(uid);
+      return (
+        <div className="user-avatar" style={{ background: `hsl(${hue}, 52%, 48%)` }}>
+          {initialsFor(uid)}
+        </div>
+      );
+    };
+
+    // Spark — renders SPARK_BUCKETS-wide activity. `buckets` is an array of
+    // counts. The most recent bucket gets the "hot" class (full opacity).
+    const Sparkline = ({ buckets }) => {
+      const max = Math.max(1, ...buckets);
+      return (
+        <div className="spark">
+          {buckets.map((b, i) => {
+            const pct = Math.round((b / max) * 100);
+            const h = b > 0 ? Math.max(4, pct) : 2;
+            const hot = i === buckets.length - 1 && b > 0;
+            return <div key={i} className={`spark-bar${hot ? ' hot' : ''}`} style={{ height: `${h}%` }}/>;
+          })}
+        </div>
+      );
+    };
+
+    const agoString = (tsMs) => {
+      if (!tsMs) return '—';
+      const d = Math.max(0, Date.now() - tsMs);
+      if (d < 1500)     return 'just now';
+      if (d < 60_000)   return `${Math.floor(d / 1000)}s ago`;
+      if (d < 3_600_000) return `${Math.floor(d / 60_000)}m ago`;
+      return `${Math.floor(d / 3_600_000)}h ago`;
+    };
+
+    const UserCard = ({ uid, row, maxViews24h, nowTick, flash }) => {
+      const pct = maxViews24h > 0 ? Math.min(100, (row.views_24h / maxViews24h) * 100) : 0;
+      const cats = Array.from(row.cats);
+      return (
+        <div className={`user-card${flash ? ' flash' : ''}`}>
+          <div className="user-card-hd">
+            <Avatar uid={uid}/>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 1, flex: 1, minWidth: 0 }}>
+              <div className="user-id">{uid}</div>
+              <div className="user-meta">last seen {agoString(row.lastTsMs)}</div>
+            </div>
+          </div>
+
+          <div className="user-big">
+            <span className="num">{row.views_total}</span>
+            <span className="sub">views_total</span>
+          </div>
+
+          <div className="bar">
+            <div className="bar-hd"><span>views_24h</span><span className="bar-val">{row.views_24h}</span></div>
+            <div className="bar-track"><div className="bar-fill" style={{ width: `${pct}%` }}/></div>
+          </div>
+
+          <div>
+            <div className="bar-hd" style={{ marginBottom: 6 }}>
+              <span>distinct_cats_7d</span>
+              <span className="bar-val">{cats.length}</span>
+            </div>
+            <div className="cat-pills">
+              {cats.slice(0, 6).map(c => <span key={c} className="cat-pill">{c}</span>)}
+              {cats.length > 6 && <span className="cat-count">+{cats.length - 6}</span>}
+            </div>
+          </div>
+
+          <div>
+            <div className="bar-hd" style={{ marginBottom: 4 }}>
+              <span>activity (recent)</span>
+              <span className="bar-val">{row.buckets.reduce((a,b) => a+b, 0)}</span>
+            </div>
+            <Sparkline buckets={row.buckets}/>
+          </div>
+        </div>
+      );
+    };
+
     // ---------------- Interactive tutorial (the core state machine) ---------------- //
 
     const Tutorial = () => {
-      // stage: 'basic' (PageView + UserStats) or 'dashboard' (expanded)
-      const [stage, setStage] = React.useState('basic');
-      const [basicStatus, setBasicStatus] = React.useState('idle');     // idle | registering | done
-      const [dashStatus, setDashStatus]   = React.useState('idle');
+      const [stage, setStage]         = React.useState('basic');      // 'basic' | 'dashboard'
+      const [basicStatus, setBasic]   = React.useState('idle');
+      const [dashStatus, setDash]     = React.useState('idle');
 
-      // live tables
-      const [events, setEvents]       = React.useState([]); // {id, user_id, path, category, ts}
-      const [userStats, setUserStats] = React.useState({}); // user_id -> { views_total, lastTs }
-      const [dashboard, setDashboard] = React.useState({}); // user_id -> full row
+      const [events, setEvents]       = React.useState([]);           // last N
+      const [rows, setRows]           = React.useState({});           // uid -> row
+      const [flashUid, setFlashUid]   = React.useState(null);
+      const [nowTick, setNowTick]     = React.useState(Date.now());
 
-      // compose form
-      const [formUser, setFormUser] = React.useState(USERS[0]);
-      const [formPath, setFormPath] = React.useState(PATHS[1]);
+      const [formUser, setFormUser]   = React.useState(USERS[0]);
+      const [formPath, setFormPath]   = React.useState(PATHS[1]);
 
-      const idRef     = React.useRef(1);
+      const idRef         = React.useRef(1);
       const firstBurstRef = React.useRef(true);
 
-      const now = () => {
-        const d = new Date();
-        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-      };
+      // tick to keep "last seen Xs ago" fresh
+      React.useEffect(() => {
+        const id = setInterval(() => setNowTick(Date.now()), 1000);
+        return () => clearInterval(id);
+      }, []);
 
       const register = (which) => {
         if (which === 'basic') {
-          setBasicStatus('registering');
-          setTimeout(() => setBasicStatus('done'), 900);
+          setBasic('registering');
+          setTimeout(() => setBasic('done'), 900);
         } else {
-          setDashStatus('registering');
+          setDash('registering');
           setTimeout(() => {
-            setDashStatus('done');
+            setDash('done');
             setStage('dashboard');
           }, 900);
         }
       };
 
       const applyEvent = (ev) => {
-        setEvents(prev => [ev, ...prev].slice(0, 4));
-        setUserStats(prev => {
-          const cur = prev[ev.user_id] || { views_total: 0, lastTs: '' };
+        // push to event log
+        setEvents(prev => [ev, ...prev].slice(0, 8));
+
+        // update rows
+        setRows(prev => {
+          const cur = prev[ev.user_id] || {
+            views_total: 0, views_24h: 0,
+            cats: new Set(), lastTsMs: 0,
+            buckets: Array(SPARK_BUCKETS).fill(0),
+          };
+          const cats = new Set(cur.cats); cats.add(ev.category);
+          const buckets = cur.buckets.slice();
+          buckets[buckets.length - 1] = buckets[buckets.length - 1] + 1;
           return {
             ...prev,
             [ev.user_id]: {
               views_total: cur.views_total + 1,
-              lastTs: ev.ts,
+              views_24h:   cur.views_24h + 1,
+              cats,
+              lastTsMs:    ev.tsMs,
+              buckets,
             },
           };
         });
-        if (stage === 'dashboard') {
-          setDashboard(prev => {
-            const cur = prev[ev.user_id] || { views_total: 0, views_24h: 0, cats: new Set(), last_seen: '' };
-            const nextCats = new Set(cur.cats); nextCats.add(ev.category);
-            return {
-              ...prev,
-              [ev.user_id]: {
-                views_total: cur.views_total + 1,
-                views_24h:   cur.views_24h + 1,
-                cats:        nextCats,
-                last_seen:   ev.ts,
-              },
-            };
-          });
-        }
+
+        // flash the card
+        setFlashUid(ev.user_id);
+        setTimeout(() => setFlashUid(u => u === ev.user_id ? null : u), 900);
       };
+
+      // Every 3s, shift spark buckets left so the "hot" slot is always rightmost.
+      React.useEffect(() => {
+        const id = setInterval(() => {
+          setRows(prev => {
+            const next = {};
+            for (const [uid, r] of Object.entries(prev)) {
+              const b = r.buckets.slice(1); b.push(0);
+              next[uid] = { ...r, buckets: b };
+            }
+            return next;
+          });
+        }, 3000);
+        return () => clearInterval(id);
+      }, []);
 
       const makeEvent = (user, path) => ({
         id: idRef.current++,
         user_id: user,
         path,
         category: CATEGORY_OF(path),
-        ts: now(),
+        tsMs: Date.now(),
       });
 
       const sendRandom = () => {
         if (basicStatus !== 'done') return;
-        const burst = firstBurstRef.current ? 3 : 1;
+        const burst = firstBurstRef.current ? 5 : 1;
         firstBurstRef.current = false;
         let i = 0;
         const fire = () => {
@@ -287,7 +557,7 @@
           const p = PATHS[Math.floor(Math.random() * PATHS.length)];
           applyEvent(makeEvent(u, p));
           i++;
-          if (i < burst) setTimeout(fire, 280);
+          if (i < burst) setTimeout(fire, 240);
         };
         fire();
       };
@@ -298,41 +568,31 @@
         applyEvent(makeEvent(formUser.trim(), formPath.trim()));
       };
 
-      // ---- Render rows for DfPanels ----
+      // Derived: sorted rows for the dashboard grid, aggregate stats strip.
+      const rowsList = React.useMemo(() => (
+        Object.entries(rows)
+          .sort((a, b) => b[1].lastTsMs - a[1].lastTsMs)
+      ), [rows]);
 
-      const eventRows = events.map(e => ({
-        key: e.id,
-        cells: stage === 'dashboard'
-          ? [e.user_id, e.path, e.category, e.ts]
-          : [e.user_id, e.path, e.ts],
-      }));
+      const maxViews24h = React.useMemo(() => (
+        rowsList.reduce((m, [, r]) => Math.max(m, r.views_24h), 0)
+      ), [rowsList]);
 
-      const userStatsRows = Object.entries(userStats)
-        .sort((a, b) => (a[1].lastTs < b[1].lastTs ? 1 : -1))
-        .slice(0, 4)
-        .map(([uid, s]) => ({
-          key: `${uid}-${s.views_total}`,
-          cells: [uid, s.views_total, s.lastTs || '—'],
-        }));
-
-      const dashboardRows = Object.entries(dashboard)
-        .sort((a, b) => (a[1].last_seen < b[1].last_seen ? 1 : -1))
-        .map(([uid, s]) => ({
-          key: `${uid}-${s.views_total}`,
-          cells: [uid, s.views_total, s.views_24h, s.cats.size, s.last_seen],
-        }));
+      const totalEvents = rowsList.reduce((s, [, r]) => s + r.views_total, 0);
+      const allCats = new Set();
+      for (const [, r] of rowsList) for (const c of r.cats) allCats.add(c);
 
       return (
         <>
-          {/* ----- Part 2: first pipeline ----- */}
+          {/* ----- Part 2: first pipeline + event composer ----- */}
           <section style={{ padding: '48px 28px 16px' }}>
-            <div style={{ maxWidth: 960, margin: '0 auto' }}>
+            <div style={{ maxWidth: 1040, margin: '0 auto' }}>
               <Eyebrow style={{ marginBottom: 12 }}>Part 2 · Your first pipeline</Eyebrow>
               <h2 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(26px, 3.4vw, 36px)', lineHeight: 1.15, letterSpacing: '-0.01em', color: 'var(--fg1)', margin: '0 0 16px' }}>
                 Three lines. One table. Live.
               </h2>
               <p style={{ fontFamily: 'var(--font-sans)', fontSize: 16, lineHeight: 1.65, color: 'var(--fg2)', margin: '0 0 22px', maxWidth: 720, textWrap: 'pretty' }}>
-                Declare a <code style={{ fontFamily: 'var(--font-mono)', fontSize: 13.5, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>PageView</code> event shape, and a <code style={{ fontFamily: 'var(--font-mono)', fontSize: 13.5, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>UserStats</code> table keyed by user. Every event updates exactly one row, atomically. Register the pipeline, then send an event.
+                Declare a <code style={{ fontFamily: 'var(--font-mono)', fontSize: 13.5, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>PageView</code> event shape and a <code style={{ fontFamily: 'var(--font-mono)', fontSize: 13.5, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>UserStats</code> table keyed by user. Every event updates exactly one row, atomically. Register the pipeline, then send an event.
               </p>
 
               <CodeBlock tokens={pipelineBasic}/>
@@ -341,7 +601,7 @@
                 <RegisterButton label="Register this pipeline" status={basicStatus} onRegister={() => register('basic')}/>
               </div>
 
-              <div className="ch1-actions" style={{ marginBottom: 22, opacity: basicStatus === 'done' ? 1 : 0.45, transition: 'opacity 300ms' }}>
+              <div className="ch1-actions" style={{ marginBottom: 16, opacity: basicStatus === 'done' ? 1 : 0.45, transition: 'opacity 300ms' }}>
                 <Button variant="secondary" size="md" onClick={sendRandom} disabled={basicStatus !== 'done'}
                         style={{ cursor: basicStatus === 'done' ? 'pointer' : 'default' }}
                         iconLeft={<Icon name="zap" size={14}/>}>
@@ -368,57 +628,90 @@
                   Send event
                 </Button>
               </div>
-
-              {/* live tables */}
-              <div className="ch1-tables" style={{ marginTop: 18 }}>
-                <DfPanel
-                  title="@bv.stream PageView  (last 4)"
-                  columns={stage === 'dashboard'
-                    ? ['user_id', 'path', 'category', 'ts']
-                    : ['user_id', 'path', 'ts']}
-                  rows={eventRows}
-                  ellipsis={events.length >= 4}
-                />
-                <DfPanel
-                  title="@bv.table UserStats  (key=user_id)"
-                  columns={['user_id', 'views_total', 'last_ts']}
-                  rows={userStatsRows}
-                  ellipsis={Object.keys(userStats).length > 4}
-                />
-                <DfPanel
-                  title={stage === 'dashboard'
-                    ? '@bv.table Dashboard  (key=user_id)'
-                    : '@bv.table Dashboard  (register below to unlock)'}
-                  columns={['user_id', 'views_total', 'views_24h', 'cats_7d', 'last_seen']}
-                  rows={dashboardRows}
-                />
-              </div>
             </div>
           </section>
 
-          {/* ----- Part 3: dashboard ----- */}
-          <section style={{ padding: '56px 28px 32px' }}>
-            <div style={{ maxWidth: 960, margin: '0 auto' }}>
+          {/* ----- Part 3: dashboard pipeline + LIVE UI ----- */}
+          <section style={{ padding: '24px 28px 40px' }}>
+            <div style={{ maxWidth: 1040, margin: '0 auto' }}>
               <Eyebrow style={{ marginBottom: 12 }}>Part 3 · Build the dashboard</Eyebrow>
               <h2 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(26px, 3.4vw, 36px)', lineHeight: 1.15, letterSpacing: '-0.01em', color: 'var(--fg1)', margin: '0 0 16px' }}>
-                Now the real thing: four metrics, windowed and unwindowed.
+                Now the real thing: four metrics, rendered live.
               </h2>
               <p style={{ fontFamily: 'var(--font-sans)', fontSize: 16, lineHeight: 1.65, color: 'var(--fg2)', margin: '0 0 22px', maxWidth: 720, textWrap: 'pretty' }}>
-                Same stream, richer table. Lifetime total views, rolling 24h views, distinct categories over the past 7 days, and the latest timestamp per user. Every push updates every metric atomically. Register to replace your first pipeline.
+                Same stream, richer table. Lifetime total views, rolling 24h views, distinct categories over the past 7 days, and the latest timestamp per user. Every push updates every metric atomically. Register to replace your first pipeline, then watch the dashboard populate below.
               </p>
 
               <CodeBlock tokens={pipelineDashboard}/>
 
-              <div style={{ marginTop: 20, marginBottom: 22 }}>
+              <div style={{ marginTop: 20, marginBottom: 28 }}>
                 <RegisterButton
-                  label={basicStatus !== 'done' ? 'Register the first pipeline above first' : 'Register the dashboard pipeline'}
+                  label={basicStatus !== 'done' ? 'Register the first pipeline first' : 'Register the dashboard pipeline'}
                   status={dashStatus}
+                  disabled={basicStatus !== 'done'}
                   onRegister={() => { if (basicStatus === 'done') register('dashboard'); }}/>
               </div>
 
-              {stage === 'dashboard' && dashboardRows.length >= 3 && (
-                <Callout eyebrow="YOU BUILT THIS" mascot="pose-2" tint="warm">
-                  That Dashboard panel above? That's live beava state. Every event you push — random or crafted — updates all four metrics for exactly one user, in a single atomic step. The real server does the same thing at ~3M events/sec/core.
+              {/* ---------- LIVE DASHBOARD UI ---------- */}
+
+              <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg3)', letterSpacing: '0.04em', textTransform: 'lowercase' }}>
+                  ↓ live from GET /batch/<span style={{ color: 'var(--accent)', fontWeight: 700 }}>
+                    {stage === 'dashboard' ? 'Dashboard' : 'UserStats'}
+                  </span>
+                </div>
+                <div className="pipeline-state-badge">
+                  <span>pipeline:</span>
+                  <span style={{ color: stage === 'dashboard' ? 'var(--beava-success)' : 'var(--fg1)', fontWeight: 700 }}>
+                    {stage === 'dashboard' ? 'Dashboard (4 metrics)' : 'UserStats (views_total only)'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="ch1-stats">
+                <StatTile label="users seen" value={rowsList.length}/>
+                <StatTile label="events ingested" value={totalEvents}/>
+                <StatTile label="distinct categories"
+                          value={stage === 'dashboard' ? allCats.size : '—'}/>
+                <StatTile label="active pipeline"
+                          value={stage === 'dashboard' ? '4 metrics' : '1 metric'}/>
+              </div>
+
+              <div className="ch1-dash">
+                <div className="evt-ticker">
+                  <div className="evt-ticker-hd">
+                    <span>recent events</span>
+                    <span style={{ color: 'var(--accent)' }}>{events.length > 0 ? 'live' : 'idle'}</span>
+                  </div>
+                  {events.length === 0 && (
+                    <div className="evt-empty">
+                      {basicStatus === 'done' ? 'click "Send a random event" →' : 'register the pipeline, then send an event.'}
+                    </div>
+                  )}
+                  {events.map(e => (
+                    <div className="evt-row" key={e.id}>
+                      <div><span className="u">{e.user_id}</span> <span className="p">{e.path}</span></div>
+                      <div className="t">{agoString(e.tsMs)} · category={e.category}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="ch1-cards">
+                  {rowsList.length === 0 && (
+                    <div className="empty-state">
+                      Dashboard is empty. Send an event and watch a card appear for that user, with views, categories, and activity filling in live.
+                    </div>
+                  )}
+                  {rowsList.map(([uid, r]) => (
+                    <UserCard key={uid} uid={uid} row={r} maxViews24h={maxViews24h}
+                              nowTick={nowTick} flash={flashUid === uid}/>
+                  ))}
+                </div>
+              </div>
+
+              {stage === 'dashboard' && rowsList.length >= 3 && (
+                <Callout eyebrow="YOU BUILT THIS" mascot="pose-2" tint="warm" style={{ marginTop: 32 }}>
+                  That grid above? That's live beava state rendered as a real dashboard. Every event you push updates a single user's card, atomically. The real server does the same thing at ~3M events/sec/core, and your UI would call <code style={{ fontFamily: 'var(--font-mono)', fontSize: 14 }}>POST /batch/Dashboard</code> with the user_ids on its screen.
                 </Callout>
               )}
             </div>
@@ -426,7 +719,7 @@
 
           {/* ----- Next steps ----- */}
           <section style={{ padding: '24px 28px 96px' }}>
-            <div style={{ maxWidth: 880, margin: '0 auto' }}>
+            <div style={{ maxWidth: 1040, margin: '0 auto' }}>
               <Eyebrow style={{ marginBottom: 12 }}>Next</Eyebrow>
               <h2 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(22px, 2.8vw, 28px)', lineHeight: 1.2, color: 'var(--fg1)', margin: '0 0 20px' }}>
                 Pick a recipe and build for real.
