@@ -16,7 +16,7 @@
 //! - SDK-AGG-06: window duration string validated server-side
 
 use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
-use crate::agg_op::{AggKind, AggOpDescriptor};
+use crate::agg_op::{AggKind, AggOpDescriptor, SketchParams};
 use crate::register_validate::{ErrorCode, ValidationError};
 use crate::registry::RegistryInner;
 use crate::registry_diff::PayloadNode;
@@ -95,6 +95,8 @@ struct AggParams {
     half_life_invalid: bool,
     /// Phase 9 — true when `sub_window` was present but unparseable.
     sub_window_invalid: bool,
+    /// Plan 10-05: sketch construction params parsed from JSON kwargs.
+    sketch_params: Option<SketchParams>,
 }
 
 fn extract_agg_params(params: &serde_json::Value) -> AggParams {
@@ -138,6 +140,33 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
     // Phase 9 — sigma parsing (numeric).
     let sigma = params.get("sigma").and_then(|v| v.as_f64());
 
+    // Plan 10-05: parse sketch kwargs (q, k, capacity, fpr / target_fpr / expected_n).
+    let percentile_q = params.get("q").and_then(|v| v.as_f64());
+    let top_k_k = params.get("k").and_then(|v| v.as_u64()).map(|n| n as usize);
+    let bloom_capacity = params
+        .get("expected_n")
+        .or_else(|| params.get("capacity"))
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+    let bloom_fpr = params
+        .get("target_fpr")
+        .or_else(|| params.get("fpr"))
+        .and_then(|v| v.as_f64());
+    let sketch_params = if percentile_q.is_some()
+        || top_k_k.is_some()
+        || bloom_capacity.is_some()
+        || bloom_fpr.is_some()
+    {
+        Some(SketchParams {
+            percentile_q,
+            top_k_k,
+            bloom_capacity,
+            bloom_fpr,
+        })
+    } else {
+        None
+    };
+
     AggParams {
         field,
         window,
@@ -148,6 +177,7 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
         sigma,
         half_life_invalid,
         sub_window_invalid,
+        sketch_params,
     }
 }
 
@@ -201,6 +231,12 @@ fn parse_agg_kind(op: &str) -> Option<AggKind> {
         "value_change_count" => Some(AggKind::ValueChangeCount),
         // Phase 9 z-score
         "z_score" => Some(AggKind::ZScore),
+        // Plan 10-05: 5 sketch ops.
+        "count_distinct" => Some(AggKind::CountDistinct),
+        "percentile" => Some(AggKind::Percentile),
+        "top_k" => Some(AggKind::TopK),
+        "bloom_member" => Some(AggKind::BloomMember),
+        "entropy" => Some(AggKind::Entropy),
         _ => None,
     }
 }
@@ -457,6 +493,11 @@ pub fn compile_aggregations_from_nodes(
                         | AggKind::OutlierCount
                         | AggKind::ValueChangeCount
                         | AggKind::ZScore
+                        | AggKind::CountDistinct
+                        | AggKind::Percentile
+                        | AggKind::TopK
+                        | AggKind::BloomMember
+                        | AggKind::Entropy
                 ) || agg_kind_requires_field(kind);
                 if needs_field {
                     match &params.field {
@@ -562,6 +603,80 @@ pub fn compile_aggregations_from_nodes(
                     continue;
                 }
 
+                // Plan 10-05: sketch-op-specific param validation.
+                let mut sketch_validation_failed = false;
+                match kind {
+                    AggKind::BloomMember => {
+                        if params.window.is_some() {
+                            errors.push(ValidationError {
+                                code: ErrorCode::WindowNotSupported,
+                                path: format!(
+                                    "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.window"
+                                ),
+                                reason: "bloom_member is windowless-only — `window` kwarg not supported".to_string(),
+                            });
+                            sketch_validation_failed = true;
+                        }
+                        if let Some(sp) = &params.sketch_params {
+                            if let Some(fpr) = sp.bloom_fpr {
+                                if !(fpr > 0.0 && fpr < 1.0) {
+                                    errors.push(ValidationError {
+                                        code: ErrorCode::InvalidBloomFpr,
+                                        path: format!(
+                                            "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.target_fpr"
+                                        ),
+                                        reason: format!(
+                                            "bloom_member fpr must be in (0.0, 1.0); got {fpr}"
+                                        ),
+                                    });
+                                    sketch_validation_failed = true;
+                                }
+                            }
+                        }
+                    }
+                    AggKind::Percentile => {
+                        if let Some(sp) = &params.sketch_params {
+                            if let Some(q) = sp.percentile_q {
+                                if !(q > 0.0 && q < 1.0) {
+                                    errors.push(ValidationError {
+                                        code: ErrorCode::InvalidPercentileQ,
+                                        path: format!(
+                                            "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.q"
+                                        ),
+                                        reason: format!(
+                                            "percentile q must be in (0.0, 1.0); got {q}"
+                                        ),
+                                    });
+                                    sketch_validation_failed = true;
+                                }
+                            }
+                        }
+                    }
+                    AggKind::TopK => {
+                        if let Some(sp) = &params.sketch_params {
+                            if let Some(k) = sp.top_k_k {
+                                if !(0 < k && k <= 1024) {
+                                    errors.push(ValidationError {
+                                        code: ErrorCode::InvalidTopKK,
+                                        path: format!(
+                                            "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.k"
+                                        ),
+                                        reason: format!(
+                                            "top_k k must be in (0, 1024]; got {k}"
+                                        ),
+                                    });
+                                    sketch_validation_failed = true;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                if sketch_validation_failed {
+                    deriv_errors = true;
+                    continue;
+                }
+
                 // Window parsing.
                 let window_ms = match &params.window {
                     None => None, // No window specified → lifetime
@@ -640,6 +755,7 @@ pub fn compile_aggregations_from_nodes(
                         half_life_ms: params.half_life_ms,
                         sub_window_ms: params.sub_window_ms,
                         sigma: params.sigma,
+                        sketch_params: params.sketch_params.clone(),
                     },
                 });
             }
@@ -1153,6 +1269,146 @@ mod tests {
                 .iter()
                 .any(|e| e.code == ErrorCode::AggregationGroupKeyCollidesWithFeature),
             "expected AggregationGroupKeyCollidesWithFeature, got: {errors:#?}"
+        );
+    }
+
+    // Plan 10-05: sketch op-name + sketch-param validation tests.
+    fn sketch_event_node() -> PayloadNode {
+        event_node_with_fields(
+            "Txn",
+            &[
+                ("user_id", FieldType::Str),
+                ("merchant_id", FieldType::Str),
+                ("amount", FieldType::F64),
+                ("device_id", FieldType::Str),
+                ("category", FieldType::Str),
+            ],
+        )
+    }
+
+    #[test]
+    fn rule11_count_distinct_op_name_recognized() {
+        let nodes = vec![
+            sketch_event_node(),
+            group_by_derivation(
+                "Agg",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({"d": {"op": "count_distinct", "params": {"field": "merchant_id", "window": "1h"}}}),
+            ),
+        ];
+        let (compiled, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "{:?}", errors);
+        assert_eq!(compiled.len(), 1);
+    }
+
+    #[test]
+    fn rule11_percentile_op_name_recognized_with_q() {
+        let nodes = vec![
+            sketch_event_node(),
+            group_by_derivation(
+                "Agg",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({"p": {"op": "percentile", "params": {"field": "amount", "q": 0.99}}}),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "{:?}", errors);
+    }
+
+    #[test]
+    fn rule11_percentile_q_out_of_range_rejected() {
+        let nodes = vec![
+            sketch_event_node(),
+            group_by_derivation(
+                "Agg",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({"p": {"op": "percentile", "params": {"field": "amount", "q": 1.5}}}),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::InvalidPercentileQ),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn rule11_bloom_member_with_window_rejected() {
+        let nodes = vec![
+            sketch_event_node(),
+            group_by_derivation(
+                "Agg",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({"b": {"op": "bloom_member", "params": {"field": "device_id", "window": "1h"}}}),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::WindowNotSupported),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn rule11_top_k_k_out_of_range_rejected() {
+        let nodes = vec![
+            sketch_event_node(),
+            group_by_derivation(
+                "Agg",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({"t": {"op": "top_k", "params": {"field": "merchant_id", "k": 5000}}}),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors.iter().any(|e| e.code == ErrorCode::InvalidTopKK),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn rule11_entropy_op_name_recognized() {
+        let nodes = vec![
+            sketch_event_node(),
+            group_by_derivation(
+                "Agg",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({"e": {"op": "entropy", "params": {"field": "category"}}}),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "{:?}", errors);
+    }
+
+    #[test]
+    fn rule11_bloom_fpr_out_of_range_rejected() {
+        let nodes = vec![
+            sketch_event_node(),
+            group_by_derivation(
+                "Agg",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({"b": {"op": "bloom_member", "params": {"field": "device_id", "target_fpr": 2.0}}}),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors.iter().any(|e| e.code == ErrorCode::InvalidBloomFpr),
+            "{:?}",
+            errors
         );
     }
 

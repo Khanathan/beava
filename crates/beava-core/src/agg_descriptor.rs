@@ -71,6 +71,7 @@ mod tests {
             half_life_ms: None,
             sub_window_ms: None,
             sigma: None,
+            sketch_params: None,
         }
     }
 

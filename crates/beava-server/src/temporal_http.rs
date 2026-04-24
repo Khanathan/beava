@@ -163,6 +163,7 @@ fn row_to_json(row: &Row) -> serde_json::Value {
             Value::Str(s) => JsonValue::String(s.clone()),
             Value::Bytes(_) => JsonValue::Null,
             Value::Datetime(ms) => JsonValue::Number((*ms).into()),
+            Value::Json(j) => j.clone(),
         };
         obj.insert(k.clone(), jv);
     }

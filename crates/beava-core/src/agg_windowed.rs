@@ -10,7 +10,7 @@
 //! D-04: bucket_index = floor(t / bucket_ms) mod 64 via div_euclid.
 //! D-06: no wall-clock reads, no rand — pure event-time determinism.
 
-use crate::agg_op::{AggKind, AggOp};
+use crate::agg_op::{AggKind, AggOp, SketchParams};
 use crate::row::Row;
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +30,10 @@ pub struct WindowedOp {
     pub buckets: [Option<Box<AggOp>>; 64],
     #[serde(with = "serde_array_64_i64")]
     pub bucket_epoch_start_ms: [i64; 64],
+    /// Plan 10-05: sketch construction params propagated to per-bucket
+    /// fresh_op() calls. Default for non-sketch kinds; threaded for sketch kinds.
+    #[serde(default)]
+    pub sketch_params: SketchParams,
 }
 
 /// serde helpers for `[Option<Box<AggOp>>; 64]` — serde's default only supports
@@ -127,6 +131,21 @@ impl WindowedOp {
     ///
     /// `bucket_ms = ceil(window_ms / 64)` — ensures at least 1ms per bucket.
     pub fn new(kind: AggKind, window_ms: u64) -> Self {
+        Self::new_with_params(kind, window_ms, SketchParams::default())
+    }
+
+    /// Plan 10-05: construct with explicit sketch params (k, q, fpr, etc.).
+    /// Sketch params are persisted on the WindowedOp so each bucket re-init
+    /// honors user-supplied configuration.
+    ///
+    /// Panics for `AggKind::BloomMember` — bloom_member is windowless-only
+    /// per CONTEXT D-08 / Plan 10-05 (rejected at register time with
+    /// kind=window_not_supported).
+    pub fn new_with_params(kind: AggKind, window_ms: u64, sketch_params: SketchParams) -> Self {
+        assert!(
+            !matches!(kind, AggKind::BloomMember),
+            "bloom_member is windowless-only — cannot be wrapped in WindowedOp"
+        );
         let bucket_ms = window_ms.div_ceil(64);
         let buckets = std::array::from_fn(|_| None);
         WindowedOp {
@@ -135,6 +154,7 @@ impl WindowedOp {
             window_ms,
             buckets,
             bucket_epoch_start_ms: [i64::MIN; 64],
+            sketch_params,
         }
     }
 
@@ -158,11 +178,11 @@ impl WindowedOp {
 
         // Reset bucket if stale (different epoch).
         if self.bucket_epoch_start_ms[idx] != bucket_epoch {
-            self.buckets[idx] = Some(Box::new(fresh_op(self.inner_kind)));
+            self.buckets[idx] = Some(Box::new(fresh_op(self.inner_kind, &self.sketch_params)));
             self.bucket_epoch_start_ms[idx] = bucket_epoch;
         }
         if self.buckets[idx].is_none() {
-            self.buckets[idx] = Some(Box::new(fresh_op(self.inner_kind)));
+            self.buckets[idx] = Some(Box::new(fresh_op(self.inner_kind, &self.sketch_params)));
         }
 
         self.buckets[idx]
@@ -190,11 +210,11 @@ impl WindowedOp {
 
         // Reset bucket if stale (different epoch).
         if self.bucket_epoch_start_ms[idx] != bucket_epoch {
-            self.buckets[idx] = Some(Box::new(fresh_op(self.inner_kind)));
+            self.buckets[idx] = Some(Box::new(fresh_op(self.inner_kind, &self.sketch_params)));
             self.bucket_epoch_start_ms[idx] = bucket_epoch;
         }
         if self.buckets[idx].is_none() {
-            self.buckets[idx] = Some(Box::new(fresh_op(self.inner_kind)));
+            self.buckets[idx] = Some(Box::new(fresh_op(self.inner_kind, &self.sketch_params)));
         }
 
         self.buckets[idx]
@@ -384,6 +404,107 @@ impl WindowedOp {
                     Value::F64(variance)
                 }
             }
+            AggKind::CountDistinct => {
+                // Pick most recently-active bucket within window (v0 simplification —
+                // future work: merge across buckets via Hll::merge for stable HLL union).
+                let mut best: Option<&AggOp> = None;
+                let mut best_epoch = i64::MIN;
+                for (i, bucket) in self.buckets.iter().enumerate() {
+                    let Some(op) = bucket else { continue };
+                    let epoch = self.bucket_epoch_start_ms[i];
+                    if epoch == i64::MIN {
+                        continue;
+                    }
+                    let age = query_time_ms - epoch;
+                    if age < 0 || age >= window_ms {
+                        continue;
+                    }
+                    if epoch > best_epoch {
+                        best_epoch = epoch;
+                        best = Some(op.as_ref());
+                    }
+                }
+                match best {
+                    Some(AggOp::CountDistinct(s)) => s.query(),
+                    _ => Value::I64(0),
+                }
+            }
+            AggKind::Percentile => {
+                let mut best: Option<&AggOp> = None;
+                let mut best_epoch = i64::MIN;
+                for (i, bucket) in self.buckets.iter().enumerate() {
+                    let Some(op) = bucket else { continue };
+                    let epoch = self.bucket_epoch_start_ms[i];
+                    if epoch == i64::MIN {
+                        continue;
+                    }
+                    let age = query_time_ms - epoch;
+                    if age < 0 || age >= window_ms {
+                        continue;
+                    }
+                    if epoch > best_epoch {
+                        best_epoch = epoch;
+                        best = Some(op.as_ref());
+                    }
+                }
+                match best {
+                    Some(AggOp::Percentile(s)) => s.query(),
+                    _ => Value::Null,
+                }
+            }
+            AggKind::TopK => {
+                let mut best: Option<&AggOp> = None;
+                let mut best_epoch = i64::MIN;
+                for (i, bucket) in self.buckets.iter().enumerate() {
+                    let Some(op) = bucket else { continue };
+                    let epoch = self.bucket_epoch_start_ms[i];
+                    if epoch == i64::MIN {
+                        continue;
+                    }
+                    let age = query_time_ms - epoch;
+                    if age < 0 || age >= window_ms {
+                        continue;
+                    }
+                    if epoch > best_epoch {
+                        best_epoch = epoch;
+                        best = Some(op.as_ref());
+                    }
+                }
+                match best {
+                    Some(AggOp::TopK(s)) => s.query(),
+                    _ => Value::Json(serde_json::Value::Array(vec![])),
+                }
+            }
+            AggKind::Entropy => {
+                // Merge histograms across active buckets via EntropyHistogram::merge.
+                use crate::sketches::entropy::EntropyHistogram;
+                let mut combined: Option<EntropyHistogram> = None;
+                for (i, bucket) in self.buckets.iter().enumerate() {
+                    let Some(op) = bucket else { continue };
+                    let epoch = self.bucket_epoch_start_ms[i];
+                    if epoch == i64::MIN {
+                        continue;
+                    }
+                    let age = query_time_ms - epoch;
+                    if age < 0 || age >= window_ms {
+                        continue;
+                    }
+                    if let AggOp::Entropy(s) = op.as_ref() {
+                        match &mut combined {
+                            None => combined = Some(s.inner.clone()),
+                            Some(c) => c.merge(&s.inner),
+                        }
+                    }
+                }
+                match combined {
+                    Some(c) => Value::F64(c.entropy_bits()),
+                    None => Value::F64(0.0),
+                }
+            }
+            AggKind::BloomMember => {
+                // Unreachable: BloomMember rejected by new_with_params; defensive.
+                Value::Bool(false)
+            }
             AggKind::Ratio => {
                 let mut matching: u64 = 0;
                 let mut total: u64 = 0;
@@ -421,30 +542,14 @@ impl WindowedOp {
 
 /// Create a fresh lifetime AggOp for a given kind (used to initialise buckets).
 ///
-/// `WindowedOp` only supports the Phase 5 core ops. Phase 8 + Phase 9 ops are
-/// lifetime-only (D-02 in 08-CONTEXT; AGG-DECAY/VEL spec) and must not be
-/// wrapped in a tumbling-bucket window — `agg_compile::parse_agg_kind`
-/// validation rejects `window=` for them. If we ever reach this with a non-
-/// Phase 5 kind it's a bug; fall back to Count to avoid panicking the apply
-/// loop.
-fn fresh_op(kind: AggKind) -> AggOp {
-    use crate::agg_state::{
-        AvgState, CountState, MaxState, MinState, RatioState, SumState, VarianceState,
-    };
-    match kind {
-        AggKind::Count => AggOp::Count(CountState::default()),
-        AggKind::Sum => AggOp::Sum(SumState::default()),
-        AggKind::Avg => AggOp::Avg(AvgState::default()),
-        AggKind::Min => AggOp::Min(MinState::default()),
-        AggKind::Max => AggOp::Max(MaxState::default()),
-        AggKind::Variance => AggOp::Variance(VarianceState::default()),
-        AggKind::StdDev => AggOp::StdDev(VarianceState::default()),
-        AggKind::Ratio => AggOp::Ratio(RatioState::default()),
-        // Phase 8 + Phase 9 ops are never wrapped in WindowedOp (compile-time
-        // invariant). Fall back to Count defensively if we ever land here —
-        // this preserves Phase 8's robust-rather-than-panic stance.
-        _ => AggOp::Count(CountState::default()),
-    }
+/// `WindowedOp` supports Phase 5 core ops + Phase 10 sketch ops (except
+/// `BloomMember` which is windowless-only). Phase 8 + Phase 9 ops are
+/// lifetime-only and `agg_compile` validation rejects `window=` for them.
+/// `new_lifetime` handles sketches via `sketch_params`; for Phase 8/9 kinds
+/// (which shouldn't reach here) it delegates to `new_lifetime_full` with a
+/// default descriptor for safety.
+fn fresh_op(kind: AggKind, sketch_params: &SketchParams) -> AggOp {
+    AggOp::new_lifetime(kind, Some(sketch_params))
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

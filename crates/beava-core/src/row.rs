@@ -33,6 +33,8 @@ pub enum Value {
     Bytes(Vec<u8>),
     /// Milliseconds since Unix epoch — matches the `event_time` convention.
     Datetime(i64),
+    /// Plan 10-05: Structured JSON output (top_k returns array of {value, count}).
+    Json(serde_json::Value),
 }
 
 impl PartialEq for Value {
@@ -46,6 +48,7 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::Datetime(a), Value::Datetime(b)) => a == b,
+            (Value::Json(a), Value::Json(b)) => a == b,
             // Cross-variant comparisons are always false.
             _ => false,
         }
@@ -64,6 +67,7 @@ impl Value {
             Value::Bool(_) => Some(FieldType::Bool),
             Value::Bytes(_) => Some(FieldType::Bytes),
             Value::Datetime(_) => Some(FieldType::Datetime),
+            Value::Json(_) => Some(FieldType::Json),
         }
     }
 
@@ -369,5 +373,13 @@ mod tests {
             .with_field("b", Value::I64(2));
         let keys: Vec<&str> = r.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, vec!["a", "b", "c"]);
+    }
+
+    // Test 13 (Plan 10-05): Value::Json variant exists for sketch top_k output.
+    #[test]
+    fn value_json_variant_exists() {
+        let v = Value::Json(serde_json::json!([{"value": "a", "count": 5}]));
+        let s = serde_json::to_string(&v).unwrap();
+        assert!(s.contains("count"));
     }
 }

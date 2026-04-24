@@ -110,6 +110,8 @@ fn validate_body(descriptor: &EventDescriptor, body: &serde_json::Map<String, Js
             FieldType::Bool => jv.is_boolean(),
             FieldType::Datetime => jv.is_i64() || jv.is_u64(),
             FieldType::Bytes => false,
+            // Json is an output-only type from sketches — input events never declare Json fields.
+            FieldType::Json => false,
         };
         if !ok {
             return false;

@@ -20,6 +20,8 @@ parking_lot = { workspace = true }
 bytes = { workspace = true }
 tracing = { workspace = true }
 bincode = { workspace = true }
+ahash = "0.8"
+ordered-float = { version = "4", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -44,4 +46,12 @@ harness = false
 
 [[bench]]
 name = "phase9_decay_velocity"
+harness = false
+
+[[bench]]
+name = "phase10_topk"
+harness = false
+
+[[bench]]
+name = "phase10_sketches"
 harness = false

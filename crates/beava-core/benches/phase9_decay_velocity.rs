@@ -32,6 +32,7 @@ fn desc_with(
         half_life_ms: half_life,
         sub_window_ms: sub_window,
         sigma,
+        sketch_params: None,
     }
 }
 

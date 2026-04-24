@@ -19,7 +19,14 @@
 //!       stable, combinable across tumbling buckets.
 
 use crate::row::Value;
+use crate::sketches::bloom::BloomFilter;
+use crate::sketches::cms::TopKValue;
+use crate::sketches::count_distinct::CountDistinctState as InnerCountDistinct;
+use crate::sketches::entropy::EntropyHistogram;
+use crate::sketches::percentile::PercentileState as InnerPercentile;
+use crate::sketches::top_k::TopKState as InnerTopK;
 use serde::{Deserialize, Serialize};
+use std::hash::{Hash, Hasher};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -772,6 +779,7 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::Str(s) => serde_json::Value::String(s.clone()),
         Value::Bytes(b) => serde_json::Value::String(format!("0x{}", hex::encode_lower(b))),
         Value::Datetime(t) => serde_json::Value::Number((*t).into()),
+        Value::Json(j) => j.clone(),
     }
 }
 
@@ -785,6 +793,253 @@ mod hex {
             s.push(char::from_digit((*b & 0xF) as u32, 16).unwrap());
         }
         s
+    }
+}
+
+// ─── Sketch wrappers (Plan 10-05) ─────────────────────────────────────────────
+
+/// Hash a `Value` for use as a CountDistinct entry. Uses ahash deterministic
+/// seed (BuildHasher) — same seed across the process so estimates are stable.
+fn hash_value(v: &Value) -> u64 {
+    let mut h = ahash::AHasher::default();
+    match v {
+        Value::Str(s) => s.hash(&mut h),
+        Value::I64(n) => n.hash(&mut h),
+        Value::F64(f) => f.to_bits().hash(&mut h),
+        Value::Bool(b) => b.hash(&mut h),
+        Value::Datetime(ms) => ms.hash(&mut h),
+        Value::Bytes(b) => b.hash(&mut h),
+        Value::Null => 0u64.hash(&mut h),
+        Value::Json(j) => j.to_string().hash(&mut h),
+    }
+    h.finish()
+}
+
+/// String view of a `Value` for use as Entropy / Bloom key.
+fn value_to_key_string(v: &Value) -> Option<String> {
+    match v {
+        Value::Str(s) => Some(s.clone()),
+        Value::I64(n) => Some(n.to_string()),
+        Value::F64(f) => Some(format!("{f:?}")),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Datetime(ms) => Some(ms.to_string()),
+        Value::Null => None,
+        Value::Bytes(_) => None,
+        Value::Json(_) => None,
+    }
+}
+
+/// AGG-SKETCH-01: count_distinct wrapper.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CountDistinctStateWrap {
+    pub inner: InnerCountDistinct,
+}
+
+impl Default for CountDistinctStateWrap {
+    fn default() -> Self {
+        Self {
+            inner: InnerCountDistinct::new(1024),
+        }
+    }
+}
+
+impl CountDistinctStateWrap {
+    pub fn update(
+        &mut self,
+        row: &crate::row::Row,
+        _event_time_ms: i64,
+        field: Option<&str>,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        let Some(fname) = field else { return };
+        let Some(v) = row.get(fname) else { return };
+        if matches!(v, Value::Null) {
+            return;
+        }
+        self.inner.add_hash(hash_value(v));
+    }
+    pub fn query(&self) -> Value {
+        Value::I64(self.inner.estimate() as i64)
+    }
+}
+
+/// AGG-SKETCH-02: percentile wrapper.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PercentileStateWrap {
+    pub inner: InnerPercentile,
+    pub q: f64,
+}
+
+impl Default for PercentileStateWrap {
+    fn default() -> Self {
+        Self {
+            inner: InnerPercentile::new(256, 0.01),
+            q: 0.5,
+        }
+    }
+}
+
+impl PercentileStateWrap {
+    pub fn update(
+        &mut self,
+        row: &crate::row::Row,
+        _event_time_ms: i64,
+        field: Option<&str>,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        let Some(fname) = field else { return };
+        let Some(v) = numeric_from_row(row, fname) else {
+            return;
+        };
+        self.inner.insert(v);
+    }
+    pub fn query(&self) -> Value {
+        match self.inner.quantile(self.q) {
+            Some(v) => Value::F64(v),
+            None => Value::Null,
+        }
+    }
+}
+
+/// AGG-SKETCH-03: top_k wrapper.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopKStateWrap {
+    pub inner: InnerTopK,
+}
+
+impl Default for TopKStateWrap {
+    fn default() -> Self {
+        Self {
+            inner: InnerTopK::new(10, 1024, 2048, 4),
+        }
+    }
+}
+
+impl TopKStateWrap {
+    pub fn update(
+        &mut self,
+        row: &crate::row::Row,
+        _event_time_ms: i64,
+        field: Option<&str>,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        let Some(fname) = field else { return };
+        let v = match row.get(fname) {
+            None | Some(Value::Null) => return,
+            Some(other) => other,
+        };
+        let tkv = match v {
+            Value::Str(s) => TopKValue::Str(s.clone()),
+            Value::I64(n) => TopKValue::Int(*n),
+            Value::F64(f) => TopKValue::Float(ordered_float::OrderedFloat(*f)),
+            Value::Bool(b) => TopKValue::Bool(*b),
+            Value::Datetime(ms) => TopKValue::Int(*ms),
+            Value::Bytes(_) | Value::Null | Value::Json(_) => return,
+        };
+        self.inner.insert(tkv);
+    }
+    pub fn query(&self) -> Value {
+        let entries: Vec<serde_json::Value> = self
+            .inner
+            .top()
+            .into_iter()
+            .map(|(v, c)| serde_json::json!({"value": v.to_json(), "count": c}))
+            .collect();
+        Value::Json(serde_json::Value::Array(entries))
+    }
+}
+
+/// AGG-SKETCH-04: bloom_member wrapper. v0 placeholder: query returns
+/// `Value::Bool(true)` once the filter has at least one insertion. Full
+/// membership-test API (passing a value to GET) deferred to v0.1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BloomMemberStateWrap {
+    pub inner: BloomFilter,
+    pub n_inserts: u64,
+}
+
+impl Default for BloomMemberStateWrap {
+    fn default() -> Self {
+        Self {
+            inner: BloomFilter::with_capacity_and_fpr(1024, 0.01),
+            n_inserts: 0,
+        }
+    }
+}
+
+impl BloomMemberStateWrap {
+    pub fn with_params(capacity: usize, fpr: f64) -> Self {
+        Self {
+            inner: BloomFilter::with_capacity_and_fpr(capacity.max(1), fpr.clamp(1e-9, 0.999)),
+            n_inserts: 0,
+        }
+    }
+    pub fn update(
+        &mut self,
+        row: &crate::row::Row,
+        _event_time_ms: i64,
+        field: Option<&str>,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        let Some(fname) = field else { return };
+        let Some(v) = row.get(fname) else { return };
+        let Some(s) = value_to_key_string(v) else {
+            return;
+        };
+        self.inner.insert(&s);
+        self.n_inserts = self.n_inserts.saturating_add(1);
+    }
+    pub fn query(&self) -> Value {
+        Value::Bool(self.n_inserts > 0)
+    }
+}
+
+/// AGG-SKETCH-05: entropy wrapper.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntropyStateWrap {
+    pub inner: EntropyHistogram,
+}
+
+impl Default for EntropyStateWrap {
+    fn default() -> Self {
+        Self {
+            inner: EntropyHistogram::new(1024),
+        }
+    }
+}
+
+impl EntropyStateWrap {
+    pub fn update(
+        &mut self,
+        row: &crate::row::Row,
+        _event_time_ms: i64,
+        field: Option<&str>,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        let Some(fname) = field else { return };
+        let Some(v) = row.get(fname) else { return };
+        let Some(s) = value_to_key_string(v) else {
+            return;
+        };
+        self.inner.insert(&s);
+    }
+    pub fn query(&self) -> Value {
+        Value::F64(self.inner.entropy_bits())
     }
 }
 

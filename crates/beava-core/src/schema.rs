@@ -21,6 +21,8 @@ pub enum FieldType {
     Bool,
     Bytes,
     Datetime,
+    /// Structured JSON output — used by sketch operators that return lists/objects (Phase 10).
+    Json,
 }
 
 // ─── Schema structs ──────────────────────────────────────────────────────────
@@ -130,6 +132,16 @@ mod tests {
                 "round-trip mismatch for {expected_json}"
             );
         }
+    }
+
+    // Test 1b: FieldType::Json round-trips as "json"
+    #[test]
+    fn field_type_json_round_trips() {
+        use crate::schema::FieldType;
+        let s = serde_json::to_string(&FieldType::Json).unwrap();
+        assert_eq!(s, "\"json\"");
+        let r: FieldType = serde_json::from_str("\"json\"").unwrap();
+        assert_eq!(r, FieldType::Json);
     }
 
     // Test 2: unknown FieldType string returns Err with readable message

@@ -42,6 +42,7 @@ fn windowless_desc(kind: AggKind, field: Option<&str>) -> AggOpDescriptor {
         half_life_ms: None,
         sub_window_ms: None,
         sigma: None,
+        sketch_params: None,
     }
 }
 
@@ -213,6 +214,7 @@ fn build_registry() -> Registry {
                 half_life_ms: None,
                 sub_window_ms: None,
                 sigma: None,
+                sketch_params: None,
             },
         )],
     );

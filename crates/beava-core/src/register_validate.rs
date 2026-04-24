@@ -89,6 +89,15 @@ pub enum ErrorCode {
     AggregationInvalidHalfLife,
     /// `burst_count` missing `params.sub_window` or value unparseable / non-positive.
     AggregationInvalidSubWindow,
+    // Plan 10-05 — sketch op validation:
+    /// bloom_member used with `window=` kwarg → rejected (windowless-only).
+    WindowNotSupported,
+    /// percentile.q out of (0.0, 1.0).
+    InvalidPercentileQ,
+    /// top_k.k out of (0, 1024].
+    InvalidTopKK,
+    /// bloom_member.fpr out of (0.0, 1.0).
+    InvalidBloomFpr,
 }
 
 /// A single structured validation error. `path` uses pseudo-JSON-pointer format

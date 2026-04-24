@@ -159,6 +159,7 @@ mod tests {
             half_life_ms: None,
             sub_window_ms: None,
             sigma: None,
+            sketch_params: None,
         }
     }
 
@@ -172,6 +173,7 @@ mod tests {
             half_life_ms: None,
             sub_window_ms: None,
             sigma: None,
+            sketch_params: None,
         }
     }
 
@@ -371,6 +373,7 @@ mod tests {
                     half_life_ms: None,
                     sub_window_ms: None,
                     sigma: None,
+                    sketch_params: None,
                 },
             )],
         );
@@ -578,6 +581,7 @@ mod registry_source_tests {
                     half_life_ms: None,
                     sub_window_ms: None,
                     sigma: None,
+                    sketch_params: None,
                 },
             }],
         }

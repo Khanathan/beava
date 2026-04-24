@@ -279,6 +279,66 @@
     @media (max-width: 880px) {
       .query-grid { grid-template-columns: 1fr !important; }
     }
+
+    /* Memory scale — segmented control + live readout of RAM + AWS. */
+    .memscale {
+      background: linear-gradient(180deg, var(--beava-paper) 0%, #fff 100%);
+      border: 1px solid var(--border); border-left: 3px solid var(--accent);
+      border-radius: 14px; padding: 22px 24px; margin: 28px 0 12px;
+      box-shadow: var(--shadow-xs);
+    }
+    .memscale-hd {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; flex-wrap: wrap; margin-bottom: 16px;
+    }
+    .memscale-title {
+      font-family: var(--font-sans); font-size: 12px; font-weight: 700;
+      color: var(--fg1); text-transform: uppercase; letter-spacing: 0.08em;
+    }
+    .memscale-seg {
+      display: inline-flex; background: var(--bg-inset);
+      border: 1px solid var(--border); border-radius: 10px; padding: 4px;
+      overflow-x: auto; max-width: 100%;
+    }
+    .memscale-seg button {
+      background: transparent; border: 0; padding: 8px 14px;
+      font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+      color: var(--fg3); cursor: pointer; border-radius: 7px;
+      transition: all 160ms; white-space: nowrap;
+    }
+    .memscale-seg button.active {
+      background: #fff; color: var(--fg1);
+      box-shadow: var(--shadow-xs);
+    }
+    .memscale-seg button:hover:not(.active) { color: var(--fg1); }
+    .memscale-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+    }
+    .memscale-card {
+      background: #fff; border: 1px solid var(--border);
+      border-radius: 10px; padding: 16px 18px;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .memscale-card .lbl {
+      font-family: var(--font-mono); font-size: 10.5px;
+      color: var(--fg3); letter-spacing: 0.04em; text-transform: lowercase;
+    }
+    .memscale-card .val {
+      font-family: var(--font-serif); font-size: 28px; font-weight: 600;
+      color: var(--fg1); letter-spacing: -0.01em; line-height: 1.1;
+    }
+    .memscale-card .sub {
+      font-family: var(--font-mono); font-size: 11px;
+      color: var(--fg3); margin-top: 2px;
+    }
+    .memscale-fine {
+      margin-top: 16px;
+      font-family: var(--font-sans); font-size: 13px; color: var(--fg2);
+      line-height: 1.55; text-wrap: pretty;
+    }
+    @media (max-width: 760px) {
+      .memscale-grid { grid-template-columns: 1fr !important; }
+    }
   </style>
 </head>
 <body class="beava">
@@ -414,7 +474,8 @@
       { t: 'fn',  v: '@bv.table' }, { t: 't', v: '(key=' }, { t: 'str', v: '"user_id"' }, { t: 't', v: ')\n' },
       { t: 'kw',  v: 'def' }, { t: 't', v: ' ' }, { t: 'fn', v: 'UserStats' }, { t: 't', v: '(e: PageView):\n' },
       { t: 't',   v: '    ' }, { t: 'kw', v: 'return' }, { t: 't', v: ' e.' }, { t: 'fn', v: 'agg' }, { t: 't', v: '(views_total=bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '())' },
-      { t: 'note', v: '← "LIFETIME VIEWS PER USER"' },
+      { t: 'note', v: '← one counter per user' }, { t: 't', v: '\n\n' },
+      { t: 't', v: 'bv.' }, { t: 'fn', v: 'App' }, { t: 't', v: '(' }, { t: 'str', v: '"0.0.0.0:6400"' }, { t: 't', v: ').' }, { t: 'fn', v: 'register' }, { t: 't', v: '(PageView, UserStats).' }, { t: 'fn', v: 'serve' }, { t: 't', v: '()' }, { t: 'note', v: '← starts the server' },
     ];
 
     const pipelineDashboard = [
@@ -429,12 +490,55 @@
       { t: 'fn',  v: '@bv.table' }, { t: 't', v: '(key=' }, { t: 'str', v: '"user_id"' }, { t: 't', v: ')\n' },
       { t: 'kw',  v: 'def' }, { t: 't', v: ' ' }, { t: 'fn', v: 'Dashboard' }, { t: 't', v: '(e: PageView):\n' },
       { t: 't',   v: '    ' }, { t: 'kw', v: 'return' }, { t: 't', v: ' e.' }, { t: 'fn', v: 'agg' }, { t: 't', v: '(\n' },
-      { t: 't',   v: '        views_total        = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(),' }, { t: 'note', v: '← "LIFETIME"' }, { t: 't', v: '\n' },
-      { t: 't',   v: '        views_24h          = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(window=' }, { t: 'str', v: '"24h"' }, { t: 't', v: '),' }, { t: 'note', v: '← "TODAY BAR"' }, { t: 't', v: '\n' },
-      { t: 't',   v: '        distinct_cats_7d   = bv.' }, { t: 'fn', v: 'distinct' }, { t: 't', v: '(e.category, window=' }, { t: 'str', v: '"7d"' }, { t: 't', v: '),' }, { t: 'note', v: '← "WEEK CATEGORIES"' }, { t: 't', v: '\n' },
-      { t: 't',   v: '        last_seen          = bv.' }, { t: 'fn', v: 'latest' }, { t: 't', v: '(e.ts),' }, { t: 'note', v: '← "FRESHNESS"' }, { t: 't', v: '\n' },
-      { t: 't',   v: '    )' },
+      { t: 't',   v: '        views_total        = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(),' }, { t: 'note', v: '← lifetime views' }, { t: 't', v: '\n' },
+      { t: 't',   v: '        views_24h          = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(window=' }, { t: 'str', v: '"24h"' }, { t: 't', v: '),' }, { t: 'note', v: "← today's activity bar" }, { t: 't', v: '\n' },
+      { t: 't',   v: '        distinct_cats_7d   = bv.' }, { t: 'fn', v: 'distinct' }, { t: 't', v: '(e.category, window=' }, { t: 'str', v: '"7d"' }, { t: 't', v: '),' }, { t: 'note', v: '← category breakdown' }, { t: 't', v: '\n' },
+      { t: 't',   v: '        last_seen          = bv.' }, { t: 'fn', v: 'latest' }, { t: 't', v: '(e.ts),' }, { t: 'note', v: '← "last seen" timestamp' }, { t: 't', v: '\n' },
+      { t: 't',   v: '    )\n\n' },
+      { t: 't', v: 'bv.' }, { t: 'fn', v: 'App' }, { t: 't', v: '(' }, { t: 'str', v: '"0.0.0.0:6400"' }, { t: 't', v: ').' }, { t: 'fn', v: 'register' }, { t: 't', v: '(PageView, Dashboard).' }, { t: 'fn', v: 'serve' }, { t: 't', v: '()' }, { t: 'note', v: '← replaces the old table, serves the new one' },
     ];
+
+    // RegisterCommand — small terminal-like block that shows what the
+    // Register button does behind the scenes: run the Python file, which
+    // calls bv.App(...).register(...).serve(). Copy button copies the raw
+    // command. Sits next to / under the Register button.
+    const RegisterCommand = ({ file, table, replaced }) => {
+      const cmd = `python ${file}`;
+      return (
+        <div style={{
+          background: '#fff',
+          border: '1px solid var(--border)',
+          borderRadius: 10,
+          padding: '12px 14px 12px 16px',
+          position: 'relative',
+          maxWidth: 560,
+        }}>
+          <div style={{
+            fontFamily: 'var(--font-mono)', fontSize: 10.5,
+            color: 'var(--fg3)', letterSpacing: '0.04em',
+            textTransform: 'lowercase', marginBottom: 6,
+          }}>
+            equivalent command in a real terminal
+          </div>
+          <pre style={{
+            fontFamily: 'var(--font-mono)', fontSize: 13,
+            lineHeight: 1.55, margin: 0, color: 'var(--code-fg)',
+            whiteSpace: 'pre',
+          }}>
+<span className="cmt">$ </span>pip install beava{'\n'}
+<span className="cmt">$ </span>python {file}{'\n'}
+<span style={{ color: 'var(--beava-success)' }}>✓ </span>
+{replaced
+  ? <>replaced previous table &mdash; serving <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{table}</span> (4 metrics, key=user_id){'\n'}</>
+  : <>registered <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{table}</span> (key=user_id){'\n'}</>}
+<span style={{ color: 'var(--beava-success)' }}>✓ </span>listening on 0.0.0.0:6400
+          </pre>
+          <div style={{ position: 'absolute', top: 10, right: 10 }}>
+            <CopyBtn text={cmd}/>
+          </div>
+        </div>
+      );
+    };
 
     // AskClaude tip — reuses the pattern from the fraud recipe. Sits below
     // a pipeline block, says "you can skip writing this and just ask Claude."
@@ -467,24 +571,38 @@
       </div>
     );
 
-    const CodeBlock = ({ tokens, fontSize = 13 }) => (
-      <pre className="code-well" style={{ fontSize, padding: '20px 22px', lineHeight: 1.7, margin: 0 }}>
-        {tokens.map((tok, i) => {
-          if (tok.t === 't') return <span key={i}>{tok.v}</span>;
-          if (tok.t === 'note') return (
-            <span key={i} style={{
-              fontFamily: 'var(--font-accent)',
-              fontSize: '1.05em',
-              fontWeight: 700,
-              color: 'var(--accent)',
-              marginLeft: 10,
-              letterSpacing: '0.005em',
-            }}>{tok.v}</span>
-          );
-          return <span key={i} className={tok.t}>{tok.v}</span>;
-        })}
-      </pre>
-    );
+    const CodeBlock = ({ tokens, fontSize = 13 }) => {
+      // Copy target + user-drag selection both exclude annotations. The
+      // notes are visual metadata, not part of the source a user would
+      // paste into a Python file.
+      const rawText = tokens
+        .filter(tok => tok.t !== 'note')
+        .map(tok => tok.v)
+        .join('');
+      return (
+        <div style={{ position: 'relative' }}>
+          <pre className="code-well" style={{ fontSize, padding: '20px 22px', lineHeight: 1.7, margin: 0 }}>
+            {tokens.map((tok, i) => {
+              if (tok.t === 't') return <span key={i}>{tok.v}</span>;
+              if (tok.t === 'note') return (
+                <span key={i} style={{
+                  fontFamily: 'var(--font-accent)',
+                  fontSize: '1.05em',
+                  fontWeight: 700,
+                  color: 'var(--accent)',
+                  marginLeft: 10,
+                  letterSpacing: '0.005em',
+                  userSelect: 'none',
+                  WebkitUserSelect: 'none',
+                }} aria-hidden="true">{tok.v}</span>
+              );
+              return <span key={i} className={tok.t}>{tok.v}</span>;
+            })}
+          </pre>
+          <CopyBtn text={rawText}/>
+        </div>
+      );
+    };
 
     const RegisterButton = ({ label, status, onRegister, disabled }) => {
       const pill = status === 'idle'
@@ -495,11 +613,12 @@
       const canClick = status === 'idle' && !disabled;
       return (
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-          <Button variant="primary" size="md" onClick={onRegister} disabled={!canClick}
-                  style={{ opacity: canClick ? 1 : 0.55, cursor: canClick ? 'pointer' : 'default' }}
-                  icon={status === 'done' ? <Icon name="check" size={14} stroke={2.5}/> : <Icon name="arrow" size={14}/>}>
+          <button className="composer-random" onClick={onRegister} disabled={!canClick}>
+            {status === 'done'
+              ? <Icon name="check" size={15} stroke={2.5}/>
+              : <Icon name="terminal" size={15} stroke={2}/>}
             {label}
-          </Button>
+          </button>
           {pill}
         </div>
       );
@@ -667,6 +786,95 @@
       );
     };
 
+    // ---------------- Memory / cost scale ---------------- //
+
+    // Interactive widget: pick a target scale (by number of distinct users),
+    // see RAM footprint and an estimated AWS bill. Baseline is ~1 KB per
+    // entity for a 4-metric Dashboard pipeline. Events don't add memory.
+    const MEMSCALE_TIERS = [
+      { users: 10_000,     label: '10K' },
+      { users: 100_000,    label: '100K' },
+      { users: 1_000_000,  label: '1M' },
+      { users: 10_000_000, label: '10M' },
+      { users: 100_000_000, label: '100M' },
+    ];
+    // AWS r7i (memory-optimized) on-demand, us-east-1. Rough publicly-listed
+    // prices as of early 2026; round for readability. RAM in GiB.
+    const AWS_INSTANCES = [
+      { name: 'r7i.large',      ram: 16,   hr: 0.1323 },
+      { name: 'r7i.xlarge',     ram: 32,   hr: 0.2646 },
+      { name: 'r7i.2xlarge',    ram: 64,   hr: 0.5293 },
+      { name: 'r7i.4xlarge',    ram: 128,  hr: 1.0586 },
+      { name: 'r7i.8xlarge',    ram: 256,  hr: 2.1171 },
+      { name: 'r7i.16xlarge',   ram: 512,  hr: 4.2342 },
+      { name: 'r7i.24xlarge',   ram: 768,  hr: 6.3514 },
+      { name: 'r7i.48xlarge',   ram: 1536, hr: 12.7027 },
+    ];
+    const PER_ENTITY_BYTES = 1024; // 1 KiB — 4-metric Dashboard
+
+    const fmtGB = (bytes) => {
+      const gib = bytes / (1024 ** 3);
+      if (gib < 1) return `${(bytes / (1024 ** 2)).toFixed(0)} MB`;
+      if (gib < 10) return `${gib.toFixed(1)} GB`;
+      return `${Math.round(gib)} GB`;
+    };
+    const fmtMonthly = (hourly) => {
+      const m = hourly * 730;
+      if (m < 1000) return `$${m.toFixed(0)}/mo`;
+      return `$${(m / 1000).toFixed(m < 10_000 ? 1 : 0)}K/mo`;
+    };
+    const fmtUsers = (n) => {
+      if (n >= 1_000_000) return `${n / 1_000_000}M`;
+      if (n >= 1_000)     return `${n / 1_000}K`;
+      return `${n}`;
+    };
+
+    const MemoryScale = () => {
+      const [idx, setIdx] = React.useState(2); // default 1M
+      const tier  = MEMSCALE_TIERS[idx];
+      const bytes = tier.users * PER_ENTITY_BYTES;
+      // Pick the smallest instance whose RAM >= needed + 50% headroom.
+      const needGib = (bytes * 1.5) / (1024 ** 3);
+      const inst = AWS_INSTANCES.find(x => x.ram >= needGib) || AWS_INSTANCES[AWS_INSTANCES.length - 1];
+
+      return (
+        <div className="memscale">
+          <div className="memscale-hd">
+            <div className="memscale-title">How much RAM will this take?</div>
+            <div className="memscale-seg">
+              {MEMSCALE_TIERS.map((t, i) => (
+                <button key={t.users} className={i === idx ? 'active' : ''} onClick={() => setIdx(i)}>
+                  {t.label} users
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="memscale-grid">
+            <div className="memscale-card">
+              <div className="lbl">entities</div>
+              <div className="val">{fmtUsers(tier.users)}</div>
+              <div className="sub">distinct user_ids on the key axis</div>
+            </div>
+            <div className="memscale-card">
+              <div className="lbl">memory footprint</div>
+              <div className="val" style={{ color: 'var(--accent)' }}>{fmtGB(bytes)}</div>
+              <div className="sub">≈ 1 KB × entities (this 4-metric pipeline)</div>
+            </div>
+            <div className="memscale-card">
+              <div className="lbl">aws fit (+50% headroom)</div>
+              <div className="val">{fmtMonthly(inst.hr)}</div>
+              <div className="sub">{inst.name} · {inst.ram} GiB RAM</div>
+            </div>
+          </div>
+
+          <div className="memscale-fine">
+            <strong style={{ color: 'var(--fg1)' }}>Events don't add memory.</strong> One billion events on 1M users is still ~1 GB &mdash; the events stream in, update the per-user row, and are forgotten (durably; the WAL persists them, but hot state is just the key table). Memory only grows when you add a new distinct user or a new metric column. Swap to a richer 30-metric feature pack and it's closer to 7 KB/user &mdash; multiply accordingly.
+          </div>
+        </div>
+      );
+    };
+
     // ---------------- Event composer (shared by Part 2 and Part 3) ---------------- //
 
     const EventComposer = ({
@@ -821,9 +1029,10 @@
       const [formUser, setFormUser]   = React.useState(USERS[0]);
       const [formPath, setFormPath]   = React.useState(PATHS[1]);
 
-      // Dashboard only renders AFTER the user runs the /batch/Dashboard
-      // query at least once — mirrors the real flow: no query, no UI.
-      const [dashQueryStarted, setDashQueryStarted] = React.useState(false);
+      // Dashboard only renders AFTER the user runs the corresponding
+      // /batch query at least once — mirrors the real flow: no query, no UI.
+      const [basicQueryStarted, setBasicQueryStarted] = React.useState(false);
+      const [dashQueryStarted, setDashQueryStarted]   = React.useState(false);
 
       const idRef         = React.useRef(1);
       const firstBurstRef = React.useRef(true);
@@ -952,11 +1161,11 @@
               <CodeBlock tokens={pipelineBasic}/>
 
               <AskClaude
-                command="/beava add views_total counter keyed on user_id"
-                blurb={<>The <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12, background: '#fff', padding: '1px 5px', borderRadius: 4 }}>/beava</code> skill writes the pipeline file, registers it, and pushes a test event.</>}/>
+                command="/beava track how many times each customer has visited our site"
+                blurb={<>Describe the feature in your own words. The <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12, background: '#fff', padding: '1px 5px', borderRadius: 4 }}>/beava</code> skill searches the repo first &mdash; if this counter already lives in another team's pipeline, Claude points you at the existing file instead of writing a duplicate. No two teams shipping the same feature twice.</>}/>
 
               <div style={{ marginTop: 20, marginBottom: 10 }}>
-                <RegisterButton label="Register this pipeline" status={basicStatus} onRegister={() => register('basic')}/>
+                <RegisterButton label="Register the pipeline" status={basicStatus} onRegister={() => register('basic')}/>
               </div>
 
               <EventComposer
@@ -968,61 +1177,64 @@
                 path={formPath} setPath={setFormPath}
                 onCraft={sendCrafted}/>
 
-              {/* Part 2 mini-result: simple per-user views_total, matches
-                  the one-metric pipeline exactly. */}
-              <div style={{
-                fontFamily: 'var(--font-mono)', fontSize: 11,
-                color: 'var(--fg3)', letterSpacing: '0.04em',
-                textTransform: 'lowercase', marginTop: 4,
-              }}>
-                ↓ live from GET /batch/<span style={{ color: 'var(--accent)', fontWeight: 700 }}>UserStats</span>
-              </div>
-
-              <div className="mini-result">
-                <div className="evt-ticker" style={{ maxHeight: 260 }}>
-                  <div className="evt-ticker-hd">
-                    <span>recent events</span>
-                    <span style={{ color: events.length > 0 ? 'var(--accent)' : 'var(--fg3)' }}>
-                      {events.length > 0 ? 'live' : 'idle'}
-                    </span>
+              {/* Part 2 mini-result: gated on the user running the query at
+                  least once. Materializes between composer (above) and
+                  QueryPanel (below) on first Run query click. */}
+              {basicQueryStarted && (
+                <>
+                  <div style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 11,
+                    color: 'var(--fg3)', letterSpacing: '0.04em',
+                    textTransform: 'lowercase', marginTop: 20, marginBottom: 10,
+                  }}>
+                    ↓ rendered from the query response (auto-refresh every 1.5s)
                   </div>
-                  {events.length === 0 && (
-                    <div className="evt-empty">
-                      {basicStatus === 'done' ? 'push an event ↑' : 'register the pipeline first.'}
-                    </div>
-                  )}
-                  {events.slice(0, 4).map(e => (
-                    <div className="evt-row" key={e.id}>
-                      <div><span className="u">{e.user_id}</span> <span className="p">{e.path}</span></div>
-                      <div className="t">{agoString(e.tsMs)}</div>
-                    </div>
-                  ))}
-                </div>
 
-                <div className="mini-rows">
-                  {rowsList.length === 0 && (
-                    <div className="mini-empty">
-                      UserStats is empty. Each event inserts or updates exactly one row, keyed by <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>user_id</code>.
+                  <div className="mini-result">
+                    <div className="evt-ticker" style={{ maxHeight: 260 }}>
+                      <div className="evt-ticker-hd">
+                        <span>recent events</span>
+                        <span style={{ color: events.length > 0 ? 'var(--accent)' : 'var(--fg3)' }}>
+                          {events.length > 0 ? 'live' : 'idle'}
+                        </span>
+                      </div>
+                      {events.length === 0 && (<div className="evt-empty">push an event ↑</div>)}
+                      {events.slice(0, 4).map(e => (
+                        <div className="evt-row" key={e.id}>
+                          <div><span className="u">{e.user_id}</span> <span className="p">{e.path}</span></div>
+                          <div className="t">{agoString(e.tsMs)}</div>
+                        </div>
+                      ))}
                     </div>
-                  )}
-                  {rowsList.map(([uid, r]) => (
-                    <div key={uid} className={`mini-row${flashUid === uid ? ' flash' : ''}`}>
-                      <span className="mini-uid">{uid}</span>
-                      <span>
-                        <span className="mini-val">{r.views_total}</span>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg3)', marginLeft: 6, letterSpacing: '0.02em' }}>views_total</span>
-                      </span>
+
+                    <div className="mini-rows">
+                      {rowsList.length === 0 && (
+                        <div className="mini-empty">
+                          UserStats is empty. Each event inserts or updates exactly one row, keyed by <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12, background: 'var(--bg-inset)', padding: '1px 5px', borderRadius: 4 }}>user_id</code>.
+                        </div>
+                      )}
+                      {rowsList.map(([uid, r]) => (
+                        <div key={uid} className={`mini-row${flashUid === uid ? ' flash' : ''}`}>
+                          <span className="mini-uid">{uid}</span>
+                          <span>
+                            <span className="mini-val">{r.views_total}</span>
+                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg3)', marginLeft: 6, letterSpacing: '0.02em' }}>views_total</span>
+                          </span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              </div>
+                  </div>
+                </>
+              )}
 
               <QueryPanel
                 table="UserStats"
                 userIds={rowsList.map(([uid]) => uid)}
                 rowsList={rowsList}
                 metricKeys={['views_total']}
-                empty={rowsList.length === 0}/>
+                empty={rowsList.length === 0}
+                onFirstRun={() => setBasicQueryStarted(true)}
+                autoRefreshMs={1500}/>
             </div>
           </section>
 
@@ -1040,8 +1252,8 @@
               <CodeBlock tokens={pipelineDashboard}/>
 
               <AskClaude
-                command="/beava extend UserStats: add views_24h, distinct_cats_7d, last_seen"
-                blurb={<>Claude edits the existing pipeline file, adds the three new metrics, re-registers the table, and verifies with a batch-get. You never type <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12, background: '#fff', padding: '1px 5px', borderRadius: 4 }}>@bv.table</code> yourself.</>}/>
+                command="/beava build a per-customer dashboard: total visits, visits today, which categories they browsed this week, and when they were last active"
+                blurb={<>Natural text, no code. Before writing, the <code style={{ fontFamily: 'var(--font-mono)', fontSize: 12, background: '#fff', padding: '1px 5px', borderRadius: 4 }}>/beava</code> skill greps the repo: if the growth team already has a "last active" counter or the ads team already tracks category diversity, Claude points you there and reuses it. One feature, one home &mdash; no duplicates between teams.</>}/>
 
               <div style={{ marginTop: 20, marginBottom: 28, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <RegisterButton
@@ -1066,32 +1278,13 @@
                 path={formPath} setPath={setFormPath}
                 onCraft={sendCrafted}/>
 
-              {/* ---------- STEP 1: QUERY (runs above the dashboard) ---------- */}
-
-              {stage === 'dashboard' && (
-                <QueryPanel
-                  table="Dashboard"
-                  userIds={rowsList.map(([uid]) => uid)}
-                  rowsList={rowsList}
-                  metricKeys={['views_total', 'views_24h', 'distinct_cats_7d', 'last_seen']}
-                  empty={rowsList.length === 0}
-                  onFirstRun={() => setDashQueryStarted(true)}
-                  autoRefreshMs={1500}/>
-              )}
-
-              {/* ---------- STEP 2: LIVE DASHBOARD UI (gated on query) ---------- */}
-
-              {stage === 'dashboard' && !dashQueryStarted && (
-                <div className="empty-state" style={{ marginTop: 28, gridColumn: 'auto' }}>
-                  Run the query above to render the dashboard. The UI only has data to show once your frontend fetches it — same contract as production.
-                </div>
-              )}
-
+              {/* Dashboard materializes between the composer (above) and
+                  the QueryPanel (below) on first Run query click. */}
               {stage === 'dashboard' && dashQueryStarted && (
                 <>
-                  <div style={{ marginTop: 28, marginBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+                  <div style={{ marginTop: 20, marginBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg3)', letterSpacing: '0.04em', textTransform: 'lowercase' }}>
-                      ↓ dashboard rendered from the query response (auto-refresh every 1.5s)
+                      ↓ rendered from the query response (auto-refresh every 1.5s)
                     </div>
                     <div className="pipeline-state-badge">
                       <span>pipeline:</span>
@@ -1139,12 +1332,27 @@
                   </div>
 
                   {rowsList.length >= 3 && (
-                    <Callout eyebrow="YOU BUILT THIS" mascot="pose-2" tint="warm" style={{ marginTop: 32 }}>
-                      That grid above? That's live beava state rendered as a real dashboard. Every event you push updates a single user's card, atomically, and the query above re-fetches every 1.5 seconds so the UI stays fresh. The real server does the same thing at ~3M events/sec/core.
+                    <Callout eyebrow="YOU BUILT THIS" mascot="pose-2" tint="warm" style={{ marginTop: 32, marginBottom: 8 }}>
+                      That grid above? That's live beava state rendered as a real dashboard. Every event you push updates a single user's card, atomically, and the query below re-fetches every 1.5 seconds so the UI stays fresh. The real server does the same thing at ~3M events/sec/core.
                     </Callout>
                   )}
                 </>
               )}
+
+              {/* Query panel always sits at the bottom. Clicking Run query
+                  materializes the dashboard above. */}
+              {stage === 'dashboard' && (
+                <QueryPanel
+                  table="Dashboard"
+                  userIds={rowsList.map(([uid]) => uid)}
+                  rowsList={rowsList}
+                  metricKeys={['views_total', 'views_24h', 'distinct_cats_7d', 'last_seen']}
+                  empty={rowsList.length === 0}
+                  onFirstRun={() => setDashQueryStarted(true)}
+                  autoRefreshMs={1500}/>
+              )}
+
+              {stage === 'dashboard' && <MemoryScale/>}
             </div>
           </section>
 
