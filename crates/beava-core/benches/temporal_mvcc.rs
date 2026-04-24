@@ -30,25 +30,21 @@ fn build_store_with_chain(depth: u64) -> (TemporalStore, Vec<u8>) {
 fn bench_upsert(c: &mut Criterion) {
     let mut group = c.benchmark_group("temporal_store_upsert");
     for depth in [1u64, 10, 100, 1000] {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(depth),
-            &depth,
-            |b, &depth| {
-                // Pre-fill so each iter inserts at chain length ~depth.
-                b.iter_batched(
-                    || build_store_with_chain(depth),
-                    |(mut store, key)| {
-                        store.upsert(
-                            black_box(key.clone()),
-                            black_box(depth + 1),
-                            black_box(make_row((depth + 1) as i64)),
-                            black_box((depth + 1) * 10),
-                        );
-                    },
-                    criterion::BatchSize::SmallInput,
-                );
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
+            // Pre-fill so each iter inserts at chain length ~depth.
+            b.iter_batched(
+                || build_store_with_chain(depth),
+                |(mut store, key)| {
+                    store.upsert(
+                        black_box(key.clone()),
+                        black_box(depth + 1),
+                        black_box(make_row((depth + 1) as i64)),
+                        black_box((depth + 1) * 10),
+                    );
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        });
     }
     group.finish();
 }
@@ -59,16 +55,12 @@ fn bench_as_of_lookup(c: &mut Criterion) {
         let (store, key) = build_store_with_chain(depth);
         // Sanity check: the fixture is well-formed.
         assert!(store.lookup_at_lsn(&key, depth).is_some());
-        group.bench_with_input(
-            BenchmarkId::from_parameter(depth),
-            &depth,
-            |b, &depth| {
-                b.iter(|| {
-                    let v = store.lookup_at_lsn(black_box(&key), black_box(depth / 2 + 1));
-                    black_box(v);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
+            b.iter(|| {
+                let v = store.lookup_at_lsn(black_box(&key), black_box(depth / 2 + 1));
+                black_box(v);
+            });
+        });
     }
     group.finish();
 }
