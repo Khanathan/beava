@@ -115,6 +115,46 @@ enum ReadResult {
     Eof,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{RecordType, WalRecord};
+
+    /// Phase 11.5 Task 2 — round-trip the three new record types through the
+    /// WAL codec. Verifies D-11/D-12: TableUpsert (0x03), TableDelete (0x04),
+    /// and Retract (0x05) each encode → decode losslessly and that unknown
+    /// discriminants continue to error cleanly.
+    #[test]
+    fn new_record_types_round_trip_through_codec() {
+        for (byte, rt) in [
+            (0x03u8, RecordType::TableUpsert),
+            (0x04u8, RecordType::TableDelete),
+            (0x05u8, RecordType::Retract),
+        ] {
+            let rec = WalRecord {
+                lsn: 42,
+                record_type: rt,
+                payload: b"hello".to_vec(),
+            };
+            let mut buf = Vec::new();
+            encode_record(&rec, &mut buf);
+            let mut slice: &[u8] = &buf;
+            let back = decode_record(&mut slice, 0)
+                .expect("decode ok")
+                .expect("record present");
+            assert_eq!(back.lsn, 42);
+            assert_eq!(back.record_type as u8, byte);
+            assert_eq!(back.payload, b"hello");
+        }
+
+        // Unknown discriminant continues to surface cleanly.
+        assert!(matches!(
+            RecordType::from_u8(0x06),
+            Err(PersistError::UnknownRecordType(0x06))
+        ));
+    }
+}
+
 fn read_exact_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<ReadResult, PersistError> {
     let mut filled = 0;
     while filled < buf.len() {
