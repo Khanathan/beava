@@ -25,6 +25,10 @@ pub struct WalSinkConfig {
     pub fsync_bytes: u64,
     /// Segment size before rotating to a new segment. Default 128 MiB.
     pub segment_bytes: u64,
+    /// Phase 6.1: default sync semantics for `append_event`. `Periodic`
+    /// (default) ACKs after in-memory append and lets the timer fsync;
+    /// `PerEvent` blocks each append on fsync.
+    pub sync_mode: SyncMode,
 }
 
 impl Default for WalSinkConfig {
@@ -36,13 +40,39 @@ impl Default for WalSinkConfig {
             fsync_interval_ms: 2,
             fsync_bytes: 1 << 20,
             segment_bytes: 128 << 20,
+            sync_mode: SyncMode::Periodic,
         }
+    }
+}
+
+/// Phase 6.1: per-append fsync semantics.
+///
+/// `Periodic` (default) — `append_event_with_mode` resolves as soon as the
+/// payload has been encoded + written to the in-memory `BufWriter` and an
+/// LSN assigned. The background timer fsyncs on its own cadence
+/// (`fsync_interval_ms`). On crash within that window, the ACK'd event MAY
+/// be lost (documented; matches Kafka acks=1).
+///
+/// `PerEvent` — `append_event_with_mode` resolves only after the assigned
+/// LSN has been fsynced to disk (Phase 6 D-12 / SRV-DUR-02 invariant).
+/// Used by the strict-callers `/push-sync` endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SyncMode {
+    Periodic,
+    PerEvent,
+}
+
+impl Default for SyncMode {
+    fn default() -> Self {
+        Self::Periodic
     }
 }
 
 struct AppendRequest {
     record_type: RecordType,
     payload: Vec<u8>,
+    mode: SyncMode,
     done: oneshot::Sender<Result<Lsn, PersistError>>,
 }
 
@@ -63,6 +93,7 @@ pub struct WalSink {
     append_tx: mpsc::Sender<AppendRequest>,
     control_tx: mpsc::Sender<ControlMsg>,
     durable_rx: watch::Receiver<Lsn>,
+    default_mode: SyncMode,
 }
 
 impl WalSink {
@@ -81,6 +112,7 @@ impl WalSink {
         let (durable_tx, durable_rx) =
             watch::channel::<Lsn>(cfg.initial_start_lsn.saturating_sub(1));
 
+        let default_mode = cfg.sync_mode;
         let join = tokio::spawn(worker_loop(cfg, writer, append_rx, control_rx, durable_tx));
 
         Ok((
@@ -88,6 +120,7 @@ impl WalSink {
                 append_tx,
                 control_tx,
                 durable_rx,
+                default_mode,
             },
             join,
         ))
@@ -104,11 +137,29 @@ impl WalSink {
         record_type: RecordType,
         payload: Vec<u8>,
     ) -> Result<Lsn, PersistError> {
+        // append_record (used by RegistryBump and other internal callers) is
+        // always strict — registry-version transitions must be durable before
+        // future events reference them.
+        self.append_record_with_mode(record_type, payload, SyncMode::PerEvent)
+            .await
+    }
+
+    /// Phase 6.1: explicit-mode variant of `append_record`. `Periodic` mode
+    /// resolves as soon as the in-memory append + LSN assignment has happened
+    /// (the background timer fsyncs on its own schedule). `PerEvent` mode
+    /// blocks until the assigned LSN has been fsynced.
+    pub async fn append_record_with_mode(
+        &self,
+        record_type: RecordType,
+        payload: Vec<u8>,
+        mode: SyncMode,
+    ) -> Result<Lsn, PersistError> {
         let (tx, rx) = oneshot::channel();
         self.append_tx
             .send(AppendRequest {
                 record_type,
                 payload,
+                mode,
                 done: tx,
             })
             .await
@@ -126,10 +177,23 @@ impl WalSink {
         })?
     }
 
-    /// Enqueue an event payload for durable append. Wrapper around
-    /// `append_record(RecordType::Event, …)` for callsite clarity.
+    /// Enqueue an event payload for durable append using the sink's
+    /// configured `default_mode` (set at `spawn` time from `WalSinkConfig
+    /// .sync_mode`). For Phase 6.1 the default is `Periodic` (Kafka acks=1
+    /// semantics). Strict callers should use `append_event_with_mode(…,
+    /// SyncMode::PerEvent)` or the `/push-sync` endpoint.
     pub async fn append_event(&self, payload: Vec<u8>) -> Result<Lsn, PersistError> {
-        self.append_record(RecordType::Event, payload).await
+        self.append_event_with_mode(payload, self.default_mode).await
+    }
+
+    /// Phase 6.1: explicit-mode variant of `append_event`.
+    pub async fn append_event_with_mode(
+        &self,
+        payload: Vec<u8>,
+        mode: SyncMode,
+    ) -> Result<Lsn, PersistError> {
+        self.append_record_with_mode(RecordType::Event, payload, mode)
+            .await
     }
 
     /// Current highest-durable LSN (snapshot of the watch channel).
@@ -195,23 +259,29 @@ async fn worker_loop(
     mut control_rx: mpsc::Receiver<ControlMsg>,
     durable_tx: watch::Sender<Lsn>,
 ) {
-    let mut pending: Vec<AppendRequest> = Vec::new();
+    // `pending` holds PerEvent requests + Periodic requests staged but
+    // un-fsynced. Periodic requests have already had their `done` resolved
+    // by the time they hit `pending` (via `stage_request`), so the fsync
+    // batch only resolves PerEvent waiters.
+    let mut pending: Vec<PendingFsync> = Vec::new();
     let mut staged_bytes: u64 = 0;
     let mut next_lsn: Lsn = cfg.initial_start_lsn;
     let mut current_start_lsn: Lsn = cfg.initial_start_lsn;
     let fsync_interval = Duration::from_millis(cfg.fsync_interval_ms);
+    // Phase 6.1: timer fires regardless of pending — when there are no
+    // un-fsynced bytes the wake is a cheap no-op.
+    let mut timer = tokio::time::interval(fsync_interval);
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Drop the immediate first tick that `interval` emits.
+    timer.tick().await;
 
     loop {
-        let flush_deadline = if pending.is_empty() {
-            None
-        } else {
-            Some(tokio::time::sleep(fsync_interval))
-        };
+        let force_now = staged_bytes >= cfg.fsync_bytes;
 
         let flush_now = tokio::select! {
             biased;
 
-            // Control messages (truncate / shutdown) — handle inline without flushing.
+            // Control messages (truncate / shutdown) — handle inline.
             ctrl = control_rx.recv() => {
                 match ctrl {
                     Some(ControlMsg::TruncateUpTo { covered_lsn, ack }) => {
@@ -220,7 +290,7 @@ async fn worker_loop(
                         false
                     }
                     Some(ControlMsg::Shutdown { ack }) => {
-                        let res = flush_batch(
+                        let res = fsync_batch(
                             &cfg,
                             &mut writer,
                             &mut pending,
@@ -228,15 +298,14 @@ async fn worker_loop(
                             &mut next_lsn,
                             &mut current_start_lsn,
                             &durable_tx,
-                        ).await;
+                        );
                         let close = writer.sync_data();
                         let combined = res.and_then(|_| close.map_err(PersistError::Io));
                         let _ = ack.send(combined);
                         return;
                     }
                     None => {
-                        // Control channel dropped — shut down.
-                        let _ = flush_batch(
+                        let _ = fsync_batch(
                             &cfg,
                             &mut writer,
                             &mut pending,
@@ -244,24 +313,31 @@ async fn worker_loop(
                             &mut next_lsn,
                             &mut current_start_lsn,
                             &durable_tx,
-                        ).await;
+                        );
                         let _ = writer.sync_data();
                         return;
                     }
                 }
             }
 
-            // New append request.
+            // New append request — stage immediately.
             req = append_rx.recv() => {
                 match req {
                     Some(req) => {
-                        staged_bytes += encoded_size(req.payload.len());
-                        pending.push(req);
+                        let pending_fsync_opt = stage_request(
+                            &mut writer,
+                            req,
+                            &mut next_lsn,
+                            &mut staged_bytes,
+                        );
+                        if let Some(pf) = pending_fsync_opt {
+                            pending.push(pf);
+                        }
+                        // Force fsync if we exceeded the byte threshold.
                         staged_bytes >= cfg.fsync_bytes
                     }
                     None => {
-                        // All senders dropped — flush remaining and exit.
-                        let _ = flush_batch(
+                        let _ = fsync_batch(
                             &cfg,
                             &mut writer,
                             &mut pending,
@@ -269,21 +345,22 @@ async fn worker_loop(
                             &mut next_lsn,
                             &mut current_start_lsn,
                             &durable_tx,
-                        ).await;
+                        );
                         let _ = writer.sync_data();
                         return;
                     }
                 }
             }
 
-            // Coalesce timer fired and we have pending work.
-            _ = async { flush_deadline.unwrap().await }, if !pending.is_empty() => {
-                true
+            // Coalesce timer fires unconditionally; we only fsync if
+            // there's something staged.
+            _ = timer.tick() => {
+                staged_bytes > 0
             }
         };
 
-        if flush_now {
-            let _ = flush_batch(
+        if flush_now || force_now {
+            let _ = fsync_batch(
                 &cfg,
                 &mut writer,
                 &mut pending,
@@ -291,76 +368,92 @@ async fn worker_loop(
                 &mut next_lsn,
                 &mut current_start_lsn,
                 &durable_tx,
-            )
-            .await;
+            );
         }
     }
 }
 
-async fn flush_batch(
+/// A PerEvent request that's been written to the BufWriter but is awaiting
+/// fsync before its `done` channel resolves.
+struct PendingFsync {
+    lsn: Lsn,
+    done: oneshot::Sender<Result<Lsn, PersistError>>,
+}
+
+/// Stage a single request: assign LSN, encode + write to BufWriter. For
+/// Periodic mode resolve `done` immediately; for PerEvent return a
+/// `PendingFsync` so the caller pushes it onto the fsync queue.
+fn stage_request(
+    writer: &mut WalWriter,
+    req: AppendRequest,
+    next_lsn: &mut Lsn,
+    staged_bytes: &mut u64,
+) -> Option<PendingFsync> {
+    let lsn = *next_lsn;
+    *next_lsn += 1;
+    let payload_len = req.payload.len();
+    let record = WalRecord {
+        lsn,
+        record_type: req.record_type,
+        payload: req.payload,
+    };
+    if let Err(e) = writer.append(&record) {
+        let _ = req.done.send(Err(e));
+        return None;
+    }
+    *staged_bytes += encoded_size(payload_len);
+    match req.mode {
+        SyncMode::Periodic => {
+            // ACK now — fsync happens on the timer (or shutdown).
+            let _ = req.done.send(Ok(lsn));
+            None
+        }
+        SyncMode::PerEvent => Some(PendingFsync { lsn, done: req.done }),
+    }
+}
+
+/// fsync the BufWriter, bump the durable watermark, resolve any PerEvent
+/// waiters, and rotate if the segment has filled. Phase 6.1: this is now
+/// the "second phase" of the staged-then-fsynced pipeline; staging
+/// happens in `stage_request` on the recv path.
+fn fsync_batch(
     cfg: &WalSinkConfig,
     writer_ref: &mut WalWriter,
-    pending: &mut Vec<AppendRequest>,
+    pending: &mut Vec<PendingFsync>,
     staged_bytes: &mut u64,
     next_lsn: &mut Lsn,
     current_start_lsn: &mut Lsn,
     durable_tx: &watch::Sender<Lsn>,
 ) -> Result<(), PersistError> {
-    if pending.is_empty() {
+    if *staged_bytes == 0 && pending.is_empty() {
         return Ok(());
     }
 
-    // Assign LSNs + encode + append.
-    let mut dones: Vec<(Lsn, oneshot::Sender<Result<Lsn, PersistError>>)> =
-        Vec::with_capacity(pending.len());
-    let mut highest = *next_lsn;
-    for req in pending.drain(..) {
-        let lsn = *next_lsn;
-        *next_lsn += 1;
-        highest = lsn;
-        let record = WalRecord {
-            lsn,
-            record_type: req.record_type,
-            payload: req.payload,
-        };
-        if let Err(e) = writer_ref.append(&record) {
-            let _ = req.done.send(Err(e));
-            continue;
-        }
-        dones.push((lsn, req.done));
-    }
-    *staged_bytes = 0;
+    // The highest LSN to publish on the watermark. PerEvent waiters track
+    // their own LSN; for Periodic-only batches we still need to advance
+    // the watermark to `next_lsn - 1`.
+    let highest = next_lsn.saturating_sub(1);
 
-    // fsync via spawn_blocking so the tokio runtime stays responsive.
-    // Temporarily move the writer into the blocking task by using a
-    // raw pointer wrapper — but std::fs::File::sync_data requires &self,
-    // so we can just call it through a mutable borrow inside spawn_blocking
-    // via a mem::swap. Simpler: call sync_data inline (current_thread runtime).
-    //
-    // For v0 we invoke sync_data inline — it's a blocking syscall but on
-    // the current_thread runtime the worker IS the thread, and the server
-    // uses a multi-thread runtime for the HTTP accept side. Good enough
-    // for the Phase 6 gate; Phase 13 revisits if P99 fsync shows up as a
-    // bottleneck.
-    //
-    // NB: We attempted spawn_blocking here but it conflicts with
-    // current_thread runtime used in tests (no blocking pool). Keeping
-    // inline fsync avoids the test-vs-prod divergence.
+    // fsync inline. (See historical note in Phase 6: spawn_blocking
+    // conflicts with the current_thread runtime used in tests; the worker
+    // IS its own task in production.)
     let sync_result = writer_ref.sync_data().map_err(PersistError::Io);
 
-    // After fsync, bump watermark + resolve all waiters.
     if sync_result.is_ok() {
         let _ = durable_tx.send(highest);
-        for (lsn, tx) in dones.drain(..) {
-            let _ = tx.send(Ok(lsn));
+        for pf in pending.drain(..) {
+            let _ = pf.done.send(Ok(pf.lsn));
         }
     } else {
         let err = || PersistError::Io(std::io::Error::other("fsync"));
-        for (_lsn, tx) in dones.drain(..) {
-            let _ = tx.send(Err(err()));
+        for pf in pending.drain(..) {
+            let _ = pf.done.send(Err(err()));
         }
+        *staged_bytes = 0;
         return sync_result;
     }
+
+    *staged_bytes = 0;
 
     // Rotate if we've outgrown the segment.
     if writer_ref.bytes_written() >= cfg.segment_bytes {

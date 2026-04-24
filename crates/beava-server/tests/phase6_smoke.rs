@@ -142,6 +142,7 @@ async fn phase6_criterion_4_rotation_truncates() {
         fsync_interval_ms: 1,
         fsync_bytes: 1 << 20,
         segment_bytes: 512, // force aggressive rotation
+        sync_mode: beava_persistence::SyncMode::PerEvent,
     })
     .expect("spawn sink");
 

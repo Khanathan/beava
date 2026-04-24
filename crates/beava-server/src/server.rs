@@ -12,7 +12,7 @@ use crate::snapshot_task::{spawn_snapshot_task, SnapshotTaskConfig, SnapshotTrig
 use crate::tcp::TcpListenerHandle;
 use crate::{AppState, Config};
 use beava_core::registry::Registry;
-use beava_persistence::{WalSink, WalSinkConfig};
+use beava_persistence::{SyncMode, WalSink, WalSinkConfig};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -158,6 +158,10 @@ impl Server {
             fsync_interval_ms: cfg.durability.wal_fsync_interval_ms,
             fsync_bytes: cfg.durability.wal_fsync_bytes,
             segment_bytes: cfg.durability.wal_segment_bytes,
+            sync_mode: match cfg.durability.wal_sync_mode {
+                beava_core::config::WalSyncMode::Periodic => SyncMode::Periodic,
+                beava_core::config::WalSyncMode::PerEvent => SyncMode::PerEvent,
+            },
         })
         .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
 

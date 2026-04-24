@@ -11,6 +11,9 @@ fn config_for_test(dir: std::path::PathBuf) -> WalSinkConfig {
         fsync_interval_ms: 2,
         fsync_bytes: 1 << 20,
         segment_bytes: 1 << 20, // 1 MiB — small but enough to keep one segment for these tests
+        // Phase 6 tests pre-date SyncMode; preserve their original
+        // ACK-after-fsync semantics by pinning to PerEvent.
+        sync_mode: beava_persistence::SyncMode::PerEvent,
     }
 }
 

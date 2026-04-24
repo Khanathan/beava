@@ -81,6 +81,34 @@ pub struct DurabilityConfig {
     /// Phase 7: number of snapshots to retain after pruning (default 2).
     #[serde(default = "default_snapshot_retain_count")]
     pub snapshot_retain_count: usize,
+    /// Phase 6.1: WAL sync semantics for the default `/push` endpoint.
+    /// `Periodic` (default) ACKs after in-memory append (Kafka acks=1);
+    /// `PerEvent` ACKs after fsync (Kafka acks=all). The `/push-sync`
+    /// endpoint always uses PerEvent regardless of this value.
+    /// Env override: `BEAVA_WAL_SYNC_MODE=periodic|per-event`.
+    #[serde(default = "default_wal_sync_mode")]
+    pub wal_sync_mode: WalSyncMode,
+}
+
+/// Phase 6.1: serializable mirror of `beava_persistence::SyncMode`. We
+/// duplicate the enum here so beava-core (WASM-portable) doesn't need to
+/// depend on beava-persistence (syscall-bearing). The conversion lives in
+/// the server crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WalSyncMode {
+    Periodic,
+    PerEvent,
+}
+
+impl Default for WalSyncMode {
+    fn default() -> Self {
+        Self::Periodic
+    }
+}
+
+fn default_wal_sync_mode() -> WalSyncMode {
+    WalSyncMode::Periodic
 }
 
 fn default_wal_dir() -> PathBuf {
@@ -119,6 +147,7 @@ impl Default for DurabilityConfig {
             snapshot_dir: default_snapshot_dir(),
             snapshot_interval_ms: default_snapshot_interval_ms(),
             snapshot_retain_count: default_snapshot_retain_count(),
+            wal_sync_mode: default_wal_sync_mode(),
         }
     }
 }
@@ -290,6 +319,21 @@ fn apply_env_overrides(cfg: &mut Config) -> Result<(), ConfigError> {
                     field: "durability.snapshot_retain_count",
                     reason: format!("BEAVA_SNAPSHOT_RETAIN_COUNT=`{}`: {}", v, e),
                 })?;
+    }
+    if let Ok(v) = std::env::var("BEAVA_WAL_SYNC_MODE") {
+        cfg.durability.wal_sync_mode = match v.to_ascii_lowercase().as_str() {
+            "periodic" => WalSyncMode::Periodic,
+            "per-event" | "perevent" | "per_event" => WalSyncMode::PerEvent,
+            other => {
+                return Err(ConfigError::Validation {
+                    field: "durability.wal_sync_mode",
+                    reason: format!(
+                        "BEAVA_WAL_SYNC_MODE=`{}` (expected `periodic` or `per-event`)",
+                        other
+                    ),
+                })
+            }
+        };
     }
     Ok(())
 }

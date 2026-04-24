@@ -60,6 +60,7 @@ fn bench_append_fsync_default_coalesce(c: &mut Criterion) {
                 fsync_interval_ms: 2,
                 fsync_bytes: 1 << 20,
                 segment_bytes: 128 << 20,
+                sync_mode: beava_persistence::SyncMode::PerEvent,
             };
             let payload = sample_payload();
 
@@ -97,6 +98,7 @@ fn bench_append_fsync_burst_1k(c: &mut Criterion) {
                 fsync_interval_ms: 2,
                 fsync_bytes: 1 << 20,
                 segment_bytes: 1024 << 20,
+                sync_mode: beava_persistence::SyncMode::PerEvent,
             };
             let payload = sample_payload();
 
