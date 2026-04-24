@@ -588,6 +588,11 @@ pub(crate) fn error_code_to_wire_str(code: ErrorCode) -> &'static str {
         ErrorCode::AggregationFeatureNameCollisionAcrossAggregations => {
             "aggregation_feature_name_collision_across_aggregations"
         }
+        // Plan 10-05: sketch-op error codes
+        ErrorCode::WindowNotSupported => "window_not_supported",
+        ErrorCode::InvalidPercentileQ => "invalid_percentile_q",
+        ErrorCode::InvalidTopKK => "invalid_top_k_k",
+        ErrorCode::InvalidBloomFpr => "invalid_bloom_fpr",
         _ => "invalid_registration",
     }
 }
