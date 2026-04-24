@@ -39,3 +39,7 @@ harness = false
 [[bench]]
 name = "phase10_topk"
 harness = false
+
+[[bench]]
+name = "phase10_sketches"
+harness = false
