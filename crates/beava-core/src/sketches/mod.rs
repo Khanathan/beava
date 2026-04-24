@@ -2,6 +2,7 @@
 
 pub mod bloom;
 pub mod cms;
+pub mod count_distinct;
 pub mod entropy;
 pub mod hll;
 pub mod percentile;
