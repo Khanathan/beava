@@ -412,6 +412,9 @@ impl WindowedOp {
                     Value::F64(matching as f64 / total as f64)
                 }
             }
+            // Phase 11 ops are never windowable (D-08). Compiler rejects
+            // `window=...` for these at register time; this arm is defensive.
+            _ => Value::Null,
         }
     }
 }
@@ -430,6 +433,14 @@ fn fresh_op(kind: AggKind) -> AggOp {
         AggKind::Variance => AggOp::Variance(VarianceState::default()),
         AggKind::StdDev => AggOp::StdDev(VarianceState::default()),
         AggKind::Ratio => AggOp::Ratio(RatioState::default()),
+        // Phase 11 ops are windowless (D-08). This path is unreachable in
+        // practice — WindowedOp is only constructed for windowable core ops
+        // by `AggOp::new`. Panic defensively if a caller passes a Phase 11
+        // kind here.
+        other => panic!(
+            "WindowedOp::fresh_op: non-windowable kind {:?} (Phase 11 ops are windowless)",
+            other
+        ),
     }
 }
 

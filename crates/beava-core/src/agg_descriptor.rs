@@ -67,6 +67,8 @@ mod tests {
             field: None,
             window_ms: None,
             where_expr: None,
+
+            ext: Default::default(),
         }
     }
 

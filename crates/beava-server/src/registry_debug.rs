@@ -207,11 +207,9 @@ fn value_to_json(v: Value) -> serde_json::Value {
         Value::List(items) => {
             serde_json::Value::Array(items.into_iter().map(value_to_json).collect())
         }
-        Value::Map(m) => serde_json::Value::Object(
-            m.into_iter()
-                .map(|(k, v)| (k, value_to_json(v)))
-                .collect(),
-        ),
+        Value::Map(m) => {
+            serde_json::Value::Object(m.into_iter().map(|(k, v)| (k, value_to_json(v))).collect())
+        }
     }
 }
 

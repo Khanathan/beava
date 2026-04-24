@@ -12,8 +12,7 @@ use beava_core::agg_buffer::{
     MostRecentNState, ReservoirSampleState, SeasonalDeviationState,
 };
 use beava_core::agg_geo::{
-    DistanceFromHomeState, GeoDistanceState, GeoEntropyState, GeoSpreadState, GeoVelocityState,
-    UniqueCellsState,
+    DistanceFromHomeState, GeoDistanceState, GeoEntropyState, GeoVelocityState, UniqueCellsState,
 };
 use beava_core::row::{Row, Value};
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -105,65 +104,58 @@ fn bench_reservoir_sample(c: &mut Criterion) {
 // ─── geo benches ─────────────────────────────────────────────────────────────
 
 fn bench_geo_velocity(c: &mut Criterion) {
-    let mut s = GeoVelocityState::default();
-    // pre-seed prev so update always hits the dist computation hot path
-    s.update(&row_geo(40.0, -74.0), 0, "lat", "lon", true);
+    let mut s = GeoVelocityState::with_fields("lat".into(), "lon".into());
+    s.update(&row_geo(40.0, -74.0), 0, true);
     let r = row_geo(40.5, -74.0);
     let mut t: i64 = 1_000_000;
     c.bench_function("geo/geo_velocity/update", |b| {
         b.iter(|| {
-            s.update(std::hint::black_box(&r), t, "lat", "lon", true);
+            s.update(std::hint::black_box(&r), t, true);
             t += 1_000;
         });
     });
 }
 
 fn bench_geo_distance(c: &mut Criterion) {
-    let mut s = GeoDistanceState::default();
-    s.update(&row_geo(40.0, -74.0), "lat", "lon", true);
+    let mut s = GeoDistanceState::with_fields("lat".into(), "lon".into());
+    s.update(&row_geo(40.0, -74.0), true);
     let r = row_geo(40.001, -74.001);
     c.bench_function("geo/geo_distance/update", |b| {
         b.iter(|| {
-            s.update(std::hint::black_box(&r), "lat", "lon", true);
+            s.update(std::hint::black_box(&r), true);
         });
     });
 }
 
 fn bench_unique_cells(c: &mut Criterion) {
-    let mut s = UniqueCellsState::new(100);
+    let mut s = UniqueCellsState::with_fields("lat".into(), "lon".into(), 100);
     let r = row_geo(40.7128, -74.0060);
     c.bench_function("geo/unique_cells/update", |b| {
         b.iter(|| {
-            s.update(std::hint::black_box(&r), "lat", "lon", true);
+            s.update(std::hint::black_box(&r), true);
         });
     });
 }
 
 fn bench_geo_entropy(c: &mut Criterion) {
-    let mut s = GeoEntropyState::new(100);
+    let mut s = GeoEntropyState::with_fields("lat".into(), "lon".into(), 100);
     let r = row_geo(40.7128, -74.0060);
     c.bench_function("geo/geo_entropy/update", |b| {
         b.iter(|| {
-            s.update(std::hint::black_box(&r), "lat", "lon", true);
+            s.update(std::hint::black_box(&r), true);
         });
     });
 }
 
 fn bench_distance_from_home(c: &mut Criterion) {
-    let mut s = DistanceFromHomeState::new(8);
-    // pre-fill so query path exercises centroid recompute
+    let mut s = DistanceFromHomeState::with_fields("lat".into(), "lon".into(), 8);
     for i in 0..8 {
-        s.update(
-            &row_geo(40.0 + i as f64 * 0.001, -74.0),
-            "lat",
-            "lon",
-            true,
-        );
+        s.update(&row_geo(40.0 + i as f64 * 0.001, -74.0), true);
     }
     let r = row_geo(40.7128, -74.0060);
     c.bench_function("geo/distance_from_home/update", |b| {
         b.iter(|| {
-            s.update(std::hint::black_box(&r), "lat", "lon", true);
+            s.update(std::hint::black_box(&r), true);
         });
     });
 }

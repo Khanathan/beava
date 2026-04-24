@@ -84,6 +84,8 @@ fn build_state_table_with_n_entities(n: usize) -> AggStateTable {
         field: None,
         window_ms: None,
         where_expr: None,
+
+        ext: Default::default(),
     };
     let mut tbl = AggStateTable::new();
     for i in 0..n {

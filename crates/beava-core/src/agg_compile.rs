@@ -83,6 +83,16 @@ struct AggParams {
     field: Option<String>,
     window: Option<String>,
     where_str: Option<String>,
+    // Phase 11 extended params
+    buckets: Option<Vec<f64>>,
+    n: Option<usize>,
+    k: Option<usize>,
+    precision: Option<u32>,
+    lat_field: Option<String>,
+    lon_field: Option<String>,
+    samples: Option<usize>,
+    categories: Option<Vec<String>>,
+    max_categories: Option<usize>,
 }
 
 fn extract_agg_params(params: &serde_json::Value) -> AggParams {
@@ -98,10 +108,54 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
         .get("where")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let buckets = params.get("buckets").and_then(|v| v.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|x| x.as_f64().or_else(|| x.as_i64().map(|n| n as f64)))
+            .collect::<Vec<f64>>()
+    });
+    let n = params.get("n").and_then(|v| v.as_u64()).map(|n| n as usize);
+    let k = params.get("k").and_then(|v| v.as_u64()).map(|n| n as usize);
+    let precision = params
+        .get("precision")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32);
+    let lat_field = params
+        .get("lat")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let lon_field = params
+        .get("lon")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let samples = params
+        .get("samples")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+    let categories = params
+        .get("categories")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect::<Vec<String>>()
+        });
+    let max_categories = params
+        .get("max_categories")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
     AggParams {
         field,
         window,
         where_str,
+        buckets,
+        n,
+        k,
+        precision,
+        lat_field,
+        lon_field,
+        samples,
+        categories,
+        max_categories,
     }
 }
 
@@ -117,8 +171,38 @@ fn parse_agg_kind(op: &str) -> Option<AggKind> {
         "variance" => Some(AggKind::Variance),
         "stddev" => Some(AggKind::StdDev),
         "ratio" => Some(AggKind::Ratio),
+        // Phase 11 bounded-buffer operators (AGG-BUFFER-01..07)
+        "histogram" => Some(AggKind::Histogram),
+        "hour_of_day_histogram" => Some(AggKind::HourOfDayHistogram),
+        "dow_hour_histogram" => Some(AggKind::DowHourHistogram),
+        "seasonal_deviation" => Some(AggKind::SeasonalDeviation),
+        "event_type_mix" => Some(AggKind::EventTypeMix),
+        "most_recent_n" => Some(AggKind::MostRecentN),
+        "reservoir_sample" => Some(AggKind::ReservoirSample),
+        // Phase 11 geo operators (AGG-GEO-01..06)
+        "geo_velocity" => Some(AggKind::GeoVelocity),
+        "geo_distance" => Some(AggKind::GeoDistance),
+        "geo_spread" => Some(AggKind::GeoSpread),
+        "unique_cells" => Some(AggKind::UniqueCells),
+        "geo_entropy" => Some(AggKind::GeoEntropy),
+        "distance_from_home" => Some(AggKind::DistanceFromHome),
         _ => None,
     }
+}
+
+/// True iff this op kind is a Phase 11 operator (not windowable in v0).
+fn is_phase11_kind(kind: AggKind) -> bool {
+    !matches!(
+        kind,
+        AggKind::Count
+            | AggKind::Sum
+            | AggKind::Avg
+            | AggKind::Min
+            | AggKind::Max
+            | AggKind::Variance
+            | AggKind::StdDev
+            | AggKind::Ratio
+    )
 }
 
 // ─── compile_aggregations_from_nodes ─────────────────────────────────────────
@@ -330,6 +414,23 @@ pub fn compile_aggregations_from_nodes(
                     },
                 };
 
+                // Phase 11 (D-08): buffer/geo ops are lifetime-only in v0.
+                // Reject `window=...` with a clear error.
+                if is_phase11_kind(kind) && window_ms.is_some() {
+                    errors.push(ValidationError {
+                        code: ErrorCode::AggregationInvalidWindow,
+                        path: format!(
+                            "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.window"
+                        ),
+                        reason: format!(
+                            "op '{}' does not support 'window=' in v0 (Phase 11 D-08)",
+                            agg_spec.op
+                        ),
+                    });
+                    deriv_errors = true;
+                    continue;
+                }
+
                 // Where predicate parsing + field reference check.
                 let where_expr = match &params.where_str {
                     None => None,
@@ -374,6 +475,17 @@ pub fn compile_aggregations_from_nodes(
                     },
                 };
 
+                let ext = crate::agg_op::AggExtParams {
+                    buckets: params.buckets,
+                    n: params.n,
+                    k: params.k,
+                    precision: params.precision,
+                    lat_field: params.lat_field,
+                    lon_field: params.lon_field,
+                    samples: params.samples,
+                    categories: params.categories,
+                    max_categories: params.max_categories,
+                };
                 features.push(NamedAggOp {
                     feature_name: feature_name.clone(),
                     descriptor: AggOpDescriptor {
@@ -381,6 +493,7 @@ pub fn compile_aggregations_from_nodes(
                         field: params.field,
                         window_ms,
                         where_expr,
+                        ext,
                     },
                 });
             }

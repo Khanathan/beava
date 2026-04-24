@@ -155,6 +155,8 @@ mod tests {
             field: None,
             window_ms: None,
             where_expr: None,
+
+            ext: Default::default(),
         }
     }
 
@@ -164,6 +166,8 @@ mod tests {
             field: Some(field.to_string()),
             window_ms: None,
             where_expr: None,
+
+            ext: Default::default(),
         }
     }
 
@@ -359,6 +363,7 @@ mod tests {
                     field: None,
                     window_ms: None,
                     where_expr: Some(where_expr),
+                    ext: Default::default(),
                 },
             )],
         );
@@ -562,6 +567,8 @@ mod registry_source_tests {
                     field: None,
                     window_ms: None,
                     where_expr: None,
+
+                    ext: Default::default(),
                 },
             }],
         }

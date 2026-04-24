@@ -124,15 +124,9 @@ fn fmt_edge(v: f64) -> String {
 
 /// 24-bin hour-of-day histogram. Bin index = `(event_time_ms / 3_600_000) mod 24`.
 /// Labels are zero-padded `"00".."23"` (UTC).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HourOfDayHistogramState {
     pub counts: [u64; 24],
-}
-
-impl Default for HourOfDayHistogramState {
-    fn default() -> Self {
-        Self { counts: [0; 24] }
-    }
 }
 
 impl HourOfDayHistogramState {
@@ -192,11 +186,11 @@ impl DowHourHistogramState {
 
     pub fn query(&self) -> Value {
         let mut m = BTreeMap::new();
-        for d in 0..7 {
+        for (d, label) in DAY_LABELS.iter().enumerate() {
             for h in 0..24 {
                 let idx = d * 24 + h;
                 m.insert(
-                    format!("{}-{:02}", DAY_LABELS[d], h),
+                    format!("{}-{:02}", label, h),
                     Value::I64(self.counts[idx] as i64),
                 );
             }
@@ -222,7 +216,7 @@ pub(crate) fn dow_hour_index(event_time_ms: i64) -> usize {
 /// Per-hour state: `(count, sum, sum_sq)` — Welford-incompatible but adequate
 /// for v0 (single-pass variance via the textbook formula). Returns `Null` if
 /// the bucket has fewer than 2 observations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SeasonalDeviationState {
     pub per_hour: [HourBucket; 24],
     pub last_observed: Option<(f64, usize)>, // (value, hour_index)
@@ -233,15 +227,6 @@ pub struct HourBucket {
     pub n: u64,
     pub sum: f64,
     pub sum_sq: f64,
-}
-
-impl Default for SeasonalDeviationState {
-    fn default() -> Self {
-        Self {
-            per_hour: Default::default(),
-            last_observed: None,
-        }
-    }
 }
 
 impl SeasonalDeviationState {

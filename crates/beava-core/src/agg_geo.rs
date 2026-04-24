@@ -8,6 +8,10 @@
 //! D-06 invariants: no wall-clock reads, no rand. All state transitions are a
 //! pure function of `(row, event_time_ms, prior state)`.
 //! D-08 (Phase 11 CONTEXT): all operators are lifetime / windowless in v0.
+//!
+//! Each geo state owns its `lat_field` / `lon_field` name (captured at register
+//! time) so the apply loop does not need to thread the descriptor params
+//! through every `update` call.
 
 use crate::row::{Row, Value};
 use haversine::{distance, Location, Units};
@@ -48,26 +52,29 @@ pub fn haversine_km(p1: (f64, f64), p2: (f64, f64)) -> f64 {
 // ─── GeoVelocityState (AGG-GEO-01) ───────────────────────────────────────────
 
 /// Maximum implied speed (km/h) between consecutive events for an entity.
-/// Holds prev `(lat, lon, t_ms)` and rolling `max_kmh`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GeoVelocityState {
+    pub lat_field: String,
+    pub lon_field: String,
     pub prev: Option<(f64, f64, i64)>,
     pub max_kmh: f64,
 }
 
 impl GeoVelocityState {
-    pub fn update(
-        &mut self,
-        row: &Row,
-        event_time_ms: i64,
-        lat_field: &str,
-        lon_field: &str,
-        where_matched: bool,
-    ) {
+    pub fn with_fields(lat_field: String, lon_field: String) -> Self {
+        Self {
+            lat_field,
+            lon_field,
+            prev: None,
+            max_kmh: 0.0,
+        }
+    }
+
+    pub fn update(&mut self, row: &Row, event_time_ms: i64, where_matched: bool) {
         if !where_matched {
             return;
         }
-        let Some((lat, lon)) = read_lat_lon(row, lat_field, lon_field) else {
+        let Some((lat, lon)) = read_lat_lon(row, &self.lat_field, &self.lon_field) else {
             return;
         };
         if let Some((plat, plon, pt)) = self.prev {
@@ -97,16 +104,27 @@ impl GeoVelocityState {
 /// Total path length (km) traversed by an entity across consecutive events.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GeoDistanceState {
+    pub lat_field: String,
+    pub lon_field: String,
     pub prev: Option<(f64, f64)>,
     pub total_km: f64,
 }
 
 impl GeoDistanceState {
-    pub fn update(&mut self, row: &Row, lat_field: &str, lon_field: &str, where_matched: bool) {
+    pub fn with_fields(lat_field: String, lon_field: String) -> Self {
+        Self {
+            lat_field,
+            lon_field,
+            prev: None,
+            total_km: 0.0,
+        }
+    }
+
+    pub fn update(&mut self, row: &Row, where_matched: bool) {
         if !where_matched {
             return;
         }
-        let Some((lat, lon)) = read_lat_lon(row, lat_field, lon_field) else {
+        let Some((lat, lon)) = read_lat_lon(row, &self.lat_field, &self.lon_field) else {
             return;
         };
         if let Some(prev) = self.prev {
@@ -123,10 +141,10 @@ impl GeoDistanceState {
 // ─── GeoSpreadState (AGG-GEO-03) ─────────────────────────────────────────────
 
 /// Maximum distance (km) of any observed event from the running mean centre.
-/// Mean is recomputed online via Welford on each axis; max is updated against
-/// each new sample relative to the *current* (post-update) mean.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GeoSpreadState {
+    pub lat_field: String,
+    pub lon_field: String,
     pub n: u64,
     pub mean_lat: f64,
     pub mean_lon: f64,
@@ -138,11 +156,19 @@ pub struct GeoSpreadState {
 }
 
 impl GeoSpreadState {
-    pub fn update(&mut self, row: &Row, lat_field: &str, lon_field: &str, where_matched: bool) {
+    pub fn with_fields(lat_field: String, lon_field: String) -> Self {
+        Self {
+            lat_field,
+            lon_field,
+            ..Default::default()
+        }
+    }
+
+    pub fn update(&mut self, row: &Row, where_matched: bool) {
         if !where_matched {
             return;
         }
-        let Some((lat, lon)) = read_lat_lon(row, lat_field, lon_field) else {
+        let Some((lat, lon)) = read_lat_lon(row, &self.lat_field, &self.lon_field) else {
             return;
         };
         self.n += 1;
@@ -150,7 +176,6 @@ impl GeoSpreadState {
         self.mean_lat += (lat - self.mean_lat) * inv_n;
         self.mean_lon += (lon - self.mean_lon) * inv_n;
         self.samples.push((lat, lon));
-        // Recompute max — needed because the centroid moved.
         let mean = (self.mean_lat, self.mean_lon);
         let mut new_max = 0.0_f64;
         for &p in &self.samples {
@@ -182,6 +207,8 @@ impl GeoSpreadState {
 /// - precision = 100 → 0.01° cell ≈ 1.1 km
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UniqueCellsState {
+    pub lat_field: String,
+    pub lon_field: String,
     pub precision: u32,
     pub cells: BTreeMap<(i32, i32), u64>,
 }
@@ -189,6 +216,17 @@ pub struct UniqueCellsState {
 impl UniqueCellsState {
     pub fn new(precision: u32) -> Self {
         Self {
+            lat_field: String::new(),
+            lon_field: String::new(),
+            precision: precision.max(1),
+            cells: BTreeMap::new(),
+        }
+    }
+
+    pub fn with_fields(lat_field: String, lon_field: String, precision: u32) -> Self {
+        Self {
+            lat_field,
+            lon_field,
             precision: precision.max(1),
             cells: BTreeMap::new(),
         }
@@ -199,11 +237,11 @@ impl UniqueCellsState {
         ((lat * p).floor() as i32, (lon * p).floor() as i32)
     }
 
-    pub fn update(&mut self, row: &Row, lat_field: &str, lon_field: &str, where_matched: bool) {
+    pub fn update(&mut self, row: &Row, where_matched: bool) {
         if !where_matched {
             return;
         }
-        let Some((lat, lon)) = read_lat_lon(row, lat_field, lon_field) else {
+        let Some((lat, lon)) = read_lat_lon(row, &self.lat_field, &self.lon_field) else {
             return;
         };
         let cell = Self::cell_id(self.precision, lat, lon);
@@ -218,10 +256,10 @@ impl UniqueCellsState {
 // ─── GeoEntropyState (AGG-GEO-05) ────────────────────────────────────────────
 
 /// Shannon entropy (bits) over the distribution of grid-cell visits.
-/// Shares cell encoding with `UniqueCellsState` so user precision semantics
-/// stay consistent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeoEntropyState {
+    pub lat_field: String,
+    pub lon_field: String,
     pub precision: u32,
     pub cells: BTreeMap<(i32, i32), u64>,
     pub total: u64,
@@ -230,17 +268,29 @@ pub struct GeoEntropyState {
 impl GeoEntropyState {
     pub fn new(precision: u32) -> Self {
         Self {
+            lat_field: String::new(),
+            lon_field: String::new(),
             precision: precision.max(1),
             cells: BTreeMap::new(),
             total: 0,
         }
     }
 
-    pub fn update(&mut self, row: &Row, lat_field: &str, lon_field: &str, where_matched: bool) {
+    pub fn with_fields(lat_field: String, lon_field: String, precision: u32) -> Self {
+        Self {
+            lat_field,
+            lon_field,
+            precision: precision.max(1),
+            cells: BTreeMap::new(),
+            total: 0,
+        }
+    }
+
+    pub fn update(&mut self, row: &Row, where_matched: bool) {
         if !where_matched {
             return;
         }
-        let Some((lat, lon)) = read_lat_lon(row, lat_field, lon_field) else {
+        let Some((lat, lon)) = read_lat_lon(row, &self.lat_field, &self.lon_field) else {
             return;
         };
         let cell = UniqueCellsState::cell_id(self.precision, lat, lon);
@@ -275,6 +325,8 @@ impl GeoEntropyState {
 /// `top_k` lands, swap to top-K most-frequent-cell centroid.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DistanceFromHomeState {
+    pub lat_field: String,
+    pub lon_field: String,
     pub samples: usize,
     pub buf: Vec<(f64, f64)>,
     pub head: usize,
@@ -285,6 +337,8 @@ pub struct DistanceFromHomeState {
 impl DistanceFromHomeState {
     pub fn new(samples: usize) -> Self {
         Self {
+            lat_field: String::new(),
+            lon_field: String::new(),
             samples: samples.max(1),
             buf: Vec::with_capacity(samples.max(1)),
             head: 0,
@@ -293,11 +347,23 @@ impl DistanceFromHomeState {
         }
     }
 
-    pub fn update(&mut self, row: &Row, lat_field: &str, lon_field: &str, where_matched: bool) {
+    pub fn with_fields(lat_field: String, lon_field: String, samples: usize) -> Self {
+        Self {
+            lat_field,
+            lon_field,
+            samples: samples.max(1),
+            buf: Vec::with_capacity(samples.max(1)),
+            head: 0,
+            filled: false,
+            last: None,
+        }
+    }
+
+    pub fn update(&mut self, row: &Row, where_matched: bool) {
         if !where_matched {
             return;
         }
-        let Some((lat, lon)) = read_lat_lon(row, lat_field, lon_field) else {
+        let Some((lat, lon)) = read_lat_lon(row, &self.lat_field, &self.lon_field) else {
             return;
         };
         if !self.filled {
@@ -357,24 +423,14 @@ mod tests {
 
     #[test]
     fn geo_velocity_records_max_kmh_between_events() {
-        let mut s = GeoVelocityState::default();
+        let mut s = GeoVelocityState::with_fields("lat".into(), "lon".into());
         // event 1 @ t=0 NYC
-        s.update(&row_geo(40.7128, -74.0060), 0, "lat", "lon", true);
-        // event 2 @ t=3_600_000 (1h later) at (41.7128, -74.0060) — 1° north ≈ 111 km
-        s.update(
-            &row_geo(41.7128, -74.0060),
-            3_600_000,
-            "lat",
-            "lon",
-            true,
-        );
+        s.update(&row_geo(40.7128, -74.0060), 0, true);
+        // event 2 @ t=3_600_000 (1h later) 1° north → ~111 km/h
+        s.update(&row_geo(41.7128, -74.0060), 3_600_000, true);
         let v = s.query();
         if let Value::F64(kmh) = v {
-            // 1° latitude ≈ 111.19 km. At 1h ⇒ ~111 km/h.
-            assert!(
-                (kmh - 111.0).abs() < 2.0,
-                "expected ~111 km/h, got {kmh}"
-            );
+            assert!((kmh - 111.0).abs() < 2.0, "expected ~111 km/h, got {kmh}");
         } else {
             panic!("expected F64");
         }
@@ -382,7 +438,7 @@ mod tests {
 
     #[test]
     fn geo_velocity_returns_null_with_no_events() {
-        let s = GeoVelocityState::default();
+        let s = GeoVelocityState::with_fields("lat".into(), "lon".into());
         assert_eq!(s.query(), Value::Null);
     }
 
@@ -390,50 +446,43 @@ mod tests {
 
     #[test]
     fn geo_distance_sums_path_segments() {
-        let mut s = GeoDistanceState::default();
-        s.update(&row_geo(0.0, 0.0), "lat", "lon", true);
-        s.update(&row_geo(0.0, 1.0), "lat", "lon", true); // ~111 km east
-        s.update(&row_geo(0.0, 2.0), "lat", "lon", true); // ~111 km east
+        let mut s = GeoDistanceState::with_fields("lat".into(), "lon".into());
+        s.update(&row_geo(0.0, 0.0), true);
+        s.update(&row_geo(0.0, 1.0), true); // ~111 km east
+        s.update(&row_geo(0.0, 2.0), true); // ~111 km east
         let d = match s.query() {
             Value::F64(x) => x,
             _ => panic!(),
         };
-        assert!(
-            (d - 222.0).abs() < 5.0,
-            "expected ~222 km path, got {d}"
-        );
+        assert!((d - 222.0).abs() < 5.0, "expected ~222 km path, got {d}");
     }
 
     // ── GeoSpreadState ───────────────────────────────────────────────────────
 
     #[test]
     fn geo_spread_returns_max_distance_from_centroid() {
-        let mut s = GeoSpreadState::default();
-        // 4 corners of a small square ±0.5° around (0,0); diagonal ~78 km from centroid
-        s.update(&row_geo(0.5, 0.5), "lat", "lon", true);
-        s.update(&row_geo(0.5, -0.5), "lat", "lon", true);
-        s.update(&row_geo(-0.5, 0.5), "lat", "lon", true);
-        s.update(&row_geo(-0.5, -0.5), "lat", "lon", true);
+        let mut s = GeoSpreadState::with_fields("lat".into(), "lon".into());
+        s.update(&row_geo(0.5, 0.5), true);
+        s.update(&row_geo(0.5, -0.5), true);
+        s.update(&row_geo(-0.5, 0.5), true);
+        s.update(&row_geo(-0.5, -0.5), true);
         let d = match s.query() {
             Value::F64(x) => x,
             _ => panic!(),
         };
         // Centroid is (0,0); each corner is ~78.6 km away.
-        assert!(
-            (d - 78.6).abs() < 1.0,
-            "expected ~78.6 km, got {d}"
-        );
+        assert!((d - 78.6).abs() < 1.0, "expected ~78.6 km, got {d}");
     }
 
     // ── UniqueCellsState ─────────────────────────────────────────────────────
 
     #[test]
     fn unique_cells_counts_distinct_cells() {
-        let mut s = UniqueCellsState::new(10); // 0.1° cells
-        s.update(&row_geo(0.05, 0.05), "lat", "lon", true);
-        s.update(&row_geo(0.07, 0.05), "lat", "lon", true); // same cell as first
-        s.update(&row_geo(1.0, 0.0), "lat", "lon", true); // different cell
-        s.update(&row_geo(2.0, 2.0), "lat", "lon", true); // different cell
+        let mut s = UniqueCellsState::with_fields("lat".into(), "lon".into(), 10);
+        s.update(&row_geo(0.05, 0.05), true);
+        s.update(&row_geo(0.07, 0.05), true); // same cell as first
+        s.update(&row_geo(1.0, 0.0), true); // different cell
+        s.update(&row_geo(2.0, 2.0), true); // different cell
         assert_eq!(s.query(), Value::I64(3));
     }
 
@@ -441,10 +490,9 @@ mod tests {
 
     #[test]
     fn geo_entropy_uniform_distribution_high_entropy() {
-        let mut s = GeoEntropyState::new(10);
-        // 4 distinct cells, equal frequency → H = log2(4) = 2.0 bits
+        let mut s = GeoEntropyState::with_fields("lat".into(), "lon".into(), 10);
         for &(lat, lon) in &[(0.05, 0.05), (1.0, 0.0), (2.0, 2.0), (3.0, 3.0)] {
-            s.update(&row_geo(lat, lon), "lat", "lon", true);
+            s.update(&row_geo(lat, lon), true);
         }
         match s.query() {
             Value::F64(h) => assert!(
@@ -457,9 +505,9 @@ mod tests {
 
     #[test]
     fn geo_entropy_single_cell_zero_entropy() {
-        let mut s = GeoEntropyState::new(10);
+        let mut s = GeoEntropyState::with_fields("lat".into(), "lon".into(), 10);
         for _ in 0..5 {
-            s.update(&row_geo(0.05, 0.05), "lat", "lon", true);
+            s.update(&row_geo(0.05, 0.05), true);
         }
         match s.query() {
             Value::F64(h) => assert!(h.abs() < 1e-9, "expected H=0 for single cell, got {h}"),
@@ -471,25 +519,21 @@ mod tests {
 
     #[test]
     fn distance_from_home_uses_centroid_of_last_n() {
-        let mut s = DistanceFromHomeState::new(3);
-        // Build "home" at (0,0) area: 3 events near origin
-        s.update(&row_geo(0.0, 0.0), "lat", "lon", true);
-        s.update(&row_geo(0.0, 0.1), "lat", "lon", true);
-        s.update(&row_geo(0.1, 0.0), "lat", "lon", true);
-        // Now jump to (1.0, 1.0) — should be far from (~0.033, 0.033) centroid
-        s.update(&row_geo(1.0, 1.0), "lat", "lon", true);
+        let mut s = DistanceFromHomeState::with_fields("lat".into(), "lon".into(), 3);
+        s.update(&row_geo(0.0, 0.0), true);
+        s.update(&row_geo(0.0, 0.1), true);
+        s.update(&row_geo(0.1, 0.0), true);
+        s.update(&row_geo(1.0, 1.0), true);
         let d = match s.query() {
             Value::F64(x) => x,
             _ => panic!(),
         };
-        // After this 4th event the buf holds the last 3: (0,0.1), (0.1,0), (1,1)
-        // centroid ≈ (0.367, 0.367), event (1,1): distance ~99 km
         assert!(d > 50.0 && d < 200.0, "expected 50-200 km, got {d}");
     }
 
     #[test]
     fn distance_from_home_null_with_no_events() {
-        let s = DistanceFromHomeState::new(5);
+        let s = DistanceFromHomeState::with_fields("lat".into(), "lon".into(), 5);
         assert_eq!(s.query(), Value::Null);
     }
 

@@ -38,6 +38,8 @@ fn windowless_desc(kind: AggKind, field: Option<&str>) -> AggOpDescriptor {
         field: field.map(|s| s.to_string()),
         window_ms: None,
         where_expr: None,
+
+        ext: Default::default(),
     }
 }
 
@@ -205,6 +207,8 @@ fn build_registry() -> Registry {
                 field: None,
                 window_ms: Some(300_000),
                 where_expr: None,
+
+                ext: Default::default(),
             },
         )],
     );

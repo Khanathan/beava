@@ -15,6 +15,14 @@
 //! D-01: enum + match arm dispatch; no Box<dyn AggOp>.
 //! D-06: no wall-clock reads in apply paths (forbidden: SystemTime now, rand).
 
+use crate::agg_buffer::{
+    DowHourHistogramState, EventTypeMixState, HistogramState, HourOfDayHistogramState,
+    MostRecentNState, ReservoirSampleState, SeasonalDeviationState,
+};
+use crate::agg_geo::{
+    DistanceFromHomeState, GeoDistanceState, GeoEntropyState, GeoSpreadState, GeoVelocityState,
+    UniqueCellsState,
+};
 use crate::agg_state::{
     AvgState, CountState, MaxState, MinState, RatioState, SumState, VarianceState,
 };
@@ -41,6 +49,20 @@ pub enum AggKind {
     Variance,
     StdDev,
     Ratio,
+    // ── Phase 11: bounded-buffer + geo ───────────────────────────────────────
+    Histogram,
+    HourOfDayHistogram,
+    DowHourHistogram,
+    SeasonalDeviation,
+    EventTypeMix,
+    MostRecentN,
+    ReservoirSample,
+    GeoVelocity,
+    GeoDistance,
+    GeoSpread,
+    UniqueCells,
+    GeoEntropy,
+    DistanceFromHome,
 }
 
 // ─── AggOpDescriptor ─────────────────────────────────────────────────────────
@@ -49,7 +71,11 @@ pub enum AggKind {
 ///
 /// `where_expr` gates the apply-path update via `agg_where::evaluate_where_predicate`.
 /// Added in Plan 05-02 (predicate threading, SDK-AGG-04).
-#[derive(Debug, Clone)]
+///
+/// `ext` carries Phase 11-family optional params (buckets, n, k, precision,
+/// lat_field, lon_field, samples, categories). Default = empty / no extended
+/// config so existing core ops stay source-compatible.
+#[derive(Debug, Clone, Default)]
 pub struct AggOpDescriptor {
     pub kind: AggKind,
     /// Field name for Sum/Avg/Min/Max/Variance/StdDev. None for Count/Ratio.
@@ -60,6 +86,41 @@ pub struct AggOpDescriptor {
     /// `agg_where::evaluate_where_predicate` at apply time.
     /// None = unconditional update (backwards-compatible with Plan 05-01).
     pub where_expr: Option<std::sync::Arc<crate::expr::Expr>>,
+    /// Phase 11 extended params (optional; None-valued for core ops).
+    pub ext: AggExtParams,
+}
+
+/// Extended register-time params for Phase 11 operators.
+#[derive(Debug, Clone, Default)]
+pub struct AggExtParams {
+    /// Histogram bucket split points (strictly increasing).
+    pub buckets: Option<Vec<f64>>,
+    /// `n` for MostRecentN.
+    pub n: Option<usize>,
+    /// `k` for ReservoirSample.
+    pub k: Option<usize>,
+    /// `precision` for UniqueCells / GeoEntropy.
+    pub precision: Option<u32>,
+    /// Latitude field name for geo ops.
+    pub lat_field: Option<String>,
+    /// Longitude field name for geo ops.
+    pub lon_field: Option<String>,
+    /// `samples` for DistanceFromHome.
+    pub samples: Option<usize>,
+    /// Allowed category allowlist for EventTypeMix.
+    pub categories: Option<Vec<String>>,
+    /// Max distinct categories tracked by EventTypeMix (default 256).
+    pub max_categories: Option<usize>,
+}
+
+// Default for AggKind so AggOpDescriptor::default() compiles. Could be
+// `#[derive(Default)] + #[default] AggKind::Count` but a manual impl keeps
+// the canonical-default rationale visible at the definition site.
+#[allow(clippy::derivable_impls)]
+impl Default for AggKind {
+    fn default() -> Self {
+        AggKind::Count
+    }
 }
 
 // ─── AggTypeError ────────────────────────────────────────────────────────────
@@ -91,6 +152,14 @@ impl std::fmt::Display for AggTypeError {
 /// Live per-(feature, entity) aggregation state. Enum dispatch; no Box<dyn>.
 ///
 /// AGG-CORE-01..09 per D-01.
+///
+/// Phase 11 (D-08): buffer/geo variants enlarge the discriminant to ~600 B
+/// (driven by `SeasonalDeviationState`'s 24-hour bucket array). We accept the
+/// size delta intentionally — every aggregation entity allocates exactly one
+/// `Vec<AggOp>` for its slots, and per-feature box indirection would dominate
+/// the small per-event update path that Phase 13 needs to keep <300 ns. The
+/// `Windowed` variant stays boxed because of its 64-bucket inner array.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AggOp {
     /// AGG-CORE-01
@@ -111,6 +180,20 @@ pub enum AggOp {
     Ratio(RatioState),
     /// AGG-CORE-09: any op wrapped in 64-bucket event-time tumbling
     Windowed(Box<WindowedOp>),
+    // ── Phase 11 (D-08 all windowless in v0) ─────────────────────────────────
+    Histogram(HistogramState),
+    HourOfDayHistogram(HourOfDayHistogramState),
+    DowHourHistogram(DowHourHistogramState),
+    SeasonalDeviation(SeasonalDeviationState),
+    EventTypeMix(EventTypeMixState),
+    MostRecentN(MostRecentNState),
+    ReservoirSample(ReservoirSampleState),
+    GeoVelocity(GeoVelocityState),
+    GeoDistance(GeoDistanceState),
+    GeoSpread(GeoSpreadState),
+    UniqueCells(UniqueCellsState),
+    GeoEntropy(GeoEntropyState),
+    DistanceFromHome(DistanceFromHomeState),
 }
 
 impl AggOp {
@@ -118,9 +201,17 @@ impl AggOp {
     ///
     /// If `desc.window_ms.is_some()`, wraps the inner op in `WindowedOp`.
     /// Otherwise returns the lifetime (windowless) variant.
+    ///
+    /// Phase 11 (D-08): buffer/geo operators are always windowless in v0; the
+    /// register-time compiler rejects `window=...` for those op names.
     pub fn new(desc: &AggOpDescriptor) -> Self {
+        // Only core ops support Windowed wrap (Phase 5).
         if let Some(window_ms) = desc.window_ms {
-            return AggOp::Windowed(Box::new(WindowedOp::new(desc.kind, window_ms)));
+            if is_windowable_core(desc.kind) {
+                return AggOp::Windowed(Box::new(WindowedOp::new(desc.kind, window_ms)));
+            }
+            // Fall through — Phase 11 ops treat window_ms as a no-op (compiler
+            // should already have rejected; defensive).
         }
         match desc.kind {
             AggKind::Count => AggOp::Count(CountState::default()),
@@ -131,12 +222,79 @@ impl AggOp {
             AggKind::Variance => AggOp::Variance(VarianceState::default()),
             AggKind::StdDev => AggOp::StdDev(VarianceState::default()),
             AggKind::Ratio => AggOp::Ratio(RatioState::default()),
+            AggKind::Histogram => AggOp::Histogram(HistogramState::new(
+                desc.ext.buckets.clone().unwrap_or_default(),
+            )),
+            AggKind::HourOfDayHistogram => {
+                AggOp::HourOfDayHistogram(HourOfDayHistogramState::default())
+            }
+            AggKind::DowHourHistogram => AggOp::DowHourHistogram(DowHourHistogramState::default()),
+            AggKind::SeasonalDeviation => {
+                AggOp::SeasonalDeviation(SeasonalDeviationState::default())
+            }
+            AggKind::EventTypeMix => AggOp::EventTypeMix(EventTypeMixState::new(
+                desc.ext.max_categories.unwrap_or(256),
+                desc.ext.categories.clone(),
+            )),
+            AggKind::MostRecentN => {
+                AggOp::MostRecentN(MostRecentNState::new(desc.ext.n.unwrap_or(10)))
+            }
+            AggKind::ReservoirSample => {
+                AggOp::ReservoirSample(ReservoirSampleState::new(desc.ext.k.unwrap_or(10)))
+            }
+            AggKind::GeoVelocity => AggOp::GeoVelocity(GeoVelocityState::with_fields(
+                desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
+                desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
+            )),
+            AggKind::GeoDistance => AggOp::GeoDistance(GeoDistanceState::with_fields(
+                desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
+                desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
+            )),
+            AggKind::GeoSpread => AggOp::GeoSpread(GeoSpreadState::with_fields(
+                desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
+                desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
+            )),
+            AggKind::UniqueCells => AggOp::UniqueCells(UniqueCellsState::with_fields(
+                desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
+                desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
+                desc.ext.precision.unwrap_or(10),
+            )),
+            AggKind::GeoEntropy => AggOp::GeoEntropy(GeoEntropyState::with_fields(
+                desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
+                desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
+                desc.ext.precision.unwrap_or(10),
+            )),
+            AggKind::DistanceFromHome => {
+                AggOp::DistanceFromHome(DistanceFromHomeState::with_fields(
+                    desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
+                    desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
+                    desc.ext.samples.unwrap_or(100),
+                ))
+            }
         }
+    }
+
+    /// Returns true iff the op is a Phase 5 core op that supports the 64-bucket
+    /// Windowed wrap. Used by serialization/debugging helpers; keep crate-public.
+    #[allow(dead_code)]
+    pub(crate) fn is_core(&self) -> bool {
+        matches!(
+            self,
+            AggOp::Count(_)
+                | AggOp::Sum(_)
+                | AggOp::Avg(_)
+                | AggOp::Min(_)
+                | AggOp::Max(_)
+                | AggOp::Variance(_)
+                | AggOp::StdDev(_)
+                | AggOp::Ratio(_)
+        )
     }
 
     /// Update state with one event row. Dispatches to the concrete per-op impl.
     ///
-    /// - `field`: the field to aggregate over (None for Count/Ratio)
+    /// - `field`: the field to aggregate over (None for Count/Ratio and for
+    ///   buffer/geo ops which carry their own field refs in state)
     /// - `where_matched`: pre-evaluated predicate result (Plan 05-02 wires this
     ///   from an Expr evaluator; here callers set it directly)
     pub fn update(
@@ -156,6 +314,20 @@ impl AggOp {
             AggOp::StdDev(s) => s.update(row, event_time_ms, field, where_matched),
             AggOp::Ratio(s) => s.update(row, event_time_ms, field, where_matched),
             AggOp::Windowed(w) => w.update(row, event_time_ms, field, where_matched),
+            // ── Phase 11 ────────────────────────────────────────────────
+            AggOp::Histogram(s) => s.update(row, field, where_matched),
+            AggOp::HourOfDayHistogram(s) => s.update(event_time_ms, where_matched),
+            AggOp::DowHourHistogram(s) => s.update(event_time_ms, where_matched),
+            AggOp::SeasonalDeviation(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::EventTypeMix(s) => s.update(row, field, where_matched),
+            AggOp::MostRecentN(s) => s.update(row, field, where_matched),
+            AggOp::ReservoirSample(s) => s.update(row, field, where_matched),
+            AggOp::GeoVelocity(s) => s.update(row, event_time_ms, where_matched),
+            AggOp::GeoDistance(s) => s.update(row, where_matched),
+            AggOp::GeoSpread(s) => s.update(row, where_matched),
+            AggOp::UniqueCells(s) => s.update(row, where_matched),
+            AggOp::GeoEntropy(s) => s.update(row, where_matched),
+            AggOp::DistanceFromHome(s) => s.update(row, where_matched),
         }
     }
 
@@ -210,8 +382,37 @@ impl AggOp {
             AggOp::StdDev(s) => s.query_stddev(),
             AggOp::Ratio(s) => s.query(),
             AggOp::Windowed(w) => w.query(query_time_ms),
+            AggOp::Histogram(s) => s.query(),
+            AggOp::HourOfDayHistogram(s) => s.query(),
+            AggOp::DowHourHistogram(s) => s.query(),
+            AggOp::SeasonalDeviation(s) => s.query(),
+            AggOp::EventTypeMix(s) => s.query(),
+            AggOp::MostRecentN(s) => s.query(),
+            AggOp::ReservoirSample(s) => s.query(),
+            AggOp::GeoVelocity(s) => s.query(),
+            AggOp::GeoDistance(s) => s.query(),
+            AggOp::GeoSpread(s) => s.query(),
+            AggOp::UniqueCells(s) => s.query(),
+            AggOp::GeoEntropy(s) => s.query(),
+            AggOp::DistanceFromHome(s) => s.query(),
         }
     }
+}
+
+/// Returns true iff the op can be wrapped in the 64-bucket Windowed envelope.
+/// Phase 5 core ops are windowable; Phase 11 ops are lifetime-only (D-08).
+fn is_windowable_core(kind: AggKind) -> bool {
+    matches!(
+        kind,
+        AggKind::Count
+            | AggKind::Sum
+            | AggKind::Avg
+            | AggKind::Min
+            | AggKind::Max
+            | AggKind::Variance
+            | AggKind::StdDev
+            | AggKind::Ratio
+    )
 }
 
 // ─── output_type_for ─────────────────────────────────────────────────────────
@@ -247,6 +448,24 @@ pub fn output_type_for(
                     field: field.to_string(),
                 })
         }
+        // Phase 11: structured outputs have no FieldType representation — they
+        // appear only as aggregation feature outputs (Value::List / Value::Map).
+        // The schema propagator treats these as FieldType::Str for placeholder
+        // naming (no downstream derivation can consume them as scalars in v0).
+        AggKind::Histogram
+        | AggKind::HourOfDayHistogram
+        | AggKind::DowHourHistogram
+        | AggKind::EventTypeMix
+        | AggKind::MostRecentN
+        | AggKind::ReservoirSample => Ok(FieldType::Str),
+        // Scalar Phase 11 outputs
+        AggKind::SeasonalDeviation
+        | AggKind::GeoVelocity
+        | AggKind::GeoDistance
+        | AggKind::GeoSpread
+        | AggKind::GeoEntropy
+        | AggKind::DistanceFromHome => Ok(FieldType::F64),
+        AggKind::UniqueCells => Ok(FieldType::I64),
     }
 }
 
@@ -264,6 +483,8 @@ mod tests {
             field: None,
             window_ms: None,
             where_expr: None,
+
+            ext: Default::default(),
         }
     }
 
@@ -273,6 +494,8 @@ mod tests {
             field: Some(field.to_string()),
             window_ms: None,
             where_expr: None,
+
+            ext: Default::default(),
         }
     }
 
@@ -282,6 +505,8 @@ mod tests {
             field: None,
             window_ms: Some(window_ms),
             where_expr: None,
+
+            ext: Default::default(),
         }
     }
 

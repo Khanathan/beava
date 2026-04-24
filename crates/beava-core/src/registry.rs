@@ -821,6 +821,8 @@ mod tests {
                         field: None,
                         window_ms: Some(300_000),
                         where_expr: None,
+
+                        ext: Default::default(),
                     },
                 },
                 NamedAggOp {
@@ -830,6 +832,8 @@ mod tests {
                         field: Some("amount".to_string()),
                         window_ms: None,
                         where_expr: None,
+
+                        ext: Default::default(),
                     },
                 },
             ],
@@ -913,6 +917,8 @@ mod tests {
                     field: None,
                     window_ms: None,
                     where_expr: None,
+
+                    ext: Default::default(),
                 },
             }],
         });
@@ -969,6 +975,8 @@ mod tests {
                     field: Some("amount".to_string()),
                     window_ms: None,
                     where_expr: None,
+
+                    ext: Default::default(),
                 },
             }],
         });
@@ -1044,6 +1052,8 @@ mod tests {
                     field: None,
                     window_ms: Some(300_000),
                     where_expr: None,
+
+                    ext: Default::default(),
                 },
             }],
         };
