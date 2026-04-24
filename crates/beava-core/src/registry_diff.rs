@@ -454,6 +454,8 @@ mod tests {
             ttl_ms: None,
             mode: TableMode::Upsert,
             registered_at_version: 0,
+            temporal: false,
+            retention_ms: None,
         })
     }
 
@@ -680,6 +682,8 @@ mod tests {
                 ttl_ms: None,
                 mode: TableMode::Upsert,
                 registered_at_version: 1,
+                temporal: false,
+                retention_ms: None,
             },
         );
 
@@ -690,6 +694,8 @@ mod tests {
             ttl_ms: None,
             mode: TableMode::Upsert,
             registered_at_version: 0,
+            temporal: false,
+            retention_ms: None,
         })];
         let diff = compute_diff(&current, &payload);
         assert_eq!(diff.changed[0].reason, DiffReason::PrimaryKeyMismatch);
@@ -1021,6 +1027,8 @@ mod proptests {
                     ttl_ms: None,
                     mode: TableMode::Upsert,
                     registered_at_version: 0,
+                    temporal: false,
+                    retention_ms: None,
                 }
             })
     }

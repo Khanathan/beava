@@ -72,6 +72,21 @@ pub struct TableDescriptor {
     /// Assigned server-side; ignored (defaulted to 0) when deserializing from client JSON.
     #[serde(default)]
     pub registered_at_version: u64,
+    /// Phase 11.5 (D-01): when `true`, the table is stored as an MVCC chain so
+    /// `as_of=<lsn>` queries and `POST /retract` work. Defaults to `false` so
+    /// pre-Phase-11.5 client payloads continue to deserialize as non-temporal.
+    #[serde(default)]
+    pub temporal: bool,
+    /// Phase 11.5 (D-16): MVCC history-window in wall-clock milliseconds.
+    /// Distinct from `ttl_ms` (per-row TTL): `retention_ms` bounds how far
+    /// back `as_of` queries and retractions can reach. `None` means
+    /// "unbounded retention" (use with care; memory grows with history).
+    ///
+    /// Note: `skip_serializing_if` is intentionally NOT used here — bincode's
+    /// positional layout would then become asymmetric with decode. JSON clients
+    /// can still omit the field (serde `default` handles the missing case).
+    #[serde(default)]
+    pub retention_ms: Option<u64>,
 }
 
 impl TableDescriptor {
@@ -82,6 +97,8 @@ impl TableDescriptor {
             && self.schema == other.schema
             && self.ttl_ms == other.ttl_ms
             && self.mode == other.mode
+            && self.temporal == other.temporal
+            && self.retention_ms == other.retention_ms
     }
 }
 
