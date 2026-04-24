@@ -5,6 +5,7 @@ pub mod cms;
 pub mod entropy;
 pub mod hll;
 pub mod retracting_ring;
+pub mod top_k;
 pub mod uddsketch;
 
 #[cfg(test)]
