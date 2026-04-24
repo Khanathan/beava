@@ -57,10 +57,7 @@ impl BloomFilter {
         let mut h = ahash::AHasher::default();
         value.hash(&mut h);
         let raw = h.finish();
-        (
-            murmur3_finalize(raw, SEED_A),
-            murmur3_finalize(raw, SEED_B),
-        )
+        (murmur3_finalize(raw, SEED_A), murmur3_finalize(raw, SEED_B))
     }
 
     /// Compute k bit positions via Kirsch-Mitzenmacher double-hashing: h_i = h1 + i*h2 mod m.

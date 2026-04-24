@@ -96,8 +96,8 @@ impl EntropyHistogram {
         std::mem::size_of::<Self>()
             + self
                 .counts
-                .iter()
-                .map(|(k, _)| k.capacity() + std::mem::size_of::<u64>())
+                .keys()
+                .map(|k| k.capacity() + std::mem::size_of::<u64>())
                 .sum::<usize>()
     }
 }
