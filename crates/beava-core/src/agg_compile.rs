@@ -1013,6 +1013,148 @@ mod tests {
         );
     }
 
+    // Plan 10-05: sketch op-name + sketch-param validation tests.
+    fn sketch_event_node() -> PayloadNode {
+        event_node_with_fields(
+            "Txn",
+            &[
+                ("user_id", FieldType::Str),
+                ("merchant_id", FieldType::Str),
+                ("amount", FieldType::F64),
+                ("device_id", FieldType::Str),
+                ("category", FieldType::Str),
+            ],
+        )
+    }
+
+    #[test]
+    fn rule11_count_distinct_op_name_recognized() {
+        let nodes = vec![
+            sketch_event_node(),
+            group_by_derivation(
+                "Agg",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({"d": {"op": "count_distinct", "params": {"field": "merchant_id", "window": "1h"}}}),
+            ),
+        ];
+        let (compiled, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "{:?}", errors);
+        assert_eq!(compiled.len(), 1);
+    }
+
+    #[test]
+    fn rule11_percentile_op_name_recognized_with_q() {
+        let nodes = vec![
+            sketch_event_node(),
+            group_by_derivation(
+                "Agg",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({"p": {"op": "percentile", "params": {"field": "amount", "q": 0.99}}}),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "{:?}", errors);
+    }
+
+    #[test]
+    fn rule11_percentile_q_out_of_range_rejected() {
+        let nodes = vec![
+            sketch_event_node(),
+            group_by_derivation(
+                "Agg",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({"p": {"op": "percentile", "params": {"field": "amount", "q": 1.5}}}),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::InvalidPercentileQ),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn rule11_bloom_member_with_window_rejected() {
+        let nodes = vec![
+            sketch_event_node(),
+            group_by_derivation(
+                "Agg",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({"b": {"op": "bloom_member", "params": {"field": "device_id", "window": "1h"}}}),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::WindowNotSupported),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn rule11_top_k_k_out_of_range_rejected() {
+        let nodes = vec![
+            sketch_event_node(),
+            group_by_derivation(
+                "Agg",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({"t": {"op": "top_k", "params": {"field": "merchant_id", "k": 5000}}}),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors.iter().any(|e| e.code == ErrorCode::InvalidTopKK),
+            "{:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn rule11_entropy_op_name_recognized() {
+        let nodes = vec![
+            sketch_event_node(),
+            group_by_derivation(
+                "Agg",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({"e": {"op": "entropy", "params": {"field": "category"}}}),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(errors.is_empty(), "{:?}", errors);
+    }
+
+    #[test]
+    fn rule11_bloom_fpr_out_of_range_rejected() {
+        let nodes = vec![
+            sketch_event_node(),
+            group_by_derivation(
+                "Agg",
+                "Txn",
+                vec!["user_id"],
+                serde_json::json!({"b": {"op": "bloom_member", "params": {"field": "device_id", "target_fpr": 2.0}}}),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.code == ErrorCode::InvalidBloomFpr),
+            "{:?}",
+            errors
+        );
+    }
+
     #[test]
     fn rule11_fail_soft_collects_all_errors() {
         // Payload with 3 violations: unknown group key + unknown field + bad window
