@@ -26,6 +26,7 @@ from typing import Any
 __all__ = [
     "AggDescriptor",
     "GroupBy",
+    # Phase 5 core
     "count",
     "sum",
     "avg",
@@ -34,6 +35,25 @@ __all__ = [
     "variance",
     "stddev",
     "ratio",
+    # Phase 9 decay (AGG-DECAY-01..06)
+    "ewma",
+    "ema",
+    "ewvar",
+    "ew_zscore",
+    "decayed_sum",
+    "decayed_count",
+    "twa",
+    # Phase 9 velocity (AGG-VEL-01..08)
+    "rate_of_change",
+    "inter_arrival_stats",
+    "burst_count",
+    "delta_from_prev",
+    "trend",
+    "trend_residual",
+    "outlier_count",
+    "value_change_count",
+    # Phase 9 entity z-score (AGG-Z-01)
+    "z_score",
 ]
 
 # ---------------------------------------------------------------------------
@@ -107,21 +127,29 @@ class AggDescriptor:
     Consumed by GroupBy.agg() to build REGISTER JSON.
 
     Attributes:
-        op:     Operator name: count|sum|avg|min|max|variance|stddev|ratio
-        field:  Column name (None for count/ratio which don't require a field)
-        window: Duration string e.g. "5m", "1h", "forever", or None (lifetime)
-        where:  Serialized predicate string (from _ExprAST.to_expr_string()), or None
+        op:         Operator name: count|sum|avg|min|max|variance|stddev|ratio or
+                    Phase 9 names (ewma, ewvar, ew_zscore, decayed_sum,
+                    decayed_count, twa, rate_of_change, inter_arrival_stats,
+                    burst_count, delta_from_prev, trend, trend_residual,
+                    outlier_count, value_change_count, z_score).
+        field:      Column name (None for count/ratio/inter_arrival_stats/burst_count).
+        window:     Duration string, or None (lifetime).
+        where:      Serialized predicate string (from _ExprAST.to_expr_string()), or None.
+        half_life:  Duration string for decay ops (Phase 9 AGG-DECAY).
+        sub_window: Duration string for burst_count (Phase 9 AGG-VEL-03).
+        sigma:      Float threshold for outlier_count (Phase 9 AGG-VEL-07); default 3.0.
     """
 
     op: str
     field: str | None = None
     window: str | None = None
     where: str | None = None
+    half_life: str | None = None
+    sub_window: str | None = None
+    sigma: float | None = None
 
     def to_agg_spec(self) -> dict[str, Any]:
         """Return the wire-JSON AggSpec for this descriptor.
-
-        Shape: ``{'op': <op>, 'params': {'field'?: ..., 'window'?: ..., 'where'?: ...}}``
 
         Only non-None values are included in params to keep the wire payload
         minimal; the Rust server treats absent keys the same as null.
@@ -133,6 +161,12 @@ class AggDescriptor:
             params["window"] = self.window
         if self.where is not None:
             params["where"] = self.where
+        if self.half_life is not None:
+            params["half_life"] = self.half_life
+        if self.sub_window is not None:
+            params["sub_window"] = self.sub_window
+        if self.sigma is not None:
+            params["sigma"] = self.sigma
         return {"op": self.op, "params": params}
 
 
@@ -267,6 +301,220 @@ def ratio(*, window: str | None = None, where: Any = None) -> AggDescriptor:
     """
     _validate_window(window, "ratio", requires_window=False)
     return AggDescriptor(op="ratio", field=None, window=window, where=_serialize_where(where))
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 — Decay helpers (AGG-DECAY-01..06)
+# ---------------------------------------------------------------------------
+
+
+def _validate_half_life(half_life: str, op: str) -> None:
+    """Validate half_life duration (must be finite, positive). AGG-DECAY-07."""
+    if not isinstance(half_life, str) or not half_life:
+        raise ValueError(
+            f"{op}(): half_life must be a non-empty duration string e.g. '5m', '1h'"
+        )
+    # Allow any \\d+(ms|s|m|h|d), reject "forever".
+    if not re.match(r"^[1-9]\d*(?:ms|s|m|h|d)$", half_life):
+        raise ValueError(
+            f"{op}(): half_life={half_life!r} must match \\d+(ms|s|m|h|d); "
+            "'forever' is not allowed for decay ops"
+        )
+
+
+def ewma(field: str, *, half_life: str, where: Any = None) -> AggDescriptor:
+    """AGG-DECAY-01: Exponentially-weighted moving average.
+
+    Args:
+        field:     Numeric field to track.
+        half_life: Duration string, e.g. ``"5m"``. Must be positive and finite.
+        where:     Optional predicate.
+
+    Returns:
+        AggDescriptor(op='ewma', ...).
+    """
+    _validate_half_life(half_life, "ewma")
+    return AggDescriptor(
+        op="ewma",
+        field=field,
+        half_life=half_life,
+        where=_serialize_where(where),
+    )
+
+
+def ema(field: str, *, half_life: str, where: Any = None) -> AggDescriptor:
+    """SDK alias for :func:`ewma` (same server-side op)."""
+    return ewma(field, half_life=half_life, where=where)
+
+
+def ewvar(field: str, *, half_life: str, where: Any = None) -> AggDescriptor:
+    """AGG-DECAY-02: Exponentially-weighted variance."""
+    _validate_half_life(half_life, "ewvar")
+    return AggDescriptor(
+        op="ewvar",
+        field=field,
+        half_life=half_life,
+        where=_serialize_where(where),
+    )
+
+
+def ew_zscore(field: str, *, half_life: str, where: Any = None) -> AggDescriptor:
+    """AGG-DECAY-03: Current event z-score vs EW baseline."""
+    _validate_half_life(half_life, "ew_zscore")
+    return AggDescriptor(
+        op="ew_zscore",
+        field=field,
+        half_life=half_life,
+        where=_serialize_where(where),
+    )
+
+
+def decayed_sum(field: str, *, half_life: str, where: Any = None) -> AggDescriptor:
+    """AGG-DECAY-04: Forward-decay sum (Cormode)."""
+    _validate_half_life(half_life, "decayed_sum")
+    return AggDescriptor(
+        op="decayed_sum",
+        field=field,
+        half_life=half_life,
+        where=_serialize_where(where),
+    )
+
+
+def decayed_count(*, half_life: str, where: Any = None) -> AggDescriptor:
+    """AGG-DECAY-05: Forward-decay count."""
+    _validate_half_life(half_life, "decayed_count")
+    return AggDescriptor(
+        op="decayed_count",
+        field=None,
+        half_life=half_life,
+        where=_serialize_where(where),
+    )
+
+
+def twa(field: str, *, window: str, where: Any = None) -> AggDescriptor:
+    """AGG-DECAY-06: Time-weighted average (gauge fields)."""
+    _validate_window(window, "twa", requires_window=True)
+    return AggDescriptor(
+        op="twa", field=field, window=window, where=_serialize_where(where)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 — Velocity helpers (AGG-VEL-01..08)
+# ---------------------------------------------------------------------------
+
+
+def rate_of_change(field: str, *, window: str, where: Any = None) -> AggDescriptor:
+    """AGG-VEL-01: rate of change across consecutive events within window."""
+    _validate_window(window, "rate_of_change", requires_window=True)
+    return AggDescriptor(
+        op="rate_of_change",
+        field=field,
+        window=window,
+        where=_serialize_where(where),
+    )
+
+
+def inter_arrival_stats(*, window: str, where: Any = None) -> AggDescriptor:
+    """AGG-VEL-02: mean inter-arrival (ms). v0 emits mean only."""
+    _validate_window(window, "inter_arrival_stats", requires_window=True)
+    return AggDescriptor(
+        op="inter_arrival_stats",
+        field=None,
+        window=window,
+        where=_serialize_where(where),
+    )
+
+
+def burst_count(*, window: str, sub_window: str, where: Any = None) -> AggDescriptor:
+    """AGG-VEL-03: max events observed in any sub-window."""
+    _validate_window(window, "burst_count", requires_window=True)
+    if not isinstance(sub_window, str) or not re.match(
+        r"^[1-9]\d*(?:ms|s|m|h|d)$", sub_window
+    ):
+        raise ValueError(
+            f"burst_count(): sub_window={sub_window!r} must match \\d+(ms|s|m|h|d)"
+        )
+    return AggDescriptor(
+        op="burst_count",
+        field=None,
+        window=window,
+        sub_window=sub_window,
+        where=_serialize_where(where),
+    )
+
+
+def delta_from_prev(field: str, *, where: Any = None) -> AggDescriptor:
+    """AGG-VEL-04: current value - previous value."""
+    return AggDescriptor(
+        op="delta_from_prev", field=field, where=_serialize_where(where)
+    )
+
+
+def trend(field: str, *, window: str, where: Any = None) -> AggDescriptor:
+    """AGG-VEL-05: slope of online linear regression."""
+    _validate_window(window, "trend", requires_window=True)
+    return AggDescriptor(
+        op="trend", field=field, window=window, where=_serialize_where(where)
+    )
+
+
+def trend_residual(field: str, *, window: str, where: Any = None) -> AggDescriptor:
+    """AGG-VEL-06: current_value - trend-predicted value."""
+    _validate_window(window, "trend_residual", requires_window=True)
+    return AggDescriptor(
+        op="trend_residual",
+        field=field,
+        window=window,
+        where=_serialize_where(where),
+    )
+
+
+def outlier_count(
+    field: str,
+    *,
+    window: str,
+    sigma: float = 3.0,
+    where: Any = None,
+) -> AggDescriptor:
+    """AGG-VEL-07: count of events with |x - mean| > sigma * stddev."""
+    _validate_window(window, "outlier_count", requires_window=True)
+    if not isinstance(sigma, (int, float)) or sigma <= 0:
+        raise ValueError(f"outlier_count(): sigma={sigma!r} must be positive float")
+    return AggDescriptor(
+        op="outlier_count",
+        field=field,
+        window=window,
+        sigma=float(sigma),
+        where=_serialize_where(where),
+    )
+
+
+def value_change_count(field: str, *, window: str, where: Any = None) -> AggDescriptor:
+    """AGG-VEL-08: count of value flips."""
+    _validate_window(window, "value_change_count", requires_window=True)
+    return AggDescriptor(
+        op="value_change_count",
+        field=field,
+        window=window,
+        where=_serialize_where(where),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 — Entity z-score (AGG-Z-01)
+# ---------------------------------------------------------------------------
+
+
+def z_score(field: str, *, baseline_window: str, where: Any = None) -> AggDescriptor:
+    """AGG-Z-01: (current - mean) / stddev over baseline_window."""
+    _validate_window(baseline_window, "z_score", requires_window=True)
+    return AggDescriptor(
+        op="z_score",
+        field=field,
+        window=baseline_window,
+        where=_serialize_where(where),
+    )
 
 
 # ---------------------------------------------------------------------------
