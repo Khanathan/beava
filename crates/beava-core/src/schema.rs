@@ -21,6 +21,8 @@ pub enum FieldType {
     Bool,
     Bytes,
     Datetime,
+    /// Structured JSON output — used by sketch operators that return lists/objects (Phase 10).
+    Json,
 }
 
 // ─── Schema structs ──────────────────────────────────────────────────────────
