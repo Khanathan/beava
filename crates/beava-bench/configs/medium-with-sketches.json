@@ -1,0 +1,64 @@
+{
+  "name": "medium-with-sketches",
+  "description": "Medium pipeline (5 core ops) + 2 sketches (count_distinct + percentile). 7 features total.",
+  "register": {
+    "nodes": [
+      {
+        "kind": "event",
+        "name": "Txn",
+        "schema": {
+          "fields": {
+            "event_time": "i64",
+            "user_id": "str",
+            "amount": "f64",
+            "merchant_id": "str"
+          },
+          "optional_fields": []
+        },
+        "event_time_field": "event_time"
+      },
+      {
+        "kind": "derivation",
+        "name": "TxnAgg",
+        "output_kind": "table",
+        "upstreams": ["Txn"],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": ["user_id"],
+            "agg": {
+              "cnt":     { "op": "count",   "params": {} },
+              "sum_amt": { "op": "sum",     "params": { "field": "amount" } },
+              "avg_amt": { "op": "avg",     "params": { "field": "amount" } },
+              "min_amt": { "op": "min",     "params": { "field": "amount" } },
+              "max_amt": { "op": "max",     "params": { "field": "amount" } },
+              "merchants_distinct_1h": { "op": "count_distinct", "params": { "field": "merchant_id", "window": "1h" } },
+              "amount_p99_1h":          { "op": "percentile",     "params": { "field": "amount", "q": 0.99, "window": "1h" } }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "user_id": "str",
+            "cnt":     "i64",
+            "sum_amt": "f64",
+            "avg_amt": "f64",
+            "min_amt": "f64",
+            "max_amt": "f64",
+            "merchants_distinct_1h": "i64",
+            "amount_p99_1h": "f64"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": ["user_id"]
+      }
+    ]
+  },
+  "event_name": "Txn",
+  "features": ["cnt", "sum_amt", "avg_amt", "min_amt", "max_amt", "merchants_distinct_1h", "amount_p99_1h"],
+  "key_field": "user_id",
+  "extra_fields": {
+    "amount": "f64",
+    "merchant_id": "str"
+  }
+}
