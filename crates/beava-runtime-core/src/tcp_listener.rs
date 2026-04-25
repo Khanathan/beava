@@ -528,9 +528,7 @@ pub fn parse_json_envelope(payload: &[u8]) -> Result<(&str, &[u8]), JsonEnvelope
             break;
         }
         if payload[p] != b'"' {
-            return Err(JsonEnvelopeError::Decode(
-                "expected string key".to_string(),
-            ));
+            return Err(JsonEnvelopeError::Decode("expected string key".to_string()));
         }
         // Read key string.
         let key_start = p + 1;
