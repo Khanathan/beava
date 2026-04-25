@@ -28,9 +28,13 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Current Focus
 
-**Phase 18 — Redis-shaped hand-rolled hot path. Plan 18-04.6 COMPLETE.**
+**Phase 18 — Redis-shaped hand-rolled hot path. Plan 18-09 COMPLETE.**
 
-Plan 18-04.6 landed 2026-04-25: mio EventLoop wired end-to-end into `ServerV18::serve_with_dirs`. New `ApplyShard` wraps single-writer `Arc<Mutex<AppState>>` with a sync `dispatch_wire_request_sync` called inline per mio tick. `WalBufferRing::append` on the hot path (async WAL bridge removed). Admin stays on tokio/axum. `beava_runtime_kind{runtime="mio"} 1` gauge added to /metrics. First real measurement: **44k EPS TCP/small** (190x over the 234 EPS tokio shim). D-1: Keep Mutex uncontended (Phase 13.3 removes it). D-2: Data plane fully sync. D-3: Async dispatch_wire_request kept for compat. Next: Plans 18-05/18-06 (IoPool parallelism on the apply thread for the 300-500k floor target).
+Plan 18-09 landed 2026-04-25 evening: msgpack-on-TCP wire format (CT_MSGPACK 0x02) wired end-to-end — `WireRequest::TcpPush` carries `body_format` byte; `tcp_listener::parse_wire_request` branches on content-type; `Row` gets `Deserialize` via `RowVisitor` (uses `serde_json::Value` as field-value intermediary to preserve bincode WAL/snapshot compat — kept the JsonValue intermediate the plan wanted to skip); `dispatch_push_sync` branches on body_format; WAL records bumped to v=2 binary self-delimiting format `[u8 v=2][u8 ct][u32 rv][u64 et_ms][u16 nlen][N name][u32 blen][M body]`; `serve_with_dirs` replays both v=1 (`*.log` registry) and v=2 (`*.wal` data plane); `beava-bench-v18 --wire-format {json|msgpack}`; Python `TcpTransport.send_push(wire_format='msgpack')` (optional `pip install msgpack`). 9 tasks, 13 commits incl 6 RED + GREEN pairs.
+
+**Key perf finding (M4, parallel=4, 10s, small):** msgpack 23,324 EPS vs JSON 23,799 EPS — **97.6% parity, no measurable serialization overhead**. The JSON tax theory was wrong; `rmp_serde` decode is sub-µs and not on the critical path. Bottleneck is confirmed = single mio apply thread (same as 18-04.6). Plan 18-04.7 (IoPool wiring into the serve loop) is the next required win — without per-tick I/O distribution, single-thread is the ceiling regardless of wire format.
+
+Plan 18-04.6 prior measurement still stands: 44k EPS TCP/small @ parallel=16 (mio EventLoop end-to-end).
 
 Phase 13.3 remains open on worktree `phase-13.3-lockless-apply` — lockless apply (RefCell + LocalSet). Both tracks are independent; Phase 18 executes on `v2/greenfield` directly.
 
