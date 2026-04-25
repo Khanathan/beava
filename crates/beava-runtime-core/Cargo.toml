@@ -19,6 +19,9 @@ crossbeam-channel = "0.5"
 serde_json = { workspace = true }
 serde = { workspace = true }
 rmp-serde = { workspace = true }
+# Plan 18-10: rmp::decode primitives for hand-rolled msgpack envelope scanner
+# in tcp_listener.rs (no serde overhead on the hot path).
+rmp = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 libc = { workspace = true }

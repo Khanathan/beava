@@ -67,6 +67,423 @@ impl TcpListener {
     }
 }
 
+// ─── Plan 18-10: Hand-rolled msgpack envelope scanner ────────────────────────
+//
+// Skips the rmp_serde + serde_json::Value indirection used in Plan 18-09. The
+// envelope is a fixed `{event: str, body: any}` 2-key fixmap; we walk it
+// byte-by-byte with rmp::decode primitives and return zero-copy slices.
+//
+// Target (Apple M4): ≤80 ns/op. Plan 18-09's serde-driven path was 1,928 ns.
+
+/// Errors from `parse_msgpack_envelope`. Owned strings only on the cold error
+/// path — the happy path returns borrowed slices.
+#[derive(Debug)]
+pub enum MsgpackEnvelopeError {
+    /// Not enough bytes / malformed marker.
+    Truncated,
+    /// Top-level shape was not a 2-entry map.
+    EnvelopeShape,
+    /// Required field missing (e.g. neither key was "event").
+    MissingField(&'static str),
+    /// Bytes that should have been a UTF-8 string were not.
+    InvalidUtf8,
+    /// Map key was not a string we recognise.
+    UnknownKey,
+    /// Underlying rmp decode failed.
+    DecodeError,
+}
+
+impl std::fmt::Display for MsgpackEnvelopeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MsgpackEnvelopeError::Truncated => f.write_str("truncated msgpack envelope"),
+            MsgpackEnvelopeError::EnvelopeShape => {
+                f.write_str("msgpack envelope must be a 2-entry map")
+            }
+            MsgpackEnvelopeError::MissingField(name) => write!(f, "missing field: {name}"),
+            MsgpackEnvelopeError::InvalidUtf8 => f.write_str("invalid utf-8 in msgpack envelope"),
+            MsgpackEnvelopeError::UnknownKey => {
+                f.write_str("unrecognised key in msgpack envelope (expected event/body)")
+            }
+            MsgpackEnvelopeError::DecodeError => f.write_str("msgpack decode error"),
+        }
+    }
+}
+
+impl std::error::Error for MsgpackEnvelopeError {}
+
+/// Walk one msgpack value of any type starting at `pos`, return the position
+/// just past it. Recursive for container types (map/array/ext).
+///
+/// Implements every msgpack tag variant per the spec:
+/// fixint / int8..int64 / uint8..uint64 / float32 / float64 / bool / nil
+/// fixstr / str8 / str16 / str32 / bin8 / bin16 / bin32
+/// fixarray / array16 / array32 / fixmap / map16 / map32
+/// fixext1..16 / ext8 / ext16 / ext32 / reserved
+fn skip_msgpack_value(payload: &[u8], pos: usize) -> Result<usize, MsgpackEnvelopeError> {
+    if pos >= payload.len() {
+        return Err(MsgpackEnvelopeError::Truncated);
+    }
+    let marker = payload[pos];
+    let mut p = pos + 1;
+    macro_rules! need {
+        ($n:expr) => {
+            if p + ($n) > payload.len() {
+                return Err(MsgpackEnvelopeError::Truncated);
+            }
+        };
+    }
+    match marker {
+        // FixPos: 0x00..=0x7f — single byte, value is in marker
+        0x00..=0x7f => Ok(p),
+        // FixMap: 0x80..=0x8f — len = marker & 0x0f, then 2*len values
+        0x80..=0x8f => {
+            let len = (marker & 0x0f) as usize;
+            for _ in 0..len {
+                p = skip_msgpack_value(payload, p)?; // key
+                p = skip_msgpack_value(payload, p)?; // value
+            }
+            Ok(p)
+        }
+        // FixArray: 0x90..=0x9f
+        0x90..=0x9f => {
+            let len = (marker & 0x0f) as usize;
+            for _ in 0..len {
+                p = skip_msgpack_value(payload, p)?;
+            }
+            Ok(p)
+        }
+        // FixStr: 0xa0..=0xbf — len = marker & 0x1f
+        0xa0..=0xbf => {
+            let len = (marker & 0x1f) as usize;
+            need!(len);
+            Ok(p + len)
+        }
+        // Nil
+        0xc0 => Ok(p),
+        // Reserved (never used per spec) — treat as decode error
+        0xc1 => Err(MsgpackEnvelopeError::DecodeError),
+        // False / True
+        0xc2 | 0xc3 => Ok(p),
+        // bin8 / bin16 / bin32
+        0xc4 => {
+            need!(1);
+            let len = payload[p] as usize;
+            p += 1;
+            need!(len);
+            Ok(p + len)
+        }
+        0xc5 => {
+            need!(2);
+            let len = u16::from_be_bytes([payload[p], payload[p + 1]]) as usize;
+            p += 2;
+            need!(len);
+            Ok(p + len)
+        }
+        0xc6 => {
+            need!(4);
+            let len = u32::from_be_bytes([
+                payload[p],
+                payload[p + 1],
+                payload[p + 2],
+                payload[p + 3],
+            ]) as usize;
+            p += 4;
+            need!(len);
+            Ok(p + len)
+        }
+        // ext8 / ext16 / ext32 — len bytes + 1 byte type + payload
+        0xc7 => {
+            need!(2);
+            let len = payload[p] as usize;
+            p += 2; // skip len + type
+            need!(len);
+            Ok(p + len)
+        }
+        0xc8 => {
+            need!(3);
+            let len = u16::from_be_bytes([payload[p], payload[p + 1]]) as usize;
+            p += 3;
+            need!(len);
+            Ok(p + len)
+        }
+        0xc9 => {
+            need!(5);
+            let len = u32::from_be_bytes([
+                payload[p],
+                payload[p + 1],
+                payload[p + 2],
+                payload[p + 3],
+            ]) as usize;
+            p += 5;
+            need!(len);
+            Ok(p + len)
+        }
+        // float32
+        0xca => {
+            need!(4);
+            Ok(p + 4)
+        }
+        // float64
+        0xcb => {
+            need!(8);
+            Ok(p + 8)
+        }
+        // uint8 / uint16 / uint32 / uint64
+        0xcc => {
+            need!(1);
+            Ok(p + 1)
+        }
+        0xcd => {
+            need!(2);
+            Ok(p + 2)
+        }
+        0xce => {
+            need!(4);
+            Ok(p + 4)
+        }
+        0xcf => {
+            need!(8);
+            Ok(p + 8)
+        }
+        // int8 / int16 / int32 / int64
+        0xd0 => {
+            need!(1);
+            Ok(p + 1)
+        }
+        0xd1 => {
+            need!(2);
+            Ok(p + 2)
+        }
+        0xd2 => {
+            need!(4);
+            Ok(p + 4)
+        }
+        0xd3 => {
+            need!(8);
+            Ok(p + 8)
+        }
+        // fixext1..16 — 1 type byte + N data bytes
+        0xd4 => {
+            need!(2);
+            Ok(p + 2)
+        }
+        0xd5 => {
+            need!(3);
+            Ok(p + 3)
+        }
+        0xd6 => {
+            need!(5);
+            Ok(p + 5)
+        }
+        0xd7 => {
+            need!(9);
+            Ok(p + 9)
+        }
+        0xd8 => {
+            need!(17);
+            Ok(p + 17)
+        }
+        // str8 / str16 / str32
+        0xd9 => {
+            need!(1);
+            let len = payload[p] as usize;
+            p += 1;
+            need!(len);
+            Ok(p + len)
+        }
+        0xda => {
+            need!(2);
+            let len = u16::from_be_bytes([payload[p], payload[p + 1]]) as usize;
+            p += 2;
+            need!(len);
+            Ok(p + len)
+        }
+        0xdb => {
+            need!(4);
+            let len = u32::from_be_bytes([
+                payload[p],
+                payload[p + 1],
+                payload[p + 2],
+                payload[p + 3],
+            ]) as usize;
+            p += 4;
+            need!(len);
+            Ok(p + len)
+        }
+        // array16 / array32
+        0xdc => {
+            need!(2);
+            let len = u16::from_be_bytes([payload[p], payload[p + 1]]) as usize;
+            p += 2;
+            for _ in 0..len {
+                p = skip_msgpack_value(payload, p)?;
+            }
+            Ok(p)
+        }
+        0xdd => {
+            need!(4);
+            let len = u32::from_be_bytes([
+                payload[p],
+                payload[p + 1],
+                payload[p + 2],
+                payload[p + 3],
+            ]) as usize;
+            p += 4;
+            for _ in 0..len {
+                p = skip_msgpack_value(payload, p)?;
+            }
+            Ok(p)
+        }
+        // map16 / map32
+        0xde => {
+            need!(2);
+            let len = u16::from_be_bytes([payload[p], payload[p + 1]]) as usize;
+            p += 2;
+            for _ in 0..len {
+                p = skip_msgpack_value(payload, p)?;
+                p = skip_msgpack_value(payload, p)?;
+            }
+            Ok(p)
+        }
+        0xdf => {
+            need!(4);
+            let len = u32::from_be_bytes([
+                payload[p],
+                payload[p + 1],
+                payload[p + 2],
+                payload[p + 3],
+            ]) as usize;
+            p += 4;
+            for _ in 0..len {
+                p = skip_msgpack_value(payload, p)?;
+                p = skip_msgpack_value(payload, p)?;
+            }
+            Ok(p)
+        }
+        // FixNeg: 0xe0..=0xff — single byte, signed value in marker
+        0xe0..=0xff => Ok(p),
+    }
+}
+
+/// Read a msgpack string header starting at `pos` and return
+/// `(string_bytes, position_just_past)`. Supports fixstr, str8, str16, str32.
+#[inline]
+fn read_msgpack_str(payload: &[u8], pos: usize) -> Result<(&[u8], usize), MsgpackEnvelopeError> {
+    if pos >= payload.len() {
+        return Err(MsgpackEnvelopeError::Truncated);
+    }
+    let marker = payload[pos];
+    let mut p = pos + 1;
+    let len = match marker {
+        0xa0..=0xbf => (marker & 0x1f) as usize,
+        0xd9 => {
+            if p >= payload.len() {
+                return Err(MsgpackEnvelopeError::Truncated);
+            }
+            let l = payload[p] as usize;
+            p += 1;
+            l
+        }
+        0xda => {
+            if p + 2 > payload.len() {
+                return Err(MsgpackEnvelopeError::Truncated);
+            }
+            let l = u16::from_be_bytes([payload[p], payload[p + 1]]) as usize;
+            p += 2;
+            l
+        }
+        0xdb => {
+            if p + 4 > payload.len() {
+                return Err(MsgpackEnvelopeError::Truncated);
+            }
+            let l = u32::from_be_bytes([
+                payload[p],
+                payload[p + 1],
+                payload[p + 2],
+                payload[p + 3],
+            ]) as usize;
+            p += 4;
+            l
+        }
+        _ => return Err(MsgpackEnvelopeError::EnvelopeShape),
+    };
+    if p + len > payload.len() {
+        return Err(MsgpackEnvelopeError::Truncated);
+    }
+    Ok((&payload[p..p + len], p + len))
+}
+
+/// Parse a msgpack push envelope `{event: str, body: any}` into borrowed
+/// `(event_name, body_bytes)`. Zero-copy: both slices alias `payload`.
+///
+/// Plan 18-10 D-1 — replaces the rmp_serde::from_slice::<JsonValue> +
+/// rmp_serde::to_vec_named round-trip from Plan 18-09.
+pub fn parse_msgpack_envelope(payload: &[u8]) -> Result<(&str, &[u8]), MsgpackEnvelopeError> {
+    if payload.is_empty() {
+        return Err(MsgpackEnvelopeError::Truncated);
+    }
+    // Top-level must be a 2-entry fixmap (0x82). map16/map32 also legal but
+    // the SDK never produces them for the envelope (always fixmap of 2).
+    let first = payload[0];
+    let map_len = match first {
+        0x82 => 2u32,
+        // map16 with len 2
+        0xde if payload.len() >= 3
+            && u16::from_be_bytes([payload[1], payload[2]]) == 2 =>
+        {
+            2
+        }
+        // map32 with len 2
+        0xdf if payload.len() >= 5
+            && u32::from_be_bytes([payload[1], payload[2], payload[3], payload[4]]) == 2 =>
+        {
+            2
+        }
+        // Any fixmap that isn't 2 entries
+        0x80..=0x8f => return Err(MsgpackEnvelopeError::EnvelopeShape),
+        _ => return Err(MsgpackEnvelopeError::EnvelopeShape),
+    };
+    if map_len != 2 {
+        return Err(MsgpackEnvelopeError::EnvelopeShape);
+    }
+
+    let mut p = match first {
+        0x82 => 1,
+        0xde => 3,
+        0xdf => 5,
+        _ => unreachable!(),
+    };
+
+    let mut event_name: Option<&str> = None;
+    let mut body_slice: Option<&[u8]> = None;
+
+    for _ in 0..2 {
+        let (key_bytes, after_key) = read_msgpack_str(payload, p)?;
+        p = after_key;
+        match key_bytes {
+            b"event" => {
+                let (event_bytes, after_event) = read_msgpack_str(payload, p)?;
+                p = after_event;
+                event_name = Some(
+                    std::str::from_utf8(event_bytes).map_err(|_| MsgpackEnvelopeError::InvalidUtf8)?,
+                );
+            }
+            b"body" => {
+                let body_start = p;
+                p = skip_msgpack_value(payload, p)?;
+                body_slice = Some(&payload[body_start..p]);
+            }
+            _ => return Err(MsgpackEnvelopeError::UnknownKey),
+        }
+    }
+
+    Ok((
+        event_name.ok_or(MsgpackEnvelopeError::MissingField("event"))?,
+        body_slice.ok_or(MsgpackEnvelopeError::MissingField("body"))?,
+    ))
+}
+
 // ─── Frame parser ─────────────────────────────────────────────────────────────
 
 /// Attempt to parse one `WireRequest` from `buf`.
@@ -127,43 +544,24 @@ pub fn parse_wire_request(
                     }
                 }
                 CT_MSGPACK => {
-                    // Msgpack envelope: {event: String, body: <msgpack-map>}
-                    // Parse the envelope to extract event_name + raw body bytes.
-                    //
-                    // rmp_serde can deserialize into serde_json::Value because it
-                    // implements the serde data model. We parse the whole envelope
-                    // as a serde_json::Value map, extract the "event" string and
-                    // "body" object, then re-serialize just the body back to msgpack
-                    // bytes for downstream Row deserialization (Task 9.4).
-                    match rmp_serde::from_slice::<serde_json::Value>(&frame.payload) {
-                        Ok(serde_json::Value::Object(mut map)) => {
-                            let event_val = map.remove("event");
-                            let body_val = map.remove("body");
-                            match (event_val, body_val) {
-                                (Some(serde_json::Value::String(event_name)), Some(body)) => {
-                                    // Re-serialize just the body back to msgpack bytes.
-                                    // Task 9.4 uses these bytes directly with rmp_serde::from_slice::<Row>.
-                                    match rmp_serde::to_vec_named(&body) {
-                                        Ok(body_bytes) => WireRequest::TcpPush {
-                                            event_name,
-                                            body: Bytes::from(body_bytes),
-                                            body_format: CT_MSGPACK,
-                                        },
-                                        Err(e) => WireRequest::ParseError {
-                                            reason: format!("msgpack body re-encode failed: {e}"),
-                                        },
-                                    }
-                                }
-                                _ => WireRequest::ParseError {
-                                    reason:
-                                        "msgpack envelope missing 'event' (string) or 'body' fields"
-                                            .into(),
-                                },
+                    // Plan 18-10 D-1: hand-rolled scanner via rmp::decode primitives.
+                    // No serde, no JsonValue, no body re-encode — body slice aliases
+                    // frame.payload directly. Target ≤80 ns vs Plan 18-09's 1,928 ns.
+                    match parse_msgpack_envelope(&frame.payload) {
+                        Ok((event_name, body_bytes)) => {
+                            // Bytes::from triggers a refcount-bump copy out of the
+                            // frame.payload Bytes. To stay zero-copy across the
+                            // WireRequest boundary we slice the original Bytes.
+                            let body_start = body_bytes.as_ptr() as usize
+                                - frame.payload.as_ptr() as usize;
+                            let body_end = body_start + body_bytes.len();
+                            let body = frame.payload.slice(body_start..body_end);
+                            WireRequest::TcpPush {
+                                event_name: event_name.to_string(),
+                                body,
+                                body_format: CT_MSGPACK,
                             }
                         }
-                        Ok(_) => WireRequest::ParseError {
-                            reason: "msgpack envelope must be a map".into(),
-                        },
                         Err(e) => WireRequest::ParseError {
                             reason: format!("msgpack envelope parse failed: {e}"),
                         },

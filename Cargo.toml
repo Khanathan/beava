@@ -49,6 +49,10 @@ futures = "0.3"
 haversine = "0.2"
 mio = { version = "1", features = ["os-poll", "net"] }
 rmp-serde = "1"
+# Plan 18-10: rmp::decode primitives for hand-rolled msgpack envelope scanner.
+# Promoted from transitive dep of rmp-serde. Used in beava-runtime-core/tcp_listener.rs
+# to bypass serde overhead on the hot path.
+rmp = "0.8"
 
 [profile.release]
 opt-level = 3
