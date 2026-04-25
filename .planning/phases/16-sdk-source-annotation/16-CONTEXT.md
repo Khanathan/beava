@@ -311,6 +311,21 @@ Multi-op request batching over framed-TCP strict-FIFO.
 
 ---
 
+## Absorb note (2026-04-24)
+
+**Plan 16-02 absorbed by Plan 18-07.** The HTTP route rename (D-09),
+`app.upsert` / `app.delete` Python SDK methods (D-04), and all server
+integration smoke tests for the hard break (`/upsert`, `/delete` → 200;
+`/push-table`, `/delete-table` → 404) were implemented inside Plan 18-07
+as part of the hand-rolled-runtime unification work. All callers
+(`phase11_5_temporal_smoke.rs`, `temporal_throughput.rs`) were migrated
+in the same plan. Requirements `SDK-UPSERT-01`, `SDK-UPSERT-02`,
+`SRV-WIRE-RENAME-01` are satisfied by Plan 18-07 commits.
+Plan 16-02 file is retained as a design artifact but should be skipped
+during Phase 16 execution — its tasks are already done.
+
+---
+
 ## Plan breakdown (6 plans, ~20 tasks)
 
 - **16-01** (3 tasks, ~180 LoC, wave 1) — `@bv.source` commutative
