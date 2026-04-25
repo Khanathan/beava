@@ -6,7 +6,7 @@
 
 use crate::http::{router_with_push, ReadinessFlag};
 use crate::idem_cache::IdemCache;
-use crate::recovery::{load_snapshot_if_any, replay_wal_from_lsn};
+use crate::recovery::{load_snapshot_if_any, replay_handrolled_wal_dir, replay_wal_from_lsn};
 use crate::registry_debug::DevAggState;
 use crate::snapshot_task::{spawn_snapshot_task, SnapshotTaskConfig, SnapshotTriggerTx};
 use crate::tcp::TcpListenerHandle;
@@ -524,12 +524,49 @@ impl ServerV18 {
         let registry = Arc::new(beava_core::registry::Registry::new());
         let dev_agg = crate::registry_debug::DevAggState::new(registry.clone());
 
+        // ── Recovery: replay persistence WAL (*.log) then hand-rolled WAL (*.wal) ──
+        //
+        // Step 1: replay *.log registry bumps from beava-persistence WalSink.
+        //   These records carry /register payloads (RegistryBump). Without them,
+        //   the second server instance has no event descriptors and cannot replay
+        //   data-plane events.
+        //
+        // Step 2: replay *.wal data-plane events from WalBufferRing + WalWriter.
+        //   These records use the v=2 binary format (apply_shard.rs).
+        let persistence_lsn = if wal_dir.exists() {
+            match replay_wal_from_lsn(&wal_dir, 0, &dev_agg) {
+                Ok(outcome) => outcome.last_lsn,
+                Err(_) => 0,
+            }
+        } else {
+            0
+        };
+
+        // Step 2: replay hand-rolled *.wal data-plane events.
+        // lsn_start = persistence_lsn + 1 to keep LSNs monotonic across both WALs.
+        let handrolled_lsn_start = persistence_lsn + 1;
+        let handrolled_outcome =
+            replay_handrolled_wal_dir(&wal_dir, handrolled_lsn_start, &dev_agg)
+                .unwrap_or_default();
+        let initial_start_lsn = handrolled_outcome.last_lsn.max(persistence_lsn) + 1;
+
+        tracing::info!(
+            target: "beava.recovery",
+            kind = "recovery.serve_with_dirs",
+            persistence_lsn,
+            handrolled_events = handrolled_outcome.replay_event_count,
+            initial_start_lsn,
+            "serve_with_dirs recovery complete"
+        );
+
         // Legacy WalSink: still used for /register cold path (admin endpoint).
         // Data-plane push uses WalBufferRing directly (D-2).
+        // initial_start_lsn ensures the new *.log segment doesn't collide with
+        // the existing one from the previous server instance.
         let (wal_sink, legacy_wal_worker) = beava_persistence::WalSink::spawn(WalSinkConfig {
             dir: wal_dir.clone(),
-            initial_start_lsn: 1,
-            initial_registry_version: 1,
+            initial_start_lsn,
+            initial_registry_version: dev_agg.registry.version() as u32,
             fsync_interval_ms: 2,
             fsync_bytes: 0,
             segment_bytes: 64 * 1024 * 1024,

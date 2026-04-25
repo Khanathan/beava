@@ -115,6 +115,182 @@ struct WalEventPayload {
     b: serde_json::Value,
 }
 
+// ─── Hand-rolled WAL replay (v=2 binary format) ───────────────────────────────
+
+/// A single decoded v=2 record from the hand-rolled WAL file.
+struct V2Record {
+    body_format: u8,
+    #[allow(dead_code)]
+    rv: u32,
+    et_ms: i64,
+    event_name: String,
+    body: Vec<u8>,
+}
+
+/// Parse all v=2 binary records from a contiguous byte slice.
+///
+/// Format: `[u8 v=2][u8 body_format][u32 rv BE][u64 et_ms BE]
+///           [u16 name_len BE][N bytes name][u32 body_len BE][M bytes body]`
+///
+/// Stops at first byte that is not 0x02 (unknown version) or if bytes are
+/// insufficient (truncated record — treat as EOF).
+fn parse_v2_records(data: &[u8]) -> Vec<V2Record> {
+    let mut records = Vec::new();
+    let mut pos = 0usize;
+
+    loop {
+        // Need at least the fixed header: 1+1+4+8+2 = 16 bytes.
+        if pos + 16 > data.len() {
+            break;
+        }
+
+        // Version byte — must be 0x02 for v=2 records.
+        let version = data[pos];
+        if version != 0x02 {
+            // Unknown version or padding — stop.
+            break;
+        }
+        pos += 1;
+
+        let body_format = data[pos];
+        pos += 1;
+
+        let rv = u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap());
+        pos += 4;
+
+        let et_ms = i64::from_be_bytes(data[pos..pos + 8].try_into().unwrap());
+        pos += 8;
+
+        let name_len = u16::from_be_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
+        pos += 2;
+
+        // Need name_len + 4 (body_len prefix).
+        if pos + name_len + 4 > data.len() {
+            break; // truncated
+        }
+
+        let event_name = match std::str::from_utf8(&data[pos..pos + name_len]) {
+            Ok(s) => s.to_string(),
+            Err(_) => break,
+        };
+        pos += name_len;
+
+        let body_len = u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4;
+
+        if pos + body_len > data.len() {
+            break; // truncated
+        }
+
+        let body = data[pos..pos + body_len].to_vec();
+        pos += body_len;
+
+        records.push(V2Record { body_format, rv, et_ms, event_name, body });
+    }
+
+    records
+}
+
+/// Replay hand-rolled WAL files (`*.wal`) from `wal_dir`.
+///
+/// Hand-rolled WAL files are written by `WalBufferRing` + `WalWriter` and use
+/// the v=2 binary record format (see `dispatch_push_sync` in apply_shard.rs).
+/// This is distinct from the `beava-persistence` WalSink format (`*.log`).
+///
+/// Returns the last synthetic LSN assigned (based on record ordinal) and the
+/// count of events replayed. Assigns monotonic LSNs starting from `lsn_start`.
+pub fn replay_handrolled_wal_dir(
+    wal_dir: &Path,
+    lsn_start: Lsn,
+    dev_agg: &DevAggState,
+) -> Result<RecoveryOutcome, std::io::Error> {
+    use beava_core::wire::CT_MSGPACK;
+    let mut outcome = RecoveryOutcome {
+        snapshot_lsn: lsn_start.saturating_sub(1),
+        ..Default::default()
+    };
+
+    if !wal_dir.exists() {
+        return Ok(outcome);
+    }
+
+    // Collect all *.wal files, sorted by name (lexicographic = LSN order).
+    let mut wal_files: Vec<std::path::PathBuf> = std::fs::read_dir(wal_dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wal"))
+        .collect();
+    wal_files.sort();
+
+    let mut next_lsn = lsn_start;
+
+    for wal_file in &wal_files {
+        let data = std::fs::read(wal_file)?;
+        let records = parse_v2_records(&data);
+
+        for rec in records {
+            let lsn = next_lsn;
+            next_lsn += 1;
+
+            // Decode body based on body_format.
+            // Row implements serde::Deserialize (Task 9.3) — works for both
+            // serde_json (CT_JSON) and rmp_serde (CT_MSGPACK).
+            let row: Row = if rec.body_format == CT_MSGPACK {
+                match rmp_serde::from_slice::<Row>(&rec.body) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "beava.recovery",
+                            kind = "recovery.v2_msgpack_decode_failed",
+                            lsn = lsn,
+                            error = %e,
+                            "v=2 msgpack body decode failed; skipping"
+                        );
+                        continue;
+                    }
+                }
+            } else {
+                // CT_JSON: serde_json decode.
+                match serde_json::from_slice::<Row>(&rec.body) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "beava.recovery",
+                            kind = "recovery.v2_json_decode_failed",
+                            lsn = lsn,
+                            error = %e,
+                            "v=2 JSON body decode failed; skipping"
+                        );
+                        continue;
+                    }
+                }
+            };
+
+            {
+                let mut tables = dev_agg.state_tables.lock();
+                beava_core::agg_apply::apply_event_to_aggregations(
+                    &rec.event_name,
+                    &row,
+                    rec.et_ms,
+                    lsn,
+                    &dev_agg.registry,
+                    &mut tables,
+                );
+            }
+
+            dev_agg.next_event_id.fetch_max(lsn, Ordering::Relaxed);
+            if rec.et_ms > 0 {
+                dev_agg.max_event_time_ms.fetch_max(rec.et_ms as u64, Ordering::Relaxed);
+            }
+            outcome.replay_event_count += 1;
+            outcome.last_lsn = lsn;
+        }
+    }
+
+    outcome.installed_from_snapshot = false;
+    Ok(outcome)
+}
+
 /// Replay every WAL record in `wal_dir` whose LSN > `from_lsn_exclusive`,
 /// applying them to `app_state`. Returns counters + last LSN seen.
 ///
