@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Executing Phase 18
-stopped_at: Completed 18-redis-hand-roll-18-07-PLAN.md
-last_updated: "2026-04-25T16:46:50.658Z"
+stopped_at: Completed 18-redis-hand-roll-18-04.6-PLAN.md
+last_updated: "2026-04-25T19:22:13.136Z"
 progress:
   total_phases: 23
   completed_phases: 9
-  total_plans: 88
-  completed_plans: 58
+  total_plans: 89
+  completed_plans: 59
   percent: 66
 ---
 
@@ -28,13 +28,13 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Current Focus
 
-**Phase 18 — Redis-shaped hand-rolled hot path. Plan 18-03 COMPLETE.**
+**Phase 18 — Redis-shaped hand-rolled hot path. Plan 18-04.6 COMPLETE.**
 
-Plan 18-03 landed 2026-04-25: IoPool of N std::thread workers with per-slot AtomicUsize Release/Acquire spin-barrier, 3-tier idle backoff (spin_loop → yield_now → park_timeout 100µs), round-robin work distribution per tick via `IoPool::publish` + `join_all`. Per-client `pending_parse_input`, `parsed_requests`, `parse_error` coordination slots added to `Client`. `parse_client_from_buf` free function for I/O worker closures. `IoConfig` with `num_cpus-1` default. 6 new tests pass; Phase 18-01/02 and Phase 6.1 tests still green. Next: Plan 18-04 (I/O threads for writes).
+Plan 18-04.6 landed 2026-04-25: mio EventLoop wired end-to-end into `ServerV18::serve_with_dirs`. New `ApplyShard` wraps single-writer `Arc<Mutex<AppState>>` with a sync `dispatch_wire_request_sync` called inline per mio tick. `WalBufferRing::append` on the hot path (async WAL bridge removed). Admin stays on tokio/axum. `beava_runtime_kind{runtime="mio"} 1` gauge added to /metrics. First real measurement: **44k EPS TCP/small** (190x over the 234 EPS tokio shim). D-1: Keep Mutex uncontended (Phase 13.3 removes it). D-2: Data plane fully sync. D-3: Async dispatch_wire_request kept for compat. Next: Plans 18-05/18-06 (IoPool parallelism on the apply thread for the 300-500k floor target).
 
 Phase 13.3 remains open on worktree `phase-13.3-lockless-apply` — lockless apply (RefCell + LocalSet). Both tracks are independent; Phase 18 executes on `v2/greenfield` directly.
 
-**Stopped at:** Completed 18-redis-hand-roll-18-07-PLAN.md
+**Stopped at:** Completed 18-redis-hand-roll-18-04.6-PLAN.md
 
 ## Shipped & Merged to `v2/greenfield`
 
