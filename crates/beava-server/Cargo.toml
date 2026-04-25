@@ -102,6 +102,18 @@ required-features = ["hand-rolled-runtime"]
 name = "phase18_01_samply_gate"
 path = "tests/phase18_01_samply_gate.rs"
 
+[[test]]
+name = "phase18_02_durability_watermarks_test"
+path = "tests/phase18_02_durability_watermarks_test.rs"
+
+[[test]]
+name = "phase18_02_pingpong_test"
+path = "tests/phase18_02_pingpong_test.rs"
+
+[[test]]
+name = "phase18_02_inline_wal_test"
+path = "tests/phase18_02_inline_wal_test.rs"
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
