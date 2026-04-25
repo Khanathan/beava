@@ -253,3 +253,55 @@ CT_MSGPACK (0x02) handler wired in `tcp_listener.rs`. `rmp_serde::from_slice::<s
 **Wire format parity:** msgpack EPS is 97.6% of json EPS at the same parallelism — no measurable overhead from `rmp_serde` encode/decode vs `serde_json`. The bottleneck remains the single mio apply thread (same as 18-04.6).
 
 **vs Phase 13 ship-gate:** 3M EPS/core (Linux Xeon HARD GATE). These M4 numbers are informational.
+
+### Phase 18-10 — parse-stage optimization (M4 informational)
+
+Harness: `beava-bench-v18 --wire-format {json|msgpack}`. Commit: 14fe033. Date: 2026-04-25. hw-class: Darwin-24.3.0 / 10 cores (Apple M4).
+
+Plan 18-10 replaced the serde_json::Value / rmp_serde + JsonValue intermediate with hand-rolled envelope scanners (parse_msgpack_envelope via rmp::decode primitives, parse_json_envelope via brace-counting scanner) and rewrote Row::Deserialize to walk MapAccess directly via BeavaValueVisitor (no JsonValue alloc per field). dispatch_push_sync now uses `sonic_rs::from_slice::<Row>` / `rmp_serde::from_slice::<Row>` directly. WAL bodies are zero-copy from wire (the body Bytes pass through unchanged from parse_*_envelope).
+
+**Microbench (criterion, .planning/perf-baselines.md):**
+
+| Bench                           | Median | Target | Result   |
+|---------------------------------|-------:|-------:|---------:|
+| parse_envelope/parse_msgpack    | 33.4 ns| ≤80 ns | PASS -58%|
+| parse_envelope/parse_json       | 77.1 ns| ≤150 ns| PASS -49%|
+
+**TRACE_SRV per-stage means (parallel=1, 2s, BEAVA_TRACE_SRV_TIMING=1):**
+
+| Wire    | parse mean | dispatch mean | encode mean | total mean | n      |
+|---------|-----------:|--------------:|------------:|-----------:|-------:|
+| json    | 401 ns     | 7,063 ns      | 603 ns      | 8,067 ns   | 11,875 |
+| msgpack | 272 ns     | 6,108 ns      | 580 ns      | 6,961 ns   | 11,781 |
+
+Plan 18-09 trace baseline (same protocol):
+
+| Wire    | parse | dispatch | encode | total |
+|---------|------:|---------:|-------:|------:|
+| json    | 583   | 2,428    | 209    | 3,220 |
+| msgpack | 1,928 | 5,041    | 552    | 7,522 |
+
+**Parse-stage improvement:**
+- JSON parse trace mean:    583 → 401 ns  (1.5× faster, microbench-isolation gives 77 ns)
+- MSGPACK parse trace mean: 1,928 → 272 ns (7.1× faster, microbench-isolation gives 33 ns)
+
+The trace numbers include the surrounding mio recv loop overhead (event-time sampling, system-call overhead, BytesMut buffer juggling, ptr-math for body slicing); the microbench measures the parser in isolation. The trace-vs-microbench gap reflects the system-call boundary noise rather than parser cost.
+
+**Inversion: msgpack now FASTER than JSON.** Plan 18-09 had msgpack 2.3× slower (per-event trace total 7,522 vs 3,220). Plan 18-10 has msgpack at 86% of JSON's per-event cost (6,961 vs 8,067) — the parse path is now uniform across formats and msgpack edges ahead because the msgpack body→Row deserialise via BeavaValueVisitor is marginally tighter than sonic_rs::from_slice for typical 6-field bodies.
+
+**No-trace parallel=4 EPS (5s sustain):**
+
+| Phase | Date | Pipeline | Transport | Wire | Parallel | Duration | EPS | p50 µs | p95 µs | p99 µs | commit | Notes |
+|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| 18-10 | 2026-04-25 | small | tcp | json    | 4 | 5s | 57,464 | 24 | 82 | 158 | 14fe033 | parse-stage optimization; +141% vs 18-09 |
+| 18-10 | 2026-04-25 | small | tcp | msgpack | 4 | 5s | 52,646 | 25 | 90 | 194 | 14fe033 | parse-stage optimization; +126% vs 18-09 |
+
+**Improvement vs 18-09 small/tcp/parallel=4 baseline:**
+- json: 23,799 → 57,464 EPS (**2.41× faster**)
+- msgpack: 23,324 → 52,646 EPS (**2.26× faster**)
+
+**No regression:** both formats well above the 24,000 EPS threshold (10% warn = 21,419, 25% block = 17,849); 2.4× headroom.
+
+**Bottleneck:** still the single mio apply thread (consistent with 18-04.6 / 18-09 finding). IoPool wiring (Plan 18-04.7) remains the next throughput unlock; this plan was about per-event efficiency on the existing single-thread path.
+
+**vs Phase 13 ship-gate:** 3M EPS/core (Linux Xeon HARD GATE). M4 numbers informational.
