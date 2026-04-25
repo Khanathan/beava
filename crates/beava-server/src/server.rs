@@ -362,15 +362,19 @@ impl Server {
 ///
 /// See Plan 18-01 Task 1.5 and D-01 in 18-CONTEXT.md.
 /// Plan 18-07: feature flag removed; ServerV18 is now unconditionally compiled.
+///
+/// Plan 18-05.1: `serve()` wires the data-plane listeners into an actual
+/// dispatch path. The transport is tokio-based in this slice (matching the
+/// existing `Server::serve` path) — the pure mio EventLoop dispatch (Plans
+/// 18-05/18-06 proper) replaces this once the WAL is converted to sync.
 pub struct ServerV18 {
     http_addr: std::net::SocketAddr,
     tcp_addr: std::net::SocketAddr,
     admin: crate::http_admin::BoundAdminServer,
-    // Hand-rolled HTTP + TCP std::net listeners (mio-managed).
-    // Stored so the OS keeps the ports open; the actual event loop wiring
-    // arrives in Plan 18-02 once the WAL is inline.
-    _http_listener: std::net::TcpListener,
-    _tcp_listener: std::net::TcpListener,
+    // Event-plane listeners bound at construction time. serve() converts these
+    // to tokio listeners and hands them to the HTTP/TCP accept loops.
+    http_listener: std::net::TcpListener,
+    tcp_listener: std::net::TcpListener,
 }
 
 impl ServerV18 {
@@ -431,8 +435,8 @@ impl ServerV18 {
             http_addr: http_bound,
             tcp_addr: tcp_bound,
             admin,
-            _http_listener: http_listener,
-            _tcp_listener: tcp_listener,
+            http_listener,
+            tcp_listener,
         })
     }
 
@@ -451,10 +455,291 @@ impl ServerV18 {
         self.admin.local_addr
     }
 
-    /// Gracefully shut down the admin server.  Event-plane shutdown wiring
-    /// arrives in Plan 18-03.
+    /// Run the server until `shutdown` completes.
+    ///
+    /// Plan 18-05.1: wires the already-bound HTTP and TCP event-plane listeners
+    /// into real dispatch using the same tokio/axum + AppState path as the
+    /// legacy `Server::serve()`. This gives measured EPS numbers immediately.
+    /// The pure mio EventLoop dispatch (Plans 18-05/18-06 proper) replaces this
+    /// accept path once the WAL is converted to synchronous `Write`.
+    ///
+    /// Boots a temporary WAL in `std::env::temp_dir()` for the duration of the
+    /// serve call. Callers that need a durable WAL path should use
+    /// `serve_with_dirs()` instead (added in Plan 18-06).
+    pub async fn serve<F>(self, shutdown: F) -> Result<(), ServerError>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        // Use temp dirs for WAL + snapshot (bench / test use case).
+        let wal_dir = std::env::temp_dir().join(format!(
+            "beava-v18-wal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        ));
+        let snapshot_dir = std::env::temp_dir().join(format!(
+            "beava-v18-snap-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        ));
+        self.serve_with_dirs(shutdown, wal_dir, snapshot_dir).await
+    }
+
+    /// Run with explicit WAL + snapshot directories. Called by `serve()` with
+    /// temp dirs, and by the bench harness with configured paths.
+    pub async fn serve_with_dirs<F>(
+        self,
+        shutdown: F,
+        wal_dir: std::path::PathBuf,
+        snapshot_dir: std::path::PathBuf,
+    ) -> Result<(), ServerError>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        use beava_core::config::DurabilityConfig;
+
+        // Build AppState — same as Server::bind but without recovery (v18 is
+        // a clean-slate bench path; recovery wired in Plan 18-06).
+        let idem_cache = Arc::new(IdemCache::new());
+        let readiness = ReadinessFlag::new();
+        let registry = Arc::new(beava_core::registry::Registry::new());
+        let dev_agg = crate::registry_debug::DevAggState::new(registry.clone());
+
+        let dur = DurabilityConfig {
+            wal_dir: wal_dir.clone(),
+            snapshot_dir: snapshot_dir.clone(),
+            wal_fsync_interval_ms: 2,
+            wal_fsync_bytes: 0,
+            wal_segment_bytes: 64 * 1024 * 1024,
+            wal_sync_mode: beava_core::config::WalSyncMode::Periodic,
+            dedupe_sweep_interval_secs: 60,
+            snapshot_interval_ms: 60_000,
+            snapshot_retain_count: 2,
+        };
+
+        let (wal_sink, wal_worker) = beava_persistence::WalSink::spawn(WalSinkConfig {
+            dir: wal_dir,
+            initial_start_lsn: 1,
+            initial_registry_version: 1,
+            fsync_interval_ms: dur.wal_fsync_interval_ms,
+            fsync_bytes: dur.wal_fsync_bytes,
+            segment_bytes: dur.wal_segment_bytes,
+            sync_mode: beava_persistence::SyncMode::Periodic,
+        })
+        .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
+
+        let app_state = Arc::new(AppState::new(dev_agg, wal_sink.clone(), idem_cache));
+
+        let snapshot_cancel = CancellationToken::new();
+        let (snapshot_worker, snapshot_trigger) = spawn_snapshot_task(
+            SnapshotTaskConfig {
+                interval: Duration::from_millis(60_000),
+                snapshot_dir,
+                retain: 2,
+            },
+            Arc::clone(&app_state),
+            wal_sink.clone(),
+            snapshot_cancel.clone(),
+        );
+        drop(snapshot_trigger); // bench doesn't need manual snapshot trigger
+
+        readiness.set_ready();
+
+        // Convert std::net listeners to tokio (they were set nonblocking in bind()).
+        let http_tokio =
+            tokio::net::TcpListener::from_std(self.http_listener).map_err(ServerError::Serve)?;
+        let tcp_tokio =
+            tokio::net::TcpListener::from_std(self.tcp_listener).map_err(ServerError::Serve)?;
+
+        let cancel = CancellationToken::new();
+
+        // Translate the external shutdown future into a cancel trip.
+        let cancel_for_signal = cancel.clone();
+        let signal_task = tokio::spawn(async move {
+            shutdown.await;
+            cancel_for_signal.cancel();
+        });
+
+        // Wrap the tokio TCP listener in a TcpListenerHandle for accept_loop_with_app.
+        // We can't construct TcpListenerHandle directly (private fields), so we
+        // drive the accept loop inline using the tokio listener.
+        let tcp_app = Arc::clone(&app_state);
+        let tcp_cancel = cancel.clone();
+        let tcp_task = tokio::spawn(async move {
+            use beava_core::wire::{decode_frame, encode_frame, Frame, CT_JSON, OP_ERROR_RESPONSE};
+            use bytes::BytesMut;
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            loop {
+                tokio::select! {
+                    accept = tcp_tokio.accept() => {
+                        match accept {
+                            Ok((mut stream, _peer)) => {
+                                let app = Arc::clone(&tcp_app);
+                                let conn_cancel = tcp_cancel.clone();
+                                tokio::spawn(async move {
+                                    let mut buf = BytesMut::with_capacity(4096);
+                                    loop {
+                                        if conn_cancel.is_cancelled() { break; }
+                                        let n = match stream.read_buf(&mut buf).await {
+                                            Ok(0) | Err(_) => break,
+                                            Ok(n) => n,
+                                        };
+                                        let _ = n;
+                                        loop {
+                                            match decode_frame(&mut buf, 4 * 1024 * 1024) {
+                                                Ok(Some(frame)) => {
+                                                    let resp_frame = dispatch_tcp_frame(&app, frame).await;
+                                                    let mut out = BytesMut::new();
+                                                    encode_frame(&resp_frame, &mut out);
+                                                    if stream.write_all(&out).await.is_err() { return; }
+                                                }
+                                                Ok(None) => break,
+                                                Err(_) => {
+                                                    let err_frame = Frame::new(OP_ERROR_RESPONSE, CT_JSON,
+                                                        bytes::Bytes::from_static(b"{\"code\":\"frame_error\"}"));
+                                                    let mut out = BytesMut::new();
+                                                    encode_frame(&err_frame, &mut out);
+                                                    let _ = stream.write_all(&out).await;
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    _ = tcp_cancel.cancelled() => break,
+                }
+            }
+        });
+
+        // HTTP serve with graceful shutdown.
+        let http_app = router_with_push(
+            readiness,
+            registry,
+            true, // dev_endpoints
+            None,
+            Some(Arc::clone(&app_state)),
+        );
+        let http_cancel = cancel.clone();
+        let http_shutdown = async move { http_cancel.cancelled().await };
+
+        axum::serve(http_tokio, http_app)
+            .with_graceful_shutdown(http_shutdown)
+            .await
+            .map_err(ServerError::Serve)?;
+
+        cancel.cancel();
+        let _ = tcp_task.await;
+        let _ = signal_task.await;
+
+        snapshot_cancel.cancel();
+        if let Some(w) = Some(snapshot_worker) {
+            let _ = w.await;
+        }
+
+        let _ = app_state.wal_sink.clone().shutdown().await;
+        let _ = wal_worker.await;
+
+        self.admin.shutdown().await;
+        Ok(())
+    }
+
+    /// Gracefully shut down the admin server without running serve().
+    /// Use this only when serve() was never called (e.g. bind-only tests).
     pub async fn shutdown(self) {
         self.admin.shutdown().await;
+    }
+}
+
+// ─── TCP frame dispatch helper (Plan 18-05.1) ─────────────────────────────────
+
+/// Dispatch one decoded wire frame to the apply path and return a response frame.
+///
+/// Used by the inline TCP accept loop inside `ServerV18::serve()`. Async because
+/// `dispatch_wire_request` drives the tokio WAL sink channel; once the WAL is
+/// converted to sync `Write` (Plan 18-06) this can become `fn`.
+async fn dispatch_tcp_frame(
+    app: &Arc<AppState>,
+    frame: beava_core::wire::Frame,
+) -> beava_core::wire::Frame {
+    use beava_core::wire::{OP_PING, OP_PUSH, OP_REGISTER};
+    use beava_runtime_core::wire_request::WireRequest;
+    use crate::runtime_core_glue::dispatch_wire_request;
+
+    // Map raw frame op+payload → WireRequest.
+    let wire_req = match frame.op {
+        OP_PING => WireRequest::Ping,
+        OP_REGISTER => WireRequest::Register { payload: frame.payload },
+        OP_PUSH => {
+            #[derive(serde::Deserialize)]
+            struct PushEnvelope { event: String, body: serde_json::Value }
+            match serde_json::from_slice::<PushEnvelope>(&frame.payload) {
+                Ok(env) => {
+                    let body = serde_json::to_vec(&env.body)
+                        .map(bytes::Bytes::from)
+                        .unwrap_or_else(|_| frame.payload.clone());
+                    WireRequest::TcpPush { event_name: env.event, body }
+                }
+                Err(e) => WireRequest::ParseError { reason: e.to_string() },
+            }
+        }
+        op => WireRequest::Unknown { op },
+    };
+
+    // Dispatch and serialise the GlueResponse back to a Frame.
+    let glue = dispatch_wire_request(app, wire_req).await;
+    glue_to_frame(glue)
+}
+
+/// Convert a `GlueResponse` into a wire `Frame` for the TCP transport.
+fn glue_to_frame(glue: crate::runtime_core_glue::GlueResponse) -> beava_core::wire::Frame {
+    use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE, OP_PING, OP_PUSH};
+    use crate::runtime_core_glue::GlueResponse;
+
+    match glue {
+        GlueResponse::Pong { .. } => {
+            beava_core::wire::Frame::new(OP_PING, CT_JSON, bytes::Bytes::from_static(b"{}"))
+        }
+        GlueResponse::PushAck { ack_lsn, registry_version } => {
+            let body = serde_json::json!({"ack_lsn": ack_lsn, "registry_version": registry_version});
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            beava_core::wire::Frame::new(OP_PUSH, CT_JSON, bytes::Bytes::from(b))
+        }
+        GlueResponse::PushReplay { registry_version } => {
+            let body = serde_json::json!({"replay": true, "registry_version": registry_version});
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            beava_core::wire::Frame::new(OP_PUSH, CT_JSON, bytes::Bytes::from(b))
+        }
+        GlueResponse::RegisterOk { version } => {
+            let body = serde_json::json!({"version": version});
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            beava_core::wire::Frame::new(OP_PUSH, CT_JSON, bytes::Bytes::from(b))
+        }
+        GlueResponse::RegisterError { code, message } => {
+            let body = serde_json::json!({"code": code, "message": message});
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            beava_core::wire::Frame::new(OP_ERROR_RESPONSE, CT_JSON, bytes::Bytes::from(b))
+        }
+        GlueResponse::PushError { code, .. } => {
+            let body = serde_json::json!({"code": code, "message": ""});
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            beava_core::wire::Frame::new(OP_ERROR_RESPONSE, CT_JSON, bytes::Bytes::from(b))
+        }
+        _ => {
+            beava_core::wire::Frame::new(
+                OP_ERROR_RESPONSE, CT_JSON,
+                bytes::Bytes::from_static(b"{\"code\":\"unsupported\"}"),
+            )
+        }
     }
 }
 
