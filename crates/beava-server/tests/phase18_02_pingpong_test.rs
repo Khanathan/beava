@@ -7,7 +7,7 @@
 //! RED state: `WalBufferRing` / `WalBuffer` stubs exist but lack any
 //! real logic. All tests will fail at runtime until Task 2.2 GREEN.
 
-use beava_runtime_core::wal_buffer::{BUF_STATE_ACTIVE, BUF_STATE_FREE, WalBuffer, WalBufferRing};
+use beava_runtime_core::wal_buffer::{BUF_STATE_ACTIVE, BUF_STATE_FREE, WalBufferRing};
 use beava_runtime_core::wal_lsn::WalLsn;
 use std::sync::Arc;
 
@@ -203,52 +203,62 @@ fn full_buffer_triggers_seal_and_swap() {
 /// When all 3 buffers are sealed (writer fell behind), `append` blocks until
 /// the writer returns a buffer to free. This test simulates the writer
 /// returning a buffer from a separate thread.
+///
+/// Setup: use `seal_active()` + pop_sealed (without return_to_free) to exhaust
+/// all free buffers, then verify that a new append blocks until we return one.
 #[test]
 fn append_blocks_on_no_free_buffers() {
     let lsn = Arc::new(WalLsn::new());
-    // 3 tiny buffers, each 32 bytes.
-    let ring = Arc::new(WalBufferRing::new(3, 32, Arc::clone(&lsn)));
+    // 3 buffers, each 64 bytes.
+    let ring = Arc::new(WalBufferRing::new(3, 64, Arc::clone(&lsn)));
 
-    // Fill + seal the first two buffers (leaving one active with 2 sealed).
-    // Buffer 0: fill beyond 80%, trigger seal.
-    ring.append(&[0x01; 30]); // 30/32 = 93.75% → auto-seal on next
-    ring.append(&[0x02; 10]); // overflow → seal buffer 0, buffer 1 becomes active
-    ring.append(&[0x03; 30]); // fill buffer 1 past threshold
-    ring.append(&[0x04; 10]); // overflow → seal buffer 1, buffer 2 becomes active
+    // Seal buffer 0 → buffer 1 becomes active (2 free → 1 free).
+    ring.append(b"data0");
+    let sealed0 = ring.seal_active().expect("seal 0 failed");
 
-    // At this point: 2 sealed, 1 active, 0 free.
-    // Now seal the active buffer to exhaust free buffers.
-    ring.seal_active();
+    // Seal buffer 1 → buffer 2 becomes active (1 free → 0 free).
+    ring.append(b"data1");
+    let sealed1 = ring.seal_active().expect("seal 1 failed");
 
-    let (active, free, sealed) = ring.buffer_state_counts();
-    // After the manual seal: 0 active, 0 free, 3 sealed (all exhausted).
-    // (Or 1 active may remain if auto-seal created one during the overflows.)
-    // The exact counts depend on how auto-seal interacts; the invariant we care
-    // about is: free == 0.
-    let _ = (active, free, sealed); // suppress unused warnings
+    // Seal buffer 2 → no free buffers remain; seal_active still enqueues.
+    ring.append(b"data2");
+    let sealed2 = ring.seal_active().expect("seal 2 failed");
 
-    // Spawn a thread that will "return" a sealed buffer to free after 30ms,
-    // unblocking the writer-side simulation.
+    // Pop all three sealed buffers (simulate writer thread taking ownership)
+    // WITHOUT calling return_to_free — so free count stays at 0.
+    let _b0 = ring.pop_sealed();
+    let _b1 = ring.pop_sealed();
+    let _b2 = ring.pop_sealed();
+
+    // Verify we have: 0 free, 0+ sealed (already popped to flushing), some active or none.
+    // The exact counts are implementation-defined; what matters is free == 0.
+    let (_, free, _) = ring.buffer_state_counts();
+    // Note: after popping, buffers are FLUSHING, so they count in sealed bucket.
+    // There may be 0 active since sealing buffer 2 left active_idx pointing
+    // to a sealed buffer.
+    assert_eq!(free, 0, "expected 0 free buffers to set up backpressure; got {free}");
+
+    // Spawn unblock thread: after 30 ms, return one buffer to free.
     let ring_clone = Arc::clone(&ring);
     let unblock_thread = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(30));
-        if let Some(buf) = ring_clone.pop_sealed() {
-            ring_clone.return_to_free(buf);
-        }
+        // Return sealed0 to free — this should wake the blocked appender.
+        ring_clone.return_to_free(sealed0);
     });
 
-    // This append should block until the unblock_thread returns a free buffer.
-    // We use a timeout to avoid hanging the test suite if there's a bug.
+    // This append must block until unblock_thread runs.
     let ring_for_append = Arc::clone(&ring);
     let appender = std::thread::spawn(move || {
         ring_for_append.append(&[0xFF; 5]);
     });
 
-    // Wait up to 2 seconds for the appender to complete.
     let _ = unblock_thread.join();
     appender
         .join()
         .expect("append thread panicked while waiting for free buffer");
+
+    // Silence unused variable warnings (the seals we didn't use).
+    let _ = (sealed1, sealed2);
 }
 
 // ── state constant visibility ─────────────────────────────────────────────────
