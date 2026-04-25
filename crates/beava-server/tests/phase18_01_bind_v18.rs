@@ -11,7 +11,7 @@
 
 #![cfg(feature = "hand-rolled-runtime")]
 
-use beava_server::server::{Server, ServerV18};
+use beava_server::server::ServerV18;
 use std::net::SocketAddr;
 
 // ─── Helper ───────────────────────────────────────────────────────────────────

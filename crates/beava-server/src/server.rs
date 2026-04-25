@@ -350,6 +350,106 @@ impl Server {
     }
 }
 
+// ─── Phase 18 Plan 01: hand-rolled runtime entry point ────────────────────────
+
+/// A server bound with the hand-rolled event loop on the data-plane and
+/// tokio/axum on the admin plane.  Created by [`ServerV18::bind`].
+///
+/// The HTTP and TCP event-plane listeners run on the mio-based
+/// `beava-runtime-core` `EventLoop`; the admin plane runs on a separate
+/// tokio runtime so `/health`, `/metrics`, and `/registry` stay responsive
+/// even when the event loop is saturated.
+///
+/// See Plan 18-01 Task 1.5 and D-01 in 18-CONTEXT.md.
+#[cfg(feature = "hand-rolled-runtime")]
+pub struct ServerV18 {
+    http_addr: std::net::SocketAddr,
+    tcp_addr: std::net::SocketAddr,
+    admin: crate::http_admin::BoundAdminServer,
+    // Hand-rolled HTTP + TCP std::net listeners (mio-managed).
+    // Stored so the OS keeps the ports open; the actual event loop wiring
+    // arrives in Plan 18-02 once the WAL is inline.
+    _http_listener: std::net::TcpListener,
+    _tcp_listener: std::net::TcpListener,
+}
+
+#[cfg(feature = "hand-rolled-runtime")]
+impl ServerV18 {
+    /// Bind HTTP, TCP, and admin listeners.
+    ///
+    /// - `http_addr` — event-plane HTTP listener (hand-rolled mio loop)
+    /// - `tcp_addr`  — event-plane TCP framed listener (hand-rolled mio loop)
+    /// - `admin_addr` — admin HTTP listener (tokio/axum)
+    ///
+    /// All three ports may be `0` for OS assignment.  The actual bound
+    /// addresses are available via [`http_addr`], [`tcp_addr`], [`admin_addr`].
+    pub async fn bind(
+        http_addr: std::net::SocketAddr,
+        tcp_addr: std::net::SocketAddr,
+        admin_addr: std::net::SocketAddr,
+    ) -> Result<Self, ServerError> {
+        // Bind event-plane listeners (std::net — they'll be handed to mio later).
+        let http_listener = std::net::TcpListener::bind(http_addr)
+            .map_err(|e| ServerError::Bind { addr: http_addr, source: e })?;
+        http_listener.set_nonblocking(true)
+            .map_err(|e| ServerError::Bind { addr: http_addr, source: e })?;
+        let http_bound = http_listener.local_addr()
+            .map_err(ServerError::Serve)?;
+
+        let tcp_listener = std::net::TcpListener::bind(tcp_addr)
+            .map_err(|e| ServerError::BindTcp {
+                host: tcp_addr.ip().to_string(),
+                port: tcp_addr.port(),
+                source: e,
+            })?;
+        tcp_listener.set_nonblocking(true)
+            .map_err(|e| ServerError::BindTcp {
+                host: tcp_addr.ip().to_string(),
+                port: tcp_addr.port(),
+                source: e,
+            })?;
+        let tcp_bound = tcp_listener.local_addr()
+            .map_err(ServerError::Serve)?;
+
+        // Bind admin (tokio/axum).
+        let snapshot = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::http_admin::RegistrySnapshot::default(),
+        ));
+        let admin = crate::http_admin::BoundAdminServer::bind(admin_addr, snapshot)
+            .await
+            .map_err(|e| ServerError::Bind { addr: admin_addr, source: e })?;
+
+        Ok(Self {
+            http_addr: http_bound,
+            tcp_addr: tcp_bound,
+            admin,
+            _http_listener: http_listener,
+            _tcp_listener: tcp_listener,
+        })
+    }
+
+    /// The bound HTTP event-plane address.
+    pub fn http_addr(&self) -> std::net::SocketAddr {
+        self.http_addr
+    }
+
+    /// The bound TCP event-plane address.
+    pub fn tcp_addr(&self) -> std::net::SocketAddr {
+        self.tcp_addr
+    }
+
+    /// The bound admin HTTP address.
+    pub fn admin_addr(&self) -> std::net::SocketAddr {
+        self.admin.local_addr
+    }
+
+    /// Gracefully shut down the admin server.  Event-plane shutdown wiring
+    /// arrives in Plan 18-03.
+    pub async fn shutdown(self) {
+        self.admin.shutdown().await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
