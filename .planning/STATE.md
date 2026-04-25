@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Executing Phase 18
-stopped_at: Completed 18-redis-hand-roll/18-04-PLAN.md
-last_updated: "2026-04-25T16:20:04.599Z"
+stopped_at: Completed 18-redis-hand-roll-18-07-PLAN.md
+last_updated: "2026-04-25T16:46:50.658Z"
 progress:
   total_phases: 23
   completed_phases: 9
-  total_plans: 87
-  completed_plans: 57
+  total_plans: 88
+  completed_plans: 58
   percent: 66
 ---
 
@@ -34,7 +34,7 @@ Plan 18-03 landed 2026-04-25: IoPool of N std::thread workers with per-slot Atom
 
 Phase 13.3 remains open on worktree `phase-13.3-lockless-apply` — lockless apply (RefCell + LocalSet). Both tracks are independent; Phase 18 executes on `v2/greenfield` directly.
 
-**Stopped at:** Completed 18-redis-hand-roll/18-04-PLAN.md
+**Stopped at:** Completed 18-redis-hand-roll-18-07-PLAN.md
 
 ## Shipped & Merged to `v2/greenfield`
 
