@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Executing Phase 18
-stopped_at: Completed 18-redis-hand-roll-18-04.6-PLAN.md
-last_updated: "2026-04-25T19:22:13.136Z"
+stopped_at: Completed 18-09-PLAN.md
+last_updated: "2026-04-25T21:24:27.134Z"
 progress:
   total_phases: 23
   completed_phases: 9
-  total_plans: 89
-  completed_plans: 59
-  percent: 66
+  total_plans: 90
+  completed_plans: 60
+  percent: 67
 ---
 
 # State: Beava v2 — v0 OSS Launch
@@ -34,7 +34,7 @@ Plan 18-04.6 landed 2026-04-25: mio EventLoop wired end-to-end into `ServerV18::
 
 Phase 13.3 remains open on worktree `phase-13.3-lockless-apply` — lockless apply (RefCell + LocalSet). Both tracks are independent; Phase 18 executes on `v2/greenfield` directly.
 
-**Stopped at:** Completed 18-redis-hand-roll-18-04.6-PLAN.md
+**Stopped at:** Completed 18-09-PLAN.md
 
 ## Shipped & Merged to `v2/greenfield`
 
