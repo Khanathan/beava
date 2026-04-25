@@ -193,3 +193,28 @@ plan are recorded here for reference:
 
 > Actual measured numbers to be recorded in Plan 18-04.5 once Linux bench infra is wired.
 > Apple-M4 is INFORMATIONAL (D-16); Linux Xeon hard gate activates at Phase 18-05.
+
+### Phase 18-05.1 — first M4 measurement on ServerV18 hand-rolled runtime
+
+Harness: `beava-bench-v18` (boots `ServerV18::bind()` + `serve_with_dirs()` directly, no TestServer).
+Commit: 9c87bb0. Date: 2026-04-25. hw-class: Darwin-24.3.0 / 10 cores (Apple M4).
+
+| Phase | Date | Pipeline | Transport | Parallel | Duration | EPS | p50 µs | p95 µs | p99 µs | get p99 µs | RSS MB | commit |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 18-05.1 | 2026-04-25 | small | tcp | 16 | 10s | 234 | 62975 | 72895 | 82815 | 878 | 10 | 9c87bb0 |
+| 18-05.1 | 2026-04-25 | small | http | 16 | 10s | 222 | 63007 | 71615 | 211967 | 853 | 12 | 9c87bb0 |
+
+**Comparison (legacy tokio path same workload):** TCP ~1,413 EPS p50=9.3ms (Phase 7.5 baseline).
+
+**Result:** ServerV18 with tokio dispatch path shows **234 EPS TCP / 222 EPS HTTP** — *lower* than the
+legacy 1,413 EPS baseline. Root cause: the async WAL sink `execute_push` path is fully serialised
+through a tokio channel + mutex per push; the `parallel=16` workers contend on the same lock.
+The legacy path was faster here because it had a warmed-up connection pool and shared WAL writer
+already tuned. This number reflects the tokio-over-tokio bridging cost, NOT the hand-rolled
+mio+sync-WAL path that Plans 18-05/18-06 proper implement.
+
+**vs Plan 18-02 floor target:** 300-500k EPS/core (M4 informational). Current 234 EPS is ~1,300×
+below floor — confirms the async WAL bridge is the bottleneck, not the accept loop.
+
+**vs Phase 13 ship-gate:** 3M EPS/core simple-fraud TCP (Linux Xeon, HARD GATE in Plan 18-05).
+This measurement is informational baseline only; the gate applies to the pure mio + sync WAL path.
