@@ -20,5 +20,6 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+libc = { workspace = true }
 
 [dev-dependencies]

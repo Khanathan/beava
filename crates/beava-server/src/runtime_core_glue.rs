@@ -27,10 +27,12 @@ use crate::push::{execute_push, PushOutcome};
 use crate::register::{execute_register_with_wal, RegisterOutcome, RegisterPayload};
 use crate::AppState;
 use beava_persistence::SyncMode;
+use beava_runtime_core::wal_buffer::WalBufferRing;
+use beava_runtime_core::wal_lsn::WalLsn;
 use beava_runtime_core::wire_request::WireRequest;
 use bytes::Bytes;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The result of dispatching a `WireRequest` through the apply path.
 ///
@@ -276,5 +278,74 @@ fn dispatch_get_batch(_app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
     match serde_json::to_vec(&empty) {
         Ok(b) => GlueResponse::QueryResult { body: Bytes::from(b) },
         Err(e) => GlueResponse::InternalError { reason: e.to_string() },
+    }
+}
+
+// ─── WAL Glue (Plan 18-02 Task 2.4) ──────────────────────────────────────────
+
+/// Thin bridge between the hand-rolled apply path and the WAL ring.
+///
+/// Provides two append modes mirroring `/push` (Periodic) and `/push-sync`
+/// (PerEvent):
+///
+/// - `wal_append_periodic`: appends a serialized record into the ring and
+///   returns immediately at `committed_lsn` (no blocking on I/O). Used by
+///   the normal `/push` path.
+///
+/// - `wal_append_per_event`: appends then blocks until `synced_lsn` reaches
+///   the request LSN or the timeout fires (returns `PushError` on timeout).
+///   Used by the `/push-sync` path.
+///
+/// Both methods are synchronous — they live on the apply thread (or test
+/// thread). The WAL ring itself is lock-free on the append hot path.
+pub struct WalGlue {
+    ring: Arc<WalBufferRing>,
+    lsn: Arc<WalLsn>,
+}
+
+impl WalGlue {
+    /// Create a new `WalGlue` wrapping `ring` and `lsn`.
+    pub fn new(ring: Arc<WalBufferRing>, lsn: Arc<WalLsn>) -> Self {
+        Self { ring, lsn }
+    }
+
+    /// Append `record_bytes` to the WAL ring and return `PushAck` immediately
+    /// at `committed_lsn` (Periodic / `/push` mode).
+    ///
+    /// Does NOT wait for `written_lsn` or `synced_lsn` to advance.
+    pub fn wal_append_periodic(&self, record_bytes: &[u8]) -> GlueResponse {
+        let ack_lsn = self.ring.append(record_bytes);
+        GlueResponse::PushAck {
+            ack_lsn,
+            registry_version: 0, // caller may override with actual registry_version
+        }
+    }
+
+    /// Append `record_bytes` to the WAL ring then block until
+    /// `synced_lsn >= request_lsn` (PerEvent / `/push-sync` mode).
+    ///
+    /// Returns `PushAck` once durable, or `PushError(wal_sync_timeout)` if
+    /// `synced_lsn` does not advance within `timeout`.
+    pub fn wal_append_per_event(&self, record_bytes: &[u8], timeout: Duration) -> GlueResponse {
+        let request_lsn = self.ring.append(record_bytes);
+        match self.lsn.wait_for_synced(request_lsn, timeout) {
+            Ok(()) => GlueResponse::PushAck {
+                ack_lsn: request_lsn,
+                registry_version: 0,
+            },
+            Err(_timeout) => GlueResponse::PushError {
+                code: "wal_sync_timeout",
+                registry_version: 0,
+            },
+        }
+    }
+}
+
+impl std::fmt::Debug for WalGlue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WalGlue")
+            .field("committed_lsn", &self.lsn.committed())
+            .field("synced_lsn", &self.lsn.synced())
+            .finish()
     }
 }

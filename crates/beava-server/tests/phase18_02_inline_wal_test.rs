@@ -155,7 +155,7 @@ fn wal_writer_allows_local_fs() {
 fn dispatch_push_periodic_returns_committed_lsn() {
     use beava_server::runtime_core_glue::{GlueResponse, WalGlue};
 
-    let dir = TempDir::new().unwrap();
+    let _dir = TempDir::new().unwrap();
     let lsn = Arc::new(WalLsn::new());
     let ring = Arc::new(WalBufferRing::new(3, 16 * 1024, Arc::clone(&lsn)));
 
