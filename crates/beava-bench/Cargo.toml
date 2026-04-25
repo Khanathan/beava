@@ -35,3 +35,7 @@ path = "src/main.rs"
 [[bin]]
 name = "temporal_throughput"
 path = "src/bin/temporal_throughput.rs"
+
+[[bin]]
+name = "beava-bench-v18"
+path = "src/bin/beava-bench-v18.rs"
