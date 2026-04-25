@@ -18,6 +18,7 @@ pub mod http_listener;
 pub mod response;
 pub mod router;
 pub mod tcp_listener;
+pub mod wire_request;
 
 pub use client::Client;
 pub use event_loop::{EventLoop, EventLoopError};
@@ -25,3 +26,4 @@ pub use http_listener::HttpListener;
 pub use response::ResponseTemplate;
 pub use router::{Route, Router};
 pub use tcp_listener::TcpListener;
+pub use wire_request::WireRequest;
