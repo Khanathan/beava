@@ -13,8 +13,11 @@
 //! - `response`   — pre-encoded byte-string response templates (hot path, no serde)
 
 pub mod client;
+pub mod config;
 pub mod event_loop;
 pub mod http_listener;
+pub mod io_pool;
+pub mod io_thread;
 pub mod response;
 pub mod router;
 pub mod tcp_listener;
@@ -23,9 +26,11 @@ pub mod wal_lsn;
 pub mod wal_writer;
 pub mod wire_request;
 
-pub use client::Client;
+pub use client::{Client, ParseError};
+pub use config::IoConfig;
 pub use event_loop::{EventLoop, EventLoopError};
 pub use http_listener::HttpListener;
+pub use io_pool::IoPool;
 pub use response::ResponseTemplate;
 pub use router::{Route, Router};
 pub use tcp_listener::TcpListener;

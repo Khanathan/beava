@@ -7,9 +7,29 @@
 //!
 //! Phase 18-01: scaffold. I/O-thread-aware fields (per-thread assignment,
 //! atomic flags) added in Plan 18-03.
+//!
+//! # Plan 18-03 additions
+//!
+//! - `pending_parse_input: bool` — set by main when client became readable this tick.
+//! - `parsed_requests: Vec<WireRequest>` — populated by I/O thread; drained by apply.
+//! - `parse_error: Option<String>` — populated on malformed input; main closes connection.
+//! - `parse_client_from_buf()` — free function; called by I/O thread work items.
 
 use bytes::{Bytes, BytesMut};
 use std::collections::VecDeque;
+use thiserror::Error;
+
+use crate::wire_request::WireRequest;
+
+/// Error produced when parsing bytes from a client's read buffer fails.
+///
+/// On `ParseError`, the main thread closes the connection (Redis D-11 pattern).
+#[derive(Debug, Error)]
+pub enum ParseError {
+    /// The byte stream did not match the expected wire protocol.
+    #[error("wire framing error: {0}")]
+    FrameError(String),
+}
 
 /// Client connection state (one per connected socket).
 ///
@@ -17,6 +37,13 @@ use std::collections::VecDeque;
 /// The `query_buf` is filled by the I/O read phase; the parser consumes
 /// from the front via `split_to`. Responses are pushed to `pending_responses`
 /// by the apply thread and written out by the I/O write phase.
+///
+/// # Plan 18-03 fields
+///
+/// `pending_parse_input`, `parsed_requests`, and `parse_error` are the
+/// I/O-thread coordination slots. They are written by the I/O worker
+/// and read by the main (apply) thread, with correctness guaranteed by the
+/// `IoPool::join_all()` Acquire barrier (see `io_pool.rs`).
 #[derive(Debug)]
 pub struct Client {
     /// Inbound data not yet parsed. Equivalent to Redis's `querybuf`.
@@ -26,6 +53,18 @@ pub struct Client {
     pub pending_responses: VecDeque<Bytes>,
     /// Current connection lifecycle state.
     pub state: ClientState,
+
+    // ── Plan 18-03: I/O thread coordination ─────────────────────────────────
+    /// Set by main when this client became readable this event-loop tick.
+    /// Cleared after the I/O worker finishes parsing.
+    pub pending_parse_input: bool,
+
+    /// Parsed requests produced by the I/O worker this tick.
+    /// Drained by the apply thread after `join_all()`.
+    pub parsed_requests: Vec<WireRequest>,
+
+    /// Parse error, if any. When `Some`, main closes the connection.
+    pub parse_error: Option<ParseError>,
 }
 
 /// Per-client lifecycle state.
@@ -51,6 +90,9 @@ impl Client {
             query_buf: BytesMut::with_capacity(Self::INITIAL_CAPACITY),
             pending_responses: VecDeque::new(),
             state: ClientState::Reading,
+            pending_parse_input: false,
+            parsed_requests: Vec::new(),
+            parse_error: None,
         }
     }
 
@@ -81,5 +123,58 @@ impl Client {
 impl Default for Client {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ─── Parse helpers (Plan 18-03) ───────────────────────────────────────────────
+
+/// Parse one framed TCP request from `buf`.
+///
+/// This is the function executed by I/O worker threads. It operates on a
+/// `BytesMut` owned by (or exclusively borrowed from) a single `Client` — no
+/// other thread touches the same buffer concurrently.
+///
+/// Returns `Ok(Some(req))` on a complete frame, `Ok(None)` if more bytes are
+/// needed, or `Err(ParseError)` on a protocol violation.
+///
+/// Used in Task 3.2 work items (I/O thread calls this on each ready client's
+/// buffer). The full `Client::parse_client` method (operating on
+/// `self.query_buf`) is in `impl Client` below; this free-function variant is
+/// used in tests where the buffer is passed directly.
+pub fn parse_client_from_buf(buf: &mut BytesMut) -> Result<Option<WireRequest>, ParseError> {
+    use crate::tcp_listener::parse_wire_request;
+
+    const MAX_FRAME: u32 = 4 * 1024 * 1024; // 4 MiB
+    parse_wire_request(buf, MAX_FRAME).map_err(|e| ParseError::FrameError(e.to_string()))
+}
+
+impl Client {
+    /// Parse all complete frames from `self.query_buf` and push them into
+    /// `self.parsed_requests`. On protocol error, sets `self.parse_error`.
+    ///
+    /// Called by the I/O worker thread work item (via `parse_client`). Returns
+    /// `true` if at least one frame was parsed.
+    pub fn parse_pending(&mut self) -> bool {
+        use crate::tcp_listener::parse_wire_request;
+
+        const MAX_FRAME: u32 = 4 * 1024 * 1024;
+        let mut parsed_any = false;
+
+        loop {
+            match parse_wire_request(&mut self.query_buf, MAX_FRAME) {
+                Ok(Some(req)) => {
+                    self.parsed_requests.push(req);
+                    parsed_any = true;
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    self.parse_error = Some(ParseError::FrameError(e.to_string()));
+                    break;
+                }
+            }
+        }
+
+        self.pending_parse_input = false;
+        parsed_any
     }
 }

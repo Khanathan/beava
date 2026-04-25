@@ -84,7 +84,9 @@ pub fn parse_wire_request(
 
     let req = match frame.op {
         OP_PING => WireRequest::Ping,
-        OP_REGISTER => WireRequest::Register { payload: frame.payload },
+        OP_REGISTER => WireRequest::Register {
+            payload: frame.payload,
+        },
         OP_PUSH => {
             // Payload is JSON: {"event": "<name>", "body": {...}}
             // Parse the envelope to extract event_name + body bytes.
@@ -167,8 +169,12 @@ mod tests {
         let mut buf = make_frame(OP_PING, Bytes::new());
         buf.extend_from_slice(&make_frame(OP_PING, Bytes::new()));
 
-        let r1 = parse_wire_request(&mut buf, 4 * 1024 * 1024).unwrap().unwrap();
-        let r2 = parse_wire_request(&mut buf, 4 * 1024 * 1024).unwrap().unwrap();
+        let r1 = parse_wire_request(&mut buf, 4 * 1024 * 1024)
+            .unwrap()
+            .unwrap();
+        let r2 = parse_wire_request(&mut buf, 4 * 1024 * 1024)
+            .unwrap()
+            .unwrap();
         assert_eq!(r1, WireRequest::Ping);
         assert_eq!(r2, WireRequest::Ping);
         assert_eq!(buf.len(), 0);

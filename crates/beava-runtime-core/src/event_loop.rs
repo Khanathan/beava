@@ -72,8 +72,12 @@ impl EventLoop {
     /// `token` must be unique per source (caller owns the token namespace).
     /// `interest` is typically `Interest::READABLE` for listeners,
     /// `Interest::READABLE | Interest::WRITABLE` for connected client sockets.
-    pub fn register<S>(&mut self, source: &mut S, token: mio::Token, interest: mio::Interest)
-        -> Result<(), EventLoopError>
+    pub fn register<S>(
+        &mut self,
+        source: &mut S,
+        token: mio::Token,
+        interest: mio::Interest,
+    ) -> Result<(), EventLoopError>
     where
         S: mio::event::Source,
     {
@@ -84,8 +88,12 @@ impl EventLoop {
     }
 
     /// Re-register a previously registered source with new interest flags.
-    pub fn reregister<S>(&mut self, source: &mut S, token: mio::Token, interest: mio::Interest)
-        -> Result<(), EventLoopError>
+    pub fn reregister<S>(
+        &mut self,
+        source: &mut S,
+        token: mio::Token,
+        interest: mio::Interest,
+    ) -> Result<(), EventLoopError>
     where
         S: mio::event::Source,
     {
@@ -112,9 +120,10 @@ impl EventLoop {
     /// `timeout`: `None` = block indefinitely, `Some(d)` = return after `d` even
     /// if no events fired. Callers driving a spin loop should pass a short
     /// timeout (e.g., `Some(Duration::from_millis(1))`) to avoid starvation.
-    pub fn tick(&mut self, timeout: Option<Duration>)
-        -> Result<impl Iterator<Item = &mio::event::Event>, EventLoopError>
-    {
+    pub fn tick(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> Result<impl Iterator<Item = &mio::event::Event>, EventLoopError> {
         self.poll
             .poll(&mut self.events, timeout)
             .map_err(EventLoopError::PollTick)?;
