@@ -27,8 +27,10 @@ import httpx
 from beava._errors import RegistrationError
 from beava._wire import (
     CT_JSON,
+    CT_MSGPACK,
     MAX_FRAME_BYTES,
     OP_PING,
+    OP_PUSH,
     OP_REGISTER,
     encode_frame,
     parse_register_response,
@@ -202,6 +204,61 @@ class TcpTransport(Transport):
         sock.sendall(encode_frame(OP_REGISTER, CT_JSON, payload_json))
         frame = read_frame(sock, self.max_frame_bytes)
         return parse_register_response(frame)
+
+    def send_push(
+        self,
+        event_name: str,
+        body_dict: dict,  # type: ignore[type-arg]
+        *,
+        wire_format: str = "json",
+    ) -> dict:  # type: ignore[type-arg]
+        """Send an OP_PUSH frame with the given event name and body.
+
+        Encodes the envelope ``{"event": event_name, "body": body_dict}``
+        using the requested wire format and sends it as an OP_PUSH frame.
+
+        Args:
+            event_name: Name of the registered event type.
+            body_dict: Event fields as a plain Python dict.
+            wire_format: ``"json"`` (default) or ``"msgpack"``.
+                         ``"json"`` uses stdlib :mod:`json` + CT_JSON.
+                         ``"msgpack"`` requires the ``msgpack`` package + CT_MSGPACK.
+
+        Returns:
+            Parsed JSON ACK dict from the server (e.g. ``{"ack_lsn": 42}``).
+
+        Raises:
+            ValueError: ``wire_format`` is not ``"json"`` or ``"msgpack"``.
+            ImportError: ``wire_format="msgpack"`` but ``msgpack`` is not installed.
+        """
+        if wire_format == "json":
+            envelope = json.dumps(
+                {"event": event_name, "body": body_dict}, ensure_ascii=False
+            ).encode("utf-8")
+            ct = CT_JSON
+        elif wire_format == "msgpack":
+            try:
+                import msgpack  # type: ignore[import-untyped]
+            except ImportError as exc:
+                raise ImportError(
+                    "wire_format='msgpack' requires the 'msgpack' package: "
+                    "pip install msgpack"
+                ) from exc
+            envelope = msgpack.packb(
+                {"event": event_name, "body": body_dict}, use_bin_type=True
+            )
+            ct = CT_MSGPACK
+        else:
+            raise ValueError(
+                f"wire_format must be 'json' or 'msgpack', got {wire_format!r}"
+            )
+
+        sock = self._ensure_connected()
+        sock.sendall(encode_frame(OP_PUSH, ct, envelope))
+        frame = read_frame(sock, self.max_frame_bytes)
+        # Server ACK is JSON regardless of push wire format.
+        result: dict[str, object] = json.loads(frame.payload.decode("utf-8"))
+        return result
 
     def send_ping(self) -> dict:  # type: ignore[type-arg]
         """Send an OP_PING frame and return the parsed response dict.

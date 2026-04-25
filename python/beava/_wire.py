@@ -32,12 +32,13 @@ from typing import Any, cast
 
 OP_PING: int = 0x0000
 OP_REGISTER: int = 0x0001
+OP_PUSH: int = 0x0002  # data-plane push (Phase 2.5+)
 OP_ERROR_RESPONSE: int = 0xFFFF
 
 # ─── Content-type constants ──────────────────────────────────────────────────
 
 CT_JSON: int = 0x01
-CT_MSGPACK: int = 0x02  # reserved, Phase 6+
+CT_MSGPACK: int = 0x02  # activated Phase 18-09
 
 # ─── Codec limits ────────────────────────────────────────────────────────────
 
