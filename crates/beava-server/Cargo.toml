@@ -125,6 +125,11 @@ name = "phase18_07_upsert_delete_rename_test"
 path = "tests/phase18_07_upsert_delete_rename_test.rs"
 required-features = ["testing"]
 
+[[test]]
+name = "phase18_04_6_integration_test"
+path = "tests/phase18_04_6_integration_test.rs"
+required-features = ["testing"]
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
