@@ -508,15 +508,10 @@ impl ServerV18 {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        use beava_core::config::DurabilityConfig;
+        use crate::apply_shard::ApplyShard;
         use beava_runtime_core::wal_buffer::WalBufferRing;
         use beava_runtime_core::wal_lsn::WalLsn;
         use beava_runtime_core::wal_writer::WalWriter;
-        use beava_runtime_core::event_loop::EventLoop;
-        use beava_runtime_core::io_pool::IoPool;
-        use beava_runtime_core::http_listener::HttpListener;
-        use beava_runtime_core::tcp_listener::TcpListener as MioTcpListener;
-        use crate::apply_shard::ApplyShard;
         use std::sync::atomic::{AtomicBool, Ordering as AOrdering};
 
         // ── Build AppState ────────────────────────────────────────────────────
@@ -546,8 +541,7 @@ impl ServerV18 {
         // lsn_start = persistence_lsn + 1 to keep LSNs monotonic across both WALs.
         let handrolled_lsn_start = persistence_lsn + 1;
         let handrolled_outcome =
-            replay_handrolled_wal_dir(&wal_dir, handrolled_lsn_start, &dev_agg)
-                .unwrap_or_default();
+            replay_handrolled_wal_dir(&wal_dir, handrolled_lsn_start, &dev_agg).unwrap_or_default();
         let initial_start_lsn = handrolled_outcome.last_lsn.max(persistence_lsn) + 1;
 
         tracing::info!(
@@ -623,7 +617,7 @@ impl ServerV18 {
                     shutdown_flag_apply,
                 );
             })
-            .map_err(|e| ServerError::Serve(e))?;
+            .map_err(ServerError::Serve)?;
 
         // ── Tokio: admin + shutdown signal ────────────────────────────────────
         // Start snapshot task (legacy, admin plane).
@@ -648,7 +642,7 @@ impl ServerV18 {
         let _ = apply_join.join();
 
         // Signal the WalWriter to do a final fsync and exit.
-        let wal_shutdown_flag = Arc::new(AtomicBool::new(true));
+        let _wal_shutdown_flag = Arc::new(AtomicBool::new(true));
         // The WalWriter's shutdown flag is internal; signal via a local AtomicBool.
         // Since we already joined the apply thread (no more appends), we just wait
         // for the wal_writer_handle to complete naturally.
@@ -725,11 +719,10 @@ fn run_mio_event_loop(
     shutdown: Arc<std::sync::atomic::AtomicBool>,
 ) {
     use beava_runtime_core::event_loop::EventLoop;
-    use beava_runtime_core::http_listener::HttpListener;
-    use beava_runtime_core::tcp_listener::TcpListener as MioTcpListener;
     use beava_runtime_core::http_listener::parse_http_request;
+    use beava_runtime_core::http_listener::HttpListener;
     use beava_runtime_core::tcp_listener::parse_wire_request;
-    use bytes::BufMut;
+    use beava_runtime_core::tcp_listener::TcpListener as MioTcpListener;
     use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::sync::atomic::Ordering as AOrdering;
@@ -906,8 +899,13 @@ fn run_mio_event_loop(
                 MioProto::Tcp => {
                     // Parse all complete framed TCP requests.
                     loop {
-                        let trace = std::env::var("BEAVA_TRACE_SRV_TIMING").ok().as_deref() == Some("1");
-                        let t_start = if trace { Some(std::time::Instant::now()) } else { None };
+                        let trace =
+                            std::env::var("BEAVA_TRACE_SRV_TIMING").ok().as_deref() == Some("1");
+                        let t_start = if trace {
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        };
                         match parse_wire_request(&mut client.read_buf, 4 * 1024 * 1024) {
                             Ok(Some(req)) => {
                                 let t_parsed = t_start.map(|t| t.elapsed());
@@ -916,7 +914,9 @@ fn run_mio_event_loop(
                                 for resp in responses {
                                     encode_glue_response_tcp(&resp, &mut client.write_buf);
                                 }
-                                if let (Some(t0), Some(parsed), Some(dispatched)) = (t_start, t_parsed, t_dispatched) {
+                                if let (Some(t0), Some(parsed), Some(dispatched)) =
+                                    (t_start, t_parsed, t_dispatched)
+                                {
                                     let total = t0.elapsed();
                                     eprintln!(
                                         "TRACE_SRV ns: parse={} dispatch={} encode={} TOTAL={}",
@@ -932,7 +932,8 @@ fn run_mio_event_loop(
                                 // Protocol error — close.
                                 use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE};
                                 encode_tcp_frame_bytes(
-                                    OP_ERROR_RESPONSE, CT_JSON,
+                                    OP_ERROR_RESPONSE,
+                                    CT_JSON,
                                     b"{\"code\":\"frame_error\"}",
                                     &mut client.write_buf,
                                 );
@@ -983,7 +984,7 @@ fn run_mio_event_loop(
         }
 
         // ── Phase 5: write — flush write buffers ─────────────────────────────
-        for (token, _readable, writable) in &events {
+        for (token, _readable, _writable) in &events {
             let tok_idx = token.0;
             if tok_idx < TOKEN_CLIENT_BASE {
                 continue;
@@ -1080,15 +1081,19 @@ fn encode_glue_response_tcp(
     resp: &crate::runtime_core_glue::GlueResponse,
     buf: &mut bytes::BytesMut,
 ) {
-    use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE, OP_PING, OP_PUSH};
     use crate::runtime_core_glue::GlueResponse;
+    use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE, OP_PING, OP_PUSH};
 
     match resp {
         GlueResponse::Pong { .. } => {
             encode_tcp_frame_bytes(OP_PING, CT_JSON, b"{}", buf);
         }
-        GlueResponse::PushAck { ack_lsn, registry_version } => {
-            let body = serde_json::json!({"ack_lsn": ack_lsn, "registry_version": registry_version});
+        GlueResponse::PushAck {
+            ack_lsn,
+            registry_version,
+        } => {
+            let body =
+                serde_json::json!({"ack_lsn": ack_lsn, "registry_version": registry_version});
             let b = serde_json::to_vec(&body).unwrap_or_default();
             encode_tcp_frame_bytes(OP_PUSH, CT_JSON, &b, buf);
         }
@@ -1113,7 +1118,12 @@ fn encode_glue_response_tcp(
             encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
         }
         _ => {
-            encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, b"{\"code\":\"unsupported\"}", buf);
+            encode_tcp_frame_bytes(
+                OP_ERROR_RESPONSE,
+                CT_JSON,
+                b"{\"code\":\"unsupported\"}",
+                buf,
+            );
         }
     }
 }
@@ -1126,7 +1136,10 @@ fn encode_glue_response_http(
     use crate::runtime_core_glue::GlueResponse;
 
     let (status, body_bytes): (u16, Vec<u8>) = match resp {
-        GlueResponse::PushAck { ack_lsn, registry_version } => {
+        GlueResponse::PushAck {
+            ack_lsn,
+            registry_version,
+        } => {
             let body = serde_json::json!({"ack_lsn": ack_lsn, "registry_version": registry_version, "idempotent_replay": false});
             (200, serde_json::to_vec(&body).unwrap_or_default())
         }
@@ -1147,9 +1160,7 @@ fn encode_glue_response_http(
             let status = if *code == "event_not_found" { 404 } else { 400 };
             (status, serde_json::to_vec(&body).unwrap_or_default())
         }
-        GlueResponse::QueryResult { body } => {
-            (200, body.to_vec())
-        }
+        GlueResponse::QueryResult { body } => (200, body.to_vec()),
         GlueResponse::QueryNotFound { code } => {
             let body = serde_json::json!({"error": {"code": code}});
             (404, serde_json::to_vec(&body).unwrap_or_default())
@@ -1162,9 +1173,7 @@ fn encode_glue_response_http(
             let body = serde_json::json!({"error": {"code": "internal_error", "reason": reason}});
             (500, serde_json::to_vec(&body).unwrap_or_default())
         }
-        _ => {
-            (501, b"{\"error\":{\"code\":\"unsupported\"}}".to_vec())
-        }
+        _ => (501, b"{\"error\":{\"code\":\"unsupported\"}}".to_vec()),
     };
 
     let status_text = match status {
@@ -1188,12 +1197,7 @@ fn encode_glue_response_http(
 
 /// Encode a raw TCP framed response into `buf`.
 /// Wire format: [u32 length BE][u16 op BE][u8 content_type][payload]
-fn encode_tcp_frame_bytes(
-    op: u16,
-    content_type: u8,
-    payload: &[u8],
-    buf: &mut bytes::BytesMut,
-) {
+fn encode_tcp_frame_bytes(op: u16, content_type: u8, payload: &[u8], buf: &mut bytes::BytesMut) {
     use bytes::BufMut;
     // Length field = op(2) + content_type(1) + payload.len()
     let frame_len = 2 + 1 + payload.len() as u32;
@@ -1210,29 +1214,41 @@ fn encode_tcp_frame_bytes(
 /// Used by the inline TCP accept loop inside `ServerV18::serve()`. Async because
 /// `dispatch_wire_request` drives the tokio WAL sink channel; once the WAL is
 /// converted to sync `Write` (Plan 18-06) this can become `fn`.
+#[allow(dead_code)]
 async fn dispatch_tcp_frame(
     app: &Arc<AppState>,
     frame: beava_core::wire::Frame,
 ) -> beava_core::wire::Frame {
+    use crate::runtime_core_glue::dispatch_wire_request;
     use beava_core::wire::{OP_PING, OP_PUSH, OP_REGISTER};
     use beava_runtime_core::wire_request::WireRequest;
-    use crate::runtime_core_glue::dispatch_wire_request;
 
     // Map raw frame op+payload → WireRequest.
     let wire_req = match frame.op {
         OP_PING => WireRequest::Ping,
-        OP_REGISTER => WireRequest::Register { payload: frame.payload },
+        OP_REGISTER => WireRequest::Register {
+            payload: frame.payload,
+        },
         OP_PUSH => {
             #[derive(serde::Deserialize)]
-            struct PushEnvelope { event: String, body: serde_json::Value }
+            struct PushEnvelope {
+                event: String,
+                body: serde_json::Value,
+            }
             match serde_json::from_slice::<PushEnvelope>(&frame.payload) {
                 Ok(env) => {
                     let body = serde_json::to_vec(&env.body)
                         .map(bytes::Bytes::from)
                         .unwrap_or_else(|_| frame.payload.clone());
-                    WireRequest::TcpPush { event_name: env.event, body, body_format: beava_core::wire::CT_JSON }
+                    WireRequest::TcpPush {
+                        event_name: env.event,
+                        body,
+                        body_format: beava_core::wire::CT_JSON,
+                    }
                 }
-                Err(e) => WireRequest::ParseError { reason: e.to_string() },
+                Err(e) => WireRequest::ParseError {
+                    reason: e.to_string(),
+                },
             }
         }
         op => WireRequest::Unknown { op },
@@ -1244,16 +1260,21 @@ async fn dispatch_tcp_frame(
 }
 
 /// Convert a `GlueResponse` into a wire `Frame` for the TCP transport.
+#[allow(dead_code)]
 fn glue_to_frame(glue: crate::runtime_core_glue::GlueResponse) -> beava_core::wire::Frame {
-    use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE, OP_PING, OP_PUSH};
     use crate::runtime_core_glue::GlueResponse;
+    use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE, OP_PING, OP_PUSH};
 
     match glue {
         GlueResponse::Pong { .. } => {
             beava_core::wire::Frame::new(OP_PING, CT_JSON, bytes::Bytes::from_static(b"{}"))
         }
-        GlueResponse::PushAck { ack_lsn, registry_version } => {
-            let body = serde_json::json!({"ack_lsn": ack_lsn, "registry_version": registry_version});
+        GlueResponse::PushAck {
+            ack_lsn,
+            registry_version,
+        } => {
+            let body =
+                serde_json::json!({"ack_lsn": ack_lsn, "registry_version": registry_version});
             let b = serde_json::to_vec(&body).unwrap_or_default();
             beava_core::wire::Frame::new(OP_PUSH, CT_JSON, bytes::Bytes::from(b))
         }
@@ -1277,12 +1298,11 @@ fn glue_to_frame(glue: crate::runtime_core_glue::GlueResponse) -> beava_core::wi
             let b = serde_json::to_vec(&body).unwrap_or_default();
             beava_core::wire::Frame::new(OP_ERROR_RESPONSE, CT_JSON, bytes::Bytes::from(b))
         }
-        _ => {
-            beava_core::wire::Frame::new(
-                OP_ERROR_RESPONSE, CT_JSON,
-                bytes::Bytes::from_static(b"{\"code\":\"unsupported\"}"),
-            )
-        }
+        _ => beava_core::wire::Frame::new(
+            OP_ERROR_RESPONSE,
+            CT_JSON,
+            bytes::Bytes::from_static(b"{\"code\":\"unsupported\"}"),
+        ),
     }
 }
 

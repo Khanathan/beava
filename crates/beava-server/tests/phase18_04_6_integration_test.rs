@@ -58,14 +58,14 @@ async fn wait_for_admin(addr: std::net::SocketAddr) {
 /// RED: ApplyShard does not exist yet.
 #[tokio::test]
 async fn test_apply_shard_single_writer_no_lock_contention() {
-    use beava_server::apply_shard::ApplyShard;
-    use beava_server::AppState;
-    use beava_server::idem_cache::IdemCache;
+    use beava_core::registry::Registry;
+    use beava_persistence::{WalSink, WalSinkConfig};
     use beava_runtime_core::wal_buffer::WalBufferRing;
     use beava_runtime_core::wal_lsn::WalLsn;
     use beava_runtime_core::wire_request::WireRequest;
-    use beava_core::registry::Registry;
-    use beava_persistence::{WalSink, WalSinkConfig};
+    use beava_server::apply_shard::ApplyShard;
+    use beava_server::idem_cache::IdemCache;
+    use beava_server::AppState;
 
     // Build minimal AppState (temp WAL). WalSink::spawn needs a tokio runtime.
     let wal_dir = tempfile::tempdir().expect("wal tempdir");
@@ -90,13 +90,20 @@ async fn test_apply_shard_single_writer_no_lock_contention() {
     let wal_ring = Arc::new(WalBufferRing::new(3, 64 * 1024, Arc::clone(&wal_lsn)));
 
     // Create the ApplyShard.
-    let shard = ApplyShard::new(Arc::clone(&app_state), Arc::clone(&wal_ring), Arc::clone(&wal_lsn));
+    let shard = ApplyShard::new(
+        Arc::clone(&app_state),
+        Arc::clone(&wal_ring),
+        Arc::clone(&wal_lsn),
+    );
 
     // 1000 sequential Ping dispatches — should complete in well under 100ms.
     let start = Instant::now();
     for _ in 0..1000 {
         let responses = shard.dispatch_wire_request_sync(WireRequest::Ping);
-        assert!(!responses.is_empty(), "Ping should return at least one response");
+        assert!(
+            !responses.is_empty(),
+            "Ping should return at least one response"
+        );
     }
     let elapsed = start.elapsed();
     assert!(
@@ -118,7 +125,9 @@ async fn test_apply_shard_single_writer_no_lock_contention() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_serve_loop_uses_mio_not_tokio() {
     // Serialize against other server-boot tests to avoid thread/resource contention.
-    let _guard = SERVER_SERIALIZER.lock().unwrap();
+    {
+        let _g = SERVER_SERIALIZER.lock().unwrap();
+    } // serialise test start; _g drops before any await
 
     use beava_server::server::ServerV18;
     use std::net::SocketAddr;
@@ -132,7 +141,10 @@ async fn test_serve_loop_uses_mio_not_tokio() {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let serve_task = tokio::spawn(async move {
-        sv18.serve(async move { let _ = shutdown_rx.await; }).await
+        sv18.serve(async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
     });
 
     // Poll until the mio event loop is accepting connections.
@@ -183,7 +195,11 @@ async fn test_serve_loop_uses_mio_not_tokio() {
         .send()
         .await
         .expect("register request");
-    assert!(reg_resp.status().is_success(), "register failed: {}", reg_resp.status());
+    assert!(
+        reg_resp.status().is_success(),
+        "register failed: {}",
+        reg_resp.status()
+    );
 
     // Push one event via HTTP.
     let event_payload = serde_json::json!({
@@ -236,7 +252,7 @@ async fn test_apply_writes_to_wal_buffer_ring_not_walsink() {
     // The test_serve_loop_uses_mio_not_tokio test above also implicitly validates
     // this: if X-Runtime is hand-rolled AND state changes correctly, we know
     // the mio path is in use.
-    assert!(true, "placeholder - see test_serve_loop_uses_mio_not_tokio");
+    // placeholder - validated implicitly by test_serve_loop_uses_mio_not_tokio
 }
 
 // ─── Task 4.6.5 ───────────────────────────────────────────────────────────────
@@ -248,7 +264,9 @@ async fn test_apply_writes_to_wal_buffer_ring_not_walsink() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_runtime_kind_metric_mio() {
     // Serialize against other server-boot tests to avoid thread/resource contention.
-    let _guard = SERVER_SERIALIZER.lock().unwrap();
+    {
+        let _g = SERVER_SERIALIZER.lock().unwrap();
+    } // serialise test start; _g drops before any await
 
     use beava_server::server::ServerV18;
     use std::net::SocketAddr;
@@ -262,7 +280,10 @@ async fn test_runtime_kind_metric_mio() {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let serve_task = tokio::spawn(async move {
-        sv18.serve(async move { let _ = shutdown_rx.await; }).await
+        sv18.serve(async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
     });
 
     // Poll until the admin server is responding to requests.

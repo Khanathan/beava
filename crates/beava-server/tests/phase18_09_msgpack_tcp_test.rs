@@ -13,7 +13,7 @@
 // asserts WireRequest::TcpPush with event="Txn", body_format=CT_MSGPACK,
 // body=raw msgpack body bytes (NOT re-serialized).
 
-use beava_core::wire::{encode_frame, CT_JSON, CT_MSGPACK, Frame, OP_PUSH};
+use beava_core::wire::{encode_frame, Frame, CT_JSON, CT_MSGPACK, OP_PUSH};
 use beava_runtime_core::tcp_listener::parse_wire_request;
 use beava_runtime_core::wire_request::WireRequest;
 use bytes::{Bytes, BytesMut};
@@ -27,8 +27,11 @@ fn make_msgpack_envelope(event_name: &str, body: &serde_json::Value) -> Vec<u8> 
         event: &'a str,
         body: &'a serde_json::Value,
     }
-    rmp_serde::to_vec_named(&Envelope { event: event_name, body })
-        .expect("msgpack serialize envelope")
+    rmp_serde::to_vec_named(&Envelope {
+        event: event_name,
+        body,
+    })
+    .expect("msgpack serialize envelope")
 }
 
 /// Build a msgpack frame (CT_MSGPACK) wrapping the given envelope bytes.
@@ -51,15 +54,26 @@ fn test_parse_wire_request_msgpack_envelope() {
         .expect("complete frame");
 
     match req {
-        WireRequest::TcpPush { event_name, body, body_format } => {
-            assert_eq!(event_name, "Txn", "event_name extracted from msgpack envelope");
+        WireRequest::TcpPush {
+            event_name,
+            body,
+            body_format,
+        } => {
+            assert_eq!(
+                event_name, "Txn",
+                "event_name extracted from msgpack envelope"
+            );
             assert_eq!(body_format, CT_MSGPACK, "body_format must be CT_MSGPACK");
             assert_ne!(body_format, CT_JSON, "must NOT be CT_JSON");
 
             // body bytes are raw msgpack of the body map — verify by decoding
-            let decoded: serde_json::Value = rmp_serde::from_slice(&body)
-                .expect("body bytes should be valid msgpack");
-            assert_eq!(decoded["amount"], serde_json::json!(99), "body amount round-trips");
+            let decoded: serde_json::Value =
+                rmp_serde::from_slice(&body).expect("body bytes should be valid msgpack");
+            assert_eq!(
+                decoded["amount"],
+                serde_json::json!(99),
+                "body amount round-trips"
+            );
         }
         WireRequest::ParseError { reason } => {
             panic!("expected TcpPush but got ParseError: {reason}");
@@ -84,7 +98,11 @@ fn test_parse_wire_request_json_still_works_after_msgpack_added() {
         .expect("complete frame");
 
     match req {
-        WireRequest::TcpPush { event_name, body, body_format } => {
+        WireRequest::TcpPush {
+            event_name,
+            body,
+            body_format,
+        } => {
             assert_eq!(event_name, "Foo");
             assert_eq!(body_format, CT_JSON, "JSON frame → CT_JSON body_format");
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -172,7 +190,9 @@ async fn send_msgpack_push_tcp(
 ) -> beava_core::wire::Frame {
     use beava_server::testing::TcpClient;
     let envelope_bytes = make_msgpack_envelope(event_name, body);
-    let mut client = TcpClient::connect(tcp_addr).await.expect("TcpClient connect");
+    let mut client = TcpClient::connect(tcp_addr)
+        .await
+        .expect("TcpClient connect");
     client
         .send_raw(OP_PUSH, CT_MSGPACK, Bytes::from(envelope_bytes))
         .await
@@ -181,7 +201,9 @@ async fn send_msgpack_push_tcp(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_dispatch_push_msgpack_body() {
-    let _lock = SERVER_SERIALIZER_09.lock().unwrap();
+    {
+        let _g = SERVER_SERIALIZER_09.lock().unwrap();
+    } // serialise test start; _g drops before any await
     let any: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
     let sv18 = beava_server::server::ServerV18::bind(any, any, any)
         .await
@@ -196,7 +218,14 @@ async fn test_dispatch_push_msgpack_body() {
     let wp = wal_dir.path().to_path_buf();
     let sp = snap_dir.path().to_path_buf();
     let serve_task = tokio::spawn(async move {
-        sv18.serve_with_dirs(async { let _ = shutdown_rx.await; }, wp, sp).await
+        sv18.serve_with_dirs(
+            async {
+                let _ = shutdown_rx.await;
+            },
+            wp,
+            sp,
+        )
+        .await
     });
 
     wait_for_http_09(http_addr).await;
@@ -210,12 +239,19 @@ async fn test_dispatch_push_msgpack_body() {
         .send()
         .await
         .expect("register");
-    assert!(reg_resp.status().is_success(), "register failed: {}", reg_resp.status());
+    assert!(
+        reg_resp.status().is_success(),
+        "register failed: {}",
+        reg_resp.status()
+    );
 
     // Send a msgpack push via TCP.
     let body = serde_json::json!({"user_id": "u1", "amount": 42.0, "event_time": 1_000_000_i64});
     let resp_frame = send_msgpack_push_tcp(tcp_addr, "TxnEvent", &body).await;
-    assert_eq!(resp_frame.op, OP_PUSH, "msgpack push should get OP_PUSH ACK");
+    assert_eq!(
+        resp_frame.op, OP_PUSH,
+        "msgpack push should get OP_PUSH ACK"
+    );
 
     // Verify the aggregation was applied by querying via HTTP.
     let get_resp = client
@@ -223,9 +259,17 @@ async fn test_dispatch_push_msgpack_body() {
         .send()
         .await
         .expect("get");
-    assert!(get_resp.status().is_success(), "GET failed: {}", get_resp.status());
+    assert!(
+        get_resp.status().is_success(),
+        "GET failed: {}",
+        get_resp.status()
+    );
     let get_json: serde_json::Value = get_resp.json().await.expect("json");
-    assert_eq!(get_json["value"], serde_json::json!(1), "count should be 1 after msgpack push");
+    assert_eq!(
+        get_json["value"],
+        serde_json::json!(1),
+        "count should be 1 after msgpack push"
+    );
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), serve_task).await;
@@ -234,7 +278,9 @@ async fn test_dispatch_push_msgpack_body() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_dispatch_push_json_body_still_works() {
     // Backward compat: CT_JSON on TCP still applies correctly.
-    let _lock = SERVER_SERIALIZER_09.lock().unwrap();
+    {
+        let _g = SERVER_SERIALIZER_09.lock().unwrap();
+    } // serialise test start; _g drops before any await
     let any: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
     let sv18 = beava_server::server::ServerV18::bind(any, any, any)
         .await
@@ -249,7 +295,14 @@ async fn test_dispatch_push_json_body_still_works() {
     let wp = wal_dir.path().to_path_buf();
     let sp = snap_dir.path().to_path_buf();
     let serve_task = tokio::spawn(async move {
-        sv18.serve_with_dirs(async { let _ = shutdown_rx.await; }, wp, sp).await
+        sv18.serve_with_dirs(
+            async {
+                let _ = shutdown_rx.await;
+            },
+            wp,
+            sp,
+        )
+        .await
     });
 
     wait_for_http_09(http_addr).await;
@@ -268,7 +321,10 @@ async fn test_dispatch_push_json_body_still_works() {
     use beava_server::testing::TcpClient;
     let mut tcp_client = TcpClient::connect(tcp_addr).await.expect("connect");
     let body = serde_json::json!({"user_id": "u2", "amount": 10.0, "event_time": 1_000_001_i64});
-    let (op, _parsed) = tcp_client.push_json("TxnEvent", body).await.expect("push_json");
+    let (op, _parsed) = tcp_client
+        .push_json("TxnEvent", body)
+        .await
+        .expect("push_json");
     assert_eq!(op, OP_PUSH, "JSON push should get OP_PUSH ACK");
 
     let get_resp = client
@@ -291,7 +347,9 @@ async fn test_dispatch_push_json_body_still_works() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_wal_record_v2_format() {
-    let _lock = SERVER_SERIALIZER_09.lock().unwrap();
+    {
+        let _g = SERVER_SERIALIZER_09.lock().unwrap();
+    } // serialise test start; _g drops before any await
     let any: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
     let sv18 = beava_server::server::ServerV18::bind(any, any, any)
         .await
@@ -308,7 +366,14 @@ async fn test_wal_record_v2_format() {
     let wp = wal_path.clone();
     let sp = snap_dir.path().to_path_buf();
     let serve_task = tokio::spawn(async move {
-        sv18.serve_with_dirs(async { let _ = shutdown_rx.await; }, wp, sp).await
+        sv18.serve_with_dirs(
+            async {
+                let _ = shutdown_rx.await;
+            },
+            wp,
+            sp,
+        )
+        .await
     });
 
     wait_for_http_09(http_addr).await;
@@ -323,7 +388,8 @@ async fn test_wal_record_v2_format() {
         .expect("register");
 
     // Send a msgpack push so a v=2 WAL record is written.
-    let body = serde_json::json!({"user_id": "waltest", "amount": 7.0, "event_time": 2_000_000_i64});
+    let body =
+        serde_json::json!({"user_id": "waltest", "amount": 7.0, "event_time": 2_000_000_i64});
     let _ = send_msgpack_push_tcp(tcp_addr, "TxnEvent", &body).await;
 
     // Give the WAL writer a beat to flush.
@@ -341,14 +407,17 @@ async fn test_wal_record_v2_format() {
         .filter_map(|e| e.ok())
         .filter(|e| {
             e.file_name().to_string_lossy().starts_with("wal-")
-            && e.file_name().to_string_lossy().ends_with(".wal")
+                && e.file_name().to_string_lossy().ends_with(".wal")
         })
         .collect();
 
     // WAL files present = v=2 records were written (the WalWriter creates them).
     // If no WAL files exist, the WalBufferRing hasn't flushed — this indicates
     // the v=2 WAL append path is not yet implemented. Fail explicitly.
-    assert!(!wal_files.is_empty(), "expected at least one WAL .wal file after msgpack push; v=2 WAL append not yet wired");
+    assert!(
+        !wal_files.is_empty(),
+        "expected at least one WAL .wal file after msgpack push; v=2 WAL append not yet wired"
+    );
 
     // Read the first WAL file and check the record format.
     let wal_file_path = &wal_files[0].path();
@@ -357,9 +426,17 @@ async fn test_wal_record_v2_format() {
 
     // v=2 record format: [u8 v=2][u8 body_format][u32 rv][u64 et_ms][u16 event_name_len][...name...][u32 body_len][...body...]
     // First byte must be 0x02 (record version 2).
-    assert_eq!(wal_bytes[0], 0x02, "first WAL record byte must be version=2 (0x02), got {:#04x}", wal_bytes[0]);
+    assert_eq!(
+        wal_bytes[0], 0x02,
+        "first WAL record byte must be version=2 (0x02), got {:#04x}",
+        wal_bytes[0]
+    );
     // Second byte must be 0x02 (CT_MSGPACK body format).
-    assert_eq!(wal_bytes[1], CT_MSGPACK, "second WAL record byte must be CT_MSGPACK (0x02), got {:#04x}", wal_bytes[1]);
+    assert_eq!(
+        wal_bytes[1], CT_MSGPACK,
+        "second WAL record byte must be CT_MSGPACK (0x02), got {:#04x}",
+        wal_bytes[1]
+    );
 }
 
 // ─── Task 9.6 RED: WAL replay handles v=2 + mixed v=1/v=2 ───────────────────
@@ -370,7 +447,9 @@ async fn test_wal_replay_v2_msgpack() {
     // msgpack (v=2) push is correctly replayed from the WAL.
     // RED: the v=2 WAL format is not yet implemented, so this test will fail
     // until Task 9.5 GREEN + 9.6 GREEN land.
-    let _lock = SERVER_SERIALIZER_09.lock().unwrap();
+    {
+        let _g = SERVER_SERIALIZER_09.lock().unwrap();
+    } // serialise test start; _g drops before any await
 
     let any: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
     let wal_dir = tempfile::tempdir().expect("wal dir");
@@ -390,7 +469,14 @@ async fn test_wal_replay_v2_msgpack() {
         let wp = wal_path.clone();
         let sp = snap_path.clone();
         let serve_task = tokio::spawn(async move {
-            sv18.serve_with_dirs(async { let _ = shutdown_rx.await; }, wp, sp).await
+            sv18.serve_with_dirs(
+                async {
+                    let _ = shutdown_rx.await;
+                },
+                wp,
+                sp,
+            )
+            .await
         });
 
         wait_for_http_09(http_addr).await;
@@ -427,7 +513,14 @@ async fn test_wal_replay_v2_msgpack() {
         let wp = wal_path.clone();
         let sp = snap_path.clone();
         let serve_task = tokio::spawn(async move {
-            sv18.serve_with_dirs(async { let _ = shutdown_rx.await; }, wp, sp).await
+            sv18.serve_with_dirs(
+                async {
+                    let _ = shutdown_rx.await;
+                },
+                wp,
+                sp,
+            )
+            .await
         });
 
         wait_for_http_09(http_addr).await;

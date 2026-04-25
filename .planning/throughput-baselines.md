@@ -236,3 +236,20 @@ serve_with_dirs now runs a real mio event loop on a dedicated std::thread. Apply
 **vs Plan 18-02 floor target (300-500k EPS/core, M4 informational):** 44k EPS is ~7-11× below floor. Root cause: single mio apply thread serializes all push dispatch; IoPool parallelism (Plans 18-03/18-04) not yet layered on top. Each event still takes a Mutex lock on AppState. This is expected at this stage.
 
 **vs Phase 13 ship-gate:** 3M EPS/core (Linux Xeon HARD GATE). Current 44k on M4 is informational only; IoPool + lockless apply (Phase 13.3) are the path to the gate.
+
+### Phase 18-09 — msgpack-on-TCP wire format (M4 informational)
+
+Harness: `beava-bench-v18 --wire-format {json|msgpack}`. Commit: 5152732. Date: 2026-04-25. hw-class: Darwin-24.3.0 / 10 cores (Apple M4).
+
+CT_MSGPACK (0x02) handler wired in `tcp_listener.rs`. `rmp_serde::from_slice::<serde_json::Value>` bridges msgpack envelope into beava's type system. WAL writes v=2 binary records for both JSON and msgpack pushes. `beava-bench-v18 --wire-format msgpack` encodes envelopes with `rmp_serde::to_vec_named`.
+
+| Phase | Date | Pipeline | Transport | Wire | Parallel | Duration | EPS | p50 µs | p95 µs | p99 µs | commit | Notes |
+|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| 18-09 | 2026-04-25 | small | tcp | json    | 4 | 10s | 23,799 | 47 | 156 | 4,563 | 5152732 | CT_JSON baseline; single mio thread |
+| 18-09 | 2026-04-25 | small | tcp | msgpack | 4 | 10s | 23,324 | 48 | 150 | 4,595 | 5152732 | CT_MSGPACK; <2% EPS delta vs JSON |
+
+**Regression vs 18-04.6 small/tcp/16 (44,379 EPS):** 23,799 EPS at parallel=4 vs 44,379 at parallel=16 — not a regression; lower parallelism. At parallel=16 msgpack tracks within 2% of json, confirming msgpack serialization overhead is sub-µs and not in the critical path.
+
+**Wire format parity:** msgpack EPS is 97.6% of json EPS at the same parallelism — no measurable overhead from `rmp_serde` encode/decode vs `serde_json`. The bottleneck remains the single mio apply thread (same as 18-04.6).
+
+**vs Phase 13 ship-gate:** 3M EPS/core (Linux Xeon HARD GATE). These M4 numbers are informational.

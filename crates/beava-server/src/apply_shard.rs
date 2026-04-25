@@ -17,7 +17,6 @@
 //! In the serve loop, only the single apply thread calls `dispatch_wire_request_sync`;
 //! the Mutex is uncontended → lock+unlock cost ~10–20 ns on macOS/Linux.
 
-use crate::push::PushAck;
 use crate::register::{RegisterOutcome, RegisterPayload};
 use crate::runtime_core_glue::GlueResponse;
 use crate::AppState;
@@ -44,12 +43,12 @@ impl ApplyShard {
     /// `state` — shared application state (registry, aggregations, idem-cache).
     /// `wal_ring` — hand-rolled WAL ring buffer (lock-free append on apply thread).
     /// `wal_lsn` — four-watermark LSN tracker (committed/written/synced/acked).
-    pub fn new(
-        state: Arc<AppState>,
-        wal_ring: Arc<WalBufferRing>,
-        wal_lsn: Arc<WalLsn>,
-    ) -> Self {
-        Self { state, wal_ring, wal_lsn }
+    pub fn new(state: Arc<AppState>, wal_ring: Arc<WalBufferRing>, wal_lsn: Arc<WalLsn>) -> Self {
+        Self {
+            state,
+            wal_ring,
+            wal_lsn,
+        }
     }
 
     /// Synchronous dispatch — the hot path for the apply thread.
@@ -112,9 +111,7 @@ impl ApplyShard {
                     RegisterOutcome::EmptyPayload { version } => {
                         GlueResponse::RegisterOk { version }
                     }
-                    RegisterOutcome::Noop { version, .. } => {
-                        GlueResponse::RegisterOk { version }
-                    }
+                    RegisterOutcome::Noop { version, .. } => GlueResponse::RegisterOk { version },
                     RegisterOutcome::ValidationFailed {
                         first_error_path,
                         first_error_reason,
@@ -135,21 +132,33 @@ impl ApplyShard {
             }
 
             // ─── TCP push / HTTP push (periodic mode) ─────────────────────────
-            WireRequest::TcpPush { event_name, body, body_format }
-            | WireRequest::HttpPush { event_name, body, body_format } => {
-                self.dispatch_push_sync(&event_name, body, body_format)
+            WireRequest::TcpPush {
+                event_name,
+                body,
+                body_format,
             }
+            | WireRequest::HttpPush {
+                event_name,
+                body,
+                body_format,
+            } => self.dispatch_push_sync(&event_name, body, body_format),
 
             // ─── HTTP push-sync (per-event / acks=all mode) ───────────────────
             // For the mio path we still do sync WAL append; the
             // wait-for-synced blocking call would stall the apply thread.
             // Per plan D-2 the full per-event path is a future refinement.
             // For now, treat identically to periodic push.
-            WireRequest::HttpPushSync { event_name, body, body_format } => {
-                self.dispatch_push_sync(&event_name, body, body_format)
-            }
+            WireRequest::HttpPushSync {
+                event_name,
+                body,
+                body_format,
+            } => self.dispatch_push_sync(&event_name, body, body_format),
 
-            WireRequest::HttpPushBatch { event_name, body, body_format } => {
+            WireRequest::HttpPushBatch {
+                event_name,
+                body,
+                body_format,
+            } => {
                 // Batch push: treat as single push for scaffold correctness.
                 self.dispatch_push_sync(&event_name, body, body_format)
             }
@@ -401,13 +410,8 @@ fn validate_body_sync(
     descriptor: &beava_core::registry::EventDescriptor,
     obj: &serde_json::Map<String, serde_json::Value>,
 ) -> bool {
-    use beava_core::schema::FieldType;
     for (field_name, field_type) in &descriptor.schema.fields {
-        if descriptor
-            .schema
-            .optional_fields
-            .contains(field_name)
-        {
+        if descriptor.schema.optional_fields.contains(field_name) {
             continue;
         }
         let val = match obj.get(field_name) {
@@ -436,9 +440,9 @@ fn extract_dedupe_str_sync(
     obj: &serde_json::Map<String, serde_json::Value>,
     key: &str,
 ) -> Option<String> {
-    obj.get(key).and_then(|v| match v {
-        serde_json::Value::String(s) => Some(s.clone()),
-        other => Some(other.to_string()),
+    obj.get(key).map(|v| match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
     })
 }
 

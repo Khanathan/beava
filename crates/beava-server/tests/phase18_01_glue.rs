@@ -9,8 +9,8 @@
 
 #![cfg(feature = "testing")]
 
-use beava_server::runtime_core_glue::{dispatch_wire_request, GlueResponse};
 use beava_runtime_core::wire_request::WireRequest;
+use beava_server::runtime_core_glue::{dispatch_wire_request, GlueResponse};
 use bytes::Bytes;
 use serde_json::json;
 use std::sync::Arc;
@@ -86,6 +86,7 @@ async fn http_push_through_glue_applies_event_and_returns_ok() {
     let push_req = WireRequest::HttpPush {
         event_name: "Txn".to_owned(),
         body: event_body,
+        body_format: beava_core::wire::CT_JSON,
     };
     let push_resp = dispatch_wire_request(&app, push_req).await;
     match push_resp {
@@ -102,10 +103,7 @@ async fn http_push_through_glue_applies_event_and_returns_ok() {
     match get_resp {
         GlueResponse::QueryResult { body } => {
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(
-                v["cnt"], 1,
-                "expected cnt=1 after one push; got: {v:#}"
-            );
+            assert_eq!(v["cnt"], 1, "expected cnt=1 after one push; got: {v:#}");
         }
         other => panic!("expected QueryResult, got {other:?}"),
     }

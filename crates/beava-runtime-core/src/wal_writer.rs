@@ -122,7 +122,6 @@ impl WalWriter {
 
         let wal_path = dir.join("wal-0000000000000000.wal");
         let file = OpenOptions::new()
-            .write(true)
             .create(true)
             .append(true)
             .open(&wal_path)?;
@@ -145,7 +144,13 @@ impl WalWriter {
     ///
     /// The returned `JoinHandle` can be awaited for clean shutdown.
     pub fn spawn(self) -> JoinHandle<()> {
-        let WalWriter { mut file, ring, lsn, tick_ms, shutdown } = self;
+        let WalWriter {
+            mut file,
+            ring,
+            lsn,
+            tick_ms,
+            shutdown,
+        } = self;
         let tick = Duration::from_millis(tick_ms);
 
         std::thread::Builder::new()
@@ -272,7 +277,10 @@ pub fn is_network_fs(path: &Path) -> bool {
 
         // f_fstypename is a fixed-size null-terminated C string.
         let name_bytes = stat.f_fstypename;
-        let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+        let name_len = name_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(name_bytes.len());
         // SAFETY: f_fstypename contains ASCII bytes from the kernel.
         let name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(
@@ -284,8 +292,15 @@ pub fn is_network_fs(path: &Path) -> bool {
         // Known network/virtual filesystem type names on macOS/BSD.
         matches!(
             name.to_lowercase().as_str(),
-            "nfs" | "smbfs" | "cifs" | "fuse" | "osxfuse" | "macfuse" | "webdavfs"
-                | "afpfs" | "fusefs"
+            "nfs"
+                | "smbfs"
+                | "cifs"
+                | "fuse"
+                | "osxfuse"
+                | "macfuse"
+                | "webdavfs"
+                | "afpfs"
+                | "fusefs"
         )
     }
 
