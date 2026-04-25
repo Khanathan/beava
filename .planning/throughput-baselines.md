@@ -174,3 +174,22 @@ cd crates/beava-bench
 # Expected (current): ~1660 EPS, P50 ~4ms
 # Expected (when fix lands): ~15-50k EPS, P50 ~50-200µs
 ```
+
+### Phase 18-04 — I/O threads write phase (informational, Apple-M4)
+
+End-to-end throughput sweep deferred to Plan 18-04.5 (Linux bench infrastructure
+setup). The `beava-bench --features hand-rolled-runtime` path requires the full
+EventLoop::tick() dispatch wiring (Plan 18-04's `run_write_phase` is exposed as a
+testable entrypoint; full EventLoop integration lands in 18-05 when the tokio
+dual-path is removed per Plan 18-07 schedule). M4 informational targets from the
+plan are recorded here for reference:
+
+| Phase | Date | Pipeline | Transport | io_threads | Target EPS/core | Notes |
+|---|---|---|---|---:|---:|---|
+| 18-04 | 2026-04-25 | small | tcp | 0 | 300-500k | Stage 18.2 floor (inline path) — informational target |
+| 18-04 | 2026-04-25 | small | tcp | 2 | 1-1.5M   | Stage 18.3 number — informational target |
+| 18-04 | 2026-04-25 | small | tcp | 4 | 2-2.5M   | Stage 18.4 target — informational |
+| 18-04 | 2026-04-25 | small | http | 4 | 250-500k | HTTP still JSON-bound; write-phase serialization off-apply helps |
+
+> Actual measured numbers to be recorded in Plan 18-04.5 once Linux bench infra is wired.
+> Apple-M4 is INFORMATIONAL (D-16); Linux Xeon hard gate activates at Phase 18-05.
