@@ -3,23 +3,23 @@ gsd_state_version: 1.0
 milestone: v0.1
 milestone_name: milestone
 status: executing
-last_updated: "2026-04-24T13:00:00.000Z"
+last_updated: "2026-04-24T23:55:00.000Z"
 progress:
-  total_phases: 19
-  completed_phases: 17  # 1, 2, 2.5, 3, 4, 5, 5.5, 6, 6.1, 7, 7.5, 8, 9, 10, 11, 11.5, 13.1
-  total_plans: 70
+  total_phases: 26   # see ROADMAP.md "Total: 26 phases" — original 13 + 2.5/5.5/6.1/7.5/11.5/12.5/13.1/13.3/14/14.1/15/16/18 inserts (13.2 abandoned, 17 deferred to v0.1)
+  completed_phases: 17  # 1, 2, 2.5, 3, 4, 5, 5.5, 6, 6.1, 7, 7.5, 8, 9, 10, 11, 11.5, 13.1 — merged to v2/greenfield
+  total_plans: 90
   completed_plans: 66
-  percent: 89
+  percent: 65
 ---
 
 # State: Beava v2 — v0 OSS Launch
 
 **Project reference:** `.planning/PROJECT.md`
-**Roadmap:** `.planning/ROADMAP.md` (19 phases: original 13 + 2.5/5.5/6.1/7.5/11.5/13.1/13.3 inserts)
+**Roadmap:** `.planning/ROADMAP.md` (26 phases — see roadmap for the full inserted-phase note)
 **Requirements:** `.planning/REQUIREMENTS.md`
 **Milestone:** v0 (first public OSS cut on beava.dev)
 **Created:** 2026-04-22
-**Last revised:** 2026-04-24 (post quota-wall reconciliation — rewrote to reflect actual shipped state)
+**Last revised:** 2026-04-24 (late evening — post Phase 18 planning landing; reconciled ROADMAP.md to add Phase 12.5 + Phase 18 + update Phase 13.3 status to IN PROGRESS)
 
 ## Core Value
 
@@ -27,7 +27,13 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Current Focus
 
-**Phase 13.3 — Lockless apply via RefCell + LocalSet (Option 0).** Primary next step. Plan lives in `.planning/ideas/phase-13.3-lockless-apply.md`. Target: ~60ns/event, ~500 LoC refactor, Redis-shaped single-thread event loop replacing the current Mutex-per-state design. **Phase 13.2 (batch coalescing) is abandoned** — superseded by 13.3's simpler/faster approach.
+**Two parallel tracks open:**
+
+1. **Phase 13.3 — Lockless apply (RefCell + LocalSet, Option 0).** Implementation underway on worktree `phase-13.3-lockless-apply` @ `34f82e8`. Currently in bottleneck investigation (samply flamegraph + root cause). Target: ~60ns/event, ~500 LoC refactor, Redis-shaped single-thread event loop replacing the current Mutex-per-state design. Once green, merges first because everything else builds on the apply-loop being lock-free. **Phase 13.2 (batch coalescing) is abandoned** — superseded by 13.3.
+
+2. **Phase 18 — Redis-shaped hand-rolled hot path.** All 10 planning documents landed 2026-04-24 (research + Rust translation + CONTEXT D-01..D-16 + plans 18-00..18-06 + risks register). Executor pending — sits behind the upstream merge round (12-joins/12-followup, 13-ship/13-followup, 13.3, 14/14.1/15/16/12.5). See `.planning/phases/18-redis-hand-roll/18-RESUME.md` for the dispatch entry point. Target: ≥3M EPS/core simple-fraud TCP on Linux Xeon (HARD GATE at Stage 18.5). This is the closer of the throughput gap to the v0 ship-gate.
+
+**Sequencing:** Phase 13.3 lands → merge round (12 + 13 + 13.3 + 14/14.1/15/16/12.5) → Phase 18 executor dispatch on a fresh worktree.
 
 ## Shipped & Merged to `v2/greenfield`
 
