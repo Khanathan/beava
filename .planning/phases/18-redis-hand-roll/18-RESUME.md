@@ -1,28 +1,27 @@
 # Phase 18 — Resume instructions for next session
 
-**Status as of 2026-04-24 evening:** 4 of 10 documents written. Need 6 more.
+**Status as of 2026-04-24 (late evening):** All 10 planning documents written and committed. Phase 18 is **plan-complete** and ready for execution dispatch (after the upstream merge round).
 
-## What's done
+## What's done (all 10 docs)
 
 | File | Commit | Notes |
 |---|---|---|
 | `18-redis-research.md` | `a5edf82` | Redis 7.x architecture summary |
 | `18-rust-translation.md` | `4798bd3` | Rust mapping table |
-| `18-CONTEXT.md` | (this commit) | D-01..D-16 locked |
-| `18-00-PLAN.md` | (this commit) | Research plan (artifacts already complete) |
-| `18-01-PLAN.md` | (this commit) | Stage 18.1 — hand-rolled event loop + HTTP + TCP (~2200 LoC, 6 tasks) |
-| `18-02-PLAN.md` | (this commit) | Stage 18.2 — inline WAL + pthread fsync (~300 LoC, 3 tasks) |
+| `18-CONTEXT.md` | `050cb32` | D-01..D-16 locked |
+| `18-00-PLAN.md` | `050cb32` | Research plan (artifacts already complete) |
+| `18-01-PLAN.md` | `050cb32` | Stage 18.1 — hand-rolled event loop + HTTP + TCP (~2200 LoC, 6 tasks) |
+| `18-02-PLAN.md` | `050cb32` | Stage 18.2 — inline WAL + pthread fsync (~300 LoC, 3 tasks) |
+| `18-03-PLAN.md` | `c5a3be8` | Stage 18.3 — I/O threads for reads (~500 LoC, 5 tasks) |
+| `18-04-PLAN.md` | `4717509` | Stage 18.4 — I/O threads for writes (~250 LoC, 3 tasks) |
+| `18-04.5-PLAN.md` | `115370a` | Stage 18.4.5 — Linux bench infra (infra/markdown only) |
+| `18-05-PLAN.md` | `4476d86` | Stage 18.5 — io_uring on Linux — **HARD GATE ≥3M EPS/core** (~600 LoC, 5 tasks) |
+| `18-06-PLAN.md` | `ccbc876` | Stage 18.6 — wire polish + VERIFICATION + SUMMARY (~400 LoC, 6 tasks) |
+| `18-risks.md` | `621f5ec` | 8 risks with mitigations + cross-cutting register |
 
-## What's remaining (6 documents)
+## What's remaining (none — planning is done)
 
-| File | Stage | Approx scope |
-|---|---|---|
-| `18-03-PLAN.md` | I/O threads for reads (Redis 6.0 pattern) | ~500 LoC, 4-5 tasks |
-| `18-04-PLAN.md` | I/O threads for writes | ~250 LoC, 2-3 tasks |
-| `18-04.5-PLAN.md` | Linux bench infrastructure setup | infra-only, no code |
-| `18-05-PLAN.md` | io_uring on Linux (**HARD ship-gate ≥3M EPS/core**) | ~600 LoC, 4-5 tasks |
-| `18-06-PLAN.md` | Wire polish + VERIFICATION + SUMMARY | ~400 LoC, 5-6 tasks |
-| `18-risks.md` | 8 risks with mitigations | brief |
+Nothing in `.planning/` is outstanding for Phase 18. Execution starts at Stage 18.1 once the upstream merge round is complete (see "Critical: when execution starts" below).
 
 ## How to resume
 
