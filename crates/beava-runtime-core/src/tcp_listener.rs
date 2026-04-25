@@ -65,14 +65,14 @@ impl TcpListener {
 /// Attempt to parse one `WireRequest` from `buf`.
 ///
 /// Returns:
-/// - `Ok(Some(req))` — a complete frame was consumed; `buf` advanced past it.
-/// - `Ok(None)`      — not enough bytes yet; `buf` unchanged.
-/// - `Err(e)`        — protocol violation (too-large / underflow); caller should
-///                     close the connection after sending an error response.
+/// - `Ok(Some(req))` — complete frame consumed; `buf` advanced past it.
+/// - `Ok(None)` — not enough bytes yet; `buf` unchanged.
+/// - `Err(e)` — protocol violation (too-large / underflow); caller closes
+///   the connection after sending an error response.
 ///
-/// This wraps `beava_core::wire::decode_frame` (Phase 2.5 codec) and lifts the
-/// raw `Frame` into a typed `WireRequest`. The TCP wire envelope for OP_PUSH is:
-///   payload = JSON `{"event": "<name>", "body": {...}}`
+/// Wraps `beava_core::wire::decode_frame` (Phase 2.5 codec) and lifts the
+/// raw `Frame` into a typed `WireRequest`. TCP wire envelope for OP_PUSH:
+/// payload = JSON `{"event": "<name>", "body": {...}}`
 pub fn parse_wire_request(
     buf: &mut BytesMut,
     max_frame_bytes: u32,

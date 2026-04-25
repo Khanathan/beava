@@ -29,7 +29,7 @@ use std::io::Write;
 fn tcp_listener_reads_ping_frame_produces_wire_request_ping() {
     // Bind on OS-assigned port.
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let mut tcp_listener = beava_runtime_core::TcpListener::bind(addr).expect("bind");
+    let tcp_listener = beava_runtime_core::TcpListener::bind(addr).expect("bind");
     let bound_addr = tcp_listener.local_addr();
 
     // Background thread: connect + write a ping frame.
@@ -105,26 +105,39 @@ fn http_post_push_with_content_length_produces_http_push() {
 
 #[test]
 fn http_post_push_chunked_body_concatenated_correctly() {
-    // Send body in 3 chunks using chunked transfer encoding.
-    // Body = `{"x":1}` (7 bytes)
-    let chunk1 = b"3\r\n{\"x\r\n";     // first 3 bytes of body
-    let chunk2 = b"3\r\":1\r\n";        // next 3 bytes
-    let chunk3 = b"1\r\n}\r\n";         // last 1 byte
-    let terminator = b"0\r\n\r\n";       // final chunk
+    // Send body `{"x":1}` (7 bytes) in 3 chunks.
+    // Chunked encoding format: `<hex-size>\r\n<data>\r\n` ... `0\r\n\r\n`
+    //
+    // chunk1: size=3, data=`{"x`  → "3\r\n{\"x\r\n"
+    // chunk2: size=3, data=`:1}`  → "3\r\n:1}\r\n"   (NOT `:1` — body is {"x":1})
+    // Correction: body `{"x":1}` split as 3+3+1: `{"x` + `:1}` — but `:1}` is only
+    // 3 chars, so chunk2 = 3 bytes of `:1}`, chunk3 = not needed (7 = 3+4).
+    // Easier split: chunk1=4 `{"x:`, chunk2=3 `1}` — no. Let's be precise:
+    // Body bytes: { = 0x7B, " = 0x22, x = 0x78, " = 0x22, : = 0x3A, 1 = 0x31, } = 0x7D
+    // 7 bytes total. Split: 3 + 3 + 1
+    // chunk1 data (3): {"x  → b"3\r\n{\"x\r\n"    ({"x is 3 bytes)
+    // chunk2 data (3): ":1  → b"3\r\n\":1\r\n"    (":1 is 3 bytes)
+    // chunk3 data (1): }   → b"1\r\n}\r\n"
+    // terminator:          → b"0\r\n\r\n"
 
     let header = "POST /push/Evt HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n";
     let mut buf = BytesMut::new();
     buf.extend_from_slice(header.as_bytes());
-    buf.extend_from_slice(chunk1);
-    buf.extend_from_slice(chunk2);
-    buf.extend_from_slice(chunk3);
-    buf.extend_from_slice(terminator);
+    // chunk1: 3 bytes "{\"x"
+    buf.extend_from_slice(b"3\r\n{\"x\r\n");
+    // chunk2: 3 bytes "\":1"
+    buf.extend_from_slice(b"3\r\n\":1\r\n");
+    // chunk3: 1 byte "}"
+    buf.extend_from_slice(b"1\r\n}\r\n");
+    // terminator
+    buf.extend_from_slice(b"0\r\n\r\n");
 
     let result = parse_http_request(&mut buf).expect("parse ok");
     let (req, _keep_alive) = result.expect("complete request");
     match req {
         WireRequest::HttpPush { event_name, body: b } => {
             assert_eq!(event_name, "Evt");
+            // Reassembled body should be `{"x":1}` (7 bytes)
             assert_eq!(&b[..], b"{\"x\":1}");
         }
         other => panic!("expected HttpPush, got {other:?}"),
