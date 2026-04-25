@@ -114,6 +114,10 @@ path = "tests/phase18_02_pingpong_test.rs"
 name = "phase18_02_inline_wal_test"
 path = "tests/phase18_02_inline_wal_test.rs"
 
+[[test]]
+name = "phase18_07_no_tokio_dataplane_test"
+path = "tests/phase18_07_no_tokio_dataplane_test.rs"
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
