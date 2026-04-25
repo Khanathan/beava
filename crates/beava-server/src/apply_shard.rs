@@ -280,23 +280,47 @@ impl ApplyShard {
             .and_then(|jv| jv.as_i64())
             .unwrap_or(now_ms as i64);
 
-        // 6. Serialize WAL payload.
-        let payload = serde_json::json!({
-            "v": 1,
-            "rv": registry_version,
-            "s": event_name,
-            "et": event_time_ms,
-            "b": &parsed,
-        });
-        let payload_bytes = match sonic_rs::to_vec(&payload) {
-            Ok(b) => b,
-            Err(_) => {
-                return GlueResponse::PushError {
-                    code: "serialize_failed",
-                    registry_version,
-                };
+        // 6. Serialize WAL payload — v=2 binary format.
+        //
+        // Record format: [u8 v=2][u8 body_format][u32 rv BE][u64 et_ms BE]
+        //                [u16 event_name_len BE][N bytes name][u32 body_len BE][M bytes body]
+        //
+        // `body` is the already-parsed body re-serialized to the wire format:
+        // - CT_JSON: sonic_rs JSON bytes of the event object
+        // - CT_MSGPACK: msgpack bytes (already in `body` from parse step)
+        //
+        // The binary header is self-delimiting — the replay reader can split
+        // records without a separator. Both CT_JSON and CT_MSGPACK push events
+        // use the same v=2 header; body_format tells the reader how to parse body.
+        let body_wire: Vec<u8> = if body_format == CT_MSGPACK {
+            // body already holds the msgpack body bytes from dispatch step 1.
+            body.to_vec()
+        } else {
+            // CT_JSON: serialize the parsed serde_json::Value to JSON bytes.
+            match sonic_rs::to_vec(&parsed) {
+                Ok(b) => b,
+                Err(_) => {
+                    return GlueResponse::PushError {
+                        code: "serialize_failed",
+                        registry_version,
+                    };
+                }
             }
         };
+        let name_bytes = event_name.as_bytes();
+        let name_len = name_bytes.len() as u16;
+        let body_len = body_wire.len() as u32;
+        // Total: 1 + 1 + 4 + 8 + 2 + name_len + 4 + body_len
+        let mut payload_bytes =
+            Vec::with_capacity(1 + 1 + 4 + 8 + 2 + name_bytes.len() + 4 + body_wire.len());
+        payload_bytes.push(0x02u8); // v = 2
+        payload_bytes.push(body_format); // body_format (CT_JSON=0x01 or CT_MSGPACK=0x02)
+        payload_bytes.extend_from_slice(&registry_version.to_be_bytes()); // u32 rv
+        payload_bytes.extend_from_slice(&(event_time_ms as u64).to_be_bytes()); // u64 et_ms
+        payload_bytes.extend_from_slice(&name_len.to_be_bytes()); // u16 name_len
+        payload_bytes.extend_from_slice(name_bytes); // name bytes
+        payload_bytes.extend_from_slice(&body_len.to_be_bytes()); // u32 body_len
+        payload_bytes.extend_from_slice(&body_wire); // body bytes
 
         // 7. WAL append — lock-free on the hot path (no Mutex, no channel).
         let ack_lsn = self.wal_ring.append(&payload_bytes);

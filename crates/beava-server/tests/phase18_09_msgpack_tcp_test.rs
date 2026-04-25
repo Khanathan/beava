@@ -334,21 +334,21 @@ async fn test_wal_record_v2_format() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), serve_task).await;
 
     // Read the WAL directory and find the data-plane WAL file.
-    // The hand-rolled WAL writer writes to a file named e.g. "wal-0000000001.bin".
-    // The first record should start with v=2, body_format=0x02.
+    // The hand-rolled WalWriter creates "wal-0000000000000000.wal".
+    // The first record should start with v=2, body_format=CT_MSGPACK.
     let wal_files: Vec<_> = std::fs::read_dir(&wal_path)
         .expect("read wal dir")
         .filter_map(|e| e.ok())
         .filter(|e| {
             e.file_name().to_string_lossy().starts_with("wal-")
-            && e.file_name().to_string_lossy().ends_with(".bin")
+            && e.file_name().to_string_lossy().ends_with(".wal")
         })
         .collect();
 
     // WAL files present = v=2 records were written (the WalWriter creates them).
     // If no WAL files exist, the WalBufferRing hasn't flushed — this indicates
     // the v=2 WAL append path is not yet implemented. Fail explicitly.
-    assert!(!wal_files.is_empty(), "expected at least one WAL .bin file after msgpack push; v=2 WAL append not yet wired");
+    assert!(!wal_files.is_empty(), "expected at least one WAL .wal file after msgpack push; v=2 WAL append not yet wired");
 
     // Read the first WAL file and check the record format.
     let wal_file_path = &wal_files[0].path();
