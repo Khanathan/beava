@@ -10,9 +10,6 @@ description = "Beava v2 server — single-binary real-time feature server (fraud
 [features]
 default = []
 testing = ["dep:reqwest"]
-# Feature flag per Plan 18-01 Decision 1: hand-rolled event loop is opt-in
-# until Plan 18-07 removes tokio data-plane entirely.
-hand-rolled-runtime = []
 
 [[bin]]
 name = "beava"
@@ -96,7 +93,7 @@ required-features = ["testing"]
 [[test]]
 name = "phase18_01_bind_v18"
 path = "tests/phase18_01_bind_v18.rs"
-required-features = ["hand-rolled-runtime"]
+required-features = ["testing"]
 
 [[test]]
 name = "phase18_01_samply_gate"

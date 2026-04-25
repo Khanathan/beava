@@ -5,17 +5,9 @@
 //! No write-back path — the event-plane state is updated only by the
 //! hand-rolled event loop (Plan 18-01, D-01).
 //!
-//! Enabled only when `--features hand-rolled-runtime`.
+//! Plan 18-07: feature flag removed; this module is now unconditionally compiled.
 
-#![cfg(feature = "hand-rolled-runtime")]
-
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::get,
-    Json, Router,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use std::sync::{Arc, RwLock};
 use tokio::net::TcpListener;
 

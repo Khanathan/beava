@@ -1,15 +1,12 @@
 //! Phase 18 Plan 01 — Task 1.5 integration test.
 //!
 //! Tests that `Server::bind_v18(http_addr, tcp_addr, admin_addr)` stands up
-//! all three listeners under the `hand-rolled-runtime` feature flag:
+//! all three listeners:
 //!   - HTTP event-plane (hand-rolled loop)
 //!   - TCP event-plane (hand-rolled loop)
 //!   - Admin plane (tokio/axum on a separate port)
 //!
-//! TDD: this file is the RED commit for Task 1.5. It fails until
-//! `crates/beava-server/src/server.rs` gains the `bind_v18` entry point.
-
-#![cfg(feature = "hand-rolled-runtime")]
+//! Plan 18-07: feature flag removed; test runs unconditionally.
 
 use beava_server::server::ServerV18;
 use std::net::SocketAddr;
@@ -40,18 +37,38 @@ async fn bind_v18_all_three_listeners_come_up() {
 
     // All three addresses must be on localhost with non-zero OS-assigned ports.
     assert_eq!(http_addr.ip().to_string(), "127.0.0.1");
-    assert_ne!(http_addr.port(), 0, "HTTP port must be OS-assigned non-zero");
+    assert_ne!(
+        http_addr.port(),
+        0,
+        "HTTP port must be OS-assigned non-zero"
+    );
 
     assert_eq!(tcp_addr.ip().to_string(), "127.0.0.1");
     assert_ne!(tcp_addr.port(), 0, "TCP port must be OS-assigned non-zero");
 
     assert_eq!(admin_addr.ip().to_string(), "127.0.0.1");
-    assert_ne!(admin_addr.port(), 0, "Admin port must be OS-assigned non-zero");
+    assert_ne!(
+        admin_addr.port(),
+        0,
+        "Admin port must be OS-assigned non-zero"
+    );
 
     // All three ports must be distinct.
-    assert_ne!(http_addr.port(), tcp_addr.port(), "HTTP and TCP ports must differ");
-    assert_ne!(http_addr.port(), admin_addr.port(), "HTTP and Admin ports must differ");
-    assert_ne!(tcp_addr.port(), admin_addr.port(), "TCP and Admin ports must differ");
+    assert_ne!(
+        http_addr.port(),
+        tcp_addr.port(),
+        "HTTP and TCP ports must differ"
+    );
+    assert_ne!(
+        http_addr.port(),
+        admin_addr.port(),
+        "HTTP and Admin ports must differ"
+    );
+    assert_ne!(
+        tcp_addr.port(),
+        admin_addr.port(),
+        "TCP and Admin ports must differ"
+    );
 
     sv18.shutdown().await;
 }

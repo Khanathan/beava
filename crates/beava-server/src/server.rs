@@ -361,7 +361,7 @@ impl Server {
 /// even when the event loop is saturated.
 ///
 /// See Plan 18-01 Task 1.5 and D-01 in 18-CONTEXT.md.
-#[cfg(feature = "hand-rolled-runtime")]
+/// Plan 18-07: feature flag removed; ServerV18 is now unconditionally compiled.
 pub struct ServerV18 {
     http_addr: std::net::SocketAddr,
     tcp_addr: std::net::SocketAddr,
@@ -373,7 +373,6 @@ pub struct ServerV18 {
     _tcp_listener: std::net::TcpListener,
 }
 
-#[cfg(feature = "hand-rolled-runtime")]
 impl ServerV18 {
     /// Bind HTTP, TCP, and admin listeners.
     ///
@@ -389,27 +388,33 @@ impl ServerV18 {
         admin_addr: std::net::SocketAddr,
     ) -> Result<Self, ServerError> {
         // Bind event-plane listeners (std::net — they'll be handed to mio later).
-        let http_listener = std::net::TcpListener::bind(http_addr)
-            .map_err(|e| ServerError::Bind { addr: http_addr, source: e })?;
-        http_listener.set_nonblocking(true)
-            .map_err(|e| ServerError::Bind { addr: http_addr, source: e })?;
-        let http_bound = http_listener.local_addr()
-            .map_err(ServerError::Serve)?;
+        let http_listener =
+            std::net::TcpListener::bind(http_addr).map_err(|e| ServerError::Bind {
+                addr: http_addr,
+                source: e,
+            })?;
+        http_listener
+            .set_nonblocking(true)
+            .map_err(|e| ServerError::Bind {
+                addr: http_addr,
+                source: e,
+            })?;
+        let http_bound = http_listener.local_addr().map_err(ServerError::Serve)?;
 
-        let tcp_listener = std::net::TcpListener::bind(tcp_addr)
+        let tcp_listener =
+            std::net::TcpListener::bind(tcp_addr).map_err(|e| ServerError::BindTcp {
+                host: tcp_addr.ip().to_string(),
+                port: tcp_addr.port(),
+                source: e,
+            })?;
+        tcp_listener
+            .set_nonblocking(true)
             .map_err(|e| ServerError::BindTcp {
                 host: tcp_addr.ip().to_string(),
                 port: tcp_addr.port(),
                 source: e,
             })?;
-        tcp_listener.set_nonblocking(true)
-            .map_err(|e| ServerError::BindTcp {
-                host: tcp_addr.ip().to_string(),
-                port: tcp_addr.port(),
-                source: e,
-            })?;
-        let tcp_bound = tcp_listener.local_addr()
-            .map_err(ServerError::Serve)?;
+        let tcp_bound = tcp_listener.local_addr().map_err(ServerError::Serve)?;
 
         // Bind admin (tokio/axum).
         let snapshot = std::sync::Arc::new(std::sync::RwLock::new(
@@ -417,7 +422,10 @@ impl ServerV18 {
         ));
         let admin = crate::http_admin::BoundAdminServer::bind(admin_addr, snapshot)
             .await
-            .map_err(|e| ServerError::Bind { addr: admin_addr, source: e })?;
+            .map_err(|e| ServerError::Bind {
+                addr: admin_addr,
+                source: e,
+            })?;
 
         Ok(Self {
             http_addr: http_bound,

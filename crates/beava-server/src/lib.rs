@@ -9,9 +9,8 @@
 
 pub mod cli;
 pub mod feature_query;
-#[cfg(feature = "hand-rolled-runtime")]
-pub mod http_admin;
 pub mod http;
+pub mod http_admin;
 pub mod idem_cache;
 pub mod logging;
 pub mod push;
@@ -29,9 +28,7 @@ pub mod temporal_http;
 pub mod testing;
 
 pub use beava_core::config::{self, Config, ConfigError};
-pub use server::{Server, ServerError};
-#[cfg(feature = "hand-rolled-runtime")]
-pub use server::ServerV18;
+pub use server::{Server, ServerError, ServerV18};
 
 use crate::idem_cache::IdemCache;
 use crate::registry_debug::DevAggState;
