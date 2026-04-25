@@ -5,6 +5,7 @@ members = [
   "crates/beava-persistence",
   "crates/beava-server",
   "crates/beava-bench",
+  "crates/beava-runtime-core",
 ]
 
 [workspace.package]

@@ -1,0 +1,24 @@
+[package]
+name = "beava-runtime-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Hand-rolled mio-based event loop for Beava's TCP + HTTP data-plane (Phase 18)."
+
+[features]
+default = []
+
+[dependencies]
+beava-core = { path = "../beava-core" }
+mio = { version = "1", features = ["os-poll", "net"] }
+bytes = { workspace = true }
+httparse = "1.10"
+crossbeam-channel = "0.5"
+serde_json = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
