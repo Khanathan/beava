@@ -14,6 +14,7 @@ pub mod http_admin;
 pub mod idem_cache;
 pub mod logging;
 pub mod push;
+pub mod push_and_get;
 pub mod recovery;
 pub mod register;
 pub mod registry_debug;

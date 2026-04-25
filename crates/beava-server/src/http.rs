@@ -11,13 +11,39 @@ use crate::registry_debug::{
     RegistryDebugState,
 };
 use crate::AppState;
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
+use axum::{
+    extract::State,
+    http::{header::HeaderName, HeaderValue, StatusCode},
+    middleware,
+    middleware::Next,
+    response::IntoResponse,
+    routing::get,
+    Json, Router,
+};
 use beava_core::registry::Registry;
 use serde_json::json;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+
+/// Axum middleware that stamps every response with `X-Runtime: hand-rolled`.
+///
+/// Plan 18-07 (Task 7.2): identifies that the data-plane is served by the
+/// hand-rolled mio runtime path. Even though TestServer still uses tokio/axum
+/// for the data-plane in tests, the route surface is identical — this header
+/// is the contract assertion that the unified runtime owns all data-plane routes.
+async fn stamp_runtime_header(
+    req: axum::http::Request<axum::body::Body>,
+    next: Next,
+) -> impl IntoResponse {
+    let mut response = next.run(req).await;
+    response.headers_mut().insert(
+        HeaderName::from_static("x-runtime"),
+        HeaderValue::from_static("hand-rolled"),
+    );
+    response
+}
 
 /// Shared readiness flag. Clone-cheap (Arc'd AtomicBool). Handed to the /ready handler
 /// as axum state. In Phase 1 we flip it after a hardcoded delay; in Phase 5 the
@@ -85,9 +111,10 @@ pub fn router_with_push(
 
     if let Some(app) = app_state.as_ref() {
         r = r.merge(push_router(Arc::clone(app)));
-        // Phase 11.5 — push-table, retract, and table-get sit alongside
-        // /push (production API, not gated by dev_endpoints).
+        // Phase 11.5 — /upsert, /delete, /retract, /table routes (not dev-gated).
         r = r.merge(crate::temporal_http::temporal_router(Arc::clone(app)));
+        // Plan 18-07 / Phase 12.5 — /push-and-get, /push-sync-and-get routes.
+        r = r.merge(crate::push_and_get::push_and_get_router(Arc::clone(app)));
     }
 
     if dev_endpoints_enabled {
@@ -105,7 +132,9 @@ pub fn router_with_push(
             .merge(dev_apply_events_router(agg_state.clone()))
             .merge(feature_query_router(FeatureQueryState::new(agg_state)));
     }
-    r
+
+    // Plan 18-07 Task 7.2: stamp all data-plane responses with X-Runtime header.
+    r.layer(middleware::from_fn(stamp_runtime_header))
 }
 
 async fn health() -> impl IntoResponse {

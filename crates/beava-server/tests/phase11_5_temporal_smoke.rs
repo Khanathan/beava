@@ -97,7 +97,7 @@ async fn temporal_table_upsert_retract_returns_prior_value() {
 
     // Upsert at t=0.
     let r0 = ts
-        .post_json("/push-table/merch", &json!({"k": "m1", "v": 100}))
+        .post_json("/upsert/merch", &json!({"k": "m1", "v": 100}))
         .await
         .expect("push 1");
     assert_eq!(
@@ -111,7 +111,7 @@ async fn temporal_table_upsert_retract_returns_prior_value() {
 
     // Upsert at t=1.
     let r1 = ts
-        .post_json("/push-table/merch", &json!({"k": "m1", "v": 200}))
+        .post_json("/upsert/merch", &json!({"k": "m1", "v": 200}))
         .await
         .expect("push 2");
     assert_eq!(r1.status().as_u16(), 200);
@@ -187,7 +187,7 @@ async fn retract_on_non_temporal_table_returns_400() {
     let reg = json!({"nodes": [non_temporal_table_node("u")]});
     ts.post_json("/register", &reg).await.expect("register");
     let r = ts
-        .post_json("/push-table/u", &json!({"k": "u1", "v": 1}))
+        .post_json("/upsert/u", &json!({"k": "u1", "v": 1}))
         .await
         .expect("push");
     assert_eq!(r.status().as_u16(), 200);

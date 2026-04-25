@@ -7,9 +7,33 @@
 //!
 //! Plan 18-07: feature flag removed; this module is now unconditionally compiled.
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
+use axum::{
+    extract::State,
+    http::{header::HeaderName, HeaderValue, StatusCode},
+    middleware,
+    middleware::Next,
+    response::IntoResponse,
+    routing::get,
+    Json, Router,
+};
 use std::sync::{Arc, RwLock};
 use tokio::net::TcpListener;
+
+/// Axum middleware: stamps every admin response with `X-Runtime: tokio`.
+///
+/// Plan 18-07 (Task 7.2): identifies admin endpoints as tokio-served (D-01,
+/// 18-CONTEXT.md). All data-plane routes return `X-Runtime: hand-rolled`.
+async fn stamp_tokio_header(
+    req: axum::http::Request<axum::body::Body>,
+    next: Next,
+) -> impl IntoResponse {
+    let mut response = next.run(req).await;
+    response.headers_mut().insert(
+        HeaderName::from_static("x-runtime"),
+        HeaderValue::from_static("tokio"),
+    );
+    response
+}
 
 // ─── Shared admin state ───────────────────────────────────────────────────────
 
@@ -40,6 +64,7 @@ pub fn admin_router(snapshot: SharedRegistrySnapshot) -> Router {
         .route("/metrics", get(metrics_handler))
         .route("/registry", get(registry_handler))
         .with_state(state)
+        .layer(middleware::from_fn(stamp_tokio_header))
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────

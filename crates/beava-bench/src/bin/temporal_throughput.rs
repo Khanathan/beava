@@ -1,7 +1,7 @@
 //! Phase 11.5 Plan 01 Task 7 — temporal-table throughput micro-harness.
 //!
 //! Drives an in-process `TestServer` over HTTP with a temporal-table workload:
-//! - 70% `POST /push-table/merch` (upsert)
+//! - 70% `POST /upsert/merch` (upsert)
 //! - 25% `GET /table/merch?key=...` (point read)
 //!  -  5% `POST /retract` (undo a recent upsert)
 //!
@@ -88,7 +88,7 @@ async fn main() -> Result<()> {
     for i in 0..50_u64 {
         let body = json!({"k": format!("m{}", i % KEY_SPACE), "v": i as i64});
         let resp: serde_json::Value = client
-            .post(format!("{}/push-table/merch", ts.base_url()))
+            .post(format!("{}/upsert/merch", ts.base_url()))
             .json(&body)
             .send()
             .await?
@@ -133,7 +133,7 @@ async fn main() -> Result<()> {
                     let body = json!({"k": format!("m{}", key_idx), "v": counter as i64});
                     let t = Instant::now();
                     let r = client
-                        .post(format!("{}/push-table/merch", base))
+                        .post(format!("{}/upsert/merch", base))
                         .json(&body)
                         .send()
                         .await;

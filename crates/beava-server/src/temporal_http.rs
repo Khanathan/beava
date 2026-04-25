@@ -1,12 +1,14 @@
-//! Phase 11.5 — HTTP handlers for temporal-table writes, `as_of` queries,
-//! and the `app.retract(event_id)` primitive.
+//! Phase 11.5 + Plan 18-07 — HTTP handlers for temporal-table writes, `as_of`
+//! queries, and the `app.retract(event_id)` primitive.
 //!
-//! Three routes:
+//! Routes (Plan 18-07 Phase 16 rename applied):
 //!
-//! - `POST /push-table/{table_name}` — body is the row JSON. Writes a
+//! - `POST /upsert/{table_name}` — body is the row JSON. Writes a
 //!   `TableUpsert` WAL record + applies it to the per-table MVCC store
-//!   (when the table is temporal). Mirrors the apply-after-fsync pattern
-//!   established in Phase 6 push.rs.
+//!   (when the table is temporal). Renamed from `/push-table` per Phase 16 D-09.
+//!
+//! - `POST /delete/{table_name}` — body is `{"key": {…}}`. Retracts the
+//!   identified row from the temporal store. Added in Plan 18-07.
 //!
 //! - `POST /retract` — body `{"event_id": <u64>}`. Looks up the LSN in
 //!   `event_id_index`, dispatches:
@@ -24,9 +26,8 @@
 //! - Single-field primary key only — composite keys are out of scope for
 //!   the smoke (multi-field encoding stays D-03; handler extension is a
 //!   follow-up).
-//! - `POST /delete-table/{name}` and retract-of-delete are scaffolded in
-//!   the EventIdEntry shape but not exercised by smoke tests in v0; their
-//!   handlers are TODO follow-ups.
+//! - Old routes `/push-table/{name}` and `/delete-table/{name}` removed per
+//!   Phase 16 GA-2 (hard break — no deprecation aliases).
 
 use crate::registry_debug::EventIdEntry;
 use crate::AppState;
@@ -178,8 +179,8 @@ struct PushTableAck {
     registry_version: u32,
 }
 
-/// `POST /push-table/{table_name}` handler.
-async fn push_table_handler(
+/// `POST /upsert/{table_name}` handler (renamed from push-table per Phase 16 D-09).
+async fn upsert_handler(
     State(app): State<Arc<AppState>>,
     Path(table_name): Path<String>,
     body_bytes: Bytes,
@@ -304,6 +305,165 @@ async fn push_table_handler(
     };
     ok_response(serde_json::to_value(ack).unwrap())
 }
+
+// ─── DELETE handler ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct DeleteRequest {
+    key: serde_json::Map<String, JsonValue>,
+}
+
+/// `POST /delete/{table_name}` handler (Phase 16 rename + Plan 18-07).
+///
+/// Body: `{"key": {"user_id": "alice"}}`.
+/// Retracts the identified row from the temporal store by issuing a Retract
+/// WAL record and marking the entry in event_id_index. Uses the most recent
+/// upsert LSN for the identified key as the target event_id. Returns 404 if
+/// the key has no prior upsert or the table doesn't exist.
+async fn delete_handler(
+    State(app): State<Arc<AppState>>,
+    Path(table_name): Path<String>,
+    body_bytes: Bytes,
+) -> Response {
+    let registry_version = app.dev_agg.registry.version() as u32;
+
+    // 1. Parse JSON.
+    let parsed: JsonValue = match serde_json::from_slice(&body_bytes) {
+        Ok(v) => v,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"error": "invalid_json", "registry_version": registry_version}),
+            );
+        }
+    };
+    let req: DeleteRequest = match serde_json::from_value(parsed) {
+        Ok(r) => r,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"error": "expected_key_object", "registry_version": registry_version}),
+            );
+        }
+    };
+
+    // 2. Lookup table descriptor.
+    let descriptor = {
+        let inner = app.dev_agg.registry.read();
+        match inner.tables.get(&table_name).cloned() {
+            Some(d) => d,
+            None => {
+                return error_response(
+                    StatusCode::NOT_FOUND,
+                    serde_json::json!({"error": "table_not_found", "table": table_name}),
+                );
+            }
+        }
+    };
+
+    if !descriptor.temporal {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({"error": "table_not_temporal", "table": table_name}),
+        );
+    }
+
+    // 3. Encode entity key from the "key" map.
+    let entity_key = match entity_key_from_body(&descriptor, &req.key) {
+        Some(k) => k,
+        None => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({
+                    "error": "missing_or_unsupported_primary_key",
+                    "primary_key": descriptor.primary_key,
+                }),
+            );
+        }
+    };
+
+    // 4. Find the most recent upsert LSN for this key in event_id_index.
+    let target_event_id = {
+        let idx = app.dev_agg.event_id_index.lock();
+        // Scan event_id_index for the latest TableWrite entry matching this key.
+        idx.iter()
+            .filter_map(|(lsn, entry)| match entry {
+                EventIdEntry::TableWrite {
+                    table_name: t,
+                    entity_key: k,
+                    retracted,
+                } if t == &table_name && k == &entity_key && !retracted => Some(*lsn),
+                _ => None,
+            })
+            .max()
+    };
+
+    let target_event_id = match target_event_id {
+        Some(lsn) => lsn,
+        None => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                serde_json::json!({"error": "key_not_found", "table": table_name}),
+            );
+        }
+    };
+
+    // 5. Build retract WAL payload.
+    let payload = serde_json::json!({
+        "v": 1,
+        "t": table_name,
+        "target": target_event_id,
+        "k": entity_key,
+    });
+    let payload_bytes = match serde_json::to_vec(&payload) {
+        Ok(b) => b,
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({"error": "serialize_failed"}),
+            );
+        }
+    };
+    let retract_lsn = match app
+        .wal_sink
+        .append_record(beava_persistence::RecordType::Retract, payload_bytes)
+        .await
+    {
+        Ok(lsn) => lsn,
+        Err(_) => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                serde_json::json!({"error": "wal_unavailable"}),
+            );
+        }
+    };
+
+    // 6. Apply retraction to MVCC store.
+    let now = now_ms();
+    {
+        let mut stores = app.dev_agg.temporal_stores.lock();
+        let store = stores.entry(table_name.clone()).or_default();
+        let _ = store.retract(&entity_key, target_event_id, retract_lsn, now);
+    }
+
+    // 7. Mark the entry retracted.
+    {
+        let mut idx = app.dev_agg.event_id_index.lock();
+        if let Some(EventIdEntry::TableWrite { retracted, .. }) =
+            idx.get_mut(&target_event_id)
+        {
+            *retracted = true;
+        }
+    }
+
+    let ack = PushTableAck {
+        ack_lsn: retract_lsn,
+        registry_version,
+    };
+    ok_response(serde_json::to_value(ack).unwrap())
+}
+
+// ─── Retract handler ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct RetractRequest {
@@ -560,9 +720,13 @@ async fn table_get_handler(
 }
 
 /// Build the temporal sub-router.
+///
+/// Plan 18-07 (Phase 16 rename): `/push-table` → `/upsert`, `/delete-table` → `/delete`.
+/// Old routes are NOT registered (hard break per Phase 16 D-09 / GA-2).
 pub fn temporal_router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/push-table/:table_name", post(push_table_handler))
+        .route("/upsert/:table_name", post(upsert_handler))
+        .route("/delete/:table_name", post(delete_handler))
         .route("/retract", post(retract_handler))
         .route("/table/:table_name", get(table_get_handler))
         .with_state(state)
