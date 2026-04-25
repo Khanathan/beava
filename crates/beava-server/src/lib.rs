@@ -7,6 +7,7 @@
 //! - Plan 05: `testing::TestServer`
 //! - Phase 6 Plan 03: `idem_cache` + `push` + `AppState` WAL wiring
 
+pub mod apply_shard;
 pub mod cli;
 pub mod feature_query;
 pub mod http;

@@ -257,6 +257,16 @@ fn dispatch_get_single(app: &Arc<AppState>, feature: &str, key: &str) -> GlueRes
     GlueResponse::QueryNotFound { code: "feature_not_found" }
 }
 
+/// Sync wrapper for `dispatch_get_single` — called from `ApplyShard` on the apply thread.
+pub fn dispatch_get_single_sync(app: &Arc<AppState>, feature: &str, key: &str) -> GlueResponse {
+    dispatch_get_single(app, feature, key)
+}
+
+/// Sync wrapper for `dispatch_get_batch` — called from `ApplyShard` on the apply thread.
+pub fn dispatch_get_batch_sync(app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
+    dispatch_get_batch(app, body)
+}
+
 fn dispatch_get_batch(_app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
     // TODO(phase-18-followup): implement full batch GET dispatch.
     // Stub: delegate to the parse path and return an empty result for now.

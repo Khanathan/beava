@@ -17,8 +17,8 @@ use std::time::Instant;
 /// uncontended Mutex on the apply thread).
 ///
 /// RED: ApplyShard does not exist yet.
-#[test]
-fn test_apply_shard_single_writer_no_lock_contention() {
+#[tokio::test]
+async fn test_apply_shard_single_writer_no_lock_contention() {
     use beava_server::apply_shard::ApplyShard;
     use beava_server::AppState;
     use beava_server::idem_cache::IdemCache;
@@ -28,7 +28,7 @@ fn test_apply_shard_single_writer_no_lock_contention() {
     use beava_core::registry::Registry;
     use beava_persistence::{WalSink, WalSinkConfig};
 
-    // Build minimal AppState (temp WAL).
+    // Build minimal AppState (temp WAL). WalSink::spawn needs a tokio runtime.
     let wal_dir = tempfile::tempdir().expect("wal tempdir");
     let (wal_sink, _wal_worker) = WalSink::spawn(WalSinkConfig {
         dir: wal_dir.path().to_path_buf(),
@@ -79,7 +79,6 @@ fn test_apply_shard_single_writer_no_lock_contention() {
 #[tokio::test]
 async fn test_serve_loop_uses_mio_not_tokio() {
     use beava_server::server::ServerV18;
-    use beava_core::wire::{CT_JSON, OP_PUSH};
     use std::net::SocketAddr;
 
     let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
