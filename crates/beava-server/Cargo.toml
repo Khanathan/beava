@@ -93,6 +93,11 @@ name = "phase18_01_glue"
 path = "tests/phase18_01_glue.rs"
 required-features = ["testing"]
 
+[[test]]
+name = "phase18_01_bind_v18"
+path = "tests/phase18_01_bind_v18.rs"
+required-features = ["hand-rolled-runtime"]
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
