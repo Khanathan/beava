@@ -101,6 +101,10 @@ fn test_parse_wire_request_json_still_works_after_msgpack_added() {
 
 static SERVER_SERIALIZER_09: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Wait until the hand-rolled HTTP server at `addr` accepts connections.
+/// Unlike admin, the hand-rolled loop has no `/health` route, so we poll
+/// any GET and accept any HTTP response (even 404 / NotFound is fine —
+/// it proves the event loop is running and accepting connections).
 async fn wait_for_http_09(addr: std::net::SocketAddr) {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     let client = reqwest::Client::builder()
@@ -108,11 +112,12 @@ async fn wait_for_http_09(addr: std::net::SocketAddr) {
         .build()
         .expect("reqwest client");
     loop {
-        match client.get(format!("http://{}/health", addr)).send().await {
+        // Any HTTP response (including 404) means the mio loop is ready.
+        match client.get(format!("http://{}/ping", addr)).send().await {
             Ok(_) => return,
             Err(_) => {
                 if tokio::time::Instant::now() >= deadline {
-                    panic!("server at {} did not become ready", addr);
+                    panic!("hand-rolled HTTP server at {} did not become ready", addr);
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
@@ -121,19 +126,41 @@ async fn wait_for_http_09(addr: std::net::SocketAddr) {
 }
 
 /// Small pipeline registration JSON for tests.
+///
+/// Uses the two-node format: an `event` node for schema + an `derivation` node
+/// for aggregation. The derivation groups by user_id and counts events into `cnt`.
+/// Feature is resolved as `cnt` → `/get/cnt/<user_id>`.
 fn small_pipeline_register() -> serde_json::Value {
     serde_json::json!({
-        "nodes": [{
-            "kind": "event",
-            "name": "TxnEvent",
-            "schema": {
-                "fields": {"user_id": "str", "amount": "f64", "event_time": "i64"},
-                "optional_fields": []
+        "nodes": [
+            {
+                "kind": "event",
+                "name": "TxnEvent",
+                "schema": {
+                    "fields": {"user_id": "str", "amount": "f64", "event_time": "i64"},
+                    "optional_fields": []
+                },
+                "event_time_field": "event_time"
             },
-            "event_time_field": "event_time",
-            "group_by": ["user_id"],
-            "aggregations": [{"op": "count", "output": "cnt"}]
-        }]
+            {
+                "kind": "derivation",
+                "name": "TxnAgg",
+                "output_kind": "table",
+                "upstreams": ["TxnEvent"],
+                "ops": [
+                    {
+                        "op": "group_by",
+                        "keys": ["user_id"],
+                        "agg": {"cnt": {"op": "count", "params": {}}}
+                    }
+                ],
+                "schema": {
+                    "fields": {"user_id": "str", "cnt": "i64"},
+                    "optional_fields": []
+                },
+                "table_primary_key": ["user_id"]
+            }
+        ]
     })
 }
 
@@ -162,7 +189,6 @@ async fn test_dispatch_push_msgpack_body() {
 
     let http_addr = sv18.http_addr();
     let tcp_addr = sv18.tcp_addr();
-    let admin_addr = sv18.admin_addr();
 
     let wal_dir = tempfile::tempdir().expect("wal dir");
     let snap_dir = tempfile::tempdir().expect("snap dir");
@@ -173,7 +199,7 @@ async fn test_dispatch_push_msgpack_body() {
         sv18.serve_with_dirs(async { let _ = shutdown_rx.await; }, wp, sp).await
     });
 
-    wait_for_http_09(admin_addr).await;
+    wait_for_http_09(http_addr).await;
 
     // Register pipeline via HTTP.
     let client = reqwest::Client::new();
@@ -216,7 +242,6 @@ async fn test_dispatch_push_json_body_still_works() {
 
     let http_addr = sv18.http_addr();
     let tcp_addr = sv18.tcp_addr();
-    let admin_addr = sv18.admin_addr();
 
     let wal_dir = tempfile::tempdir().expect("wal dir");
     let snap_dir = tempfile::tempdir().expect("snap dir");
@@ -227,7 +252,7 @@ async fn test_dispatch_push_json_body_still_works() {
         sv18.serve_with_dirs(async { let _ = shutdown_rx.await; }, wp, sp).await
     });
 
-    wait_for_http_09(admin_addr).await;
+    wait_for_http_09(http_addr).await;
 
     let client = reqwest::Client::new();
     let reg_resp = client
@@ -274,7 +299,6 @@ async fn test_wal_record_v2_format() {
 
     let http_addr = sv18.http_addr();
     let tcp_addr = sv18.tcp_addr();
-    let admin_addr = sv18.admin_addr();
 
     let wal_dir = tempfile::tempdir().expect("wal dir");
     let snap_dir = tempfile::tempdir().expect("snap dir");
@@ -287,7 +311,7 @@ async fn test_wal_record_v2_format() {
         sv18.serve_with_dirs(async { let _ = shutdown_rx.await; }, wp, sp).await
     });
 
-    wait_for_http_09(admin_addr).await;
+    wait_for_http_09(http_addr).await;
 
     let client = reqwest::Client::new();
     let _ = client
@@ -361,7 +385,6 @@ async fn test_wal_replay_v2_msgpack() {
             .expect("ServerV18::bind first");
         let http_addr = sv18.http_addr();
         let tcp_addr = sv18.tcp_addr();
-        let admin_addr = sv18.admin_addr();
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let wp = wal_path.clone();
@@ -370,7 +393,7 @@ async fn test_wal_replay_v2_msgpack() {
             sv18.serve_with_dirs(async { let _ = shutdown_rx.await; }, wp, sp).await
         });
 
-        wait_for_http_09(admin_addr).await;
+        wait_for_http_09(http_addr).await;
 
         let client = reqwest::Client::new();
         let _ = client
@@ -399,7 +422,6 @@ async fn test_wal_replay_v2_msgpack() {
             .await
             .expect("ServerV18::bind second");
         let http_addr = sv18.http_addr();
-        let admin_addr = sv18.admin_addr();
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let wp = wal_path.clone();
@@ -408,7 +430,7 @@ async fn test_wal_replay_v2_msgpack() {
             sv18.serve_with_dirs(async { let _ = shutdown_rx.await; }, wp, sp).await
         });
 
-        wait_for_http_09(admin_addr).await;
+        wait_for_http_09(http_addr).await;
 
         let client = reqwest::Client::new();
         let get_resp = client

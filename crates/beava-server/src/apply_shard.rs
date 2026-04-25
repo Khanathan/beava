@@ -186,13 +186,9 @@ impl ApplyShard {
     /// 7. `apply_event_to_aggregations` under the aggregation table lock.
     /// 8. Build and return GlueResponse.
     fn dispatch_push_sync(&self, event_name: &str, body: Bytes, body_format: u8) -> GlueResponse {
-        // body_format is used in Task 9.4 to select JSON vs msgpack parser.
-        // For now (9.1 GREEN) we always use the JSON path; msgpack is wired in 9.4.
-        let _ = body_format;
         use beava_core::agg_apply::apply_event_to_aggregations;
         use beava_core::defaults::DEFAULT_DEDUPE_WINDOW_MS;
-        use beava_core::row::Value;
-        use beava_core::schema::FieldType;
+        use beava_core::wire::CT_MSGPACK;
         use serde_json::Value as JsonValue;
         use std::sync::atomic::Ordering;
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -204,14 +200,32 @@ impl ApplyShard {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        // 1. Parse JSON body.
-        let parsed: JsonValue = match sonic_rs::from_slice(&body) {
-            Ok(v) => v,
-            Err(_) => {
-                return GlueResponse::PushError {
-                    code: "invalid_event",
-                    registry_version,
-                };
+        // 1. Parse body — branch on body_format (CT_JSON vs CT_MSGPACK).
+        //
+        // For CT_MSGPACK: rmp_serde::from_slice::<serde_json::Value> bridges
+        // msgpack wire format into serde_json's type system. The rest of the
+        // dispatch path (validation, WAL, apply) is format-agnostic once parsed.
+        //
+        // For CT_JSON (and any unknown format): sonic_rs::from_slice (unchanged).
+        let parsed: JsonValue = if body_format == CT_MSGPACK {
+            match rmp_serde::from_slice::<JsonValue>(&body) {
+                Ok(v) => v,
+                Err(_) => {
+                    return GlueResponse::PushError {
+                        code: "invalid_event",
+                        registry_version,
+                    };
+                }
+            }
+        } else {
+            match sonic_rs::from_slice(&body) {
+                Ok(v) => v,
+                Err(_) => {
+                    return GlueResponse::PushError {
+                        code: "invalid_event",
+                        registry_version,
+                    };
+                }
             }
         };
         let obj = match parsed.as_object() {
