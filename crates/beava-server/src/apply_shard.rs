@@ -186,19 +186,24 @@ impl ApplyShard {
 
     /// Synchronous push — the hot path.
     ///
-    /// 1. Parse JSON body (no clone of the full tree).
+    /// Plan 18-10 D-3: parse body directly into beava_core::row::Row via
+    /// the `Row::Deserialize` impl (Plan 18-09 Task 9.3, rewritten in Plan
+    /// 18-10 to walk MapAccess directly without serde_json::Value intermediate).
+    /// No JsonValue allocation on the hot path.
+    ///
+    /// 1. Parse body → Row (sonic_rs::from_slice or rmp_serde::from_slice).
     /// 2. Look up event descriptor.
     /// 3. Schema validate.
     /// 4. Dedupe lookup.
-    /// 5. Serialize WAL payload.
-    /// 6. `WalBufferRing::append` (lock-free memcpy + atomic LSN bump).
-    /// 7. `apply_event_to_aggregations` under the aggregation table lock.
+    /// 5. Serialize WAL payload (body bytes pass through unchanged).
+    /// 6. WalBufferRing::append.
+    /// 7. apply_event_to_aggregations.
     /// 8. Build and return GlueResponse.
     fn dispatch_push_sync(&self, event_name: &str, body: Bytes, body_format: u8) -> GlueResponse {
         use beava_core::agg_apply::apply_event_to_aggregations;
         use beava_core::defaults::DEFAULT_DEDUPE_WINDOW_MS;
+        use beava_core::row::Row;
         use beava_core::wire::CT_MSGPACK;
-        use serde_json::Value as JsonValue;
         use std::sync::atomic::Ordering;
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -209,16 +214,13 @@ impl ApplyShard {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        // 1. Parse body — branch on body_format (CT_JSON vs CT_MSGPACK).
-        //
-        // For CT_MSGPACK: rmp_serde::from_slice::<serde_json::Value> bridges
-        // msgpack wire format into serde_json's type system. The rest of the
-        // dispatch path (validation, WAL, apply) is format-agnostic once parsed.
-        //
-        // For CT_JSON (and any unknown format): sonic_rs::from_slice (unchanged).
-        let parsed: JsonValue = if body_format == CT_MSGPACK {
-            match rmp_serde::from_slice::<JsonValue>(&body) {
-                Ok(v) => v,
+        // 1. Plan 18-10 D-3: parse body DIRECTLY into Row — no JsonValue.
+        //    Row::Deserialize walks MapAccess + visit_* primitives without
+        //    allocating an intermediate JsonValue tree. Both serde_json and
+        //    rmp_serde drive the same visitor.
+        let row: Row = if body_format == CT_MSGPACK {
+            match rmp_serde::from_slice::<Row>(&body) {
+                Ok(r) => r,
                 Err(_) => {
                     return GlueResponse::PushError {
                         code: "invalid_event",
@@ -227,23 +229,14 @@ impl ApplyShard {
                 }
             }
         } else {
-            match sonic_rs::from_slice(&body) {
-                Ok(v) => v,
+            match sonic_rs::from_slice::<Row>(&body) {
+                Ok(r) => r,
                 Err(_) => {
                     return GlueResponse::PushError {
                         code: "invalid_event",
                         registry_version,
                     };
                 }
-            }
-        };
-        let obj = match parsed.as_object() {
-            Some(o) => o.clone(),
-            None => {
-                return GlueResponse::PushError {
-                    code: "invalid_event",
-                    registry_version,
-                };
             }
         };
 
@@ -261,19 +254,19 @@ impl ApplyShard {
             }
         };
 
-        // 3. Schema validate (required fields present with correct types).
-        if !validate_body_sync(&descriptor, &obj) {
+        // 3. Schema validate against Row.fields directly.
+        if !validate_row_against_descriptor(&descriptor, &row) {
             return GlueResponse::PushError {
                 code: "invalid_event",
                 registry_version,
             };
         }
 
-        // 4. Dedupe lookup.
+        // 4. Dedupe lookup against Row.fields.
         let dedupe_str = descriptor
             .dedupe_key
             .as_deref()
-            .and_then(|k| extract_dedupe_str_sync(&obj, k));
+            .and_then(|k| extract_dedupe_str_from_row(&row, k));
 
         if let (Some(_), Some(ref key_str)) = (descriptor.dedupe_key.as_ref(), &dedupe_str) {
             if let Some(_cached) = self.state.idem_cache.get(event_name, key_str, now_ms) {
@@ -281,12 +274,16 @@ impl ApplyShard {
             }
         }
 
-        // 5. Extract event_time_ms.
+        // 5. Extract event_time_ms from Row.
         let event_time_ms = descriptor
             .event_time_field
             .as_deref()
-            .and_then(|f| obj.get(f))
-            .and_then(|jv| jv.as_i64())
+            .and_then(|f| row.get(f))
+            .and_then(|v| match v {
+                beava_core::row::Value::I64(i) => Some(*i),
+                beava_core::row::Value::Datetime(i) => Some(*i),
+                _ => None,
+            })
             .unwrap_or(now_ms as i64);
 
         // 6. Serialize WAL payload — v=2 binary format.
@@ -294,34 +291,15 @@ impl ApplyShard {
         // Record format: [u8 v=2][u8 body_format][u32 rv BE][u64 et_ms BE]
         //                [u16 event_name_len BE][N bytes name][u32 body_len BE][M bytes body]
         //
-        // `body` is the already-parsed body re-serialized to the wire format:
-        // - CT_JSON: sonic_rs JSON bytes of the event object
-        // - CT_MSGPACK: msgpack bytes (already in `body` from parse step)
-        //
-        // The binary header is self-delimiting — the replay reader can split
-        // records without a separator. Both CT_JSON and CT_MSGPACK push events
-        // use the same v=2 header; body_format tells the reader how to parse body.
-        let body_wire: Vec<u8> = if body_format == CT_MSGPACK {
-            // body already holds the msgpack body bytes from dispatch step 1.
-            body.to_vec()
-        } else {
-            // CT_JSON: serialize the parsed serde_json::Value to JSON bytes.
-            match sonic_rs::to_vec(&parsed) {
-                Ok(b) => b,
-                Err(_) => {
-                    return GlueResponse::PushError {
-                        code: "serialize_failed",
-                        registry_version,
-                    };
-                }
-            }
-        };
+        // Plan 18-10: the `body` Bytes is the EXACT raw client bytes passed
+        // through from parse_msgpack_envelope / parse_json_envelope (zero-copy
+        // from wire to disk). No re-serialise on this path.
         let name_bytes = event_name.as_bytes();
         let name_len = name_bytes.len() as u16;
-        let body_len = body_wire.len() as u32;
+        let body_len = body.len() as u32;
         // Total: 1 + 1 + 4 + 8 + 2 + name_len + 4 + body_len
         let mut payload_bytes =
-            Vec::with_capacity(1 + 1 + 4 + 8 + 2 + name_bytes.len() + 4 + body_wire.len());
+            Vec::with_capacity(1 + 1 + 4 + 8 + 2 + name_bytes.len() + 4 + body.len());
         payload_bytes.push(0x02u8); // v = 2
         payload_bytes.push(body_format); // body_format (CT_JSON=0x01 or CT_MSGPACK=0x02)
         payload_bytes.extend_from_slice(&registry_version.to_be_bytes()); // u32 rv
@@ -329,13 +307,12 @@ impl ApplyShard {
         payload_bytes.extend_from_slice(&name_len.to_be_bytes()); // u16 name_len
         payload_bytes.extend_from_slice(name_bytes); // name bytes
         payload_bytes.extend_from_slice(&body_len.to_be_bytes()); // u32 body_len
-        payload_bytes.extend_from_slice(&body_wire); // body bytes
+        payload_bytes.extend_from_slice(&body); // body bytes — zero-copy passthrough
 
         // 7. WAL append — lock-free on the hot path (no Mutex, no channel).
         let ack_lsn = self.wal_ring.append(&payload_bytes);
 
         // 8. Apply to aggregations under the table lock (uncontended on apply thread).
-        let row = json_object_to_row_sync(&obj);
         {
             let mut tables = self.state.dev_agg.state_tables.lock();
             apply_event_to_aggregations(
@@ -404,69 +381,61 @@ impl ApplyShard {
     }
 }
 
-// ─── Sync helpers (duplicated from push.rs to avoid async dependency) ─────────
+// ─── Sync helpers (Plan 18-10 D-3: Row-based, no JsonValue) ───────────────────
 
-fn validate_body_sync(
+/// Schema validation against a beava_core::row::Row directly. Replaces the
+/// Plan 18-09 `validate_body_sync` which took `serde_json::Map<String, Value>`.
+///
+/// For each non-optional schema field, the row must contain a typed `Value`
+/// compatible with the declared `FieldType`.
+fn validate_row_against_descriptor(
     descriptor: &beava_core::registry::EventDescriptor,
-    obj: &serde_json::Map<String, serde_json::Value>,
+    row: &beava_core::row::Row,
 ) -> bool {
     for (field_name, field_type) in &descriptor.schema.fields {
         if descriptor.schema.optional_fields.contains(field_name) {
             continue;
         }
-        let val = match obj.get(field_name) {
+        let val = match row.get(field_name) {
             Some(v) => v,
             None => return false,
         };
-        if !type_compatible(val, field_type) {
+        if !value_type_compatible(val, field_type) {
             return false;
         }
     }
     true
 }
 
-fn type_compatible(val: &serde_json::Value, ft: &beava_core::schema::FieldType) -> bool {
+/// FieldType ↔ Value compatibility. Numeric coercion (i64↔f64) is permitted
+/// because the wire data may be either; the apply path consumes the typed
+/// Value as-is.
+fn value_type_compatible(val: &beava_core::row::Value, ft: &beava_core::schema::FieldType) -> bool {
+    use beava_core::row::Value;
     use beava_core::schema::FieldType;
     match ft {
-        FieldType::I64 | FieldType::F64 => val.is_number(),
-        FieldType::Str => val.is_string(),
-        FieldType::Bool => val.is_boolean(),
+        FieldType::I64 | FieldType::F64 => matches!(val, Value::I64(_) | Value::F64(_)),
+        FieldType::Str => matches!(val, Value::Str(_)),
+        FieldType::Bool => matches!(val, Value::Bool(_)),
         // Bytes/Datetime/Json: accept any non-null value for forward compat.
-        FieldType::Bytes | FieldType::Datetime | FieldType::Json => !val.is_null(),
+        FieldType::Bytes | FieldType::Datetime | FieldType::Json => !matches!(val, Value::Null),
     }
 }
 
-fn extract_dedupe_str_sync(
-    obj: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Option<String> {
-    obj.get(key).map(|v| match v {
-        serde_json::Value::String(s) => s.clone(),
-        other => other.to_string(),
+/// Extract the dedupe key as a string from a Row field. Mirrors the Plan 18-09
+/// behaviour where strings pass through and other types are stringified.
+fn extract_dedupe_str_from_row(row: &beava_core::row::Row, key: &str) -> Option<String> {
+    use beava_core::row::Value;
+    row.get(key).map(|v| match v {
+        Value::Str(s) => s.clone(),
+        Value::I64(i) => i.to_string(),
+        Value::F64(f) => f.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        Value::Bytes(b) => format!("{:?}", b),
+        Value::Datetime(i) => i.to_string(),
+        Value::Json(j) => j.to_string(),
+        Value::List(l) => format!("{:?}", l),
+        Value::Map(m) => format!("{:?}", m),
     })
-}
-
-fn json_object_to_row_sync(
-    obj: &serde_json::Map<String, serde_json::Value>,
-) -> beava_core::row::Row {
-    use beava_core::row::{Row, Value};
-    let mut row = Row::new();
-    for (k, v) in obj {
-        let rv = match v {
-            serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    Value::I64(i)
-                } else if let Some(f) = n.as_f64() {
-                    Value::F64(f)
-                } else {
-                    Value::I64(0)
-                }
-            }
-            serde_json::Value::String(s) => Value::Str(s.clone()),
-            serde_json::Value::Bool(b) => Value::Bool(*b),
-            _ => Value::I64(0),
-        };
-        row = row.with_field(k, rv);
-    }
-    row
 }

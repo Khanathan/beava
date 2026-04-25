@@ -182,12 +182,9 @@ fn skip_msgpack_value(payload: &[u8], pos: usize) -> Result<usize, MsgpackEnvelo
         }
         0xc6 => {
             need!(4);
-            let len = u32::from_be_bytes([
-                payload[p],
-                payload[p + 1],
-                payload[p + 2],
-                payload[p + 3],
-            ]) as usize;
+            let len =
+                u32::from_be_bytes([payload[p], payload[p + 1], payload[p + 2], payload[p + 3]])
+                    as usize;
             p += 4;
             need!(len);
             Ok(p + len)
@@ -209,12 +206,9 @@ fn skip_msgpack_value(payload: &[u8], pos: usize) -> Result<usize, MsgpackEnvelo
         }
         0xc9 => {
             need!(5);
-            let len = u32::from_be_bytes([
-                payload[p],
-                payload[p + 1],
-                payload[p + 2],
-                payload[p + 3],
-            ]) as usize;
+            let len =
+                u32::from_be_bytes([payload[p], payload[p + 1], payload[p + 2], payload[p + 3]])
+                    as usize;
             p += 5;
             need!(len);
             Ok(p + len)
@@ -301,12 +295,9 @@ fn skip_msgpack_value(payload: &[u8], pos: usize) -> Result<usize, MsgpackEnvelo
         }
         0xdb => {
             need!(4);
-            let len = u32::from_be_bytes([
-                payload[p],
-                payload[p + 1],
-                payload[p + 2],
-                payload[p + 3],
-            ]) as usize;
+            let len =
+                u32::from_be_bytes([payload[p], payload[p + 1], payload[p + 2], payload[p + 3]])
+                    as usize;
             p += 4;
             need!(len);
             Ok(p + len)
@@ -323,12 +314,9 @@ fn skip_msgpack_value(payload: &[u8], pos: usize) -> Result<usize, MsgpackEnvelo
         }
         0xdd => {
             need!(4);
-            let len = u32::from_be_bytes([
-                payload[p],
-                payload[p + 1],
-                payload[p + 2],
-                payload[p + 3],
-            ]) as usize;
+            let len =
+                u32::from_be_bytes([payload[p], payload[p + 1], payload[p + 2], payload[p + 3]])
+                    as usize;
             p += 4;
             for _ in 0..len {
                 p = skip_msgpack_value(payload, p)?;
@@ -348,12 +336,9 @@ fn skip_msgpack_value(payload: &[u8], pos: usize) -> Result<usize, MsgpackEnvelo
         }
         0xdf => {
             need!(4);
-            let len = u32::from_be_bytes([
-                payload[p],
-                payload[p + 1],
-                payload[p + 2],
-                payload[p + 3],
-            ]) as usize;
+            let len =
+                u32::from_be_bytes([payload[p], payload[p + 1], payload[p + 2], payload[p + 3]])
+                    as usize;
             p += 4;
             for _ in 0..len {
                 p = skip_msgpack_value(payload, p)?;
@@ -397,12 +382,8 @@ fn read_msgpack_str(payload: &[u8], pos: usize) -> Result<(&[u8], usize), Msgpac
             if p + 4 > payload.len() {
                 return Err(MsgpackEnvelopeError::Truncated);
             }
-            let l = u32::from_be_bytes([
-                payload[p],
-                payload[p + 1],
-                payload[p + 2],
-                payload[p + 3],
-            ]) as usize;
+            let l = u32::from_be_bytes([payload[p], payload[p + 1], payload[p + 2], payload[p + 3]])
+                as usize;
             p += 4;
             l
         }
@@ -429,11 +410,7 @@ pub fn parse_msgpack_envelope(payload: &[u8]) -> Result<(&str, &[u8]), MsgpackEn
     let map_len = match first {
         0x82 => 2u32,
         // map16 with len 2
-        0xde if payload.len() >= 3
-            && u16::from_be_bytes([payload[1], payload[2]]) == 2 =>
-        {
-            2
-        }
+        0xde if payload.len() >= 3 && u16::from_be_bytes([payload[1], payload[2]]) == 2 => 2,
         // map32 with len 2
         0xdf if payload.len() >= 5
             && u32::from_be_bytes([payload[1], payload[2], payload[3], payload[4]]) == 2 =>
@@ -466,7 +443,8 @@ pub fn parse_msgpack_envelope(payload: &[u8]) -> Result<(&str, &[u8]), MsgpackEn
                 let (event_bytes, after_event) = read_msgpack_str(payload, p)?;
                 p = after_event;
                 event_name = Some(
-                    std::str::from_utf8(event_bytes).map_err(|_| MsgpackEnvelopeError::InvalidUtf8)?,
+                    std::str::from_utf8(event_bytes)
+                        .map_err(|_| MsgpackEnvelopeError::InvalidUtf8)?,
                 );
             }
             b"body" => {
@@ -532,8 +510,8 @@ pub fn parse_json_envelope(payload: &[u8]) -> Result<(&str, &[u8]), JsonEnvelope
         body: sonic_rs::LazyValue<'a>,
     }
 
-    let env: EnvelopeLazy<'_> = sonic_rs::from_slice(payload)
-        .map_err(|e| JsonEnvelopeError::Decode(e.to_string()))?;
+    let env: EnvelopeLazy<'_> =
+        sonic_rs::from_slice(payload).map_err(|e| JsonEnvelopeError::Decode(e.to_string()))?;
     // as_raw_cow preserves the input lifetime ('a). When the input is borrowed
     // bytes (which is always the case here), the Cow is Borrowed and we can
     // extract the underlying &str slice with the input lifetime.
@@ -585,8 +563,8 @@ pub fn parse_wire_request(
                     match parse_json_envelope(&frame.payload) {
                         Ok((event_name, body_bytes)) => {
                             // Slice frame.payload to keep the Bytes refcounted view.
-                            let body_start = body_bytes.as_ptr() as usize
-                                - frame.payload.as_ptr() as usize;
+                            let body_start =
+                                body_bytes.as_ptr() as usize - frame.payload.as_ptr() as usize;
                             let body_end = body_start + body_bytes.len();
                             let body = frame.payload.slice(body_start..body_end);
                             WireRequest::TcpPush {
@@ -609,8 +587,8 @@ pub fn parse_wire_request(
                             // Bytes::from triggers a refcount-bump copy out of the
                             // frame.payload Bytes. To stay zero-copy across the
                             // WireRequest boundary we slice the original Bytes.
-                            let body_start = body_bytes.as_ptr() as usize
-                                - frame.payload.as_ptr() as usize;
+                            let body_start =
+                                body_bytes.as_ptr() as usize - frame.payload.as_ptr() as usize;
                             let body_end = body_start + body_bytes.len();
                             let body = frame.payload.slice(body_start..body_end);
                             WireRequest::TcpPush {

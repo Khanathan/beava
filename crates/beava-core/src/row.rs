@@ -263,24 +263,20 @@ impl Default for Row {
     }
 }
 
-// ─── Row Deserialize (Task 18-09 Plan 9.3) ────────────────────────────────────
+// ─── Row Deserialize (Task 18-09 Plan 9.3, Plan 18-10 zero-alloc rewrite) ─────
 //
 // Custom Deserialize impl for Row that works with BOTH serde_json and rmp_serde.
 //
-// Strategy: deserialize each map value as `serde_json::Value` (which supports
-// `deserialize_any` used by both serde_json and rmp_serde), then convert to
-// beava `Value` via `json_value_to_beava_value`. This avoids the problem that
-// `Value`'s derived Deserialize expects the internal tagged-enum format
-// (e.g. `{"I64": 42}`) rather than wire-format primitives (`42`).
+// **Plan 18-10 D-3 rewrite:** the visitor walks the deserializer's MapAccess
+// directly — no `serde_json::Value` intermediate. Each field's value is
+// deserialized via a `BeavaValueVisitor` that handles serde primitives
+// (bool / i64 / u64 / f64 / str / unit / map / seq) and constructs a beava
+// `Value` directly.
 //
-// `serde_json::Value` deserializes:
-//   null    → Value::Null
-//   bool    → Value::Bool
-//   integer → Value::I64  (via Number.as_i64())
-//   float   → Value::F64  (via Number.as_f64())
-//   string  → Value::Str
-//   array   → Value::List  (recursively converted)
-//   object  → Value::Map   (recursively converted)
+// This shaves the per-event JsonValue allocation that was the largest fixed
+// cost in dispatch_push_sync (Plan 18-09 measured 2,428 ns JSON / 5,041 ns
+// msgpack including this allocation). Plan 18-10 D-5 target after rewrite:
+// dispatch ≈ 1,800 ns for both formats.
 
 impl<'de> serde::Deserialize<'de> for Row {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -301,16 +297,131 @@ impl<'de> serde::Deserialize<'de> for Row {
                 M: serde::de::MapAccess<'de>,
             {
                 let mut row = Row::new();
-                // Deserialize each value as serde_json::Value (supports deserialize_any
-                // from both serde_json and rmp_serde), then convert to beava Value.
-                while let Some((key, jv)) = access.next_entry::<String, serde_json::Value>()? {
-                    row = row.with_field(&key, json_value_to_beava_value(jv));
+                // Plan 18-10 D-3: walk values directly via BeavaValueVisitor —
+                // no JsonValue heap allocation per field.
+                while let Some(key) = access.next_key::<String>()? {
+                    let value: Value = access.next_value_seed(BeavaValueSeed)?;
+                    row = row.with_field(&key, value);
                 }
                 Ok(row)
             }
         }
 
         deserializer.deserialize_map(RowVisitor)
+    }
+}
+
+// ─── BeavaValueSeed: deserialize a serde-data-model value directly to beava Value ─
+
+/// A `DeserializeSeed` that drives `deserialize_any` on the deserializer and
+/// constructs a beava `Value` from whatever primitive it hits — no
+/// `serde_json::Value` allocation.
+///
+/// Both `serde_json` and `rmp_serde` route `deserialize_any` to the visitor's
+/// type-specific `visit_*` methods based on what's in the wire data, so this
+/// works for either format.
+struct BeavaValueSeed;
+
+impl<'de> serde::de::DeserializeSeed<'de> for BeavaValueSeed {
+    type Value = Value;
+    fn deserialize<D>(self, deserializer: D) -> Result<Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(BeavaValueVisitor)
+    }
+}
+
+struct BeavaValueVisitor;
+
+impl<'de> serde::de::Visitor<'de> for BeavaValueVisitor {
+    type Value = Value;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a JSON/msgpack scalar, array, or object")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
+        Ok(Value::Bool(v))
+    }
+    fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
+        Ok(Value::I64(v))
+    }
+    fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
+        // Range check: convert to I64 if it fits, else fall back to F64
+        // (matches the json_value_to_beava_value behaviour for large uints).
+        if v <= i64::MAX as u64 {
+            Ok(Value::I64(v as i64))
+        } else {
+            Ok(Value::F64(v as f64))
+        }
+    }
+    fn visit_i128<E>(self, v: i128) -> Result<Value, E> {
+        if v >= i64::MIN as i128 && v <= i64::MAX as i128 {
+            Ok(Value::I64(v as i64))
+        } else {
+            Ok(Value::F64(v as f64))
+        }
+    }
+    fn visit_u128<E>(self, v: u128) -> Result<Value, E> {
+        if v <= i64::MAX as u128 {
+            Ok(Value::I64(v as i64))
+        } else {
+            Ok(Value::F64(v as f64))
+        }
+    }
+    fn visit_f64<E>(self, v: f64) -> Result<Value, E> {
+        Ok(Value::F64(v))
+    }
+    fn visit_str<E>(self, v: &str) -> Result<Value, E> {
+        Ok(Value::Str(v.to_string()))
+    }
+    fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Value, E> {
+        Ok(Value::Str(v.to_string()))
+    }
+    fn visit_string<E>(self, v: String) -> Result<Value, E> {
+        Ok(Value::Str(v))
+    }
+    fn visit_bytes<E>(self, v: &[u8]) -> Result<Value, E> {
+        // Bytes wire-type is rare in events; preserve as Bytes for any caller
+        // that needs raw bytes (e.g. binary fields).
+        Ok(Value::Bytes(v.to_vec()))
+    }
+    fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Value, E> {
+        Ok(Value::Bytes(v))
+    }
+    fn visit_unit<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+    fn visit_none<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+    fn visit_some<D>(self, deserializer: D) -> Result<Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(self)
+    }
+    fn visit_seq<A>(self, mut seq: A) -> Result<Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        while let Some(elem) = seq.next_element_seed(BeavaValueSeed)? {
+            out.push(elem);
+        }
+        Ok(Value::List(out))
+    }
+    fn visit_map<A>(self, mut map: A) -> Result<Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let mut out = BTreeMap::new();
+        while let Some(key) = map.next_key::<String>()? {
+            let value: Value = map.next_value_seed(BeavaValueSeed)?;
+            out.insert(key, value);
+        }
+        Ok(Value::Map(out))
     }
 }
 
