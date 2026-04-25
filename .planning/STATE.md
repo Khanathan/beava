@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Executing Phase 18
-stopped_at: Completed 18-09-PLAN.md
-last_updated: "2026-04-25T21:24:27.134Z"
+stopped_at: Completed 18-10-PLAN.md
+last_updated: "2026-04-25T22:30:00.000Z"
 progress:
   total_phases: 23
   completed_phases: 9
-  total_plans: 90
-  completed_plans: 60
+  total_plans: 91
+  completed_plans: 61
   percent: 67
 ---
 
@@ -28,17 +28,29 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Current Focus
 
-**Phase 18 — Redis-shaped hand-rolled hot path. Plan 18-09 COMPLETE.**
+**Phase 18 — Redis-shaped hand-rolled hot path. Plan 18-10 COMPLETE.**
 
-Plan 18-09 landed 2026-04-25 evening: msgpack-on-TCP wire format (CT_MSGPACK 0x02) wired end-to-end — `WireRequest::TcpPush` carries `body_format` byte; `tcp_listener::parse_wire_request` branches on content-type; `Row` gets `Deserialize` via `RowVisitor` (uses `serde_json::Value` as field-value intermediary to preserve bincode WAL/snapshot compat — kept the JsonValue intermediate the plan wanted to skip); `dispatch_push_sync` branches on body_format; WAL records bumped to v=2 binary self-delimiting format `[u8 v=2][u8 ct][u32 rv][u64 et_ms][u16 nlen][N name][u32 blen][M body]`; `serve_with_dirs` replays both v=1 (`*.log` registry) and v=2 (`*.wal` data plane); `beava-bench-v18 --wire-format {json|msgpack}`; Python `TcpTransport.send_push(wire_format='msgpack')` (optional `pip install msgpack`). 9 tasks, 13 commits incl 6 RED + GREEN pairs.
+Plan 18-10 landed 2026-04-25 (later that evening) — parse-stage optimization via hand-rolled scanners: `parse_msgpack_envelope` walks `rmp::decode` markers directly (no `rmp_serde` for envelope, no `JsonValue` intermediate, body slice via `Bytes::slice()` zero-copy through refcount); `parse_json_envelope` is a hand-rolled brace-counting scanner with string-state (sonic-rs `LazyValue` derive path measured ~380 ns/op — over the 150 ns target — fell back to D-2 fallback); `Row::Deserialize` rewritten via `BeavaValueVisitor` (walks `MapAccess` directly with `next_value_seed`, no JsonValue per field); `dispatch_push_sync` deserializes raw bytes directly into `Row` (`sonic_rs::from_slice::<Row>` for CT_JSON; `rmp_serde::from_slice::<Row>` for CT_MSGPACK); WAL body bytes are truly zero-copy from wire (`body.extend_from_slice` of the original payload slice — no re-serialize). 6 tasks, 9 commits incl 3 RED + GREEN pairs; +`rmp` 0.8 as direct dep.
 
-**Key perf finding (M4, parallel=4, 10s, small):** msgpack 23,324 EPS vs JSON 23,799 EPS — **97.6% parity, no measurable serialization overhead**. The JSON tax theory was wrong; `rmp_serde` decode is sub-µs and not on the critical path. Bottleneck is confirmed = single mio apply thread (same as 18-04.6). Plan 18-04.7 (IoPool wiring into the serve loop) is the next required win — without per-tick I/O distribution, single-thread is the ceiling regardless of wire format.
+**Microbench results (Apple M4, criterion):**
+- `parse_msgpack_envelope`: **33.4 ns** (target ≤80 ns; **57.7× faster** than 18-09's 1,928 ns)
+- `parse_json_envelope`: **77.1 ns** (target ≤150 ns; **7.6× faster** than 18-09's 583 ns)
+- `msgpack_body_to_row`: 407.8 ns (informational; was JsonValue-intermediate)
+- `json_body_to_row`: 402.9 ns (informational)
+
+**End-to-end EPS (M4, small/tcp/parallel=4, 5s, no trace):**
+- json: **57,464 EPS** (+141% / 2.41× vs 18-09's 23,799)
+- msgpack: **52,646 EPS** (+126% / 2.26× vs 18-09's 23,324)
+
+**Inversion:** msgpack now 86% the per-event cost of JSON (6,961 vs 8,067 ns trace total) — was 2.3× SLOWER in 18-09. The parse path is now uniform; msgpack edges ahead because `BeavaValueVisitor` body deserialize is marginally tighter for typical 6-field bodies.
+
+The bottleneck remains the single mio apply thread (consistent finding since 18-04.6). At parallel=4 we hit ~57k EPS (json) — well under the Phase 13 ship-gate of 3M EPS/core. **Plan 18-04.7 (IoPool wiring into the serve loop) is the next throughput unlock**; this plan was about per-event efficiency on the existing single-thread path.
 
 Plan 18-04.6 prior measurement still stands: 44k EPS TCP/small @ parallel=16 (mio EventLoop end-to-end).
 
 Phase 13.3 remains open on worktree `phase-13.3-lockless-apply` — lockless apply (RefCell + LocalSet). Both tracks are independent; Phase 18 executes on `v2/greenfield` directly.
 
-**Stopped at:** Completed 18-09-PLAN.md
+**Stopped at:** Completed 18-10-PLAN.md
 
 ## Shipped & Merged to `v2/greenfield`
 
