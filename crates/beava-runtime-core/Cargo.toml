@@ -31,3 +31,13 @@ libc = { workspace = true }
 num_cpus = "1"
 
 [dev-dependencies]
+criterion = { workspace = true }
+serde = { workspace = true }
+rmp-serde = { workspace = true }
+serde_json = { workspace = true }
+sonic-rs = "0.5"
+beava-core = { path = "../beava-core" }
+
+[[bench]]
+name = "parse_envelope_bench"
+harness = false

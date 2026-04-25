@@ -231,6 +231,7 @@ version = "0.1.0"
 dependencies = [
  "beava-core",
  "bytes",
+ "criterion",
  "crossbeam-channel",
  "httparse",
  "libc",

@@ -174,3 +174,23 @@ Captured: 2026-04-23
 | temporal_mvcc/as_of_lookup/depth_10 | 68.54 ns | 2026-04-23 | 11.5 | warm-cache representative |
 | temporal_mvcc/as_of_lookup/depth_100 | 160.32 ns | 2026-04-23 | 11.5 | |
 | temporal_mvcc/as_of_lookup/depth_1000 | 8.36 µs | 2026-04-23 | 11.5 | BTreeMap range walk; 1250× under Phase 13 batch-get target |
+
+### Phase 18-10 — Parse envelope microbench (criterion microbench)
+
+Captured: 2026-04-25. hw-class: Apple-M4 / Darwin-24.3.0 / 10 cores.
+Baseline saved as `18-10` (`cargo bench --baseline 18-10` from later phases).
+
+Targets per Plan 18-10 D-4: parse_msgpack_envelope ≤80 ns; parse_json_envelope ≤150 ns. Both met with significant headroom.
+
+| Bench | Median | Date | Phase | Notes |
+|---|---|---|---|---|
+| parse_envelope/parse_msgpack_envelope | 33.4 ns | 2026-04-25 | 18-10 | hand-rolled rmp scanner; target ≤80 ns; 58% under |
+| parse_envelope/parse_json_envelope | 77.1 ns | 2026-04-25 | 18-10 | hand-rolled brace-counting scanner (sonic-rs LazyValue derive path was ~380 ns/op, dropped to D-2 fallback); target ≤150 ns; 49% under |
+| parse_envelope/msgpack_body_to_row | 407.8 ns | 2026-04-25 | 18-10 | informational; rmp_serde::from_slice::<Row> via BeavaValueVisitor (Plan 18-10 D-3 rewrite) |
+| parse_envelope/json_body_to_row | 402.9 ns | 2026-04-25 | 18-10 | informational; sonic_rs::from_slice::<Row> via BeavaValueVisitor (Plan 18-10 D-3 rewrite) |
+
+**Improvement vs Plan 18-09:**
+- parse_msgpack_envelope: previously 1,928 ns (rmp_serde::from_slice::<JsonValue> + rmp_serde::to_vec_named) → 33.4 ns. **57.7× faster.**
+- parse_json_envelope: previously 583 ns (serde_json::from_slice::<PushEnvelope> + serde_json::to_vec) → 77.1 ns. **7.6× faster.**
+- msgpack body_to_row: previously included JsonValue alloc per field → 407.8 ns direct Row.
+- json body_to_row: previously included JsonValue alloc per field → 402.9 ns direct Row.
