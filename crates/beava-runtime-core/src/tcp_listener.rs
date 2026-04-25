@@ -11,7 +11,7 @@
 //! A single recv() can deliver 0, 1, or many frames — the caller loops until
 //! `Ok(None)` (need more bytes) is returned.
 
-use beava_core::wire::{decode_frame, OP_PING, OP_PUSH, OP_REGISTER};
+use beava_core::wire::{decode_frame, CT_JSON, CT_MSGPACK, OP_PING, OP_PUSH, OP_REGISTER};
 use bytes::{Bytes, BytesMut};
 use std::net::SocketAddr;
 
@@ -95,26 +95,47 @@ pub fn parse_wire_request(
             payload: frame.payload,
         },
         OP_PUSH => {
-            // Payload is JSON: {"event": "<name>", "body": {...}}
-            // Parse the envelope to extract event_name + body bytes.
-            #[derive(serde::Deserialize)]
-            struct PushEnvelope {
-                event: String,
-                body: serde_json::Value,
-            }
-            match serde_json::from_slice::<PushEnvelope>(&frame.payload) {
-                Ok(env) => {
-                    // Re-serialise just the body so downstream apply gets raw bytes.
-                    let body_bytes = serde_json::to_vec(&env.body)
-                        .map(Bytes::from)
-                        .unwrap_or_else(|_| frame.payload.clone());
-                    WireRequest::TcpPush {
-                        event_name: env.event,
-                        body: body_bytes,
+            match frame.content_type {
+                CT_JSON => {
+                    // Payload is JSON: {"event": "<name>", "body": {...}}
+                    // Parse envelope to extract event_name + raw body bytes.
+                    // No re-serialization: extract the body slice directly.
+                    #[derive(serde::Deserialize)]
+                    struct PushEnvelopeJson {
+                        event: String,
+                        body: serde_json::Value,
+                    }
+                    match serde_json::from_slice::<PushEnvelopeJson>(&frame.payload) {
+                        Ok(env) => {
+                            // Pass body bytes through WITHOUT re-serializing.
+                            // Find the raw body slice in the original payload by
+                            // re-serializing once (needed to get canonical bytes for
+                            // downstream; re-serialization overhead will be removed
+                            // in Task 9.3/9.4 via direct Row deserialize).
+                            let body_bytes = serde_json::to_vec(&env.body)
+                                .map(Bytes::from)
+                                .unwrap_or_else(|_| frame.payload.clone());
+                            WireRequest::TcpPush {
+                                event_name: env.event,
+                                body: body_bytes,
+                                body_format: CT_JSON,
+                            }
+                        }
+                        Err(e) => WireRequest::ParseError {
+                            reason: e.to_string(),
+                        },
                     }
                 }
-                Err(e) => WireRequest::ParseError {
-                    reason: e.to_string(),
+                CT_MSGPACK => {
+                    // Msgpack envelope: {event: String, body: map} encoded as msgpack.
+                    // Parsed in Task 9.2 GREEN — stub returns ParseError for now.
+                    // This branch is replaced in 9.2 GREEN.
+                    WireRequest::ParseError {
+                        reason: "CT_MSGPACK not yet implemented (9.2 GREEN pending)".to_string(),
+                    }
+                }
+                other => WireRequest::ParseError {
+                    reason: format!("unsupported content_type: {other:#04x}"),
                 },
             }
         }
@@ -153,8 +174,9 @@ mod tests {
             .expect("no error")
             .expect("complete frame");
         match req {
-            WireRequest::TcpPush { event_name, body } => {
+            WireRequest::TcpPush { event_name, body, body_format } => {
                 assert_eq!(event_name, "Txn");
+                assert_eq!(body_format, CT_JSON, "JSON frame should produce CT_JSON body_format");
                 let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
                 assert_eq!(v["amount"], 99);
             }

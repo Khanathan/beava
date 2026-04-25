@@ -94,7 +94,7 @@ fn http_post_push_with_content_length_produces_http_push() {
     let (req, keep_alive) = result.expect("complete request");
     assert!(keep_alive, "keep-alive expected");
     match req {
-        WireRequest::HttpPush { event_name, body: b } => {
+        WireRequest::HttpPush { event_name, body: b, .. } => {
             assert_eq!(event_name, "Transaction");
             let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
             assert_eq!(v["user_id"], "u1");
@@ -135,7 +135,7 @@ fn http_post_push_chunked_body_concatenated_correctly() {
     let result = parse_http_request(&mut buf).expect("parse ok");
     let (req, _keep_alive) = result.expect("complete request");
     match req {
-        WireRequest::HttpPush { event_name, body: b } => {
+        WireRequest::HttpPush { event_name, body: b, .. } => {
             assert_eq!(event_name, "Evt");
             // Reassembled body should be `{"x":1}` (7 bytes)
             assert_eq!(&b[..], b"{\"x\":1}");

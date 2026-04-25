@@ -135,9 +135,9 @@ impl ApplyShard {
             }
 
             // ─── TCP push / HTTP push (periodic mode) ─────────────────────────
-            WireRequest::TcpPush { event_name, body }
-            | WireRequest::HttpPush { event_name, body } => {
-                self.dispatch_push_sync(&event_name, body)
+            WireRequest::TcpPush { event_name, body, body_format }
+            | WireRequest::HttpPush { event_name, body, body_format } => {
+                self.dispatch_push_sync(&event_name, body, body_format)
             }
 
             // ─── HTTP push-sync (per-event / acks=all mode) ───────────────────
@@ -145,13 +145,13 @@ impl ApplyShard {
             // wait-for-synced blocking call would stall the apply thread.
             // Per plan D-2 the full per-event path is a future refinement.
             // For now, treat identically to periodic push.
-            WireRequest::HttpPushSync { event_name, body } => {
-                self.dispatch_push_sync(&event_name, body)
+            WireRequest::HttpPushSync { event_name, body, body_format } => {
+                self.dispatch_push_sync(&event_name, body, body_format)
             }
 
-            WireRequest::HttpPushBatch { event_name, body } => {
+            WireRequest::HttpPushBatch { event_name, body, body_format } => {
                 // Batch push: treat as single push for scaffold correctness.
-                self.dispatch_push_sync(&event_name, body)
+                self.dispatch_push_sync(&event_name, body, body_format)
             }
 
             // ─── GET single ───────────────────────────────────────────────────
@@ -185,7 +185,10 @@ impl ApplyShard {
     /// 6. `WalBufferRing::append` (lock-free memcpy + atomic LSN bump).
     /// 7. `apply_event_to_aggregations` under the aggregation table lock.
     /// 8. Build and return GlueResponse.
-    fn dispatch_push_sync(&self, event_name: &str, body: Bytes) -> GlueResponse {
+    fn dispatch_push_sync(&self, event_name: &str, body: Bytes, body_format: u8) -> GlueResponse {
+        // body_format is used in Task 9.4 to select JSON vs msgpack parser.
+        // For now (9.1 GREEN) we always use the JSON path; msgpack is wired in 9.4.
+        let _ = body_format;
         use beava_core::agg_apply::apply_event_to_aggregations;
         use beava_core::defaults::DEFAULT_DEDUPE_WINDOW_MS;
         use beava_core::row::Value;

@@ -48,6 +48,7 @@ futures = "0.3"
 # no transitive deps.
 haversine = "0.2"
 mio = { version = "1", features = ["os-poll", "net"] }
+rmp-serde = "1"
 
 [profile.release]
 opt-level = 3

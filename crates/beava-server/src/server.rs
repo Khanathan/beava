@@ -1193,7 +1193,7 @@ async fn dispatch_tcp_frame(
                     let body = serde_json::to_vec(&env.body)
                         .map(bytes::Bytes::from)
                         .unwrap_or_else(|_| frame.payload.clone());
-                    WireRequest::TcpPush { event_name: env.event, body }
+                    WireRequest::TcpPush { event_name: env.event, body, body_format: beava_core::wire::CT_JSON }
                 }
                 Err(e) => WireRequest::ParseError { reason: e.to_string() },
             }

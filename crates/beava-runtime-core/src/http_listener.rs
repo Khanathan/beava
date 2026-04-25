@@ -156,10 +156,12 @@ pub fn parse_http_request(
     // Route the parsed request.
     let route = Router::route(&method, &path);
     use crate::router::Route;
+    // HTTP always carries JSON bodies (content_type = CT_JSON = 0x01).
+    use beava_core::wire::CT_JSON;
     let wire_req = match route {
-        Route::Push { event_name } => WireRequest::HttpPush { event_name, body },
-        Route::PushSync { event_name } => WireRequest::HttpPushSync { event_name, body },
-        Route::PushBatch { event_name } => WireRequest::HttpPushBatch { event_name, body },
+        Route::Push { event_name } => WireRequest::HttpPush { event_name, body, body_format: CT_JSON },
+        Route::PushSync { event_name } => WireRequest::HttpPushSync { event_name, body, body_format: CT_JSON },
+        Route::PushBatch { event_name } => WireRequest::HttpPushBatch { event_name, body, body_format: CT_JSON },
         Route::Get => WireRequest::HttpGet { body },
         Route::GetSingle { feature, key } => WireRequest::HttpGetSingle { feature, key },
         Route::Upsert { table } => WireRequest::HttpUpsert { table, body },

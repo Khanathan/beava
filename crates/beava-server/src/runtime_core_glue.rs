@@ -119,15 +119,15 @@ pub async fn dispatch_wire_request(
         }
 
         // ─── TCP push ─────────────────────────────────────────────────────────
-        WireRequest::TcpPush { event_name, body } | WireRequest::HttpPush { event_name, body } => {
+        WireRequest::TcpPush { event_name, body, .. } | WireRequest::HttpPush { event_name, body, .. } => {
             dispatch_push(app, &event_name, body, SyncMode::Periodic).await
         }
 
-        WireRequest::HttpPushSync { event_name, body } => {
+        WireRequest::HttpPushSync { event_name, body, .. } => {
             dispatch_push(app, &event_name, body, SyncMode::PerEvent).await
         }
 
-        WireRequest::HttpPushBatch { event_name, body } => {
+        WireRequest::HttpPushBatch { event_name, body, .. } => {
             // Batch push: body is a JSON array of event objects.
             // TODO(phase-18-followup): implement batch dispatch properly.
             // For now, treat as a single push for scaffold correctness.
