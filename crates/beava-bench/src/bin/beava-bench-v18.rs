@@ -14,7 +14,7 @@
 //! ```
 
 use anyhow::{Context, Result};
-use beava_core::wire::{CT_JSON, OP_PUSH};
+use beava_core::wire::{CT_JSON, CT_MSGPACK, OP_PUSH};
 use beava_server::server::ServerV18;
 use bytes::Bytes;
 use clap::{Parser, ValueEnum};
@@ -42,6 +42,10 @@ struct Cli {
     /// Transport to use.
     #[arg(long, value_enum, default_value_t = Transport::Tcp)]
     transport: Transport,
+
+    /// Wire format for TCP pushes (json or msgpack). HTTP always uses JSON.
+    #[arg(long, value_enum, default_value_t = WireFormat::Json)]
+    wire_format: WireFormat,
 
     /// Wall-time duration in seconds.
     #[arg(long, default_value_t = 60)]
@@ -79,6 +83,21 @@ impl Transport {
         match self {
             Transport::Http => "http",
             Transport::Tcp => "tcp",
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum WireFormat {
+    Json,
+    Msgpack,
+}
+
+impl WireFormat {
+    fn label(self) -> &'static str {
+        match self {
+            WireFormat::Json => "json",
+            WireFormat::Msgpack => "msgpack",
         }
     }
 }
@@ -175,9 +194,10 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| std::cmp::min(8, num_cpus_or_default()));
 
     eprintln!(
-        "beava-bench-v18: pipeline={} transport={} duration_secs={} parallel={} seed={} get_sample_ms={} get_batch_keys={}",
+        "beava-bench-v18: pipeline={} transport={} wire_format={} duration_secs={} parallel={} seed={} get_sample_ms={} get_batch_keys={}",
         pipeline.name,
         cli.transport.label(),
+        cli.wire_format.label(),
         cli.duration_secs,
         parallel,
         cli.seed,
@@ -266,11 +286,12 @@ async fn main() -> Result<()> {
         &cli,
         parallel,
         Arc::new(client.clone()),
+        cli.wire_format,
     )
     .await?;
 
     // Print results.
-    let report = format_report(&pipeline, cli.transport, &cli, &result);
+    let report = format_report(&pipeline, cli.transport, cli.wire_format, &cli, &result);
     if !cli.no_ledger {
         println!("{}", report.ledger_row);
     }
@@ -304,6 +325,7 @@ async fn run_workload(
     cli: &Cli,
     parallel: usize,
     http_client: Arc<reqwest::Client>,
+    wire_format: WireFormat,
 ) -> Result<WorkloadResult> {
     let stop = Arc::new(AtomicBool::new(false));
     let pushes = Arc::new(AtomicU64::new(0));
@@ -405,6 +427,7 @@ async fn run_workload(
         let seed = cli.seed.wrapping_add(worker_id as u64 * 0x9E37);
         let http_url = format!("http://{}/push/{}", http_addr, pipeline.event_name);
         let transport = cli.transport;
+        let wf = wire_format;
         let client = Arc::clone(&http_client);
 
         workers.push(tokio::spawn(async move {
@@ -417,6 +440,7 @@ async fn run_workload(
                 push_hist,
                 pipeline_clone,
                 transport,
+                wf,
                 http_url,
                 tcp_addr,
                 deadline,
@@ -472,6 +496,7 @@ async fn run_push_worker(
     push_hist: Arc<AsyncMutex<Histogram<u64>>>,
     pipeline: PipelineConfig,
     transport: Transport,
+    wire_format: WireFormat,
     http_url: String,
     tcp_addr: std::net::SocketAddr,
     deadline: Instant,
@@ -521,19 +546,40 @@ async fn run_push_worker(
             let mut seq = 0_u64;
             while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
                 let body = make_event_payload(&pipeline, seq, &mut rng);
-                let payload = serde_json::json!({
-                    "event": pipeline.event_name,
-                    "body": body,
-                });
-                let payload_bytes = serde_json::to_vec(&payload).unwrap();
+
+                // Build frame payload based on wire_format.
+                // CT_JSON: JSON-encoded envelope {"event": ..., "body": ...}
+                // CT_MSGPACK: msgpack-encoded envelope {event: ..., body: ...}
+                let (ct, payload_bytes) = match wire_format {
+                    WireFormat::Json => {
+                        let envelope = serde_json::json!({
+                            "event": pipeline.event_name,
+                            "body": body,
+                        });
+                        (CT_JSON, serde_json::to_vec(&envelope).unwrap())
+                    }
+                    WireFormat::Msgpack => {
+                        use serde::Serialize;
+                        #[derive(Serialize)]
+                        struct Envelope<'a> {
+                            event: &'a str,
+                            body: &'a serde_json::Value,
+                        }
+                        let envelope = Envelope {
+                            event: &pipeline.event_name,
+                            body: &body,
+                        };
+                        (CT_MSGPACK, rmp_serde::to_vec_named(&envelope).unwrap())
+                    }
+                };
+
                 let start = Instant::now();
                 match client
-                    .send_raw(OP_PUSH, CT_JSON, Bytes::from(payload_bytes))
+                    .send_raw(OP_PUSH, ct, Bytes::from(payload_bytes))
                     .await
                 {
                     Ok(resp) => {
                         let elapsed_us = start.elapsed().as_micros() as u64;
-                        // OP_PUSH response means the push was accepted.
                         if resp.op == OP_PUSH {
                             pushes.fetch_add(1, Ordering::Relaxed);
                             let mut h = push_hist.lock().await;
@@ -563,11 +609,13 @@ struct Report {
 fn format_report(
     pipeline: &PipelineConfig,
     transport: Transport,
+    wire_format: WireFormat,
     cli: &Cli,
     r: &WorkloadResult,
 ) -> Report {
     let date = current_utc_date();
     let commit = git_short_sha().unwrap_or_else(|| "unknown".to_string());
+    let transport_label = format!("{}/{}", transport.label(), wire_format.label());
     let notes = if r.push_errors > 0 {
         format!("errors={}", r.push_errors)
     } else {
@@ -576,7 +624,7 @@ fn format_report(
     let ledger_row = format!(
         "| 18 | {date} | {pipeline} | {transport} | {parallel} | {duration}s | {eps:.0} | {p50} | {p95} | {p99} | {gp99} | {rss} | {commit} | {notes} |",
         pipeline = pipeline.name,
-        transport = transport.label(),
+        transport = transport_label,
         parallel = cli.parallel.unwrap_or(0),
         duration = cli.duration_secs,
         eps = r.sustained_eps,
@@ -589,6 +637,7 @@ fn format_report(
     let human = format!(
         "pipeline:         {}\n\
          transport:        {}\n\
+         wire_format:      {}\n\
          duration_secs:    {}\n\
          parallel:         {}\n\
          pushes:           {}\n\
@@ -603,6 +652,7 @@ fn format_report(
          commit:           {}\n",
         pipeline.name,
         transport.label(),
+        wire_format.label(),
         cli.duration_secs,
         cli.parallel.unwrap_or(0),
         r.push_count,
