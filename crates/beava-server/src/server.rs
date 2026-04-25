@@ -869,11 +869,25 @@ fn run_mio_event_loop(
                 MioProto::Tcp => {
                     // Parse all complete framed TCP requests.
                     loop {
+                        let trace = std::env::var("BEAVA_TRACE_SRV_TIMING").ok().as_deref() == Some("1");
+                        let t_start = if trace { Some(std::time::Instant::now()) } else { None };
                         match parse_wire_request(&mut client.read_buf, 4 * 1024 * 1024) {
                             Ok(Some(req)) => {
+                                let t_parsed = t_start.map(|t| t.elapsed());
                                 let responses = apply_shard.dispatch_wire_request_sync(req);
+                                let t_dispatched = t_start.map(|t| t.elapsed());
                                 for resp in responses {
                                     encode_glue_response_tcp(&resp, &mut client.write_buf);
+                                }
+                                if let (Some(t0), Some(parsed), Some(dispatched)) = (t_start, t_parsed, t_dispatched) {
+                                    let total = t0.elapsed();
+                                    eprintln!(
+                                        "TRACE_SRV ns: parse={} dispatch={} encode={} TOTAL={}",
+                                        parsed.as_nanos(),
+                                        (dispatched - parsed).as_nanos(),
+                                        (total - dispatched).as_nanos(),
+                                        total.as_nanos()
+                                    );
                                 }
                             }
                             Ok(None) => break,

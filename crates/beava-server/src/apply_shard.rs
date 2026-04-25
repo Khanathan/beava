@@ -202,7 +202,7 @@ impl ApplyShard {
             .unwrap_or(0);
 
         // 1. Parse JSON body.
-        let parsed: JsonValue = match serde_json::from_slice(&body) {
+        let parsed: JsonValue = match sonic_rs::from_slice(&body) {
             Ok(v) => v,
             Err(_) => {
                 return GlueResponse::PushError {
@@ -271,7 +271,7 @@ impl ApplyShard {
             "et": event_time_ms,
             "b": &parsed,
         });
-        let payload_bytes = match serde_json::to_vec(&payload) {
+        let payload_bytes = match sonic_rs::to_vec(&payload) {
             Ok(b) => b,
             Err(_) => {
                 return GlueResponse::PushError {
