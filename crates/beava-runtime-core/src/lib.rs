@@ -31,7 +31,7 @@ pub use config::IoConfig;
 pub use event_loop::{EventLoop, EventLoopError};
 pub use http_listener::HttpListener;
 pub use io_pool::IoPool;
-pub use response::ResponseTemplate;
+pub use response::{serialize_into, ResponseTemplate, WireResponse};
 pub use router::{Route, Router};
 pub use tcp_listener::TcpListener;
 pub use wal_buffer::{WalBuffer, WalBufferRing};

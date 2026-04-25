@@ -19,6 +19,7 @@ use bytes::{Bytes, BytesMut};
 use std::collections::VecDeque;
 use thiserror::Error;
 
+use crate::response::WireResponse;
 use crate::wire_request::WireRequest;
 
 /// Error produced when parsing bytes from a client's read buffer fails.
@@ -35,8 +36,9 @@ pub enum ParseError {
 ///
 /// Holds the read buffer, a pending-response queue, and a state enum.
 /// The `query_buf` is filled by the I/O read phase; the parser consumes
-/// from the front via `split_to`. Responses are pushed to `pending_responses`
-/// by the apply thread and written out by the I/O write phase.
+/// from the front via `split_to`. Responses are enqueued as raw `WireResponse`
+/// values by the apply thread into `output_queue`, then serialized and drained
+/// by the I/O write phase via `write_buf` + `write_offset`.
 ///
 /// # Plan 18-03 fields
 ///
@@ -44,12 +46,21 @@ pub enum ParseError {
 /// I/O-thread coordination slots. They are written by the I/O worker
 /// and read by the main (apply) thread, with correctness guaranteed by the
 /// `IoPool::join_all()` Acquire barrier (see `io_pool.rs`).
+///
+/// # Plan 18-04 fields
+///
+/// `output_queue` — raw responses enqueued by apply (no serialization on apply).
+/// `write_buf`    — staging buffer; I/O thread serializes output_queue into here.
+/// `write_offset` — how many bytes of `write_buf` have been flushed so far.
+///                  Non-zero indicates a partial write; resume next tick.
 #[derive(Debug)]
 pub struct Client {
     /// Inbound data not yet parsed. Equivalent to Redis's `querybuf`.
     pub query_buf: BytesMut,
     /// Serialized response frames waiting to be written to the socket.
     /// Translation table entry #11: `VecDeque<Bytes>`.
+    /// Retained for compatibility with Plan 18-01/02 callers; new code should
+    /// use `output_queue` instead.
     pub pending_responses: VecDeque<Bytes>,
     /// Current connection lifecycle state.
     pub state: ClientState,
@@ -65,6 +76,21 @@ pub struct Client {
 
     /// Parse error, if any. When `Some`, main closes the connection.
     pub parse_error: Option<ParseError>,
+
+    // ── Plan 18-04: I/O write phase ──────────────────────────────────────────
+    /// Raw (unserialised) responses enqueued by the apply thread.
+    /// I/O workers drain this queue and serialize each item into `write_buf`.
+    /// Apply MUST NOT call `serialize_into` — that is the I/O thread's job.
+    pub output_queue: VecDeque<WireResponse>,
+
+    /// Staging buffer for serialized response bytes. Populated by the I/O
+    /// write worker; flushed to the socket via `write_vectored`.
+    pub write_buf: BytesMut,
+
+    /// Number of bytes in `write_buf` that have already been sent to the kernel.
+    /// Non-zero indicates a partial write; the I/O worker resumes from this
+    /// offset on the next tick. Reset to 0 when `write_buf` is fully drained.
+    pub write_offset: usize,
 }
 
 /// Per-client lifecycle state.
@@ -93,6 +119,9 @@ impl Client {
             pending_parse_input: false,
             parsed_requests: Vec::new(),
             parse_error: None,
+            output_queue: VecDeque::new(),
+            write_buf: BytesMut::new(),
+            write_offset: 0,
         }
     }
 
@@ -117,6 +146,36 @@ impl Client {
     /// True if there are bytes waiting to be written.
     pub fn has_pending_writes(&self) -> bool {
         !self.pending_responses.is_empty()
+    }
+
+    // ── Plan 18-04: write phase helpers ──────────────────────────────────────
+
+    /// Enqueue a raw `WireResponse` for the I/O write phase.
+    ///
+    /// Apply thread calls this instead of `push_response`. The I/O worker will
+    /// drain `output_queue` into `write_buf` via `serialize_into`, then flush
+    /// to the socket. Apply MUST NOT call `serialize_into` itself.
+    pub fn enqueue_response(&mut self, resp: WireResponse) {
+        self.output_queue.push_back(resp);
+        if self.state != ClientState::Closing {
+            self.state = ClientState::Writing;
+        }
+    }
+
+    /// True if the client has pending write work: either unserialized responses
+    /// in `output_queue` or partially-flushed bytes in `write_buf`.
+    pub fn has_write_work(&self) -> bool {
+        !self.output_queue.is_empty() || self.write_offset < self.write_buf.len()
+    }
+
+    /// Reset `write_buf` and `write_offset` after fully draining to the socket.
+    ///
+    /// Called by the I/O write worker when `write_offset == write_buf.len()`.
+    /// Clears the buffer so it can be reused next tick without re-allocation
+    /// (BytesMut::clear keeps the backing allocation).
+    pub fn reset_write_buf(&mut self) {
+        self.write_buf.clear();
+        self.write_offset = 0;
     }
 }
 

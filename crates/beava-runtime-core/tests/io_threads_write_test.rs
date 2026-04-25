@@ -11,9 +11,6 @@
 
 #[cfg(test)]
 mod task_4_1 {
-    use beava_runtime_core::client::Client;
-    use beava_runtime_core::io_pool::IoPool;
-    use beava_runtime_core::response::{serialize_into, WireResponse};
     use bytes::BytesMut;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -41,9 +38,8 @@ mod task_4_1 {
         const RESPONSES_PER_CLIENT: usize = 4;
 
         // Build mock clients: each holds an output_queue with 4 TcpAck responses.
-        let mut mock_write_bufs: Vec<BytesMut> = (0..CLIENT_COUNT)
-            .map(|_| BytesMut::new())
-            .collect();
+        let mut mock_write_bufs: Vec<BytesMut> =
+            (0..CLIENT_COUNT).map(|_| BytesMut::new()).collect();
 
         let expected_bytes_per_response = {
             let mut tmp = BytesMut::new();
@@ -54,18 +50,17 @@ mod task_4_1 {
         // Simulate apply enqueueing WireResponse (WITHOUT calling serialize_into).
         // In real code this is in EventLoop::apply_phase. Here we just populate
         // write_buf directly to test the serialization path.
-        let mut output_queues: Vec<std::collections::VecDeque<WireResponse>> =
-            (0..CLIENT_COUNT)
-                .map(|i| {
-                    let mut q = std::collections::VecDeque::new();
-                    for j in 0..RESPONSES_PER_CLIENT {
-                        q.push_back(WireResponse::TcpAck {
-                            lsn: (i * RESPONSES_PER_CLIENT + j) as u64,
-                        });
-                    }
-                    q
-                })
-                .collect();
+        let mut output_queues: Vec<std::collections::VecDeque<WireResponse>> = (0..CLIENT_COUNT)
+            .map(|i| {
+                let mut q = std::collections::VecDeque::new();
+                for j in 0..RESPONSES_PER_CLIENT {
+                    q.push_back(WireResponse::TcpAck {
+                        lsn: (i * RESPONSES_PER_CLIENT + j) as u64,
+                    });
+                }
+                q
+            })
+            .collect();
 
         // Shared result buffers: I/O workers serialize into these.
         let result_bufs: Vec<Arc<Mutex<Vec<u8>>>> = (0..CLIENT_COUNT)
@@ -142,8 +137,6 @@ mod task_4_1 {
 #[cfg(test)]
 mod task_4_2 {
     use beava_runtime_core::io_pool::IoPool;
-    use beava_runtime_core::response::WireResponse;
-    use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
     /// Verifies the per-tick lifecycle order: read_dist → read_join → apply →
@@ -185,8 +178,9 @@ mod task_4_2 {
         }
 
         // 2. APPLY PHASE: serial, on "apply thread" — produces WireResponse.
-        let output_queues: Arc<Mutex<Vec<VecDeque<WireResponse>>>> =
-            Arc::new(Mutex::new((0..CLIENT_COUNT).map(|_| VecDeque::new()).collect()));
+        let output_queues: Arc<Mutex<Vec<VecDeque<WireResponse>>>> = Arc::new(Mutex::new(
+            (0..CLIENT_COUNT).map(|_| VecDeque::new()).collect(),
+        ));
 
         {
             phase_log.lock().unwrap().push("apply");
@@ -229,7 +223,13 @@ mod task_4_2 {
         let log = phase_log.lock().unwrap();
         assert_eq!(
             *log,
-            vec!["read_dist", "read_join", "apply", "write_dist", "write_join"],
+            vec![
+                "read_dist",
+                "read_join",
+                "apply",
+                "write_dist",
+                "write_join"
+            ],
             "phase order incorrect: {log:?}"
         );
 
@@ -248,7 +248,6 @@ mod task_4_2 {
 
 #[cfg(test)]
 mod task_4_3 {
-    use beava_runtime_core::client::Client;
     use beava_runtime_core::response::{serialize_into, WireResponse};
     use bytes::BytesMut;
 
@@ -276,7 +275,10 @@ mod task_4_3 {
             serialize_into(&WireResponse::TcpAck { lsn: i as u64 }, &mut write_buf);
         }
         let total_bytes = write_buf.len();
-        assert!(total_bytes >= 100, "expected >= 100 bytes, got {total_bytes}");
+        assert!(
+            total_bytes >= 100,
+            "expected >= 100 bytes, got {total_bytes}"
+        );
 
         // Mock socket: limited to 17 bytes per flush call.
         let max_bytes_per_tick: usize = 17;
@@ -293,13 +295,20 @@ mod task_4_3 {
             tick_count += 1;
         }
 
-        let expected_ticks = (total_bytes + max_bytes_per_tick - 1) / max_bytes_per_tick;
+        let expected_ticks = total_bytes.div_ceil(max_bytes_per_tick);
         assert_eq!(
             tick_count, expected_ticks,
             "expected {expected_ticks} ticks to drain {total_bytes} bytes at {max_bytes_per_tick}/tick, got {tick_count}"
         );
-        assert_eq!(write_offset, total_bytes, "write_offset must equal total bytes");
-        assert_eq!(received, write_buf.to_vec(), "received bytes must match serialized output");
+        assert_eq!(
+            write_offset, total_bytes,
+            "write_offset must equal total bytes"
+        );
+        assert_eq!(
+            received,
+            write_buf.to_vec(),
+            "received bytes must match serialized output"
+        );
 
         // Verify FIFO ordering: decode each 15-byte frame and check lsn order.
         let bytes_per_frame = total_bytes / RESP_COUNT;
@@ -308,8 +317,7 @@ mod task_4_3 {
             let chunk = &received[start..start + bytes_per_frame];
             // TcpAck: [u32 len=11][u16 op=0x0011][u8 ct=0x01][u64 lsn]
             let lsn = u64::from_be_bytes([
-                chunk[7], chunk[8], chunk[9], chunk[10], chunk[11], chunk[12], chunk[13],
-                chunk[14],
+                chunk[7], chunk[8], chunk[9], chunk[10], chunk[11], chunk[12], chunk[13], chunk[14],
             ]);
             assert_eq!(lsn, i as u64, "frame {i}: lsn out of order");
         }

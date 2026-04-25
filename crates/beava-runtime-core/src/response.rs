@@ -1,13 +1,158 @@
-//! Pre-encoded response templates for the hand-rolled event loop (Phase 18).
+//! Pre-encoded response templates and the `WireResponse` enum (Phase 18 Plan 04).
 //!
-//! Hot-path responses must NOT call `serde_json::to_vec` — that allocates and
-//! walks the object graph on every request. Instead, common responses are
-//! pre-formatted once as `&'static [u8]` or `Bytes::from_static(...)`.
+//! Hot-path responses must NOT call `serde_json::to_vec` on the apply thread —
+//! that allocates and walks the object graph on every request. Instead, common
+//! responses are pre-formatted as `&'static [u8]`, and the `WireResponse` enum
+//! carries raw response data that I/O threads serialize off-apply via
+//! `serialize_into()`.
+//!
+//! # Plan 18-04 additions
+//!
+//! - `WireResponse` — raw (unserialised) response queued by the apply thread.
+//! - `serialize_into(resp, &mut BytesMut)` — called by I/O worker threads only.
 //!
 //! Translation table entry #12 (18-rust-translation.md): `addReply(c, bytes)`
-//! → `client.pending_responses.push_back(bytes)` with pre-encoded payload.
+//! → `client.output_queue.push_back(WireResponse)` (apply) +
+//!   `serialize_into(&resp, &mut write_buf)` (I/O thread).
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
+
+// ─── OP codes used in response frames ────────────────────────────────────────
+
+/// TCP push-ACK response opcode (response-only, never a request opcode).
+/// Wire encoding: `[u32 length][u16 OP_ACK][u8 CT_JSON][u64 lsn BE]`
+const OP_ACK: u16 = 0x0080;
+
+/// TCP error response opcode (matches Phase 2.5 wire spec OP_ERROR_RESPONSE).
+const OP_ERROR_RESPONSE: u16 = 0xFFFF;
+
+/// Content-type byte for JSON (CT_JSON from beava-core wire spec).
+const CT_JSON: u8 = 0x01;
+
+// ─── WireResponse ─────────────────────────────────────────────────────────────
+
+/// An unserialised response queued by the apply thread into `Client::output_queue`.
+///
+/// The apply thread MUST NOT call `serialize_into` — that is the I/O worker's job.
+/// Keeping the enum small (no allocated strings on most variants) avoids heap
+/// traffic on the apply-thread hot path.
+///
+/// # Plan 18-04 design decisions
+///
+/// - `TcpAck { lsn }` — the most common response. 8-byte payload, no allocation.
+/// - `TcpError { code, msg }` — error frame. `msg` is a `Bytes` (ref-counted, no copy).
+/// - `HttpStatus { status, body, keep_alive }` — HTTP response. `body` is a `Bytes`.
+/// - `HttpStaticOk { keep_alive }` — hot path HTTP 204, uses static template (no allocation).
+///
+/// Adding variants here requires a matching arm in `serialize_into`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WireResponse {
+    /// TCP push-ACK: `[u32 len=11][u16 OP_ACK][u8 CT_JSON][u64 lsn BE]`
+    TcpAck { lsn: u64 },
+
+    /// TCP error frame: `[u32 len][u16 0xFFFF][u8 CT_JSON][msg bytes]`
+    TcpError { code: u16, msg: Bytes },
+
+    /// HTTP response with arbitrary status + body.
+    HttpStatus {
+        status: u16,
+        body: Bytes,
+        keep_alive: bool,
+    },
+
+    /// HTTP 204 No Content — pre-formatted static template. Zero allocation.
+    HttpStaticOk { keep_alive: bool },
+}
+
+/// Serialize `resp` into `out`, appending bytes with no intermediate allocation
+/// beyond `BytesMut::reserve`.
+///
+/// # Concurrency
+///
+/// Called exclusively by I/O worker threads. Never called on the apply thread.
+/// No synchronization needed — each I/O worker has exclusive ownership of its
+/// `write_buf: BytesMut` for the duration of the work item.
+///
+/// # Wire format
+///
+/// - `TcpAck`:        `[u32 length=11 BE][u16 OP_ACK=0x0080 BE][u8 CT_JSON=0x01][u64 lsn BE]`  (15 bytes)
+/// - `TcpError`:      `[u32 length BE][u16 0xFFFF BE][u8 CT_JSON][msg bytes]`
+/// - `HttpStatus`:    HTTP/1.1 header + body as ASCII bytes
+/// - `HttpStaticOk`:  `HTTP/1.1 204 No Content\r\n...` static template
+pub fn serialize_into(resp: &WireResponse, out: &mut BytesMut) {
+    match resp {
+        WireResponse::TcpAck { lsn } => {
+            // frame: length(4) + op(2) + ct(1) + lsn(8) = 15 bytes
+            // length field = op(2) + ct(1) + lsn(8) = 11
+            out.reserve(15);
+            out.put_u32(11u32); // length = 11
+            out.put_u16(OP_ACK); // op = 0x0080
+            out.put_u8(CT_JSON); // content_type = 0x01
+            out.put_u64(*lsn); // 8-byte lsn, big-endian
+        }
+
+        WireResponse::TcpError { code: _, msg } => {
+            // length = op(2) + ct(1) + msg.len()
+            let length = (3 + msg.len()) as u32;
+            out.reserve(4 + 3 + msg.len());
+            out.put_u32(length);
+            out.put_u16(OP_ERROR_RESPONSE);
+            out.put_u8(CT_JSON);
+            out.put_slice(msg);
+        }
+
+        WireResponse::HttpStatus {
+            status,
+            body,
+            keep_alive,
+        } => {
+            let conn = if *keep_alive { "keep-alive" } else { "close" };
+            // Formatted header — one allocation for the header string, then copy.
+            let header = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {len}\r\nConnection: {conn}\r\n\r\n",
+                status = status,
+                reason = http_status_reason(*status),
+                len = body.len(),
+                conn = conn,
+            );
+            out.reserve(header.len() + body.len());
+            out.put_slice(header.as_bytes());
+            out.put_slice(body);
+        }
+
+        WireResponse::HttpStaticOk { keep_alive } => {
+            let template = if *keep_alive {
+                ResponseTemplate::HTTP_204
+            } else {
+                ResponseTemplate::HTTP_204_CLOSE
+            };
+            out.reserve(template.len());
+            out.put_slice(template);
+        }
+    }
+}
+
+/// Map a numeric HTTP status code to its canonical reason phrase.
+fn http_status_reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
+        _ => "Unknown",
+    }
+}
+
+// ─── ResponseTemplate ─────────────────────────────────────────────────────────
 
 /// Pre-encoded HTTP and TCP response byte strings.
 pub struct ResponseTemplate;
