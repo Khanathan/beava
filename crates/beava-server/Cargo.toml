@@ -130,6 +130,15 @@ name = "phase18_04_6_integration_test"
 path = "tests/phase18_04_6_integration_test.rs"
 required-features = ["testing"]
 
+[[test]]
+name = "phase18_09_msgpack_tcp_test"
+path = "tests/phase18_09_msgpack_tcp_test.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "phase18_09_http_direct_row_test"
+path = "tests/phase18_09_http_direct_row_test.rs"
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
