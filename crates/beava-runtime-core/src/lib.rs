@@ -18,6 +18,9 @@ pub mod http_listener;
 pub mod response;
 pub mod router;
 pub mod tcp_listener;
+pub mod wal_buffer;
+pub mod wal_lsn;
+pub mod wal_writer;
 pub mod wire_request;
 
 pub use client::Client;
@@ -26,4 +29,7 @@ pub use http_listener::HttpListener;
 pub use response::ResponseTemplate;
 pub use router::{Route, Router};
 pub use tcp_listener::TcpListener;
+pub use wal_buffer::{WalBuffer, WalBufferRing};
+pub use wal_lsn::{Lsn, WalLsn};
+pub use wal_writer::WalWriter;
 pub use wire_request::WireRequest;
