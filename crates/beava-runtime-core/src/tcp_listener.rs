@@ -794,4 +794,106 @@ mod tests {
             other => panic!("expected TcpPush, got {other:?}"),
         }
     }
+
+    // ─── Plan 18-10 Task 10.2 — parse_json_envelope via sonic-rs LazyValue ────
+
+    #[test]
+    fn parse_json_envelope_happy() {
+        let payload = br#"{"event":"Txn","body":{"amount":99,"ts":1234567890}}"#;
+        let (event, body_bytes) = parse_json_envelope(payload).expect("ok");
+        assert_eq!(event, "Txn");
+        // body bytes are valid JSON for {"amount":99,"ts":1234567890}
+        let body_val: serde_json::Value =
+            sonic_rs::from_slice(body_bytes).expect("body parses as json");
+        assert_eq!(body_val["amount"], 99);
+        assert_eq!(body_val["ts"], 1234567890i64);
+    }
+
+    #[test]
+    fn parse_json_envelope_nested_body() {
+        let payload = br#"{"event":"Order","body":{"amount":99.95,"tags":["a","b","c"],"meta":{"region":"us-east-1","shard":7}}}"#;
+        let (event, body_bytes) = parse_json_envelope(payload).expect("ok");
+        assert_eq!(event, "Order");
+        let body_val: serde_json::Value =
+            sonic_rs::from_slice(body_bytes).expect("nested body parses");
+        assert_eq!(body_val["meta"]["region"], "us-east-1");
+        assert_eq!(body_val["tags"][1], "b");
+    }
+
+    #[test]
+    fn parse_json_envelope_array_body() {
+        // body itself is an array — still valid wire content.
+        let payload = br#"{"event":"Bulk","body":[1,2,3,4,5]}"#;
+        let (event, body_bytes) = parse_json_envelope(payload).expect("ok");
+        assert_eq!(event, "Bulk");
+        let body_val: serde_json::Value =
+            sonic_rs::from_slice(body_bytes).expect("array body parses");
+        assert_eq!(body_val[4], 5);
+    }
+
+    #[test]
+    fn parse_json_envelope_string_with_braces_in_field() {
+        // String fields that contain `{` or `}` must NOT confuse the brace
+        // counter in the hand-rolled fallback. (sonic-rs handles this for free
+        // via its scanner; the test guards against a regression to a naive impl.)
+        let payload = br#"{"event":"Note","body":{"text":"hello {world} }} {{"}}"#;
+        let (event, body_bytes) = parse_json_envelope(payload).expect("ok");
+        assert_eq!(event, "Note");
+        let body_val: serde_json::Value =
+            sonic_rs::from_slice(body_bytes).expect("string-with-braces body parses");
+        assert_eq!(body_val["text"], "hello {world} }} {{");
+    }
+
+    #[test]
+    fn parse_json_envelope_escaped_quote_in_string() {
+        // Escaped quote inside a string must not terminate string state.
+        let payload = br#"{"event":"E","body":{"q":"a\"b"}}"#;
+        let (event, body_bytes) = parse_json_envelope(payload).expect("ok");
+        assert_eq!(event, "E");
+        let body_val: serde_json::Value =
+            sonic_rs::from_slice(body_bytes).expect("escaped-quote body parses");
+        assert_eq!(body_val["q"], "a\"b");
+    }
+
+    #[test]
+    fn parse_json_envelope_malformed_returns_err() {
+        // Missing closing brace.
+        let payload = br#"{"event":"X","body":{"a":1"#;
+        assert!(parse_json_envelope(payload).is_err());
+    }
+
+    #[test]
+    fn parse_json_envelope_missing_event_returns_err() {
+        let payload = br#"{"foo":"bar","body":{}}"#;
+        assert!(parse_json_envelope(payload).is_err());
+    }
+
+    #[test]
+    fn parse_json_envelope_missing_body_returns_err() {
+        let payload = br#"{"event":"X","foo":"bar"}"#;
+        assert!(parse_json_envelope(payload).is_err());
+    }
+
+    #[test]
+    fn parse_json_envelope_replaces_old_branch_in_parse_wire_request() {
+        // Backward compat: CT_JSON frame still produces the right WireRequest.
+        let payload = br#"{"event":"Txn","body":{"amount":99}}"#;
+        let mut buf = make_frame(OP_PUSH, Bytes::copy_from_slice(payload));
+        let req = parse_wire_request(&mut buf, 4 * 1024 * 1024)
+            .expect("no parse error")
+            .expect("complete frame");
+        match req {
+            WireRequest::TcpPush {
+                event_name,
+                body,
+                body_format,
+            } => {
+                assert_eq!(event_name, "Txn");
+                assert_eq!(body_format, CT_JSON);
+                let v: serde_json::Value = sonic_rs::from_slice(&body).unwrap();
+                assert_eq!(v["amount"], 99);
+            }
+            other => panic!("expected TcpPush, got {other:?}"),
+        }
+    }
 }
