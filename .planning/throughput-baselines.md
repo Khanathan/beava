@@ -218,3 +218,21 @@ below floor — confirms the async WAL bridge is the bottleneck, not the accept 
 
 **vs Phase 13 ship-gate:** 3M EPS/core simple-fraud TCP (Linux Xeon, HARD GATE in Plan 18-05).
 This measurement is informational baseline only; the gate applies to the pure mio + sync WAL path.
+
+### Phase 18-04.6 — mio EventLoop wired end-to-end (M4 informational)
+
+Harness: `beava-bench-v18`. Commit: eefd8f2. Date: 2026-04-25. hw-class: Darwin-24.3.0 / 10 cores (Apple M4).
+
+serve_with_dirs now runs a real mio event loop on a dedicated std::thread. ApplyShard::dispatch_wire_request_sync is called inline per tick (no IoPool parallelism yet). WalBufferRing used on the apply path; WalSink retained only for /register cold path.
+
+| Phase | Date | Pipeline | Transport | Parallel | Duration | EPS | p50 µs | p95 µs | p99 µs | get p99 µs | RSS MB | commit | Notes |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
+| 18-04.6 | 2026-04-25 | small | tcp | 16 | 10s | 44379 | 137 | 248 | 4723 | 7487 | 219 | eefd8f2 | mio inline apply, single-thread |
+| 18-04.6 | 2026-04-25 | small | tcp | 32 | 10s | 60033 | 242 | 3715 | 4855 | 4947 | 223 | eefd8f2 | mio inline apply, single-thread |
+| 18-04.6 | 2026-04-25 | small | http | 16 | 10s | 43642 | 146 | 2725 | 3913 | 2761 | 221 | eefd8f2 | mio inline apply, single-thread |
+
+**vs 18-05.1 tokio shim (234 EPS TCP/16):** 44,379 EPS = **190× improvement** by removing the async channel/mutex serialization.
+
+**vs Plan 18-02 floor target (300-500k EPS/core, M4 informational):** 44k EPS is ~7-11× below floor. Root cause: single mio apply thread serializes all push dispatch; IoPool parallelism (Plans 18-03/18-04) not yet layered on top. Each event still takes a Mutex lock on AppState. This is expected at this stage.
+
+**vs Phase 13 ship-gate:** 3M EPS/core (Linux Xeon HARD GATE). Current 44k on M4 is informational only; IoPool + lockless apply (Phase 13.3) are the path to the gate.
