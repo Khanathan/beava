@@ -10,6 +10,7 @@ description = "Beava v2 server — single-binary real-time feature server (fraud
 [features]
 default = []
 testing = ["dep:reqwest"]
+hand-rolled-runtime = ["dep:beava-runtime-core"]
 
 [[bin]]
 name = "beava"
@@ -85,6 +86,11 @@ name = "phase7_restart_cycle"
 path = "tests/phase7_restart_cycle.rs"
 required-features = ["testing"]
 
+[[test]]
+name = "phase18_01_glue"
+path = "tests/phase18_01_glue.rs"
+required-features = ["testing"]
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
@@ -96,6 +102,7 @@ path = "src/lib.rs"
 [dependencies]
 beava-core = { path = "../beava-core" }
 beava-persistence = { path = "../beava-persistence" }
+beava-runtime-core = { path = "../beava-runtime-core", optional = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
@@ -114,6 +121,7 @@ bincode = { workspace = true }
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
+beava-runtime-core = { path = "../beava-runtime-core" }
 tempfile = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "net", "signal", "time", "sync", "test-util"] }
