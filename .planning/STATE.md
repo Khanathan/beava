@@ -3,13 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Executing Phase 18
-last_updated: "2026-04-25T14:15:00Z"
+stopped_at: Completed 18-02-PLAN.md (2026-04-25)
+last_updated: "2026-04-25T15:54:18.524Z"
 progress:
   total_phases: 23
   completed_phases: 9
   total_plans: 87
-  completed_plans: 53
-  percent: 61
+  completed_plans: 55
+  percent: 63
 ---
 
 # State: Beava v2 — v0 OSS Launch
@@ -27,13 +28,13 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Current Focus
 
-**Phase 18 — Redis-shaped hand-rolled hot path. Plan 18-01 COMPLETE.**
+**Phase 18 — Redis-shaped hand-rolled hot path. Plan 18-02 COMPLETE.**
 
-Plan 18-01 landed 2026-04-25: `beava-runtime-core` crate scaffold (mio event loop, HTTP/1.1 + framed TCP parsers, WireRequest dispatch), `runtime_core_glue.rs` bridging to AppState, `ServerV18::bind_v18` with tokio/axum admin sidecar, samply profiling procedure. Next: Plan 18-02 (inline WAL + pthread fsync worker).
+Plan 18-02 landed 2026-04-25: lock-free 3-buffer WAL ring (`WalBuffer`/`WalBufferRing` with ACTIVE/SEALED/FLUSHING/FREE state machine), four-watermark LSN discipline (`WalLsn`: committed/written/synced), dedicated writer+fsync thread (`WalWriter` with O_APPEND + network-FS guard), and `WalGlue` bridging periodic and per-event append modes. 28 new tests pass; Phase 6.1 durability tests still green. Next: Plan 18-03 (I/O threads for reads).
 
 Phase 13.3 remains open on worktree `phase-13.3-lockless-apply` — lockless apply (RefCell + LocalSet). Both tracks are independent; Phase 18 executes on `v2/greenfield` directly.
 
-**Stopped at:** Completed 18-01-PLAN.md (2026-04-25)
+**Stopped at:** Completed 18-02-PLAN.md (2026-04-25)
 
 ## Shipped & Merged to `v2/greenfield`
 
