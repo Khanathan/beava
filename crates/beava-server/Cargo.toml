@@ -115,6 +115,16 @@ path = "tests/phase18_02_inline_wal_test.rs"
 name = "phase18_07_no_tokio_dataplane_test"
 path = "tests/phase18_07_no_tokio_dataplane_test.rs"
 
+[[test]]
+name = "phase18_07_push_and_get_test"
+path = "tests/phase18_07_push_and_get_test.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "phase18_07_upsert_delete_rename_test"
+path = "tests/phase18_07_upsert_delete_rename_test.rs"
+required-features = ["testing"]
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
