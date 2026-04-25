@@ -45,6 +45,38 @@ pub enum Value {
     Map(BTreeMap<String, Value>),
 }
 
+/// Convert a `serde_json::Value` (JSON primitive) into the beava `Value` type.
+///
+/// Used by the Row Deserialize impl to convert wire-format JSON fields.
+/// `serde_json::Value` uses `deserialize_any` which works with both serde_json
+/// and rmp_serde (both support `deserialize_any`).
+pub fn json_value_to_beava_value(jv: serde_json::Value) -> Value {
+    match jv {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::I64(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::F64(f)
+            } else {
+                Value::Null
+            }
+        }
+        serde_json::Value::String(s) => Value::Str(s),
+        serde_json::Value::Array(arr) => {
+            Value::List(arr.into_iter().map(json_value_to_beava_value).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            let mut map = BTreeMap::new();
+            for (k, v) in obj {
+                map.insert(k, json_value_to_beava_value(v));
+            }
+            Value::Map(map)
+        }
+    }
+}
+
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -228,6 +260,74 @@ impl Row {
 impl Default for Row {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ─── Row Deserialize (Task 18-09 Plan 9.3) ────────────────────────────────────
+//
+// Custom Deserialize impl for Row that works with BOTH serde_json and rmp_serde.
+//
+// Strategy: deserialize each map value as `serde_json::Value` (which supports
+// `deserialize_any` used by both serde_json and rmp_serde), then convert to
+// beava `Value` via `json_value_to_beava_value`. This avoids the problem that
+// `Value`'s derived Deserialize expects the internal tagged-enum format
+// (e.g. `{"I64": 42}`) rather than wire-format primitives (`42`).
+//
+// `serde_json::Value` deserializes:
+//   null    → Value::Null
+//   bool    → Value::Bool
+//   integer → Value::I64  (via Number.as_i64())
+//   float   → Value::F64  (via Number.as_f64())
+//   string  → Value::Str
+//   array   → Value::List  (recursively converted)
+//   object  → Value::Map   (recursively converted)
+
+impl<'de> serde::Deserialize<'de> for Row {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct RowVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for RowVisitor {
+            type Value = Row;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a JSON/msgpack map of string field names to primitive values")
+            }
+
+            fn visit_map<M>(self, mut access: M) -> Result<Row, M::Error>
+            where
+                M: serde::de::MapAccess<'de>,
+            {
+                let mut row = Row::new();
+                // Deserialize each value as serde_json::Value (supports deserialize_any
+                // from both serde_json and rmp_serde), then convert to beava Value.
+                while let Some((key, jv)) =
+                    access.next_entry::<String, serde_json::Value>()?
+                {
+                    row = row.with_field(&key, json_value_to_beava_value(jv));
+                }
+                Ok(row)
+            }
+        }
+
+        deserializer.deserialize_map(RowVisitor)
+    }
+}
+
+/// Row serialization: serialize as a flat JSON object `{field: value, ...}`.
+impl serde::Serialize for Row {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (k, v) in &self.0 {
+            map.serialize_entry(k, v)?;
+        }
+        map.end()
     }
 }
 
