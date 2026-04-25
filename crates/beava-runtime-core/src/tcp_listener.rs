@@ -127,11 +127,44 @@ pub fn parse_wire_request(
                     }
                 }
                 CT_MSGPACK => {
-                    // Msgpack envelope: {event: String, body: map} encoded as msgpack.
-                    // Parsed in Task 9.2 GREEN — stub returns ParseError for now.
-                    // This branch is replaced in 9.2 GREEN.
-                    WireRequest::ParseError {
-                        reason: "CT_MSGPACK not yet implemented (9.2 GREEN pending)".to_string(),
+                    // Msgpack envelope: {event: String, body: <msgpack-map>}
+                    // Parse the envelope to extract event_name + raw body bytes.
+                    //
+                    // rmp_serde can deserialize into serde_json::Value because it
+                    // implements the serde data model. We parse the whole envelope
+                    // as a serde_json::Value map, extract the "event" string and
+                    // "body" object, then re-serialize just the body back to msgpack
+                    // bytes for downstream Row deserialization (Task 9.4).
+                    match rmp_serde::from_slice::<serde_json::Value>(&frame.payload) {
+                        Ok(serde_json::Value::Object(mut map)) => {
+                            let event_val = map.remove("event");
+                            let body_val = map.remove("body");
+                            match (event_val, body_val) {
+                                (Some(serde_json::Value::String(event_name)), Some(body)) => {
+                                    // Re-serialize just the body back to msgpack bytes.
+                                    // Task 9.4 uses these bytes directly with rmp_serde::from_slice::<Row>.
+                                    match rmp_serde::to_vec_named(&body) {
+                                        Ok(body_bytes) => WireRequest::TcpPush {
+                                            event_name,
+                                            body: Bytes::from(body_bytes),
+                                            body_format: CT_MSGPACK,
+                                        },
+                                        Err(e) => WireRequest::ParseError {
+                                            reason: format!("msgpack body re-encode failed: {e}"),
+                                        },
+                                    }
+                                }
+                                _ => WireRequest::ParseError {
+                                    reason: "msgpack envelope missing 'event' (string) or 'body' fields".into(),
+                                },
+                            }
+                        }
+                        Ok(_) => WireRequest::ParseError {
+                            reason: "msgpack envelope must be a map".into(),
+                        },
+                        Err(e) => WireRequest::ParseError {
+                            reason: format!("msgpack envelope parse failed: {e}"),
+                        },
                     }
                 }
                 other => WireRequest::ParseError {
