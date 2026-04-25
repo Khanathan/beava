@@ -497,17 +497,17 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 **Success criteria:** see `.planning/phases/15-event-time-pit/15-CONTEXT.md` (SC1–SC7).
 
-### Phase 18: Redis-shaped hand-rolled hot path — 📋 PLANNED
+### Phase 18: Redis-shaped hand-rolled hot path — 🔄 IN PROGRESS
 
-**Status:** All 10 planning documents landed 2026-04-24 in `.planning/phases/18-redis-hand-roll/` (research + Rust translation + CONTEXT D-01..D-16 + plans 18-00..18-06 + risks register). Executor pending — sits behind the upstream merge round (12-joins/12-followup, 13-ship/13-followup, 13.3, 14/14.1/15/16/12.5). See `18-RESUME.md` for the dispatch entry point.
+**Status:** Plan 18-01 COMPLETE (2026-04-25). `beava-runtime-core` crate scaffold, HTTP/1.1 + framed TCP parsers, WireRequest dispatch to AppState via `runtime_core_glue.rs`, `ServerV18::bind_v18` with tokio/axum admin sidecar, samply profiling procedure. Next: Plan 18-02 (inline WAL + pthread fsync).
 
 **Goal:** Replace tokio on the apply + wire hot path with a hand-rolled event loop matching Redis 7.x architecture. Spec target: ≥3M EPS/core simple-fraud TCP on Linux Xeon. The hand-rolled hot path handles BOTH HTTP/1.1 + framed TCP for data-plane endpoints (`/push`, `/push-sync`, `/push-batch`, `/get`, `/upsert`, `/delete`, `/retract`); admin endpoints (`/metrics`, `/health`, `/ready`, `/registry`) stay on tokio/axum on a separate port (`8081`).
 
 **Depends on:** Phase 13 ship-gate baseline (need to know the floor `tokio` produces before measuring lift). Phase 13.3 lockless-apply landing (apply thread already owns `RefCell<AppState>` directly — Phase 18 is a wire-stack rewrite, not a state-ownership rewrite). All Phase 8–11 + 12 + 12.5 operators must be on `v2/greenfield` so the wire rewrite measures the real workload.
 
 **Stages and perf gates:**
-1. **18.0** — research + translation (already complete)
-2. **18.1** — hand-rolled event loop + HTTP/1.1 + framed TCP (~2200 LoC, 6 tasks). Apple-M4 INFORMATIONAL gate.
+1. **18.0** — research + translation (complete)
+2. **18.1** — hand-rolled event loop + HTTP/1.1 + framed TCP (~2200 LoC, 6 tasks). Apple-M4 INFORMATIONAL gate. ✅ COMPLETE
 3. **18.2** — inline WAL + pthread fsync (~300 LoC, 3 tasks). Apple-M4 INFORMATIONAL gate.
 4. **18.3** — I/O threads for reads (Redis 6.0 pattern, ~500 LoC, 5 tasks). Apple-M4 INFORMATIONAL gate: 1–1.5M EPS/core aggregate with 4 I/O threads.
 5. **18.4** — I/O threads for writes (~250 LoC, 3 tasks). Apple-M4 INFORMATIONAL gate: 2–2.5M EPS/core aggregate; tail p99 <5ms.

@@ -1,15 +1,15 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.1
+milestone: v0.0
 milestone_name: milestone
-status: executing
-last_updated: "2026-04-24T23:55:00.000Z"
+status: Executing Phase 18
+last_updated: "2026-04-25T14:15:00Z"
 progress:
-  total_phases: 26   # see ROADMAP.md "Total: 26 phases" — original 13 + 2.5/5.5/6.1/7.5/11.5/12.5/13.1/13.3/14/14.1/15/16/18 inserts (13.2 abandoned, 17 deferred to v0.1)
-  completed_phases: 17  # 1, 2, 2.5, 3, 4, 5, 5.5, 6, 6.1, 7, 7.5, 8, 9, 10, 11, 11.5, 13.1 — merged to v2/greenfield
-  total_plans: 90
-  completed_plans: 66
-  percent: 65
+  total_phases: 23
+  completed_phases: 9
+  total_plans: 87
+  completed_plans: 53
+  percent: 61
 ---
 
 # State: Beava v2 — v0 OSS Launch
@@ -27,13 +27,13 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Current Focus
 
-**Two parallel tracks open:**
+**Phase 18 — Redis-shaped hand-rolled hot path. Plan 18-01 COMPLETE.**
 
-1. **Phase 13.3 — Lockless apply (RefCell + LocalSet, Option 0).** Implementation underway on worktree `phase-13.3-lockless-apply` @ `34f82e8`. Currently in bottleneck investigation (samply flamegraph + root cause). Target: ~60ns/event, ~500 LoC refactor, Redis-shaped single-thread event loop replacing the current Mutex-per-state design. Once green, merges first because everything else builds on the apply-loop being lock-free. **Phase 13.2 (batch coalescing) is abandoned** — superseded by 13.3.
+Plan 18-01 landed 2026-04-25: `beava-runtime-core` crate scaffold (mio event loop, HTTP/1.1 + framed TCP parsers, WireRequest dispatch), `runtime_core_glue.rs` bridging to AppState, `ServerV18::bind_v18` with tokio/axum admin sidecar, samply profiling procedure. Next: Plan 18-02 (inline WAL + pthread fsync worker).
 
-2. **Phase 18 — Redis-shaped hand-rolled hot path.** All 10 planning documents landed 2026-04-24 (research + Rust translation + CONTEXT D-01..D-16 + plans 18-00..18-06 + risks register). Executor pending — sits behind the upstream merge round (12-joins/12-followup, 13-ship/13-followup, 13.3, 14/14.1/15/16/12.5). See `.planning/phases/18-redis-hand-roll/18-RESUME.md` for the dispatch entry point. Target: ≥3M EPS/core simple-fraud TCP on Linux Xeon (HARD GATE at Stage 18.5). This is the closer of the throughput gap to the v0 ship-gate.
+Phase 13.3 remains open on worktree `phase-13.3-lockless-apply` — lockless apply (RefCell + LocalSet). Both tracks are independent; Phase 18 executes on `v2/greenfield` directly.
 
-**Sequencing:** Phase 13.3 lands → merge round (12 + 13 + 13.3 + 14/14.1/15/16/12.5) → Phase 18 executor dispatch on a fresh worktree.
+**Stopped at:** Completed 18-01-PLAN.md (2026-04-25)
 
 ## Shipped & Merged to `v2/greenfield`
 
@@ -78,6 +78,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 6 | Milestone audit → complete → cleanup (`gsd-audit-milestone` → `gsd-complete-milestone v0.1` → `gsd-cleanup`) | Lifecycle | ⏳ final |
 
 **Deferred to v0.0.x point releases** (per Phase 13 CONTEXT D-16):
+
 - Plan 13-05 docs site (quickstart/operators/concepts/http-api/architecture)
 - Plan 13-06 `bv.fork()` local scoped replica subcommand
 - Plan 13-07 `pip install beava` + Docker Hub + GitHub Releases packaging
