@@ -164,7 +164,7 @@ reqwest = { workspace = true, optional = true }
 beava-runtime-core = { path = "../beava-runtime-core" }
 tempfile = { workspace = true }
 reqwest = { workspace = true }
-tokio = { workspace = true, features = ["rt", "macros", "net", "signal", "time", "sync", "test-util"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "signal", "time", "sync", "test-util"] }
 tower = { workspace = true, features = ["util"] }
 http-body-util = { workspace = true }
 serde_json = { workspace = true }

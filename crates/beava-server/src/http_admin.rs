@@ -85,12 +85,28 @@ async fn metrics_handler(State(state): State<AdminState>) -> impl IntoResponse {
         .read()
         .unwrap_or_else(|p| p.into_inner())
         .clone();
+
+    // Prometheus exposition format (text/plain; version=0.0.4).
+    // Plan 18-04.6 Task 4.6.5: add beava_runtime_kind gauge to identify
+    // which runtime is serving the data plane.
+    let body = format!(
+        "# HELP beava_registry_version Registry version (monotonic).\n\
+         # TYPE beava_registry_version gauge\n\
+         beava_registry_version {registry_version}\n\
+         # HELP beava_node_count Number of registered aggregation nodes.\n\
+         # TYPE beava_node_count gauge\n\
+         beava_node_count {node_count}\n\
+         # HELP beava_runtime_kind Data-plane runtime (1=active). Labels: runtime.\n\
+         # TYPE beava_runtime_kind gauge\n\
+         beava_runtime_kind{{runtime=\"mio\"}} 1\n",
+        registry_version = snap.version,
+        node_count = snap.node_count,
+    );
+
     (
         StatusCode::OK,
-        Json(serde_json::json!({
-            "registry_version": snap.version,
-            "node_count": snap.node_count,
-        })),
+        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        body,
     )
 }
 

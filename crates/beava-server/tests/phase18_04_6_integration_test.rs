@@ -10,6 +10,45 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+// ─── Shared helpers ───────────────────────────────────────────────────────────
+
+/// Global mutex used to serialize tests that boot a full ServerV18 stack.
+///
+/// Each ServerV18::serve() spawns a std::thread (mio loop) + tokio admin
+/// server + WalWriter + WalSink. When two such tests run concurrently the OS
+/// thread pool and tokio task queues become saturated, causing startup timeouts.
+/// Holding this lock for the duration of each server test ensures only one
+/// heavy server is live at a time without needing --test-threads 1.
+static SERVER_SERIALIZER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Poll an HTTP or admin address until the server responds to an HTTP GET or
+/// the deadline is reached.  Verifies that the event loop is actually
+/// processing requests — not just that the kernel backlog accepted a TCP
+/// connection.
+async fn wait_for_http(addr: std::net::SocketAddr) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+        .expect("reqwest client");
+    loop {
+        match client.get(format!("http://{}/health", addr)).send().await {
+            Ok(_) => return,
+            Err(_) => {
+                if tokio::time::Instant::now() >= deadline {
+                    panic!("server at {} did not become ready within 10 seconds", addr);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+    }
+}
+
+/// Wait for the admin server (axum/tokio) to become ready.
+async fn wait_for_admin(addr: std::net::SocketAddr) {
+    wait_for_http(addr).await;
+}
+
 // ─── Task 4.6.1 ───────────────────────────────────────────────────────────────
 
 /// Constructs an ApplyShard and dispatches 1000 sequential requests from one
@@ -76,8 +115,11 @@ async fn test_apply_shard_single_writer_no_lock_contention() {
 /// 3. The X-Runtime header is "hand-rolled"
 ///
 /// RED: the new serve() doesn't use mio yet.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_serve_loop_uses_mio_not_tokio() {
+    // Serialize against other server-boot tests to avoid thread/resource contention.
+    let _guard = SERVER_SERIALIZER.lock().unwrap();
+
     use beava_server::server::ServerV18;
     use std::net::SocketAddr;
 
@@ -93,8 +135,8 @@ async fn test_serve_loop_uses_mio_not_tokio() {
         sv18.serve(async move { let _ = shutdown_rx.await; }).await
     });
 
-    // Wait for the server to start accepting.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // Poll until the mio event loop is accepting connections.
+    wait_for_http(http_addr).await;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -203,8 +245,11 @@ async fn test_apply_writes_to_wal_buffer_ring_not_walsink() {
 /// beava_runtime_kind{runtime="mio"} 1 is present.
 ///
 /// RED: the metric does not exist yet.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_runtime_kind_metric_mio() {
+    // Serialize against other server-boot tests to avoid thread/resource contention.
+    let _guard = SERVER_SERIALIZER.lock().unwrap();
+
     use beava_server::server::ServerV18;
     use std::net::SocketAddr;
 
@@ -220,8 +265,8 @@ async fn test_runtime_kind_metric_mio() {
         sv18.serve(async move { let _ = shutdown_rx.await; }).await
     });
 
-    // Wait for admin server to start.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // Poll until the admin server is responding to requests.
+    wait_for_admin(admin_addr).await;
 
     let metrics_body = reqwest::get(format!("http://{}/metrics", admin_addr))
         .await
