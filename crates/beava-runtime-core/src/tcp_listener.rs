@@ -12,7 +12,7 @@
 //! `Ok(None)` (need more bytes) is returned.
 
 use beava_core::wire::{decode_frame, CT_JSON, CT_MSGPACK, OP_PING, OP_PUSH, OP_REGISTER};
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use std::net::SocketAddr;
 
 use crate::wire_request::WireRequest;
@@ -484,6 +484,72 @@ pub fn parse_msgpack_envelope(payload: &[u8]) -> Result<(&str, &[u8]), MsgpackEn
     ))
 }
 
+// ─── Plan 18-10: Hand-rolled JSON envelope scanner ────────────────────────────
+//
+// Plan 18-09's CT_JSON path used `serde_json::from_slice::<PushEnvelope>` to
+// decode the envelope into `PushEnvelope { event: String, body: JsonValue }`,
+// then re-serialised the body to canonical bytes. That was 583 ns/op.
+//
+// Plan 18-10 D-2 swaps to sonic-rs LazyValue: the envelope deserialise produces
+// borrowed `(&str, raw &str)` pointing into the payload; the body bytes are
+// already canonical (the original wire bytes, modulo whitespace). Target ≤150 ns.
+
+/// Errors from `parse_json_envelope`. Cold path only.
+#[derive(Debug)]
+pub enum JsonEnvelopeError {
+    /// sonic-rs failed to deserialise the envelope shape.
+    Decode(String),
+    /// `event` or `body` missing.
+    MissingField(&'static str),
+}
+
+impl std::fmt::Display for JsonEnvelopeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JsonEnvelopeError::Decode(e) => write!(f, "json envelope decode failed: {e}"),
+            JsonEnvelopeError::MissingField(name) => write!(f, "missing field: {name}"),
+        }
+    }
+}
+
+impl std::error::Error for JsonEnvelopeError {}
+
+/// Parse a JSON push envelope `{"event":"<name>","body":<any>}` into borrowed
+/// `(event_name, body_bytes)`.
+///
+/// Body bytes are the EXACT canonical bytes that sonic-rs identified as the
+/// `body` value's raw text — guaranteed to be a self-contained JSON value
+/// (object/array/string/number/bool/null) suitable for `sonic_rs::from_slice`.
+///
+/// Plan 18-10 D-2 — replaces the serde_json::from_slice::<PushEnvelope> +
+/// serde_json::to_vec round-trip from Plan 18-09.
+pub fn parse_json_envelope(payload: &[u8]) -> Result<(&str, &[u8]), JsonEnvelopeError> {
+    #[derive(serde::Deserialize)]
+    struct EnvelopeLazy<'a> {
+        #[serde(borrow)]
+        event: &'a str,
+        #[serde(borrow)]
+        body: sonic_rs::LazyValue<'a>,
+    }
+
+    let env: EnvelopeLazy<'_> = sonic_rs::from_slice(payload)
+        .map_err(|e| JsonEnvelopeError::Decode(e.to_string()))?;
+    // as_raw_cow preserves the input lifetime ('a). When the input is borrowed
+    // bytes (which is always the case here), the Cow is Borrowed and we can
+    // extract the underlying &str slice with the input lifetime.
+    let body_slice: &[u8] = match env.body.as_raw_cow() {
+        std::borrow::Cow::Borrowed(s) => s.as_bytes(),
+        std::borrow::Cow::Owned(_) => {
+            // Should not happen for &[u8] input — would only occur for FastStr
+            // input. Treat as decode failure.
+            return Err(JsonEnvelopeError::Decode(
+                "json envelope body produced owned slice (unexpected)".to_string(),
+            ));
+        }
+    };
+    Ok((env.event, body_slice))
+}
+
 // ─── Frame parser ─────────────────────────────────────────────────────────────
 
 /// Attempt to parse one `WireRequest` from `buf`.
@@ -514,27 +580,18 @@ pub fn parse_wire_request(
         OP_PUSH => {
             match frame.content_type {
                 CT_JSON => {
-                    // Payload is JSON: {"event": "<name>", "body": {...}}
-                    // Parse envelope to extract event_name + raw body bytes.
-                    // No re-serialization: extract the body slice directly.
-                    #[derive(serde::Deserialize)]
-                    struct PushEnvelopeJson {
-                        event: String,
-                        body: serde_json::Value,
-                    }
-                    match serde_json::from_slice::<PushEnvelopeJson>(&frame.payload) {
-                        Ok(env) => {
-                            // Pass body bytes through WITHOUT re-serializing.
-                            // Find the raw body slice in the original payload by
-                            // re-serializing once (needed to get canonical bytes for
-                            // downstream; re-serialization overhead will be removed
-                            // in Task 9.3/9.4 via direct Row deserialize).
-                            let body_bytes = serde_json::to_vec(&env.body)
-                                .map(Bytes::from)
-                                .unwrap_or_else(|_| frame.payload.clone());
+                    // Plan 18-10 D-2: sonic-rs LazyValue zero-copy envelope scan.
+                    // Body slice aliases frame.payload directly; no re-serialise.
+                    match parse_json_envelope(&frame.payload) {
+                        Ok((event_name, body_bytes)) => {
+                            // Slice frame.payload to keep the Bytes refcounted view.
+                            let body_start = body_bytes.as_ptr() as usize
+                                - frame.payload.as_ptr() as usize;
+                            let body_end = body_start + body_bytes.len();
+                            let body = frame.payload.slice(body_start..body_end);
                             WireRequest::TcpPush {
-                                event_name: env.event,
-                                body: body_bytes,
+                                event_name: event_name.to_string(),
+                                body,
                                 body_format: CT_JSON,
                             }
                         }
@@ -581,6 +638,7 @@ pub fn parse_wire_request(
 mod tests {
     use super::*;
     use beava_core::wire::{encode_frame, Frame, CT_JSON};
+    use bytes::Bytes;
 
     fn make_frame(op: u16, payload: impl Into<Bytes>) -> BytesMut {
         let frame = Frame::new(op, CT_JSON, payload.into());

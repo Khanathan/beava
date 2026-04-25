@@ -22,6 +22,9 @@ rmp-serde = { workspace = true }
 # Plan 18-10: rmp::decode primitives for hand-rolled msgpack envelope scanner
 # in tcp_listener.rs (no serde overhead on the hot path).
 rmp = { workspace = true }
+# Plan 18-10: sonic-rs LazyValue for zero-copy JSON envelope parsing in
+# tcp_listener.rs. Used to bypass serde_json::Value allocation on the hot path.
+sonic-rs = "0.5"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 libc = { workspace = true }
