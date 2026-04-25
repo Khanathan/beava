@@ -197,6 +197,8 @@ impl TestServerBuilder {
         // consumes the Server.
         let registry = server.registry();
         let snapshot_trigger = server.snapshot_trigger_handle();
+        // Phase 18 Plan 01: grab AppState Arc for glue-layer tests.
+        let app_state = server.app_state();
 
         let (tx, rx) = oneshot::channel::<()>();
         let shutdown = async move {
@@ -213,6 +215,7 @@ impl TestServerBuilder {
             serve_task: Some(serve_task),
             registry,
             snapshot_trigger,
+            app_state,
         };
 
         harness
@@ -234,6 +237,9 @@ pub struct TestServer {
     registry: Arc<beava_core::registry::Registry>,
     /// Phase 7 Plan 03: handle to the snapshot task's manual-trigger channel.
     snapshot_trigger: crate::snapshot_task::SnapshotTriggerTx,
+    /// Phase 18 Plan 01: shared AppState Arc — used by glue-layer tests that
+    /// call `dispatch_wire_request` directly without going through HTTP.
+    app_state: Arc<crate::AppState>,
 }
 
 impl TestServer {
@@ -260,6 +266,13 @@ impl TestServer {
     /// assertions without an HTTP round-trip.
     pub fn registry(&self) -> &Arc<beava_core::registry::Registry> {
         &self.registry
+    }
+
+    /// Phase 18 Plan 01: return the shared AppState Arc.
+    /// Glue-layer tests call `dispatch_wire_request(&ts.app_state(), req)` to
+    /// exercise the apply path without going through HTTP.
+    pub fn app_state(&self) -> Arc<crate::AppState> {
+        Arc::clone(&self.app_state)
     }
 
     /// Phase 7 Plan 03: force the periodic snapshot task to run NOW.

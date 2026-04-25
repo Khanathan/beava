@@ -16,6 +16,7 @@ pub mod push;
 pub mod recovery;
 pub mod register;
 pub mod registry_debug;
+pub mod runtime_core_glue;
 pub mod server;
 pub mod shutdown;
 pub mod snapshot_task;

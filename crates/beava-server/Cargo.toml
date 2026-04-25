@@ -10,7 +10,9 @@ description = "Beava v2 server — single-binary real-time feature server (fraud
 [features]
 default = []
 testing = ["dep:reqwest"]
-hand-rolled-runtime = ["dep:beava-runtime-core"]
+# Feature flag per Plan 18-01 Decision 1: hand-rolled event loop is opt-in
+# until Plan 18-07 removes tokio data-plane entirely.
+hand-rolled-runtime = []
 
 [[bin]]
 name = "beava"
@@ -102,7 +104,7 @@ path = "src/lib.rs"
 [dependencies]
 beava-core = { path = "../beava-core" }
 beava-persistence = { path = "../beava-persistence" }
-beava-runtime-core = { path = "../beava-runtime-core", optional = true }
+beava-runtime-core = { path = "../beava-runtime-core" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
