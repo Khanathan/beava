@@ -180,7 +180,10 @@ async fn test_push_and_get_unknown_feature_returns_null_and_warning() {
     let status = resp.status().as_u16();
     let rb: serde_json::Value = resp.json().await.expect("json");
 
-    assert_eq!(status, 200, "unknown feature should still return 200; got={rb:#}");
+    assert_eq!(
+        status, 200,
+        "unknown feature should still return 200; got={rb:#}"
+    );
     assert_eq!(
         rb["features"]["cnt"],
         json!(1),
@@ -190,9 +193,13 @@ async fn test_push_and_get_unknown_feature_returns_null_and_warning() {
         rb["features"]["bogus_feature"].is_null(),
         "unknown feature must be null; got: {rb:#}"
     );
-    let warnings = rb["warnings"].as_array().expect("warnings array must be present");
+    let warnings = rb["warnings"]
+        .as_array()
+        .expect("warnings array must be present");
     assert!(
-        warnings.iter().any(|w| w.as_str().unwrap_or("").contains("bogus_feature")),
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap_or("").contains("bogus_feature")),
         "warnings must mention bogus_feature; got: {rb:#}"
     );
 
@@ -227,7 +234,10 @@ async fn test_push_sync_and_get_returns_200() {
     let status = resp.status().as_u16();
     let rb: serde_json::Value = resp.json().await.expect("json");
 
-    assert_eq!(status, 200, "/push-sync-and-get must return 200; got={rb:#}");
+    assert_eq!(
+        status, 200,
+        "/push-sync-and-get must return 200; got={rb:#}"
+    );
     assert_eq!(
         rb["features"]["sync_cnt"],
         json!(1),

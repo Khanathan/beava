@@ -29,13 +29,8 @@ fn wal_writer_advances_written_and_synced_lsn() {
 
     // tick_ms = 10 for fast test; default is 5 ms in production.
     let tick_ms: u64 = 10;
-    let writer = WalWriter::new(
-        dir.path(),
-        Arc::clone(&ring),
-        Arc::clone(&lsn),
-        tick_ms,
-    )
-    .expect("WalWriter::new should succeed on local FS");
+    let writer = WalWriter::new(dir.path(), Arc::clone(&ring), Arc::clone(&lsn), tick_ms)
+        .expect("WalWriter::new should succeed on local FS");
 
     let _handle = writer.spawn();
 
@@ -168,7 +163,11 @@ fn dispatch_push_periodic_returns_committed_lsn() {
     match resp {
         GlueResponse::PushAck { ack_lsn, .. } => {
             assert!(ack_lsn > 0, "ack_lsn should be > 0 after WAL append");
-            assert_eq!(ack_lsn, lsn.committed(), "ack_lsn should equal committed_lsn");
+            assert_eq!(
+                ack_lsn,
+                lsn.committed(),
+                "ack_lsn should equal committed_lsn"
+            );
         }
         other => panic!("expected PushAck, got {other:?}"),
     }

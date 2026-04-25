@@ -7,7 +7,7 @@
 //! RED state: `WalBufferRing` / `WalBuffer` stubs exist but lack any
 //! real logic. All tests will fail at runtime until Task 2.2 GREEN.
 
-use beava_runtime_core::wal_buffer::{BUF_STATE_ACTIVE, BUF_STATE_FREE, WalBufferRing};
+use beava_runtime_core::wal_buffer::{WalBufferRing, BUF_STATE_ACTIVE, BUF_STATE_FREE};
 use beava_runtime_core::wal_lsn::WalLsn;
 use std::sync::Arc;
 
@@ -98,7 +98,10 @@ fn seal_active_transitions_state() {
 
     ring.append(b"some data");
     let sealed = ring.seal_active();
-    assert!(sealed.is_some(), "seal_active should return the sealed buffer");
+    assert!(
+        sealed.is_some(),
+        "seal_active should return the sealed buffer"
+    );
 
     let (active, free, sealed_count) = ring.buffer_state_counts();
     assert_eq!(active, 1, "should still have 1 active buffer after seal");
@@ -115,8 +118,16 @@ fn sealed_buffer_has_correct_lsn_range() {
     ring.append(b"XXXX"); // 4 bytes → committed_lsn = 4; lsn_lo=0, lsn_hi=4
     let sealed = ring.seal_active().expect("seal_active returned None");
 
-    assert_eq!(sealed.lsn_lo(), 0, "sealed buffer lsn_lo should be 0 (start of segment)");
-    assert_eq!(sealed.lsn_hi(), 4, "sealed buffer lsn_hi should equal committed_lsn");
+    assert_eq!(
+        sealed.lsn_lo(),
+        0,
+        "sealed buffer lsn_lo should be 0 (start of segment)"
+    );
+    assert_eq!(
+        sealed.lsn_hi(),
+        4,
+        "sealed buffer lsn_hi should equal committed_lsn"
+    );
 }
 
 /// Appending after a seal goes into the new active buffer; the old sealed
@@ -131,8 +142,12 @@ fn append_after_seal_goes_to_new_active() {
     assert_eq!(sealed.lsn_hi(), 5);
 
     ring.append(b"SECOND"); // 6 bytes → committed_lsn=11
-    // Active buffer position should now reflect only the second append.
-    assert_eq!(ring.active_pos(), 6, "new active buffer should have 6 bytes");
+                            // Active buffer position should now reflect only the second append.
+    assert_eq!(
+        ring.active_pos(),
+        6,
+        "new active buffer should have 6 bytes"
+    );
     assert_eq!(lsn.committed(), 11, "committed_lsn should be cumulative");
 }
 
@@ -166,7 +181,11 @@ fn return_to_free_restores_free_count() {
     ring.return_to_free(sealed_buf);
 
     let (_, free_after, _) = ring.buffer_state_counts();
-    assert_eq!(free_after, free_before + 1, "free count should increase after return_to_free");
+    assert_eq!(
+        free_after,
+        free_before + 1,
+        "free count should increase after return_to_free"
+    );
 }
 
 // ── buffer-full → swap ────────────────────────────────────────────────────────
@@ -236,7 +255,10 @@ fn append_blocks_on_no_free_buffers() {
     // Note: after popping, buffers are FLUSHING, so they count in sealed bucket.
     // There may be 0 active since sealing buffer 2 left active_idx pointing
     // to a sealed buffer.
-    assert_eq!(free, 0, "expected 0 free buffers to set up backpressure; got {free}");
+    assert_eq!(
+        free, 0,
+        "expected 0 free buffers to set up backpressure; got {free}"
+    );
 
     // Spawn unblock thread: after 30 ms, return one buffer to free.
     let ring_clone = Arc::clone(&ring);

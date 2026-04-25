@@ -152,12 +152,16 @@ pub async fn execute_push_and_get(
             ack_lsn = ack.ack_lsn;
             updated_registry_version = ack.registry_version;
         }
-        PushOutcome::IdempotentReplay { cached_response_bytes } => {
+        PushOutcome::IdempotentReplay {
+            cached_response_bytes,
+        } => {
             // Idempotent replay: parse ack_lsn from cached bytes; still run query.
             let cached: serde_json::Value =
                 serde_json::from_slice(&cached_response_bytes).unwrap_or_default();
             ack_lsn = cached["ack_lsn"].as_u64().unwrap_or(0);
-            updated_registry_version = cached["registry_version"].as_u64().unwrap_or(registry_version as u64) as u32;
+            updated_registry_version = cached["registry_version"]
+                .as_u64()
+                .unwrap_or(registry_version as u64) as u32;
         }
         PushOutcome::Error {
             http_status,
@@ -177,10 +181,7 @@ pub async fn execute_push_and_get(
     // Query features. The push has already applied — state_tables contains
     // the just-pushed event. Lock scope spans the entire query batch.
     let query_time_ms = {
-        let raw = app
-            .dev_agg
-            .max_event_time_ms
-            .load(Ordering::Acquire);
+        let raw = app.dev_agg.max_event_time_ms.load(Ordering::Acquire);
         if raw == 0 {
             0i64
         } else {
@@ -212,7 +213,8 @@ pub async fn execute_push_and_get(
                     };
 
                     // Match entity_key map to group_key order.
-                    let entity_key = build_entity_key(&req.query.entity_key, &descriptor.group_keys);
+                    let entity_key =
+                        build_entity_key(&req.query.entity_key, &descriptor.group_keys);
 
                     let val = tables
                         .get(&agg_node)
@@ -242,10 +244,7 @@ pub async fn execute_push_and_get(
 
 /// Build an `EntityKey` from the query's `entity_key` map using the descriptor's
 /// group_keys ordering. Missing keys default to empty string.
-fn build_entity_key(
-    key_map: &BTreeMap<String, String>,
-    group_keys: &[String],
-) -> EntityKey {
+fn build_entity_key(key_map: &BTreeMap<String, String>, group_keys: &[String]) -> EntityKey {
     // EntityKey is Vec<(String, String)> — pairs of (group_key_name, value).
     let pairs: Vec<(String, String)> = group_keys
         .iter()
@@ -278,10 +277,7 @@ pub async fn push_sync_and_get_handler(
 /// Build the push-and-get sub-router (Phase 12.5 / Plan 18-07).
 pub fn push_and_get_router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route(
-            "/push-and-get/:event_name",
-            post(push_and_get_handler),
-        )
+        .route("/push-and-get/:event_name", post(push_and_get_handler))
         .route(
             "/push-sync-and-get/:event_name",
             post(push_sync_and_get_handler),

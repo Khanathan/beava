@@ -185,7 +185,13 @@ fn parse_v2_records(data: &[u8]) -> Vec<V2Record> {
         let body = data[pos..pos + body_len].to_vec();
         pos += body_len;
 
-        records.push(V2Record { body_format, rv, et_ms, event_name, body });
+        records.push(V2Record {
+            body_format,
+            rv,
+            et_ms,
+            event_name,
+            body,
+        });
     }
 
     records
@@ -280,7 +286,9 @@ pub fn replay_handrolled_wal_dir(
 
             dev_agg.next_event_id.fetch_max(lsn, Ordering::Relaxed);
             if rec.et_ms > 0 {
-                dev_agg.max_event_time_ms.fetch_max(rec.et_ms as u64, Ordering::Relaxed);
+                dev_agg
+                    .max_event_time_ms
+                    .fetch_max(rec.et_ms as u64, Ordering::Relaxed);
             }
             outcome.replay_event_count += 1;
             outcome.last_lsn = lsn;

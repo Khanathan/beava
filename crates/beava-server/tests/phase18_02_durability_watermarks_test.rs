@@ -85,9 +85,8 @@ fn wait_for_synced_wakes_when_synced_advances() {
 
     // Spawn a waiter thread that calls wait_for_synced.
     let lsn_clone = Arc::clone(&lsn);
-    let waiter = std::thread::spawn(move || {
-        lsn_clone.wait_for_synced(request_lsn, Duration::from_secs(5))
-    });
+    let waiter =
+        std::thread::spawn(move || lsn_clone.wait_for_synced(request_lsn, Duration::from_secs(5)));
 
     // Simulate writer thread: write → mark_written, fsync → mark_synced.
     std::thread::sleep(Duration::from_millis(20));
@@ -96,7 +95,10 @@ fn wait_for_synced_wakes_when_synced_advances() {
 
     // Waiter must unblock within a reasonable window.
     let result = waiter.join().expect("waiter panicked");
-    assert!(result.is_ok(), "wait_for_synced timed out unexpectedly: {result:?}");
+    assert!(
+        result.is_ok(),
+        "wait_for_synced timed out unexpectedly: {result:?}"
+    );
 }
 
 /// A `wait_for_synced` call returns `Err` if the timeout fires before synced
@@ -126,14 +128,12 @@ fn multiple_waiters_wake_at_correct_lsn() {
     let lsn_b = lsn.record(200);
 
     let lsn_a_clone = Arc::clone(&lsn);
-    let waiter_a = std::thread::spawn(move || {
-        lsn_a_clone.wait_for_synced(lsn_a, Duration::from_secs(5))
-    });
+    let waiter_a =
+        std::thread::spawn(move || lsn_a_clone.wait_for_synced(lsn_a, Duration::from_secs(5)));
 
     let lsn_b_clone = Arc::clone(&lsn);
-    let waiter_b = std::thread::spawn(move || {
-        lsn_b_clone.wait_for_synced(lsn_b, Duration::from_secs(5))
-    });
+    let waiter_b =
+        std::thread::spawn(move || lsn_b_clone.wait_for_synced(lsn_b, Duration::from_secs(5)));
 
     std::thread::sleep(Duration::from_millis(20));
 

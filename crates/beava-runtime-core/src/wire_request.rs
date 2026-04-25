@@ -20,14 +20,30 @@ pub enum WireRequest {
     /// OP_PUSH (0x0010) — fire-and-forget event push.
     /// `event_name` is the stream name; `body` is the raw payload bytes (JSON or MsgPack).
     /// `body_format` indicates the encoding: `beava_core::wire::CT_JSON` or `CT_MSGPACK`.
-    TcpPush { event_name: String, body: Bytes, body_format: u8 },
+    TcpPush {
+        event_name: String,
+        body: Bytes,
+        body_format: u8,
+    },
     /// HTTP POST /push/:event — same semantic as TcpPush but via HTTP.
     /// Always `CT_JSON` format (HTTP path carries JSON bodies only).
-    HttpPush { event_name: String, body: Bytes, body_format: u8 },
+    HttpPush {
+        event_name: String,
+        body: Bytes,
+        body_format: u8,
+    },
     /// HTTP POST /push-sync/:event — synchronous push (await fsync).
-    HttpPushSync { event_name: String, body: Bytes, body_format: u8 },
+    HttpPushSync {
+        event_name: String,
+        body: Bytes,
+        body_format: u8,
+    },
     /// HTTP POST /push-batch/:event — batched push.
-    HttpPushBatch { event_name: String, body: Bytes, body_format: u8 },
+    HttpPushBatch {
+        event_name: String,
+        body: Bytes,
+        body_format: u8,
+    },
     /// HTTP POST /get — batch feature read.
     HttpGet { body: Bytes },
     /// HTTP GET /get/:feature/:key — single feature read.
@@ -63,7 +79,11 @@ mod tests {
             body_format: CT_MSGPACK,
         };
         match req {
-            WireRequest::TcpPush { event_name, body: b, body_format } => {
+            WireRequest::TcpPush {
+                event_name,
+                body: b,
+                body_format,
+            } => {
                 assert_eq!(event_name, "Txn");
                 assert_eq!(b, body);
                 assert_eq!(body_format, CT_MSGPACK);
@@ -83,7 +103,11 @@ mod tests {
             body_format: CT_JSON,
         };
         match req {
-            WireRequest::HttpPush { event_name: _, body: _, body_format } => {
+            WireRequest::HttpPush {
+                event_name: _,
+                body: _,
+                body_format,
+            } => {
                 assert_eq!(body_format, CT_JSON);
             }
             other => panic!("expected HttpPush, got {other:?}"),

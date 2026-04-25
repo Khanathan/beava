@@ -449,9 +449,7 @@ async fn delete_handler(
     // 7. Mark the entry retracted.
     {
         let mut idx = app.dev_agg.event_id_index.lock();
-        if let Some(EventIdEntry::TableWrite { retracted, .. }) =
-            idx.get_mut(&target_event_id)
-        {
+        if let Some(EventIdEntry::TableWrite { retracted, .. }) = idx.get_mut(&target_event_id) {
             *retracted = true;
         }
     }

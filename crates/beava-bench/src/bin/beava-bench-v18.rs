@@ -182,8 +182,9 @@ fn make_event_payload(pipeline: &PipelineConfig, seq: u64, rng: &mut rand::rngs:
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("beava_bench_v18=info,warn")),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new("beava_bench_v18=info,warn")
+            }),
         )
         .init();
 
@@ -230,7 +231,9 @@ async fn main() -> Result<()> {
     let snap_path = snap_dir.path().to_path_buf();
     let serve_task = tokio::spawn(async move {
         sv18.serve_with_dirs(
-            async move { let _ = shutdown_rx.await; },
+            async move {
+                let _ = shutdown_rx.await;
+            },
             wal_path,
             snap_path,
         )
@@ -330,8 +333,9 @@ async fn run_workload(
     let stop = Arc::new(AtomicBool::new(false));
     let pushes = Arc::new(AtomicU64::new(0));
     let errors = Arc::new(AtomicU64::new(0));
-    let push_hist: Arc<AsyncMutex<Histogram<u64>>> =
-        Arc::new(AsyncMutex::new(Histogram::new_with_bounds(1, 60_000_000, 3)?));
+    let push_hist: Arc<AsyncMutex<Histogram<u64>>> = Arc::new(AsyncMutex::new(
+        Histogram::new_with_bounds(1, 60_000_000, 3)?,
+    ));
 
     let deadline = Instant::now() + Duration::from_secs(cli.duration_secs);
 
@@ -365,8 +369,9 @@ async fn run_workload(
 
     // Batch-get latency sampler.
     let stop_get = Arc::clone(&stop);
-    let get_hist: Arc<AsyncMutex<Histogram<u64>>> =
-        Arc::new(AsyncMutex::new(Histogram::new_with_bounds(1, 60_000_000, 3)?));
+    let get_hist: Arc<AsyncMutex<Histogram<u64>>> = Arc::new(AsyncMutex::new(
+        Histogram::new_with_bounds(1, 60_000_000, 3)?,
+    ));
     let get_hist_clone = Arc::clone(&get_hist);
     let get_samples_counter = Arc::new(AtomicU64::new(0));
     let get_samples_clone = Arc::clone(&get_samples_counter);
@@ -705,5 +710,9 @@ fn git_short_sha() -> Option<String> {
         return None;
     }
     let s = String::from_utf8(output.stdout).ok()?.trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }

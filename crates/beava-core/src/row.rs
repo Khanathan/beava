@@ -303,9 +303,7 @@ impl<'de> serde::Deserialize<'de> for Row {
                 let mut row = Row::new();
                 // Deserialize each value as serde_json::Value (supports deserialize_any
                 // from both serde_json and rmp_serde), then convert to beava Value.
-                while let Some((key, jv)) =
-                    access.next_entry::<String, serde_json::Value>()?
-                {
+                while let Some((key, jv)) = access.next_entry::<String, serde_json::Value>()? {
                     row = row.with_field(&key, json_value_to_beava_value(jv));
                 }
                 Ok(row)

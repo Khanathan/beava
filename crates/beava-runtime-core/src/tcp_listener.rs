@@ -155,7 +155,9 @@ pub fn parse_wire_request(
                                     }
                                 }
                                 _ => WireRequest::ParseError {
-                                    reason: "msgpack envelope missing 'event' (string) or 'body' fields".into(),
+                                    reason:
+                                        "msgpack envelope missing 'event' (string) or 'body' fields"
+                                            .into(),
                                 },
                             }
                         }
@@ -207,9 +209,16 @@ mod tests {
             .expect("no error")
             .expect("complete frame");
         match req {
-            WireRequest::TcpPush { event_name, body, body_format } => {
+            WireRequest::TcpPush {
+                event_name,
+                body,
+                body_format,
+            } => {
                 assert_eq!(event_name, "Txn");
-                assert_eq!(body_format, CT_JSON, "JSON frame should produce CT_JSON body_format");
+                assert_eq!(
+                    body_format, CT_JSON,
+                    "JSON frame should produce CT_JSON body_format"
+                );
                 let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
                 assert_eq!(v["amount"], 99);
             }

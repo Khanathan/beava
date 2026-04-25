@@ -14,8 +14,8 @@ use beava_core::row::{Row, Value};
 fn test_parse_json_directly_into_row() {
     let json_bytes = br#"{"user_id":"u1","amount":42.5,"count":7,"active":true}"#;
 
-    let row: Row = serde_json::from_slice(json_bytes)
-        .expect("serde_json::from_slice::<Row> should succeed");
+    let row: Row =
+        serde_json::from_slice(json_bytes).expect("serde_json::from_slice::<Row> should succeed");
 
     assert_eq!(row.get("user_id"), Some(&Value::Str("u1".to_string())));
     assert_eq!(row.get("count"), Some(&Value::I64(7)));
@@ -41,11 +41,16 @@ fn test_parse_msgpack_directly_into_row() {
         count: i64,
         active: bool,
     }
-    let body = Body { user_id: "u1", amount: 42.5, count: 7, active: true };
+    let body = Body {
+        user_id: "u1",
+        amount: 42.5,
+        count: 7,
+        active: true,
+    };
     let msgpack_bytes = rmp_serde::to_vec_named(&body).expect("msgpack serialize");
 
-    let row: Row = rmp_serde::from_slice(&msgpack_bytes)
-        .expect("rmp_serde::from_slice::<Row> should succeed");
+    let row: Row =
+        rmp_serde::from_slice(&msgpack_bytes).expect("rmp_serde::from_slice::<Row> should succeed");
 
     assert_eq!(row.get("user_id"), Some(&Value::Str("u1".to_string())));
     assert_eq!(row.get("count"), Some(&Value::I64(7)));

@@ -49,7 +49,10 @@ pub enum GlueResponse {
     /// Push idempotent-replay; identical to the original ACK.
     PushReplay { registry_version: u32 },
     /// Push rejected (unknown event, schema failure, etc.)
-    PushError { code: &'static str, registry_version: u32 },
+    PushError {
+        code: &'static str,
+        registry_version: u32,
+    },
     /// Feature query result (JSON-encoded `{"value": ...}` or batch result).
     QueryResult { body: Bytes },
     /// Feature not found or key not found.
@@ -71,10 +74,7 @@ pub enum GlueResponse {
 /// can await directly.
 ///
 /// # TODO(phase-18-followup): replace tokio WAL calls with sync Write
-pub async fn dispatch_wire_request(
-    app: &Arc<AppState>,
-    req: WireRequest,
-) -> GlueResponse {
+pub async fn dispatch_wire_request(app: &Arc<AppState>, req: WireRequest) -> GlueResponse {
     match req {
         // ─── Ping ─────────────────────────────────────────────────────────────
         WireRequest::Ping => GlueResponse::Pong {
@@ -93,8 +93,7 @@ pub async fn dispatch_wire_request(
                 }
             };
             let outcome =
-                execute_register_with_wal(&app.dev_agg.registry, reg_payload, &app.wal_sink)
-                    .await;
+                execute_register_with_wal(&app.dev_agg.registry, reg_payload, &app.wal_sink).await;
             match outcome {
                 RegisterOutcome::Success { version, .. } => GlueResponse::RegisterOk { version },
                 RegisterOutcome::EmptyPayload { version } => GlueResponse::RegisterOk { version },
@@ -119,15 +118,20 @@ pub async fn dispatch_wire_request(
         }
 
         // ─── TCP push ─────────────────────────────────────────────────────────
-        WireRequest::TcpPush { event_name, body, .. } | WireRequest::HttpPush { event_name, body, .. } => {
-            dispatch_push(app, &event_name, body, SyncMode::Periodic).await
+        WireRequest::TcpPush {
+            event_name, body, ..
         }
+        | WireRequest::HttpPush {
+            event_name, body, ..
+        } => dispatch_push(app, &event_name, body, SyncMode::Periodic).await,
 
-        WireRequest::HttpPushSync { event_name, body, .. } => {
-            dispatch_push(app, &event_name, body, SyncMode::PerEvent).await
-        }
+        WireRequest::HttpPushSync {
+            event_name, body, ..
+        } => dispatch_push(app, &event_name, body, SyncMode::PerEvent).await,
 
-        WireRequest::HttpPushBatch { event_name, body, .. } => {
+        WireRequest::HttpPushBatch {
+            event_name, body, ..
+        } => {
             // Batch push: body is a JSON array of event objects.
             // TODO(phase-18-followup): implement batch dispatch properly.
             // For now, treat as a single push for scaffold correctness.
@@ -135,14 +139,10 @@ pub async fn dispatch_wire_request(
         }
 
         // ─── GET single feature/key ───────────────────────────────────────────
-        WireRequest::HttpGetSingle { feature, key } => {
-            dispatch_get_single(app, &feature, &key)
-        }
+        WireRequest::HttpGetSingle { feature, key } => dispatch_get_single(app, &feature, &key),
 
         // ─── GET batch ────────────────────────────────────────────────────────
-        WireRequest::HttpGet { body } => {
-            dispatch_get_batch(app, &body)
-        }
+        WireRequest::HttpGet { body } => dispatch_get_batch(app, &body),
 
         // ─── Upsert / delete / retract ────────────────────────────────────────
         WireRequest::HttpUpsert { .. }
@@ -152,9 +152,7 @@ pub async fn dispatch_wire_request(
             GlueResponse::Unsupported
         }
 
-        WireRequest::Unknown { .. } | WireRequest::ParseError { .. } => {
-            GlueResponse::Unsupported
-        }
+        WireRequest::Unknown { .. } | WireRequest::ParseError { .. } => GlueResponse::Unsupported,
     }
 }
 
@@ -191,7 +189,10 @@ fn dispatch_get_single(app: &Arc<AppState>, feature: &str, key: &str) -> GlueRes
     let registry = &app.dev_agg.registry;
 
     let query_time_ms = {
-        let raw = app.dev_agg.max_event_time_ms.load(std::sync::atomic::Ordering::Acquire);
+        let raw = app
+            .dev_agg
+            .max_event_time_ms
+            .load(std::sync::atomic::Ordering::Acquire);
         if raw == 0 {
             // Fall back to wall clock when no events have been pushed yet.
             Instant::now().elapsed().as_millis() as i64
@@ -205,11 +206,19 @@ fn dispatch_get_single(app: &Arc<AppState>, feature: &str, key: &str) -> GlueRes
     if let Some((agg_node, feature_idx)) = registry.resolve_feature(feature) {
         let descriptor = match registry.compiled_aggregation(&agg_node) {
             Some(d) => d,
-            None => return GlueResponse::InternalError { reason: "internal_error".to_owned() },
+            None => {
+                return GlueResponse::InternalError {
+                    reason: "internal_error".to_owned(),
+                }
+            }
         };
         let entity_key = match parse_entity_key(key, &descriptor.group_keys) {
             Some(k) => k,
-            None => return GlueResponse::QueryNotFound { code: "key_parse_failure" },
+            None => {
+                return GlueResponse::QueryNotFound {
+                    code: "key_parse_failure",
+                }
+            }
         };
         let tables = app.dev_agg.state_tables.lock();
         let value_opt = tables
@@ -219,11 +228,17 @@ fn dispatch_get_single(app: &Arc<AppState>, feature: &str, key: &str) -> GlueRes
             Some(v) => {
                 let json_val = serde_json::json!({ "value": value_to_json(v) });
                 match serde_json::to_vec(&json_val) {
-                    Ok(b) => GlueResponse::QueryResult { body: Bytes::from(b) },
-                    Err(e) => GlueResponse::InternalError { reason: e.to_string() },
+                    Ok(b) => GlueResponse::QueryResult {
+                        body: Bytes::from(b),
+                    },
+                    Err(e) => GlueResponse::InternalError {
+                        reason: e.to_string(),
+                    },
                 }
             }
-            None => GlueResponse::QueryNotFound { code: "key_not_found" },
+            None => GlueResponse::QueryNotFound {
+                code: "key_not_found",
+            },
         };
     }
 
@@ -232,12 +247,20 @@ fn dispatch_get_single(app: &Arc<AppState>, feature: &str, key: &str) -> GlueRes
     if let Some(descriptor) = registry.compiled_aggregation(feature) {
         let entity_key = match parse_entity_key(key, &descriptor.group_keys) {
             Some(k) => k,
-            None => return GlueResponse::QueryNotFound { code: "key_parse_failure" },
+            None => {
+                return GlueResponse::QueryNotFound {
+                    code: "key_parse_failure",
+                }
+            }
         };
         let tables = app.dev_agg.state_tables.lock();
         let table = match tables.get(feature) {
             Some(t) => t,
-            None => return GlueResponse::QueryNotFound { code: "key_not_found" },
+            None => {
+                return GlueResponse::QueryNotFound {
+                    code: "key_not_found",
+                }
+            }
         };
         let mut result = serde_json::Map::new();
         for (idx, named_op) in descriptor.features.iter().enumerate() {
@@ -246,15 +269,23 @@ fn dispatch_get_single(app: &Arc<AppState>, feature: &str, key: &str) -> GlueRes
             }
         }
         if result.is_empty() {
-            return GlueResponse::QueryNotFound { code: "key_not_found" };
+            return GlueResponse::QueryNotFound {
+                code: "key_not_found",
+            };
         }
         return match serde_json::to_vec(&serde_json::Value::Object(result)) {
-            Ok(b) => GlueResponse::QueryResult { body: Bytes::from(b) },
-            Err(e) => GlueResponse::InternalError { reason: e.to_string() },
+            Ok(b) => GlueResponse::QueryResult {
+                body: Bytes::from(b),
+            },
+            Err(e) => GlueResponse::InternalError {
+                reason: e.to_string(),
+            },
         };
     }
 
-    GlueResponse::QueryNotFound { code: "feature_not_found" }
+    GlueResponse::QueryNotFound {
+        code: "feature_not_found",
+    }
 }
 
 /// Sync wrapper for `dispatch_get_single` — called from `ApplyShard` on the apply thread.
@@ -280,14 +311,20 @@ fn dispatch_get_batch(_app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
     let _req: BatchGetBody = match serde_json::from_slice(body) {
         Ok(r) => r,
         Err(e) => {
-            return GlueResponse::InternalError { reason: e.to_string() };
+            return GlueResponse::InternalError {
+                reason: e.to_string(),
+            };
         }
     };
     // Stub return — Plan 18-01 only requires GetSingle for the integration test.
     let empty = serde_json::json!({ "result": {} });
     match serde_json::to_vec(&empty) {
-        Ok(b) => GlueResponse::QueryResult { body: Bytes::from(b) },
-        Err(e) => GlueResponse::InternalError { reason: e.to_string() },
+        Ok(b) => GlueResponse::QueryResult {
+            body: Bytes::from(b),
+        },
+        Err(e) => GlueResponse::InternalError {
+            reason: e.to_string(),
+        },
     }
 }
 

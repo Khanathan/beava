@@ -84,7 +84,10 @@ async fn test_upsert_route_works_old_route_404() {
 
     // Old route: POST /push-table/users must return 404.
     let old_push_resp = ts
-        .post_json("/push-table/users", &json!({"user_id": "u2", "country": "CA"}))
+        .post_json(
+            "/push-table/users",
+            &json!({"user_id": "u2", "country": "CA"}),
+        )
         .await
         .expect("old push-table request");
     let old_push_status = old_push_resp.status().as_u16();
@@ -122,7 +125,10 @@ async fn test_upsert_stores_row_readable_via_table_get() {
 
     // Upsert a row.
     let upsert_resp = ts
-        .post_json("/upsert/profiles", &json!({"user_id": "alice", "country": "US"}))
+        .post_json(
+            "/upsert/profiles",
+            &json!({"user_id": "alice", "country": "US"}),
+        )
         .await
         .expect("upsert");
     assert_eq!(
@@ -161,7 +167,10 @@ async fn test_delete_removes_upserted_row() {
 
     // Upsert then delete.
     let upsert_resp = ts
-        .post_json("/upsert/accounts", &json!({"user_id": "bob", "country": "GB"}))
+        .post_json(
+            "/upsert/accounts",
+            &json!({"user_id": "bob", "country": "GB"}),
+        )
         .await
         .expect("upsert");
     assert_eq!(upsert_resp.status().as_u16(), 200, "upsert must succeed");

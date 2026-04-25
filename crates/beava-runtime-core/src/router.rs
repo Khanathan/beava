@@ -45,7 +45,9 @@ impl Router {
         // /push/:event_name
         if let Some(rest) = path.strip_prefix("/push/") {
             return if method == "POST" {
-                Route::Push { event_name: rest.to_owned() }
+                Route::Push {
+                    event_name: rest.to_owned(),
+                }
             } else {
                 Route::MethodNotAllowed
             };
@@ -53,7 +55,9 @@ impl Router {
         // /push-sync/:event_name
         if let Some(rest) = path.strip_prefix("/push-sync/") {
             return if method == "POST" {
-                Route::PushSync { event_name: rest.to_owned() }
+                Route::PushSync {
+                    event_name: rest.to_owned(),
+                }
             } else {
                 Route::MethodNotAllowed
             };
@@ -61,7 +65,9 @@ impl Router {
         // /push-batch/:event_name
         if let Some(rest) = path.strip_prefix("/push-batch/") {
             return if method == "POST" {
-                Route::PushBatch { event_name: rest.to_owned() }
+                Route::PushBatch {
+                    event_name: rest.to_owned(),
+                }
             } else {
                 Route::MethodNotAllowed
             };
@@ -91,7 +97,9 @@ impl Router {
         // /upsert/:table
         if let Some(rest) = path.strip_prefix("/upsert/") {
             return if method == "POST" {
-                Route::Upsert { table: rest.to_owned() }
+                Route::Upsert {
+                    table: rest.to_owned(),
+                }
             } else {
                 Route::MethodNotAllowed
             };
@@ -99,7 +107,9 @@ impl Router {
         // /delete/:table
         if let Some(rest) = path.strip_prefix("/delete/") {
             return if method == "POST" {
-                Route::Delete { table: rest.to_owned() }
+                Route::Delete {
+                    table: rest.to_owned(),
+                }
             } else {
                 Route::MethodNotAllowed
             };
@@ -133,7 +143,9 @@ mod tests {
     fn route_push_post() {
         assert_eq!(
             Router::route("POST", "/push/Transaction"),
-            Route::Push { event_name: "Transaction".to_owned() }
+            Route::Push {
+                event_name: "Transaction".to_owned()
+            }
         );
     }
 
@@ -167,7 +179,9 @@ mod tests {
     fn route_trailing_slash_normalised() {
         assert_eq!(
             Router::route("POST", "/push/Txn/"),
-            Route::Push { event_name: "Txn".to_owned() }
+            Route::Push {
+                event_name: "Txn".to_owned()
+            }
         );
     }
 }

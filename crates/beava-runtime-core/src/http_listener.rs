@@ -61,9 +61,7 @@ const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 /// - `Transfer-Encoding: chunked` body framing
 /// - `Connection: keep-alive` / `Connection: close` detection
 /// - Pipelining (call repeatedly until `Ok(None)`)
-pub fn parse_http_request(
-    buf: &mut BytesMut,
-) -> Result<Option<(WireRequest, bool)>, ParseError> {
+pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, bool)>, ParseError> {
     // httparse needs a slice of Header slots pre-allocated on the stack/heap.
     let mut headers = vec![httparse::EMPTY_HEADER; MAX_HEADERS];
     let mut req = httparse::Request::new(&mut headers);
@@ -93,7 +91,9 @@ pub fn parse_http_request(
         let name_lower = h.name.to_ascii_lowercase();
         match name_lower.as_str() {
             "connection" => {
-                let val = std::str::from_utf8(h.value).unwrap_or("").to_ascii_lowercase();
+                let val = std::str::from_utf8(h.value)
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
                 if val.contains("close") {
                     keep_alive = false;
                 } else if val.contains("keep-alive") {
@@ -110,7 +110,9 @@ pub fn parse_http_request(
                 );
             }
             "transfer-encoding" => {
-                let val = std::str::from_utf8(h.value).unwrap_or("").to_ascii_lowercase();
+                let val = std::str::from_utf8(h.value)
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
                 if val.contains("chunked") {
                     is_chunked = true;
                 }
@@ -124,7 +126,10 @@ pub fn parse_http_request(
         // Parse chunked encoding from buf starting at header_end.
         let body_start = header_end;
         match parse_chunked_body(&buf[body_start..]) {
-            ChunkedResult::Complete { body, bytes_consumed } => {
+            ChunkedResult::Complete {
+                body,
+                bytes_consumed,
+            } => {
                 // We have a complete chunked body.
                 let total = body_start + bytes_consumed;
                 // Advance the buffer past headers + body.
@@ -159,9 +164,21 @@ pub fn parse_http_request(
     // HTTP always carries JSON bodies (content_type = CT_JSON = 0x01).
     use beava_core::wire::CT_JSON;
     let wire_req = match route {
-        Route::Push { event_name } => WireRequest::HttpPush { event_name, body, body_format: CT_JSON },
-        Route::PushSync { event_name } => WireRequest::HttpPushSync { event_name, body, body_format: CT_JSON },
-        Route::PushBatch { event_name } => WireRequest::HttpPushBatch { event_name, body, body_format: CT_JSON },
+        Route::Push { event_name } => WireRequest::HttpPush {
+            event_name,
+            body,
+            body_format: CT_JSON,
+        },
+        Route::PushSync { event_name } => WireRequest::HttpPushSync {
+            event_name,
+            body,
+            body_format: CT_JSON,
+        },
+        Route::PushBatch { event_name } => WireRequest::HttpPushBatch {
+            event_name,
+            body,
+            body_format: CT_JSON,
+        },
         Route::Get => WireRequest::HttpGet { body },
         Route::GetSingle { feature, key } => WireRequest::HttpGetSingle { feature, key },
         Route::Upsert { table } => WireRequest::HttpUpsert { table, body },

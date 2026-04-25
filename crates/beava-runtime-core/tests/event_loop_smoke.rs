@@ -19,11 +19,11 @@ fn event_loop_new_constructs_and_returns() {
 //   2. Spawns a background thread that writes a OP_PING frame to the socket.
 //   3. Calls parse_tcp_frame() — asserts it returns WireRequest::Ping.
 
+use beava_core::wire::{encode_frame, Frame, CT_JSON, OP_PING};
 use beava_runtime_core::wire_request::WireRequest;
-use beava_core::wire::{encode_frame, Frame, OP_PING, CT_JSON};
 use bytes::BytesMut;
-use std::net::SocketAddr;
 use std::io::Write;
+use std::net::SocketAddr;
 
 #[test]
 fn tcp_listener_reads_ping_frame_produces_wire_request_ping() {
@@ -94,7 +94,11 @@ fn http_post_push_with_content_length_produces_http_push() {
     let (req, keep_alive) = result.expect("complete request");
     assert!(keep_alive, "keep-alive expected");
     match req {
-        WireRequest::HttpPush { event_name, body: b, .. } => {
+        WireRequest::HttpPush {
+            event_name,
+            body: b,
+            ..
+        } => {
             assert_eq!(event_name, "Transaction");
             let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
             assert_eq!(v["user_id"], "u1");
@@ -135,7 +139,11 @@ fn http_post_push_chunked_body_concatenated_correctly() {
     let result = parse_http_request(&mut buf).expect("parse ok");
     let (req, _keep_alive) = result.expect("complete request");
     match req {
-        WireRequest::HttpPush { event_name, body: b, .. } => {
+        WireRequest::HttpPush {
+            event_name,
+            body: b,
+            ..
+        } => {
             assert_eq!(event_name, "Evt");
             // Reassembled body should be `{"x":1}` (7 bytes)
             assert_eq!(&b[..], b"{\"x\":1}");
