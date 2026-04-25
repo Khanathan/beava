@@ -250,4 +250,150 @@ mod tests {
         assert_eq!(r2, WireRequest::Ping);
         assert_eq!(buf.len(), 0);
     }
+
+    // ─── Plan 18-10 Task 10.1 — parse_msgpack_envelope hand-rolled scanner ────
+
+    /// Helper: build a msgpack envelope `{event: "<name>", body: <body_json>}`.
+    /// Round-trips through `rmp_serde` so the bytes are real msgpack the SDK
+    /// produces.
+    fn build_msgpack_envelope(event_name: &str, body: &serde_json::Value) -> Vec<u8> {
+        use serde::Serialize;
+        #[derive(Serialize)]
+        struct Envelope<'a> {
+            event: &'a str,
+            body: &'a serde_json::Value,
+        }
+        rmp_serde::to_vec_named(&Envelope {
+            event: event_name,
+            body,
+        })
+        .expect("msgpack serialize envelope")
+    }
+
+    #[test]
+    fn parse_msgpack_envelope_happy() {
+        let body = serde_json::json!({"amount": 99, "ts": 1234567890i64});
+        let payload = build_msgpack_envelope("Txn", &body);
+        let (event, body_bytes) = parse_msgpack_envelope(&payload).expect("ok");
+        assert_eq!(event, "Txn");
+        // Body bytes round-trip through rmp_serde (they ARE the raw client bytes).
+        let body_val: serde_json::Value =
+            rmp_serde::from_slice(body_bytes).expect("body parses as msgpack");
+        assert_eq!(body_val["amount"], 99);
+        assert_eq!(body_val["ts"], 1234567890i64);
+    }
+
+    #[test]
+    fn parse_msgpack_envelope_nested_body() {
+        let body = serde_json::json!({
+            "amount": 99.95,
+            "tags": ["a", "b", "c"],
+            "meta": {"region": "us-east-1", "shard": 7}
+        });
+        let payload = build_msgpack_envelope("Order", &body);
+        let (event, body_bytes) = parse_msgpack_envelope(&payload).expect("ok");
+        assert_eq!(event, "Order");
+        let body_val: serde_json::Value =
+            rmp_serde::from_slice(body_bytes).expect("nested body parses");
+        assert_eq!(body_val["meta"]["region"], "us-east-1");
+        assert_eq!(body_val["tags"][1], "b");
+    }
+
+    #[test]
+    fn parse_msgpack_envelope_array_field() {
+        let body = serde_json::json!({"vals": [1i64, 2, 3, 4, 5]});
+        let payload = build_msgpack_envelope("Bulk", &body);
+        let (event, body_bytes) = parse_msgpack_envelope(&payload).expect("ok");
+        assert_eq!(event, "Bulk");
+        let body_val: serde_json::Value =
+            rmp_serde::from_slice(body_bytes).expect("array body parses");
+        assert_eq!(body_val["vals"][4], 5);
+    }
+
+    #[test]
+    fn parse_msgpack_envelope_truncated_returns_err() {
+        let body = serde_json::json!({"amount": 99});
+        let payload = build_msgpack_envelope("Txn", &body);
+        // Truncate to half the length — must return Err, not panic.
+        let truncated = &payload[..payload.len() / 2];
+        assert!(parse_msgpack_envelope(truncated).is_err());
+    }
+
+    #[test]
+    fn parse_msgpack_envelope_wrong_map_len() {
+        // Build a 3-key envelope (extra "id" field) — must reject.
+        let mut buf = Vec::new();
+        // 0x83 = fixmap of 3 entries
+        buf.push(0x83);
+        // key "event"
+        buf.push(0xa5);
+        buf.extend_from_slice(b"event");
+        // val "Txn"
+        buf.push(0xa3);
+        buf.extend_from_slice(b"Txn");
+        // key "body"
+        buf.push(0xa4);
+        buf.extend_from_slice(b"body");
+        // val empty fixmap
+        buf.push(0x80);
+        // key "id"
+        buf.push(0xa2);
+        buf.extend_from_slice(b"id");
+        // val "x"
+        buf.push(0xa1);
+        buf.extend_from_slice(b"x");
+        let r = parse_msgpack_envelope(&buf);
+        assert!(
+            r.is_err(),
+            "envelope with extra key should be rejected (map_len != 2)"
+        );
+    }
+
+    #[test]
+    fn parse_msgpack_envelope_missing_event_key() {
+        // 2-key map but neither key is "event"
+        let mut buf = Vec::new();
+        buf.push(0x82); // fixmap 2
+        buf.push(0xa3);
+        buf.extend_from_slice(b"foo");
+        buf.push(0xa1);
+        buf.extend_from_slice(b"x");
+        buf.push(0xa4);
+        buf.extend_from_slice(b"body");
+        buf.push(0x80); // empty fixmap body
+        let r = parse_msgpack_envelope(&buf);
+        assert!(r.is_err(), "envelope with missing 'event' key rejected");
+    }
+
+    #[test]
+    fn parse_msgpack_envelope_replaces_old_branch_in_parse_wire_request() {
+        // Backward compat: existing CT_MSGPACK frame parsing path still
+        // produces correct WireRequest::TcpPush — the implementation MUST
+        // route through the new hand-rolled path.
+        use beava_core::wire::{encode_frame, Frame, CT_MSGPACK, OP_PUSH};
+        let body_json = serde_json::json!({"amount": 99});
+        let envelope_bytes = build_msgpack_envelope("Txn", &body_json);
+        let frame = Frame::new(OP_PUSH, CT_MSGPACK, Bytes::from(envelope_bytes));
+        let mut buf = BytesMut::new();
+        encode_frame(&frame, &mut buf);
+
+        let req = parse_wire_request(&mut buf, 4 * 1024 * 1024)
+            .expect("no parse error")
+            .expect("complete frame");
+
+        match req {
+            WireRequest::TcpPush {
+                event_name,
+                body,
+                body_format,
+            } => {
+                assert_eq!(event_name, "Txn");
+                assert_eq!(body_format, CT_MSGPACK);
+                let v: serde_json::Value =
+                    rmp_serde::from_slice(&body).expect("body still valid msgpack");
+                assert_eq!(v["amount"], 99);
+            }
+            other => panic!("expected TcpPush, got {other:?}"),
+        }
+    }
 }
