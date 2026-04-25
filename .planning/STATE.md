@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Executing Phase 18
-stopped_at: Completed 18-02-PLAN.md (2026-04-25)
-last_updated: "2026-04-25T15:54:18.524Z"
+stopped_at: Completed 18-03-PLAN.md (2026-04-25)
+last_updated: "2026-04-25T16:06:27.480Z"
 progress:
   total_phases: 23
   completed_phases: 9
   total_plans: 87
-  completed_plans: 55
-  percent: 63
+  completed_plans: 56
+  percent: 64
 ---
 
 # State: Beava v2 — v0 OSS Launch
@@ -28,13 +28,13 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Current Focus
 
-**Phase 18 — Redis-shaped hand-rolled hot path. Plan 18-02 COMPLETE.**
+**Phase 18 — Redis-shaped hand-rolled hot path. Plan 18-03 COMPLETE.**
 
-Plan 18-02 landed 2026-04-25: lock-free 3-buffer WAL ring (`WalBuffer`/`WalBufferRing` with ACTIVE/SEALED/FLUSHING/FREE state machine), four-watermark LSN discipline (`WalLsn`: committed/written/synced), dedicated writer+fsync thread (`WalWriter` with O_APPEND + network-FS guard), and `WalGlue` bridging periodic and per-event append modes. 28 new tests pass; Phase 6.1 durability tests still green. Next: Plan 18-03 (I/O threads for reads).
+Plan 18-03 landed 2026-04-25: IoPool of N std::thread workers with per-slot AtomicUsize Release/Acquire spin-barrier, 3-tier idle backoff (spin_loop → yield_now → park_timeout 100µs), round-robin work distribution per tick via `IoPool::publish` + `join_all`. Per-client `pending_parse_input`, `parsed_requests`, `parse_error` coordination slots added to `Client`. `parse_client_from_buf` free function for I/O worker closures. `IoConfig` with `num_cpus-1` default. 6 new tests pass; Phase 18-01/02 and Phase 6.1 tests still green. Next: Plan 18-04 (I/O threads for writes).
 
 Phase 13.3 remains open on worktree `phase-13.3-lockless-apply` — lockless apply (RefCell + LocalSet). Both tracks are independent; Phase 18 executes on `v2/greenfield` directly.
 
-**Stopped at:** Completed 18-02-PLAN.md (2026-04-25)
+**Stopped at:** Completed 18-03-PLAN.md (2026-04-25)
 
 ## Shipped & Merged to `v2/greenfield`
 
