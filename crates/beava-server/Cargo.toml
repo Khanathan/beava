@@ -142,6 +142,7 @@ path = "src/lib.rs"
 beava-core = { path = "../beava-core" }
 beava-persistence = { path = "../beava-persistence" }
 beava-runtime-core = { path = "../beava-runtime-core" }
+mio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }

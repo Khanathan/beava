@@ -22,6 +22,8 @@ pub enum Route {
     Delete { table: String },
     /// POST /retract — retraction.
     Retract,
+    /// POST /register — pipeline registration.
+    Register,
     /// Path not in the table.
     NotFound,
     /// Path matched but wrong method.
@@ -106,6 +108,14 @@ impl Router {
         if path == "/retract" {
             return if method == "POST" {
                 Route::Retract
+            } else {
+                Route::MethodNotAllowed
+            };
+        }
+        // /register
+        if path == "/register" {
+            return if method == "POST" {
+                Route::Register
             } else {
                 Route::MethodNotAllowed
             };

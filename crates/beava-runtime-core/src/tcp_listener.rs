@@ -43,6 +43,13 @@ impl TcpListener {
         Ok(Self { inner, local_addr })
     }
 
+    /// Construct from an already-bound `std::net::TcpListener` (must be non-blocking).
+    pub fn from_std(listener: std::net::TcpListener) -> std::io::Result<Self> {
+        let local_addr = listener.local_addr()?;
+        let inner = mio::net::TcpListener::from_std(listener);
+        Ok(Self { inner, local_addr })
+    }
+
     /// The actual bound address (useful when port 0 was requested).
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr

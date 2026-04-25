@@ -165,6 +165,7 @@ pub fn parse_http_request(
         Route::Upsert { table } => WireRequest::HttpUpsert { table, body },
         Route::Delete { table } => WireRequest::HttpDelete { table, body },
         Route::Retract => WireRequest::HttpRetract { body },
+        Route::Register => WireRequest::Register { payload: body },
         Route::NotFound => WireRequest::ParseError {
             reason: format!("404 Not Found: {path}"),
         },
@@ -275,6 +276,13 @@ impl HttpListener {
     pub fn bind(addr: SocketAddr) -> std::io::Result<Self> {
         let inner = mio::net::TcpListener::bind(addr)?;
         let local_addr = inner.local_addr()?;
+        Ok(Self { inner, local_addr })
+    }
+
+    /// Construct from an already-bound `std::net::TcpListener` (must be non-blocking).
+    pub fn from_std(listener: std::net::TcpListener) -> std::io::Result<Self> {
+        let local_addr = listener.local_addr()?;
+        let inner = mio::net::TcpListener::from_std(listener);
         Ok(Self { inner, local_addr })
     }
 

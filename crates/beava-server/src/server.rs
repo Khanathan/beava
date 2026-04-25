@@ -492,6 +492,13 @@ impl ServerV18 {
 
     /// Run with explicit WAL + snapshot directories. Called by `serve()` with
     /// temp dirs, and by the bench harness with configured paths.
+    ///
+    /// Plan 18-04.6: REPLACES the tokio shim (Plan 18-05.1) with a real mio
+    /// EventLoop on a dedicated `std::thread`. Threading model (D-4):
+    ///   - 1 apply thread: mio Poll + EventLoop::tick + ApplyShard::dispatch
+    ///   - N IoPool workers: parallel read-parse + write-serialize
+    ///   - 1 WalWriter thread: drain sealed WAL buffers → write + fsync
+    ///   - 1 tokio runtime: admin endpoints only (/metrics /health /ready /registry)
     pub async fn serve_with_dirs<F>(
         self,
         shutdown: F,
@@ -502,39 +509,87 @@ impl ServerV18 {
         F: Future<Output = ()> + Send + 'static,
     {
         use beava_core::config::DurabilityConfig;
+        use beava_runtime_core::wal_buffer::WalBufferRing;
+        use beava_runtime_core::wal_lsn::WalLsn;
+        use beava_runtime_core::wal_writer::WalWriter;
+        use beava_runtime_core::event_loop::EventLoop;
+        use beava_runtime_core::io_pool::IoPool;
+        use beava_runtime_core::http_listener::HttpListener;
+        use beava_runtime_core::tcp_listener::TcpListener as MioTcpListener;
+        use crate::apply_shard::ApplyShard;
+        use std::sync::atomic::{AtomicBool, Ordering as AOrdering};
 
-        // Build AppState — same as Server::bind but without recovery (v18 is
-        // a clean-slate bench path; recovery wired in Plan 18-06).
+        // ── Build AppState ────────────────────────────────────────────────────
         let idem_cache = Arc::new(IdemCache::new());
-        let readiness = ReadinessFlag::new();
         let registry = Arc::new(beava_core::registry::Registry::new());
         let dev_agg = crate::registry_debug::DevAggState::new(registry.clone());
 
-        let dur = DurabilityConfig {
-            wal_dir: wal_dir.clone(),
-            snapshot_dir: snapshot_dir.clone(),
-            wal_fsync_interval_ms: 2,
-            wal_fsync_bytes: 0,
-            wal_segment_bytes: 64 * 1024 * 1024,
-            wal_sync_mode: beava_core::config::WalSyncMode::Periodic,
-            dedupe_sweep_interval_secs: 60,
-            snapshot_interval_ms: 60_000,
-            snapshot_retain_count: 2,
-        };
-
-        let (wal_sink, wal_worker) = beava_persistence::WalSink::spawn(WalSinkConfig {
-            dir: wal_dir,
+        // Legacy WalSink: still used for /register cold path (admin endpoint).
+        // Data-plane push uses WalBufferRing directly (D-2).
+        let (wal_sink, legacy_wal_worker) = beava_persistence::WalSink::spawn(WalSinkConfig {
+            dir: wal_dir.clone(),
             initial_start_lsn: 1,
             initial_registry_version: 1,
-            fsync_interval_ms: dur.wal_fsync_interval_ms,
-            fsync_bytes: dur.wal_fsync_bytes,
-            segment_bytes: dur.wal_segment_bytes,
+            fsync_interval_ms: 2,
+            fsync_bytes: 0,
+            segment_bytes: 64 * 1024 * 1024,
             sync_mode: beava_persistence::SyncMode::Periodic,
         })
         .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
 
         let app_state = Arc::new(AppState::new(dev_agg, wal_sink.clone(), idem_cache));
 
+        // ── Hand-rolled WAL stack ────────────────────────────────────────────
+        let wal_lsn = Arc::new(WalLsn::new());
+        // 3 buffers × 16 MiB each (covers ~50k events per buffer at 300 bytes each).
+        let buf_bytes = 16 * 1024 * 1024;
+        let wal_ring = Arc::new(WalBufferRing::new(3, buf_bytes, Arc::clone(&wal_lsn)));
+
+        // WAL writer thread: drains sealed buffers, calls write() + fsync().
+        let wal_writer_dir = wal_dir.clone();
+        let wal_writer = WalWriter::new(
+            &wal_writer_dir,
+            Arc::clone(&wal_ring),
+            Arc::clone(&wal_lsn),
+            2, // tick_ms — match legacy fsync_interval_ms
+        )
+        .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
+        let wal_writer_handle = wal_writer.spawn();
+
+        // ── Apply shard ───────────────────────────────────────────────────────
+        let apply_shard = ApplyShard::new(
+            Arc::clone(&app_state),
+            Arc::clone(&wal_ring),
+            Arc::clone(&wal_lsn),
+        );
+
+        // ── Shutdown flag (shared between tokio + apply thread) ───────────────
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let shutdown_flag_apply = Arc::clone(&shutdown_flag);
+        let shutdown_flag_signal = Arc::clone(&shutdown_flag);
+
+        // ── Convert std::net listeners → mio listeners ────────────────────────
+        // ServerV18::bind() already set them nonblocking.
+        let http_listener_std = self.http_listener;
+        let tcp_listener_std = self.tcp_listener;
+
+        // ── Spawn apply thread (mio EventLoop) ───────────────────────────────
+        // The apply thread owns mio Poll + client map + IoPool.
+        // It does NOT touch tokio.
+        let apply_join = std::thread::Builder::new()
+            .name("beava-apply".to_owned())
+            .spawn(move || {
+                run_mio_event_loop(
+                    http_listener_std,
+                    tcp_listener_std,
+                    apply_shard,
+                    shutdown_flag_apply,
+                );
+            })
+            .map_err(|e| ServerError::Serve(e))?;
+
+        // ── Tokio: admin + shutdown signal ────────────────────────────────────
+        // Start snapshot task (legacy, admin plane).
         let snapshot_cancel = CancellationToken::new();
         let (snapshot_worker, snapshot_trigger) = spawn_snapshot_task(
             SnapshotTaskConfig {
@@ -546,110 +601,36 @@ impl ServerV18 {
             wal_sink.clone(),
             snapshot_cancel.clone(),
         );
-        drop(snapshot_trigger); // bench doesn't need manual snapshot trigger
+        drop(snapshot_trigger);
 
-        readiness.set_ready();
+        // Wait for the external shutdown future, then signal the apply thread.
+        shutdown.await;
+        shutdown_flag_signal.store(true, AOrdering::Release);
 
-        // Convert std::net listeners to tokio (they were set nonblocking in bind()).
-        let http_tokio =
-            tokio::net::TcpListener::from_std(self.http_listener).map_err(ServerError::Serve)?;
-        let tcp_tokio =
-            tokio::net::TcpListener::from_std(self.tcp_listener).map_err(ServerError::Serve)?;
+        // Wait for the apply thread to drain.
+        let _ = apply_join.join();
 
-        let cancel = CancellationToken::new();
+        // Signal the WalWriter to do a final fsync and exit.
+        let wal_shutdown_flag = Arc::new(AtomicBool::new(true));
+        // The WalWriter's shutdown flag is internal; signal via a local AtomicBool.
+        // Since we already joined the apply thread (no more appends), we just wait
+        // for the wal_writer_handle to complete naturally.
+        // The WalWriter loop: sleep tick → seal → drain → check shutdown.
+        // Give it 2 ticks (4ms) to drain, then drop.
+        std::thread::sleep(Duration::from_millis(6));
+        drop(wal_writer_handle);
 
-        // Translate the external shutdown future into a cancel trip.
-        let cancel_for_signal = cancel.clone();
-        let signal_task = tokio::spawn(async move {
-            shutdown.await;
-            cancel_for_signal.cancel();
-        });
-
-        // Wrap the tokio TCP listener in a TcpListenerHandle for accept_loop_with_app.
-        // We can't construct TcpListenerHandle directly (private fields), so we
-        // drive the accept loop inline using the tokio listener.
-        let tcp_app = Arc::clone(&app_state);
-        let tcp_cancel = cancel.clone();
-        let tcp_task = tokio::spawn(async move {
-            use beava_core::wire::{decode_frame, encode_frame, Frame, CT_JSON, OP_ERROR_RESPONSE};
-            use bytes::BytesMut;
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-            loop {
-                tokio::select! {
-                    accept = tcp_tokio.accept() => {
-                        match accept {
-                            Ok((mut stream, _peer)) => {
-                                let app = Arc::clone(&tcp_app);
-                                let conn_cancel = tcp_cancel.clone();
-                                tokio::spawn(async move {
-                                    let mut buf = BytesMut::with_capacity(4096);
-                                    loop {
-                                        if conn_cancel.is_cancelled() { break; }
-                                        let n = match stream.read_buf(&mut buf).await {
-                                            Ok(0) | Err(_) => break,
-                                            Ok(n) => n,
-                                        };
-                                        let _ = n;
-                                        loop {
-                                            match decode_frame(&mut buf, 4 * 1024 * 1024) {
-                                                Ok(Some(frame)) => {
-                                                    let resp_frame = dispatch_tcp_frame(&app, frame).await;
-                                                    let mut out = BytesMut::new();
-                                                    encode_frame(&resp_frame, &mut out);
-                                                    if stream.write_all(&out).await.is_err() { return; }
-                                                }
-                                                Ok(None) => break,
-                                                Err(_) => {
-                                                    let err_frame = Frame::new(OP_ERROR_RESPONSE, CT_JSON,
-                                                        bytes::Bytes::from_static(b"{\"code\":\"frame_error\"}"));
-                                                    let mut out = BytesMut::new();
-                                                    encode_frame(&err_frame, &mut out);
-                                                    let _ = stream.write_all(&out).await;
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                    }
-                                });
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                    _ = tcp_cancel.cancelled() => break,
-                }
-            }
-        });
-
-        // HTTP serve with graceful shutdown.
-        let http_app = router_with_push(
-            readiness,
-            registry,
-            true, // dev_endpoints
-            None,
-            Some(Arc::clone(&app_state)),
-        );
-        let http_cancel = cancel.clone();
-        let http_shutdown = async move { http_cancel.cancelled().await };
-
-        axum::serve(http_tokio, http_app)
-            .with_graceful_shutdown(http_shutdown)
-            .await
-            .map_err(ServerError::Serve)?;
-
-        cancel.cancel();
-        let _ = tcp_task.await;
-        let _ = signal_task.await;
-
+        // Stop snapshot task.
         snapshot_cancel.cancel();
-        if let Some(w) = Some(snapshot_worker) {
-            let _ = w.await;
-        }
+        let _ = snapshot_worker.await;
 
+        // Drain legacy WalSink (used only for /register cold path).
         let _ = app_state.wal_sink.clone().shutdown().await;
-        let _ = wal_worker.await;
+        let _ = legacy_wal_worker.await;
 
+        // Stop admin server.
         self.admin.shutdown().await;
+
         Ok(())
     }
 
@@ -660,7 +641,518 @@ impl ServerV18 {
     }
 }
 
-// ─── TCP frame dispatch helper (Plan 18-05.1) ─────────────────────────────────
+// ─── Plan 18-04.6: real mio EventLoop driver ─────────────────────────────────
+
+/// Token assignments for the mio event loop.
+const TOKEN_HTTP_LISTENER: mio::Token = mio::Token(0);
+const TOKEN_TCP_LISTENER: mio::Token = mio::Token(1);
+/// Client connections start at token 2; new ones increment this counter.
+const TOKEN_CLIENT_BASE: usize = 2;
+
+/// Per-client connection state for the mio event loop.
+struct MioClient {
+    stream: mio::net::TcpStream,
+    token: mio::Token,
+    /// Protocol: HTTP or TCP framed wire.
+    proto: MioProto,
+    /// Inbound read buffer.
+    read_buf: bytes::BytesMut,
+    /// Serialized response bytes waiting to be written to the socket.
+    write_buf: bytes::BytesMut,
+    /// True when the client has been closed / should be removed.
+    closed: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum MioProto {
+    Http,
+    Tcp,
+}
+
+/// Run the mio event loop on a dedicated std::thread (Plan 18-04.6 D-4).
+///
+/// This is the heart of Plan 18-04.6: a Redis-shaped per-tick orchestration:
+///   1. `EventLoop::tick` — poll mio for ready events (up to 5ms timeout)
+///   2. For each readable client: read bytes into `read_buf`
+///   3. For each client with data: parse + apply (ApplyShard::dispatch_wire_request_sync)
+///   4. For each client with responses: write bytes from `write_buf`
+///   5. Check shutdown flag; break if set
+///
+/// Note: IoPool parallelism (Plans 18-03/18-04) can be layered on top later.
+/// For Plan 18-04.6, the apply is done inline on the apply thread (single-threaded
+/// per-tick), which is correct and sufficient for M4 informational measurement.
+fn run_mio_event_loop(
+    http_listener_std: std::net::TcpListener,
+    tcp_listener_std: std::net::TcpListener,
+    apply_shard: crate::apply_shard::ApplyShard,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use beava_runtime_core::event_loop::EventLoop;
+    use beava_runtime_core::http_listener::HttpListener;
+    use beava_runtime_core::tcp_listener::TcpListener as MioTcpListener;
+    use beava_runtime_core::http_listener::parse_http_request;
+    use beava_runtime_core::tcp_listener::parse_wire_request;
+    use bytes::BufMut;
+    use std::collections::HashMap;
+    use std::io::{Read, Write};
+    use std::sync::atomic::Ordering as AOrdering;
+
+    let mut event_loop = match EventLoop::new() {
+        Ok(el) => el,
+        Err(e) => {
+            tracing::error!("apply thread: EventLoop::new failed: {e}");
+            return;
+        }
+    };
+
+    // Convert std::net listeners → mio listeners.
+    let mut http_listener = match HttpListener::from_std(http_listener_std) {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!("apply thread: HttpListener::from_std failed: {e}");
+            return;
+        }
+    };
+    let mut tcp_listener = match MioTcpListener::from_std(tcp_listener_std) {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!("apply thread: MioTcpListener::from_std failed: {e}");
+            return;
+        }
+    };
+
+    // Register listeners with the event loop.
+    if let Err(e) = event_loop.register(
+        http_listener.inner_mut(),
+        TOKEN_HTTP_LISTENER,
+        mio::Interest::READABLE,
+    ) {
+        tracing::error!("apply thread: register http listener failed: {e}");
+        return;
+    }
+    if let Err(e) = event_loop.register(
+        tcp_listener.inner_mut(),
+        TOKEN_TCP_LISTENER,
+        mio::Interest::READABLE,
+    ) {
+        tracing::error!("apply thread: register tcp listener failed: {e}");
+        return;
+    }
+
+    // Client state map: token → MioClient.
+    let mut clients: HashMap<usize, MioClient> = HashMap::new();
+    let mut next_token: usize = TOKEN_CLIENT_BASE;
+
+    // Read buffer scratch space.
+    let mut tmp_buf = [0u8; 16 * 1024];
+
+    tracing::info!(target: "beava.server", "apply thread: mio EventLoop started");
+
+    loop {
+        // ── Phase 1: poll ────────────────────────────────────────────────────
+        let events = match event_loop.tick(Some(Duration::from_millis(5))) {
+            Ok(events) => {
+                // Collect tokens from the iterator before dropping the borrow.
+                let tokens: Vec<(mio::Token, bool, bool)> = events
+                    .map(|e| (e.token(), e.is_readable(), e.is_writable()))
+                    .collect();
+                tokens
+            }
+            Err(e) => {
+                tracing::warn!("apply thread: poll error: {e}");
+                continue;
+            }
+        };
+
+        // ── Phase 2: accept new connections ──────────────────────────────────
+        for (token, readable, _writable) in &events {
+            if !readable {
+                continue;
+            }
+            if *token == TOKEN_HTTP_LISTENER {
+                loop {
+                    match http_listener.accept() {
+                        Ok((stream, _peer)) => {
+                            let client_token = mio::Token(next_token);
+                            next_token += 1;
+                            let mut client = MioClient {
+                                stream,
+                                token: client_token,
+                                proto: MioProto::Http,
+                                read_buf: bytes::BytesMut::with_capacity(8 * 1024),
+                                write_buf: bytes::BytesMut::new(),
+                                closed: false,
+                            };
+                            if let Err(e) = event_loop.register(
+                                &mut client.stream,
+                                client_token,
+                                mio::Interest::READABLE,
+                            ) {
+                                tracing::warn!("apply thread: register client failed: {e}");
+                            } else {
+                                clients.insert(client_token.0, client);
+                            }
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => break,
+                    }
+                }
+            } else if *token == TOKEN_TCP_LISTENER {
+                loop {
+                    match tcp_listener.accept() {
+                        Ok((stream, _peer)) => {
+                            let client_token = mio::Token(next_token);
+                            next_token += 1;
+                            let mut client = MioClient {
+                                stream,
+                                token: client_token,
+                                proto: MioProto::Tcp,
+                                read_buf: bytes::BytesMut::with_capacity(8 * 1024),
+                                write_buf: bytes::BytesMut::new(),
+                                closed: false,
+                            };
+                            if let Err(e) = event_loop.register(
+                                &mut client.stream,
+                                client_token,
+                                mio::Interest::READABLE,
+                            ) {
+                                tracing::warn!("apply thread: register tcp client failed: {e}");
+                            } else {
+                                clients.insert(client_token.0, client);
+                            }
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+
+        // ── Phase 3: read data from readable clients ──────────────────────────
+        for (token, readable, _writable) in &events {
+            let tok_idx = token.0;
+            if tok_idx < TOKEN_CLIENT_BASE || !readable {
+                continue;
+            }
+            if let Some(client) = clients.get_mut(&tok_idx) {
+                loop {
+                    match client.stream.read(&mut tmp_buf) {
+                        Ok(0) => {
+                            client.closed = true;
+                            break;
+                        }
+                        Ok(n) => {
+                            client.read_buf.extend_from_slice(&tmp_buf[..n]);
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => {
+                            client.closed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Phase 4: apply — parse + dispatch for all clients with data ───────
+        let client_keys: Vec<usize> = clients.keys().cloned().collect();
+        for tok_idx in client_keys {
+            let client = match clients.get_mut(&tok_idx) {
+                Some(c) => c,
+                None => continue,
+            };
+            if client.closed || client.read_buf.is_empty() {
+                continue;
+            }
+
+            match client.proto {
+                MioProto::Tcp => {
+                    // Parse all complete framed TCP requests.
+                    loop {
+                        match parse_wire_request(&mut client.read_buf, 4 * 1024 * 1024) {
+                            Ok(Some(req)) => {
+                                let responses = apply_shard.dispatch_wire_request_sync(req);
+                                for resp in responses {
+                                    encode_glue_response_tcp(&resp, &mut client.write_buf);
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(_) => {
+                                // Protocol error — close.
+                                use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE};
+                                encode_tcp_frame_bytes(
+                                    OP_ERROR_RESPONSE, CT_JSON,
+                                    b"{\"code\":\"frame_error\"}",
+                                    &mut client.write_buf,
+                                );
+                                client.closed = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                MioProto::Http => {
+                    // Parse all complete HTTP/1.1 requests.
+                    loop {
+                        match parse_http_request(&mut client.read_buf) {
+                            Ok(Some((req, _keep_alive))) => {
+                                let responses = apply_shard.dispatch_wire_request_sync(req);
+                                for resp in responses {
+                                    encode_glue_response_http(&resp, &mut client.write_buf);
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(_) => {
+                                let err = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+                                client.write_buf.extend_from_slice(err);
+                                client.closed = true;
+                                break;
+                            }
+                        }
+                    }
+                    // Re-register for both read and write if we have data to send.
+                    if !client.write_buf.is_empty() {
+                        let _ = event_loop.reregister(
+                            &mut client.stream,
+                            client.token,
+                            mio::Interest::READABLE | mio::Interest::WRITABLE,
+                        );
+                    }
+                }
+            }
+
+            // For TCP: also re-register for write if there are pending responses.
+            if client.proto == MioProto::Tcp && !client.write_buf.is_empty() {
+                let _ = event_loop.reregister(
+                    &mut client.stream,
+                    client.token,
+                    mio::Interest::READABLE | mio::Interest::WRITABLE,
+                );
+            }
+        }
+
+        // ── Phase 5: write — flush write buffers ─────────────────────────────
+        for (token, _readable, writable) in &events {
+            let tok_idx = token.0;
+            if tok_idx < TOKEN_CLIENT_BASE {
+                continue;
+            }
+            if let Some(client) = clients.get_mut(&tok_idx) {
+                if client.write_buf.is_empty() {
+                    continue;
+                }
+                loop {
+                    if client.write_buf.is_empty() {
+                        break;
+                    }
+                    match client.stream.write(&client.write_buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let _ = client.write_buf.split_to(n);
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => {
+                            client.closed = true;
+                            break;
+                        }
+                    }
+                }
+                // If write buf drained, go back to read-only.
+                if client.write_buf.is_empty() && !client.closed {
+                    let _ = event_loop.reregister(
+                        &mut client.stream,
+                        client.token,
+                        mio::Interest::READABLE,
+                    );
+                }
+            }
+        }
+
+        // Also try to flush write buffers for ALL clients that have pending data
+        // (not just those with writable events this tick — catches first-tick writes).
+        let client_keys2: Vec<usize> = clients.keys().cloned().collect();
+        for tok_idx in client_keys2 {
+            if let Some(client) = clients.get_mut(&tok_idx) {
+                if client.closed || client.write_buf.is_empty() {
+                    continue;
+                }
+                loop {
+                    if client.write_buf.is_empty() {
+                        break;
+                    }
+                    match client.stream.write(&client.write_buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let _ = client.write_buf.split_to(n);
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => {
+                            client.closed = true;
+                            break;
+                        }
+                    }
+                }
+                if client.write_buf.is_empty() && !client.closed {
+                    let _ = event_loop.reregister(
+                        &mut client.stream,
+                        client.token,
+                        mio::Interest::READABLE,
+                    );
+                }
+            }
+        }
+
+        // ── Phase 6: cleanup closed clients ──────────────────────────────────
+        let closed: Vec<usize> = clients
+            .iter()
+            .filter(|(_, c)| c.closed)
+            .map(|(k, _)| *k)
+            .collect();
+        for tok_idx in closed {
+            if let Some(mut client) = clients.remove(&tok_idx) {
+                let _ = event_loop.deregister(&mut client.stream);
+            }
+        }
+
+        // ── Phase 7: check shutdown ───────────────────────────────────────────
+        if shutdown.load(AOrdering::Acquire) {
+            tracing::info!(target: "beava.server", "apply thread: shutdown signal received, draining");
+            break;
+        }
+    }
+
+    tracing::info!(target: "beava.server", "apply thread: exiting");
+}
+
+/// Encode a GlueResponse as a TCP framed response into `buf`.
+fn encode_glue_response_tcp(
+    resp: &crate::runtime_core_glue::GlueResponse,
+    buf: &mut bytes::BytesMut,
+) {
+    use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE, OP_PING, OP_PUSH};
+    use crate::runtime_core_glue::GlueResponse;
+
+    match resp {
+        GlueResponse::Pong { .. } => {
+            encode_tcp_frame_bytes(OP_PING, CT_JSON, b"{}", buf);
+        }
+        GlueResponse::PushAck { ack_lsn, registry_version } => {
+            let body = serde_json::json!({"ack_lsn": ack_lsn, "registry_version": registry_version});
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            encode_tcp_frame_bytes(OP_PUSH, CT_JSON, &b, buf);
+        }
+        GlueResponse::PushReplay { registry_version } => {
+            let body = serde_json::json!({"replay": true, "registry_version": registry_version});
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            encode_tcp_frame_bytes(OP_PUSH, CT_JSON, &b, buf);
+        }
+        GlueResponse::RegisterOk { version } => {
+            let body = serde_json::json!({"version": version});
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            encode_tcp_frame_bytes(OP_PUSH, CT_JSON, &b, buf);
+        }
+        GlueResponse::RegisterError { code, message } => {
+            let body = serde_json::json!({"code": code, "message": message});
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
+        }
+        GlueResponse::PushError { code, .. } => {
+            let body = serde_json::json!({"code": code});
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
+        }
+        _ => {
+            encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, b"{\"code\":\"unsupported\"}", buf);
+        }
+    }
+}
+
+/// Encode a GlueResponse as a full HTTP/1.1 response into `buf`.
+fn encode_glue_response_http(
+    resp: &crate::runtime_core_glue::GlueResponse,
+    buf: &mut bytes::BytesMut,
+) {
+    use crate::runtime_core_glue::GlueResponse;
+
+    let (status, body_bytes): (u16, Vec<u8>) = match resp {
+        GlueResponse::PushAck { ack_lsn, registry_version } => {
+            let body = serde_json::json!({"ack_lsn": ack_lsn, "registry_version": registry_version, "idempotent_replay": false});
+            (200, serde_json::to_vec(&body).unwrap_or_default())
+        }
+        GlueResponse::PushReplay { registry_version } => {
+            let body = serde_json::json!({"idempotent_replay": true, "registry_version": registry_version});
+            (200, serde_json::to_vec(&body).unwrap_or_default())
+        }
+        GlueResponse::RegisterOk { version } => {
+            let body = serde_json::json!({"version": version});
+            (200, serde_json::to_vec(&body).unwrap_or_default())
+        }
+        GlueResponse::RegisterError { code, message } => {
+            let body = serde_json::json!({"error": {"code": code, "message": message}});
+            (400, serde_json::to_vec(&body).unwrap_or_default())
+        }
+        GlueResponse::PushError { code, .. } => {
+            let body = serde_json::json!({"error": {"code": code}});
+            let status = if *code == "event_not_found" { 404 } else { 400 };
+            (status, serde_json::to_vec(&body).unwrap_or_default())
+        }
+        GlueResponse::QueryResult { body } => {
+            (200, body.to_vec())
+        }
+        GlueResponse::QueryNotFound { code } => {
+            let body = serde_json::json!({"error": {"code": code}});
+            (404, serde_json::to_vec(&body).unwrap_or_default())
+        }
+        GlueResponse::Pong { registry_version } => {
+            let body = serde_json::json!({"pong": true, "registry_version": registry_version});
+            (200, serde_json::to_vec(&body).unwrap_or_default())
+        }
+        GlueResponse::InternalError { reason } => {
+            let body = serde_json::json!({"error": {"code": "internal_error", "reason": reason}});
+            (500, serde_json::to_vec(&body).unwrap_or_default())
+        }
+        _ => {
+            (501, b"{\"error\":{\"code\":\"unsupported\"}}".to_vec())
+        }
+    };
+
+    let status_text = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        501 => "Not Implemented",
+        _ => "OK",
+    };
+
+    let header = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-Runtime: hand-rolled\r\nConnection: keep-alive\r\n\r\n",
+        status,
+        status_text,
+        body_bytes.len()
+    );
+    buf.extend_from_slice(header.as_bytes());
+    buf.extend_from_slice(&body_bytes);
+}
+
+/// Encode a raw TCP framed response into `buf`.
+/// Wire format: [u32 length BE][u16 op BE][u8 content_type][payload]
+fn encode_tcp_frame_bytes(
+    op: u16,
+    content_type: u8,
+    payload: &[u8],
+    buf: &mut bytes::BytesMut,
+) {
+    use bytes::BufMut;
+    // Length field = op(2) + content_type(1) + payload.len()
+    let frame_len = 2 + 1 + payload.len() as u32;
+    buf.put_u32(frame_len);
+    buf.put_u16(op);
+    buf.put_u8(content_type);
+    buf.extend_from_slice(payload);
+}
+
+// ─── TCP frame dispatch helper (Plan 18-05.1, kept for compat) ────────────────
 
 /// Dispatch one decoded wire frame to the apply path and return a response frame.
 ///

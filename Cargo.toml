@@ -47,6 +47,7 @@ futures = "0.3"
 # geo_distance, geo_spread, distance_from_home). Pure-Rust, ~20-line formula,
 # no transitive deps.
 haversine = "0.2"
+mio = { version = "1", features = ["os-poll", "net"] }
 
 [profile.release]
 opt-level = 3
