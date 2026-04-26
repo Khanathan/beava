@@ -132,7 +132,11 @@ async fn test_serve_with_dirs_uses_iopool_for_read_write() {
         .send()
         .await
         .expect("register");
-    assert!(resp.status().is_success(), "register failed: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "register failed: {}",
+        resp.status()
+    );
 
     // Push 1000 events at parallel=4 via TCP.
     use beava_core::wire::{CT_JSON, OP_PUSH};
@@ -268,7 +272,11 @@ async fn test_apply_thread_does_no_parse_or_encode() {
         .send()
         .await
         .expect("register");
-    assert!(resp.status().is_success(), "register failed: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "register failed: {}",
+        resp.status()
+    );
 
     // Push 100 events through TCP.
     use beava_core::wire::{CT_JSON, OP_PUSH};
@@ -379,7 +387,11 @@ async fn test_mixed_http_tcp_through_iopool() {
         .send()
         .await
         .expect("register");
-    assert!(resp.status().is_success(), "register failed: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "register failed: {}",
+        resp.status()
+    );
 
     const N: usize = 100;
     // Single shared key so we can sanity-check the final count.

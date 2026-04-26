@@ -1053,21 +1053,17 @@ fn run_mio_event_loop(
                 match err {
                     MioParseError::TcpFrame => {
                         use crate::runtime_core_glue::GlueResponse;
-                        client
-                            .output_queue
-                            .push_back(GlueResponse::PushError {
-                                code: "frame_error",
-                                registry_version: 0,
-                            });
+                        client.output_queue.push_back(GlueResponse::PushError {
+                            code: "frame_error",
+                            registry_version: 0,
+                        });
                     }
                     MioParseError::HttpProtocol => {
                         use crate::runtime_core_glue::GlueResponse;
-                        client
-                            .output_queue
-                            .push_back(GlueResponse::PushError {
-                                code: "http_protocol_error",
-                                registry_version: 0,
-                            });
+                        client.output_queue.push_back(GlueResponse::PushError {
+                            code: "http_protocol_error",
+                            registry_version: 0,
+                        });
                     }
                 }
                 client.closed = true;
@@ -1086,14 +1082,13 @@ fn run_mio_event_loop(
         // already in write_set. After apply, many clients in read_set will now
         // have output_queue populated.
         for &idx in &read_set {
-            if !write_set.contains(&idx) {
-                if clients[idx]
+            if !write_set.contains(&idx)
+                && clients[idx]
                     .as_ref()
                     .map(|c| c.has_write_work())
                     .unwrap_or(false)
-                {
-                    write_set.push(idx);
-                }
+            {
+                write_set.push(idx);
             }
         }
 
@@ -1244,11 +1239,9 @@ fn accept_clients<L>(
                     interest_writable: false,
                     closed: false,
                 };
-                if let Err(e) = event_loop.register(
-                    &mut client.stream,
-                    client_token,
-                    mio::Interest::READABLE,
-                ) {
+                if let Err(e) =
+                    event_loop.register(&mut client.stream, client_token, mio::Interest::READABLE)
+                {
                     tracing::warn!("apply thread: register client failed: {e}");
                     free_slots.push(slot_idx);
                 } else {
