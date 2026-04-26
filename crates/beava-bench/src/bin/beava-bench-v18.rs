@@ -70,6 +70,12 @@ struct Cli {
     /// Suppress markdown ledger row; only print human summary.
     #[arg(long)]
     no_ledger: bool,
+
+    /// TCP pipeline depth — send N pushes back-to-back before reading N acks.
+    /// Default 1 (no pipelining, request-response per event). Set higher to
+    /// amortise loopback RTT across multiple events. HTTP transport ignores this.
+    #[arg(long, default_value_t = 1)]
+    pipeline_depth: usize,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -434,6 +440,7 @@ async fn run_workload(
         let transport = cli.transport;
         let wf = wire_format;
         let client = Arc::clone(&http_client);
+        let pipeline_depth = cli.pipeline_depth.max(1);
 
         workers.push(tokio::spawn(async move {
             run_push_worker(
@@ -450,6 +457,7 @@ async fn run_workload(
                 tcp_addr,
                 deadline,
                 client,
+                pipeline_depth,
             )
             .await;
         }));
@@ -506,6 +514,7 @@ async fn run_push_worker(
     tcp_addr: std::net::SocketAddr,
     deadline: Instant,
     http_client: Arc<reqwest::Client>,
+    pipeline_depth: usize,
 ) {
     let mut rng = sampling_rng(seed);
     match transport {
@@ -540,6 +549,7 @@ async fn run_push_worker(
             }
         }
         Transport::Tcp => {
+            use beava_core::wire::Frame;
             use beava_server::testing::TcpClient;
             let mut client = match TcpClient::connect(tcp_addr).await {
                 Ok(c) => c,
@@ -549,58 +559,83 @@ async fn run_push_worker(
                 }
             };
             let mut seq = 0_u64;
+            let pdepth = pipeline_depth.max(1);
             while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
-                let body = make_event_payload(&pipeline, seq, &mut rng);
-
-                // Build frame payload based on wire_format.
-                // CT_JSON: JSON-encoded envelope {"event": ..., "body": ...}
-                // CT_MSGPACK: msgpack-encoded envelope {event: ..., body: ...}
-                let (ct, payload_bytes) = match wire_format {
-                    WireFormat::Json => {
-                        let envelope = serde_json::json!({
-                            "event": pipeline.event_name,
-                            "body": body,
-                        });
-                        (CT_JSON, serde_json::to_vec(&envelope).unwrap())
+                // ─── Build N frames + send all of them, then read N acks ─────
+                let batch_start = Instant::now();
+                let mut sent: usize = 0;
+                let mut send_err = false;
+                for _ in 0..pdepth {
+                    if stop.load(Ordering::Relaxed) || Instant::now() >= deadline {
+                        break;
                     }
-                    WireFormat::Msgpack => {
-                        use serde::Serialize;
-                        #[derive(Serialize)]
-                        struct Envelope<'a> {
-                            event: &'a str,
-                            body: &'a serde_json::Value,
+                    let body = make_event_payload(&pipeline, seq, &mut rng);
+                    let (ct, payload_bytes) = match wire_format {
+                        WireFormat::Json => {
+                            let envelope = serde_json::json!({
+                                "event": pipeline.event_name,
+                                "body": body,
+                            });
+                            (CT_JSON, serde_json::to_vec(&envelope).unwrap())
                         }
-                        let envelope = Envelope {
-                            event: &pipeline.event_name,
-                            body: &body,
-                        };
-                        (CT_MSGPACK, rmp_serde::to_vec_named(&envelope).unwrap())
+                        WireFormat::Msgpack => {
+                            use serde::Serialize;
+                            #[derive(Serialize)]
+                            struct Envelope<'a> {
+                                event: &'a str,
+                                body: &'a serde_json::Value,
+                            }
+                            let envelope = Envelope {
+                                event: &pipeline.event_name,
+                                body: &body,
+                            };
+                            (CT_MSGPACK, rmp_serde::to_vec_named(&envelope).unwrap())
+                        }
+                    };
+                    let frame = Frame {
+                        op: OP_PUSH,
+                        content_type: ct,
+                        payload: Bytes::from(payload_bytes),
+                    };
+                    if client.write_frame(&frame).await.is_err() {
+                        send_err = true;
+                        break;
                     }
-                };
-
-                let start = Instant::now();
-                match client
-                    .send_raw(OP_PUSH, ct, Bytes::from(payload_bytes))
-                    .await
-                {
-                    Ok(resp) => {
-                        let elapsed_us = start.elapsed().as_micros() as u64;
-                        if resp.op == OP_PUSH {
-                            pushes.fetch_add(1, Ordering::Relaxed);
-                            let mut h = push_hist.lock().await;
-                            let _ = h.record(elapsed_us.max(1));
-                        } else {
-                            errors.fetch_add(1, Ordering::Relaxed);
+                    sent += 1;
+                    seq = seq.wrapping_add(1);
+                }
+                if sent == 0 {
+                    if send_err {
+                        if let Ok(c) = TcpClient::connect(tcp_addr).await {
+                            client = c;
                         }
+                    }
+                    continue;
+                }
+                // ─── Read N acks (strict FIFO order) ─────────────────────────
+                match client.read_n_frames(sent).await {
+                    Ok(frames) => {
+                        let elapsed_us = batch_start.elapsed().as_micros() as u64;
+                        // Per-event amortised latency: total batch time / N events.
+                        let per_event_us = (elapsed_us / sent as u64).max(1);
+                        let mut h = push_hist.lock().await;
+                        for f in &frames {
+                            if f.op == OP_PUSH {
+                                pushes.fetch_add(1, Ordering::Relaxed);
+                                let _ = h.record(per_event_us);
+                            } else {
+                                errors.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        drop(h);
                     }
                     Err(_e) => {
-                        errors.fetch_add(1, Ordering::Relaxed);
+                        errors.fetch_add(sent as u64, Ordering::Relaxed);
                         if let Ok(c) = TcpClient::connect(tcp_addr).await {
                             client = c;
                         }
                     }
                 }
-                seq = seq.wrapping_add(1);
             }
         }
     }
