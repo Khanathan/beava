@@ -35,7 +35,12 @@
 
 pub mod mio_backend;
 
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
+pub mod io_uring;
+
 pub use mio_backend::MioBackend;
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
+pub use io_uring::IoUringBackend;
 
 use bytes::BytesMut;
 // Re-export mio's TcpStream so callers don't need to import mio directly.
