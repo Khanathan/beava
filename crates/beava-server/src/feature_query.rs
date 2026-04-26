@@ -250,14 +250,23 @@ async fn post_get_batch_handler(
 /// because `|` is the multi-key separator. Full URL-decoding of `%7C` → `|` is deferred
 /// to Phase 12 API completion.
 pub(crate) fn parse_entity_key(key_str: &str, group_keys: &[String]) -> Option<EntityKey> {
+    use beava_core::row::Value;
+    use compact_str::CompactString;
+    use smallvec::SmallVec;
     let segments: Vec<&str> = key_str.split('|').collect();
     if segments.len() != group_keys.len() {
         return None;
     }
-    let pairs: Vec<(String, String)> = group_keys
+    // Plan 18-11 D-5: build EntityKey via SmallVec of (CompactString, Value::Str)
+    // pairs. URL parameters are always strings — values are stored as Str.
+    let pairs: SmallVec<[(CompactString, Value); 2]> = group_keys
         .iter()
         .zip(segments.iter())
-        .map(|(k, v)| (k.clone(), v.to_string()))
+        .map(|(k, v)| {
+            let key: CompactString = k.as_str().into();
+            let val: Value = Value::Str(CompactString::from(*v));
+            (key, val)
+        })
         .collect();
     Some(EntityKey(pairs))
 }

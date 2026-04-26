@@ -245,12 +245,19 @@ pub async fn execute_push_and_get(
 /// Build an `EntityKey` from the query's `entity_key` map using the descriptor's
 /// group_keys ordering. Missing keys default to empty string.
 fn build_entity_key(key_map: &BTreeMap<String, String>, group_keys: &[String]) -> EntityKey {
-    // EntityKey is Vec<(String, String)> — pairs of (group_key_name, value).
-    let pairs: Vec<(String, String)> = group_keys
+    // Plan 18-11 D-5: EntityKey is SmallVec<[(CompactString, Value); 2]>.
+    // URL/query keys arrive as strings — store as Value::Str.
+    use beava_core::row::Value;
+    use compact_str::CompactString;
+    use smallvec::SmallVec;
+    let pairs: SmallVec<[(CompactString, Value); 2]> = group_keys
         .iter()
         .map(|gk| {
             let val = key_map.get(gk).cloned().unwrap_or_default();
-            (gk.clone(), val)
+            (
+                CompactString::from(gk.as_str()),
+                Value::Str(CompactString::from(val)),
+            )
         })
         .collect();
     EntityKey(pairs)

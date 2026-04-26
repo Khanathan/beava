@@ -189,10 +189,13 @@ fn aggop_windowed_sum_30s_roundtrip() {
 
 #[test]
 fn entity_key_serde_roundtrip() {
-    let ek = EntityKey(vec![
-        ("user_id".to_string(), "alice".to_string()),
-        ("merchant".to_string(), "m1".to_string()),
+    use compact_str::CompactString;
+    use smallvec::SmallVec;
+    let pairs: SmallVec<[(CompactString, Value); 2]> = SmallVec::from_buf([
+        ("user_id".into(), Value::Str("alice".into())),
+        ("merchant".into(), Value::Str("m1".into())),
     ]);
+    let ek = EntityKey(pairs);
     let bytes = bincode::serialize(&ek).expect("encode");
     let decoded: EntityKey = bincode::deserialize(&bytes).expect("decode");
     assert_eq!(ek, decoded);
@@ -355,7 +358,13 @@ fn snapshot_body_state_tables_full_roundtrip() {
     for node in ["agg_a", "agg_b"] {
         let mut table = AggStateTable::new();
         for u in ["alice", "bob", "carol"] {
-            let key = EntityKey(vec![("user_id".to_string(), u.to_string())]);
+            use compact_str::CompactString;
+            use smallvec::SmallVec;
+            let pair: (CompactString, Value) = ("user_id".into(), Value::Str(u.into()));
+            let key = EntityKey(SmallVec::from_buf_and_len(
+                [pair, ("".into(), Value::Null)],
+                1,
+            ));
             let mut cnt = AggOp::Count(CountState::default());
             cnt.update(&Row::new(), 0, None, true);
             cnt.update(&Row::new(), 1, None, true);

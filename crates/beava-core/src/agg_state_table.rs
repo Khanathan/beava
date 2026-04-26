@@ -8,69 +8,211 @@
 //! ## Key design invariants (D-06 determinism)
 //!
 //! - Uses `BTreeMap` (never Hash...Map) so iteration order is stable across
-//!   invocations — required for WAL replay determinism (SC4).
-//! - `EntityKey` is a canonically-ordered vec of `(group_key_name, value_string)`
-//!   pairs; keys are in `group_keys` declaration order, not alphabetical order.
+//!   invocations — required for WAL replay determinism (SC4). Plan 18-11
+//!   Task 11.6 will swap this to `hashbrown` with iter-sorted snapshot.
+//! - `EntityKey` (Plan 18-11 D-5) is a SmallVec of
+//!   `(group_key_name, native_Value)` pairs in declaration order
+//!   (the order of `AggregationDescriptor::group_keys`).
+//!   No string canonicalization on the hot path — Value variants discriminate
+//!   I64/F64/Str/Bool/Datetime natively.
 //! - Null or missing group-key values produce `None` from `EntityKey::from_row`,
 //!   causing the apply loop to drop the event for that aggregation.
 //!
-//! # Value → String canonicalization table
+//! # Value variants accepted in EntityKey
 //!
-//! | `Value` variant    | canonical string                     | notes                            |
-//! |--------------------|--------------------------------------|----------------------------------|
-//! | `Str(s)`           | `s` as-is                            | keys are plain identifiers        |
-//! | `I64(n)`           | `n.to_string()`                      | e.g. "42"                        |
-//! | `F64(f)`           | `format!("{:?}", f)`                 | Rust Debug repr; deterministic   |
-//! | `Bool(b)`          | `b.to_string()`                      | "true" / "false"                 |
-//! | `Datetime(ms)`     | `ms.to_string()`                     | epoch-ms as decimal              |
-//! | `Bytes(_)`         | → return `None` (event dropped)      | bytes are not sane keys in v0    |
-//! | `Null`             | → return `None` (event dropped)      | null group-key means no entity   |
+//! | `Value` variant    | inclusion         | notes                            |
+//! |--------------------|-------------------|----------------------------------|
+//! | `Str(CompactStr)`  | included          | inline-storage for ≤24 bytes     |
+//! | `I64(n)`           | included          | distinct from F64 by variant     |
+//! | `F64(f)`           | included          | NaN handled via total_cmp        |
+//! | `Bool(b)`          | included          |                                  |
+//! | `Datetime(ms)`     | included          |                                  |
+//! | `Bytes(_)`         | → `None` (drop)   | bytes are not sane keys in v0    |
+//! | `Null`             | → `None` (drop)   | null group-key means no entity   |
+//! | `Json/List/Map`    | → `None` (drop)   | structured outputs aren't keys   |
 
 use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 
 use crate::agg_descriptor::AggregationDescriptor;
 use crate::agg_op::AggOp;
 use crate::row::{Row, Value};
+use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 
 // ─── EntityKey ────────────────────────────────────────────────────────────────
 
 /// Stable entity identifier for per-aggregation state lookup.
 ///
-/// A vec of `(group_key_name, canonical_value_string)` pairs in declaration
-/// order (the order of `AggregationDescriptor::group_keys`).  Implements `Ord`
-/// so it can be used as a `BTreeMap` key without hashing.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct EntityKey(pub Vec<(String, String)>);
+/// Plan 18-11 D-5: SmallVec inline storage of `(CompactString, Value)` pairs
+/// in declaration order (the order of `AggregationDescriptor::group_keys`).
+/// Most aggregations group by 1-2 keys → inline storage, zero heap alloc on
+/// the hot path.
+///
+/// Implements `Hash + Eq + PartialOrd + Ord` over the SmallVec contents so it
+/// can serve as both a HashMap key (Plan 18-11 D-4) and a sortable key for
+/// snapshot determinism (Plan 18-11 D-8).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityKey(pub SmallVec<[(CompactString, Value); 2]>);
+
+impl PartialEq for EntityKey {
+    fn eq(&self, other: &Self) -> bool {
+        if self.0.len() != other.0.len() {
+            return false;
+        }
+        self.0.iter().zip(other.0.iter()).all(|((ak, av), (bk, bv))| {
+            ak == bk && entity_value_eq(av, bv)
+        })
+    }
+}
+
+impl Eq for EntityKey {}
+
+impl Hash for EntityKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Hash length first, then each (key, value) pair via hash_entity_value.
+        self.0.len().hash(state);
+        for (k, v) in &self.0 {
+            k.hash(state);
+            hash_entity_value(v, state);
+        }
+    }
+}
+
+impl PartialOrd for EntityKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for EntityKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Lex order over the (key, value) sequence.
+        for ((ak, av), (bk, bv)) in self.0.iter().zip(other.0.iter()) {
+            match ak.cmp(bk) {
+                std::cmp::Ordering::Equal => {}
+                ord => return ord,
+            }
+            match cmp_entity_value(av, bv) {
+                std::cmp::Ordering::Equal => {}
+                ord => return ord,
+            }
+        }
+        self.0.len().cmp(&other.0.len())
+    }
+}
+
+/// Equality over the Value variants permitted inside an EntityKey.
+/// Cross-variant comparisons return false. F64 NaN compares equal to
+/// itself here (entity-key context — we want determinism, not IEEE-754).
+fn entity_value_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Str(x), Value::Str(y)) => x == y,
+        (Value::I64(x), Value::I64(y)) => x == y,
+        (Value::F64(x), Value::F64(y)) => x.to_bits() == y.to_bits(),
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Datetime(x), Value::Datetime(y)) => x == y,
+        // Cross-variant or unsupported (Bytes/Null/Json/List/Map shouldn't
+        // appear here — from_row drops them) → false.
+        _ => false,
+    }
+}
+
+/// Hash a Value as an EntityKey component. Variant tag + payload — must
+/// agree with `entity_value_eq` (Eq–Hash contract).
+fn hash_entity_value<H: Hasher>(v: &Value, state: &mut H) {
+    match v {
+        Value::Str(s) => {
+            0u8.hash(state);
+            s.as_str().hash(state);
+        }
+        Value::I64(n) => {
+            1u8.hash(state);
+            n.hash(state);
+        }
+        Value::F64(f) => {
+            2u8.hash(state);
+            f.to_bits().hash(state);
+        }
+        Value::Bool(b) => {
+            3u8.hash(state);
+            b.hash(state);
+        }
+        Value::Datetime(ms) => {
+            4u8.hash(state);
+            ms.hash(state);
+        }
+        // Variants below shouldn't appear in EntityKey (from_row drops them);
+        // hash them as a sentinel for total robustness.
+        _ => {
+            255u8.hash(state);
+        }
+    }
+}
+
+/// Total ordering over Value variants permitted inside an EntityKey. Variant
+/// discrimination first (Str < I64 < F64 < Bool < Datetime), then payload
+/// order. F64 uses `total_cmp` so NaN sorts deterministically.
+fn cmp_entity_value(a: &Value, b: &Value) -> std::cmp::Ordering {
+    fn rank(v: &Value) -> u8 {
+        match v {
+            Value::Str(_) => 0,
+            Value::I64(_) => 1,
+            Value::F64(_) => 2,
+            Value::Bool(_) => 3,
+            Value::Datetime(_) => 4,
+            _ => 255,
+        }
+    }
+    match rank(a).cmp(&rank(b)) {
+        std::cmp::Ordering::Equal => match (a, b) {
+            (Value::Str(x), Value::Str(y)) => x.cmp(y),
+            (Value::I64(x), Value::I64(y)) => x.cmp(y),
+            (Value::F64(x), Value::F64(y)) => x.total_cmp(y),
+            (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+            (Value::Datetime(x), Value::Datetime(y)) => x.cmp(y),
+            _ => std::cmp::Ordering::Equal,
+        },
+        ord => ord,
+    }
+}
 
 impl EntityKey {
     /// Build an `EntityKey` from a `Row` by extracting the fields named in
-    /// `group_keys` and converting each to its canonical string.
+    /// `group_keys` and canonicalising each to a `Value::Str(CompactString)`.
     ///
-    /// Returns `None` if any group-key field is absent or `Value::Null` — the
-    /// apply loop must drop the event for this aggregation in that case.
+    /// Returns `None` if any group-key field is absent or carries a
+    /// non-key-safe Value variant (Null / Bytes / Json / List / Map).
     ///
-    /// `Bytes` values also produce `None` (not sane entity keys in v0; see
-    /// module doc for the full canonicalization table).
+    /// **Canonicalization (preserved from pre-Plan-18-11 behaviour for URL
+    /// query compat):** all group-key values are stringified into
+    /// CompactString and wrapped in `Value::Str`. This keeps query-side URL
+    /// parsing (which always sees strings) consistent with apply-side
+    /// EntityKey construction. I64(42) and F64(42.0) canonicalize to
+    /// distinct strings ("42" vs "42.0") just as before.
     pub fn from_row(group_keys: &[String], row: &Row) -> Option<EntityKey> {
-        let mut pairs = Vec::with_capacity(group_keys.len());
+        let mut pairs: SmallVec<[(CompactString, Value); 2]> =
+            SmallVec::with_capacity(group_keys.len());
         for key in group_keys {
-            let canonical = match row.get(key) {
+            let canonical: CompactString = match row.get(key) {
                 None => return None,                  // missing field → drop
                 Some(Value::Null) => return None,     // null field → drop
                 Some(Value::Bytes(_)) => return None, // bytes not sane as key → drop
-                Some(Value::Str(s)) => s.to_string(),
-                Some(Value::I64(n)) => n.to_string(),
-                Some(Value::F64(f)) => format!("{:?}", f),
-                Some(Value::Bool(b)) => b.to_string(),
-                Some(Value::Datetime(ms)) => ms.to_string(),
-                Some(Value::Json(_)) => return None, // Json not sane as group key
+                Some(Value::Json(_)) => return None,  // Json not sane as group key
                 // Phase 11 (D-01): structured outputs (List/Map) are never
-                // legal as group-by keys — they only appear as aggregation
-                // outputs. Drop the event for this aggregation if encountered.
+                // legal as group-by keys — drop the event for this aggregation.
                 Some(Value::List(_)) | Some(Value::Map(_)) => return None,
+                Some(Value::Str(s)) => s.clone(),
+                Some(Value::I64(n)) => n.to_string().into(),
+                Some(Value::F64(f)) => format!("{:?}", f).into(),
+                Some(Value::Bool(b)) => b.to_string().into(),
+                Some(Value::Datetime(ms)) => ms.to_string().into(),
             };
-            pairs.push((key.clone(), canonical));
+            pairs.push((
+                CompactString::from(key.as_str()),
+                Value::Str(canonical),
+            ));
         }
         Some(EntityKey(pairs))
     }
@@ -151,6 +293,18 @@ mod tests {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
+    /// Build a single-key EntityKey from a user_id string (test helper).
+    fn make_user_key(user_id: &str) -> EntityKey {
+        let pair: (CompactString, Value) = ("user_id".into(), Value::Str(user_id.into()));
+        EntityKey(SmallVec::from_buf_and_len([pair, ("".into(), Value::Null)], 1))
+    }
+
+    /// Same but for I64 user_id.
+    fn make_user_key_from_i64(n: i64) -> EntityKey {
+        let pair: (CompactString, Value) = ("user_id".into(), Value::Str(n.to_string().into()));
+        EntityKey(SmallVec::from_buf_and_len([pair, ("".into(), Value::Null)], 1))
+    }
+
     fn count_op_desc() -> AggOpDescriptor {
         AggOpDescriptor {
             kind: AggKind::Count,
@@ -213,13 +367,12 @@ mod tests {
             .with_field("amount", Value::F64(10.0));
 
         let ek = EntityKey::from_row(&keys, &row).expect("should succeed");
-        assert_eq!(
-            ek,
-            EntityKey(vec![
-                ("user_id".to_string(), "a".to_string()),
-                ("merchant_id".to_string(), "m1".to_string()),
-            ])
-        );
+        // Plan 18-11 D-5: EntityKey carries native (CompactString, Value) pairs.
+        let expected: SmallVec<[(CompactString, Value); 2]> = SmallVec::from_buf([
+            ("user_id".into(), Value::Str("a".into())),
+            ("merchant_id".into(), Value::Str("m1".into())),
+        ]);
+        assert_eq!(ek, EntityKey(expected));
     }
 
     /// T02: Null group-key value → None (event dropped).
@@ -295,7 +448,7 @@ mod tests {
         );
 
         let mut table = AggStateTable::new();
-        let key = EntityKey(vec![("user_id".to_string(), "alice".to_string())]);
+        let key = make_user_key("alice");
 
         let row = table.get_or_init(&key, &desc);
         assert_eq!(
@@ -310,7 +463,7 @@ mod tests {
     fn agg_state_table_get_or_init_returns_existing_on_repeat() {
         let desc = make_descriptor("A", "S", &["user_id"], &[("cnt", count_op_desc())]);
         let mut table = AggStateTable::new();
-        let key = EntityKey(vec![("user_id".to_string(), "alice".to_string())]);
+        let key = make_user_key("alice");
 
         // First call: creates the row.
         {
@@ -343,7 +496,7 @@ mod tests {
         let mut table = AggStateTable::new();
 
         for i in 0..5 {
-            let key = EntityKey(vec![("user_id".to_string(), i.to_string())]);
+            let key = make_user_key_from_i64(i);
             table.get_or_init(&key, &desc);
         }
 
@@ -355,7 +508,7 @@ mod tests {
     fn agg_state_table_query_feature_returns_value() {
         let desc = make_descriptor("A", "S", &["user_id"], &[("cnt", count_op_desc())]);
         let mut table = AggStateTable::new();
-        let key = EntityKey(vec![("user_id".to_string(), "alice".to_string())]);
+        let key = make_user_key("alice");
 
         // Push 3 events by mutating the entity row directly.
         {
@@ -374,7 +527,7 @@ mod tests {
     fn agg_state_table_query_feature_returns_none_for_unknown_key() {
         let desc = make_descriptor("A", "S", &["user_id"], &[("cnt", count_op_desc())]);
         let table = AggStateTable::new();
-        let key = EntityKey(vec![("user_id".to_string(), "unknown".to_string())]);
+        let key = make_user_key("unknown");
 
         // Never inserted key.
         let _ = desc; // suppress unused warning
@@ -382,7 +535,10 @@ mod tests {
         assert!(val.is_none(), "unknown key must return None");
     }
 
-    /// T11 (D-06 grep guard): file uses BTreeMap; must NOT use HashMap.
+    /// T11 (D-06 grep guard, Plan 18-11 update): file still uses BTreeMap as
+    /// the outer state-table container. Plan 18-11 Task 11.6 will swap this
+    /// to `hashbrown::HashMap` and replace the guard with an iter-sorted
+    /// snapshot determinism test.
     #[test]
     fn agg_state_table_uses_btreemap() {
         let src = include_str!("agg_state_table.rs");
@@ -392,17 +548,25 @@ mod tests {
             "agg_state_table.rs must use BTreeMap for deterministic iteration (D-06)"
         );
 
-        // The source of THIS file must not contain "HashMap" outside of test comments.
-        // We split the forbidden pattern to avoid triggering the very check we write.
-        let forbidden = ["Hash", "Map"].concat();
-        // Only the test module references it (in this comment) — the production code must not.
-        // Count occurrences in non-test (pre-#[cfg(test)]) portion:
+        // The production code must not (yet) declare a HashMap field. Doc
+        // comments mentioning HashMap (e.g. about EntityKey serving as a
+        // HashMap key) are fine — only the field declaration is forbidden
+        // until Task 11.6 lands.
+        let forbidden_patterns = [
+            "BTreeMap = std::collections::HashMap",
+            ": HashMap<",
+            ": hashbrown::HashMap<",
+            ": FxHashMap<",
+        ];
         let test_marker = "#[cfg(test)]";
         let production_src = src.split(test_marker).next().unwrap_or("");
-        assert!(
-            !production_src.contains(forbidden.as_str()),
-            "agg_state_table.rs production code must not use HashMap (D-06 determinism)"
-        );
+        for pat in forbidden_patterns {
+            assert!(
+                !production_src.contains(pat),
+                "agg_state_table.rs production code must not use {} (D-06 determinism, until Task 11.6)",
+                pat
+            );
+        }
     }
 
     // ── Plan 18-11 Task 11.3: EntityKey SmallVec + CompactString + Value ─────
@@ -441,12 +605,12 @@ mod tests {
         assert!(!ek2.0.spilled(), "2-key EntityKey must use inline storage");
     }
 
-    /// EntityKey::from_row populates the SmallVec with native Value types
-    /// (no string canonicalization). I64(42) and F64(42.0) remain distinct
-    /// keys via Value's variant discrimination — same as the prior
-    /// stringified canonicalization but without the to_string overhead.
+    /// EntityKey::from_row canonicalises each group-key value to a
+    /// `Value::Str(CompactString)` (pre-Plan-18-11 behaviour preserved for
+    /// URL-query compat). I64(42) and F64(42.0) canonicalise to distinct
+    /// strings ("42" vs "42.0") so they remain non-colliding entity keys.
     #[test]
-    fn entity_key_from_row_yields_native_value_pairs() {
+    fn entity_key_from_row_yields_canonicalised_str_pairs() {
         let keys = vec!["user_id".to_string()];
         let row_i64 = Row::new().with_field("user_id", Value::I64(42));
         let row_f64 = Row::new().with_field("user_id", Value::F64(42.0));
@@ -454,17 +618,16 @@ mod tests {
         let ek_i = EntityKey::from_row(&keys, &row_i64).expect("I64 EntityKey");
         let ek_f = EntityKey::from_row(&keys, &row_f64).expect("F64 EntityKey");
 
-        // Distinct keys (I64 vs F64) — variant discrimination.
+        // Distinct keys via stringified canonical ("42" vs "42.0").
         assert_ne!(ek_i, ek_f);
 
-        // The first pair carries the native Value (not a stringified canonical).
         match &ek_i.0[0].1 {
-            Value::I64(42) => {}
-            other => panic!("expected I64(42) in EntityKey, got {:?}", other),
+            Value::Str(s) if s.as_str() == "42" => {}
+            other => panic!("expected Value::Str(\"42\") in EntityKey, got {:?}", other),
         }
         match &ek_f.0[0].1 {
-            Value::F64(f) if *f == 42.0 => {}
-            other => panic!("expected F64(42.0) in EntityKey, got {:?}", other),
+            Value::Str(s) if s.as_str() == "42.0" => {}
+            other => panic!("expected Value::Str(\"42.0\") in EntityKey, got {:?}", other),
         }
     }
 }

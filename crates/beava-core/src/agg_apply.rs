@@ -349,8 +349,13 @@ mod tests {
         let table = state_tables
             .get("UserCount")
             .expect("UserCount table must exist");
-        let key =
-            crate::agg_state_table::EntityKey(vec![("user_id".to_string(), "alice".to_string())]);
+        let key = crate::agg_state_table::EntityKey({
+            let mut sv: smallvec::SmallVec<
+                [(compact_str::CompactString, Value); 2],
+            > = smallvec::SmallVec::new();
+            sv.push(("user_id".into(), Value::Str("alice".into())));
+            sv
+        });
         let val = table
             .query_feature(&key, 0, 10_000)
             .expect("must have value");
@@ -430,10 +435,13 @@ mod tests {
 
         // Either: no entry for alice, OR alice's count == 0.
         let count = state_tables.get("UserCount").and_then(|t| {
-            let key = crate::agg_state_table::EntityKey(vec![(
-                "user_id".to_string(),
-                "alice".to_string(),
-            )]);
+            let key = crate::agg_state_table::EntityKey({
+                let mut sv: smallvec::SmallVec<
+                    [(compact_str::CompactString, Value); 2],
+                > = smallvec::SmallVec::new();
+                sv.push(("user_id".into(), Value::Str("alice".into())));
+                sv
+            });
             t.query_feature(&key, 0, 10_000)
         });
 
@@ -510,8 +518,13 @@ mod tests {
         }
 
         let table = state_tables.get("UserStats").expect("UserStats must exist");
-        let key =
-            crate::agg_state_table::EntityKey(vec![("user_id".to_string(), "alice".to_string())]);
+        let key = crate::agg_state_table::EntityKey({
+            let mut sv: smallvec::SmallVec<
+                [(compact_str::CompactString, Value); 2],
+            > = smallvec::SmallVec::new();
+            sv.push(("user_id".into(), Value::Str("alice".into())));
+            sv
+        });
 
         let cnt = table
             .query_feature(&key, 0, 10_000)
